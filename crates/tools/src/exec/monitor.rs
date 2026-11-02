@@ -1,82 +1,6 @@
-//! Monitors: a condition watched **across turns**, per `TODO.md` T24.
-//!
-//! # This is not `job_wait` with a longer deadline
-//!
-//! `job_wait` blocks **inside** one turn. A monitor watches while the model is
-//! not running and wakes the loop when it fires — *"the encoder running while the
-//! model is not"*, in `docs/closed-loop.md`'s terms. T24 says both are wanted and
-//! that they are different primitives, and folding them into one verb with a flag
-//! would make the model's worst mistake here — believing it waited when it did
-//! not — spellable.
-//!
-//! The seat brief pays for the distinction in its own words: *a Stop hook fires
-//! when a session goes idle, and a seat that is rate limited, has crashed, or
-//! never started is not running a session, so no stop event ever fires and the
-//! silence looks exactly like a quiet room.*
-//!
-//! # A monitor keys on a HANDLE or a CGROUP, never a pattern
-//!
-//! This is the rule the whole module is shaped around, and it is not a guard.
-//! [`Watch`] has four built-in variants and **none of them can hold a string
-//! that is matched against a process**. `until pgrep -f X` is not refused
-//! here; it is unspellable, because there is no argument to put the `X` in.
-//!
-//! The `process` argument on the tool (2026-09-14) does not change that: the
-//! string is consumed **once, at declaration**, by [`super::procs::find`] — an
-//! in-process `/proc` scan that removes this daemon, its ancestors and its
-//! protected pids before matching, so it cannot find itself — and what the
-//! monitor holds from then on is [`super::procs::ProcessCondition`]: (pid,
-//! start time) handles. The poller never sees the string.
-//!
-//! The evidence is not an argument about taste. On this box a process check
-//! self-matched its own shell **seven times in one session** with the lesson in
-//! memory and T21 open in `TODO.md`, and the seventh — `pkill -f
-//! 'harnessd-rice.sock'` — killed a running command mid-flight, because the
-//! string was in the shell's own command line. Prompting has now failed eight
-//! times against this hazard. `docs/tool-design-brief.md` §2.4: *make the mistake
-//! blocked, do not warn about it.*
-//!
-//! [`crate::builtins::monitor`]'s test asserts no monitor tool has grown a
-//! `pattern`, `match` or `cmdline` argument, the way the job tools already do.
-//!
-//! # What a monitor may watch, and what it may not
-//!
-//! | may | keyed on |
-//! |---|---|
-//! | a job finishing | the job's handle |
-//! | a scope emptying | the cgroup |
-//! | a path appearing, vanishing or changing | the path |
-//! | a loopback TCP port becoming listenable, or stopping | the port number |
-//! | a process leaving | (pid, start time) — from a `pid`, or from a `process` string resolved once |
-//!
-//! **Refused: an arbitrary shell predicate.** That is a polling loop with extra
-//! steps, and `flowy wait`'s own help records what happens: three seats each
-//! hand-wrote one, and somebody wrote it in seventy-six spellings. A predicate
-//! the model composes is a predicate the model composes *differently every time*,
-//! and one of those spellings matches the shell evaluating it.
-//!
-//! **Refused: a host.** [`Watch::Port`] is loopback only and has no host
-//! argument, which is what keeps the whole tool out of [`crate::schema::Access::Network`]
-//! — a monitor that could reach an arbitrary address would have to declare
-//! network access on *every* call, including the ones watching a cgroup.
-//!
-//! # T24's five requirements, and where each one is
-//!
-//! | | |
-//! |---|---|
-//! | 1. scoped at creation, default session | [`Monitor::owner`] is a [`ScopeId`] and there is no constructor without one |
-//! | 2. listable and attributable | [`Monitors::list`], and [`Monitor::declared_by`] |
-//! | 3. reports **why** it fired | [`Fired::Fired::why`] — a sentence naming the change, not a bit |
-//! | 4. one waiter per name, enforced | [`Monitors::declare`] refuses [`MonitorError::NameTaken`] |
-//! | 5. bounded | [`Monitor::ttl`], capped at [`MAX_TTL`], renewed only by an explicit call |
-//!
-//! # The mechanism does not leak the thing it exists to stop
-//!
-//! A monitor is structurally a long-lived process, which is why T24 would not let
-//! them land before the lifetime work. So: **one poller thread for all monitors,
-//! started lazily on the first declaration and exiting when nothing is left
-//! watching.** No monitors, no thread. A thread per monitor would have made this
-//! module the leak.
+//! Monitors: a condition watched across turns, which wakes the model when it fires.
+//! A monitor keys on a handle, a cgroup, a path, a port or a (pid, start time), never on a
+//! string matched against processes, so no spelling of a command can match the poller itself.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -88,19 +12,14 @@ use super::jobs::{Job, JobId};
 use super::plugin_condition::PluginConditions;
 use super::scope::ScopeId;
 
-/// The longest a monitor may live without being renewed. **One hour.**
-///
-/// T24 requirement 5: *"a TTL or an explicit renewal, so a monitor whose reason
-/// has passed dies without anybody remembering it."* The cap is what makes the
-/// requirement true of a monitor whose declarer never came back — a TTL the
-/// caller chooses is only a bound if there is a bound on the choice.
+/// The longest a monitor may live without being renewed: a TTL the caller chooses is a bound
+/// only if there is a bound on the choice.
 pub const MAX_TTL: Duration = Duration::from_secs(3600);
-/// What a monitor gets when nobody said. Five minutes: long enough for a build,
-/// short enough that a forgotten one is gone before anybody has to decide about
-/// it.
+/// What a monitor gets when nobody said: long enough for a build, short enough that a forgotten
+/// one is gone before anybody has to decide about it.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
-/// How often the poller looks. Deliberately unhurried: a monitor exists because
-/// nobody is waiting on it this instant.
+/// How often the poller looks. Unhurried on purpose: a monitor exists because nobody is waiting
+/// on it this instant.
 const TICK: Duration = Duration::from_millis(250);
 
 /// What a monitor watches. The built-in conditions are the first-class, listable
@@ -109,24 +28,21 @@ const TICK: Duration = Duration::from_millis(250);
 pub enum Watch {
     /// A job leaving `Running`. Keyed on the handle the model already holds.
     Job(JobId),
-    /// A scope's cgroup emptying. Keyed on the cgroup — *"is this cgroup
-    /// populated"*, which is the replacement `TODO.md` T24 names for `until pgrep
-    /// -f X`, and which has no predicate that can match its own waiter.
+    /// A scope's cgroup emptying. Keyed on the cgroup, a question no waiter can match itself
+    /// with.
     Scope(ScopeId),
     /// A path appearing, vanishing, or changing size or mtime.
     Path(PathBuf),
-    /// A **loopback** TCP port reaching the wanted state. No host argument: see
-    /// this module's docs for why that omission is load-bearing.
+    /// A loopback TCP port reaching the wanted state. The absent host argument is what keeps
+    /// this out of network access.
     Port { port: u16, want: PortState },
-    /// A caller-supplied condition: a timer, a command, a log tail, a flowy
-    /// watcher. The open seam — built-ins are here, everything else is a
-    /// [`Condition`].
+    /// A caller-supplied condition: a timer, a command, a log tail, a flowy watcher. The open
+    /// seam, where everything that is not built in lives.
     Custom(CustomWatch),
 }
 
-/// A [`Watch::Custom`], behind an `Arc` so the enum stays `Clone`. Compared by
-/// pointer identity: two `Custom` watches are equal iff they are the same
-/// condition object.
+/// A [`Watch::Custom`], behind an `Arc` so the enum stays `Clone`. Two of them are equal iff
+/// they are the same condition object.
 #[derive(Clone)]
 pub struct CustomWatch(pub Arc<dyn Condition>);
 
@@ -144,51 +60,39 @@ impl PartialEq for CustomWatch {
 
 impl Eq for CustomWatch {}
 
-/// A condition a monitor watches. The open seam: a flowy watcher, a log tail, a
-/// health check — anything that can answer "is it met" — is a `Condition`, not a
-/// new arm of a closed enum.
-///
-/// Evaluation is **poll-based**: the monitor's runner calls [`Condition::met`]
-/// each pass. A condition that can be signalled instead (a job's `finished`
-/// condvar) overrides [`Condition::wait`] so the runner blocks rather than polls;
-/// until then it polls on [`TICK`].
+/// A condition a monitor watches: the open seam where a flowy watcher, a log tail or a health
+/// check lives. Evaluation is poll-based unless the condition can signal, in which case it
+/// overrides [`Condition::wait`] and the runner blocks.
 pub trait Condition: Send + Sync {
     /// Evaluate now. `Some(why)` when the condition is met, `None` otherwise.
     fn met(&self) -> Option<String>;
 
-    /// How the runner waits before the next evaluation. `Block` means the
-    /// condition can signal (push); `Sleep` means poll.
-    ///
-    /// Defaults to polling on [`TICK`]; a blockable condition overrides it.
+    /// How the runner waits before the next evaluation: `Block` when the condition can signal,
+    /// `Sleep` when it must poll. Defaults to polling on [`TICK`].
     fn wait(&self) -> Wait {
         Wait::Sleep(TICK)
     }
 
-    /// Reset after a firing, so a **continuous** monitor watches for the next
-    /// occurrence. Default: stateless — the condition is re-evaluated as-is.
+    /// Reset after a firing, so a continuous monitor watches for the next occurrence. Default:
+    /// stateless, re-evaluated as-is.
     fn rearm(&self) {}
 
     /// One line for a listing.
     fn describe(&self) -> String;
 
-    /// **Push**: called once at declaration with a signal the condition can ping
-    /// when it changes, so the poller wakes immediately rather than on [`TICK`].
-    /// The default does nothing — a poll condition. A blockable one (a channel
-    /// fed by a subprocess, a job handle) overrides this and pings `signal`.
-    ///
-    /// `self: Arc<Self>` so an implementation can move itself into a notifier
-    /// thread.
+    /// Called once at declaration with a signal the condition pings when it changes, so the
+    /// poller wakes at once rather than on [`TICK`]. The default does nothing; `self: Arc<Self>`
+    /// lets an implementation move itself into a notifier thread.
     fn install(self: Arc<Self>, _signal: Arc<dyn Fn() + Send + Sync>) {}
 
-    /// **This condition's own cap on how long it may watch**, when it is not [`MAX_TTL`]: a
-    /// pull request's review takes days (`exec::github`). `None` is the ordinary cap.
+    /// This condition's own cap on how long it may watch, when it is not [`MAX_TTL`]: a pull
+    /// request's review takes days. `None` is the ordinary cap.
     fn max_ttl(&self) -> Option<Duration> {
         None
     }
 
-    /// **The GitHub pull request or issue this watches, and for what** — `("owner/repo#N",
-    /// ["checks", …])` — so a second watch on the same one can be refused in favour of one watch
-    /// for all of it. `None` for everything that is not a GitHub watch.
+    /// The GitHub pull request or issue this watches, and for what, so a second watch on the
+    /// same one can be refused in favour of one watch for all of it. `None` for everything else.
     fn github(&self) -> Option<(String, Vec<String>)> {
         None
     }
@@ -257,7 +161,7 @@ impl Watch {
         }
     }
 
-    /// **The longest this watch may live** — [`MAX_TTL`], or its condition's own cap.
+    /// The longest this watch may live — [`MAX_TTL`], or its condition's own cap.
     pub fn max_ttl(&self) -> Duration {
         match self {
             Watch::Custom(c) => c.0.max_ttl().unwrap_or(MAX_TTL),
@@ -266,16 +170,11 @@ impl Watch {
     }
 }
 
-/// How a monitor ended. **Four endings and they never collapse.**
-///
-/// The one that matters is that [`Fired::Expired`] is not a firing. A monitor
-/// whose TTL passed learned nothing about the world, and reporting it as though
-/// the condition happened is the same defect as reporting a deadline as a
-/// completion — F5, one primitive over.
+/// How a monitor ended. Four endings, and they never collapse: [`Fired::Expired`] is not a
+/// firing, because a monitor whose TTL passed learned nothing about the world.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fired {
-    /// The condition happened, and `why` says **what changed**, not that
-    /// something did. T24 requirement 3.
+    /// The condition happened, and `why` says what changed rather than that something did.
     Fired {
         why: String,
         at: SystemTime,
@@ -286,17 +185,15 @@ pub enum Fired {
     Expired { after: Duration, last_seen: String },
     /// Somebody retired it by name.
     Cancelled { by: String, after: Duration },
-    /// **Its owning scope ended, so it went with it.** This is the reaping half
+    /// Its owning scope ended, so it went with it. This is the reaping half
     /// of T24 applied to watchers: a monitor whose owner is gone is not something
     /// anybody is coming back for.
     OwnerEnded { scope: ScopeId, after: Duration },
 }
 
 impl Fired {
-    /// Did the thing being watched actually happen?
-    ///
-    /// Deliberately narrow. Three of the four endings are ways a monitor stopped
-    /// existing, and only one of them is an answer about the world.
+    /// Did the thing being watched actually happen? Three of the four endings are ways a
+    /// monitor stopped existing, and only one of them is an answer about the world.
     pub fn happened(&self) -> bool {
         matches!(self, Fired::Fired { .. })
     }
@@ -324,7 +221,7 @@ impl Fired {
 /// One declared watch.
 #[derive(Debug)]
 pub struct Monitor {
-    /// **The name is the caller's**, and it is the identity T24 requirement 4
+    /// The name is the caller's, and it is the identity T24 requirement 4
     /// enforces one waiter per.
     pub name: String,
     /// Who owns its lifetime. There is no constructor without one: T24
@@ -342,25 +239,17 @@ pub struct Monitor {
     deadline: Mutex<Instant>,
     ttl: Mutex<Duration>,
     probe: Probe,
-    /// **Presence, before absence.** A [`Watch::Scope`] must see the cgroup hold
-    /// something before an empty one means anything: an empty scope at t=0 is a
-    /// boot window and not a finish, and this flag is the only thing that keeps
-    /// the two apart. Unused by the other three probes, which have no such
-    /// ambiguity — a path either changed or did not.
+    /// Presence before absence: a [`Watch::Scope`] must be seen holding something before an
+    /// empty one means anything, or an empty cgroup at t=0 reads as a finish rather than as a
+    /// boot window. Unused by the other probes, which have no such ambiguity.
     seen_populated: AtomicBool,
-    /// **Continuous** rather than one-shot: after a firing the monitor re-arms and
-    /// keeps watching instead of settling. One-shot is the default; a continuous
-    /// monitor lives until its TTL or an explicit retire. It is a **persistent**
-    /// watcher — it does not die between firings; each firing is an event in the
-    /// stream the harness wakes on.
+    /// Continuous rather than one-shot: it re-arms after a firing and lives until its TTL or
+    /// an explicit retire, so a watcher does not die between firings.
     repeat: bool,
 }
 
-/// One firing of a monitor — a message in the stream the harness wakes on. A
-/// continuous monitor produces a stream of these without dying; a one-shot monitor
-/// produces exactly one. Recorded separately from the live [`Monitor`], so a
-/// continuous monitor's stream of firings is a list of events rather than a shared
-/// mutable cell.
+/// One firing of a monitor: a message in the stream the harness wakes on. Recorded apart
+/// from the live [`Monitor`] so a continuous monitor's firings are events, not a shared cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Firing {
     pub name: String,
@@ -371,19 +260,15 @@ pub struct Firing {
     pub at: SystemTime,
 }
 
-/// The resolved thing a monitor looks at each tick.
-///
-/// Separate from [`Watch`] because a `Watch` is a *description* a listing can
-/// clone and compare, and this holds live handles. A job monitor keeps the
-/// `Arc<Job>` it was declared against rather than looking the id up every tick:
-/// the id could be re-used by a different host, and a monitor that silently
-/// re-targeted would be watching something nobody asked about.
+/// The resolved thing a monitor looks at each tick, holding live handles. A job monitor keeps
+/// the `Arc<Job>` it was declared against rather than looking the id up every tick, because a
+/// reused id would silently re-target the watch.
 enum Probe {
     Job(Arc<Job>),
     Scope(ScopeId),
     Path {
         path: PathBuf,
-        /// Behind a lock so a **continuous** monitor can re-baseline at the new
+        /// Behind a lock so a continuous monitor can re-baseline at the new
         /// state after each firing.
         baseline: Mutex<PathFacts>,
     },
@@ -401,7 +286,7 @@ impl std::fmt::Debug for Probe {
     }
 }
 
-/// What a path looked like when the monitor was declared. The **baseline** — a
+/// What a path looked like when the monitor was declared. The baseline — a
 /// path monitor with no baseline could only report existence, and "it changed"
 /// is the question people actually have.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -480,7 +365,7 @@ impl Monitor {
         self.repeat
     }
 
-    /// T24 requirement 5's other half: an **explicit** renewal. Nothing renews a
+    /// T24 requirement 5's other half: an explicit renewal. Nothing renews a
     /// monitor by looking at it, because a monitor that lives as long as somebody
     /// keeps listing it is a monitor with no bound.
     fn renew(&self, ttl: Duration) {
@@ -507,10 +392,9 @@ impl Monitor {
                 if st.is_running() {
                     return None;
                 }
-                // The state, not "it is gone": `exited 0`, `killed by job_kill`
-                // and `not run (could not join its scope)` are three different
-                // things to have happened and a monitor that flattened them would
-                // be reporting the fact it was created to distinguish.
+                // The state, not "it is gone": `exited 0`, `killed by job_kill` and
+                // `not run (could not join its scope)` are three different things, and
+                // flattening them reports the fact this probe exists to distinguish.
                 Some(format!(
                     "`{}` {} after {:.1}s",
                     job.id,
@@ -519,10 +403,9 @@ impl Monitor {
                 ))
             }
             Probe::Scope(s) => {
-                // **Presence, then absence.** A scope directory that is gone is a
-                // scope that ended; one that exists and holds nothing has to have
-                // been seen holding something first, or an empty cgroup at t=0
-                // reads as a finish when it is a boot window.
+                // Presence, then absence: a scope directory that is gone has ended, and one
+                // that exists and holds nothing must have been seen holding something first,
+                // or a boot window reads as a finish.
                 if std::fs::metadata(&s.path).is_err() {
                     return Some(format!("`{s}` no longer exists — the scope ended"));
                 }
@@ -610,11 +493,9 @@ impl Monitor {
         }
     }
 
-    /// Re-arm after a firing, in place: a **continuous** monitor is persistent, so
-    /// it re-baselines its probe for the *next* occurrence rather than dying. The
-    /// path is re-read at its new state, the port's target flips, and a custom
-    /// condition re-arms itself. A job or scope is terminal and has no next
-    /// occurrence.
+    /// Re-arm in place after a firing: the path is re-read at its new state, the port's
+    /// target flips, a custom condition re-arms itself. A job or a scope is terminal and has
+    /// no next occurrence.
     fn rearm(&self) {
         match &self.probe {
             Probe::Path { path, baseline } => {
@@ -633,7 +514,7 @@ impl Monitor {
 /// Why a monitor was not declared. Every variant hands over what the retry needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitorError {
-    /// **One waiter per name.** T24 requirement 4, and the fleet's own words:
+    /// One waiter per name. T24 requirement 4, and the fleet's own words:
     /// *two processes under one reader means the roster shows a seat attached
     /// while the real one hears nothing.*
     NameTaken {
@@ -711,22 +592,20 @@ impl std::fmt::Display for MonitorError {
 
 impl std::error::Error for MonitorError {}
 
-/// Every monitor this session has, and the one thread that looks at them.
-///
-/// **Listable by construction** (T24 requirement 2): there is no way to declare a
-/// monitor that this does not hold, so there is no monitor a listing cannot show.
+/// Every monitor this session has, and the one thread that looks at them. A monitor this does
+/// not hold cannot be declared, so no monitor is missing from a listing.
 #[derive(Default)]
 pub struct Monitors {
     inner: Mutex<Registry>,
-    /// Woken when a monitor settles. **This is the wake seam** — see
+    /// Woken when a monitor settles. This is the wake seam — see
     /// [`Monitors::wait_for_any`].
     settled: Condvar,
     /// Woken by a blockable condition (push) so the poller re-polls immediately
     /// instead of waiting out [`TICK`]. Guarded by [`Monitors::wake_guard`].
     wake: Condvar,
     wake_guard: Mutex<()>,
-    /// **The plugin conditions this session may arm** (`docs/plugins-plan.md` §4.4), wired by the
-    /// daemon. `None` in a test or a daemon that serves no plugins.
+    /// The plugin conditions this session may arm, wired by the daemon. `None` in a test or a
+    /// daemon that serves no plugins.
     plugins: Mutex<Option<Arc<dyn PluginConditions>>>,
 }
 
@@ -756,13 +635,9 @@ impl std::fmt::Debug for Monitors {
 }
 
 impl Monitors {
-    /// **The plugin conditions this session may arm**, once the daemon has wired them.
-    ///
-    /// A field rather than a parameter on every call, because the monitor tool asks `Monitors`
-    /// for everything else it needs (`world`, `workspace`, `protected`) and a plugin condition is
-    /// the same kind of fact: something only the host it opened inside can answer. `None` — every
-    /// test, and a daemon that serves no plugins — means a `plugin` monitor is refused by name
-    /// rather than declared and never polled.
+    /// The plugin conditions this session may arm, once the daemon has wired them. A field
+    /// rather than a parameter because it is a fact only the host it opened inside can answer;
+    /// `None` refuses a `plugin` monitor by name instead of declaring one nobody polls.
     pub fn plugin_conditions(&self) -> Option<Arc<dyn PluginConditions>> {
         self.plugins
             .lock()
@@ -785,7 +660,7 @@ impl Monitors {
         }
     }
 
-    /// **Push**: a blockable condition calls this when it changes, so the poller
+    /// Push: a blockable condition calls this when it changes, so the poller
     /// wakes now rather than on the next [`TICK`]. Cheap and idempotent — a wake
     /// with nothing new to look at costs one re-poll.
     pub fn signal(&self) {
@@ -803,11 +678,9 @@ impl Monitors {
         })
     }
 
-    /// Declare a watch. **Refuses rather than replacing** when the name is taken.
-    ///
-    /// `job` must be the live handle rather than an id, so that a monitor cannot
-    /// be declared against a job that does not exist — see [`Probe`]. `repeat`
-    /// makes it **continuous**: it re-arms after each firing instead of settling.
+    /// Declare a watch, refusing rather than replacing when the name is taken. `job` is the
+    /// live handle rather than an id, so a monitor cannot be declared against a job that does
+    /// not exist; `repeat` makes it continuous.
     #[allow(clippy::too_many_arguments)] // a watch is declared in one call; a builder would hide which half is optional
     pub fn declare(
         self: &Arc<Self>,
@@ -910,12 +783,9 @@ impl Monitors {
         Some(f)
     }
 
-    /// **Retire every monitor a scope owned, because the scope ended.**
-    ///
-    /// Called from the reaping path rather than left to the poller, so the record
-    /// lands at the moment the scope goes and says which scope took it. A monitor
-    /// that merely stopped being polled would be a watcher that went quiet, and a
-    /// watcher that goes quiet looks exactly like one whose condition never fired.
+    /// Retire every monitor a scope owned, because the scope ended. Called from the reaping
+    /// path so the record lands when the scope goes: a monitor merely left unpolled would look
+    /// exactly like one whose condition never fired.
     pub fn retire_under(&self, scope: &ScopeId) -> Vec<Firing> {
         let mut reg = self.inner.lock().expect("monitors");
         let doomed: Vec<String> = reg
@@ -953,10 +823,8 @@ impl Monitors {
             .collect()
     }
 
-    /// The stream of firings, in the order they fired. The falsifier: a session
-    /// with no monitors and a session whose monitors all expired without firing
-    /// are different facts — and a **continuous** monitor contributes one entry per
-    /// firing while it keeps watching.
+    /// The firings, in order. A session with no monitors and one whose monitors all expired
+    /// are different facts, and a continuous monitor adds one entry per firing.
     pub fn firings(&self) -> Vec<Firing> {
         self.inner.lock().expect("monitors").events.clone()
     }
@@ -978,15 +846,8 @@ impl Monitors {
             .collect()
     }
 
-    /// **The wake seam.** Block until a monitor fires, or until the deadline.
-    ///
-    /// This is what a loop calls between turns: it is the "wakes the loop when it
-    /// fires" half of T24's sentence, and it is a `Condvar` rather than a poll so
-    /// that a caller waiting on it costs nothing while nothing is happening.
-    ///
-    /// Returns the firings **during this call**, which is why it takes a `since`: a
-    /// caller that asked twice would otherwise be handed the same firing twice and
-    /// act on it twice.
+    /// The wake seam: block until a monitor fires or the deadline passes, so a loop can call
+    /// it between turns. Returns the firings during this call, which is why it takes a `since`.
     pub fn wait_for_any(&self, since: usize, deadline: Duration) -> Vec<Firing> {
         let reg = self.inner.lock().expect("monitors");
         let (reg, _) = self
@@ -1043,7 +904,7 @@ impl Monitors {
             let event = m.firing(ending);
             let mut reg = self.inner.lock().expect("monitors");
             if m.repeat && is_fire {
-                // **Continuous**: the monitor persists — it does not die and get
+                // Continuous: the monitor persists — it does not die and get
                 // re-declared. It re-baselines its probe for the next occurrence and
                 // keeps watching; the firing is one message in the stream.
                 m.rearm();
@@ -1059,13 +920,8 @@ impl Monitors {
         fired
     }
 
-    /// One thread for **all** monitors, and it exits when there is nothing left
-    /// to watch.
-    ///
-    /// A thread per monitor would make this module the accumulation T24 exists to
-    /// stop — *"you guys like to accumulate monitors and shells"*. The `Arc` is
-    /// downgraded so that a session dropping its `Monitors` lets the thread
-    /// finish rather than keeping the registry alive to be polled forever.
+    /// One thread for all monitors, held weakly so a session dropping its `Monitors` lets it
+    /// finish rather than keeping the registry alive to be polled for ever.
     fn spawn_poller(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         let _ = std::thread::Builder::new()
@@ -1091,11 +947,8 @@ impl Monitors {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shipped conditions. A flowy watcher, a log tail, a health check — these are the
-// examples of the [`Condition`] seam, and the things a caller builds its own on
-// top of.
-// ---------------------------------------------------------------------------
+// Shipped conditions: the examples of the [`Condition`] seam that a caller builds its own
+// on top of.
 
 /// A timer: fires when the deadline passes. One-shot by default; on a continuous
 /// monitor it re-arms and fires every `interval`.
@@ -1133,10 +986,9 @@ impl Condition for TimerCondition {
     }
 }
 
-/// What a command condition fires on. `AnyExit` when the command exits — whatever
-/// the code; `OutputContains` when its stdout contains the string; `NumberAbove`
-/// and `NumberBelow` when its stdout is a number that crosses the threshold (a
-/// temperature, a token count, a latency).
+/// What a command condition fires on: `AnyExit` when it exits whatever the code,
+/// `OutputContains` when stdout contains the string, `NumberAbove`/`NumberBelow` when stdout
+/// is a number crossing the threshold.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandExpect {
     AnyExit,
@@ -1145,12 +997,9 @@ pub enum CommandExpect {
     NumberBelow(f64),
 }
 
-/// A command returning: the condition is met by the command exiting, its output
-/// matching, or its numeric output crossing a threshold. The command is **spawned
-/// once and polled** (`try_wait`), not run to completion on every look — so a
-/// command that blocks until some external event (a bash script waiting on a
-/// marker) works as a condition without stalling the poller. Run on the host, not
-/// through the session's exec boundary — a monitor condition is a check, not a job.
+/// A command returning: met by the exit, by its output matching, or by a number crossing a
+/// threshold. The command is spawned once and polled, so one that blocks until an external
+/// event works without stalling the poller.
 #[derive(Debug)]
 pub struct CommandCondition {
     argv: Vec<String>,
@@ -1287,7 +1136,7 @@ fn parse_number(text: &str) -> Option<f64> {
         .find_map(|w| w.trim_end_matches(['C', 'c', 's', 'm']).parse::<f64>().ok())
 }
 
-/// A log tail: fires on each new line that matches a filter. A **continuous**
+/// A log tail: fires on each new line that matches a filter. A continuous
 /// monitor's example — the condition is stateless between firings except for how
 /// far it has read, which `rearm` advances.
 #[derive(Debug)]
@@ -1335,16 +1184,12 @@ impl Condition for LogTailCondition {
     }
 }
 
-/// A channel-fed condition: a subprocess (or thread) writes messages to the
-/// `Sender`, and each message is a firing. This is the **push** case — the
-/// condition pings the poller on each message instead of being polled, so a
-/// continuous monitor wakes the instant a message lands. One message per firing.
+/// A channel-fed condition: each message from the `Sender` is a firing, which is the push
+/// case where the condition pings the poller instead of being polled.
 #[derive(Debug)]
 pub struct ChannelCondition {
-    /// The receiver, taken by [`Condition::install`] and moved into the notifier
-    /// thread — `mpsc::Receiver` is `Send` but not `Sync`, so it cannot be shared,
-    /// and sharing it behind a `Mutex` would hold a lock for the whole of a
-    /// blocking `recv` (which deadlocks against the poller). `None` after install.
+    /// The receiver, moved into the notifier thread by [`Condition::install`]. It is `Send`
+    /// but not `Sync`, and a `Mutex` would hold a lock for the whole of a blocking `recv`.
     rx: Mutex<Option<std::sync::mpsc::Receiver<String>>>,
     /// Messages the notifier has received and the poller has not yet drained.
     pending: Mutex<VecDeque<String>>,

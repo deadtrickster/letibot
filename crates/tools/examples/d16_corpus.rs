@@ -1,27 +1,14 @@
-//! **What D16 and R98(1) would change, over a corpus** — the two numbers the rulings were filed
-//! on, per host.
+//! What a boundary rule and a standing-answer rule would change, over a corpus.
 //!
 //! ```sh
 //! cargo run --offline -p letibot-tools --example d16_corpus -- \
 //!     --workspace /home/dead/Projects/letibot ~/letibot-corpus/mac.json
 //! ```
 //!
-//! The corpus is read-only and lives outside the tree (`~/letibot-corpus/*.json`, exported from
-//! each host's store); nothing here writes anything, asks a model, or runs a command.
-//!
-//! # What each number means, and the one assumption
-//!
-//! * **D16** — the cards a *person* answered at `writes-allowed`, and how many of them the
-//!   boundary rule would have settled with nobody asked. A corpus row does not record the
-//!   confinement the call ran inside, so the column asks the rule with the boundary's own half
-//!   assumed: *if this session had been inside a measured boundary*. The rule itself is
-//!   `adjudicate::a_command_that_crosses_nothing` — the gate's own function, not a restatement —
-//!   so this cannot answer after the gate has stopped.
-//! * **R98** — the settles whose deciding mechanism was a standing answer (an approved shape, a
-//!   session grant, a `permission` rule) over a command that runs the project's own code, split
-//!   by runner. With `[permissions] ask_unconfined_code` OFF — the default — R98 does nothing,
-//!   and this is what turning it on would cost: each of these is a call that would go back to
-//!   being a card on a host with no boundary.
+//! The corpus is read-only and lives outside the tree; nothing here writes anything,
+//! asks a model, or runs a command. A row records the call, the mode and who decided,
+//! never the confinement it ran in, so the boundary half is assumed: the gate's own
+//! rule is asked as if the session had been inside a measured boundary.
 //!
 //! Numbers only. Not one command is printed: the corpus holds real sessions.
 use std::path::Path;

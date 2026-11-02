@@ -1,25 +1,9 @@
-//! **Remote placement, against a fake ssh** — `docs/remote-hosts.md`'s RH1 row.
+//! Remote placement against a fake ssh: the commands, the base64 channel, the `setsid` launch, the job
+//! files and the `git bundle` round trip are the production ones, and no network is touched because the
+//! fake runs the last argument locally against a temporary home.
 //!
-//! # No network, and no real host, ever
-//!
-//! The `ssh` these tests run is a script this file writes: it accepts every flag the
-//! backend passes (`-i`, the `-o` options, the destination), ignores them, and **executes
-//! the last argument locally** — which is the remote command. The "remote machine" is a
-//! temporary directory standing in for its home (`HOME` is set to it inside the fake), so
-//! `root = "~/letibot-remote"` is expanded **on the far side** exactly as it is over a real
-//! connection, and every absolute path the backend spells from then on is one this fake
-//! can open.
-//!
-//! What that buys is the real thing under test: the commands, the base64 channel, the
-//! `setsid` launch, the job files and the `git bundle`/`git fetch` round trip are the
-//! production ones. What it does not test is ssh itself — a test that needed a second
-//! machine could not run in this suite, and would prove the network rather than the
-//! placement.
-//!
-//! `setsid` does not exist on Darwin. The fake remote gets one: a perl one-liner that
-//! calls `POSIX::setsid()` and execs, so a job on the "remote" leads its own process group
-//! exactly as it does on Linux — which is the property `job_kill`'s group signal depends
-//! on, and the one thing a passthrough shim would silently weaken.
+//! `setsid` does not exist on Darwin, so the fake remote gets a perl shim: a job there must lead its own
+//! process group, which is what the group signal depends on.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -36,16 +20,16 @@ const SHORT: &str = "01abcdef";
 /// commands against the first.
 struct Rig {
     dir: PathBuf,
-    /// Where the checkout lands — `~/letibot-remote/the-repo/01abcdef`, on the "remote".
+    /// Where the checkout lands on the "remote", under its `~/letibot-remote` root.
     worktree: PathBuf,
     /// The jobs' own directory, on the "remote".
     jobs: PathBuf,
     repo: PathBuf,
     ssh: PathBuf,
-    /// **What the fake ssh was handed**, one line per call: its argv, and its environment.
+    /// What the fake ssh was handed, one line per call: its argv and its environment.
     log: PathBuf,
-    /// letibot's own ssh material for this test: a key under the config directory, and the host
-    /// key already accepted. `Ssh::connect` refuses without both, which is the point of it.
+    /// letibot's own ssh material for this test, a key and an accepted host key: a connection
+    /// is refused without both, which is the point of it.
     paths: Paths,
     host: Host,
 }
@@ -65,12 +49,9 @@ impl Rig {
         std::fs::create_dir_all(&bin).expect("bin");
         std::fs::create_dir_all(&home).expect("home");
 
-        // **A `setsid` for the boxes that have none** — Linux does, Darwin does not — so a
-        // job on the fake remote leads its own process group exactly as it does on a Linux
-        // host: `kill -TERM -<pid>` is only safe when it does, and `RemoteProcesses::kill`
-        // asks before it signals. Where the box has `setsid`, its own is what runs (the
-        // shim directory is first on the fake remote's PATH, so the shim would win) — hence
-        // this is written only when there is nothing to shim.
+        // A `setsid` for the boxes that have none, so a job on the fake remote leads its own
+        // process group and `kill -TERM -<pid>` cannot reach this test's group. Written only
+        // where the box has none, since the shim directory is first on the fake's PATH.
         if !on_path("setsid") {
             write_executable(
                 &bin.join("setsid"),
@@ -78,15 +59,9 @@ impl Rig {
             );
         }
 
-        // **The fake ssh records its argv and its environment**, and refuses to be anything but
-        // a passthrough: the flags under test are the ones it is HANDED, so it must not interpret
-        // them (a fake that understood `-i` would be testing itself).
-        //
-        // **And it can be told to HOLD one call**, which is how a race between two placements is
-        // made deterministic rather than likely: `<dir>/hold` names a needle and a release file,
-        // a command containing the needle waits (bounded) for the release, and `<dir>/hold.entered`
-        // is touched so the test knows the hold was reached. Nothing writes that file in an
-        // ordinary test, so every other test in this binary is unaffected.
+        // The fake records its argv and its environment and is otherwise a passthrough, since the flags
+        // under test are the ones it is HANDED and a fake that understood them would be testing itself.
+        // It can also be told to HOLD one call, which makes a race between two placements deterministic.
         let ssh = bin.join("ssh");
         let log = dir.join("ssh.log");
         write_executable(
@@ -115,8 +90,8 @@ impl Rig {
                 hold = dir.join("hold").display()
             ),
         );
-        // **letibot's own key and known host**, in a config directory of this test's own — the
-        // two facts a connection is refused without, and neither is the operator's.
+        // letibot's own key and known host, in a config directory of this test's own: the two
+        // facts a connection is refused without, and neither is the operator's.
         let paths = Paths::in_home(dir.join("letibot-home"));
         std::fs::create_dir_all(paths.keys()).expect("the keys directory");
         std::fs::write(paths.default_key("fake"), b"a dedicated key").expect("the key");
@@ -144,14 +119,11 @@ impl Rig {
             key: None,
             path: Vec::new(),
             root: "~/letibot-remote".into(),
-            // **A fixture's host has no mise**, and says so rather than letting the default probe
-            // find this box's own (`/opt/homebrew/bin/mise`) and wrap every command in it: these
-            // tests assert the shape of the command line, and a machine-dependent wrapper would
-            // make the same assertion mean two things on two boxes. `the_mise_wrapper_*` below
-            // are the tests that do have one.
+            // A fixture's host has no mise, or the default probe would find this box's own and
+            // wrap every command in it, making one assertion mean two things on two boxes.
             mise: Some(Mise::Off),
-            // No reservation and no never-touch list: a fixture's host has no owner's workloads
-            // running on it, and a `flags` list would be a fact about a machine this is not.
+            // No reservation and no never-touch list: a fixture's host carries no owner's
+            // workloads, and a `flags` list would be a fact about a machine this is not.
             ..Host::default()
         };
         Rig {
@@ -166,11 +138,9 @@ impl Rig {
         }
     }
 
-    /// One spec, with this rig's fake ssh and its own ssh material.
-    ///
-    /// **The bound is short on purpose**: every one of these tests runs against a fake that answers
-    /// in milliseconds, and a fake that is *meant* to hang has to be measured in a second rather
-    /// than in [`letibot_tools::remote::STEP_BOUND`].
+    /// One spec, with this rig's fake ssh and its own ssh material. The bound is short on purpose: the
+    /// fake answers in milliseconds, and a fake meant to hang is measured in a second, not the production
+    /// bound.
     fn spec(&self) -> SshSpec {
         SshSpec {
             host: self.host.clone(),
@@ -181,26 +151,22 @@ impl Rig {
             ssh: Some(self.ssh.clone()),
             paths: Some(self.paths.clone()),
             bound: Some(Duration::from_secs(5)),
-            // **This fixture's host confines nothing, and says so.** The probe runs on the machine
-            // behind the fake — the machine running the test — so an unpinned answer would make
-            // the same assertion mean two things on two boxes (confined on Linux with `bwrap`,
-            // unconfined on a Mac). `remote_confine.rs` is the suite that tests the boundary.
+            // This fixture's host confines nothing, and says so: the probe would run on the
+            // machine behind the fake, so an unpinned answer would mean two things on two boxes.
             egress: Egress::Denied,
             confine: Some(false),
             vm: false,
         }
     }
 
-    /// **Every ssh call this rig made**, as `<argv>` and `<env>` lines.
+    /// Every ssh call this rig made, as `<argv>` and `<env>` lines.
     fn ssh_log(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
-    /// **The backend, and the worktree it says it got.** The path is taken from the
-    /// backend rather than built here: the remote resolves `~/letibot-remote` with `pwd -P`,
-    /// and on this box that turns `/var/...` into `/private/var/...` — the same directory
-    /// under two names, and a comparison of the two would fail for a reason that has nothing
-    /// to do with the placement.
+    /// The backend, and the worktree it says it got. The path is taken from the backend rather
+    /// than built here, because the remote resolves its root with `pwd -P` and a symlinked
+    /// `/var` would make the two spellings differ for a reason that is not the placement.
     fn place(&mut self) -> SshBackend {
         let b = SshBackend::place(&self.spec()).expect("the placement is arranged");
         self.worktree = PathBuf::from(b.worktree_path());
@@ -211,8 +177,8 @@ impl Rig {
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        // **Only the pids this rig wrote down**, never a pattern: a job left running by a
-        // panic would otherwise keep writing into a tree this drop removes.
+        // Only the pids this rig wrote down, never a pattern: a job left running by a panic
+        // would otherwise keep writing into a tree this drop removes.
         if let Ok(entries) = std::fs::read_dir(&self.jobs) {
             for e in entries.flatten() {
                 if e.path().extension().is_some_and(|x| x == "pid")
@@ -231,15 +197,14 @@ impl Drop for Rig {
     }
 }
 
-/// A fake program on the rig's own `PATH` — [`letibot_tools::testing::write_stub`] is what
-/// writes it, so a fork this suite's own session starts cannot leave the file unexecutable.
+/// A fake program on the rig's own `PATH`. [`letibot_tools::testing::write_stub`] writes it,
+/// so a fork this suite's own session starts cannot leave the file unexecutable.
 fn write_executable(path: &Path, text: &str) {
     letibot_tools::testing::write_stub(path, text);
 }
 
-/// Is this program on the box's own `PATH`? Used to decide whether the fake remote needs a
-/// shim for it — a shim that shadowed a real `setsid` would be a weaker thing tested than
-/// the one production runs.
+/// Is this program on the box's own `PATH`? A shim that shadowed a real `setsid` would test a
+/// weaker thing than production runs.
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
@@ -268,12 +233,9 @@ fn alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// **The flags are handed to ssh, and nothing in the call names the operator's ssh material.**
-///
-/// This is the fake-ssh measurement the contract's policy is pinned by: every flag is on the
-/// command line `/tmp/letibot/ssh-…`-style, and neither the argv nor the environment the call runs
-/// with has a path into the operator's own ssh directory. The env half matters on its own — a
-/// `HOME` or an `SSH_*` that pointed there would hand ssh the same material the flags refuse.
+/// The flags are handed to ssh, and nothing in the call names the operator's ssh material:
+/// neither the argv nor the environment may carry a path into the operator's ssh directory,
+/// because a `HOME` or an `SSH_*` pointing there hands ssh what the flags refuse.
 #[test]
 fn the_ssh_call_carries_the_policy_and_no_operator_ssh_material() {
     let mut rig = Rig::new("flags");
@@ -312,12 +274,9 @@ fn the_ssh_call_carries_the_policy_and_no_operator_ssh_material() {
     );
 }
 
-/// **Reading and writing a file over ssh, byte for byte, and atomically.**
-///
-/// The bytes matter: a NUL and invalid UTF-8 go through base64 because a channel that
-/// mangles an image or a GGUF is a channel that writes files nobody can open. The
-/// atomicity is the interface's own requirement ([`ExecBackend::write`]): a write that
-/// cannot complete must leave the old file alone rather than truncate it.
+/// Reading and writing a file over ssh, byte for byte, and atomically: a channel that mangles
+/// an image or a GGUF writes files nobody can open, and [`ExecBackend::write`] requires that a
+/// write which cannot complete leaves the old file alone.
 #[test]
 fn a_binary_round_trip_and_a_write_that_cannot_land_leaves_the_old_file() {
     let mut rig = Rig::new("rw");
@@ -330,7 +289,7 @@ fn a_binary_round_trip_and_a_write_that_cannot_land_leaves_the_old_file() {
         b.worktree_path()
     );
 
-    // NUL, invalid UTF-8, every byte — the three things a text channel gets wrong.
+    // NUL, invalid UTF-8, every byte: the three things a text channel gets wrong.
     let bytes: Vec<u8> = (0u8..=255).chain([0, 0, 0xff, 0x80]).collect();
     b.write("docs/blob.bin", &bytes).expect("the write lands");
     assert_eq!(b.read("docs/blob.bin").expect("the read"), bytes);
@@ -342,8 +301,8 @@ fn a_binary_round_trip_and_a_write_that_cannot_land_leaves_the_old_file() {
         Err(BackendError::NotFound(_))
     ));
 
-    // **Atomicity, measured**: with the directory unwritable the rename cannot happen, and
-    // the file that was there is still there, whole.
+    // Atomicity, measured: with the directory unwritable the rename cannot happen, and the
+    // file that was there is still there, whole.
     std::fs::write(rig.worktree.join("docs/keep.txt"), b"old").expect("the old file");
     let dir = rig.worktree.join("docs");
     set_mode(&dir, 0o500);
@@ -367,7 +326,7 @@ fn set_mode(p: &Path, mode: u32) {
     std::fs::set_permissions(p, perms).expect("chmod");
 }
 
-/// **A command runs on the far side, in the checkout**, and a `cwd` is relative to it.
+/// A command runs on the far side, in the checkout, and a `cwd` is relative to it.
 #[test]
 fn a_command_runs_in_the_checkout_and_names_the_host() {
     let mut rig = Rig::new("run");
@@ -387,8 +346,8 @@ fn a_command_runs_in_the_checkout_and_names_the_host() {
     );
 
     std::fs::create_dir_all(rig.worktree.join("sub")).expect("sub");
-    // **An environment addition reaches the command**, which is what `build_env` and the
-    // daemon's own `LETIBOT_SOCKET` ride on.
+    // An environment addition reaches the command, which is what `build_env` and the daemon's
+    // own socket variable ride on.
     let out = b
         .run(&Command {
             argv: vec!["sh".into(), "-c".into(), "echo $A_TEST_VARIABLE".into()],
@@ -398,8 +357,8 @@ fn a_command_runs_in_the_checkout_and_names_the_host() {
         .expect("it runs");
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "a value");
 
-    // **The host is named where a person looks**: the card's own sentence, and the
-    // description a session shows.
+    // The host is named where a person looks: the card's sentence and the description a
+    // session shows.
     assert_eq!(b.host_label().as_deref(), Some("fake over ssh"));
     let described = b.describe();
     assert!(described.contains("`fake`"), "{described}");
@@ -415,7 +374,7 @@ fn a_command_runs_in_the_checkout_and_names_the_host() {
     );
 }
 
-/// **`list` and `stat`, and the tree in the order a walk would have produced it.**
+/// `list` and `stat`, and the tree in the order a walk would have produced it.
 #[test]
 fn list_stat_and_the_walk_agree_with_a_local_tree() {
     let mut rig = Rig::new("list");
@@ -451,13 +410,9 @@ fn list_stat_and_the_walk_agree_with_a_local_tree() {
     assert!(matches!(b.list("nowhere"), Err(BackendError::NotFound(_))));
 }
 
-/// **A background job outlives the ssh call that started it**, is read through its files,
-/// and is killed by its own process group.
-///
-/// This is the whole of the contract's "Jobs and processes": the launch returns, the job
-/// keeps running on that machine, `job_output` reads what it wrote, `job_kill` ends it. The
-/// assertion that it *outlived* the connection is the pid — the ssh that started it has
-/// returned (it is gone), and the job's own pid is alive.
+/// A background job outlives the ssh call that started it, is read through its files, and is
+/// killed by its own process group. The pid is what proves it outlived the connection: the
+/// ssh that started it has returned and the job's own process is alive.
 #[test]
 fn a_background_job_outlives_its_ssh_and_is_read_and_killed() {
     let mut rig = Rig::new("job");
@@ -480,7 +435,7 @@ fn a_background_job_outlives_its_ssh_and_is_read_and_killed() {
         })
         .expect("the job starts");
 
-    // **It is running, and the ssh call that made it has returned.**
+    // Running, with the ssh call that made it already returned.
     let view = host.job(&id).expect("the job is known");
     assert!(view.pid > 1, "the remote wrote a pid: {view:?}");
     assert!(
@@ -495,8 +450,8 @@ fn a_background_job_outlives_its_ssh_and_is_read_and_killed() {
     assert_eq!(view.slug.as_deref(), Some("a-long-job"));
     assert!(view.command.contains("started-marker"));
 
-    // Its output is a file on that machine — `<worktree>/.letibot-remote/jobs/<id>.out` —
-    // and the model's stderr is in it: ssh carries one channel, so the job keeps one file.
+    // Its output is a file on that machine, stderr included: ssh carries one channel, so the
+    // job keeps one file.
     let n = id.0.trim_start_matches('j').to_string();
     let out_file = rig.jobs.join(format!("{n}.out"));
     let asked = Instant::now();
@@ -517,8 +472,8 @@ fn a_background_job_outlives_its_ssh_and_is_read_and_killed() {
     let slice = host.output(&id, 0, usize::MAX).expect("its output");
     assert!(slice.text().contains("started-marker"), "{}", slice.text());
 
-    // **Killed by its group**, and the group is really the job's own: the launch used
-    // `setsid`, so `kill -TERM -<pid>` cannot reach this test's own process group.
+    // Killed by its group, which is the job's own: the launch used `setsid`, so the group
+    // signal cannot reach this test's own process group.
     let reaping = host
         .kill_job_as(&id, "the test asking")
         .expect("the kill is recorded");
@@ -536,12 +491,12 @@ fn a_background_job_outlives_its_ssh_and_is_read_and_killed() {
         JobState::Killed { .. }
     ));
 
-    // **A scope end kills what is in it**, and the record says nothing survived.
+    // A scope end kills what is in it, and the record says nothing survived.
     let ended = host.end_scope(&scope).expect("a scope end is recorded");
     assert!(ended.observed.is_empty(), "the job was already ended");
 }
 
-/// **A job that exits settles from its exit file**, and the status is the command's own.
+/// A job that exits settles from its exit file, and the status is the command's own.
 #[test]
 fn a_finished_job_reports_the_commands_own_exit_status() {
     let mut rig = Rig::new("exit");
@@ -571,12 +526,9 @@ fn a_finished_job_reports_the_commands_own_exit_status() {
     );
 }
 
-/// **The tree: out as a bundle, back as a branch.**
-///
-/// The contract's §"The tree", measured end to end: the local `HEAD` arrives as a checkout
-/// on `remote/<short>`, a commit made "there" comes back as `remote/<host>/<short>`, the
-/// local branch the work started from is untouched, and a local edit that was never
-/// committed is named in the placement's own notes because it did **not** go.
+/// The tree: out as a bundle, back as a branch. The local `HEAD` arrives as a checkout on
+/// `remote/<short>`, a commit made there comes back as `remote/<host>/<short>`, the branch the
+/// work started from is untouched, and an uncommitted edit is named as not carried.
 #[test]
 fn the_head_goes_out_and_the_branch_comes_back() {
     let mut rig = Rig::new("git");
@@ -605,7 +557,7 @@ fn the_head_goes_out_and_the_branch_comes_back() {
         format!("remote/{SHORT}")
     );
 
-    // **A commit made "remotely"** — the same git, run where the session would run it.
+    // A commit made remotely: the same git, run where the session would run it.
     std::fs::write(rig.worktree.join("feature.rs"), b"// the work\n").expect("a file");
     git(&rig.worktree, &["add", "feature.rs"]);
     git(
@@ -646,7 +598,7 @@ fn the_head_goes_out_and_the_branch_comes_back() {
     assert_eq!(b.close().expect("the second close"), said);
 }
 
-/// **A folder that is not a repository is refused, and names the fix.**
+/// A folder that is not a repository is refused, and the refusal names the fix.
 #[test]
 fn a_plain_folder_is_refused_for_remote_placement() {
     let rig = Rig::new("norepo");
@@ -676,18 +628,9 @@ fn a_plain_folder_is_refused_for_remote_placement() {
     );
 }
 
-/// **R101: a mirror that exists but is not a repository is made complete, not trusted.**
-///
-/// `[ ! -d <mirror> ]` was the whole test before `git init --bare`, and a DIRECTORY is not a
-/// repository. Two ways the directory is there and the repository is not, both measured:
-///
-/// * three placements starting together on a cold host each test `[ ! -d ]` and then run
-///   `git init --bare` on the same path — **two of the three exit 128** in 30 of 30 rounds, and a
-///   loser has already made the directory by then;
-/// * the winner can be killed between its `mkdir` and its `objects/`.
-///
-/// Either way the next placement skips the init and fails at the hand-off, which is the sentence
-/// the operator saw: *handing the bundle to the remote repository*, from a race that had finished.
+/// A mirror that exists but is not a repository is made complete, not trusted: a directory is
+/// not a repository, and a placement that lost a concurrent `git init` leaves exactly that, so
+/// skipping the init fails the next hand-off.
 #[test]
 fn a_mirror_that_is_only_a_directory_is_made_a_repository() {
     let rig = Rig::new("halfmirror");
@@ -714,26 +657,17 @@ fn a_mirror_that_is_only_a_directory_is_made_a_repository() {
     );
 }
 
-/// **R101: two placements at once never read each other's bundle** — the forcing test.
-///
-/// The name the bundle went over under was `{mirror}/incoming.bundle` — one name per MIRROR, so
-/// every placement of one repository on one host wrote and fetched through the same file. Nothing
-/// in that fails loudly: `git fetch -f incoming.bundle +HEAD:refs/heads/letibot/<mine>` creates
-/// *my* ref from *whatever* bundle is there, so a placement that loses the race is handed a
-/// checkout of somebody else's commit and says nothing about it.
-///
-/// The race is made deterministic rather than likely: the fake ssh holds the first placement at
-/// its hand-off (before the fetch runs) until the test says so, the repository's `HEAD` moves
-/// while it is held — a commit made while another placement is in flight, which is how one mirror
-/// comes to hold two different trees — and the second placement then runs start to finish.
+/// Two placements at once never read each other's bundle. One name per mirror would not fail loudly:
+/// `git fetch -f <bundle> +HEAD:refs/heads/<mine>` builds the ref from whatever bundle is there, so a
+/// loser is handed somebody else's commit and says nothing.
 #[test]
 fn two_placements_at_once_never_read_each_others_bundle() {
     let rig = Rig::new("at-once");
     let first = rig.spec();
     let start = git(&rig.repo, &["rev-parse", "HEAD"]).trim().to_string();
 
-    // Hold the FIRST placement at its hand-off. The needle is its own staged ref, which appears
-    // in no other command of the placement.
+    // Hold the first placement at its hand-off. The needle is its own staged ref, which no
+    // other command of the placement carries.
     let hold = rig.dir.join("hold");
     let release = rig.dir.join("release");
     std::fs::write(&hold, format!("letibot/{SHORT}\n{}\n", release.display())).expect("the hold");
@@ -754,7 +688,7 @@ fn two_placements_at_once_never_read_each_others_bundle() {
         "the first placement never reached its hand-off"
     );
 
-    // **HEAD moves while it is held.**
+    // HEAD moves while it is held, so the two placements send different trees.
     std::fs::write(rig.repo.join("later.txt"), b"later\n").expect("a file");
     git(&rig.repo, &["add", "later.txt"]);
     git(
@@ -792,7 +726,7 @@ fn two_placements_at_once_never_read_each_others_bundle() {
          same file"
     );
 
-    // And the mirror keeps no bundle: 19 MB per placement, for ever, was the other half.
+    // And the mirror keeps no bundle afterwards, or one file per placement stays for ever.
     let mirror = rig
         .dir
         .join("home")
@@ -807,10 +741,8 @@ fn two_placements_at_once_never_read_each_others_bundle() {
     assert!(left.is_empty(), "no bundle is left in the mirror: {left:?}");
 }
 
-/// **A name that is not in the file is refused, with the ones that are.**
-///
-/// The text a model or an operator is actually shown, because a refusal that does not name
-/// the near-miss is the refusal that costs an hour.
+/// A name that is not in the file is refused, with the ones that are: a refusal that does not
+/// name the near-miss is the one that costs an hour.
 #[test]
 fn the_hosts_file_is_the_only_place_a_host_can_come_from() {
     let file = std::env::temp_dir().join(format!(
@@ -838,22 +770,12 @@ fn the_hosts_file_is_the_only_place_a_host_can_come_from() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Nothing hangs, and the retry follows idempotency
-// ---------------------------------------------------------------------------
-//
-// The operator: *"the tooling shouldnt hang, that is important"*. Everything below is measured
-// against a fake ssh that is written to misbehave in one specific way — it goes silent, or it
-// drops the connection, or it answers only the second time — because those are the three shapes
-// a real machine fails in and none of them is reachable from a fake that always answers.
+// Nothing hangs, and the retry follows idempotency. Every test below runs against a fake ssh written to
+// misbehave in one way: it goes silent, drops the connection, or answers only the second time.
 
-/// **A fake ssh whose behaviour this test writes.**
-///
-/// It logs every invocation, sets up a `HOME` that is the "remote", and then runs `body` with the
-/// last argument (the command ssh would run) in `$last`. A body that `exec`s runs the command
-/// locally; a body that sleeps is a host that has stopped answering. `@DIR@` in a body is the
-/// fake's own directory, so a body's bookkeeping never lands in the test process's working
-/// directory.
+/// A fake ssh whose behaviour the test writes: it logs every invocation, sets `HOME` to the
+/// "remote", and runs `body` with the last argument (the command ssh would run) in `$last`. A
+/// body that sleeps is a host that stopped answering; `@DIR@` is the fake's own directory.
 struct Fake {
     dir: PathBuf,
     program: PathBuf,
@@ -884,8 +806,8 @@ impl Fake {
         let log = dir.join("ssh.log");
         let body = body.replace("@DIR@", &dir.display().to_string());
         // `[ $# -eq 0 ] && exit 0` before the log and before `body`: `write_stub` proves the file
-        // by running it with no arguments, and a body here is a host's behaviour — a `sleep 300`
-        // prelude would be this fixture hanging, and the log would gain a line no test made.
+        // by running it with no arguments, and a body here is a host's behaviour, so a `sleep
+        // 300` prelude would be this fixture hanging and would add a line no test made.
         write_executable(
             &program,
             &format!(
@@ -913,7 +835,7 @@ impl Fake {
             .collect()
     }
 
-    /// How many invocations carried `needle` anywhere in their argv — the count a retry changes.
+    /// How many invocations carried `needle` anywhere in their argv: the count a retry changes.
     fn count(&self, needle: &str) -> usize {
         self.calls().iter().filter(|l| l.contains(needle)).count()
     }
@@ -980,13 +902,9 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path, bound: Duration) -> SshS
     }
 }
 
-/// **A host that stops answering does not hold any operation that is not a command.**
-///
-/// The fake answers everything until a marker file appears, so the placement itself is real; after
-/// that every call sleeps for ever, and each operation has to come back inside its own bound with
-/// a sentence naming the host and the step. The bound is two seconds here and twenty in
-/// production — short enough to measure, long enough that the placement before the marker appears
-/// is not racing it on a busy box.
+/// A host that stops answering does not hold any operation that is not a command: the fake
+/// answers until a marker appears, and every call after it must come back inside its own bound
+/// naming the host and the step. The bound is two seconds here, twenty in production.
 #[test]
 fn every_step_that_is_not_a_command_stops_at_its_bound() {
     let bound = Duration::from_secs(2);
@@ -1009,7 +927,7 @@ fn every_step_that_is_not_a_command_stops_at_its_bound() {
     std::fs::write(&silent, b"stop answering").expect("the marker");
 
     /// One operation under test: its name, and how to run it and describe what came back. The
-    /// lifetime is the backend's — every closure below borrows it.
+    /// lifetime is the backend's, since every closure below borrows it.
     type Step<'a> = (&'static str, Box<dyn Fn() -> String + 'a>);
 
     let cases: Vec<Step> = vec![
@@ -1054,9 +972,8 @@ fn every_step_that_is_not_a_command_stops_at_its_bound() {
             }),
         ),
     ];
-    // `stat` is the one that answers `None` for a host that said nothing — a miss and a silence
-    // are the same fact to its caller — so what is asserted for it is that it RETURNS, inside the
-    // bound, rather than a sentence it has nowhere to put.
+    // `stat` answers `None` for a host that said nothing, because a miss and a silence are the
+    // same fact to its caller, so what is asserted is that it returns inside the bound.
     let began = Instant::now();
     let none = b.stat("README");
     assert!(
@@ -1090,7 +1007,7 @@ fn every_step_that_is_not_a_command_stops_at_its_bound() {
     let _ = std::fs::remove_file(&silent);
 }
 
-/// **A job's output and a job's kill are bounded too**, and a kill that could not read back says
+/// A job's output and a job's kill are bounded too, and a kill that could not read back says
 /// the process's fate is unknown rather than counting it as removed.
 #[test]
 fn a_jobs_output_and_kill_stop_at_their_bound() {
@@ -1162,16 +1079,15 @@ fn a_jobs_output_and_kill_stop_at_their_bound() {
             .is_some_and(|n| n.contains("UNKNOWN") && n.contains("fake")),
         "the record has to say what it does not know: {reaping:?}"
     );
-    // And the process on this box is really gone — the test's own cleanup, not the backend's.
+    // And the process on this box is really gone: the test's own cleanup, not the backend's.
     let _ = std::process::Command::new("kill")
         .args(["-KILL", &pid.to_string()])
         .output();
 }
 
-/// **A command whose connection drops is reported as an UNKNOWN outcome, and is never re-sent.**
-///
-/// `run` is not idempotent: the command may have run, partly run, or still be running. So the
-/// sentence says exactly that — and the fake's log proves it was shipped once.
+/// A command whose connection drops is reported as an unknown outcome and is never re-sent:
+/// `run` is not idempotent, so the command may have run, partly run, or still be running, and
+/// the fake's log proves it was shipped once.
 #[test]
 fn a_command_that_loses_its_connection_is_reported_unknown_and_never_re_sent() {
     let fake = Fake::new(
@@ -1214,7 +1130,7 @@ fn a_command_that_loses_its_connection_is_reported_unknown_and_never_re_sent() {
     );
 }
 
-/// **An idempotent step that loses the connection is asked exactly once more.**
+/// An idempotent step that loses the connection is asked exactly once more.
 #[test]
 fn a_read_that_loses_its_connection_is_asked_once_more() {
     let fake = Fake::new(
@@ -1245,10 +1161,9 @@ fn a_read_that_loses_its_connection_is_asked_once_more() {
     );
 }
 
-/// **A write that loses its connection is retried as a whole, and nothing is written twice.**
-///
-/// The chunk calls are never retried on their own — a chunk sent twice appends itself twice — so
-/// the second attempt rewrites the temporary file from the top and the bytes land exactly once.
+/// A write that loses its connection is retried as a whole, and nothing is written twice: the
+/// chunk calls are never retried on their own, since a chunk sent twice appends itself twice,
+/// so the second attempt rewrites the temporary file from the top.
 #[test]
 fn a_write_that_drops_mid_way_lands_its_bytes_exactly_once() {
     let fake = Fake::new(
@@ -1276,11 +1191,9 @@ fn a_write_that_drops_mid_way_lands_its_bytes_exactly_once() {
     assert_eq!(landed, bytes);
 }
 
-/// **A stale `ControlMaster` socket does not hold the next call.**
-///
-/// The socket outlives the connection it belongs to, and ssh would try to multiplex through it and
-/// wait. It is checked with a few seconds on the question, and a socket nobody answers on is
-/// removed before the call dials afresh.
+/// A stale `ControlMaster` socket does not hold the next call: the socket outlives the
+/// connection it belongs to, and ssh would multiplex through it and wait. A socket nobody
+/// answers on is removed before the call dials afresh.
 #[test]
 fn a_stale_control_master_is_checked_and_dropped() {
     let fake = Fake::new("stale", "exec bash -lc \"$last\"");
@@ -1322,10 +1235,8 @@ fn a_stale_control_master_is_checked_and_dropped() {
     let _ = std::fs::remove_file(&stale);
 }
 
-/// **The session's own job directory is not part of the tree.**
-///
-/// `.letibot-remote/` appears the moment a job runs, and it used to appear on close as
-/// `?? .letibot-remote/` — a change the operator was told was theirs to look at. The checkout's own
+/// The session's own job directory is not part of the tree: `.letibot-remote/` appears the
+/// moment a job runs, and an unexcluded one reads as uncommitted work. The checkout's own
 /// exclude file says otherwise, and `git status` is what proves it.
 #[test]
 fn the_sessions_own_job_directory_is_excluded_from_the_tree() {
@@ -1352,7 +1263,7 @@ fn the_sessions_own_job_directory_is_excluded_from_the_tree() {
         rig.jobs.display()
     );
 
-    // **`git` itself says so**, which is the only proof that matters: the exclude file git READS
+    // `git` itself says so, which is the only proof that matters: the exclude file git READS
     // is the one the placement wrote, whatever a link-heavy worktree layout does with `--git-path`.
     let status = git(&rig.worktree, &["status", "--porcelain"]);
     assert!(
@@ -1381,11 +1292,9 @@ fn the_sessions_own_job_directory_is_excluded_from_the_tree() {
     );
 }
 
-/// **`hosts {probe: true}` asks every declared host at once**, and reports each one's live facts.
-///
+/// `hosts {probe: true}` asks every declared host at once, and reports each one's live facts.
 /// The overlap is measured rather than assumed: each fake call records when it began and ended,
-/// and the two hosts' intervals must intersect — which they cannot if the probes ran one after
-/// the other.
+/// and two intervals that intersect cannot have run one after the other.
 #[test]
 fn the_hosts_tool_probes_two_hosts_in_parallel() {
     let dir = std::env::temp_dir().join(format!(
@@ -1438,18 +1347,18 @@ fn the_hosts_tool_probes_two_hosts_in_parallel() {
     let said = answer.payload;
     assert_eq!(said.matches("REACHABLE").count(), 2, "{said}");
     assert!(said.contains("`h1`") && said.contains("`h2`"), "{said}");
-    // The facts are the machine's own — this box's, since the fake runs the script here.
+    // The facts are the machine's own, this box's, since the fake runs the script here.
     assert!(said.contains("cores:"), "{said}");
     assert!(
         !said.contains("TIMED OUT") && !said.contains("NOT REACHED"),
         "{said}"
     );
-    // **Rule 7's view is on the row**: the last calls this process made to the host, by name.
+    // The record is on the row: the last calls this process made to the host, by name.
     assert!(said.contains("calls:    last "), "{said}");
     assert!(said.contains("a probe of h1"), "{said}");
     assert!(said.contains("slowest"), "{said}");
 
-    // **The overlap**: both spans intersect, which one-after-another cannot produce.
+    // The overlap: both spans intersect, which one-after-another cannot produce.
     let spans = std::fs::read_to_string(fake.path("SPAN")).expect("the probe spans");
     let mut starts = Vec::new();
     let mut ends = Vec::new();
@@ -1474,7 +1383,7 @@ fn the_hosts_tool_probes_two_hosts_in_parallel() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A host that will not answer is reported, not fatal**, and one dead host does not hold the
+/// A host that will not answer is reported, not fatal, and one dead host does not hold the
 /// hosts that do answer.
 #[test]
 fn an_unreachable_host_is_reported_and_does_not_hold_the_others() {
@@ -1486,12 +1395,9 @@ fn an_unreachable_host_is_reported_and_does_not_hold_the_others() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    // `h1` refuses the connection the way ssh does — 255 with nothing on stdout.
-    //
-    // **`u1`, not `h1`**: two connection failures count towards the process-wide breaker
-    // ([`letibot_tools::rpc`]), and a host name another test in this binary also uses would carry
-    // that streak into it. Three failures would open the breaker and turn that test's *reachable*
-    // into *not reached*, from a state no line of it mentions.
+    // `u1` refuses the connection the way ssh does, 255 with nothing on stdout, and it is a name of its
+    // own: two connection failures count towards the process-wide breaker, so a shared name would carry
+    // that streak into another test.
     let fake = Fake::new(
         "unreachable",
         "case \"$*\" in *u1.invalid*) echo 'ssh: connect to host u1.invalid port 22: Connection refused' >&2; exit 255 ;; esac\n\
@@ -1539,7 +1445,7 @@ fn an_unreachable_host_is_reported_and_does_not_hold_the_others() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A host whose key is missing is refused before anything connects** — and the answer carries the
+/// A host whose key is missing is refused before anything connects, and the answer carries the
 /// two commands that make the key.
 #[test]
 fn a_host_with_no_key_is_refused_before_anything_connects() {
@@ -1593,20 +1499,14 @@ fn a_host_with_no_key_is_refused_before_anything_connects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// The RPC practices — rules 5 to 8, and what ssh's two refusals mean
-// ---------------------------------------------------------------------------
-//
-// `docs/remote-hosts.md`: *"a remote is an RPC, and the client follows the practices"*. Rules 1–4
-// are above (deadlines, failure detection, retries by idempotency, an unknown outcome said as
-// unknown); these are the rest, and each one is measured against the same fake ssh.
+// The RPC practices, rules 5 to 8, and what ssh's two refusals mean. Rules 1 to 4 are above:
+// deadlines, failure detection, retries by idempotency, and an unknown outcome said as unknown.
 
-/// **The spec these tests place with** — this fake ssh, this host, three seconds on every call
-/// that is not a command.
+/// The spec these tests place with: this fake ssh, this host, three seconds on every call that
+/// is not a command.
 fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -> SshSpec {
-    // **The two facts a connection is refused without**, for THIS host's name: the breaker and
-    // back-pressure tests use a name of their own, so `repo_and_paths`'s `fake` material would not
-    // open them.
+    // The two facts a connection is refused without, for this host's own name: the breaker and
+    // back-pressure tests use a name of their own, so `fake` material would not open them.
     std::fs::create_dir_all(paths.keys()).expect("the keys directory");
     std::fs::write(paths.default_key(&host.name), b"a dedicated key").expect("the key");
     let mut known = std::fs::read_to_string(paths.known_hosts()).unwrap_or_default();
@@ -1630,17 +1530,12 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
     }
 }
 
-/// **Rule 5: three connection failures in a row and the host is not dialled any more.**
-///
-/// The measured shape of the defect this replaces: a host that has gone away costs every call its
-/// own timeout, one after another, and a session that keeps asking pays for each. Here the third
-/// failure opens the breaker, the fourth call fails **at once** with a sentence naming the reason,
-/// the time the host was last reached and when the next probe is, and the fake's own log proves no
-/// ssh was spawned for it.
+/// Three connection failures in a row and the host is not dialled any more: the fourth call fails at once
+/// naming the reason and when the host was last reached, and the fake's log proves no ssh was spawned.
 #[test]
 fn three_failed_calls_open_the_breaker_and_the_next_fails_at_once() {
-    // A unique host name: the breaker is process-wide, and a name another test also uses would
-    // carry its streak (and its opened state) into that test.
+    // A unique host name: the breaker is process-wide, and a shared name would carry its streak,
+    // and its opened state, into another test.
     let host = format!("breaker-{}", std::process::id());
     let fake = Fake::new(
         "breaker",
@@ -1696,18 +1591,14 @@ fn three_failed_calls_open_the_breaker_and_the_next_fails_at_once() {
         fake.calls()
     );
 
-    // **Rule 7's record is how a report sees the same thing.**
+    // The record is how a report sees the same thing.
     let report = letibot_tools::rpc::report(&host);
     assert!(report.contains("dropped"), "{report}");
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **Rule 6: a command that has to be abandoned takes its remote process group with it.**
-///
-/// The fake ssh *is* the remote here, so a `sleep 300 &` under it is a process on this box in a
-/// session of its own — which is exactly the shape a real command has on a real host. The command
-/// is wrapped so its group is written down, the call is killed at its bound, and the cancel reaches
-/// that group: the child that would have outlived the ssh is gone.
+/// A command that has to be abandoned takes its remote process group with it: the command writes its
+/// group down, the call is killed at its bound, and the cancel reaches that group.
 #[test]
 fn a_cancelled_command_leaves_nothing_running_on_the_far_side() {
     let host = format!("cancel-{}", std::process::id());
@@ -1747,10 +1638,9 @@ fn a_cancelled_command_leaves_nothing_running_on_the_far_side() {
         .trim()
         .parse()
         .expect("a pid");
-    // **The cancel is the whole proof, and the group is why.** The `setsid` wrapper put the command
-    // in a session of its own, so the kill that ended the local ssh cannot have reached this child;
-    // nothing but the recorded group id could. And the run only returned after
-    // [`Ssh::cancel_group`] signalled it, so the child is gone by now.
+    // The cancel is the whole proof, and the group is why. The `setsid` wrapper put the
+    // command in a session of its own, so the kill that ended the local ssh cannot have reached
+    // this child, and the run only returned after [`Ssh::cancel_group`] signalled the group.
     let mut gone = !alive(child);
     for _ in 0..40 {
         if gone {
@@ -1775,12 +1665,9 @@ fn a_cancelled_command_leaves_nothing_running_on_the_far_side() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **A job's wait is a heartbeat, and it does not fill the record ring.**
-///
-/// A status poll is one ssh call every 120 ms for as long as a job is waited on, so a single
-/// `job_wait` of half a minute is [`letibot_tools::rpc::RECORD_RING`] entries — and it would evict
-/// every call a reader could act on. A poll that *succeeds* says only *the machine is still
-/// there*, which is the one thing a report does not need; a poll that fails is still recorded.
+/// A job's wait is a heartbeat and does not fill the record ring, since a status poll is one ssh call
+/// every 120 ms and one `job_wait` would evict every call a reader could act on. A failed poll is still
+/// recorded.
 #[test]
 fn a_jobs_polling_does_not_fill_the_record_ring() {
     let host = format!("polls-{}", std::process::id());
@@ -1819,10 +1706,8 @@ fn a_jobs_polling_does_not_fill_the_record_ring() {
         polls, 0,
         "a successful poll is a heartbeat and is not written down"
     );
-    // …and the count is what a launch plus a wait really was — under a hundred — rather than the
-    // hundreds a recorded heartbeat would have added. Only the count is asserted: the ring is
-    // shared by every test in this binary, so *which* records survive is another host's traffic's
-    // business, and a presence assertion here would be a flake dressed as a measurement.
+    // Only the count is asserted: the ring is shared by every test in this binary, so which
+    // records survive is another host's traffic, and a presence assertion here would be a flake.
     assert!(
         mine.len() < 100,
         "the polls did not put a single extra entry in: {}",
@@ -1842,17 +1727,8 @@ fn pidfile_is_stale(b: &letibot_tools::remote::SshBackend) -> bool {
         .unwrap_or(false)
 }
 
-/// **A host whose mise insists on a directory that exists** — which is what a real mise does, and
-/// what the placement did not do: the wrapper was pointed at the checkout before `git worktree add`
-/// had made it, so on every machine whose toolchain comes from mise the placement died at `making
-/// the mirror` with `mise ERROR Directory specified with --cd does not exist: …` (measured on the
-/// orchestrator's gate, 2026-10-26 — and mise prints the path with `$HOME` abbreviated to `~`,
-/// which makes it read like a quoting bug and is not one).
-///
-/// The stub here is the real behaviour in eight lines: refuse a `-C` that is not a directory, record
-/// every `-C` it was given, then run the command. It is `$HOME/.local/bin/mise` in the fake remote's
-/// own home, so the **default** probe finds it — no `mise` line in `hosts.toml` — and every step of a
-/// placement goes through it.
+/// A host whose mise refuses a `-C` that is not a directory, which is what a real mise does: a wrapper
+/// pointed at the checkout before `git worktree add` made it fails every step of a placement.
 #[test]
 fn a_placement_through_a_mise_that_insists_its_directory_exists() {
     let host = format!("mise-real-{}", std::process::id());
@@ -1879,8 +1755,8 @@ fn a_placement_through_a_mise_that_insists_its_directory_exists() {
         ),
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    // **No `mise` line**: the default is what a real `hosts.toml` gets, and the probe finds this
-    // stub at `$HOME/.local/bin/mise` — the operator's own layout.
+    // No `mise` line, so the default probe runs: it finds this stub at `$HOME/.local/bin/mise`,
+    // which is the operator's own layout.
     let b = SshBackend::place(&place_spec_for_test(
         &fake.program,
         &repo,
@@ -1899,15 +1775,15 @@ fn a_placement_through_a_mise_that_insists_its_directory_exists() {
         !dirs.is_empty(),
         "every step of the placement went through mise: {cds}"
     );
-    // **Every `-C` was a path that exists on the remote** — which the stub itself enforced, and
-    // which is asserted here so a future change that stops using the stub still fails this test.
+    // Every `-C` was a path that exists on the remote, which the stub itself enforced, asserted
+    // here so a change that stops using the stub still fails this test.
     for d in &dirs {
         assert!(
             d.starts_with('/') && Path::new(d).is_dir(),
             "`-C {d}` is an absolute directory that exists: {dirs:?}"
         );
     }
-    // The wrapper is pointed at the ROOT until the checkout exists, and at the checkout after.
+    // The wrapper is pointed at the root until the checkout exists, and at the checkout after.
     assert!(
         dirs.iter()
             .all(|d| !d.ends_with("01abcdef") || Path::new(d).is_dir()),
@@ -1930,11 +1806,8 @@ fn a_placement_through_a_mise_that_insists_its_directory_exists() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **Rule 7: every call is recorded, and the report says what it did.**
-///
-/// One host, three shapes of call: a read that worked, a command that worked, and a command that
-/// dropped. The records carry the host, the step, the duration and the outcome — and the report is
-/// the row `hosts {probe: true}` shows.
+/// Every call is recorded, and the report says what it did: the records carry the host, the step,
+/// the duration and the outcome, and the report is the row `hosts {probe: true}` shows.
 #[test]
 fn every_call_is_recorded_and_the_report_names_host_step_duration_and_outcome() {
     let host = format!("records-{}", std::process::id());
@@ -2003,14 +1876,8 @@ fn every_call_is_recorded_and_the_report_names_host_step_duration_and_outcome() 
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **Rule 8: a host takes a bounded number of ssh sessions, and a call beyond it queues under its
-/// own deadline.**
-///
-/// The fake holds each call for 300 ms and counts how many are inside at once. Sixteen steps are
-/// sent at once against a host whose bound is
-/// [`letibot_tools::rpc::MAX_SESSIONS_PER_HOST`]; the most that may ever be in flight is that bound
-/// (a client that opened sixteen would have sshd refuse the eleventh, which reads as a fault on
-/// the host), and every call still answers inside its own deadline.
+/// A host takes a bounded number of ssh sessions and a call beyond it queues under its own deadline: a
+/// client opening one per call would have sshd refuse the eleventh, which reads as a fault on the host.
 #[test]
 fn concurrent_calls_to_one_host_queue_at_the_session_bound() {
     let host = format!("busy-{}", std::process::id());
@@ -2062,11 +1929,9 @@ fn concurrent_calls_to_one_host_queue_at_the_session_bound() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **An auth refusal is definite: said in those words, never retried, exactly one invocation.**
-///
-/// Measured live on 2026-10-26: three hosts whose key was not installed answered `Permission denied
-/// (publickey)`, and the client called it *lost the connection, it may not have happened* and asked
-/// **twice**. The machine answered; the key is not there; nothing about a second offer changes it.
+/// An auth refusal is definite: said in those words, never retried, exactly one invocation. The
+/// machine answered and the key is not there, so nothing about a second offer changes it, and
+/// treating it as a lost connection costs a duplicate of every call.
 #[test]
 fn an_auth_refusal_is_definite_and_is_never_asked_twice() {
     let host = format!("auth-{}", std::process::id());
@@ -2114,7 +1979,7 @@ fn an_auth_refusal_is_definite_and_is_never_asked_twice() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **A host key that does not verify is the other definite refusal, and its fix is the other file.**
+/// A host key that does not verify is the other definite refusal, and its fix is the other file.
 #[test]
 fn a_host_key_mismatch_is_refused_with_the_scan_command() {
     let host = format!("hostkey-{}", std::process::id());
@@ -2142,12 +2007,9 @@ fn a_host_key_mismatch_is_refused_with_the_scan_command() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **A script that writes `$HOME/.local/bin/mise` is the host's mise**, and every remote command
-/// goes through `<mise> exec -C <the checkout> -- bash -lc '<cmd>'`.
-///
-/// The default (no `mise` line in `hosts.toml`) is *probe `~/.local/bin/mise`, then `PATH`, once,
-/// and cache the answer*: the fake's home has one, so the probe finds it — and the wrapper is
-/// asserted on the argv the next command was handed, not on a field.
+/// A script at `$HOME/.local/bin/mise` is the host's mise, and every remote command goes through
+/// `<mise> exec -C <the checkout> -- bash -lc '<cmd>'`: the default is to probe that path once and
+/// cache the answer, and the wrapper is asserted on the argv the next command was handed.
 #[test]
 fn the_default_probe_finds_mise_and_every_command_runs_through_it() {
     let host = format!("mise-{}", std::process::id());
@@ -2184,7 +2046,7 @@ fn the_default_probe_finds_mise_and_every_command_runs_through_it() {
             .any(|l| l.starts_with("MISE exec -C ") && l.contains(worktree)),
         "the wrapper names `mise exec -C <the checkout>`: {log}"
     );
-    // **A multi-line script makes one MISE line span several lines**, so this asks the lines mise
+    // A multi-line script makes one MISE line span several lines, so this asks the lines mise
     // actually began: every one of them wraps a login shell.
     assert!(
         !log.is_empty()
@@ -2194,9 +2056,9 @@ fn the_default_probe_finds_mise_and_every_command_runs_through_it() {
                 .all(|l| l.starts_with("MISE exec -C ") && l.contains("-- bash -lc ")),
         "every wrapped command is `mise exec -C <dir> -- bash -lc <script>`: {log}"
     );
-    // The calls the placement made BEFORE the checkout existed ran in `$HOME` — the honest answer
-    // for a directory that does not exist yet. The argv is where that is visible: the shell on the
-    // far side expands it, so the fake's log shows a path and the ssh call shows `"$HOME"`.
+    // The calls made BEFORE the checkout existed ran in `$HOME`, the honest answer for a
+    // directory that does not exist yet: the far shell expands it, so the ssh argv says `$HOME`
+    // while the fake's log shows a path.
     assert!(
         fake.calls()
             .iter()
@@ -2216,8 +2078,8 @@ fn the_default_probe_finds_mise_and_every_command_runs_through_it() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// **`mise = false` turns the wrapper off**, and a host that names a program uses that program
-/// with its `~` expanded **there**.
+/// `mise = false` turns the wrapper off, and a host that names a program uses that program with
+/// its `~` expanded there.
 #[test]
 fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
     // Off.
@@ -2238,7 +2100,7 @@ fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
         fake.calls()
     );
 
-    // A path, spelled with a `~` that is the REMOTE's home.
+    // A path, spelled with a `~` that is the remote's home.
     let host = format!("miseat-{}", std::process::id());
     let fake = Fake::new("miseat", "exec bash -lc \"$last\"");
     let mise = fake.dir.join("home/.local/bin/mise");
@@ -2271,8 +2133,8 @@ fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
         log.lines().any(|l| l.starts_with("MISE exec -C ")),
         "a named program is the wrapper: {log}"
     );
-    // **`~` is expanded on the remote**: the argv says `"$HOME/.local/bin/mise"`, and the shell
-    // there turns it into the fake home's copy — which is the file that wrote this log.
+    // `~` is expanded on the remote: the argv says `"$HOME/.local/bin/mise"`, and the shell there
+    // turns it into the fake home's copy, which is the file that wrote this log.
     assert!(
         fake.calls()
             .iter()

@@ -1,119 +1,6 @@
-//! **The notes keeper — the reviewer that checks whether a note is still true, and proposes
-//! removals.**
-//!
-//! The design, in the operator's own words: *"and then we need a periodic poke to review notes
-//! for being up-to-dater"*, *"id even say us much us the actuality check is a job for another
-//! hardcoded subagent"*, *"it can then chat with the main session"*, and *"like propose
-//! removals"*.
-//!
-//! # A second instance of a shape this tree already has
-//!
-//! The precedent is [`crate::gatekeeper`], and the shape is copied deliberately rather than
-//! reinvented: **a fixed prompt, a closed set of answers, and an answer that is parsed rather
-//! than read as prose.** A notes keeper is not a new kind of thing.
-//!
-//! | | gatekeeper | notes keeper |
-//! |---|---|---|
-//! | asked with | [`crate::gatekeeper::review_prompt`] | [`keeper_prompt`] |
-//! | the closed set | `accept \| reject \| needs_human` | [`KeeperDecision`] |
-//! | the answer is read by | `review_verdict` → `crate::builtins::verdict::ReviewDesk` | [`parse_report`] |
-//! | its seat | [`crate::runtime::roles::gatekeeper`] | [`crate::runtime::roles::notes_keeper`] |
-//! | the seam the daemon lands on | [`crate::gatekeeper::wake`] | [`wake`] |
-//!
-//! # Its brief, in this order — the order IS the design
-//!
-//! 1. **The references first**, because they are checkable and they produce evidence rather than
-//!    a feeling. [`crate::references`] resolves them *before* the session is asked, and the
-//!    answer is handed over in the prompt: paths, commit shas, symbols and line ranges, and
-//!    which of them no longer resolve.
-//! 2. **Then the prose**, against the tree — the diff between what the note claims and what the
-//!    tree now says.
-//! 3. **Then the repair, through the `notes` tool.** Not through a file write and not through an
-//!    edit: see [`roles::notes_keeper`](crate::runtime::roles::notes_keeper), whose seat has
-//!    `notes` and no `write`, `edit` or `bash` at all. **That is what preserves authorship.** A
-//!    keeper's edit is still an agent's edit — it lands through the same tool, into the same
-//!    `.letibot/notes/` directory, keeping the author's abstract marker and the historical
-//!    caveat every `read` of a note carries — so a note stays a record rather than becoming an
-//!    authority. A keeper that could `write` a note file could make its own prose
-//!    indistinguishable from the operator's, which is the one thing the notes tool's whole
-//!    design is built to prevent.
-//! 4. **And it raises what it cannot judge** — the `raised:` field, which reaches the session
-//!    that ran it. (The lateral channel that will carry this across sessions is
-//!    `agent/session-channel`; until it lands, the answer comes back the ordinary way, which is
-//!    the path the merge queue's verdicts already take.)
-//!
-//! # Its answer is a closed set, and it says what it changed
-//!
-//! [`KeeperDecision`] is the four words the daemon can act on, and the failure it exists to
-//! prevent is the design's own: *"the failure mode of a poke is an unactionable essay nobody
-//! reads."*
-//!
-//! **And the diff of somebody's memory is the operator's to see**, exactly as a queue verdict
-//! is. Two things carry it, and they are different in kind:
-//!
-//! * the keeper's own account (`changed:`, parsed into [`KeeperReport::changed`]) — which is a
-//!   claim, and this tree's rule about claims by the party under review is to distrust them
-//!   (the gatekeeper is given no report for exactly this reason);
-//! * [`edits`], computed by the caller from the note's bytes before and after the session ran —
-//!   which is evidence. [`KeeperReport::unaccounted`] names where the two disagree, and a
-//!   disagreement is itself worth the operator's attention: a keeper that edited a note and did
-//!   not say so, or said so and did not.
-//!
-//! # And it proposes removals, which are not acts
-//!
-//! A keeper that can only repair leaves the corpus growing for ever, and the index gets worse
-//! exactly as the corpus gets bigger. So its report carries [`Proposal`]s, each with an
-//! [`Evidence`] kind and the evidence itself:
-//!
-//! | evidence | how it is established |
-//! |---|---|
-//! | `references` | [`crate::references`] — the cheapest honest signal, and mechanical |
-//! | `superseded` | the similarity door ([`Supersession`]), the same arithmetic as the write gate |
-//! | `never_taken` | [`offers_log`] — `<workspace>/.letibot/notes-offers.jsonl` |
-//! | `landed` | the work the note describes finished and landed; the keeper checks the shas |
-//!
-//! **A proposal is not an act.** Deleting a note is the one move that loses information rather
-//! than reorganising it, so the keeper proposes and the decision is the session's, or the
-//! person's — which is why a review that proposes anything is [`KeeperDecision::NeedsPerson`].
-//!
-//! # What is deliberately NOT here: the clock
-//!
-//! The design wants a **per-workspace periodic** — *"the nag clock that landed tonight is
-//! per-session and per-plan; this clock is per-workspace — one, whoever is attached"* — and this
-//! module is the role that clock would wake, not the clock. It is deferred for two reasons, both
-//! of them the tree's:
-//!
-//! * **The scope does not exist.** There is no per-workspace scheduler in this tree; the nag
-//!   clock (`8bd6fb8`) is per-session and per-plan, and `agent/idle-clock` (`e7db232`) is
-//!   unlanded and editing the daemon's idle arm. Two unlanded writers on that arm is a certain
-//!   conflict, which is the same reason the plan-as-DAG waits.
-//! * **The pieces are separable, and this is the separable half.** Everything a clock would
-//!   *call* is here and exercised by tests: the seat, the prompt, the parse, the reference
-//!   checker and the repair path. A clock is then a small piece that does nothing but decide
-//!   *when*.
-//!
-//! What that piece would need, named so it can be written afterwards:
-//!
-//! 1. **Where it would live.** A per-workspace clock belongs to the daemon, beside the sessions
-//!    it serves — not to a session, because the notes are workspace files every session shares
-//!    and the clock must be one, whoever is attached.
-//! 2. **What scope it holds.** A scope keyed by the workspace path, owned by the daemon, holding
-//!    one entry per workspace with the last review's timestamp, the tree's tip SHA at that
-//!    review, and the note it named. The design's period is not wall-clock alone: *"the tree
-//!    moved since the note was written"*, *"an offer was never taken"*, and *"a long backstop
-//!    period, so a quiet tree still gets a sweep."* The tip SHA is what makes the first of those
-//!    observable without walking every note.
-//! 3. **How it would be armed and observed.** It is armed by a turn ending (the same primitive
-//!    the child-nag clock uses: a clock that wakes the thread owning the work) and observed by a
-//!    row — the keeper's report belongs on the standing-notes pane the design already asks for
-//!    (*"the keeper's report lands there — stale references, what changed, proposals to remove —
-//!    exactly as queue verdicts land on the queue's rows"*), which is a piece of the TUI.
-//! 4. **And a hidden child needs a mark.** The daemon spawns the keeper as a child of the session
-//!    it serves, exactly as `mergequeue::GatekeeperDoor` spawns the gatekeeper — and the head
-//!    keeps that child out of the subagents it counts by reading
-//!    `letibot_sessionlog::GATEKEEPER_TITLE_PREFIX`. [`keeper_prompt`] begins with
-//!    [`TITLE_PREFIX`] for that reason, and the constant and the head's rule are the two lines
-//!    that piece has to add.
+//! The notes keeper: the reviewer that checks whether a note is still true, repairs it through
+//! the `notes` tool, and proposes removals without ever acting on one. Its answer is a closed
+//! set, and its seat holds `notes` and no `write`, which is what preserves authorship.
 
 use std::path::{Path, PathBuf};
 
@@ -123,32 +10,19 @@ use serde_json::Value;
 use crate::gatekeeper::{bullets, commas, label};
 use crate::references::{self, ReferenceReport};
 
-/// **The first words of the keeper's brief** — the mark a head reads to keep a hidden child out
-/// of the subagents the operator sees, on `GATEKEEPER_TITLE_PREFIX`'s rule.
-///
-/// The constant is *not* in `letibot-sessionlog` yet, and that is deliberate rather than an
-/// oversight: nothing spawns a keeper until the clock lands, and a mark nothing reads is a mark
-/// nobody can get wrong. The prompt begins with these words now so that the piece which adds the
-/// spawn has nothing to change here.
+/// The first words of the keeper's brief: the mark a head reads to keep a hidden child out of
+/// the subagents the operator sees, on `GATEKEEPER_TITLE_PREFIX`'s rule. The prompt begins with
+/// them so the piece that adds the spawn has nothing to change here.
 pub const TITLE_PREFIX: &str = "You are the notes keeper.";
 
-/// **The closed set the daemon can act on** — the four words a review comes back as.
-///
-/// The design's own list, verbatim: *"a closed set the daemon can act on (checked / stale
-/// references / changed / needs a person)"*, and its reason: *"the failure mode of a poke is an
-/// unactionable essay nobody reads."*
-///
-/// The **precedence is the order of the variants**, and the prompt states it as the rule: the
-/// first that is true is the answer. `NeedsPerson` is first because a proposal to remove a note
-/// is a decision only a person (or the session that ran the keeper) can make, and a review that
-/// proposes one must not come back as `checked` and be filed away.
+/// The closed set the daemon can act on: the four words a review comes back as. The precedence
+/// is the order of the variants and the prompt states it as the rule, the first that is true
+/// being the answer; `NeedsPerson` is first because a proposal to remove a note is a person's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum KeeperDecision {
-    /// The keeper could not settle whether the note is still true — or it is proposing a
-    /// removal. A person, or the session that ran the keeper, decides.
-    ///
-    /// **The default, and it is the safe direction on purpose**: a decision nobody set parks the
-    /// note for a person rather than filing it away as `checked`.
+    /// The keeper could not settle whether the note is still true, or it is proposing a removal:
+    /// a person, or the session that ran the keeper, decides. The default, and the safe
+    /// direction on purpose, since a decision nobody set parks the note rather than filing it.
     #[default]
     NeedsPerson,
     /// The tree moved under the note's prose, and the keeper repaired it through `notes`.
@@ -160,9 +34,8 @@ pub enum KeeperDecision {
 }
 
 impl KeeperDecision {
-    /// **Every decision, in the order the daemon reads them** — the one list, for the reason
-    /// [`crate::gatekeeper::Decision::ALL`] is one: the parse and the rendering both ask *which
-    /// of the values is this*, and a second list is a second answer. The order is the
+    /// Every decision, in the order the daemon reads them: the parse and the rendering both ask
+    /// which of the values is this, and a second list is a second answer. The order is the
     /// precedence, most-demanding first.
     pub const ALL: [KeeperDecision; 4] = [
         KeeperDecision::NeedsPerson,
@@ -188,22 +61,20 @@ impl KeeperDecision {
     }
 }
 
-/// **Why a note should be removed** — a closed set, because a proposal whose evidence cannot be
-/// read is a proposal nobody can weigh.
-///
-/// Each of the four is a different *question*, and each is established by a different piece of
-/// machinery. The words are the ones the report renders and the parse reads.
+/// Why a note should be removed: a closed set, because a proposal whose evidence cannot be read
+/// is a proposal nobody can weigh. Each of the four is a different question, established by a
+/// different piece of machinery, and the words are the ones the report renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Evidence {
-    /// References that no longer resolve — [`crate::references`], mechanical.
+    /// References that no longer resolve: [`crate::references`], mechanical.
     References,
-    /// A note superseded by another — the similarity door ([`Supersession`]), the same
+    /// A note superseded by another: the similarity door ([`Supersession`]), the same
     /// arithmetic as the write gate, so the same floor.
     Superseded,
-    /// Offered and never taken — [`offers_log`]. An offer nobody ever takes is a note nobody
+    /// Offered and never taken: [`offers_log`]. An offer nobody ever takes is a note nobody
     /// reads, which is a note to rewrite or retire.
     NeverTaken,
-    /// The work it describes finished and landed — the note is a record of a branch that is now
+    /// The work it describes finished and landed: the note is a record of a branch that is now
     /// on `main`, and what is left of it is history.
     Landed,
 }
@@ -230,14 +101,12 @@ impl Evidence {
     }
 }
 
-/// One note the keeper proposes removing, and why.
-///
-/// **A proposal, never an act.** The design: *"a finished row is a record of work, and only an
-/// act takes it off. Here the keeper proposes and the decision is the main session's — or the
-/// person's, when it matters."*
+/// One note the keeper proposes removing, and why. A proposal, never an act: the keeper proposes
+/// and the decision is the session's, or the person's when it matters, because deleting a note
+/// loses information rather than reorganising it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposal {
-    /// The note proposed for removal — a path, as the report spells it.
+    /// The note proposed for removal: a path, as the report spells it.
     pub note: String,
     pub evidence: Evidence,
     /// The evidence itself, in the keeper's words: which references, which other note and its
@@ -246,8 +115,8 @@ pub struct Proposal {
 }
 
 impl Proposal {
-    /// The one line the report renders a proposal as — and the shape the prompt asks for, so
-    /// that what a reader sees is what the keeper wrote.
+    /// The one line the report renders a proposal as, and the shape the prompt asks for, so that
+    /// what a reader sees is what the keeper wrote.
     pub fn render(&self) -> String {
         format!(
             "remove [{}] {} — {}",
@@ -258,17 +127,15 @@ impl Proposal {
     }
 }
 
-/// What the offer log says about one note.
-///
-/// The take-up is the measurement that keeps the offer floor honest, and it answers a second
-/// question the design names: *"an offer nobody ever takes is a note to rewrite or retire."*
+/// What the offer log says about one note. The take-up is the measurement that keeps the offer
+/// floor honest: an offer nobody ever takes is a note to rewrite or retire.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offered {
     pub path: PathBuf,
     /// How many times the note was offered at the tail of a request.
     pub offers: usize,
-    /// How many of those the round actually **read**. A `grep` that mentions a note does not
-    /// count — the take-up signal is a `read` of that path, which is the design's own rule.
+    /// How many of those the round actually read. A `grep` that mentions a note does not count:
+    /// the take-up signal is a `read` of that path.
     pub taken: usize,
     /// The best score the note ever earned, and when it was last offered, for the evidence line.
     pub best: f64,
@@ -290,20 +157,9 @@ impl Offered {
     }
 }
 
-/// **Read the take-up log** — `<workspace>/.letibot/notes-offers.jsonl`, one line per settled
-/// offer.
-///
-/// # This reader is deliberately tolerant, and the writer says why
-///
-/// The offering half owns the file and writes one JSON object per offer (`path`, `score`,
-/// `taken`, `at`, `session`). It is **best-effort by its own design** — *"a hint that fails to
-/// write a line about itself is still a hint, and a notes feature that breaks a turn because a
-/// file could not be appended to would be worse than no notes"* — so a malformed line, an
-/// unknown field or a missing file is *no evidence* rather than an error. A keeper that refused
-/// to run because a log line was truncated would be a keeper that never runs.
-///
-/// The file does not exist until the offering half lands. An absent log is an empty log, and
-/// the prompt says so rather than pretending the question was answered.
+/// Read the take-up log, `<workspace>/.letibot/notes-offers.jsonl`, one line per settled offer.
+/// The file is written best-effort, so a malformed line or a missing file is no evidence rather
+/// than an error: a keeper that refused to run on a truncated line would never run.
 pub fn offers_log(workspace: &Path) -> Vec<Offered> {
     let path = workspace.join(".letibot").join("notes-offers.jsonl");
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -340,22 +196,17 @@ pub fn offers_log(workspace: &Path) -> Vec<Offered> {
     by_path.into_values().collect()
 }
 
-/// **The score at which one note is called a duplicate of another.**
-///
-/// MEASURED, and the number is not this module's: it is the write gate's floor, where the
-/// closest honest pair in this box's corpus scored **0.183** and the weakest near-copy **0.363**,
-/// so 0.30 sits in the gap. *"A duplicate gate and a supersession proposal are the same
-/// arithmetic asking the same question"* — and when `letibot_tools::similarity` lands this
-/// constant should be replaced by an import of `builtins::notes::DUPLICATE_FLOOR`, so that the
-/// two cannot drift apart.
+/// The score at which one note is called a duplicate of another: the write gate's own floor, so
+/// a duplicate gate and a supersession proposal are the same arithmetic asking the same
+/// question. When `letibot_tools::similarity` lands this should import its constant instead.
 pub const SUPERSEDED_FLOOR: f64 = 0.30;
 
 /// What the similarity door said about this note.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Nearest {
-    /// **No door is attached**, so nobody asked. The keeper is told this in as many words, and
-    /// it is the reason it must not propose a `superseded` removal: a supersession is a
-    /// similarity judgement, and there is no score to cite.
+    /// No door is attached, so nobody asked. The keeper is told this in as many words, and it is
+    /// the reason it must not propose a `superseded` removal: a supersession is a similarity
+    /// judgement, and there is no score to cite.
     Unavailable,
     /// The door was asked and no other note reached [`SUPERSEDED_FLOOR`].
     NothingClose,
@@ -363,19 +214,11 @@ pub enum Nearest {
     Note { path: PathBuf, score: f64 },
 }
 
-/// **The door a "superseded by another note" judgement goes through.**
-///
-/// The arithmetic is `letibot_tools::similarity`'s — cosine over TF-IDF on a note's title,
-/// abstract and headings, with its floors measured rather than chosen — and it is **not in this
-/// tree**: the offering half (`agent/notes-offer`) owns it and is enqueued and unlanded. So the
-/// keeper asks through a door, exactly as [`crate::gatekeeper::wake`] is the door the merge queue
-/// lands on.
-///
-/// A keeper is a **caller** of that arithmetic, never a second implementation of it: two
-/// similarity scores one crate apart are two answers to one question, and the floor that decides
-/// whether a note is a duplicate would then be a floor that means two things.
+/// The door a superseded-by-another-note judgement goes through. The arithmetic is
+/// `letibot_tools::similarity`'s and it is not in this tree, so the keeper asks through a door:
+/// a keeper is a caller of that arithmetic, never a second implementation of it.
 pub trait Supersession {
-    /// The note most like `text`, and its score, **excluding `skip`** — a note is never its own
+    /// The note most like `text`, and its score, excluding `skip`: a note is never its own
     /// duplicate. `None` when the door cannot say, which the keeper is told rather than guessed
     /// around.
     fn nearest(&self, text: &str, skip: &Path) -> Option<(PathBuf, f64)>;
@@ -390,18 +233,14 @@ impl Supersession for NoSupersession {
     }
 }
 
-/// **Everything the keeper is asked with, and nothing else.**
-///
-/// The gatekeeper's request is deliberately three fields, with no room for the child's report.
-/// This one is deliberately **gathered** rather than assembled by hand: the references are
-/// resolved, the offer log is read and the similarity door is asked by [`KeeperRequest::gather`],
-/// so that the prompt is a function of evidence somebody actually collected. A field a caller
-/// could fill in with a guess is a field that will be.
+/// Everything the keeper is asked with, and nothing else. It is gathered rather than assembled
+/// by hand: the references are resolved, the offer log is read and the similarity door is asked
+/// by [`KeeperRequest::gather`], so a field a caller could fill with a guess cannot be.
 #[derive(Debug, Clone)]
 pub struct KeeperRequest {
     /// The note under review.
     pub note: PathBuf,
-    /// The workspace the note belongs to — the directory whose `.letibot/notes/` the harness
+    /// The workspace the note belongs to: the directory whose `.letibot/notes/` the harness
     /// reads, and the roots the references were resolved against
     /// ([`crate::references::tree_roots`]).
     pub workspace: PathBuf,
@@ -417,8 +256,8 @@ pub struct KeeperRequest {
 }
 
 impl KeeperRequest {
-    /// **Gather the evidence for one note** — the three things the prompt is built from, in the
-    /// order the brief puts them in.
+    /// Gather the evidence for one note: the three things the prompt is built from, in the order
+    /// the brief puts them in.
     pub fn gather(
         workspace: &Path,
         note: &Path,
@@ -443,7 +282,7 @@ impl KeeperRequest {
         })
     }
 
-    /// What the log says about **this** note, when it says anything.
+    /// What the log says about this note, when it says anything.
     pub fn offered_here(&self) -> Option<&Offered> {
         self.offers
             .iter()
@@ -451,14 +290,9 @@ impl KeeperRequest {
     }
 }
 
-/// **The exact text the keeper is asked with** — the fixed prompt, a function of the request and
-/// nothing else.
-///
-/// The brief's order is the rules' order, and that is the design rather than a layout choice:
-/// the references first because they are checkable, the prose next, the repair third, and what
-/// cannot be judged last. The closing block is stated field by field, on the gatekeeper's own
-/// reasoning: *"re-parsing prose to recover a label is how a corpus rots"* — and the label here
-/// decides whether a note is rewritten, repaired, or put in front of a person.
+/// The exact text the keeper is asked with: the fixed prompt, a function of the request and
+/// nothing else. The brief's order is the rules' order, the references first because they are
+/// checkable, and the closing block is stated field by field rather than read out of prose.
 pub fn keeper_prompt(req: &KeeperRequest) -> String {
     format!(
         "{TITLE_PREFIX} The standing notes are the memory this harness injects into every \
@@ -546,8 +380,8 @@ pub fn keeper_prompt(req: &KeeperRequest) -> String {
     )
 }
 
-/// What the offer log says, as the prompt's own sentence — including the case where the log does
-/// not exist yet, which is the case today.
+/// What the offer log says, as the prompt's own sentence, including the case where the log does
+/// not exist yet.
 fn describe_offers(req: &KeeperRequest) -> String {
     match req.offered_here() {
         Some(o) if o.never_taken() => format!(
@@ -564,7 +398,7 @@ fn describe_offers(req: &KeeperRequest) -> String {
     }
 }
 
-/// What the similarity door said, as the prompt's own sentence — and when it was not asked, the
+/// What the similarity door said, as the prompt's own sentence; when it was not asked, the
 /// keeper is told not to guess.
 fn describe_nearest(nearest: &Nearest) -> String {
     match nearest {
@@ -587,18 +421,9 @@ fn describe_nearest(nearest: &Nearest) -> String {
     }
 }
 
-/// **The keeper's answer, read out of the shape the prompt asks for** — the one place a reply
-/// becomes a report.
-///
-/// The prompt states a closing block and this reads exactly that, from the LAST `decision:` line
-/// onwards: prose above it is the keeper thinking, which is worth reading in the session's
-/// transcript and is not evidence.
-///
-/// **A reply without a readable decision is an `Err`, never a default.** Reading an unknown word
-/// as `checked` would file away a note nobody reviewed; reading it as `needs_person` would put
-/// work in front of the operator on the strength of a typo. And a proposal whose evidence cannot
-/// be read is refused for the same reason one step down: it is a request to delete somebody's
-/// memory, and a request nobody can weigh is not one.
+/// The keeper's answer, read out of the shape the prompt asks for: the closing block from the
+/// last `decision:` line onwards, since prose above it is the keeper thinking. A reply without a
+/// readable decision, or with an unreadable proposal, is an `Err` and never a default.
 pub fn parse_report(req: &KeeperRequest, said: &str) -> Result<KeeperReport, String> {
     let lines: Vec<&str> = said.lines().collect();
     let Some(start) = lines.iter().rposition(|l| label(l, "decision").is_some()) else {
@@ -735,16 +560,14 @@ fn parse_proposal(line: &str) -> Result<Proposal, String> {
     })
 }
 
-/// The keeper's answer, before it is attached to the note it is about.
-///
-/// `Default` is derived and its decision is [`KeeperDecision::NeedsPerson`] — the safe
-/// direction, so a struct literal that forgets the field parks the note for a person rather than
-/// filing it away. The parse always sets it from the reply's own word.
+/// The keeper's answer, before it is attached to the note it is about. `Default` is derived and
+/// its decision is [`KeeperDecision::NeedsPerson`], so a struct literal that forgets the field
+/// parks the note for a person rather than filing it away.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeeperAnswer {
     pub decision: KeeperDecision,
     pub reasons: Vec<String>,
-    /// The keeper's own account of what it changed — a claim, not the evidence. The evidence is
+    /// The keeper's own account of what it changed: a claim, not the evidence. The evidence is
     /// [`KeeperReport::diffs`].
     pub changed: Vec<String>,
     pub proposals: Vec<Proposal>,
@@ -754,8 +577,7 @@ pub struct KeeperAnswer {
     pub files: Vec<String>,
 }
 
-/// **The keeper's report** — the note it is about, the answer, and the diff of the memory it
-/// touched.
+/// The keeper's report: the note it is about, the answer, and the diff of the memory it touched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperReport {
     /// The note reviewed. It comes from the request ([`KeeperReport::for_request`]), so a report
@@ -768,9 +590,9 @@ pub struct KeeperReport {
     pub proposals: Vec<Proposal>,
     pub raised: Vec<String>,
     pub files: Vec<String>,
-    /// **What the caller measured**: the note's bytes before the keeper ran and after. Empty
-    /// until [`KeeperReport::measured`] is called, and the report says so rather than implying
-    /// nothing changed.
+    /// What the caller measured: the note's bytes before the keeper ran and after. Empty until
+    /// [`KeeperReport::measured`] is called, and the report says so rather than implying nothing
+    /// changed.
     pub diffs: Vec<Edit>,
 }
 
@@ -790,19 +612,15 @@ impl KeeperReport {
         }
     }
 
-    /// Attach the diff the caller measured — see [`edits`].
+    /// Attach the diff the caller measured: see [`edits`].
     pub fn measured(mut self, diffs: Vec<Edit>) -> Self {
         self.diffs = diffs;
         self
     }
 
-    /// **Where the keeper's own account and the disk disagree.**
-    ///
-    /// A keeper is the party under review, so its account of its own edit is the weakest form of
-    /// the evidence — and the tree's answer to that is to compare it against something it did
-    /// not write. Two shapes, and both are worth a reader's attention: a note that changed on
-    /// disk and is not named under `changed:`, and a note named under `changed:` that did not
-    /// change.
+    /// Where the keeper's own account and the disk disagree. A keeper is the party under review,
+    /// so its account of its own edit is the weakest evidence, and the tree's answer is to
+    /// compare it against something it did not write.
     pub fn unaccounted(&self) -> Vec<String> {
         let mut out = Vec::new();
         for d in &self.diffs {
@@ -830,8 +648,8 @@ impl KeeperReport {
         out
     }
 
-    /// The operator-visible rendering, in the house voice — what a queue verdict's rendering is
-    /// to the merge queue.
+    /// The operator-visible rendering, in the house voice, what a queue verdict's rendering is to
+    /// the merge queue.
     pub fn render(&self) -> String {
         let mut out = format!(
             "notes keeper report\n  note      {}\n  decision  {}\n",
@@ -891,8 +709,8 @@ fn file_name(p: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// **One note's bytes before and after the keeper ran** — the diff of somebody's memory, which
-/// is the operator's to see.
+/// One note's bytes before and after the keeper ran: the diff of somebody's memory, which is
+/// the operator's to see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
     pub path: PathBuf,
@@ -902,9 +720,8 @@ pub struct Edit {
 
 impl Edit {
     /// A line diff with the common head and tail trimmed off, which is what makes an append read
-    /// as an append rather than as a whole note rewritten. Not an LCS: a keeper's edits are
-    /// additions and corrections in a note of a few hundred lines, and a prefix/suffix trim is
-    /// the whole of what a reader needs to see them.
+    /// as an append rather than as a whole note rewritten. Not an LCS: a prefix and suffix trim
+    /// is the whole of what a reader needs for a note of a few hundred lines.
     pub fn render(&self) -> String {
         const CAP: usize = 40;
         let before: Vec<&str> = self.before.lines().collect();
@@ -949,12 +766,9 @@ impl Edit {
     }
 }
 
-/// **The notes that changed between two readings of the corpus**, as diffs.
-///
-/// The caller reads the notes' bytes before it wakes the keeper and after the keeper's session
-/// has run, and this says what moved. A note that is gone from `after` is an `Edit` too, with an
-/// empty `after`: the keeper has no tool that can delete a note, and a note that vanished
-/// anyway is exactly the thing the operator has to see.
+/// The notes that changed between two readings of the corpus, as diffs. A note gone from `after`
+/// is an `Edit` with an empty `after` too: the keeper has no tool that deletes a note, so one
+/// that vanished anyway is exactly what the operator has to see.
 pub fn edits(before: &[(PathBuf, String)], after: &[(PathBuf, String)]) -> Vec<Edit> {
     let mut out = Vec::new();
     for (path, old) in before {
@@ -975,19 +789,9 @@ pub fn edits(before: &[(PathBuf, String)], after: &[(PathBuf, String)]) -> Vec<E
     out
 }
 
-/// **The seam the clock lands on.**
-///
-/// A wake is two acts on the daemon's side — write the request where the keeper's session will
-/// find it, and ring the bell that starts its turn — and neither is expressible in this crate,
-/// which has no daemon. So [`Keeper`] is the caller's own door and this function is the
-/// protocol's precondition, on [`crate::gatekeeper::wake`]'s rule exactly.
-///
-/// # What this refuses, and why it is not a formality
-///
-/// A request with no note, no text or no workspace is a request nobody can act on, and it is
-/// refused BY NAME rather than handed on: a keeper given an empty note would review nothing and
-/// its report would be an opinion about the corpus, which is exactly what the brief-first
-/// protocol exists to prevent.
+/// The seam the clock lands on: this crate has no daemon, so [`Keeper`] is the caller's own
+/// door. A request with no note, no text or no workspace is refused by name, since a keeper
+/// given an empty note would review nothing.
 pub fn wake(req: KeeperRequest, keeper: &dyn Keeper) -> Result<String, String> {
     if req.note.as_os_str().is_empty() {
         return Err(
@@ -1013,18 +817,16 @@ pub fn wake(req: KeeperRequest, keeper: &dyn Keeper) -> Result<String, String> {
     keeper.wake(&req)
 }
 
-/// **The door a wake goes through** — the daemon's own two acts, and nothing else.
-///
-/// The keeper is a session the daemon serves and a review is minutes long, so the ask is a fact
-/// written down plus a bell rung, and the answer comes back on a later pass — the same
-/// asynchrony [`crate::gatekeeper::Reviewer`] carries, for the same reason.
+/// The door a wake goes through: the daemon's own two acts, and nothing else. A review is
+/// minutes long, so the ask is a fact written down plus a bell rung and the answer comes back on
+/// a later pass.
 pub trait Keeper {
-    /// **Write the request down and ring the keeper's bell.** `Ok` is what was done, in the
-    /// words the operator gets; `Err` is why it could not be, said rather than swallowed.
+    /// Write the request down and ring the keeper's bell. `Ok` is what was done, in the words
+    /// the operator gets; `Err` is why it could not be, said rather than swallowed.
     fn wake(&self, req: &KeeperRequest) -> Result<String, String>;
 }
 
-/// **A door that refuses by name** — what a build with no keeper session attached answers.
+/// A door that refuses by name: what a build with no keeper session attached answers.
 pub struct NoKeeper;
 
 impl Keeper for NoKeeper {
@@ -1060,7 +862,7 @@ mod tests {
         KeeperRequest::gather(&root, &note, &NoSupersession).expect("gather")
     }
 
-    /// **The closed set is closed.** All four words round-trip, and a word outside the set is
+    /// The closed set is closed: all four words round-trip, and a word outside the set is
     /// refused rather than defaulted.
     #[test]
     fn the_decision_is_a_closed_set() {
@@ -1078,8 +880,8 @@ mod tests {
         assert_eq!(Evidence::parse("because"), None);
     }
 
-    /// A reply with no block, or with a word outside the set, is refused by name — and the note
-    /// is left as it was.
+    /// A reply with no block, or with a word outside the set, is refused by name, and the note is
+    /// left as it was.
     #[test]
     fn a_report_without_a_readable_decision_is_refused() {
         let req = request("refuse");
@@ -1121,7 +923,7 @@ mod tests {
         assert_eq!(r.files.len(), 2);
     }
 
-    /// A proposal whose evidence cannot be read is refused, and the refusal names the shape —
+    /// A proposal whose evidence cannot be read is refused, and the refusal names the shape,
     /// because a request to delete somebody's memory that nobody can weigh is not a request.
     #[test]
     fn a_proposal_outside_the_shape_is_refused_by_name() {
@@ -1156,8 +958,8 @@ mod tests {
         assert!(ok.proposals[0].render().contains("[landed]"));
     }
 
-    /// **The prompt is the brief's order**, states the closed set, and carries the evidence the
-    /// checker produced — the unresolved ones named.
+    /// The prompt is the brief's order, states the closed set, and carries the evidence the
+    /// checker produced, with the unresolved ones named.
     #[test]
     fn the_prompt_carries_the_order_the_set_and_the_evidence() {
         let root = workspace("prompt");
@@ -1205,7 +1007,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **The seat's repair path, in the prompt's own words**: repair through `notes`, never by
+    /// The seat's repair path, in the prompt's own words: repair through `notes`, never by
     /// writing a file, and never by rewriting history to look current.
     #[test]
     fn the_prompt_says_how_to_repair_and_what_not_to_do() {
@@ -1254,8 +1056,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// An absent log is an empty log — the case today, since the offering half has not landed —
-    /// and the prompt says which it is rather than implying a measurement.
+    /// An absent log is an empty log, and the prompt says which it is rather than implying a
+    /// measurement.
     #[test]
     fn an_absent_log_is_an_empty_log_and_says_so() {
         let req = request("nolog");
@@ -1264,8 +1066,8 @@ mod tests {
         assert!(p.contains("the log is empty or absent"), "{p}");
     }
 
-    /// **The similarity door, and the honesty it buys**: not asked is not the same as nothing
-    /// close, and the keeper is told not to guess.
+    /// The similarity door, and the honesty it buys: not asked is not the same as nothing close,
+    /// and the keeper is told not to guess.
     #[test]
     fn the_similarity_door_distinguishes_unasked_from_nothing_close() {
         struct Door(Option<(PathBuf, f64)>);
@@ -1345,8 +1147,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **The measured diff.** An append reads as an append, and a note that vanished is an edit
-    /// too — because nothing the keeper can call may delete a note.
+    /// The measured diff: an append reads as an append, and a note that vanished is an edit too,
+    /// because nothing the keeper can call may delete a note.
     #[test]
     fn the_measured_diff_shows_what_moved() {
         let a = PathBuf::from(".letibot/notes/a.md");
@@ -1374,8 +1176,8 @@ mod tests {
         assert!(gone[0].after.is_empty());
     }
 
-    /// **Where the keeper's account and the disk disagree**, which is the whole reason the diff
-    /// is measured rather than asked for.
+    /// Where the keeper's account and the disk disagree, which is the whole reason the diff is
+    /// measured rather than asked for.
     #[test]
     fn an_edit_nobody_reported_and_a_report_nobody_measured_are_both_named() {
         let req = request("unaccounted");
@@ -1482,7 +1284,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&req.workspace);
     }
 
-    /// Gathering resolves the references against the note's own text — the first rule, done
+    /// Gathering resolves the references against the note's own text: the first rule, done
     /// before anybody is asked anything.
     #[test]
     fn gathering_resolves_the_references_before_anyone_is_asked() {

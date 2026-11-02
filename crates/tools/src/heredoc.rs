@@ -1,26 +1,6 @@
-//! **A heredoc through `bash` is a write** — the one shell shape where that is
-//! decidable, and the line a near miss earns instead.
-//!
-//! # Why
-//!
-//! Measured in the operator's session: a model wrote a whole file with
-//! `cd ~/Projects/x && cat > crates/workloads/src/banking.rs <<'RUST' … RUST`
-//! instead of calling `write`. The file it produced was right, and four things
-//! about how it was made were wrong:
-//!
-//! - the transcript had no **diff row**, so the operator could see the change
-//!   only by running `git diff` in a shell of their own;
-//! - the gate judged an **exec** and not a write to a path, so the rules that are
-//!   about a path — §11.4's never-write list, a path resolving outside the
-//!   workspace — were never asked about the file;
-//! - nothing recorded it as an **edit**: the file ledger, the intent check and
-//!   the files-changed accounting all had no record of a change the model had
-//!   made;
-//! - and the row said `bash`, which is what the model *called*, not what it did.
-//!
-//! # What is recognised, and what that costs
-//!
-//! Exactly one shape, and no near form of it:
+//! A heredoc through `bash` is a write, and the one shell shape where that is decidable: a
+//! model that writes a file with `cat > f <<'TAG'` leaves no diff row, gives the gate an exec
+//! instead of a path, and says `bash` rather than what it did.
 //!
 //! ```text
 //! [cd <dir> &&] cat  > <path> <<[']TAG['] … TAG      (a file's whole contents)
@@ -29,24 +9,8 @@
 //! [cd <dir> &&] tee -a <path> <<[']TAG['] … TAG
 //! ```
 //!
-//! Anything else is not this shape and is left alone: a pipeline, a second
-//! redirection, a command after it, a heredoc feeding something other than the
-//! program that writes, an operand on `cat` (whose content this cannot know), a
-//! `<<-` whose body the shell rewrites, and any command containing a construct
-//! the shell grammar could not resolve.
-//!
-//! **The conservatism is the design and it is not free.** A shape this refuses
-//! runs as it always did — nothing is lost but the record. A shape this accepted
-//! wrongly would write bytes the shell would not have, which is the one failure
-//! mode worth paying to avoid, so every rule below refuses when it cannot tell.
-//!
-//! # It is a pure function, and the two facts it does not have
-//!
-//! Where the session sits and what the file already holds are the caller's, not
-//! the command text's: [`recognise`] is a function of the string alone, and
-//! [`as_a_write`] takes those two as arguments. That is what makes the whole
-//! thing testable without a backend — and it is why the append case can be
-//! *refused* rather than guessed when the file on disk is not text.
+//! The conservatism is the design: a shape refused here runs as it always did and loses
+//! only the record, while one accepted wrongly writes bytes the shell would not have.
 
 use letibot_code::shell::{self, Context, RedirectOp, RedirectTarget, Stage, Word};
 
@@ -61,7 +25,7 @@ pub struct HeredocWrite {
     /// The bytes the heredoc hands the program: the body between the delimiter
     /// line and its terminator, with its own final newline.
     pub body: String,
-    /// `cat >>` or `tee -a` — the file's existing contents have to be kept.
+    /// `cat >>` or `tee -a`: the file's existing contents have to be kept.
     pub append: bool,
 }
 
@@ -75,39 +39,33 @@ pub struct FileWrite {
     pub content: String,
 }
 
-/// **What is at the path an append would extend.** Three facts, not two: "there
-/// is nothing there" and "there is something this cannot read" are answers to
-/// different questions, and only the first of them means the body alone.
+/// What is at the path an append would extend. Three facts, not two: "there is
+/// nothing there" and "there is something this cannot read" answer different
+/// questions, and only the first of them means the body alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Existing {
     /// The file is there, and these are its bytes.
     Bytes(Vec<u8>),
     /// There is no file at that path, so an append creates one.
     Absent,
-    /// The read failed some other way — outside the session's view, a directory, an
-    /// I/O error. Nothing is assumed, so nothing is appended: the shell keeps this
-    /// one.
+    /// The read failed some other way - outside the session's view, a directory, an
+    /// I/O error. Nothing is assumed, so nothing is appended: the shell keeps this one.
     Unknown,
 }
 
-/// **Read a command as the one file write it might be**, or say that it is not
-/// one.
-///
-/// Never panics and never guesses: every arm that cannot *know* the bytes returns
-/// `None`, and the command runs through the shell exactly as it did before this
-/// module existed.
+/// Read a command as the one file write it might be, or say that it is not one. Never panics and never
+/// guesses: every arm that cannot know the bytes returns `None`, and the command runs through the shell
+/// exactly as it did before this module existed.
 pub fn recognise(command: &str) -> Option<HeredocWrite> {
     let normalised = shell::normalise(command);
-    // **A command with anything unresolved is not this shape.** That covers
-    // `$HOME` anywhere in the command, and — the case that matters — a heredoc
-    // whose delimiter is unquoted and whose body the shell would therefore expand,
-    // which the grammar reports as `Construct::ExpandedHeredoc`.
+    // A command with anything unresolved is not this shape. That covers `$HOME` anywhere in it and a
+    // heredoc whose delimiter is unquoted, whose body the shell would therefore expand.
     if !normalised.is_resolved() {
         return None;
     }
 
     let (cd, stage) = match normalised.stages.as_slice() {
-        // One stage, at the top level. A `(cat > f <<'E' …)` in a subshell is the
+        // One stage, at the top level. A `(cat > f <<'E' ...)` in a subshell is the
         // same bytes, but the subshell is a fact this does not model.
         [only] if only.context.is_empty() => (None, only),
         // `cd <dir> && <the write>`, and nothing else in between.
@@ -147,12 +105,8 @@ pub fn recognise(command: &str) -> Option<HeredocWrite> {
     })
 }
 
-/// The `write` call this heredoc stands for, or `None` when the bytes it would
-/// leave are not certainly this command's.
-///
-/// `cwd` is where the session sits — `bash`'s own `cwd`, which is the workspace
-/// unless the call named another. `existing` is asked only for an append, and only
-/// about the path this resolves to.
+/// The `write` call this heredoc stands for, or `None` when the bytes it would leave are not certainly
+/// this command's. `cwd` is where the session sits, and `existing` is asked only for an append.
 pub fn as_a_write(
     recognised: &HeredocWrite,
     cwd: &str,
@@ -171,9 +125,9 @@ pub fn as_a_write(
             // shell would have done.
             Existing::Absent => recognised.body.clone(),
             Existing::Bytes(bytes) => {
-                // `write` replaces a file's whole contents and will not do that
-                // over bytes it cannot show, so an append to a file that is not
-                // text is not this: the shell keeps it.
+                // `write` replaces a file's whole contents and will not do that over
+                // bytes it cannot show, so an append to a file that is not text is not
+                // this: the shell keeps it.
                 let mut whole = String::from_utf8(bytes).ok()?;
                 whole.push_str(&recognised.body);
                 whole
@@ -186,17 +140,9 @@ pub fn as_a_write(
     Some(FileWrite { path, content })
 }
 
-/// **The one line a command that writes a file through a heredoc gets when it is
-/// not converted** — the near miss, which is the far more common case.
-///
-/// A question about the *shape* and not about what the runtime did with it: a
-/// recognised command answers `Some` here too, because it does write a file
-/// through a heredoc. The runtime asks this only on the arm that did not convert,
-/// so one call never carries both the note and the nudge.
-///
-/// Conservative on purpose: a heredoc **and** a redirect into a file, both
-/// present in one command. `cargo build 2>&1 | tee out.log` writes a file and is
-/// not this — it is a program doing its job, not file contents written by hand.
+/// The one line a command that writes a file through a heredoc gets when it is not converted, which is
+/// the far more common case. Conservative on purpose: `cargo build | tee out.log` writes a file and is
+/// not this, since it is a program doing its job rather than file contents written by hand.
 pub fn nudge(command: &str) -> Option<&'static str> {
     let normalised = shell::normalise(command);
     let mut heredoc = false;
@@ -247,15 +193,15 @@ fn file_redirect(stage: &Stage) -> Option<(String, bool)> {
                 found = Some((w.literal()?.to_string(), r.op == RedirectOp::Append));
             }
             // A heredoc is the body, not a place bytes go: `heredoc_body` reads it
-            // and refuses a second one. Skipped here rather than validated twice.
+            // and refuses a second one, so it is skipped here rather than validated twice.
             (RedirectOp::HereDoc, _) => {}
             // `2>&1` moves stderr and nothing else: the bytes that reach the file
             // are the heredoc's either way, and it is the one extra redirection
             // people actually write beside this shape.
             (RedirectOp::Duplicate, RedirectTarget::Descriptor(1)) if r.fd == Some(2) => {}
             // Everything else moves bytes: `2> err` is a second file, `< in` is
-            // another read, `> …` on any other fd is none of this, and `>&2` can
-            // take stdout off the file entirely.
+            // another read, `> ...` on any other fd is none of this, and `>&2` can take
+            // stdout off the file entirely.
             _ => return None,
         }
     }
@@ -294,11 +240,9 @@ fn heredoc_body(command: &str, stage: &Stage) -> Option<String> {
         if !matches!(r.fd, None | Some(0)) || found.is_some() {
             return None;
         }
-        // **`<<-` strips leading tabs from the body, and the body this grammar
-        // hands back still carries the tab that ended it** — measured:
-        // `cat > f <<-'EOF'\n\ta\n\tEOF` comes back as `"a\n\t"`. So the bytes are
-        // not the bytes, and a body that is off by a tab is a file that was
-        // rewritten rather than written.
+        // `<<-` strips leading tabs from the body, and the body this grammar hands
+        // back still carries the tab that ended it (`cat > f <<-'EOF'` comes back as
+        // `"a\n\t"`). A body off by a tab is a file rewritten rather than written.
         if command
             .get(r.span.start..r.span.end)
             .is_some_and(|text| text.starts_with("<<-"))
@@ -309,11 +253,8 @@ fn heredoc_body(command: &str, stage: &Stage) -> Option<String> {
     }
     let (body, literal) = found?;
     if !literal {
-        // **An unquoted delimiter means the shell expands the body before the
-        // program reads it**: `$x` becomes its value, backticks and `$(…)` their
-        // output, and a backslash is an escape or a line continuation. Any of the
-        // three and the bytes `cat` reads are not the bytes here — which is why a
-        // body with none of them is still recognised, and one with any is not.
+        // An unquoted delimiter means the shell expands the body before the program reads it, so the bytes
+        // `cat` reads are not the bytes here. A body with none of the three expansions is still recognised.
         if body.contains(['$', '`', '\\']) {
             return None;
         }
@@ -321,10 +262,8 @@ fn heredoc_body(command: &str, stage: &Stage) -> Option<String> {
     Some(body)
 }
 
-/// A path joined to the directory it is relative to, lexically.
-///
-/// Not `Path::join`: the two halves are the *command's* spelling of a place, and
-/// nothing here may touch the disk or collapse a `~` the backend expands itself.
+/// A path joined to the directory it is relative to, lexically. Not `Path::join`: the two halves are the
+/// command's spelling of a place, and nothing here may touch the disk or collapse a `~`.
 fn join(base: &str, path: &str) -> String {
     // Absolute, or a `~` the backend expands: the base has no say in either.
     if path.starts_with('/') || path == "~" || path.starts_with("~/") {
@@ -333,7 +272,7 @@ fn join(base: &str, path: &str) -> String {
     let path = path.trim_start_matches("./");
     let trimmed = base.trim_end_matches('/');
     if trimmed.is_empty() {
-        // `cd / &&` — the base is the filesystem root, not the session's directory.
+        // `cd / &&` - the base is the filesystem root, not the session's directory.
         return if base.starts_with('/') {
             format!("/{path}")
         } else {
@@ -350,7 +289,7 @@ fn join(base: &str, path: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The operator's own command, from the session this exists for.
+    /// The shape this module exists for, spelled as a session wrote it.
     const THE_OPERATORS_EXAMPLE: &str = "cd ~/Projects/x && cat > crates/workloads/src/banking.rs \
                                          <<'RUST'\npub fn balance() -> i64 { 0 }\nRUST";
 
@@ -369,9 +308,9 @@ mod tests {
 
     #[test]
     fn a_body_is_the_bytes_between_the_delimiter_and_its_terminator() {
-        // Three shapes of the same text, and all three land on it exactly: the
-        // same delimiter quoted with `'` and with `"`, and the here-document
-        // operator written after the redirect rather than before it.
+        // Three shapes of the same text, and all three land on it exactly: the same
+        // delimiter quoted with `'` and with `"`, and the here-document operator
+        // written after the redirect rather than before it.
         for command in [
             "cat > f.rs <<'EOF'\nfn a() {}\nfn b() {}\nEOF",
             "cat > f.rs <<\"EOF\"\nfn a() {}\nfn b() {}\nEOF",

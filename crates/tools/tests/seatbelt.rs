@@ -1,20 +1,10 @@
-//! **macOS's boundary, measured on the machine that has it.**
+//! macOS's boundary, measured on the machine that has it.
 //!
-//! The unit tests in `crates/tools/src/exec/seatbelt.rs` pin the profile text; this file is the
-//! other half — a real `sandbox-exec`, a real profile, and a shell asked to do the things the
-//! boundary exists to prevent. `#[cfg(target_os = "macos")]` on every test here, because
-//! Seatbelt is a Darwin facility and `apparatus::applies` is the module's answer for a test
-//! whose *other* half is measured everywhere: on Linux there is no `sandbox-exec` at all, and
-//! asking a run to go and provision one would be a demand no provisioner can meet.
-//!
-//! # What is never read here
-//!
-//! `~/.ssh`, the keychains and the operator's shell profiles are never opened, listed or
-//! printed — not even to prove the boundary works. The deny list is measured against a **fake
-//! home** the test makes in a temporary directory, whose `.ssh` it fills with a known string,
-//! and every assertion is on an exit status or on whether that string came back. The operator's
-//! real paths are in the profile too (they are, by construction), and the only thing this file
-//! does with them is leave them alone.
+//! The unit tests pin the profile text; this file asks a real `sandbox-exec` to do what the
+//! boundary exists to prevent. The operator's `~/.ssh` and profiles are never opened or printed:
+//! the deny list is measured against a fake home whose `.ssh` holds a known string, and every
+//! assertion is on an exit status or on whether that string came back. Linux has no
+//! `sandbox-exec` at all, which is what the `cfg` is for.
 
 #![cfg(target_os = "macos")]
 
@@ -25,7 +15,7 @@ use letibot_tools::exec::confine::{
 };
 use letibot_tools::exec::seatbelt::{CANARY, Seatbelt};
 
-/// A fixture: a project, a fake home with a `.ssh` in it, and a scratch directory — all under
+/// A fixture: a project, a fake home with a `.ssh` in it, and a scratch directory, all under
 /// one temporary directory, removed when the test ends.
 struct Fixture {
     root: PathBuf,
@@ -58,14 +48,13 @@ impl Fixture {
             .unwrap_or(false);
         assert!(ok, "git init in the fixture");
         std::fs::write(root.join("project/a.txt"), "hello\n").expect("a file in the checkout");
-        // **The fake credential.** Not a key and not the operator's: a known string this test
+        // The fake credential: not a key and not the operator's, but a known string this test
         // can look for, in a directory named the way the deny list names it.
         std::fs::write(root.join("home/ssh-fixture/known_hosts"), SECRET)
             .expect("the fake ssh directory");
         let mut f = Fixture { root };
-        // The deny list is spelled with the path the *view* would see, and this one is not the
-        // operator's home at all — which is the point: the rule is measured on a path that
-        // costs nothing to get wrong.
+        // The deny list is spelled with the path the view sees, and this home is not the
+        // operator's: the rule is measured on a path that costs nothing to get wrong.
         f.root = f.root.canonicalize().unwrap_or(f.root.clone());
         f
     }
@@ -82,8 +71,8 @@ impl Fixture {
         self.root.join("home/ssh-fixture")
     }
 
-    /// The view a session would get, with the fixture's home and scratch, and the fixture's
-    /// `ssh-fixture` directory added to the deny list beside the operator's real ones.
+    /// The view a session would get, with the fixture's home and scratch and its `ssh-fixture`
+    /// added to the deny list beside the real ones.
     fn view(&self) -> ViewSpec {
         ViewSpec::project_only(self.project())
             .with_home(HomeView::Dir(self.home()))
@@ -104,7 +93,7 @@ impl Drop for Fixture {
 /// The string the fake credential holds. Nothing outside this file may see it come back.
 const SECRET: &str = "letibot-fixture-line-that-must-never-be-readable\n";
 
-/// **Run a shell command inside a measured boundary**, the way `HostProcesses` does: the
+/// Run a shell command inside a measured boundary the way `HostProcesses` does: the
 /// confinement's argv, then `/bin/sh -c <command>`, in the checkout.
 fn run_in(s: &Seatbelt, cwd: &Path, command: &str) -> (i32, String) {
     let argv = s
@@ -141,8 +130,8 @@ fn the_probe_measures_a_boundary_and_says_what_macos_cannot_give() {
     let b = s.boundary().expect("a measured boundary");
     assert_eq!(b.platform, Mechanism::Policy, "{}", b.describe());
     assert!(b.complete(), "{}", b.describe());
-    // The three required properties are held, and they were HELD rather than asserted: the
-    // probe measures each of them from inside.
+    // The three required properties are held, and held by measurement: the probe checks each
+    // from inside the boundary.
     for p in [Prop::FileView, Prop::ProcessIsolation, Prop::Nested] {
         match b.props.get(&p) {
             Some(PropState::Held { how }) => assert!(!how.is_empty(), "{p} held with no how"),
@@ -159,8 +148,8 @@ fn the_probe_measures_a_boundary_and_says_what_macos_cannot_give() {
     assert!(d.contains("this OS cannot give it"), "{d}");
     assert!(d.contains("NOT APPLICABLE"), "{d}");
     assert!(d.contains("sandbox-exec"), "{d}");
-    // A policy boundary must not print the namespace table — seven `NOT ENTERED` lines would
-    // read as a boundary that failed.
+    // A policy boundary must not print the namespace table: seven `NOT ENTERED` lines would read
+    // as a boundary that failed.
     assert!(!d.contains("mnt:"), "{d}");
     assert!(b.seals.contains_key(&SealKind::NestedNamespaces), "{d}");
 }
@@ -193,9 +182,9 @@ fn a_command_inside_the_profile_runs_the_toolchain_and_writes_the_checkout() {
 
 #[test]
 fn the_deny_list_is_unreadable_even_though_the_home_is_a_writable_part_of_the_view() {
-    // **The measurement the whole list is for.** The home is `(rw)` in this profile — a session
-    // has to be able to write it — and `ssh-fixture` inside it is denied anyway. The proof is
-    // an exit status and the absence of a known string, never the content of a real key.
+    // The measurement the whole list is for: the home is writable in this profile, as a session
+    // needs, and `ssh-fixture` inside it is denied anyway. The proof is an exit status and the
+    // absence of a known string, never the content of a real key.
     let f = Fixture::new("deny");
     let s = match f.probe(Egress::Denied) {
         Ok(s) => s,
@@ -228,8 +217,8 @@ fn the_deny_list_is_unreadable_even_though_the_home_is_a_writable_part_of_the_vi
         !out.contains("letibot-fixture-line"),
         "a secret got out: {out}"
     );
-    // The canary the probe itself uses is in the same state, and it is the one the profile is
-    // refused on if the deny list does not win.
+    // The canary the probe itself uses is in the same state, and the profile is refused when
+    // the deny list does not win.
     let (rc, _) = run_in(&s, &cwd, &format!("cat \"$HOME/{CANARY}\""));
     assert_ne!(rc, 0, "the canary was readable");
 }
@@ -249,8 +238,8 @@ fn a_write_outside_the_checkout_is_refused() {
     );
     assert_ne!(rc, 0, "a write outside the view succeeded: {out}");
     assert!(!outside.exists(), "the file outside the view exists");
-    // And a path that is not in the view at all is refused rather than absent — the difference
-    // the description is written to state.
+    // A path outside the view is refused rather than absent, which is the difference the
+    // description exists to state.
     let (rc, _) = run_in(&s, &f.project(), "cat /etc/master.passwd");
     assert_ne!(rc, 0, "a path outside the view was readable");
 }
@@ -262,9 +251,8 @@ fn egress_is_denied_and_measured_as_denied() {
         Ok(s) => s,
         Err(e) => panic!("the macOS boundary did not measure on this box: {e}"),
     };
-    // **A connect that cannot leave, and nothing is sent.** The destinations are a loopback
-    // port nothing listens on and TEST-NET-1, which is reserved for documentation and routed
-    // nowhere; `nc -z` closes as soon as the answer arrives.
+    // A connect that cannot leave, and nothing is sent: TEST-NET-1 is reserved for
+    // documentation and routed nowhere, and `nc -z` closes as soon as the answer arrives.
     let (_, out) = run_in(
         &s,
         &f.project(),
@@ -317,7 +305,7 @@ fn the_profile_is_written_outside_the_checkout() {
         text.rfind("(deny file-read* file-write*").unwrap() > text.rfind("(allow ").unwrap(),
         "{text}"
     );
-    // Every path it denies is one of ours or the operator's own — never a path either of them
+    // Every path it denies is one of ours or the operator's own, never a path either of them
     // wrote into the checkout.
     assert!(text.contains(&f.denied().display().to_string()), "{text}");
 }

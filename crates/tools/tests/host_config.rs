@@ -1,14 +1,11 @@
-//! `host_config` through the whole runtime — the half the unit tests cannot see.
+//! `host_config` through the whole runtime, the half the unit tests cannot see.
 //!
-//! The unit tests in `builtins/host_config/tests.rs` drive `dispatch` with a platform and a
-//! changelog of their own. These check the three things that only exist once a session is built:
-//! the seat holds the tool, `set` reaches the gate as an **exec**, and a backend opened read-only
-//! refuses before anything runs. Every platform here is the fixture's — no test in this tree
-//! changes the operator's keyboard repeat or their governor.
+//! Only here does a session exist: the seat holds the tool, `set` reaches the gate as an exec,
+//! and a backend opened read-only refuses before anything runs. Every platform is the fixture's.
 
 use letibot_tools::testing::{harness, writable_harness};
 
-/// **A `set` through the runtime lands in the changelog and on the fixture's platform**, and the
+/// A `set` through the runtime lands in the changelog and on the fixture's platform, and the
 /// record's `before` is what the fixture read.
 #[test]
 fn a_set_through_the_runtime_is_applied_and_recorded() {
@@ -33,8 +30,8 @@ fn a_set_through_the_runtime_is_applied_and_recorded() {
     assert!(line.contains(r#""after":"after""#), "{line}");
 }
 
-/// **A read through the runtime costs no decision** — `settings` and `read` narrow to `Read`, so
-/// they answer even in a session whose gate allows nothing.
+/// A read through the runtime costs no decision: `settings` and `read` narrow to `Read`, so
+/// they answer in a session whose gate allows nothing.
 #[test]
 fn a_read_through_the_runtime_answers_with_no_adjudicator() {
     let mut h = harness();
@@ -45,11 +42,9 @@ fn a_read_through_the_runtime_answers_with_no_adjudicator() {
     assert!(seen.contains("`before`"), "{seen}");
 }
 
-/// **A read-only session refuses a change, and which gate refuses it depends on what is attached.**
-///
-/// Two gates stand above the platform and they are in a fixed order: with no adjudicator the call
-/// is `not run` before the tool is reached, and with an adjudicator that admits, the backend's own
-/// read-only answer is what refuses. Neither runs anything.
+/// A read-only session refuses a change, and which gate refuses it depends on what is attached: with no
+/// adjudicator the call is `not run` before the tool is reached, and with an admitting one the backend's
+/// own read-only answer refuses.
 #[test]
 fn a_set_from_a_read_only_session_is_refused_before_the_platform() {
     let set = r#"{"verb":"set","setting":"fixture-knob","value":"after",
@@ -77,7 +72,7 @@ fn a_set_from_a_read_only_session_is_refused_before_the_platform() {
     assert!(!h.changelog_file().exists(), "and nothing was recorded");
 }
 
-/// **A setting that needs root, with no way to ask, is refused through the runtime too** — the
+/// A setting that needs root, with no way to ask, is refused through the runtime too: the
 /// fixture's privilege is a fixed refusal, which is what makes this assertable on any box.
 #[test]
 fn a_root_setting_through_the_runtime_names_the_missing_helper() {
@@ -94,7 +89,7 @@ fn a_root_setting_through_the_runtime_names_the_missing_helper() {
     assert!(h.host_config().applied().is_empty(), "nothing ran");
 }
 
-/// **`settings` names the platform**, so a model that asked in the wrong vocabulary is told which
+/// `settings` names the platform, so a model that asked in the wrong vocabulary is told which
 /// one it is in.
 #[test]
 fn settings_through_the_runtime_names_the_platform() {

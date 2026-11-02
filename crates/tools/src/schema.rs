@@ -1,24 +1,12 @@
-//! The tool schema: clause 4 (`access` is declared) and clause 6 (the description
-//! says how to use the tool, never what the data contains).
-//!
-//! Both clauses are enforced here rather than reviewed, because both fail
-//! silently. A tool whose access is decided per call reads as working right up
-//! until the first call that should have prompted and did not; a description that
-//! names data reads as working right up until the data changes.
+//! The tool schema: `access` is declared once, and a description says how to use the
+//! tool rather than what the data contains. Both are enforced here rather than reviewed,
+//! because both fail silently: the wrong class or a stale description reads as working.
 
 use serde::{Deserialize, Serialize};
 
-/// What a tool is allowed to touch. **Declared once, in the schema.**
-///
-/// §8.1 clause 4. This is the field §11.3's policy table keys on, so it is not a
-/// hint: [`crate::runtime::ToolRuntime`] consults the gate only for a tool that is
-/// not [`Access::Read`], which is what makes "a read-only tool never prompts" a
-/// structural property rather than a promise.
-///
-/// A tool declares the *widest* thing it can do. A tool that reads a file and
-/// sometimes writes one is a `Write` tool on every call, including the calls that
-/// only read: the point of the declaration is that the class is knowable before
-/// the arguments are.
+/// What a tool is allowed to touch, declared once in the schema: [`crate::runtime::ToolRuntime`]
+/// consults the gate only for a tool that is not [`Access::Read`], so "a read-only tool never
+/// prompts" is structural. A tool declares the widest thing it can do, not the current call's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
@@ -26,31 +14,15 @@ pub enum Access {
     Write,
     Exec,
     Network,
-    /// Changes the **session's own** state and nothing the operator owns: the
-    /// intent board, the goal, plan mode, a question posted to a head.
-    ///
-    /// Declared rather than folded into `Read` because the survey found exactly
-    /// that hole in grok-build — `todo_write` and `update_goal` declare `Read`
-    /// while mutating session state (`docs/tool-survey.md` §1.4) — and a tool that
-    /// under-declares is a hole whether or not the thing it writes is a file.
-    /// `is_unattended` is still true: nobody needs to adjudicate the model writing
-    /// its own todo list. The tool that *widens* capability (`exit_plan_mode`)
-    /// declares `Write` for that reason and goes to the gate like any other write.
+    /// Changes the session's own state and nothing the operator owns: the intent board,
+    /// the goal, plan mode, a question posted to a head. A tool that under-declares is a
+    /// hole whether or not it writes a file, so one that widens capability declares `Write`.
     Session,
 }
 
-/// What a subagent is denied **below** the session that spawned it. A set of
-/// access classes, and it only ever removes: a subagent's downgrade is the
-/// parent's downgrade plus its own, so nothing a parent could not do can be
-/// handed down by naming a wider role. `Read` and `Session` cannot be denied —
-/// a subagent that cannot read its files or its own todo list is not a
-/// subagent, and a caller asking for that is told so.
-///
-/// Three things read it, and all three must agree: the tools seated (a denied
-/// class's tools are not in the prompt, so the model is not told it has a
-/// capability it does not); the backend (no writable view without `Write`, no
-/// process host without `Exec`); and the permission ruleset (a `deny` rule per
-/// denied tool, so a call that reached the gate anyway is refused by name).
+/// What a subagent is denied below the session that spawned it. It only ever removes, so
+/// nothing a parent could not do can be handed down by naming a wider role, and `Read` and
+/// `Session` cannot be denied. The seated tools, the backend and the ruleset must all agree.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Downgrade {
     pub deny: std::collections::BTreeSet<Access>,
@@ -114,7 +86,7 @@ impl Downgrade {
         }
     }
 
-    /// `no write, no exec` — for a disclosure or a listing.
+    /// `no write, no exec` - for a disclosure or a listing.
     pub fn describe(&self) -> String {
         if self.deny.is_empty() {
             return "none".into();
@@ -151,17 +123,9 @@ impl Access {
         .find(|a| a.as_str() == name.trim())
     }
 
-    /// Whether a call of this class may proceed without anyone being asked.
-    ///
-    /// `Read` and `Session`. Everything else goes through the gate, and in M1
-    /// there is no adjudicator behind it, so everything else is
-    /// [`crate::runtime::Gate`]'s problem and not a tool's.
-    ///
-    /// `Session` is unattended because nothing outside the session changes: the
-    /// model writing its own working list is not an act on the operator's machine,
-    /// and a session whose todo tool prompts is a session nobody uses. The moment a
-    /// session-state tool can *widen* what the session may do, it declares `Write`
-    /// instead — see `exit_plan_mode`.
+    /// Whether a call of this class may proceed without anyone being asked. `Read` and
+    /// `Session` do; everything else goes through the gate and is [`crate::runtime::Gate`]'s
+    /// problem. A session-state tool that can widen what the session may do declares `Write`.
     pub fn is_unattended(&self) -> bool {
         matches!(self, Access::Read | Access::Session)
     }
@@ -171,12 +135,10 @@ impl Access {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
-    /// How to use the tool. Never what the data contains — see [`lint_description`].
+    /// How to use the tool. Never what the data contains - see [`lint_description`].
     pub description: String,
-    /// JSON Schema for the arguments. Used for the prompt and, more importantly,
-    /// by [`crate::args`] to salvage a malformed call: knowing that `path` is a
-    /// string and `limit` is an integer is what turns `"limit": "40"` into a
-    /// repair instead of a rejection.
+    /// JSON Schema for the arguments, used for the prompt and by [`crate::args`] to salvage a
+    /// malformed call: knowing `limit` is an integer turns `"limit": "40"` into a repair.
     pub parameters: serde_json::Value,
     pub access: Access,
 }
@@ -196,12 +158,9 @@ impl ToolSchema {
         }
     }
 
-    /// The bytes that go into the stable prefix (`StablePrefix::tools_json`).
-    ///
-    /// `access` is **not** rendered. It is ours, not the model's: a model that can
-    /// read the access class can argue about it, and §11's policy is not a
-    /// negotiation. Key order is fixed by construction because a reorder here
-    /// re-prefills the whole conversation.
+    /// The bytes that go into the stable prefix (`StablePrefix::tools_json`). `access` is
+    /// not rendered: it is ours, not the model's, and a model that can read the class can
+    /// argue about it. Key order is fixed by construction, since a reorder re-prefills all.
     pub fn prompt_json(&self) -> String {
         let v = serde_json::json!({
             "type": "function",
@@ -244,7 +203,7 @@ impl ToolSchema {
     }
 }
 
-/// One reason a description violates clause 6.
+/// One reason a tool description fails the lint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DescriptionFinding {
     /// A stable code, so a test can assert on the kind rather than the wording.
@@ -259,19 +218,9 @@ impl std::fmt::Display for DescriptionFinding {
     }
 }
 
-/// Clause 6, mechanised.
-///
-/// > The description says how to use the tool and never what the data contains.
-/// > Tool descriptions are prompt, are never audited, and go stale.
-///
-/// This is a lint and not a proof: it catches the four ways a description goes
-/// stale that can be recognised from the text alone. It is applied at
-/// registration ([`crate::runtime::Registry::register`]) rather than in review,
-/// because "never audited" is precisely the premise.
-///
-/// What it deliberately does not do is judge prose quality. A vague description is
-/// a bad description; a description that says the corpus covers Rust 1.89 is a
-/// **wrong** description six weeks from now, and only the second one is mechanical.
+/// Whether a description says what the data contains instead of how to use the tool.
+/// A lint and not a proof: it catches the four ways a description goes stale that the text
+/// alone shows, and runs at [`crate::runtime::Registry::register`] because prose is unaudited.
 pub fn lint_description(text: &str) -> Vec<DescriptionFinding> {
     let mut out = Vec::new();
     let lower = text.to_lowercase();

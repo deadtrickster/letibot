@@ -1,8 +1,7 @@
-//! **`gate_corpus`: replay a gate-decision corpus through today's parser and gate.**
+//! `gate_corpus`: replay a gate-decision corpus through today's parser and gate.
 //!
-//! The instrument `letibot_tools::corpus_replay` describes; this is its command line.
-//! It reads corpus files named on the command line — nothing in the tree points at
-//! where they live, because they hold the operator's real commands.
+//! The command line for `letibot_tools::corpus_replay`. Corpus files are named as
+//! arguments, because they hold real commands and nothing in the tree points at them.
 //!
 //! ```sh
 //! cargo run --offline -p letibot-tools --example gate_corpus -- \
@@ -10,10 +9,8 @@
 //!     ~/letibot-corpus/box.json
 //! ```
 //!
-//! `--home` and `--workspace` are the sweep's assumption about where the commands ran:
-//! the export records the command and not the directory, and the region half of the
-//! reading needs one. Every file named is swept and then a total is printed, so the
-//! same invocation gives both the per-host table and the overall one.
+//! `--home` and `--workspace` are the sweep's assumption: the export records the command
+//! and not the directory it ran in, and the region half of the reading needs one.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -52,9 +49,9 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     let workspace = workspace.unwrap_or_else(|| format!("{home}/project"));
-    // The daemon's gate declares the shell (`Surroundings::with_pinned_shell`); left
-    // undeclared, every bare program name is shadowable and 88% of a corpus reads as
-    // unresolved for a reason that has nothing to do with the parser.
+    // The daemon's gate declares the shell (`Surroundings::with_pinned_shell`). Left
+    // undeclared, every bare program name is shadowable and the corpus reads as unresolved
+    // for a reason that has nothing to do with the parser.
     let env = Surroundings {
         home: Some(home.clone()),
         workspace: Some(workspace.clone()),

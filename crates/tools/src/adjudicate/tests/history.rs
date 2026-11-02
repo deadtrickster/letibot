@@ -1,20 +1,13 @@
-//! R11 — the audit rows, read back at decision time.
+//! The audit rows, read back at decision time: a call is shown what was decided before it.
 
 use super::*;
 
-/// §4h's loop, closed: a second call of the same shape is shown the first
-/// answer, with its count and its age. The prior rows are keyed on the task
-/// direction — `(tool, intents, scope, regions)` — so a re-spelled command in
-/// the same direction matches and a different direction does not.
+/// Prior rows are keyed on the task direction, so a re-spelling of the same direction matches
+/// and a different one does not.
 #[test]
 fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age() {
-    // **A PERSON's answer, and only a person's.** This used to run against a
-    // closed gate, whose fail-closed refusal is nobody's judgement, and assert
-    // that it came back as history. It does not any more, and the reason is the
-    // operator's: *"self recursion can do drift — 'that command was approved
-    // already by someone and this is ever so slightly different'. we dont
-    // include its own decisions to the brief."* A gate shown its own answers
-    // ratchets; only what a human decided is evidence about what anyone wanted.
+    // Only a person's answer is history: a gate shown its own decisions ratchets, because a
+    // refusal is nobody's judgement about what anyone wanted.
     let mut human = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
         "human:test",
         |req: &AdjudicationRequest| {
@@ -27,10 +20,8 @@ fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age
         },
     )))
     .with_surroundings(pinned());
-    // **Exec, and still asking** (R21). `ls` is a look and nothing else, so a shell
-    // carrying it is clause 4 and no human answers — and this test is about what a
-    // HUMAN's answer leaves behind in the brief. `sed -n` is the exec that still
-    // reaches one; see `Baseline::reads_only`.
+    // `sed -n` reads and still asks, so it reaches a person; `ls` would be clause 4 and no
+    // human would answer (see `Baseline::reads_only`).
     let args = json!({"command": "/bin/sed -n 1p /w"});
 
     let req1 = human.request_for(&bash_at(&args, "s#3"));
@@ -50,8 +41,8 @@ fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age
     assert_eq!(p.latest_turns_ago, Some(3));
     assert_eq!(p.first_turns_ago, Some(3));
 
-    // And the gate's OWN decisions stay out: a closed gate refuses every call,
-    // and none of those refusals is shown back to it as history.
+    // And the gate's own decisions stay out: a closed gate refuses every call, and is
+    // shown none of those refusals back.
     let mut closed = AdjudicatedGate::closed().with_surroundings(pinned());
     let _ = closed.admit(&bash_at(&args, "s#3"));
     let after = closed.request_for(&bash_at(&args, "s#6"));
@@ -61,8 +52,7 @@ fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age
         after.prior
     );
 
-    // A different direction does not inherit the answer: regions differ, and
-    // a history for one shape is not a history for the next.
+    // A different region set is a different direction, so the answer does not carry.
     let other = human.request_for(&bash_at(&json!({"command": "/bin/ls /elsewhere"}), "s#6"));
     assert!(
         other.prior.is_empty(),
@@ -71,9 +61,8 @@ fn a_second_call_of_the_same_shape_shows_the_first_answer_with_its_count_and_age
     );
 }
 
-/// *"A denial is history too."* Both effects appear, denials beside approvals,
-/// each with its own count and age — and the ages differ, because *"once,
-/// three weeks ago"* and *"nine times this week"* are different facts.
+/// A denial is evidence as much as an approval, and each carries its own count and age: once
+/// long ago and many times this week are different facts.
 #[test]
 fn a_denial_is_history_too_and_sits_beside_the_approvals() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -81,7 +70,6 @@ fn a_denial_is_history_too_and_sits_beside_the_approvals() {
     let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
         let i = n.fetch_add(1, Ordering::Relaxed);
         if i == 0 {
-            // First: refused.
             Some(AdjudicationDecision::selected(
                 req,
                 "deny_and_tell",
@@ -89,7 +77,6 @@ fn a_denial_is_history_too_and_sits_beside_the_approvals() {
                 "not today",
             ))
         } else {
-            // Then: allowed.
             Some(AdjudicationDecision::selected(
                 req,
                 "allow_once",
@@ -120,16 +107,13 @@ fn a_denial_is_history_too_and_sits_beside_the_approvals() {
     assert_eq!(admit.latest_turns_ago, Some(5));
 }
 
-/// *"History is evidence, never precedent"* — and it never lifts a tier. Two
-/// approvals of the same shape do not turn an always-ask action into one the
-/// gate admits unasked: the tier is layer A's, the option list still offers
-/// only what the gate would honour, and a third ask still has to be answered
-/// by somebody.
+/// History is evidence, never precedent: the tier is layer A's, so a history of approvals
+/// neither lowers it nor makes the card offer a standing grant.
 #[test]
 fn a_history_of_approvals_cannot_move_an_always_ask_action() {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    // What the adjudicator was asked: the tier and the option ids it was offered.
+    // What the adjudicator was asked: the tier, and the option ids it was offered.
     type Seen = Vec<(String, Vec<String>)>;
     let n = AtomicUsize::new(0);
     let seen: std::sync::Arc<Mutex<Seen>> = std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -153,12 +137,11 @@ fn a_history_of_approvals_cannot_move_an_always_ask_action() {
     });
     let mut g = AdjudicatedGate::new(Box::new(adj)).with_surroundings(pinned());
     let args = json!({"command": "sudo systemctl restart foo"});
-    // Two approvals in the direction — `sudo`, the privilege-escalation ask.
+    // Two approvals in the direction: `sudo` is the privilege-escalation ask.
     assert_eq!(g.admit(&bash_at(&args, "s#1")), GateDecision::Admit);
     assert_eq!(g.admit(&bash_at(&args, "s#2")), GateDecision::Admit);
 
-    // The third call: the history says admitted twice, and the gate asks
-    // anyway — and with nobody to answer, nothing ran.
+    // The third call still asks, and with nobody to answer nothing ran.
     match g.admit(&bash_at(&args, "s#3")) {
         GateDecision::Refuse {
             outcome: ToolOutcome::NotRun { .. },

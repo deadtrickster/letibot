@@ -1,71 +1,20 @@
-//! Finding the text an edit names, and saying what is actually there when it is
-//! not found.
-//!
-//! This module is clause 1 for the write tools, and it is where the design
-//! decision that matters was made:
-//!
-//! > **A relaxed match is a diagnosis, never an application.**
-//!
-//! # Why, given that both prior harnesses do the opposite
-//!
-//! opencode's shipping `edit` runs a nine-rung ladder — `SimpleReplacer`,
-//! `LineTrimmedReplacer`, `BlockAnchorReplacer`, `WhitespaceNormalizedReplacer`,
-//! `IndentationFlexibleReplacer`, `EscapeNormalizedReplacer`,
-//! `TrimmedBoundaryReplacer`, `ContextAwareReplacer`, `MultiOccurrenceReplacer` —
-//! and **writes the relaxed match to disk**, with a Levenshtein similarity floor
-//! of 0.65 deciding whether two blocks are "the same". Two facts about that
-//! design are worth more than the design itself:
-//!
-//! 1. it needed a guard on top of itself. `isDisproportionateMatch` refuses when
-//!    the matched span is `>= max(oldLines+3, oldLines*2)` lines, with the
-//!    message *"Refusing replacement because the matched span is much larger than
-//!    oldString."* A ladder that has to be told when it has gone too far has an
-//!    upper bound nobody can state;
-//! 2. their own rewrite dropped it. `packages/core/src/tool/edit.ts:84` defers
-//!    the whole thing: *"Port V1 fuzzy correction strategies only after
-//!    exact-edit behavior is established: line-trimmed matching, block-anchor
-//!    fallback, indentation correction, and similarity-threshold review."*
-//!
-//! grok-build never had it: `search_replace` is `match_indices` on the exact
-//! bytes, and its one relaxation (Unicode confusables) is **off by default** and
-//! round-trip validated before it is allowed to apply.
-//!
-//! The cost of relaxing-and-applying is paid in a place nobody looks: a
-//! whitespace-normalised match applied to Python, YAML, a Makefile or a Go
-//! raw-string literal writes bytes the model did not ask for, and it writes them
-//! into the file the operator asked to be careful with. The cost of
-//! relaxing-and-reporting is **one extra call** — and only when the report is not
-//! good enough to fix the call, which is what this module spends its effort on:
-//! a miss comes back with the exact bytes that are actually there, so the retry
-//! is a copy rather than a guess.
-//!
-//! # The one relaxation that is applied
-//!
-//! Line endings. Both prior harnesses do this and both are right:
-//! [`FileText`] holds the file's dominant ending, matching happens on an
-//! LF-normalised copy, and the file's own ending is restored on write. A file's
-//! line endings are a property of the file, not of what the model meant, and
-//! there is no edit anybody wants that turns on which of them the model typed.
-//!
-//! The one place this differs from both: a file with **mixed** endings is left
-//! mixed outside the edited span. grok-build's
-//! `new_text.replace("\r\n","\n").replace('\n',"\r\n")` rewrites every line in
-//! the file when one CRLF is present, which turns a one-line edit into a
-//! whole-file diff.
+//! Finding the text an edit names, and saying what is actually there when it is not found. A relaxed
+//! match is a DIAGNOSIS and never an application, so the model's retry is a copy rather than a guess;
+//! the one relaxation applied is line endings, which are the file's property and not the edit's.
 
 /// A file's text, with its line endings remembered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileText {
-    /// The content with every `\r\n` turned into `\n`. All matching happens here.
+    /// Every `\r\n` turned into `\n`: all matching happens here, so a CRLF file never
+    /// shows a phantom difference.
     pub lf: String,
     /// Whether the file used `\r\n`, and should get it back.
     pub crlf: bool,
-    /// True when the file had both kinds. Restoring endings then cannot be done
-    /// without rewriting lines nobody touched, so it is not attempted and the tool
-    /// says so.
+    /// True when the file had both kinds. Restoring endings then cannot be done without
+    /// rewriting lines nobody touched, so it is not attempted and the tool says so.
     pub mixed: bool,
-    /// The file was not valid UTF-8 and had to be read lossily. A write would
-    /// replace the undecodable bytes with U+FFFD permanently, so a write refuses.
+    /// The file was not valid UTF-8 and had to be read lossily. A write would replace the
+    /// undecodable bytes with U+FFFD for good, so a write refuses.
     pub lossy: bool,
 }
 
@@ -96,11 +45,9 @@ impl FileText {
     }
 }
 
-/// Every exact occurrence of `needle`, as byte offsets into `hay`.
-///
-/// Non-overlapping and left to right, which is what a replacement needs: two
-/// overlapping occurrences of the same string cannot both be replaced, and
-/// counting them as two would make the ambiguity report a lie.
+/// Every exact occurrence of `needle`, as byte offsets into `hay`. Non-overlapping and left to right,
+/// which is what a replacement needs: two overlapping occurrences cannot both be replaced, and counting
+/// them as two would make the ambiguity report a lie.
 pub fn occurrences(hay: &str, needle: &str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
@@ -115,22 +62,22 @@ pub fn occurrences(hay: &str, needle: &str) -> Vec<usize> {
     out
 }
 
-/// What a relaxation relaxed. The name the model is told, so that a retry can be
-/// aimed rather than guessed.
+/// What a relaxation relaxed: the name the model is told, so a retry can be aimed rather
+/// than guessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Relax {
     /// Trailing whitespace on one or more lines differs.
     TrailingWhitespace,
     /// Every line differs by the same leading indent.
     Indentation,
-    /// Whitespace *within* lines differs — a run of spaces against a tab, or two
-    /// spaces against one.
+    /// Whitespace within lines differs: a run of spaces against a tab, or two spaces
+    /// against one.
     InnerWhitespace,
     /// Only the case differs.
     Case,
-    /// The first and last lines were found framing a region, and the middle
-    /// differs. The weakest probe, and the one whose report is worth the most:
-    /// the region between two anchors is almost always the thing the model meant.
+    /// The first and last lines frame a region whose middle differs. The weakest probe
+    /// and the one whose report is worth the most, since that region is almost always what
+    /// the model meant.
     Anchors,
 }
 
@@ -146,9 +93,9 @@ impl Relax {
         }
     }
 
-    /// The clause that finishes *"N place(s) match under a relaxed comparison —
-    /// …"*. Written to be readable in that sentence rather than to be a label,
-    /// because the sentence is what the model reads.
+    /// The clause that finishes "N place(s) match under a relaxed comparison, ...". Written
+    /// to be readable in that sentence rather than to be a label, because the sentence is
+    /// what the model reads.
     pub fn headline(&self) -> &'static str {
         match self {
             Relax::TrailingWhitespace => "identical except for trailing whitespace",
@@ -165,7 +112,7 @@ impl Relax {
         }
     }
 
-    /// The clause that finishes the `reason` line: *"…; at N place(s), …"*.
+    /// The clause that finishes the `reason` line, after "at N place(s), ".
     pub fn differs(&self) -> &'static str {
         match self {
             Relax::TrailingWhitespace => "the trailing whitespace differs",
@@ -176,9 +123,8 @@ impl Relax {
         }
     }
 
-    /// What to do about it. Written as an instruction rather than a diagnosis,
-    /// because the model's next act is a retry and a diagnosis alone leaves the
-    /// retry to be invented.
+    /// What to do about it, written as an instruction rather than a diagnosis: the model's
+    /// next act is a retry, and a diagnosis alone leaves the retry to be invented.
     pub fn advice(&self) -> &'static str {
         match self {
             Relax::TrailingWhitespace => {
@@ -212,12 +158,8 @@ impl Candidate {
     }
 }
 
-/// The relaxation ladder, run **for diagnosis**.
-///
-/// Ordered strongest first, and it stops at the first rung that finds anything:
-/// a report naming five ways the string nearly matched is a report nobody acts
-/// on. The rungs are the same relaxations opencode's replacers apply; the
-/// difference is entirely in what is done with the answer.
+/// The relaxation ladder, run for diagnosis only, ordered strongest first and stopping at the first rung
+/// that finds anything: a report naming five ways the string nearly matched is one nobody acts on.
 pub fn probe(file: &FileText, needle: &str) -> Vec<Candidate> {
     let hay = &file.lf;
     let want: Vec<&str> = needle.split('\n').collect();
@@ -235,10 +177,8 @@ pub fn probe(file: &FileText, needle: &str) -> Vec<Candidate> {
     ] {
         let found = windows_matching(file, &want, &key);
         if !found.is_empty() {
-            // The indentation rung must not report a hit that the trailing-space
-            // rung would have: `trim_start` also equalises a line that is only
-            // trailing whitespace. Ordering handles that, since the stronger rung
-            // runs first.
+            // `trim_start` also equalises a line that is only trailing whitespace, so
+            // the stronger rung runs first and the indentation one cannot claim its hit.
             return found
                 .into_iter()
                 .map(|(start, end, fl, ll)| Candidate {
@@ -252,9 +192,9 @@ pub fn probe(file: &FileText, needle: &str) -> Vec<Candidate> {
         }
     }
 
-    // The anchor rung, last and separate: it does not compare the middle at all,
-    // so it can find a region when every line-wise rung has failed. Needs at
-    // least two lines to be an anchor rather than a search.
+    // The anchor rung is last and separate: it does not compare the middle at all, so it
+    // can find a region when every line-wise rung has failed. It needs two lines to be an
+    // anchor rather than a search.
     if want.len() >= 2 {
         let first = want[0].trim();
         let last = want[want.len() - 1].trim();
@@ -302,8 +242,8 @@ fn windows_matching(
         return Vec::new();
     }
     let wanted: Vec<String> = want.iter().map(|l| key(l)).collect();
-    // A needle that maps to nothing at all (all whitespace) would match every
-    // blank run in the file. That is not a diagnosis, it is noise.
+    // A needle that maps to nothing at all (all whitespace) would match every blank run
+    // in the file, which is noise rather than a diagnosis.
     if wanted.iter().all(|w| w.is_empty()) {
         return Vec::new();
     }
@@ -317,7 +257,7 @@ fn windows_matching(
             out.push((start, end, i + 1, j + 1));
         }
         // Bounded: a file where every line is `}` should not produce a thousand
-        // candidates, and after a handful the report says "and N more" anyway.
+        // candidates, and the report says "and N more" after a handful anyway.
         if out.len() >= 32 {
             break;
         }
@@ -342,26 +282,21 @@ pub fn line_starts(hay: &str) -> Vec<usize> {
 fn span_of_lines(hay: &str, starts: &[usize], a: usize, b: usize) -> (usize, usize) {
     let start = *starts.get(a).unwrap_or(&hay.len());
     let end = match starts.get(b + 1) {
-        // `- 1` drops the `\n` that ended line `b`, so the span is the text of the
-        // lines and not the text plus a separator.
+        // `- 1` drops the `\n` that ended line `b`, so the span is the text of the lines
+        // and not the text plus a separator.
         Some(&s) => s.saturating_sub(1),
         None => hay.len(),
     };
     (start, end.max(start))
 }
 
-// ---------------------------------------------------------------------------
 // The hand-off to the head.
-// ---------------------------------------------------------------------------
 
-/// **Both sides of one file change**, which is what a head needs and what nothing
-/// in this harness carried before.
+/// Both sides of one file change, which is what a head needs to draw a diff.
 ///
-/// `crates/ui`'s `diff` — Myers with a `max_d` cap plus word-level intra-line
-/// highlight — was built, tested and unwired *"because nothing carries both sides
-/// of an edit"*. This is the thing that carries them.
-///
-/// # What the head must do
+/// It rides the tool result and not a [`crate::events::ToolEvent`], because an event
+/// fans out to every attached head and carries no payload; the digests are there so it
+/// can be sent by reference instead.
 ///
 /// ```text
 /// let before: Vec<&str> = edit.before.lines().collect();
@@ -369,32 +304,11 @@ fn span_of_lines(hay: &str, starts: &[usize], a: usize, b: usize) -> (usize, usi
 /// let rows = letibot_ui::diff::render(&before, &after, &DiffConfig { .. });
 /// ```
 ///
-/// That is the whole contract. Three notes on it:
+/// Both sides are LF-normalised, so the diff shows no phantom change on a CRLF file and
+/// a created file simply has an empty `before`.
 ///
-/// - `before` and `after` are **LF-normalised** and carry no `\r`, so the diff
-///   never shows a phantom change on a CRLF file. [`FileText::restore`] put the
-///   real endings back on the bytes that reached the disk;
-/// - a created file has `before == ""` and `created == true`. `"".lines()` is
-///   empty, which is what `crates/ui`'s empty-to-empty case documents as the
-///   right input — *"without context it is an empty file write and must produce
-///   no hunk lines at all"*;
-/// - this is on [`crate::result::ToolResult`] and **not** in a [`crate::events::ToolEvent`],
-///   deliberately. The events module's rule is that *"no event carries the
-///   payload"*, because an event fans out to every attached head; a whole file on
-///   both sides is exactly the payload that rule is about. A head reads this off
-///   the result the runtime returns, in process. Sending it over the socket is
-///   `letibot-sessionlog`'s decision to make, and [`FileEdit::before_digest`] /
-///   [`FileEdit::after_digest`] are there so it can be sent by reference if that
-///   is the answer.
-///
-/// # Why the model does not get a rendered diff
-///
-/// The model asked for the change; re-rendering it back is telling it what it
-/// just said, in the most expensive form available — permanent context, every
-/// turn, for the rest of the session. What it does not know is *where the change
-/// landed and what it displaced*, and that is what the tool's payload says
-/// instead. §9's whole argument is about what is worth keeping in the prompt, and
-/// a diff of an edit the model authored is not.
+/// The model is not shown a rendered diff: it asked for the change, and what it does not
+/// know is where the change landed, which is what the tool's payload says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEdit {
     /// Relative to the session root, as the head should label it.
@@ -413,15 +327,9 @@ pub struct FileEdit {
     pub changed: ChangedSpan,
 }
 
-/// The region of a file that differs, found by trimming the common prefix and
-/// suffix — **not** by an edit script.
-///
-/// This is an exact fact and it needs no differ: the lines before `first` are
-/// identical in both, and so are the lines after `last_before` / `last_after`.
-/// It is deliberately weaker than a minimal diff, and that is the point — this
-/// crate does not own a differ, `crates/ui` does, and computing a second, worse
-/// one here to put a number in a sentence is how two answers to one question
-/// start disagreeing.
+/// The region of a file that differs, found by trimming the common prefix and suffix rather than by an
+/// edit script, which is an exact fact and needs no differ: a weaker answer than a minimal diff, because
+/// this crate does not own one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangedSpan {
     /// 1-based first differing line. Equal to `before_lines + 1` when the change
@@ -453,11 +361,9 @@ impl ChangedSpan {
     }
 }
 
-/// The changed span of two texts, from the outside in.
-///
-/// Counted in `str::lines()` lines, deliberately: that is what `read` numbers a
-/// file by, and a `write` that reported eleven lines for the file `read` had just
-/// called ten would teach the model that one of the two is lying.
+/// The changed span of two texts, from the outside in, counted in `str::lines()` lines deliberately:
+/// that is what `read` numbers a file by, and a `write` that reported eleven lines for a file `read` had
+/// just called ten would teach the model that one of the two is lying.
 pub fn changed_span(before: &str, after: &str) -> ChangedSpan {
     let b: Vec<&str> = before.lines().collect();
     let a: Vec<&str> = after.lines().collect();
@@ -481,43 +387,26 @@ pub fn changed_span(before: &str, after: &str) -> ChangedSpan {
     }
 }
 
-/// A file's lines as they are numbered everywhere the model sees them.
-///
-/// One function, so `read`, `edit` and `write` cannot drift apart on whether a
-/// trailing newline makes a last, empty line.
+/// A file's lines as they are numbered everywhere the model sees them: one function, so `read`, `edit`
+/// and `write` cannot drift on whether a trailing newline makes a last, empty line.
 pub fn display_lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
 
-/// The before/after of a file-editing call, bounded to what differs, as it
-/// rides the tool event to a head.
-///
-/// One definition, in `letibot-transcript` — the one crate this crate and the
-/// log can both see — re-exported here under the name the runtime has always
-/// used. It used to be defined in this file and lifted field by field into the
-/// log's own shape; two copies of a nine-field struct with a lift between them
-/// is how copies drift, and the transcript row now carries the excerpt too, so
-/// a third copy was about to exist.
+/// The before/after of a file-editing call, bounded to what differs, as it rides the tool event to a
+/// head. Defined once in `letibot-transcript`, so the row and the event cannot drift into two copies.
 pub use letibot_transcript::ToolEditExcerpt;
 
 impl FileEdit {
-    /// The bounded before/after a head draws a two-panel diff from: the
-    /// changed span plus `context` lines either side, capped at `cap`
-    /// lines per side.
-    ///
-    /// The cap is not stinginess for its own sake — the event fans out to
-    /// every attached head, and a whole-file `write` of a large file would
-    /// otherwise put tens of thousands of lines on the wire for a display
-    /// that shows sixty rows. [`ChangedSpan`] is an exact fact, so the
-    /// excerpt contains the whole change unless the cap cut it, and
-    /// `truncated` says when it did.
+    /// The bounded before/after a head draws a two-panel diff from: the changed span plus `context` lines
+    /// either side, capped per side. The cap is not stinginess, since the excerpt fans out to every head,
+    /// and `truncated` says when it cut.
     pub fn excerpt(&self, context: usize, cap: usize) -> ToolEditExcerpt {
         let before: Vec<&str> = self.before.lines().collect();
         let after: Vec<&str> = self.after.lines().collect();
-        // The span is 1-based inclusive; widen by `context` and clamp to the
-        // file, then work 0-based. A pure insertion has `last_before ==
-        // first - 1`, so the old range comes out empty by the same
-        // arithmetic, and a created file has no old lines at all.
+        // The span is 1-based and inclusive; widen by `context`, clamp to the file, then
+        // work 0-based. A pure insertion has `last_before == first - 1`, so the old range
+        // comes out empty by the same arithmetic, and a created file has no old lines.
         let b_lo = self.changed.first.saturating_sub(context + 1);
         let a_lo = b_lo;
         let b_hi = (self.changed.last_before + context).min(before.len());

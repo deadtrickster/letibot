@@ -1,6 +1,6 @@
-//! **The memory card's session grant** (R65): the operator, getting the asks one after another —
-//! *"i started to get memory asks, session_allow option is missing"*. A session grant covers a later
-//! ask no larger than what was granted and no larger than what is free; anything else asks again.
+//! The memory card's session grant: a grant covers a later ask no larger than what was granted
+//! and no larger than what is free. Anything else asks again, which is what keeps one card from
+//! standing for every future allocation.
 
 use super::*;
 
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::exec::memory::{MemoryAsk, MemoryGrant};
 use crate::runtime::Gate;
 
-/// Answers every card with one option and counts how many cards it was shown.
+/// Answers every card with one option and counts the cards it was shown.
 struct Answers {
     option: &'static str,
     asked: Arc<AtomicUsize>,
@@ -70,7 +70,6 @@ fn a_session_grant_covers_a_later_ask_no_larger_and_no_larger_than_what_is_free(
     ));
     assert_eq!(asked.load(Ordering::SeqCst), 1, "the first ask is a card");
 
-    // Smaller, and free enough: granted without a card.
     assert!(matches!(
         g.grant_memory(&ask(Some(12 * GIB), 60 * GIB)),
         MemoryGrant::Granted
@@ -81,7 +80,6 @@ fn a_session_grant_covers_a_later_ask_no_larger_and_no_larger_than_what_is_free(
         "covered by the session grant"
     );
 
-    // Larger than granted: asks again.
     g.grant_memory(&ask(Some(20 * GIB), 60 * GIB));
     assert_eq!(
         asked.load(Ordering::SeqCst),
@@ -89,7 +87,6 @@ fn a_session_grant_covers_a_later_ask_no_larger_and_no_larger_than_what_is_free(
         "above the grant asks again"
     );
 
-    // Within the (now widened, 20 GiB) grant but more than is free right now: asks again.
     g.grant_memory(&ask(Some(16 * GIB), 10 * GIB));
     assert_eq!(
         asked.load(Ordering::SeqCst),

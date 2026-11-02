@@ -1,24 +1,9 @@
-//! **What layer A thinks of a command line** — one command per argument.
+//! What layer A thinks of a command line, one command per argument.
 //!
 //! `cargo run --example classify -p letibot-tools -- 'head -c 200 src/app.rs'`
 //!
-//! The gate's whole design turns on this reading: the intents, the regions, the tier, and
-//! (since R21) whether the line is a **read** — which is what decides whether a shell call
-//! is judged on its work or on the vehicle that carried it. Asking a live daemon is the
-//! other way to find out, and it costs a real call, a corpus row, and a gate.
-//!
-//! **A pinned shell**, because that is what a session that can exec is judged under
-//! (`harnessd`'s `surroundings_for`): a bare name resolves through the PATH fixed at seat
-//! time. `$HOME` and `$WS` override the two paths it places against, so a reader can ask
-//! *what would this be under another workspace* without touching the box.
-//!
-//! **R39: `$CWD` is where a script file is resolved from, and `$READ_SCRIPTS=1` turns the
-//! reading on.** `python3 foo.py` is judged from `foo.py`'s bytes, and those bytes are read
-//! by the session's own reader (`letibot_tools::runtime::scripts_for`) against the session's
-//! own workspace — so a corpus sweep has to be told the directory each command ran in. With
-//! the flag off this example is exactly the old behaviour, which is what makes a
-//! before/after sweep honest without building two revisions: `&[]` is not a
-//! reimplementation of the scan, it is the same function with nothing to read.
+//! The gate judges a call by this reading, so `$HOME`, `$WS`, `$CWD` and
+//! `$READ_SCRIPTS` exist to stand in for the session a corpus row does not record.
 use std::io::Read;
 
 fn main() {
@@ -47,12 +32,9 @@ fn main() {
     let read_scripts = std::env::var("READ_SCRIPTS").is_ok_and(|v| v == "1");
     let show_scripts = std::env::var("SHOW_SCRIPTS").is_ok();
 
-    // Arguments, or NUL-separated commands on stdin for a bulk pass. The second form is
-    // what a corpus sweep wants: `sqlite3 … | cargo run --example classify`.
-    //
-    // **`PAIRS=1` makes the bulk pass alternate `cwd` and `command`** — R39's sweep, where
-    // every row carries the directory it ran in and one process per row would be 30,000
-    // processes to answer a question about one flag.
+    // Arguments, or NUL-separated commands on stdin for a bulk pass, which is what a corpus
+    // sweep wants: `sqlite3 ... | cargo run --example classify`. `PAIRS=1` alternates `cwd`
+    // and `command`, because one process per row would be tens of thousands of processes.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut lines = args;
     let mut pairs = Vec::new();
@@ -87,11 +69,9 @@ fn main() {
         pairs
     } {
         let (cwd, cmd) = pair;
-        // **The scripts this command runs, read the way a session's gate reads them.** The
-        // same function the daemon calls, so a sweep measures the real reader — including
-        // its refusal to open a path in a secret store — rather than a model of it. A
-        // relative path resolves against the session's working directory and is confined to
-        // the workspace root, which is what `HostBackend::resolve` does.
+        // The scripts this command runs, read by the same function the daemon calls, so a
+        // sweep measures the real reader. A relative path resolves against the session's
+        // working directory and is confined to the workspace root, as `HostBackend::resolve` does.
         let scripts = if read_scripts {
             let root = std::path::PathBuf::from(&workspace);
             let base = std::path::PathBuf::from(&cwd);
@@ -135,15 +115,11 @@ fn main() {
             b.intents.iter().map(|i| i.as_str()).collect::<Vec<_>>(),
             b.regions.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
         );
-        // **On a character boundary, not a byte.** `&one[..120]` panics on any command
-        // whose 120th byte is inside a multi-byte character — which aborted this example
-        // after 78 of 7772 corpus commands the first time it was pointed at the store, and
-        // silently, because the panic went to stderr.
+        // On a character boundary, not a byte: `&one[..120]` panics on any command whose
+        // 120th byte is inside a multi-byte character, and the panic goes to stderr.
         let one: String = cmd.replace('\n', " ⏎ ").chars().take(120).collect();
-        // **The findings, which are what say WHY.** A tier on its own answers *what*; the
-        // rule that fired is the only thing that tells a reader whether the answer is the
-        // one they meant. Added while measuring R35, where the seven rows whose tier moved
-        // could not be explained from the tier alone.
+        // The findings are what say why: a tier answers what, and the rule that fired is
+        // the only thing that tells a reader whether the answer is the one they meant.
         for f in &b.findings {
             println!("  ! {f}");
         }

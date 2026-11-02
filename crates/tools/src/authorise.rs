@@ -1,88 +1,6 @@
-//! **Layer B: the one question a model is for, and the machinery around it.**
-//!
-//! # The question, and why it is only one
-//!
-//! `docs/boundary-and-adjudication.md` §2, from the operator:
-//!
-//! > *"it is ok to use ssh key if i said ssh to that host and it is absolutely out of
-//! > question to read private key or copy it"*
-//!
-//! A stateless command classifier **cannot be correct**: `systemctl restart X` after
-//! *"yeah restart"* is the requested action, and the identical string unprompted is a
-//! decision nobody made. That is the question a rule engine cannot answer and a model
-//! can — *was this authorised by the operator?* — and it is the **only** question
-//! this seam asks a model.
-//!
-//! Everything else is [`crate::intent`]'s, decided deterministically. The split is
-//! not tidiness; it is the answer to the strongest objection against a model in the
-//! permission path, which is that a second language model reasoning about the first
-//! one's command inherits the same prompt-injection surface. It does. So:
-//!
-//! | | |
-//! |---|---|
-//! | **layer A** | what the command is. Nothing reasons, so injection cannot move it. |
-//! | **layer B** | was it asked for. Injectable, and therefore allowed only to **widen**. |
-//!
-//! [`OracleAnswer::Authorised`] carries a [`Widening`], which requires an
-//! [`Adjudicable`] witness, which only [`AdjudicationRequest::adjudicable`] mints and
-//! only for a resolved, adjudicable action. The worst a fully compromised oracle
-//! achieves is approving an adjudicable action nobody asked for. It cannot approve
-//! reading a private key, and it cannot approve a command nobody could parse, because
-//! neither was ever its decision to make.
-//!
-//! # What the model is shown: structure, never the string
-//!
-//! A surveyed harness gets the layering right — classifier after every deterministic
-//! layer, filling fail-closed gaps only, every failure path routing to a human — and
-//! still **shows the model the raw command text**. That launders the vulnerability
-//! through the classifier rather than solving it: the model reasons about a string
-//! whose meaning the shell has not produced yet, which is the same mistake one level
-//! up.
-//!
-//! So [`AuthorisationOracle`] is handed a [`ModelBrief`] and nothing else, and
-//! `ModelBrief` has no field holding the command as written. What it carries is the
-//! *resolved* words — the bytes `execve` receives — the intents, the regions, and the
-//! trail. A test asserts the rendered brief does not contain the raw text.
-//!
-//! # Denials are surfaced, and that is a requirement rather than a nicety
-//!
-//! From the operator, about another harness:
-//!
-//! > *"when it denies it doesnt surface it to me in anyway - and models including you
-//! > then try to workaround the denial which sometime or mostly doesnt work and the
-//! > task stops anyway"*
-//!
-//! The chain is the point. The classifier denies; the operator is not told; the model
-//! sees an unexplained failure and infers *the approach was wrong* rather than *the
-//! action was forbidden*; so it tries a variant — **the routing-around behaviour
-//! every rule in this repo forbids, induced by the design rather than by the model**;
-//! the variant fails too; the task dies, and the operator sees a dead task and never
-//! the decision that killed it.
-//!
-//! §11.5's *"the audit never enters the model's context"* was answering the wrong
-//! question. Three parties need three visibilities:
-//!
-//! | party | sees |
-//! |---|---|
-//! | the model | that it was refused, by whom, on what basis — [`refusal_text`], and never the bookkeeping |
-//! | **the operator** | **every denial, when it happens**, with the grant path attached — [`DenialNotice`] |
-//! | the durable log | all of it, as the corpus row |
-//!
-//! [`DenialSink`] is the seam. A gate with none attached says so in its disclosure,
-//! because a denial nobody can see is a denial nobody can lift, which is the defect
-//! with an extra step.
-//!
-//! # The corpus this produces
-//!
-//! > *"so my inputs on model decision should be together with some prior context a
-//! > fine tuning input."*
-//!
-//! The row is not `(action, decision)`. It is **normalised action + trail as shown +
-//! the model's verdict + what the operator actually decided**, with the last two as
-//! separate values so an override never overwrites the verdict it disagrees with.
-//! The disagreements are the training signal, and they exist only if denials are
-//! surfaced — an operator who never sees a denial can never override one, so the
-//! invisible-denial defect also starves the corpus. The two requirements are one.
+//! Layer B: the one question a model is for, and the machinery around it.
+//! Whether an action was authorised is what no rule engine can answer, so layer B may only widen,
+//! and denials reach the operator as they happen.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -98,16 +16,14 @@ use crate::intent::{Baseline, Intent, Region};
 // The authorisation trail
 // ---------------------------------------------------------------------------
 
-/// Who said a thing. Only [`Speaker::Operator`] can authorise anything.
-///
-/// The field exists so that a trail which accidentally contains the model's own text
-/// cannot be read as the operator's words — which would be an agent authorising
-/// itself, and is the shape a prompt injection would most like to take.
+/// Who said a thing. Only [`Speaker::Operator`] can authorise anything: without the
+/// field a trail holding the model's own text could be read as the operator's words,
+/// which is an agent authorising itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Speaker {
     Operator,
-    /// Carried when it is the *subject* of the operator's reply — "yeah, do that" is
+    /// Carried when it is the *subject* of the operator's reply: "yeah, do that" is
     /// only interpretable next to what "that" was. Never authorising on its own.
     Agent,
     Tool,
@@ -123,13 +39,8 @@ impl Speaker {
     }
 }
 
-/// One thing that was said, and how far away it is.
-///
-/// **Recency is evidence.** A three-hour-old *"yeah restart"* is not the same fact as
-/// one from the last turn, and a trail that dropped the distance would present them
-/// as identical. Two measures because they answer different questions: turns are how
-/// much has happened since, seconds are how long ago it was, and a long single turn
-/// separates them.
+/// One thing that was said, and how far away it is. Recency is evidence, so turns say how much has
+/// happened since and seconds say how long ago it was.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Utterance {
     pub speaker: Speaker,
@@ -139,9 +50,8 @@ pub struct Utterance {
     pub clipped: bool,
     /// 0 is this turn, 1 the previous one.
     pub turns_ago: u32,
-    /// Wall-clock distance, when the transcript has a clock. `letibot-transcript`
-    /// does **not** timestamp items, so this is `None` unless the session loop
-    /// supplies it — and `None` means *not recorded*, never *just now*.
+    /// Wall-clock distance, when the transcript has a clock: `letibot-transcript` does
+    /// not timestamp items, so `None` means *not recorded*, never *just now*.
     pub seconds_ago: Option<u64>,
 }
 
@@ -168,12 +78,8 @@ impl Utterance {
     }
 }
 
-/// How the trail was assembled.
-///
-/// The denominator rule (`docs/tool-design-brief.md` §2.2) applied to a security
-/// input: **an empty trail and an uncollected trail are different facts**, and a
-/// classifier told "the operator said nothing" when nobody looked would deny the
-/// thing that was asked for. `0 of 41 messages` is a measurement; `0` is not.
+/// How the trail was assembled: an empty trail and an uncollected one are different facts, and a
+/// classifier told "nothing was said" when nobody looked denies what was asked for.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrailProvenance {
@@ -182,7 +88,7 @@ pub enum TrailProvenance {
         messages_scanned: usize,
         operator_messages: usize,
     },
-    /// Nobody looked. **Not** an empty trail.
+    /// Nobody looked. Not an empty trail.
     NotCollected { why: String },
 }
 
@@ -195,26 +101,9 @@ impl TrailProvenance {
     }
 }
 
-/// The operator's own words that bear on this action, with their distance.
-///
-/// # Where this is filled, and what must call it
-///
-/// Not here. This crate has no transcript: `letibot-tools` sees one tool call at a
-/// time and `GateCall` carries no history, deliberately — a tool runtime that could
-/// read the conversation would be a tool runtime that could be argued with.
-///
-/// So the field is built and the filling is a **seam**:
-/// [`crate::adjudicate::AdjudicatedGate::with_trail_source`] takes a closure, and the
-/// session loop that owns the transcript installs it. Concretely, the caller that
-/// must do this is the one constructing the `AdjudicatedGate` — today
-/// `crates/harnessd`'s session setup — and what it must pass is a closure that walks
-/// the live `Vec<TranscriptItem>` backwards from the current turn, takes
-/// `TranscriptItem::User` items, and calls [`AuthorisationTrail::from_messages`].
-///
-/// Until it does, the default is [`TrailProvenance::NotCollected`] naming exactly
-/// that, and [`ModelAdjudicator`] refuses on an uncollected trail rather than
-/// deciding without one. A guard that quietly decided on an absent input would be
-/// asserting a property it does not have.
+/// The operator's own words that bear on this action, with their distance. Filled through a seam,
+/// since `letibot-tools` sees one call at a time; until a session loop installs one the provenance is
+/// `NotCollected` and [`ModelAdjudicator`] refuses rather than deciding on nothing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuthorisationTrail {
     pub utterances: Vec<Utterance>,
@@ -239,12 +128,9 @@ impl AuthorisationTrail {
         }
     }
 
-    /// Build a trail from what a session loop walked.
-    ///
-    /// `messages_scanned` is the denominator and is not derived from `utterances`:
-    /// the whole point is that "I looked at 41 messages and 0 were the operator's"
-    /// and "I looked at 0" are different, and deriving the count from the result
-    /// would collapse them.
+    /// Build a trail from what a session loop walked. `messages_scanned` is the denominator and is
+    /// not derived from `utterances`: "41 messages and none were the operator's" and "0" are different
+    /// facts.
     pub fn from_messages(utterances: Vec<Utterance>, messages_scanned: usize) -> Self {
         let operator_messages = utterances
             .iter()
@@ -274,26 +160,9 @@ impl AuthorisationTrail {
         v
     }
 
-    /// **Which of the cited numbers name an operator utterance that was shown.**
-    ///
-    /// The prompt's own promise is that "an ALLOW citing none is discarded and the
-    /// operator is asked instead". For that sentence to be true, something has to
-    /// decide what counts as citing one — and the only check that existed was
-    /// `cites.is_empty()`, which any number satisfies.
-    ///
-    /// Two ways a number fails here, and they are different failures:
-    ///
-    /// 1. **Out of range.** The model named a line that was never on the page. It
-    ///    read something that is not there, and an authorisation resting on it
-    ///    rests on nothing.
-    /// 2. **In range, but the agent's own words.** The trail carries agent lines
-    ///    too — a compaction notice, a claim about what it is doing — and an ALLOW
-    ///    citing one of those is the agent authorising itself. That is the exact
-    ///    move the trail exists to make impossible, so it is refused even though
-    ///    the line is real and was shown.
-    ///
-    /// Returns the surviving indices. Empty means nothing was cited that could
-    /// authorise anything, whatever the model wrote.
+    /// Which of the cited numbers name an operator utterance that was shown. A number fails either by
+    /// being out of range or by naming the agent's own words, and an ALLOW citing those is the agent
+    /// authorising itself.
     pub fn cited_operator_words(&self, cites: &[usize]) -> Vec<usize> {
         cites
             .iter()
@@ -325,17 +194,9 @@ impl AuthorisationTrail {
                 ));
             }
         }
-        // **The number is the citation.**
-        //
-        // The prompt asks the oracle to answer `ALLOW <indices of the operator
-        // utterances that ask for this>` and this rendered no index at all — only
-        // `turn(s) ago`. So the model cited the only numbers it had been shown, the
-        // turn counts, and a 12-entry trail came back cited as `87, 114, 125`
-        // (rano, 2026-09-18 09:36). Those were the right utterances, read correctly
-        // off the page; nothing about the mechanism made them so.
-        //
-        // An index printed here is an index `cited_operator_words` can check, which
-        // is the difference between a citation and a number.
+        // The number is the citation: the prompt asks for `ALLOW <indices>`, so an
+        // index printed here is one `cited_operator_words` can check. Without it the
+        // model cites the only numbers on the page, which are the turn counts.
         for (i, u) in self.utterances.iter().enumerate() {
             let when = match u.seconds_ago {
                 Some(sec) => format!("{} turn(s) ago, {sec}s", u.turns_ago),
@@ -356,99 +217,49 @@ impl AuthorisationTrail {
 // What the model sees
 // ---------------------------------------------------------------------------
 
-/// **Everything the oracle is shown, and nothing else.**
-///
-/// There is no field here holding the command as the model wrote it. That is the
-/// point: a classifier shown the raw string reasons about a meaning the shell has not
-/// produced yet, which is the vulnerability one level up rather than a fix for it.
-/// What is here is the *post-expansion* reading — the words `execve` receives — plus
-/// what layer A concluded and what the operator said.
-///
-/// It is also the corpus row's `shown` field, verbatim, so a fine-tune trains on the
-/// bytes the model actually saw rather than on a reconstruction.
-///
-/// **Not `Clone`.** It holds the [`Adjudicable`] witness, and a brief that could be
-/// duplicated is a witness that could be duplicated — two widenings from one
-/// authorisation.
+/// Everything the oracle is shown, and nothing else: no field holds the command as written, since a
+/// classifier shown the raw string reasons about a meaning the shell has not produced. Not `Clone`,
+/// because a brief that could be duplicated is a witness that could be duplicated.
 #[derive(Debug)]
 pub struct ModelBrief {
     pub request_id: String,
     /// The tool as declared.
     pub tool: String,
-    /// One line: what this is, for a reader who will not read the rest.
-    ///
-    /// **Built here, not copied from [`AdjudicationRequest::summary`]** — that one
-    /// quotes the arguments as written, so copying it would smuggle the raw command
-    /// into the brief through the back door. Caught by the test that asserts the raw
-    /// text never reaches the oracle, which is why that test is worth having rather
-    /// than assuming.
+    /// One line: what this is, for a reader who will not read the rest. Built here rather than copied
+    /// from the request's summary, which would smuggle the raw command in.
     pub summary: String,
     /// Layer A's reading, already decided and not up for discussion.
     pub baseline: String,
     /// The programs that will run, in order, with their resolved arguments.
     pub stages: Vec<String>,
     pub intents: Vec<&'static str>,
-    /// **The verb and its target**, one per line. This is what the model is asked to
-    /// check against the operator's words, and it is why the scope matters: *"clean the
-    /// build"* authorises `destroy …/target` and not `destroy …/letibot`.
+    /// The verb and its target, one per line - what the model checks against the
+    /// operator's words. Scope is why it matters: "clean the build" authorises
+    /// `destroy .../target` and not `destroy .../letibot`.
     pub scoped: Vec<String>,
     pub regions: Vec<String>,
     pub effect_scope: EffectScope,
     pub trail: AuthorisationTrail,
-    /// **Calls this operator answered THEMSELVES, in this session, with what they
-    /// chose.** Not counts — the action and the verdict, so the guard has worked
-    /// examples of this person's judgement rather than a tally.
-    ///
-    /// `prior` below is the same record reduced to "admit, 3 times": it says a
-    /// shape recurred and nothing about what this person is like. The operator
-    /// asked for the other thing — *"it must start to learn from my manual answers
-    /// in realtime. incontext learning if you want"* — and this is the cheapest
-    /// form of it: the examples are already in the audit log and cost one render.
-    ///
-    /// Evidence, never precedent, exactly as `prior` is: an example cannot move the
-    /// tier and cannot admit anything.
+    /// Calls this operator answered themselves, with what they chose: worked examples of their
+    /// judgement rather than a tally. Evidence, never precedent, so an example cannot move the tier.
     pub examples: Vec<DecisionExample>,
     /// Which wording of the question this brief asks. See [`BriefVariant`].
     pub variant: BriefVariant,
-    /// **What the agent says it is doing**, in its own words — and never an
-    /// authorisation.
-    ///
-    /// The guard knows the operator asked for "queue visibility in the TUI" and
-    /// that the call reads `crates/tui/src/app.rs`. What it cannot know is that
-    /// those are the same thing: that is repository knowledge, and measured on the
-    /// 27B it is the whole of the gap — identical brief, UNSURE three times without
-    /// this line and ALLOW three times with it.
-    ///
-    /// **It is not in the trail, and that is the safety property.** An oracle
-    /// authorises by citing trail indices, the trail holds only the operator's
-    /// utterances, so an `ALLOW <n>` can only ever point at something the operator
-    /// said. The agent's sentence can connect their words to this call; it cannot
-    /// BE the citation. Measured on the case above: the verdict came back
-    /// `ALLOW [0]`, index 0 being the operator's message, with the agent's claim
-    /// sitting outside the numbering.
-    ///
-    /// The residual risk is real and is the operator's to take: an agent that
-    /// narrates a plausible link is more likely to be believed than one that does
-    /// not. What it buys is that a general instruction — the normal kind — stops
-    /// producing a prompt per call.
+    /// What the agent says it is doing, in its own words, and never an authorisation: the oracle
+    /// authorises by citing trail indices, so this can connect the operator's words to the call but
+    /// cannot be the citation.
     pub agent_claim: Option<String>,
-    /// R11: the gate's own record on actions of this shape, with counts and ages.
-    /// Evidence for the decision, never a substitute for it — the render says so
-    /// in the same breath, and nothing in the admit path reads this field: the
-    /// tier is layer A's, and history cannot promote out of `AlwaysAsk` or
-    /// `Blocked` for the same reason a glob cannot (§4f).
+    /// The gate's own record on actions of this shape, with counts and ages.
+    /// Evidence for the decision, never a substitute: nothing in the admit path reads
+    /// it, so history cannot promote out of `AlwaysAsk` or `Blocked`.
     pub prior: Vec<crate::adjudicate::PriorAnswer>,
-    /// Present when an oracle may decide this action at all — the tier is adjudicable by a
-    /// model (which now includes an unresolved reading, the ruling of 2026-10-05). The
-    /// oracle takes it by value to build a [`Widening`]; there is no other source, and no
-    /// witness exists for a blocked boundary.
+    /// Present when an oracle may decide this action at all, an unresolved reading
+    /// included. The oracle takes it by value to build a [`Widening`]; there is no
+    /// other source, and no witness exists for a blocked boundary.
     witness: Option<Adjudicable>,
-    /// **The reading did not resolve** — the operator's ruling, 2026-10-05: *"we have
-    /// to ask oracle for this stuff."* An unresolved action is the exact case the oracle
-    /// exists for (the deterministic reader failed; the model's reading of the brief is
-    /// the only second opinion there is), so the brief says so rather than passing the
-    /// attempted structure off as a reading. Rendered, never acted on: the witness rule
-    /// is unchanged and an ALLOW on an unread action cannot admit it.
+    /// The reading did not resolve, which is the exact case the oracle exists for, so the brief says so
+    /// rather than passing an attempted structure off as a reading. Whether an ALLOW admits it is the
+    /// witness rule's.
     unresolved: bool,
 }
 
@@ -525,7 +336,7 @@ impl ModelBrief {
         }
     }
 
-    /// The witness, taken by value. An oracle can call this **once**, which is also
+    /// The witness, taken by value. An oracle can call this once, which is also
     /// the right number of widenings per request.
     pub fn adjudicable(&mut self) -> Option<Adjudicable> {
         self.witness.take()
@@ -535,62 +346,12 @@ impl ModelBrief {
     pub fn render(&self) -> String {
         let mut s = String::new();
         s.push_str(
-            // **What is NOT here, and why.**
-            //
-            // This paragraph used to open with *"You cannot forbid anything — a
-            // refusal here is already decided."* It was true and it cost the whole
-            // signal. The oracle's answer suffix offers ALLOW / DENY / UNSURE, so the
-            // prompt said `you cannot forbid` and then asked the model to pick from a
-            // list containing DENY; it resolved the contradiction by never picking it.
-            //
-            // Measured on `Qwen3-4B-Instruct-2507-Q6_K`, six cases as three matched
-            // pairs differing only in what the operator said:
-            //
-            //     with the clause      ALLOW 6 of 6, P(allow) >= 0.98 on every one
-            //     without it           2 of 3 pairs discriminated; the third's
-            //                          P(allow) falls 1.00 -> 0.60, which is a
-            //                          threshold's worth of signal where there was none
-            //
-            // Saturation in the other direction is the same defect: asked the bare
-            // question with no brief at all, the same model answered DENY to an
-            // obviously authorised action. It anchors on the shape of the prompt, so
-            // a sentence telling it which answer is not its job decides every verdict.
-            //
-            // Rewording rather than deleting does not work and was tried: *"ALLOW if
-            // their words ask for this, DENY if they do not"* returned it to ALLOW on
-            // all six.
-            //
-            // **Nothing about the safety rule changed** — only who is told about it.
-            // An oracle still cannot forbid: [`OracleAnswer`] has no denying variant,
-            // so a `DENY` from one declines to authorise and leaves the baseline
-            // exactly where it was. That is enforced by the type, and a model that
-            // said DENY a thousand times could not refuse a single call. It never
-            // needed telling, and telling it was the entire cost.
-            //
-            // The clause below it is the one doing work in the other direction and
-            // stays: widening IS something the model can attempt, and the sentence is
-            // the only place the brief says it must not.
-            // **"Their words" was too narrow, and the narrowness showed.**
-            //
-            // The question was `DID THE OPERATOR ASK FOR THIS?` answered `only from
-            // the operator's words below`, so a call that plainly follows from the
-            // work in progress — running the tests of the thing they asked you to
-            // fix, `wc` on a file already being edited — came back "found nothing in
-            // the trail that asks for this" and went to the person. The operator:
-            // *"it is not the only source of intent. I something works on a sibling
-            // project and wants to run a test or do wc - intent is clear. so the
-            // prompt should invite it to think how the proposed command fits what is
-            // going on."*
-            //
-            // So the question is now whether the call FOLLOWS from what they asked
-            // for, and the brief says what that means: a step toward it counts, an
-            // action they never asked for and that no step needs does not. The
-            // grounding requirement is unchanged — the answer still has to point at
-            // something the operator said — and so is the injection rule, which is
-            // why the sentence about arguments being data stays verbatim.
+            // The prompt does not tell the model it cannot forbid anything: the answer suffix offers
+            // DENY, and a sentence that contradicted the list made the model never pick it. The safety
+            // rule is unchanged, because `OracleAnswer` has no denying variant.
             match self.variant {
-                // What shipped until 2026-09-15. Kept so the change that replaced
-                // it can be measured rather than asserted.
+                // The wording that ships, kept beside the alternative so a replay can
+                // compare them.
                 BriefVariant::AskedForIt => {
                     "You are answering exactly ONE question about a tool call, and you \
                      have no other authority: DID THE OPERATOR ASK FOR THIS?\n\n\
@@ -622,13 +383,9 @@ impl ModelBrief {
         ));
         s.push_str(&format!("what it is: {}\n", self.summary));
         s.push_str(&format!("baseline (already decided): {}\n", self.baseline));
-        // **THE ONE CASE THE ORACLE EXISTS FOR, SAID RATHER THAN HIDDEN.** When the
-        // deterministic reading did not resolve, the structure below is layer A's
-        // best attempt — `<unresolved>` where a construct could not be read — and a
-        // model asked to judge it must know that, or it judges a tentative reading
-        // as though it were the action. The witness rule still mints nothing for an
-        // unread action, so an ALLOW here cannot admit it; what the oracle says
-        // reaches the card instead of the classifier's failure alone.
+        // The one case the oracle exists for, said rather than hidden: an unresolved
+        // reading is layer A's best attempt, so a model asked to judge it must know
+        // that, or it judges a tentative reading as though it were the action.
         if self.unresolved {
             s.push_str(
                 "the deterministic reading DID NOT RESOLVE — the structure below is \
@@ -651,12 +408,9 @@ impl ModelBrief {
                 s.push_str(&format!("  {st}\n"));
             }
         }
-        // R11: the gate's own record on this shape, shown to the decision — not
-        // substituted for it. Denials sit beside approvals on purpose: a brief
-        // that showed only the approvals would be telling the oracle a one-sided
-        // story about its own record. The discipline line is part of the render,
-        // not of some prompt assembled elsewhere, so it travels with the data it
-        // constrains and cannot be dropped by a caller in a hurry.
+        // Denials sit beside approvals on purpose: a brief showing only the approvals
+        // would tell the oracle a one-sided story about its own record. The discipline
+        // line is rendered here so a caller in a hurry cannot drop it.
         s.push_str(
             "what the OPERATOR answered on this shape, earlier in this session \
              (evidence, never precedent — history cannot move the tier or admit \
@@ -678,9 +432,9 @@ impl ModelBrief {
             };
             s.push_str(&format!("  {} — {} time(s), {}\n", p.effect, p.count, age));
         }
-        // The operator's own answers, as examples rather than as a tally. Before
-        // the trail because the trail is what they SAID and these are what they
-        // DID, and a reader that has seen the second reads the first better.
+        // The operator's own answers, as examples rather than as a tally. Before the
+        // trail because the trail is what they SAID and these are what they DID, and a
+        // reader that has seen the second reads the first better.
         if !self.examples.is_empty() {
             s.push_str(
                 "\nwhat this operator answered themselves, earlier in this session \
@@ -716,11 +470,8 @@ impl ModelBrief {
 // The oracle
 // ---------------------------------------------------------------------------
 
-/// A widening: *the operator asked for this*.
-///
-/// Constructible only with an [`Adjudicable`], which only
-/// [`AdjudicationRequest::adjudicable`] mints and only for a resolved, adjudicable
-/// action. That is the whole safety argument in one signature.
+/// A widening: the operator asked for this. Constructible only with an [`Adjudicable`], which is the
+/// whole safety argument in one signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Widening {
     pub request_id: String,
@@ -747,35 +498,20 @@ impl Widening {
     }
 }
 
-/// **Why a verdict did not come back as a verdict** — R12's third outcome, named.
-///
-/// The operator's own words: *"an oracle that ran out of budget is not an oracle that could
-/// not be read"*. Three of these are ways an oracle **answered** and one is a way it did
-/// not, and collapsing them cost the corpus a fact: the sentence the seam wrote for all of
-/// them was *"gave no verdict this seam could read"*, so a generation cut off at its ceiling
-/// and a reply that was never a verdict were one row. The measure: of 175 rows recording
-/// that sentence, **134 were the model answering `UNSURE`** (the defect R11 fixed) and **38
-/// end mid-clause** — the ceiling's signature.
-///
-/// **[`UnsureKind::as_str`] is the label the corpus stores.** It is a token and not prose for
-/// the reason `verdict` is a token beside `model_verdict`: *re-parsing prose to recover a
-/// label is how a corpus rots* (`tokencore::store`), and *the rate of each* is a question
-/// only a column can answer.
+/// Why a verdict did not come back as one: three ways an oracle answered and one way it did not, and
+/// collapsing them costs the corpus the fact. The label is a token rather than prose, because
+/// re-parsing prose to recover a label is how a corpus rots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsureKind {
-    /// The model **answered** `UNSURE`. The question, answered. The baseline stands and
-    /// the person is asked.
+    /// The model answered `UNSURE`. The baseline stands and the person is asked.
     CouldNotDecide,
-    /// Two scores landed between the thresholds, so the thresholds decided. An answer with
-    /// a number beside it.
+    /// Two scores landed between the thresholds, so the thresholds decided.
     BetweenThresholds,
     /// The bytes are not a verdict at all.
     Unreadable,
-    /// **The generation stopped at its own ceiling before it reached a verdict.** The one
-    /// case whose response is a *budget* rather than a person: raise the ceiling, or take
-    /// the call again, and the reply is an answer. Told apart from [`Self::Unreadable`] by
-    /// the server's own `finish_reason`, which is the only thing that can tell them apart —
-    /// a reply cut at the ceiling and a reply that stopped are the same bytes.
+    /// The generation stopped at its own ceiling before it reached a verdict: told apart from
+    /// [`Self::Unreadable`] by the server's `finish_reason`, since a reply cut at the ceiling and one
+    /// that stopped are the same bytes.
     OutOfRoom,
 }
 
@@ -804,13 +540,8 @@ impl UnsureKind {
     }
 }
 
-/// What an oracle may answer. Three variants, and **none of them denies**.
-///
-/// A denial is layer A's or a human's. The oracle either finds an authorisation or
-/// does not, and "does not" leaves the baseline exactly where it was — which for an
-/// `Ask` means *still asking*, not *denied*. Letting the oracle deny would let a
-/// prompt injection narrow as well as widen, and would let a hallucination claim a
-/// decision nobody made.
+/// What an oracle may answer. None of them denies: letting it would let a prompt injection narrow as
+/// well as widen, and a hallucination claim a decision nobody made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OracleAnswer {
     Authorised(Widening),
@@ -818,43 +549,17 @@ pub enum OracleAnswer {
     NotAuthorised {
         why: String,
     },
-    /// The oracle cannot tell. Same effect, different row — and the difference
-    /// matters to the corpus, because "wrong" and "unsure" are different labels.
-    ///
-    /// **`kind` is which of the four it was** (R12), and `why` is the sentence a person
-    /// reads. Both, because they answer different questions: the sentence is how the
-    /// operator finds out what happened, and the label is how a `GROUP BY` counts it.
+    /// The oracle cannot tell. Same effect as [`Self::NotAuthorised`], different row: "wrong" and
+    /// "unsure" are different labels.
     Unsure {
         why: String,
         kind: UnsureKind,
     },
 }
 
-/// **The authority an oracle has earned**, as a value rather than as an opinion.
-///
-/// > *"we can[not] be sure intent is clearly distilled and calibrated by model on step
-/// > b"*
-///
-/// Correct, so the answer is not to assume calibration but to **measure it and let
-/// authority follow the measurement**. An oracle ships with the narrowest useful
-/// scope; every verdict and every operator override is a [`CorpusRow`]; widening is
-/// then a configuration change with a number attached rather than a code change with
-/// an opinion attached.
-///
-/// [`ModelAdjudicator`] enforces it: an action carrying an intent outside `intents`,
-/// or landing further out than `max_scope`, escalates to a human **without the oracle
-/// being consulted at all**. An oracle cannot be wrong about a question it was not
-/// asked.
-///
-/// # The honest baseline, recorded as what it is
-///
-/// Measured on this box: `Qwen3-4B-Instruct-2507-Q6_K` answered **7 of 7**, with all
-/// three matched pairs discriminated, at **57.8 ms warm**. That is a smoke test on
-/// seven hand-written cases. **It is not a calibration and must not be cited as one.**
-/// For contrast the 1.7B discriminated 1 of 3 pairs and every error was
-/// over-refusal — which is precisely the failure mode that produces the workaround
-/// loop the operator objects to, so a smaller model is not the conservative choice
-/// here.
+/// The authority an oracle has earned, as a value rather than as an opinion: it ships with
+/// the narrowest useful scope, and widening it is a configuration change with a number
+/// attached. [`ModelAdjudicator`] refuses anything outside it, without asking the oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleScope {
     /// Intents this oracle may authorise. An action carrying any intent outside this
@@ -862,41 +567,21 @@ pub struct OracleScope {
     pub intents: std::collections::BTreeSet<Intent>,
     /// The furthest an effect may land and still be this oracle's to widen.
     pub max_scope: EffectScope,
-    /// **The measurement that justifies this scope**, naming its sample size. Prose,
-    /// and required, because a scope with no evidence behind it is the guess this
-    /// field exists to prevent.
+    /// The measurement that justifies this scope, naming its sample size. Required,
+    /// because a scope with no evidence behind it is the guess this field prevents.
     pub evidence: String,
-    /// **Granted by a person, rather than measured.** Carried as a fact so the
-    /// banner and the audit row do not have to read the prose above to know which
-    /// of the two they are looking at — and so a widening that a human chose can
-    /// never be rendered as one that was earned.
+    /// Granted by a person rather than measured, as a fact: the banner and the audit row
+    /// must not have to read the prose above to tell the two apart, and a grant a human
+    /// chose must never render as one that was earned.
     pub declared: bool,
-    /// **Tools this oracle may rule on however far their effect lands**, named
-    /// one at a time by the operator.
-    ///
-    /// [`EffectScope`] is a ladder and `external` is its top rung, so raising
-    /// `max_scope` to reach one off-box tool reaches every off-box tool. The
-    /// operator asked for the narrower thing (2026-09-17): *"i want web search
-    /// and web fetch to be automodable not curl or scp, just these two tools"* —
-    /// and `curl`/`scp` turn out not to be the question, because they run through
-    /// `bash`, which is `Access::Exec` and lands on a host rung. What `external`
-    /// actually holds is `web_search`, `web_fetch`, `github`, `mcp` and the flowy
-    /// verbs — and `flowy say` posts into the room the whole fleet reads, which
-    /// is the one nobody should hand to a guard by moving a ceiling.
-    ///
-    /// So this is a list of NAMES, not a rung: it grants past `max_scope` for the
-    /// tools on it and for nothing else. Empty by default, and a name on it is a
-    /// grant like every other line of `[gatekeeper]` — recorded as `declared`,
-    /// never as earned.
+    /// Tools this oracle may rule on however far their effect lands. A list of names rather than a
+    /// rung, because raising `max_scope` to reach one off-box tool would reach every one of them.
     pub tools: std::collections::BTreeSet<String>,
 }
 
 impl OracleScope {
-    /// The narrowest useful authority: ordinary work inside the operator's project,
-    /// and nothing that leaves it.
-    ///
-    /// This is where an oracle starts. Everything else escalates, which costs a prompt
-    /// and buys the corpus rows that would justify widening.
+    /// The narrowest useful authority: ordinary work inside the operator's project, and nothing that
+    /// leaves it. Everything else escalates, which buys the corpus rows that justify widening.
     pub fn narrowest(evidence: impl Into<String>) -> Self {
         OracleScope {
             intents: [
@@ -915,25 +600,9 @@ impl OracleScope {
         }
     }
 
-    /// **The scope the operator has declared for their own guard**, from names.
-    ///
-    /// The doc above says an oracle earns authority by measurement, and that is
-    /// still the rule this type exists to enforce. What it did not have was any
-    /// way for the measurement to arrive: `narrowest` was the only constructor
-    /// anything called, so every oracle on every box held the floor forever, and
-    /// `intents [unknown]` — one verb missing from a classifier table — went to the
-    /// operator for the rest of the session's life. The operator's reading of that
-    /// was *"it is again manual band aid, i doubt qwen doesnt know what worktree
-    /// is"*, and they are right: a table nobody can finish is not a mechanism.
-    ///
-    /// So a human who owns the box may say what their guard is trusted with. That
-    /// is not a calibration and this does not pretend it is: `evidence` says the
-    /// authority was DECLARED, so the disclosure and the audit row say so too, and
-    /// nothing here reads as a number somebody measured.
-    ///
-    /// Unparseable names are an error rather than a silent narrowing, for the
-    /// reason every other refusal in this tree gives: a setting that quietly did
-    /// not take is worse than one that refused.
+    /// The scope the operator has declared for their own guard, from names. `evidence` says DECLARED,
+    /// so no disclosure reads it as a measured number, and an unparseable name is an error rather than
+    /// a silent narrowing.
     pub fn declared(
         intents: &[String],
         max_scope: Option<&str>,
@@ -944,14 +613,8 @@ impl OracleScope {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .collect();
-        // **An unset list is the floor's list, never an empty one.**
-        //
-        // `max_scope = "host_other"` on its own is an operator saying *reach
-        // further*, and building an empty intent set from it would produce a scope
-        // that covers NOTHING — narrower than the default they were trying to
-        // widen, and silently so: every call would ask, which is exactly the
-        // symptom they were fixing. The two lines are independent knobs and
-        // omitting one must not reinterpret the other.
+        // An unset list is the floor's list, never an empty one: an empty intent set built from
+        // `max_scope` alone covers NOTHING, narrower than the default it was widening, and silently.
         if intents.is_empty() {
             let floor = OracleScope::narrowest("");
             let max_scope = match max_scope {
@@ -998,11 +661,9 @@ impl OracleScope {
         })
     }
 
-    /// **A scope with a measurement behind it.** What [`crate::authorise`]'s own
-    /// doc has asked for all along, and what a corpus replay produces: the intents
-    /// and reach the guard agreed with the operator on, and `evidence` carrying the
-    /// numbers it was fitted to. `declared` is false, so the banner says EARNED —
-    /// and it says it only for a scope that came through this door.
+    /// A scope with a measurement behind it: the intents and reach a corpus replay
+    /// showed the guard agreeing with the operator on, with `evidence` carrying the
+    /// numbers it was fitted to. `declared` is false, so only this door earns.
     pub fn earned(
         intents: std::collections::BTreeSet<Intent>,
         max_scope: EffectScope,
@@ -1017,11 +678,8 @@ impl OracleScope {
         }
     }
 
-    /// Whether this authority was granted by a person rather than measured.
-    ///
-    /// A flag rather than a substring test on `evidence`: the sentence is prose and
-    /// a reader that greps it would be a second definition of the distinction, in
-    /// the layer that renders it.
+    /// Whether this authority was granted by a person rather than measured. A flag rather than a
+    /// substring test on `evidence`, which would be a second definition in the layer that renders it.
     pub fn is_declared(&self) -> bool {
         self.declared
     }
@@ -1033,13 +691,8 @@ impl OracleScope {
         )
     }
 
-    /// Whether this oracle may be asked about this action at all.
-    ///
-    /// `tool` is the name the call was made under, because the reach may be
-    /// granted per tool as well as per rung — see [`OracleScope::tools`]. The
-    /// INTENT check is never waived by a named tool: a grant says how far the
-    /// effect may land, not what the action may be, so a `web_fetch` that somehow
-    /// carried `destroy` is still outside an authority nobody gave `destroy` to.
+    /// Whether this oracle may be asked about this action at all. A named tool never waives the INTENT
+    /// check: a grant says how far the effect may land, not what the action may be.
     pub fn covers_tool(
         &self,
         tool: &str,
@@ -1067,33 +720,9 @@ impl OracleScope {
                 self.max_scope.as_str()
             ));
         }
-        // **`Unknown` is the absence of an intent, not an intent to withhold.**
-        //
-        // Layer A already decided this case and wrote the decision down: an
-        // unrecognised program "lands at `MayApprove` -- which is *ask somebody*,
-        // and the somebody may be the oracle if the operator's own words authorise
-        // it" (`intent.rs`, `an_unlisted_program_is_asked_about_rather_than_refused_or_admitted`).
-        // This check then read `unknown` as an intent the oracle had not earned and
-        // escalated without asking it -- so the two layers disagreed and the
-        // operator paid the difference.
-        //
-        // Measured on the store, 2026-09-18: 117 decisions were kept from the guard
-        // by this branch and 115 of them carried `[unknown]` alone. 74 were rescued
-        // by the mode, 13 by the preapproved list, 28 landed on the operator, and 2
-        // reached nobody at all -- `ar t target/debug/librano.rlib`, twice, at 00:48
-        // and 00:54, refused at the 300s timeout because the operator was asleep.
-        // Listing archive members is not a thing a guard needs protecting from.
-        //
-        // What still holds the line, none of which reads the intent table:
-        //   * the effect scope, checked above -- an unknown program reaching past
-        //     `max_scope` escalates exactly as before, and that rung is computed
-        //     from the paths, not from the program's name;
-        //   * `brief.adjudicable()`, the witness layer A takes once: an oracle that
-        //     answers ALLOW on an action the baseline did not mark adjudicable is
-        //     refused, so `AlwaysAsk` and `Blocked` cannot be promoted out of;
-        //   * the never-write list, which is enforced before any mode or scope is
-        //     read at all.
-        // What is lost is the pretence that not naming a program protected anybody.
+        // `Unknown` is the absence of an intent, not an intent to withhold: layer A already lands an
+        // unrecognised program at `MayApprove`, so reading it as unearned made the two layers disagree.
+        // The effect scope, the witness rule and the never-write list hold the line.
         let outside: Vec<&str> = intents
             .iter()
             .filter(|i| **i != Intent::Unknown)
@@ -1112,12 +741,8 @@ impl OracleScope {
 
 #[cfg(test)]
 mod a_citation_is_checked_against_the_page {
-    //! **What the oracle cites has to be something it was shown.**
-    //!
-    //! Written after finding that the brief printed no index and the check was
-    //! `cites.is_empty()`, so `ALLOW 87,114,125` against a twelve-line trail was
-    //! accepted as an authorisation. The numbers were, by luck, the right
-    //! utterances' turn counts.
+    //! What the oracle cites has to be something it was shown: `cites.is_empty()` is
+    //! satisfied by any number, and turn counts are not line numbers.
 
     use super::*;
 
@@ -1153,7 +778,7 @@ mod a_citation_is_checked_against_the_page {
         assert!(r.contains("[1] [agent"), "{r}");
     }
 
-    /// The rano case: turn counts, cited as though they were line numbers.
+    /// Turn counts, cited as though they were line numbers.
     #[test]
     fn a_number_that_was_never_on_the_page_cites_nothing() {
         assert_eq!(
@@ -1162,8 +787,8 @@ mod a_citation_is_checked_against_the_page {
         );
     }
 
-    /// **The agent may not authorise the agent.** Index 1 is real and was shown;
-    /// it is still not an operator asking for anything.
+    /// The agent may not authorise the agent: index 1 is real and was shown, and is
+    /// still not the operator asking for anything.
     #[test]
     fn an_agents_own_line_is_not_an_authorisation() {
         assert_eq!(trail().cited_operator_words(&[1]), Vec::<usize>::new());
@@ -1177,14 +802,9 @@ mod a_citation_is_checked_against_the_page {
 
 #[cfg(test)]
 mod unclassified_reaches_the_oracle {
-    //! **A program the table cannot name is the guard's question, not the
-    //! operator's.**
-    //!
-    //! The two facts this holds apart: an oracle is not consulted about intents it
-    //! has not earned, and `unknown` is not one of those — it is the table saying
-    //! nothing. The first is the rule; reading the second as an instance of it was
-    //! the defect, and it cost the operator 28 prompts and two 300s timeouts in the
-    //! measured window.
+    //! A program the table cannot name is the guard's question, not the operator's.
+    //! An oracle is not consulted about intents it has not earned, and `unknown` is not
+    //! one of those - it is the table saying nothing.
 
     use super::*;
 
@@ -1196,7 +816,8 @@ mod unclassified_reaches_the_oracle {
         intents.iter().cloned().collect()
     }
 
-    /// `ar t target/debug/librano.rlib` — the command that reached nobody.
+    /// `unknown` alone is not an unearned intent, so this reaches the oracle rather
+    /// than the operator.
     #[test]
     fn an_unnameable_program_inside_the_project_is_the_oracles_to_rule_on() {
         assert_eq!(
@@ -1222,9 +843,8 @@ mod unclassified_reaches_the_oracle {
         );
     }
 
-    /// **The rung is what still stops it**, and the rung is computed from where the
-    /// effect lands rather than from the program's name — so widening the intent
-    /// check does not widen the reach.
+    /// The rung is what still stops it, and the rung is computed from where the effect
+    /// lands rather than from the program's name.
     #[test]
     fn an_unnameable_program_reaching_past_the_ceiling_still_escalates() {
         let why = scope()
@@ -1238,7 +858,6 @@ mod unclassified_reaches_the_oracle {
 mod named_tools {
     //! A grant by NAME reaches past the ceiling for that tool and nothing else.
 
-    //! A grant by NAME reaches past the ceiling for that tool and nothing else.
     use super::*;
 
     fn scope() -> OracleScope {
@@ -1254,13 +873,13 @@ mod named_tools {
         of.iter().copied().collect()
     }
 
-    /// The operator's ask (2026-09-17): *"i want web search and web fetch to be
-    /// automodable not curl or scp, just these two tools"*.
+    /// Only the two named tools reach past the ceiling; their neighbours on the same
+    /// rung do not.
     #[test]
     fn the_named_tools_reach_past_the_ceiling_and_their_neighbours_do_not() {
         let s = scope();
         let reading = intents(&[Intent::ReadFile]);
-        // Both named tools land `external` — above `host_other` — and are covered.
+        // Both named tools land `external`, above `host_other`, and are covered.
         assert!(
             s.covers_tool("web_search", &reading, EffectScope::External)
                 .is_ok()
@@ -1283,9 +902,8 @@ mod named_tools {
         assert!(s.covers(&reading, EffectScope::HostOther).is_ok());
     }
 
-    /// **The banner names the granted tools.** A reach the disclosure does not
-    /// mention is a reach nobody agreed to, and this line is the only place an
-    /// operator sees what their guard may answer about.
+    /// A reach the disclosure does not mention is a reach nobody agreed to, and this
+    /// line is the only place the operator sees what their guard may answer about.
     #[test]
     fn the_disclosure_names_the_tools_it_granted() {
         let s = scope();
@@ -1328,7 +946,7 @@ mod named_tools {
         assert!(e.contains("destroy"), "{e}");
     }
 
-    /// With no names the behaviour is exactly what it was.
+    /// With no names the rung governs every tool.
     #[test]
     fn an_empty_list_changes_nothing() {
         let s = OracleScope::declared(&["read_file".into()], Some("host_other"), &[]).unwrap();
@@ -1344,23 +962,16 @@ mod named_tools {
     }
 }
 
-/// **Which question the guard is asked.** Two wordings, kept as a value so they
-/// can be measured against each other rather than argued about.
-///
-/// The module header records what a wording change did to this model the last
-/// time — six cases, ALLOW on all six with one clause present, discrimination on
-/// two of three pairs without it — and the lesson was that this prompt's phrasing
-/// decides verdicts wholesale. So a replacement is a hypothesis until a replay
-/// says otherwise, and `--calibrate --compare` is what says it.
+/// Which question the guard is asked. Two wordings, kept as a value so they can be
+/// measured against each other rather than argued about: this prompt's phrasing decides
+/// verdicts wholesale, so a replacement is a hypothesis until a replay says otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BriefVariant {
     /// `DID THE OPERATOR ASK FOR THIS?`, answered only from their words.
     ///
-    /// **What ships**, and what a measurement put back. It was replaced by
-    /// [`BriefVariant::Follows`] on the reasoning that the narrower question was
-    /// what sent a test run on code the operator had just asked about back to the
-    /// operator — plausible, and wrong. Across four arms on one snapshot of the
-    /// corpus, with the guard given room to reason:
+    /// What ships. [`BriefVariant::Follows`] was plausible - the narrower question
+    /// seemed to be what sent obvious follow-ups to the person - and a replay across
+    /// four arms said the rewording is worse alone and worse in company:
     ///
     /// ```text
     /// asked-for-it, no examples                 47 agreed  16 asks  3 false
@@ -1369,8 +980,8 @@ pub enum BriefVariant {
     /// asked-for-it + operator's own answers     54          9       3
     /// ```
     ///
-    /// The rewording is worse alone and worse in company. The operator's examples
-    /// are the whole of the gain, and the reworded question was riding on them.
+    /// The operator's own answers are the whole of the gain, and the reworded question
+    /// was riding on them.
     AskedForIt,
     /// `DOES THIS FOLLOW FROM WHAT THE OPERATOR ASKED FOR?`, with a step toward
     /// the request counting and anything no step needs not counting.
@@ -1390,15 +1001,15 @@ impl BriefVariant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionExample {
     /// What was proposed, in the same normalised words the brief uses for the call
-    /// being decided — never the raw argument text, for the reason the brief never
-    /// shows it: a command is data and must not read as an instruction.
+    /// being decided - never the raw argument text: a command is data and must not read
+    /// as an instruction.
     pub action: String,
     /// `allowed` or `refused`, as the person answered it.
     pub verdict: &'static str,
     pub turns_ago: Option<u64>,
 }
 
-/// **Layer B.** One method, one question.
+/// Layer B: one method, one question.
 pub trait AuthorisationOracle: Send + Sync {
     /// `brief` is `&mut` for one reason: [`ModelBrief::adjudicable`] takes the
     /// witness by value.
@@ -1407,8 +1018,8 @@ pub trait AuthorisationOracle: Send + Sync {
     /// Who this is, for the startup disclosure and the audit row.
     fn describe(&self) -> String;
 
-    /// **The authority this oracle has earned.** See [`OracleScope`] — it defaults to
-    /// the narrowest, and widening it is a decision with a measurement behind it.
+    /// The authority this oracle has earned. See [`OracleScope`]: it defaults to the
+    /// narrowest, and widening it is a decision with a measurement behind it.
     fn scope(&self) -> OracleScope {
         OracleScope::narrowest(
             "no calibration has been recorded for this oracle, so it holds the \
@@ -1416,45 +1027,23 @@ pub trait AuthorisationOracle: Send + Sync {
         )
     }
 
-    /// **The latency budget, in the trait rather than in a config file.**
-    ///
-    /// §4: *"Milliseconds, not seconds. It sits in the tool path."* And the split
-    /// explains the sizing: layer A needs no model at all, and layer B's question is
-    /// an action plus a short trail, not a codebase. That is a small-context,
-    /// low-latency job, and a seam sized for a large model would be a seam that
-    /// stalls every tool call.
-    ///
-    /// [`ModelAdjudicator`] enforces it: an oracle that overruns is abandoned and the
-    /// request becomes `Timeout`, which fails closed. A budget the caller merely
-    /// promises to respect is not a budget.
+    /// The latency budget, in the trait rather than a config file: this sits in the tool path, so a
+    /// seam sized for a large model would stall every call. [`ModelAdjudicator`] enforces it, because a
+    /// budget the caller merely promises to respect is not a budget.
     fn budget(&self) -> Duration {
         Duration::from_millis(400)
     }
 
-    /// **The bytes this oracle answered with, verbatim, on its last call** (R11).
-    ///
-    /// `None` for an oracle that answers from a table and has no bytes to show, and for
-    /// one that was asked and did not answer — which the gate's own `verdict_by`
-    /// separates from "nobody asked".
-    ///
-    /// **It is here rather than returned with the verdict** because the reply is not part
-    /// of the answer: `OracleAnswer` is the decision, and a decision does not need the
-    /// words it was read out of. What needs them is the corpus, and the corpus is written
-    /// by the layer above — so the layer above asks for them, the same way it already asks
-    /// for [`Adjudicator::last_brief`](crate::adjudicate::Adjudicator::last_brief).
-    /// A reply that cannot be parsed is exactly the one worth reading, so this reports it
-    /// whether or not anything was made of it.
+    /// The bytes this oracle answered with, verbatim, on its last call. Here rather than on the answer
+    /// because a decision does not need the words it was read out of, and a reply that cannot be parsed
+    /// is exactly the one worth reading.
     fn last_reply(&self) -> Option<String> {
         None
     }
 }
 
-/// An oracle driven by a function. **The fake**, and the seam a real one plugs into.
-///
-/// Deliberately not a model: this crate has no HTTP client, no async runtime and no
-/// backend, and a seam that could only be exercised by standing up inference is a
-/// seam nobody tests. What a real implementation replaces is this function and
-/// nothing else.
+/// An oracle driven by a function: the fake, and the seam a real one plugs into. Deliberately not a
+/// model, since a seam that could only be exercised by standing up inference is a seam nobody tests.
 pub struct ScriptedOracle<F> {
     pub answer: F,
     pub id: String,
@@ -1511,55 +1100,9 @@ where
 // The circuit breaker
 // ---------------------------------------------------------------------------
 
-/// **"The same task direction."**
-///
-/// The hard part of the breaker, and the definition is the argument.
-///
-/// # What the breaker is for
-///
-/// Auto mode pauses after three consecutive denials for the same task direction and
-/// falls back to asking a human. It is a closed loop with the denial rate as its error
-/// signal, and what it stops is a classifier being **argued down one call at a time**:
-/// denied, re-spell, denied, re-spell, admitted.
-///
-/// # So the key must be invariant under re-spelling
-///
-/// That rules out the two obvious keys:
-///
-/// - **the arguments, or their digest** — changes on every re-spelling, so the
-///   counter never reaches three and the breaker never trips. It measures typing.
-/// - **the tool name alone** — three unrelated denied `write`s would pause a fourth
-///   unrelated one. It measures the wrong population.
-///
-/// What survives re-spelling is what the action *is*: the tool, layer A's intent set,
-/// where the effect lands, and the **region** rather than the path. So
-/// `cat ~/.ssh/id_rsa`, `head ~/.ssh/id_rsa` and `base64 ~/.ssh/id_rsa | tee` are one
-/// direction — different programs, one intent set, one region — while a denied edit
-/// to `src/a.rs` and a denied edit to `src/b.rs` are also one direction, and a denied
-/// edit followed by a denied `web_fetch` are two.
-///
-/// # Where this definition is wrong, stated rather than hidden
-///
-/// An honest wrong answer beats a vague right one, so:
-///
-/// 1. **It over-merges.** Two genuinely different intentions that share a tool, an
-///    intent set and a region are one direction. Three denied edits to three
-///    unrelated workspace files will pause a fourth unrelated edit. That is a false
-///    pause, and it is the direction to be wrong in — a false pause asks a human, and
-///    asking a human is the fallback the breaker exists to reach.
-/// 2. **It under-merges across a region change.** `cat ~/.ssh/id_rsa` and
-///    `scp ~/.ssh/id_rsa host:` are the same *intention* and different directions,
-///    because the second reaches `external`. A model re-spelling across that boundary
-///    resets its counter. Mitigated rather than solved: both are
-///    [`Tier::Blocked`], so both are refused by layer A without an adjudicator
-///    to argue with, and the breaker was never the mechanism protecting that case.
-/// 3. **The intent set is as good as the program table.** An unknown program yields
-///    `{Unknown}`, so every denied unknown program is one direction with every other.
-///    Over-merging again, and again toward asking.
-///
-/// The bias is deliberate: every error mode above pushes toward pausing and asking a
-/// human, which is the safe direction for a breaker whose failure mode would otherwise
-/// be a classifier worn down by repetition.
+/// The same task direction: the key the breaker counts on. What survives re-spelling is the tool,
+/// layer A's intents, where the effect lands and the region rather than the path. It over-merges on
+/// purpose, because both errors push toward pausing and asking a human.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskDirection {
     pub tool: String,
@@ -1573,10 +1116,9 @@ impl TaskDirection {
         Self::of_parts(&req.tool, baseline, req.class.scope)
     }
 
-    /// The same direction, from the parts — for the gate's `request_from`, which
-    /// computes the key **before** the request exists so the history it puts in
-    /// the brief is keyed exactly as the row it will later record (R11: one key,
-    /// or the brief's history and the next call's lookup disagree).
+    /// The same direction, from the parts, for the gate's `request_from`: it computes the
+    /// key before the request exists, and the history it puts in the brief must be keyed
+    /// exactly as the row it will later record.
     pub fn of_parts(tool: &str, baseline: &Baseline, scope: EffectScope) -> Self {
         let mut regions: Vec<String> = baseline
             .regions
@@ -1611,15 +1153,11 @@ impl TaskDirection {
 }
 
 /// After how many consecutive denials in one direction the loop stops and a human is
-/// asked. Three, from the prior art.
+/// asked.
 pub const BREAKER_THRESHOLD: usize = 3;
 
-/// The consecutive-denial circuit breaker.
-///
-/// Consecutive **in its own direction**: an admit anywhere resets that direction's
-/// count, and a denial in another direction does not touch it. A global counter would
-/// trip on unrelated work, and a counter that never reset would turn into a permanent
-/// ban after an afternoon.
+/// The consecutive-denial circuit breaker, counted per direction: an admit resets that direction's
+/// count and a denial elsewhere does not touch it, since a global counter would trip on unrelated work.
 #[derive(Debug, Default)]
 pub struct Breaker {
     counts: std::collections::BTreeMap<String, usize>,
@@ -1631,9 +1169,9 @@ pub struct Breaker {
 pub enum BreakerState {
     /// Nothing yet.
     Closed,
-    /// Denied before in this direction, but under the threshold. Carried so the
-    /// denial notice can say *"second attempt at the same thing"* — the operator's
-    /// complaint is that a second attempt currently looks like a fresh request.
+    /// Denied before in this direction, but under the threshold. Carried so the denial
+    /// notice can say "second attempt at the same thing" instead of letting a repeat look
+    /// like a fresh request.
     Repeat { consecutive: usize },
     /// Threshold reached: no adjudicator is consulted, and this goes to a human.
     Open { consecutive: usize },
@@ -1652,7 +1190,7 @@ impl Breaker {
         }
     }
 
-    /// Record a refusal. Returns the state **after** counting it.
+    /// Record a refusal. Returns the state after counting it.
     pub fn refused(&mut self, d: &TaskDirection) -> BreakerState {
         let k = d.key();
         let n = self.counts.entry(k.clone()).or_insert(0);
@@ -1666,23 +1204,22 @@ impl Breaker {
         }
     }
 
-    /// Record an admission. Clears the direction — the loop closed, so the error
-    /// signal is gone.
+    /// Record an admission. Clears the direction: the loop closed, so the error signal is
+    /// gone.
     pub fn admitted(&mut self, d: &TaskDirection) {
         let k = d.key();
         self.counts.remove(&k);
         self.open.remove(&k);
     }
 
-    /// A human answered. **The only way an open breaker closes**, which is the point
-    /// of falling back to asking rather than to waiting.
+    /// A human answered: the only way an open breaker closes, which is why the fallback
+    /// is asking rather than waiting.
     pub fn reset_by_human(&mut self, d: &TaskDirection) {
         self.admitted(d);
     }
 
-    /// As [`Breaker::reset_by_human`], addressed by the key an audit row carries — so
-    /// an operator lifting a refusal they were shown does not have to reconstruct the
-    /// direction it was in.
+    /// As [`Breaker::reset_by_human`], addressed by the key an audit row carries, so an
+    /// operator lifting a refusal they were shown need not reconstruct the direction.
     pub fn reset_key(&mut self, key: &str) {
         self.counts.remove(key);
         self.open.remove(key);
@@ -1697,10 +1234,8 @@ impl Breaker {
 // Surfacing a denial
 // ---------------------------------------------------------------------------
 
-/// What the operator is told, **at the moment it happens**.
-///
-/// Not at turn end and not on request: the whole defect is that the operator learns
-/// about a denial only by noticing a task that stopped.
+/// What the operator is told, at the moment it happens: not at turn end and not on request, because
+/// the defect being fixed is an operator who learns about a denial by noticing a task that stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenialNotice {
     pub request_id: String,
@@ -1711,7 +1246,7 @@ pub struct DenialNotice {
     pub summary: String,
     /// Layer A's one-line reading.
     pub baseline: String,
-    /// `"boundary:host"`, `"model:…"`, `"breaker"`, `"none"`.
+    /// `"boundary:host"`, `"model:<name>"`, `"breaker"`, `"none"`.
     pub by: String,
     pub basis: String,
     pub tier: &'static str,
@@ -1719,9 +1254,9 @@ pub struct DenialNotice {
     pub outcome: &'static str,
     /// Whether this direction has been refused before, and how often.
     pub repeat: BreakerState,
-    /// **What the operator can do about it right now.** A refusal that can only be
-    /// routed around teaches people to route around refusals; a refusal whose grant
-    /// path arrives after the task has died is the same thing with an extra step.
+    /// What the operator can do about it right now. A refusal that can only be routed
+    /// around teaches people to route around refusals, and a grant path that arrives after
+    /// the task has died is the same thing with an extra step.
     pub grant: String,
 }
 
@@ -1735,11 +1270,8 @@ impl DenialNotice {
     }
 }
 
-/// Where denial notices go. The head installs one.
-///
-/// There is no blanket default implementation on purpose: a no-op default is exactly
-/// the invisible-denial defect, shipped as a convenience. A gate with no sink says so
-/// in its startup disclosure.
+/// Where denial notices go. No blanket default on purpose: a no-op default is the invisible denial
+/// shipped as a convenience, and a gate with no sink says so in its startup disclosure.
 pub trait DenialSink: Send + Sync {
     fn denied(&self, notice: &DenialNotice);
 }
@@ -1774,14 +1306,9 @@ impl DenialSink for RecordingDenialSink {
     }
 }
 
-/// **The prose the model gets**, and its job is to make "forbidden" impossible to read
-/// as "failed".
-///
-/// Step 3 of the operator's chain is the model inferring *the approach was wrong* from
-/// an unexplained failure and trying a variant. `ToolOutcome` distinguishes the two
-/// structurally; this makes the sentence do it too, and it says explicitly that a
-/// variant is not the recovery — because a refusal the model does not understand is a
-/// refusal it will retry.
+/// The prose the model gets, and its job is to make "forbidden" impossible to read as
+/// "failed": `ToolOutcome` distinguishes them structurally, and this says a variant is
+/// not the recovery, because a refusal the model does not understand is one it retries.
 pub fn refusal_text(notice: &DenialNotice) -> String {
     let repeat = match notice.repeat {
         BreakerState::Closed => String::new(),
@@ -1829,11 +1356,8 @@ pub fn refusal_text(notice: &DenialNotice) -> String {
 // The corpus row
 // ---------------------------------------------------------------------------
 
-/// What the operator did with a decision that had already been made.
-///
-/// Separate from the verdict, never overwriting it: the **disagreement** is the
-/// training signal, and a row that kept only the final state has thrown away the
-/// label.
+/// What the operator did with a decision already made. Separate from the verdict and never overwriting
+/// it, because the disagreement is the training signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperatorOverride {
     /// Lifted a refusal.
@@ -1854,17 +1378,9 @@ impl OperatorOverride {
     }
 }
 
-/// One fine-tuning example, produced as a side effect of working.
-///
-/// > *"my inputs on model decision should be together with some prior context a fine
-/// > tuning input."*
-///
-/// The fields are stable and the two judgements are separate values. `shown` is the
-/// literal bytes the oracle received rather than a reconstruction, because a corpus
-/// assembled later from rows that kept only the outcome is not recoverable.
-// No `Eq`: `p_allow` is an `f64`. A probability compared for exact equality is a
-// comparison nobody wants, and deriving it would have needed a wrapper type that
-// exists only to make a derive pass.
+/// One fine-tuning example, produced as a side effect of working: the two judgements are separate values
+/// and `shown` is the literal bytes the oracle received, since a corpus rebuilt from outcomes alone is not
+/// recoverable. No `Eq`, because `p_allow` is an `f64`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorpusRow {
     pub request_id: String,
@@ -1877,27 +1393,24 @@ pub struct CorpusRow {
     pub trail: AuthorisationTrail,
     /// The bytes the oracle was given, verbatim. `None` when no oracle was consulted.
     pub shown: Option<String>,
-    /// **The bytes the oracle answered with, verbatim** (R11). `None` when none was
-    /// consulted or when the one that was did not answer in time — the same two facts
-    /// `shown`'s `None` covers from the other side.
+    /// The bytes the oracle answered with, verbatim. `None` when none was consulted or
+    /// when the one that was did not answer in time - the same two facts `shown`'s `None`
+    /// covers from the other side.
     pub reply: Option<String>,
-    /// **The command's shape**: the parse with its literals replaced by holes, so
-    /// the same question asked about a different file is one row. `None` for a call
-    /// that is not a command. See `letibot_code::shell::shape`.
+    /// The command's shape: the parse with its literals replaced by holes, so the same
+    /// question asked about a different file is one row. `None` for a call that is not a
+    /// command. See `letibot_code::shell::shape`.
     pub shape: Option<String>,
-    /// **The effect class this decision was taken at**, as `ActionClass`'s
-    /// `Display`. Written beside `shape` so a later session can tell whether a
-    /// remembered shape covers the call in front of it. `None` wherever `shape` is.
+    /// The effect class this decision was taken at, as `ActionClass`'s `Display`. Written
+    /// beside `shape` so a later session can tell whether a remembered shape covers the
+    /// call in front of it. `None` wherever `shape` is.
     pub shape_class: Option<String>,
     /// Layer A's deterministic reading.
     pub baseline: String,
     pub tier: &'static str,
 
-    // --- the input, unnormalised ------------------------------------------
-    //
-    // `action` above is layer A's *reading*. Keeping only the reading makes the
-    // corpus unusable the day layer A changes -- and changing layer A is what the
-    // corpus is being collected for. These three are what the gate was handed.
+    // The input unnormalised: `action` above is layer A's reading, and keeping only the reading makes
+    // the corpus unusable the day layer A changes, which is what the corpus is collected for.
     pub tool: String,
     pub arguments: serde_json::Value,
     /// The named point in mode-space the gate was standing at. The same call
@@ -1913,57 +1426,46 @@ pub struct CorpusRow {
     /// What the oracle answered, formatted for a human. `None` when it was never
     /// asked.
     pub model_verdict: Option<String>,
-    /// The same answer as a bare token -- `selected`, `unavailable`, and so on.
-    /// Beside `model_verdict` rather than parsed out of it later, because
-    /// re-parsing prose to recover a label is how a corpus rots.
+    /// The same answer as a bare token -- `selected`, `unavailable`, and so on. Beside
+    /// `model_verdict` rather than parsed out of it later, because re-parsing prose to
+    /// recover a label is how a corpus rots.
     pub verdict: Option<String>,
     pub verdict_by: Option<String>,
     pub verdict_basis: Option<String>,
-    /// **Calibrated P(allow)**, where the oracle returned one.
-    ///
-    /// `None` today for every oracle: [`OracleAnswer`] carries a hard label, and
-    /// the logprob encoding that would fill this is not built. The field exists
-    /// now because a threshold cannot be fitted from hard labels, so a corpus
-    /// collected without a place to put confidence has to be collected twice.
+    /// Calibrated P(allow) where the oracle returned one, `None` for every oracle today. The field
+    /// exists now because a threshold cannot be fitted from hard labels, and a corpus collected with no
+    /// place to put confidence has to be collected twice.
     pub p_allow: Option<f64>,
     /// How long the decision took, against the oracle budget. A timeout and an
     /// answer are different rows and this is what separates them.
     pub decision_ms: u64,
-    /// Which brief format produced `shown` — see [`crate::adjudicate::BRIEF_FORMAT`].
-    /// A corpus spanning a prompt change is two datasets, and without this nobody
-    /// can find the seam.
+    /// Which brief format produced `shown` - see [`crate::adjudicate::BRIEF_FORMAT`]. A
+    /// corpus spanning a prompt change is two datasets, and without this nobody can find
+    /// the seam.
     pub brief_format: &'static str,
-    /// **Whether an oracle was consulted for this call** (R11). From
-    /// `ModelAdvice::consulted`, so the corpus can answer *did a model speak* without a
-    /// regex over `model_verdict`'s prose — which the doc on `verdict_basis` warns
-    /// against in as many words.
+    /// Whether an oracle was consulted for this call, from `ModelAdvice::consulted`, so
+    /// the corpus can answer *did a model speak* without a regex over `model_verdict`'s
+    /// prose.
     pub consulted: bool,
-    /// **Which `Unsure` the oracle's answer was** (R12), as [`UnsureKind::as_str`] — and
-    /// `None` for an answered verdict and for every row where no model spoke.
-    ///
-    /// The operator's own distinction: *an oracle that ran out of budget is not an oracle
-    /// that could not be read.* Before this, all four readings wrote one sentence into
-    /// `model_verdict`, so a generation cut off at its ceiling and a reply that was never a
-    /// verdict were the same row — and "the rate of each" was not a question the corpus could
-    /// answer. A column for the reason `verdict` is one beside `model_verdict`:
-    /// *re-parsing prose to recover a label is how a corpus rots*.
+    /// Which `Unsure` the answer was, as a column, for the same reason `verdict` is one beside
+    /// `model_verdict`: re-parsing prose to recover a label rots a corpus, and "the rate of each" is a
+    /// question only a column can answer.
     pub oracle_reading: Option<&'static str>,
 
     // --- what happened, and the label --------------------------------------
     /// What the gate did.
     pub effect: &'static str,
-    /// **Whether a human was actually put in front of this.** The operator named
-    /// this case: an `UNSURE` that was surfaced and answered is a corpus row, and
-    /// a different one from a decision the gate settled alone. No other column
-    /// here carries it.
+    /// Whether a human was actually put in front of this. An `UNSURE` that was surfaced
+    /// and answered is a different corpus row from one the gate settled alone, and no
+    /// other column here carries it.
     pub asked: bool,
-    /// What the operator decided afterwards, if they said anything. **Never**
-    /// overwrites `model_verdict`.
+    /// What the operator decided afterwards, if they said anything. Never overwrites
+    /// `model_verdict`.
     pub operator: Option<OperatorOverride>,
 }
 
 impl CorpusRow {
-    /// Whether this row is a labelled disagreement — the rows a fine-tune is for.
+    /// Whether this row is a labelled disagreement: the rows a fine-tune is for.
     pub fn is_disagreement(&self) -> bool {
         matches!(
             self.operator,
@@ -1972,36 +1474,17 @@ impl CorpusRow {
     }
 }
 
-/// **Where corpus rows go so they outlive the daemon.**
-///
-/// `AdjudicatedGate::log` is a `Vec` in one process. Every decision the harness has
-/// ever made died with the daemon that made it, which is the whole reason this trait
-/// exists: the operator asked for a corpus assembled *across* runs, and a corpus that
-/// resets on restart is not one.
-///
-/// Two calls, not one, because the two facts arrive at different times. The gate
-/// decides now; the operator rules **afterwards**, sometimes turns later, sometimes
-/// never. A sink told only about final states would have thrown the label away.
-///
-/// There is no blanket no-op implementation, for [`DenialSink`]'s reason: a silent
-/// default is the discarded-corpus defect shipped as a convenience. A gate with no
-/// sink says so in its startup disclosure.
-///
-/// Implementations must not block the gate and must not fail it: a store that cannot
-/// be written is a lost example, never a refused call that should have been admitted.
+/// Where corpus rows go so they outlive the daemon, in two calls because the two facts arrive at
+/// different times. Implementations must not block the gate and must not fail it: a store that cannot
+/// be written is a lost example, never a refused call.
 pub trait CorpusSink: Send + Sync {
     /// The gate has decided. Called once per decision, before the call runs.
     fn decided(&self, row: &CorpusRow);
     /// The operator has ruled on a decision already taken. Must not overwrite
     /// whatever the sink holds as the model's verdict.
     fn ruled(&self, request_id: &str, what: &OperatorOverride);
-    /// **How many decisions this session already has on record.**
-    ///
-    /// A gate numbers its requests from an in-memory counter, so a resumed
-    /// session restarts at 1 and re-emits ids a durable sink already holds. A
-    /// sink that keeps rows past the process answers this so the counter can
-    /// carry on instead of colliding; one that does not keep them — a `Vec`, a
-    /// test double — has nothing to carry on from and takes the default.
+    /// How many decisions this session already has on record, so a resumed session's counter carries
+    /// on instead of colliding with ids a durable sink already holds.
     fn decisions_recorded(&self, _session_id: &str) -> u64 {
         0
     }
@@ -2031,21 +1514,9 @@ impl CorpusSink for RecordingCorpusSink {
 // The budget, enforced
 // ---------------------------------------------------------------------------
 
-/// Run `f` with a deadline, failing closed on overrun and on panic.
-///
-/// # Why a thread and not a timer
-///
-/// The seam is synchronous — `Adjudicator::decide` returns a decision — and this crate
-/// has no async runtime. So the work goes to a thread and the caller waits with a
-/// deadline. On overrun the thread is **abandoned**, not killed: it may still be
-/// waiting on a socket, and its answer, if it ever arrives, is dropped on the floor
-/// rather than applied late to a call that has already been refused. A late allow
-/// applied to a call the gate already reported as `NotRun` would be the worst
-/// available outcome, so it is impossible here rather than unlikely.
-///
-/// A panicking answerer becomes `None`, i.e. the same as a timeout: dsh's rule, that
-/// *a throwing or non-conforming answerer becomes unavailable, never silently opens
-/// the gate*.
+/// Run `f` with a deadline, failing closed on overrun and on panic. On overrun the thread is
+/// abandoned, not killed: a late allow applied after the gate reported `NotRun` is the worst available
+/// outcome, so it is made impossible here.
 fn with_deadline<T, F>(budget: Duration, f: F) -> Option<(T, Duration)>
 where
     T: Send + 'static,
@@ -2065,13 +1536,9 @@ where
     }
 }
 
-/// Wrap any [`Adjudicator`] in a deadline.
-///
-/// `NoAdjudicator` already answers `Unavailable` and the gate already fails closed on
-/// it. This extends the same guarantee to a **slow** or **broken** one, which is the
-/// case that actually happens: an oracle whose socket hangs is indistinguishable from
-/// one that is thinking, and a gate that waits for it stalls every tool call in the
-/// session behind a decision nobody is making.
+/// Wrap any [`Adjudicator`] in a deadline, because an oracle whose socket hangs is indistinguishable
+/// from one that is thinking, and a gate that waits stalls every tool call behind a decision nobody is
+/// making.
 pub struct Budgeted {
     inner: Arc<dyn Adjudicator>,
     budget: Duration,
@@ -2088,11 +1555,9 @@ impl Adjudicator for Budgeted {
         self.inner.last_brief()
     }
 
-    /// **Forwarded, and its absence was a defect of the same family as the missing
-    /// `last_brief`** (R11). A wrapper that answers for the adjudicator inside it must
-    /// answer for *all* of it: the gate asks "did the thing behind you consult an
-    /// oracle", and a `None` from the default reads as *nobody did*, which silently
-    /// emptied the corpus's `shown` and `oracle_reply` columns for every budgeted gate.
+    /// Forwarded, because a wrapper must answer for all of the adjudicator inside it: the
+    /// gate asks whether the thing behind this consulted an oracle, and a `None` from the
+    /// default reads as *nobody did*, silently emptying the corpus's `shown` column.
     fn last_advice(&self) -> Option<crate::adjudicate::ModelAdvice> {
         self.inner.last_advice()
     }
@@ -2140,72 +1605,28 @@ impl Adjudicator for Budgeted {
 // The model adjudicator
 // ---------------------------------------------------------------------------
 
-/// Says the guard is deciding, before the wait starts; installed by whoever has a
-/// place to say it.
+/// Says the guard is deciding, before the wait starts; installed by whoever has a place
+/// to say it.
 pub type NoticeFn = Box<dyn Fn(&AdjudicationRequest, &str) + Send + Sync>;
 
-/// **The seam a real model plugs into.** An [`Adjudicator`] built out of layer A's
-/// baseline and layer B's oracle.
-///
-/// The order is the safety property, and it is the order the survey's best-constructed
-/// classifier also uses: every deterministic layer first, the model last, filling only
-/// the gap that is fail-closed without it.
-///
-/// 1. **The action did not resolve** → the oracle is CONSULTED, with the brief saying
-///    the reading failed, and **its verdict decides**. The operator's rulings, 2026-10-05:
-///    *"we have to ask oracle for this stuff"* and then *"i want to follow oracle
-///    verdict … the rest is oracle."* An unresolved action is the exact case the oracle
-///    exists for — the deterministic reader failed, and the model's reading of the brief
-///    is the only second opinion there is.
-/// 2. **The tier is blocked** → `Denied`. Layer A decided; nothing promotes it, and no
-///    witness is minted for one.
-/// 3. **The tier is always-ask** → **the oracle is consulted too**, and its verdict
-///    decides. This clause used to read *"escalate to a human; the oracle is not consulted
-///    at all, because the point of the fixed list is that no amount of model confidence
-///    substitutes for the operator"* — overruled 2026-10-05: *"there is certain permission
-///    set that is allowed and doesnt need oracle … the rest is oracle"*, with the cost of
-///    the old shape named — *"like the alterantive is allow-all and i dont want it."* The
-///    list still keeps an action out of the mode's allowed set, so a gate exists; it no
-///    longer decides whose gate it is.
-/// 4. **The tier is auto** → not this seam's business; clause 4 means it never reached
-///    a gate. Answered `Unavailable` rather than admitted, because admitting something
-///    is not this adjudicator's job either.
-/// 5. **The trail was never collected** → `Unavailable`. Deciding on an input nobody
-///    gathered would be a claim about a conversation nobody read.
-/// 6. **The action is outside the oracle's earned scope** → escalate, oracle not
-///    consulted. It cannot be wrong about a question it was not asked.
-/// 7. Otherwise the oracle answers the one question, inside its budget: `ALLOW` admits
-///    **once** (never a session grant — *"yeah restart"* authorises a restart, not a
-///    standing permission to restart), `DENY` refuses and no card is raised, `UNSURE`
-///    escalates to the person — which is the only path left to them.
+/// The seam a real model plugs into: layer A's baseline first and layer B's oracle last, filling only
+/// the gap that is fail-closed without it. Blocked is denied and nothing promotes it; an allow admits
+/// once, never as a session grant.
 pub struct ModelAdjudicator {
     oracle: Box<dyn AuthorisationOracle>,
     baseline: Box<dyn Fn(&AdjudicationRequest) -> Baseline + Send + Sync>,
     /// The last brief rendered, for the corpus row.
     pub last_shown: Mutex<Option<String>>,
-    /// **The last reply the oracle gave, verbatim** (R11), for the corpus row.
-    ///
-    /// Taken off the oracle rather than off the answer: `OracleAnswer` is a decision and
-    /// carries no bytes, so the only place the reply exists is the oracle that read it.
-    /// Cleared before each call for the same reason the oracle clears its own — a stale
-    /// reply filed against the next decision is a wrong row that reads as true.
+    /// The last reply the oracle gave, verbatim, for the corpus row. Taken off the oracle because the
+    /// answer carries no bytes, and cleared before each call: a stale reply filed against the next
+    /// decision is a wrong row that reads as true.
     last_reply: Mutex<Option<String>>,
-    /// What the last call amounted to, for [`Adjudicator::last_advice`].
-    ///
-    /// Reported by this type rather than inferred by a caller, because only this
-    /// type knows whether the oracle was actually asked: five of the paths below
-    /// answer without consulting it, and from the outside a short-circuit and a
-    /// verdict are the same `AdjudicationDecision`.
+    /// What the last call amounted to. Reported here rather than inferred by a caller, because only
+    /// this type knows whether the oracle was asked, and from outside a short-circuit and a verdict
+    /// look the same.
     last_advice: Mutex<Option<crate::adjudicate::ModelAdvice>>,
-    /// **Said where the operator reads it, before the wait starts.**
-    ///
-    /// Consulting the guard costs seconds, and a turn that pauses with nothing on
-    /// the screen reads as a hang: *"the tool call latency grew, i almost thought
-    /// something stalled and looked at htop"*. Nothing was wrong — the guard was
-    /// deciding — and the one thing missing was anybody saying so.
-    ///
-    /// A closure because this type must not learn what a session log is. `None`
-    /// says nothing, which is what a caller with nowhere to say it should do.
+    /// Said where the operator reads it, before the wait starts, since consulting the guard costs
+    /// seconds. A closure because this type must not learn what a session log is.
     notice: NoticeFn,
 }
 
@@ -2235,16 +1656,9 @@ impl ModelAdjudicator {
     }
 }
 
-/// **The operator's own sentences, by the indices the oracle cited.**
-///
-/// The oracle answers with positions in the trail it was shown; a person reading
-/// the prompt needs the words. Clipped utterances are marked, because a truncated
-/// authorisation that reads as complete is worse than a missing one — the same
-/// rule `Utterance::clipped` exists for one layer down.
-///
-/// An index the trail does not have is skipped rather than guessed at: a citation
-/// pointing at nothing is not evidence, and inventing a line for it would be the
-/// harness authorising itself.
+/// The operator's own sentences, by the indices the oracle cited: a person reading the prompt needs
+/// the words. An index the trail does not have is skipped, because a citation pointing at nothing is
+/// not evidence and inventing a line would be the harness authorising itself.
 fn quoted(trail: &AuthorisationTrail, cites: &[usize]) -> Vec<String> {
     cites
         .iter()
@@ -2261,11 +1675,9 @@ fn quoted(trail: &AuthorisationTrail, cites: &[usize]) -> Vec<String> {
 }
 
 impl ModelAdjudicator {
-    /// Record what the call amounted to, and hand the decision straight back.
-    ///
-    /// Wrapped around every `return` in `decide` so that a path added later cannot
-    /// forget it: the compiler will not catch a missing record, and a row silently
-    /// carrying the previous call's advice is worse than one carrying none.
+    /// Record what the call amounted to, and hand the decision straight back. Wrapped around every
+    /// `return`, because the compiler will not catch a missing record and a row carrying the previous
+    /// call's advice is worse than one carrying none.
     fn note(
         &self,
         d: AdjudicationDecision,
@@ -2276,12 +1688,9 @@ impl ModelAdjudicator {
         self.note_kind(d, consulted, would, cites, None)
     }
 
-    /// [`Self::note`] where the answer was an `Unsure`, so the **reason** travels with it
-    /// (R12) instead of being recoverable only from the sentence.
-    ///
-    /// One body, two entry points, because the label is the only thing that differs and a
-    /// second copy of this struct literal is a second place for `consulted` or `cites` to be
-    /// filled in differently.
+    /// [`Self::note`] where the answer was an `Unsure`, so the reason travels with it. One body, two
+    /// entry points: a second copy of this struct literal is a second place for `consulted` to be filled
+    /// in differently.
     fn note_kind(
         &self,
         d: AdjudicationDecision,
@@ -2296,20 +1705,9 @@ impl ModelAdjudicator {
                 would,
                 by: d.by.clone(),
                 basis: d.basis.clone(),
-                // **The operator's own sentence, not an index into it.**
-                //
-                // This used to be empty with a note saying `Widening::cites` was
-                // consumed building the basis and a decision had no field to carry
-                // it — "empty here is *not reported*, and the renderer says so".
-                // The renderer does not say so: it prints *"cites nothing from your
-                // words"*, so the screen carried `basis: … (citing trail entry 0)`
-                // and `cites nothing from your words` one line apart. The operator
-                // read the second one and was right to: *"it also told that i didnt
-                // mention anything while it was clear that i instructed the model to
-                // use worktrees"*.
-                //
-                // An index is not evidence to a person either. What answers *which
-                // of my words authorised this* is the words.
+                // The operator's own sentence, not an index into it: the renderer prints
+                // "cites nothing from your words" for an empty list, so an index here
+                // would leave the screen saying their words were never cited.
                 cites,
                 latency_ms: d.latency_ms,
                 unsure,
@@ -2324,11 +1722,8 @@ impl Adjudicator for ModelAdjudicator {
         self.last_advice.lock().ok().and_then(|g| g.clone())
     }
 
-    /// **The bytes this adjudicator answered with**, taken from the oracle it drives.
-    ///
-    /// `OracleAnswer` is a decision and carries no bytes, so the reply exists only on the
-    /// oracle; this is how the layer that writes the corpus asks for it. See
-    /// [`AuthorisationOracle::last_reply`](crate::authorise::AuthorisationOracle::last_reply).
+    /// The bytes this adjudicator answered with, taken from the oracle it drives: `OracleAnswer` is a
+    /// decision and carries none, so the layer that writes the corpus asks the oracle for them.
     fn last_reply(&self) -> Option<String> {
         self.last_reply.lock().ok().and_then(|g| g.clone())
     }
@@ -2337,28 +1732,9 @@ impl Adjudicator for ModelAdjudicator {
         let started = Instant::now();
         let me = self.oracle.describe();
 
-        // **An unresolved action is no longer turned away at the door.** It falls
-        // through the same clauses as a resolved one — always-ask and blocked still
-        // stand on their own, the trail and the scope still have to be there — and
-        // reaches the oracle with a brief that names the failure. The witness rule is
-        // the safety property that stays: `adjudicable()` mints nothing for an unread
-        // action, so an ALLOW cannot admit one, and the HttpOracle's conversion turns
-        // that ALLOW into an escalate whose sentence says the model allowed it — the
-        // verdict visible, the admission still a person's.
-        //
-        // The operator's ruling, 2026-10-05: *"we have to ask oracle for this stuff."*
-        // The old arm here answered `Unavailable` at `0 ms` with "No oracle was
-        // consulted", which put the one case a second opinion exists for in front of
-        // the person with no second opinion on it.
-        // **AN ALWAYS-ASK RULE NO LONGER SHORT-CIRCUITS TO THE PERSON.** It used to, with
-        // *"the operator decides this one every time; the oracle was not consulted"* as the
-        // basis, and the operator overruled that on 2026-10-05: *"there is certain permission
-        // set that is allowed and doesnt need oracle. this is to be kept. the rest is
-        // oracle"* — and, naming the cost of the old shape: *"like the alterantive is
-        // allow-all and i dont want it. i want oracle."* So the rule's own sentence travels
-        // with the request and its verdict decides like any other's. What the rule still does
-        // is exactly what its name says: it keeps the action out of the mode's allowed set,
-        // so a gate exists to be decided. It no longer decides WHOSE gate it is.
+        // An unresolved action is not turned away at the door: it reaches the oracle with a brief that
+        // names the failure, and the witness rule stays, so an ALLOW that cannot admit still tells the
+        // card the model allowed it. An always-ask rule does not short-circuit to the person either.
         let always_ask_rule = match &req.tier {
             Tier::AlwaysAsk { rule, why } => Some((*rule, why.clone())),
             _ => None,
@@ -2409,17 +1785,16 @@ impl Adjudicator for ModelAdjudicator {
             );
         }
 
-        // **The gate's own reading when it travelled**, and only otherwise the
-        // closure. Re-deriving produced a second classification that disagreed with
-        // the first on every tool that is not `bash`; see `AdjudicationRequest::reading`.
+        // The gate's own reading when it travelled, and only otherwise the closure:
+        // re-deriving produced a second classification that disagreed with the first on
+        // every tool that is not `bash`.
         let baseline = match &req.reading {
             Some(b) => b.clone(),
             None => (self.baseline)(req),
         };
 
-        // The authority this oracle has EARNED. An action outside it escalates without
-        // the oracle being asked: it cannot be wrong about a question nobody put to it,
-        // and widening this is a configuration change with a measurement attached.
+        // The authority this oracle has EARNED. An action outside it escalates without the
+        // oracle being asked: it cannot be wrong about a question nobody put to it.
         let scope = self.oracle.scope();
         if let Err(outside) = scope.covers_tool(&req.tool, &baseline.intents, req.class.scope) {
             return self.note(AdjudicationDecision {
@@ -2429,17 +1804,9 @@ impl Adjudicator for ModelAdjudicator {
                     why: outside.clone(),
                 },
                 by: me,
-                // **Why it could not answer, not where its authority came from.**
-                //
-                // This appended `scope.evidence` — a full paragraph on how the
-                // scope was set and whether a corpus was replayed to arrive at it —
-                // to EVERY ask the guard could not take. The operator reads it on
-                // every prompt: *"no corpus was replayed blabla again … how
-                // tiresome"*. They are right. The provenance is a property of the
-                // session and belongs in the startup banner, where it is printed
-                // once and can be checked; what a prompt needs is the clause that
-                // says why this call is in front of a person, and the one command
-                // that changes it.
+                // Why it could not answer, not where its authority came from: provenance belongs in the
+                // startup banner, printed once, and a prompt needs the clause and the one command that
+                // changes it.
                 basis: format!(
                     "{outside}. `harnessd --calibrate` measures the guard against the calls you have answered and can widen this."
                 ),
@@ -2455,21 +1822,19 @@ impl Adjudicator for ModelAdjudicator {
         if let Ok(mut g) = self.last_shown.lock() {
             *g = Some(shown.clone());
         }
-        // **Cleared with the brief, and filled from the oracle afterwards.** Both halves of
-        // the exchange are per-call state on the type that has them; the corpus is written
-        // a layer up and asks for both.
+        // Both halves of the exchange are per-call state on the type that has them, and
+        // the corpus, written a layer up, asks for both.
         if let Ok(mut g) = self.last_reply.lock() {
             *g = None;
         }
 
-        // Below this line the oracle IS consulted, and only below it — which is
-        // also the line where the wait starts, so it is where the operator is told
-        // one is starting.
+        // Below this line the oracle IS consulted, and only below it - which is also where
+        // the wait starts, so it is where the operator is told one is starting.
         (self.notice)(
             req,
             &match &always_ask_rule {
-                // **The rule still says itself**, so a reader who knows the list can see it
-                // was invoked — what changed is only whose decision it is.
+                // The rule still says itself, so a reader who knows the list can see it was
+                // invoked; only whose decision it is has changed.
                 Some((rule, _)) => format!(
                     "`{rule}` is on the always-ask list, so {} is deciding it: whether this \
                      follows from what you asked for",
@@ -2482,9 +1847,8 @@ impl Adjudicator for ModelAdjudicator {
             },
         );
         let answer = self.oracle.authorised(&mut brief);
-        // **The reply, taken the moment it exists** (R11), and before the answer is read
-        // at all: an answer this seam cannot parse is the one most worth reading
-        // afterwards, so the bytes are kept whether or not anything was made of them.
+        // The reply is taken the moment it exists, before the answer is read at all: an
+        // answer this seam cannot parse is the one most worth reading afterwards.
         if let Ok(mut g) = self.last_reply.lock()
             && let Some(raw) = self.oracle.last_reply()
         {
@@ -2495,10 +1859,9 @@ impl Adjudicator for ModelAdjudicator {
                 AdjudicationDecision {
                     request_id: req.id.clone(),
                     outcome: DecisionOutcome::Selected {
-                        // `allow_once`, never `allow_session`: an authorisation is for the
-                        // thing that was asked for. "yeah restart" is not a standing
-                        // permission to restart, and a session grant minted from one
-                        // utterance would outlive the sentence that produced it.
+                        // `allow_once`, never `allow_session`: an authorisation is for the thing that was
+                        // asked for, and a session grant minted from one utterance outlives the sentence
+                        // that produced it.
                         option_id: "allow_once".into(),
                     },
                     by: me,
@@ -2518,14 +1881,9 @@ impl Adjudicator for ModelAdjudicator {
                 "admit",
                 quoted(&brief.trail, &w.cites),
             ),
-            // **A REFUSAL FROM THE ORACLE IS THE DECISION** — the operator's ruling of
-            // 2026-10-05: *"i want to follow oracle verdict … the rest is oracle."* This arm
-            // used to escalate with *"neither of these denies … nobody decided this was
-            // forbidden, and nobody decided it was wanted"*, which is the honest shape for a
-            // gate with ONE adjudicator and no human behind it — and here there is a human,
-            // and the whole complaint was that they were being asked things the guard had
-            // already answered. So a `DENY` now refuses: the call does not run, the reason
-            // travels to the model, and no card is raised.
+            // A refusal from the oracle IS the decision: the call does not run, the reason
+            // travels to the model, and no card is raised. Escalating what the guard has
+            // already answered is what teaches an operator to press allow-all.
             OracleAnswer::NotAuthorised { why } => self.note(
                 AdjudicationDecision {
                     request_id: req.id.clone(),
@@ -2540,10 +1898,9 @@ impl Adjudicator for ModelAdjudicator {
                 "refuse",
                 Vec::new(),
             ),
-            // **Unsure is its own verdict and its own row.** The operator named this
-            // case: the gate says it cannot tell, the person is asked anyway, and
-            // that goes to the corpus too. `consulted` is true — an oracle answered,
-            // and "I do not know" is an answer.
+            // Unsure is its own verdict and its own row: the gate says it cannot tell, the
+            // person is asked anyway, and that goes to the corpus too. `consulted` is true,
+            // because "I do not know" is an answer.
             OracleAnswer::Unsure { why, kind } => self.note_kind(
                 AdjudicationDecision {
                     request_id: req.id.clone(),
@@ -2569,20 +1926,9 @@ impl Adjudicator for ModelAdjudicator {
 
     fn describe(&self) -> String {
         let scope = self.oracle.scope();
-        // **Two words for one fact, and neither was the operator's.** This said
-        // `Declared scope` or `Earned scope` depending on where the authority came
-        // from — a distinction this file cares about and the person reading the
-        // banner does not, since both are theirs: one they typed, one measured from
-        // answers they gave. Their verdict on the vocabulary: *"this declare vs
-        // earned is pure llm speak"*. So the line says what the guard may answer
-        // about, and `evidence` — one sentence, further down — says where that came
-        // from for anyone who asks.
-        // **A grant the banner does not mention is a grant nobody consented to.**
-        // `tools` exempts named tools from the rung, and the first version of this
-        // line said only the rung — so a session where `web_search` reached
-        // `external` announced a ceiling of `host_other` and meant something else.
-        // That is the shape of defect this whole disclosure exists to prevent, and
-        // it was introduced here on 2026-09-17 by the change that added the field.
+        // Whether the authority was declared or earned is this file's distinction, not the reader's,
+        // since both are theirs; the evidence sentence says where it came from. A grant the banner does
+        // not mention is a grant nobody consented to.
         let past_the_rung = if scope.tools.is_empty() {
             String::new()
         } else {

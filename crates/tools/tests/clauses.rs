@@ -1,10 +1,9 @@
-//! The six clauses of §8.1, as acceptance tests over the whole runtime.
+//! The six clauses, as acceptance tests over the whole runtime.
 //!
-//! The unit tests inside the crate check the pieces. These check the thing the
-//! plan actually promises: **what the model sees**. So every assertion here is
-//! against `ToolResult::render()` — the exact bytes that become a
-//! `TranscriptItem::ToolResult` — and not against an internal field, because a
-//! clause that holds in a struct and not in the prompt has not held.
+//! The unit tests inside the crate check the pieces; these check what the plan promises, which is
+//! what the model sees. Every assertion is against `ToolResult::render()`, the exact bytes that
+//! become a `TranscriptItem::ToolResult`, because a clause that holds in a struct and not in the
+//! prompt has not held.
 
 use letibot_tools::builtins::retrieval::{Retrieval, Unavailable};
 use letibot_tools::events::ToolEvent;
@@ -18,7 +17,7 @@ use letibot_tools::testing::{
 use letibot_transcript::ToolOutcome;
 
 // ---------------------------------------------------------------------------
-// Clause 1 — a miss is self-correcting in the SAME call.
+// A miss is self-correcting in the same call.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -28,8 +27,8 @@ fn clause1_a_scoped_grep_that_misses_reports_where_the_term_does_occur() {
         .call("grep", r#"{"pattern":"cache_prompt","path":"src"}"#)
         .render();
 
-    // The three things the model needs, all in this one call: that the scope was
-    // empty, where the term is, and the matching lines themselves.
+    // The three things the model needs in one call: the scope was empty, where the term is, and
+    // the matching lines.
     assert!(seen.contains("nothing matches under `src`"), "{seen}");
     assert!(seen.contains("docs/notes.md"), "{seen}");
     assert!(seen.contains("cache_prompt"), "{seen}");
@@ -61,15 +60,14 @@ fn clause1_a_too_strict_anchor_is_relaxed_and_the_relaxation_is_reported() {
     assert!(seen.contains("bare identifier"), "{seen}");
     assert!(seen.contains("parse_args"), "{seen}");
     assert!(seen.contains("src/lib.rs:"), "{seen}");
-    // §9.4: the rewrite is visible. The model is told the original still fails.
+    // The rewrite is visible, and the model is told the original still fails.
     assert!(seen.contains("still matches nothing"), "{seen}");
 }
 
 #[test]
 fn clause1_a_miss_carries_more_that_is_actionable_than_a_hit_does() {
-    // The property behind the clause, stated as a measurement rather than a
-    // wording: a miss must not be *smaller* than a hit, because "not found" being
-    // cheap is exactly what makes the model guess again.
+    // A miss must not be smaller than a hit, because "not found" being cheap is exactly what
+    // makes the model guess again.
     let mut h = harness();
     let hit = h.call("read", r#"{"path":"README.md"}"#).render();
     let miss = h.call("read", r#"{"path":"READ_ME.md"}"#).render();
@@ -83,12 +81,12 @@ fn clause1_a_miss_carries_more_that_is_actionable_than_a_hit_does() {
 }
 
 // ---------------------------------------------------------------------------
-// Clause 2 — malformed input is salvaged, not rejected.
+// Malformed input is salvaged, not rejected.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn clause2_a_leaked_function_envelope_is_executed_and_the_repair_is_stated() {
-    // oracle's measured case: this shape was 33% of calls dropped.
+    // The shape models actually emit: a leaked function envelope, single quotes, a trailing comma.
     let mut h = harness();
     let r = h.call(
         "read",
@@ -101,8 +99,8 @@ fn clause2_a_leaked_function_envelope_is_executed_and_the_repair_is_stated() {
         "{seen}"
     );
 
-    // Four separate repairs, and every one of them said out loud: the model that
-    // is never told keeps spelling it that way for the rest of the session.
+    // Every repair is said out loud: a model that is never told keeps spelling it that way for
+    // the rest of the session.
     let codes: Vec<&str> = r.repairs.iter().map(|x| x.code).collect();
     for want in [
         "envelope.function",
@@ -125,7 +123,7 @@ fn clause2_what_cannot_be_read_at_all_gets_the_parameter_list_rather_than_a_comp
 }
 
 // ---------------------------------------------------------------------------
-// Clause 3 — outcome is a closed vocabulary and abstention is not success.
+// The outcome is a closed vocabulary, and abstention is not success.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -143,8 +141,8 @@ fn clause3_abstention_is_structurally_distinct_in_what_the_model_sees() {
     );
     assert!(seen.contains("may be cited"), "{seen}");
 
-    // And an answered call is not in that envelope, so the two are distinguishable
-    // by shape rather than by reading the prose.
+    // An answered call is not in that envelope, so the two are distinguishable by shape rather
+    // than by reading the prose.
     let mut h = harness_with_retrieval(Scripted::answering());
     let ok = h
         .call("ask_corpus", r#"{"question":"what is the ledger?"}"#)
@@ -173,12 +171,12 @@ fn clause3_an_empty_search_abstains_rather_than_returning_an_empty_success() {
         "an empty result is not a result: {:?}",
         r.outcome
     );
-    // It still says what was searched — clause 1 does not switch off for clause 3.
+    // It still says what was searched: a miss stays self-correcting.
     assert!(r.render().contains("relaxations tried"), "{}", r.render());
 }
 
 // ---------------------------------------------------------------------------
-// Clause 4 — read/write declared in the schema, not decided per call.
+// Access is declared in the schema, not decided per call.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -212,8 +210,7 @@ fn clause4_every_built_in_declares_read_and_none_of_them_reaches_the_gate() {
 
 #[test]
 fn clause4_the_access_class_is_not_shown_to_the_model() {
-    // It is policy input (§11.3), not prompt. A model that can read it can argue
-    // about it.
+    // It is policy input, not prompt: a model that can read it can argue about it.
     let reg = letibot_tools::read_only_tools(std::sync::Arc::new(Unavailable)).unwrap();
     for json in reg.tools_json() {
         assert!(!json.contains("\"access\""), "{json}");
@@ -221,7 +218,7 @@ fn clause4_the_access_class_is_not_shown_to_the_model() {
 }
 
 // ---------------------------------------------------------------------------
-// Clause 5 — output is bounded and spilled, never truncated.
+// Output is bounded and spilled, never truncated.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -230,12 +227,8 @@ fn clause5_a_large_output_is_bounded_recoverable_and_never_silently_cut() {
         Box::new(FixedBudget(1_000)),
         Box::new(MemoryStore::new()),
     ));
-    // An explicit limit, so what reaches the spill layer is the whole file:
-    // this test is about the spill policy's bound, and read's own default
-    // line cap would otherwise answer the question first.
-    // `limit` 1800 keeps read's own byte cap (32 KiB) out of the way while the
-    // payload stays over 30 KB: this test is about the spill layer's bound,
-    // and the window between the two is deliberate.
+    // An explicit line limit keeps read's own 32 KiB byte cap out of the way, so what reaches the
+    // spill layer is the whole file and the bound under test is the spill policy's.
     let r = h.call("read", r#"{"path":"big.txt","limit":1300}"#);
     let spill = r
         .spill
@@ -245,8 +238,8 @@ fn clause5_a_large_output_is_bounded_recoverable_and_never_silently_cut() {
     let seen = r.render();
     assert!(seen.contains("Omitted"), "{seen}");
     assert!(seen.contains(&spill.hash), "{seen}");
-    // The inline body respects the cap; the notice and the repair lines are the
-    // envelope around it.
+    // The inline body respects the cap; the notice and the repair lines are the envelope around
+    // it.
     assert!(r.payload.len() <= 1_000, "{} bytes inline", r.payload.len());
 
     // Nothing was lost: the whole original is behind the locator.
@@ -261,9 +254,8 @@ fn clause5_a_large_output_is_bounded_recoverable_and_never_silently_cut() {
 
 #[test]
 fn clause5_unset_is_a_no_op_rather_than_a_default_nobody_chose() {
-    // D6: `max_inline_bytes` keeps no default. The explicit limit keeps read's
-    // own caps out of the way — this asserts on the spill layer, and 1300
-    // lines lands the payload between its 30 KB claim and read's 32 KiB cap.
+    // `max_inline_bytes` keeps no default, so an unarmed harness spills nothing. The line limit
+    // keeps read's own caps out of the way, so the payload is genuinely large and still inline.
     let mut h = harness();
     let r = h.call("read", r#"{"path":"big.txt","limit":1300}"#);
     assert!(r.spill.is_none());
@@ -271,7 +263,7 @@ fn clause5_unset_is_a_no_op_rather_than_a_default_nobody_chose() {
 }
 
 // ---------------------------------------------------------------------------
-// Clause 6 — the description says how to use the tool.
+// The description says how to use the tool.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -288,7 +280,7 @@ fn clause6_no_built_in_description_says_what_the_data_contains() {
 }
 
 // ---------------------------------------------------------------------------
-// The events, which is what W9 owed T13.4 an answer about.
+// The lifecycle events a head reads.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -331,8 +323,7 @@ fn the_lifecycle_events_carry_what_a_head_needs() {
             ..
         } => {
             assert_eq!(*outcome, ToolOutcome::Ok);
-            // The two byte counts differ, which is the fact a single `bytes` field
-            // could not carry.
+            // The two byte counts differ, which is the fact a single `bytes` field could not carry.
             assert!(full_bytes > inline_bytes, "{full_bytes} vs {inline_bytes}");
             assert!(spill.is_some(), "a spilled call must name its locator");
             assert!(*repairs > 0, "the repairs are countable by a head");
@@ -367,11 +358,9 @@ fn a_refused_call_never_reports_that_it_started() {
 
 #[test]
 fn the_transcript_row_carries_the_envelope_the_model_saw() {
-    // The seam to the turn engine. `TranscriptItem::ToolResult` is what the next
-    // prompt replays, so the payload it carries must be the *rendered* result and
-    // not the raw body: were it the raw body, the abstention envelope would exist
-    // for one turn and vanish at the next prefill, which is §8.2's failure with an
-    // extra step.
+    // `TranscriptItem::ToolResult` is what the next prompt replays, so its payload must be the
+    // rendered result: were it the raw body, the abstention envelope would exist for one turn and
+    // vanish at the next prefill.
     let mut h = harness_with_retrieval(Scripted::no_coverage());
     let r = h.call("ask_corpus", r#"{"question":"anything"}"#);
     match letibot_tools::runtime::ToolRuntime::transcript_item(&r) {
@@ -385,19 +374,13 @@ fn the_transcript_row_carries_the_envelope_the_model_saw() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The write tools (W10), against the same six clauses.
-//
-// Separated because these are the first tools that can change the operator's
-// tree, so for them the clause tests are also the safety tests: every one
-// asserts what is **on disk** afterwards, through `read_file`, and never through
-// what the tool said about itself.
-// ---------------------------------------------------------------------------
+// The write tools, against the same six clauses. These are the first tools that can change the
+// operator's tree, so every one asserts what is on disk afterwards.
 
 #[test]
 fn clause1_an_edit_that_misses_reports_the_text_that_is_actually_there() {
-    // The measured shape, one tool over: the guess is refused *and* what would
-    // have been correct comes back, so the model corrects itself in the same call.
+    // The guess is refused and what would have been correct comes back, so the model corrects
+    // itself in the same call.
     let mut h = writable_harness();
     h.write_file("a.rs", "fn main() {\n\tlet ledger = 1;\n}\n");
     h.call("read", r#"{"path":"a.rs"}"#);
@@ -449,9 +432,8 @@ fn clause1_more_than_one_match_reports_every_line_rather_than_asking_for_more_co
 
 #[test]
 fn clause2_a_malformed_edit_call_is_salvaged_and_the_repair_is_said_out_loud() {
-    // Single quotes, unquoted keys, and `replace_all` as the string models
-    // actually emit. Salvaged — and the repairs are rendered, so the next call is
-    // not malformed the same way.
+    // Single quotes, unquoted keys, and `replace_all` as a string: salvaged, and the repairs are
+    // rendered so the next call is not malformed the same way.
     let mut h = writable_harness();
     h.write_file("c.rs", "let n = 0;\nlet n = 0;\n");
     h.call("read", r#"{"path":"c.rs"}"#);
@@ -471,7 +453,7 @@ fn clause2_a_malformed_edit_call_is_salvaged_and_the_repair_is_said_out_loud() {
 fn clause3_a_refused_write_is_never_ok_and_never_an_abstention() {
     // Three refusals, three outcome classes, and none of them is `Ok`.
 
-    // Nothing decided: nobody was asked, and the *class* says so.
+    // Nothing decided: nobody was asked, and the class says so.
     let mut closed = writable_harness_with_gate(None);
     closed.call("read", r#"{"path":"README.md"}"#);
     let r = closed.call("write", r#"{"path":"README.md","content":"x"}"#);
@@ -491,10 +473,8 @@ fn clause3_a_refused_write_is_never_ok_and_never_an_abstention() {
         r.outcome
     );
 
-    // A tool-level refusal: the call ran and could not do what was asked. The
-    // refusal that reaches here is **the changed-since one** — the unread-file
-    // refusal was abandoned (R14), so the surviving way for a `write` to fail at
-    // the tool level is a file that moved under this session's read.
+    // A tool-level refusal: the call ran and could not do what was asked. The surviving way for a
+    // `write` to fail here is a file that moved under this session's read.
     let mut h = writable_harness();
     h.call("read", r#"{"path":"README.md"}"#);
     h.write_file("README.md", "somebody else got here first\n");
@@ -506,8 +486,7 @@ fn clause3_a_refused_write_is_never_ok_and_never_an_abstention() {
     );
     assert!(!r.is_grounded());
 
-    // Abstention is for "nothing to say about this", and a write never abstains:
-    // a write either happened or it did not.
+    // A write never abstains: it either happened or it did not.
     assert_eq!(Envelope::classify(&r.render()), Some("TOOL_ERROR"));
 }
 
@@ -528,8 +507,8 @@ fn clause4_both_write_tools_declare_write_and_a_write_always_reaches_the_gate() 
         assert!(!s.prompt_json().contains("access"), "{}", s.prompt_json());
     }
 
-    // "A write tool always prompts unless policy says otherwise" as a
-    // control-flow fact: a counting gate, and a write call that must reach it.
+    // A write tool always prompts unless policy says otherwise, as a control-flow fact: a
+    // counting gate, and a call that must reach it.
     struct Counting(Arc<AtomicUsize>);
     impl letibot_tools::runtime::Gate for Counting {
         fn admit(
@@ -550,14 +529,9 @@ fn clause4_both_write_tools_declare_write_and_a_write_always_reaches_the_gate() 
 
 #[test]
 fn clause5_a_write_tools_output_spills_like_everything_else() {
-    // The refusal that hands back a whole file is exactly the payload clause 5
-    // exists for: bounded, recoverable, and never silently cut.
-    //
-    // **The refusal is the changed-since one**, because the unread-file refusal it
-    // used to be was abandoned (R14). That does not weaken the clause — it is the same
-    // shape of payload either way, a whole file quoted back at the model — and it is
-    // the stricter case to test, because this refusal has to arrive *and* the file has
-    // to be left alone.
+    // The refusal that hands back a whole file is exactly the payload the spill bound exists for:
+    // bounded, recoverable, never silently cut. It is also the stricter case, because this
+    // refusal has to arrive and the file has to be left alone.
     let mut h = writable_harness_with_budget(Spiller::new(
         Box::new(FixedBudget(900)),
         Box::new(MemoryStore::new()),
@@ -575,17 +549,14 @@ fn clause5_a_write_tools_output_spills_like_everything_else() {
         back.render().contains("their line 1999"),
         "the rest is fetchable"
     );
-    // …and nothing was written, which is what the refusal said.
+    // And nothing was written, which is what the refusal said.
     assert!(h.read_file("big.txt").contains("their line 0"));
 }
 
 #[test]
 fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
-    // opencode's `edit.txt` promises a read-before-write error and two error
-    // strings that do not exist anywhere in its code; grok-build strips a sentence
-    // from its served description when the behaviour is off, so *"the model is
-    // never told a rule that isn't running"*. Both promises here are behaviours,
-    // and this asserts them by making the tool keep them.
+    // Both promises here are behaviours, and this asserts them by making the tool keep them: no
+    // description may name a rule that is not running.
     use std::sync::Arc;
     let reg = letibot_tools::coder_tools(Arc::new(Unavailable)).unwrap();
     let edit = reg
@@ -597,9 +568,8 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
         letibot_tools::schema::lint_description(&edit.description),
         vec![]
     );
-    // The shown-lines rule is back (R111), and the sentence says it in the
-    // terms the code keeps: lines shown, changed since shown, refused with the
-    // range to read. Not the old whole-file ritual, which is not coming back.
+    // The sentence says the rule in the terms the code keeps: lines shown, changed since shown,
+    // refused with the range to read.
     assert!(
         edit.description
             .contains("must have been shown to this session")
@@ -612,8 +582,8 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
     );
 
     let mut h = writable_harness();
-    // …and the promise is a behaviour: an unread file's unique target is
-    // refused with the range to read, and the read it names is what lands it.
+    // The promise is a behaviour: an unread file's unique target is refused with the range to
+    // read, and the read it names is what lands it.
     let refused = h.call(
         "edit",
         r#"{"path":"README.md","old_string":"letibot","new_string":"x"}"#,
@@ -632,7 +602,7 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
         )
         .is_grounded()
     );
-    // …and the exactly-once promise.
+    // And the exactly-once promise.
     h.write_file("d.rs", "x\nx\n");
     h.call("read", r#"{"path":"d.rs"}"#);
     assert!(
@@ -646,16 +616,13 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
 
 #[test]
 fn a_write_is_atomic_and_leaves_no_temporary_behind() {
-    // Neither prior harness does this: opencode's `writeWithDirs` and
-    // grok-build's `fs.write_file` are both plain truncating writes, so a crash
-    // mid-write publishes a half file and a fresh create loses the mode. This
-    // asserts the two observable consequences of temp-plus-rename: the mode
-    // survives, and the directory is left clean.
+    // A plain truncating write publishes a half file on a crash and loses the mode on a fresh
+    // create. This asserts the two observable consequences of temp-plus-rename: the mode survives
+    // and the directory is left clean.
     let mut h = writable_harness();
-    // The mode is the setup here rather than the assertion, and `write_stub` is the one place
-    // that writes an executable: it does not return until a probe exec proves nobody holds the
-    // file. This tree's own session forks while it runs, so a plain write-then-chmod is the shape
-    // that fails under load (`letibot_tools::testing::write_stub` carries the measurement).
+    // The mode is setup here, and `write_stub` is the one place that writes an executable: it does
+    // not return until a probe exec proves nobody holds the file, because this tree's own session
+    // forks while it runs.
     letibot_tools::testing::write_stub(&h.root().join("script.sh"), "#!/bin/sh\necho one\n");
     h.call("read", r#"{"path":"script.sh"}"#);
     let r = h.call(
@@ -689,8 +656,7 @@ fn a_write_is_atomic_and_leaves_no_temporary_behind() {
 
 #[test]
 fn the_head_is_handed_both_sides_and_the_model_is_not() {
-    // The two halves of the hand-off decision, asserted together because they are
-    // one decision: `crates/ui`'s differ needs both sides, and the prompt must not
+    // One decision with two halves: the head's differ needs both sides, and the prompt must not
     // carry a diff of an edit the model authored.
     let mut h = writable_harness();
     h.call("read", r#"{"path":"README.md"}"#);
@@ -716,9 +682,8 @@ fn the_head_is_handed_both_sides_and_the_model_is_not() {
 
 #[test]
 fn the_never_write_list_is_refused_before_any_adjudicator_sees_it() {
-    // §11.9's rule: a `deny` row is evaluated before dispatch and no adjudicator
-    // can override it. `writable_harness` attaches one that says yes to
-    // everything, and it does not get asked.
+    // A deny row is evaluated before dispatch and no adjudicator can override it:
+    // `writable_harness` attaches one that says yes to everything, and it does not get asked.
     let mut h = writable_harness();
     h.write_file(".ssh/config", "Host x\n");
     h.call("read", r#"{"path":".ssh/config"}"#);
@@ -735,14 +700,9 @@ fn the_never_write_list_is_refused_before_any_adjudicator_sees_it() {
     assert_eq!(h.read_file(".ssh/config"), "Host x\n");
 }
 
-/// **A note's body is prose, and the never-write list does not read prose** — the ruling of
-/// 2026-10-26 (package RH6), and the other half of the measurement in
-/// `crates/tools/src/adjudicate.rs`'s [`CONTENT_ARGUMENTS`](letibot_tools::adjudicate).
-///
-/// The list used to be applied to *every* string argument, so a note **about** the operator's ssh
-/// directory or about `.git` could not be written at all — and the note that explains the rake is
-/// exactly the note that has to be writable. Its `text` and `abstract` are content; its `name` is
-/// not, and the next test is that half.
+/// A note's body is prose and the never-write list does not read prose: its `text` and `abstract` are
+/// content, its `name` is not. The list once applied to every string argument, so a note about the
+/// operator's ssh directory could not be written at all.
 #[test]
 fn a_notes_body_is_prose_so_the_list_does_not_refuse_it() {
     let mut h = writable_harness();
@@ -767,11 +727,8 @@ fn a_notes_body_is_prose_so_the_list_does_not_refuse_it() {
     assert!(said.contains(&store), "with its prose intact: {said}");
 }
 
-/// **A note's `name` is still a path-like argument**, and the list keeps reading it.
-///
-/// The exemption above is about *content*. A name becomes a file under the notes directory, so it
-/// is a spelling that could be aimed somewhere — and the same rule that refuses `.ssh` as a
-/// `path` refuses it as a `name`. The two tests are the whole ruling: prose is free, a name is not.
+/// A note's `name` is still a path-like argument and the list keeps reading it: a name becomes a file
+/// under the notes directory, so the rule that refuses `.ssh` as a `path` refuses it as a `name`.
 #[test]
 fn a_notes_name_is_still_a_path_like_argument() {
     let mut h = writable_harness();

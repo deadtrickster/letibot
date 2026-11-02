@@ -1,23 +1,6 @@
-//! Clause 2: **malformed input is salvaged, not rejected**, and what was repaired
-//! is said out loud.
-//!
-//! > oracle's shim took leaked `<function=…>` tool calls from 33% dropped to 0% by
-//! > parsing them rather than asking for better formatting. Our targets are the
-//! > same size class of model.
-//!
-//! Two halves, and the second one is the half people forget:
-//!
-//! 1. A best-effort parse. Envelope stripping, then a lenient JSON reader, then a
-//!    shape and type normalisation against the tool's own schema.
-//! 2. **An explicit note of what was repaired**, carried on the result and shown to
-//!    the model. A silent repair teaches the model that its malformed spelling
-//!    works, and the next call is malformed the same way — for the rest of the
-//!    session, in permanent context.
-//!
-//! The one thing this module must never do is guess *semantics*. It will turn
-//! `'path'` into `"path"` and `"40"` into `40`; it will not turn a missing `path`
-//! into a plausible one. §9.4's rule — the harness must not silently improve a
-//! tool's query — is the same rule one layer down.
+//! Malformed input is salvaged, not rejected, and what was repaired is said out loud: a
+//! silent repair teaches the model that its malformed spelling works. This module fixes
+//! spelling only - `"40"` becomes `40`, but a missing `path` never becomes a plausible one.
 
 use serde_json::{Map, Value};
 
@@ -54,11 +37,9 @@ pub struct Salvaged {
     pub repairs: Vec<Repair>,
 }
 
-/// The arguments could not be made into an object at all.
-///
-/// Carries the corrective text rather than only the complaint, because clause 1
-/// applies to argument parsing as much as to searching: a bare "invalid JSON"
-/// leaves the model nothing to correct itself with.
+/// The arguments could not be made into an object at all. Carries the corrective text
+/// rather than only the complaint: a bare "invalid JSON" leaves the model nothing to
+/// correct itself with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SalvageError {
     pub reason: String,
@@ -79,11 +60,9 @@ pub fn salvage(raw: &str, schema: &ToolSchema) -> Result<Salvaged, SalvageError>
     let value = match serde_json::from_str::<Value>(&body) {
         Ok(v) => v,
         Err(_) => match lenient::parse(&body, &mut repairs) {
-            // A top-level *bare word* is prose, not an argument. The lenient
-            // reader will happily hand back `"please read the file for me"` as a
-            // string, and dropping that into the tool's one required parameter
-            // would be the harness inventing a path. §9.4's rule: salvage
-            // spelling, never meaning.
+            // A top-level bare word is prose, not an argument: the lenient reader would
+            // hand back `"please read the file for me"` as a string and that would become
+            // the tool's one required parameter. Salvage spelling, never meaning.
             Some(Value::String(_)) if repairs.iter().any(|r| r.code == "json.unquoted_string") => {
                 return Err(no_parse(raw, schema));
             }
@@ -142,7 +121,8 @@ fn no_parse(raw: &str, schema: &ToolSchema) -> SalvageError {
 fn strip_envelopes(raw: &str, repairs: &mut Vec<Repair>) -> String {
     let mut s = raw.trim().to_string();
 
-    // `<function=name>{…}</function>` — the exact shape oracle measured.
+    // `<function=name>{...}</function>`, the envelope a model leaks when the harness's
+    // own tool syntax reaches ordinary text.
     if let Some(rest) = s.strip_prefix("<function=")
         && let Some(gt) = rest.find('>')
     {
@@ -158,7 +138,7 @@ fn strip_envelopes(raw: &str, repairs: &mut Vec<Repair>) -> String {
         s = inner.trim().to_string();
     }
 
-    // `<tool_call>…</tool_call>` and `<arguments>…</arguments>`.
+    // `<tool_call>...</tool_call>` and `<arguments>...</arguments>`.
     for (open, close) in [
         ("<tool_call>", "</tool_call>"),
         ("<arguments>", "</arguments>"),
@@ -205,7 +185,7 @@ fn strip_envelopes(raw: &str, repairs: &mut Vec<Repair>) -> String {
     s
 }
 
-/// The first balanced `{…}` span, ignoring braces inside strings.
+/// The first balanced `{...}` span, ignoring braces inside strings.
 fn balanced_object(s: &str) -> Option<(usize, usize)> {
     let b = s.as_bytes();
     let start = s.find('{')?;
@@ -271,7 +251,7 @@ fn into_object(
     }
 }
 
-/// `{"name": "read", "arguments": {…}}` — the model echoing the whole call into
+/// `{"name": "read", "arguments": {...}}`: the model echoing the whole call into
 /// the arguments slot. Common, and unambiguous when the inner object is there.
 fn unwrap_double_envelope(
     o: &mut Map<String, Value>,
@@ -284,7 +264,7 @@ fn unwrap_double_envelope(
             continue;
         }
         let inner = o.get(key).cloned().unwrap_or(Value::Null);
-        // The arguments as a *string* of JSON — the other half of the same habit.
+        // The arguments as a string of JSON, the other half of the same habit.
         let inner = match inner {
             Value::String(s) => serde_json::from_str::<Value>(&s)
                 .ok()
@@ -303,11 +283,9 @@ fn unwrap_double_envelope(
     }
 }
 
-/// A key the schema does not have, spelled close enough to one it does.
-///
-/// Case and separators only, plus a short synonym table. Not fuzzy matching: a
-/// tool called with `paht` is a tool called wrongly, and inventing the fix is how
-/// a harness starts answering questions the model did not ask.
+/// A key the schema does not have, spelled close enough to one it does: case and
+/// separators only, plus a short synonym table. Not fuzzy matching - inventing the fix
+/// is how a harness starts answering questions the model did not ask.
 fn rename_near_misses(o: &mut Map<String, Value>, schema: &ToolSchema, repairs: &mut Vec<Repair>) {
     const SYNONYMS: &[(&str, &str)] = &[
         ("file", "path"),
@@ -422,11 +400,9 @@ fn kind_of(v: &Value) -> &'static str {
     }
 }
 
-/// A JSON reader that accepts what models actually emit.
-///
-/// Single quotes, unquoted keys, Python's `True`/`False`/`None`, `=` for `:`,
-/// trailing commas, and a document that simply stops. Every deviation is recorded
-/// as a repair; nothing is accepted quietly.
+/// A JSON reader that accepts what models actually emit: single quotes, unquoted keys,
+/// Python's `True`/`False`/`None`, `=` for `:`, trailing commas, and a document that
+/// simply stops. Every deviation is recorded as a repair; nothing is accepted quietly.
 mod lenient {
     use super::Repair;
     use serde_json::{Map, Value};
@@ -540,7 +516,7 @@ mod lenient {
                 }
                 // A value that cannot be read ends the object rather than the
                 // parse: the keys already understood are worth more than a clean
-                // failure, which is the whole of clause 2.
+                // failure, which is the whole point of salvaging.
                 let Some(v) = self.value() else {
                     self.note(
                         "json.missing_value",
@@ -639,7 +615,7 @@ mod lenient {
                 self.i += 1;
             }
             if self.i == start {
-                // Not an identifier at all — skip one byte so the loop cannot spin.
+                // Not an identifier at all: skip one byte so the loop cannot spin.
                 self.i += 1;
                 return None;
             }
@@ -722,7 +698,7 @@ mod tests {
 
     #[test]
     fn the_leaked_function_envelope_is_parsed() {
-        // The exact shape oracle measured at a 33% drop rate.
+        // The leaked function envelope, verbatim.
         let s = salvage(
             r#"<function=read>{"path": "src/lib.rs"}</function>"#,
             &read_schema(),
@@ -768,8 +744,8 @@ mod tests {
         assert_eq!(s.value["path"], "a.rs");
         assert!(s.repairs.iter().any(|r| r.code == "key.renamed"));
 
-        // `paht` is a call made wrongly, and inventing the fix is exactly what
-        // §9.4 forbids one layer up.
+        // `paht` is a call made wrongly, and inventing the fix is what this module
+        // refuses to do.
         let s = salvage(r#"{"paht": "a.rs"}"#, &read_schema()).unwrap();
         assert!(s.value.get("path").is_none());
     }

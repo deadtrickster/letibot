@@ -2,17 +2,9 @@
 
 use super::*;
 
-/// **A python heredoc that only writes rides the EDIT path** — the operator's ruling of
-/// 2026-10-05, asserted where *"permission mechanics"* actually live.
-///
-/// The ruling, in their words: *"since we try to catch python heredoc edits and render them
-/// with diffs - they have to be classified as edits for permission mechanics"*, and the mode
-/// they are running answers the other half: *"so we are in allow-edits mode now. there is
-/// certain permission set that is allowed and doesnt need oracle. this is to be kept."* So
-/// the assertions are (a) the class is `write` and the headline says so, (b) in allow-edits
-/// that is the mode's own allowed set and nobody is asked, and (c) in an ask mode the same
-/// call asks as a WRITE — while every shape that is not a placed write keeps `exec` and goes
-/// on asking in both.
+/// A python heredoc that only writes rides the edit path, so the mode's write rules, the shape
+/// cache and the grant vocabulary are reachable for it; in an ask mode it asks as a WRITE, and
+/// every shape that is not a placed write keeps `exec`.
 #[test]
 fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,10 +33,8 @@ fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
         "command": "python3 - <<'PY'\nopen('/w/src/lib.rs', 'w').write('hi')\nPY"
     });
 
-    // **The class, and the headline a person reads.** This call was `exec access` over
-    // intents that said `write_file`, which is the same defect as the read one with the
-    // consequence the other way round: exec asks at EVERY point, so the edit path — the
-    // mode's write rules, the shape cache, the grant vocabulary — was unreachable.
+    // The class, and the headline a person reads: exec asks at every point, so calling this
+    // `exec` would put the edit path out of reach.
     let (mut g, asked) = gate(crate::mode::Mode::AUTO_EDITS);
     let row = g.request_for(&bash(&write));
     assert_eq!(row.class.access, Access::Write, "{}", row.summary);
@@ -53,8 +43,7 @@ fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
         "the headline says: {}",
         row.summary
     );
-    // **And in allow-edits that is the mode's allowed set.** Nobody is consulted, which is
-    // the operator's *"certain permission set that is allowed and doesnt need oracle"*.
+    // In allow-edits that is the mode's own allowed set, so nobody is consulted.
     assert_eq!(g.admit(&bash(&write)), GateDecision::Admit);
     assert_eq!(
         asked.load(Ordering::Relaxed),
@@ -69,18 +58,15 @@ fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
         last.decision.basis
     );
 
-    // **In ask mode it still asks, and it asks as a write.** The oracle is shown a write
-    // and the card says so, which is the point of classifying it rather than of admitting
-    // it.
+    // In ask mode it still asks, and it asks as a write: the card says so.
     let (mut g, asked) = gate(crate::mode::Mode::ALWAYS_ASK);
     let row = g.request_for(&bash(&write));
     assert_eq!(row.class.access, Access::Write, "{}", row.summary);
     assert_eq!(g.admit(&bash(&write)), GateDecision::Admit);
     assert_eq!(asked.load(Ordering::Relaxed), 1, "nobody was asked");
 
-    // **Every shape that is not a placed write keeps exec, in both modes.** Each is one of
-    // `writes_only`'s guardrails, and each is asserted at the gate because the guardrail is
-    // what keeps this narrowing from becoming "any interpreter is an edit".
+    // Every shape that is not a placed write keeps exec: the guardrails are what keep this
+    // narrowing from becoming "any interpreter is an edit".
     for (cmd, why) in [
         (
             "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['ls'])\nPY",
@@ -125,8 +111,8 @@ fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
     }
 }
 
-/// A gate that would admit anything an adjudicator is consulted about, so that a
-/// refusal in these tests can only have come from layer A.
+/// A gate that would admit anything an adjudicator is consulted about, so a refusal here can only
+/// have come from layer A.
 fn permissive_gate() -> AdjudicatedGate {
     AdjudicatedGate::new(Box::new(AskAdjudicator::new(
         "yes-to-everything",
@@ -168,32 +154,14 @@ fn a_disclosure_is_refused_by_a_gate_that_would_otherwise_admit_everything() {
     assert_eq!(g.log[0].request.tier.as_str(), "blocked");
 }
 
-/// **R21 — a shell that only reads is judged on the work, and the four ways it is
-/// not.**
-///
-/// `head-parity-2026-09-21.md` **R21**, raised by the operator looking at a gate on
-/// `head`: *"wonder why oracle didnt allow head itself, or why head wasn't
-/// categorized as Read."* Both halves had answers and neither was the defect — `head`
-/// **is** a read in the classifier, and the oracle was never asked to allow it — and
-/// what was left was that **the vehicle outranked the work**: a shell that only reads
-/// gated as exec, and the card said *exec access* over intents that said *read*.
-///
-/// **Measured, 2026-09-22, over every `bash` call this box has gated** (7318 rows,
-/// from the store's own `arguments_json`): 1008 rows (13.8%) are read-only by this
-/// rule, and **977 of the 5153 rows that were ASKED — 19.0% — stop gating.** The two
-/// numbers are the point of this test in the small and of the commit in the large.
-///
-/// The four guardrails are asserted failing, because the ruling says the rule is
-/// *paid for* by the parser's refusals and void the moment a line carries something it
-/// could not read. Each of them is a shape the corpus actually holds.
+/// A shell that only reads is judged on the work and not on the vehicle: gating it as exec put a
+/// prompt in front of the operator for a call whose every intent said read. The four ways it is not
+/// a read are asserted failing, because the parser's refusals are what pay for the rule.
 #[test]
 fn a_shell_that_only_reads_is_judged_on_the_work() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    // **A fresh gate per case.** A human `allow_session` on one call is a standing
-    // permission whose coverage is `intents.is_subset`, so a later call in the same
-    // gate can be settled by a grant taken over an earlier one — real behaviour, and
-    // noise in a test about which access a call is judged at. One gate per assertion,
-    // or the guardrails measure each other.
+    // A fresh gate per case: a grant taken over an earlier call could settle a later one, which is
+    // real behaviour and noise in a test about which access a call is judged at.
     let gate = || {
         let asked = std::sync::Arc::new(AtomicUsize::new(0));
         let a = asked.clone();
@@ -209,16 +177,15 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
                 ))
             },
         )))
-        // `always-ask` is the strongest form of the assertion: clause 4 admits a read
-        // at **every** point, including the one whose whole purpose is to ask.
+        // `always-ask` is the strongest form: a read is admitted at every point, including the one
+        // whose purpose is to ask.
         .with_mode(crate::mode::Mode::ALWAYS_ASK)
         .with_exec_follows_mode(false)
         .with_surroundings(pinned());
         (g, asked)
     };
 
-    // **The yes.** The operator's own example: a `cd`, then a reader. It asked before
-    // this, and the card it asked with said `exec access` over `[inspect read_file]`.
+    // The yes: a `cd` then a reader, which is the class a person would give it.
     let (mut g, asked) = gate();
     let reads = json!({"command": "cd /w && head -c 2000 src/lib.rs"});
     let row = g.request_for(&bash(&reads));
@@ -240,8 +207,7 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
         0,
         "nobody is asked about a read inside the boundary"
     );
-    // And the row records it as the mode's doing, naming the access the call was
-    // judged at rather than the tool's declaration.
+    // The row records it as the mode's doing, naming the access the call was judged at.
     let last = g.log.last().expect("a row");
     assert_eq!(last.decision.by, "gate:mode");
     assert!(
@@ -250,8 +216,7 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
         last.decision.basis
     );
 
-    // **The ways it is not a read.** Each keeps the exec class and each still asks —
-    // the guardrails are the requirement, so they are asserted as loudly as the yes.
+    // The ways it is not a read: each keeps the exec class and each still asks.
     for (cmd, why) in [
         ("cd /w && frobnicate src/lib.rs", "an unknown program"),
         (
@@ -268,22 +233,9 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
             "a program that can execute",
         ),
         ("cd /w && rm -f src/lib.rs", "a deletion"),
-        // **A verb that had to be MEASURED to be here.** `git symbolic-ref` reads a ref, so it
-        // sat in layer A's read arm — and it was ALSO in the write arm, where the match could
-        // never reach it. Source order decided the classification: this call came back
-        // `intents ["inspect"]`, `reads_only` true, so `judged_access` narrowed it to
-        // `Access::Read` and `Mode::disposition` admits a read at every point. The operator
-        // was never asked, and nothing on any screen said so, because what the
-        // misclassification suppressed was a PROMPT.
-        //
-        // It is a write: `git symbolic-ref HEAD refs/heads/other` sets `.git/HEAD` to
-        // `refs/heads/other` (measured against a scratch repo), and the man-page scrape in
-        // `docs/evidence/man-scrape/` says so in as many words — *"This subcommand can delete
-        // symbolic refs that existed before"* — while `FLAG_RULES` already carried `Destroy`
-        // for its `-d` spelling. Two signals and neither reached the base arm.
-        //
-        // Here rather than only in `intent.rs`, because THIS is where the consequence is: the
-        // class must be the vehicle's and `asked` must be 1.
+        // `git symbolic-ref` reads a ref and also moves one: source order put it in the read arm,
+        // where `judged_access` narrowed it to `Access::Read` and the point admitted it, so a
+        // misclassification suppressed a prompt.
         (
             "git symbolic-ref HEAD refs/heads/other",
             "a ref being moved",
@@ -305,13 +257,9 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
         );
     }
 
-    // **A secret read through a shell is refused, which is stronger than asking.** It
-    // is the one case where being judged a read would have been *worse* than being
-    // judged exec: `cat ~/.ssh/id_rsa` is a read by every intent it computes, and the
-    // thing that stops it is the flow rule, which sees the secret store in the region
-    // table and refuses before any point is read. So the boundary conjunct in
-    // `reads_only` is what keeps this call's exec access, and the refusal is what
-    // happens next.
+    // A secret read through a shell is refused, which is stronger than asking: being judged a read
+    // would be worse here, so the boundary conjunct in `reads_only` keeps its exec access and the
+    // flow rule refuses it before any point is read.
     let (mut g, asked) = gate();
     let secret = json!({"command": "cat ~/.ssh/id_rsa"});
     let row = g.request_for(&bash(&secret));
@@ -327,20 +275,9 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
         "a secret reached a person"
     );
 
-    // **And a line the parser refused is now a line the POINT decides about**, which is
-    // the 2026-10-02 ruling: *"in allow-all, stop refusing a command because the
-    // grammar could not resolve a construct"*. It is still not a read — `$(ls)` has no
-    // known prefix and `cat` takes a path, so the scope widened to `unbounded` and the
-    // boundary conjunct in `reads_only` voids — so it keeps its exec access and the
-    // mode is consulted exactly as it would be for the literal spelling.
-    //
-    // **AND THE MODEL IS THE ONE ASKED** — the operator's ruling of 2026-10-05 overrules
-    // what stood here (*"a meaning nobody could read is never handed to a model to
-    // approve"*): *"we have to ask oracle for this stuff"*, and *"i want to follow oracle
-    // verdict … the rest is oracle."* An unresolved line is now the case a second opinion
-    // exists for, so `Adjudicable` IS minted and the oracle answers it — the person is
-    // asked when the oracle is unsure (or refuses nothing and has no answer), never
-    // because the parser gave up.
+    // A line the parser refused is a line the point decides about, not a read: `$(ls)` has no known
+    // prefix, so the scope widens and the boundary conjunct voids. The model is the one asked, and the
+    // person only when the oracle is unsure.
     let (mut g, asked) = gate();
     let unresolved = json!({"command": "cd /w && cat $(ls) src/lib.rs"});
     let row = g.request_for(&bash(&unresolved));
@@ -361,15 +298,10 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
     );
 }
 
-/// **`rm -rf /` is not refused on the strength of the string.** This is the operator's
-/// own case, and the test carries no attribute for a while — an insertion landed between
-/// its `#[test]` and its `fn`, which left the attribute on the next test's doc comment and
-/// this function unreachable. The compiler said so (`never used`) and nobody read it. It is
-/// back, because a test that stopped running is worse than a test that fails.
+/// `rm -rf /` can be allowed if it is the intent; what the gate must not do is refuse it on the
+/// strength of the string.
 #[test]
 fn rm_rf_slash_is_not_blocked_by_the_gate_and_reaches_a_decision() {
-    // The operator's case: `rm -rf /` can be allowed if it is the intent. What the
-    // gate must NOT do is refuse it on the strength of the string.
     let mut g = permissive_gate();
     let args = json!({"command": "/bin/rm -rf /"});
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
@@ -379,9 +311,8 @@ fn rm_rf_slash_is_not_blocked_by_the_gate_and_reaches_a_decision() {
 
 #[test]
 fn an_always_ask_is_never_turned_into_a_standing_grant() {
-    // The adjudicator asks for the widest grant it is allowed to name each time. A
-    // class grant over a deletion outside the project is the standing authority the
-    // fixed list withholds, so the second call must be asked about again.
+    // The adjudicator asks for the widest grant it may name, and a deletion outside the project is
+    // the standing authority the fixed list withholds, so the second call asks again.
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let a = asked.clone();
     let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
@@ -412,19 +343,13 @@ fn an_always_ask_is_never_turned_into_a_standing_grant() {
         2,
         "an always-ask is asked every time"
     );
-    // And it was never even OFFERED a standing grant: the tier is `AlwaysAsk`,
-    // whose ladder is `always_ask_options` — no session grant, no durable rule.
-    // This half is untouched by the 2026-09-18 revision, which completed the
-    // ladder at points that offer the durable rule; the always-ask TIER offers
-    // no durable rule and so offers no session grant either.
+    // It was never even offered a standing grant: the always-ask tier's ladder has no durable
+    // rule, and a session grant follows the durable rule rather than standing alone.
     assert!(g.log[0].request.option("allow_session").is_none());
     assert!(g.log[0].request.option("allow_always").is_none());
 
-    // An ordinary may-approve exec call, though, now takes the session grant
-    // its ladder offers — the operator's revision of 2026-09-18, which retired
-    // the exec exception the same way the 2026-09-14 revision had already
-    // broken it with the durable rule. The second identical call is settled by
-    // the grant, not asked again.
+    // An ordinary may-approve exec call takes the session grant its ladder offers, so the second
+    // identical call is settled rather than asked again.
     let ordinary = json!({"command": "/bin/rm -rf /w/target"});
     assert_eq!(g.admit(&bash(&ordinary)), GateDecision::Admit);
     assert_eq!(g.admit(&bash(&ordinary)), GateDecision::Admit);
@@ -438,11 +363,8 @@ fn an_always_ask_is_never_turned_into_a_standing_grant() {
         1,
         "one standing permission, recorded from the exec answer"
     );
-    // And the grant is scoped to what the call showed, not to exec at large: a
-    // different program is outside it and asks again.
-    // **A program the grant does not name** (R21: `cat` is a read and would be
-    // admitted by clause 4 without asking anybody, so it can no longer be the
-    // fixture for "a different program asks again").
+    // The grant is scoped to what the call showed, so a different program asks again. The other
+    // program has to be exec: a read is admitted by clause 4 without asking anybody.
     let other = json!({"command": "/usr/bin/awk {print} /w/src/lib.rs"});
     assert_eq!(g.admit(&bash(&other)), GateDecision::Admit);
     assert_eq!(
@@ -453,18 +375,9 @@ fn an_always_ask_is_never_turned_into_a_standing_grant() {
 }
 
 #[test]
-/// **Exec asks, and the ladder it asks with is complete.**
-///
-/// The operator's rule of 2026-09-11 — *"i want something very simple for
-/// now - exec and bash always ask me for permission"* — still holds as the
-/// DEFAULT: nothing settles an exec call before somebody answers. What
-/// changed twice is what an answer can reach. The revision of 2026-09-14 put
-/// the durable *Always allow* rule on the ladder; the revision of
-/// 2026-09-18 — *"if I'm offered to permanently enable — it is stronger than
-/// allow_session — so allow_session should always be offered too"* — put the
-/// session grant beside it. The command below is a read inside the workspace,
-/// layer A's weakest verdict, because it is exactly the call clause 4 would
-/// wave through if the access class let it.
+/// Exec asks by default, and what an answer can reach is the session grant and the durable rule
+/// beside it. The command is layer A's weakest verdict, which is what clause 4 would wave through
+/// if the access class let it.
 fn exec_class_calls_ask_and_the_ladder_offers_both_standing_options() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let a = asked.clone();
@@ -488,10 +401,8 @@ fn exec_class_calls_ask_and_the_ladder_offers_both_standing_options() {
     .with_mode(crate::mode::Mode::WRITES_ALLOWED)
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
-    // **`sed -n` and not `cat`** (R21): the command has to be an exec-class call
-    // that still ASKS, and a shell that only reads is clause 4 now. This one is the
-    // classifier's own exec — see `Baseline::reads_only` — so the ladder is still
-    // exercised by a call that reaches it.
+    // `sed -n` and not `cat`: the command has to be an exec-class call that still asks, and a
+    // shell that only reads is clause 4 (see `Baseline::reads_only`).
     let args = json!({"command": "/bin/sed -n 1p /w/src/lib.rs"});
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
@@ -511,18 +422,15 @@ fn exec_class_calls_ask_and_the_ladder_offers_both_standing_options() {
             .all(|r| r.request.option("allow_session").is_some()),
         "exec is offered the session grant, scoped to the program and the class"
     );
-    // The revision of 2026-09-14: a DURABLE rule is offered — it is the
-    // operator's own preapproval, in a file they read — and it is not a grant.
+    // A durable rule is offered as well: it is the operator's own preapproval, in a file they read.
     assert!(
         g.log
             .iter()
             .all(|r| r.request.option("allow_always").is_some()),
         "exec is offered Always allow, as a rule"
     );
-    // And the grant is scoped to the program it was taken over: a different
-    // program is outside it and asks again. **Exec, so that asking is what this
-    // measures** (R21): `ls` is a look and a shell carrying one is clause 4, which
-    // would be admitted without reaching a ladder at all.
+    // The grant is scoped to the program it was taken over, so a different exec program asks
+    // again; a read would be admitted without reaching a ladder at all.
     let other = json!({"command": "/usr/bin/awk {print} /w/src/lib.rs"});
     assert_eq!(g.admit(&bash(&other)), GateDecision::Admit);
     assert_eq!(
@@ -532,17 +440,8 @@ fn exec_class_calls_ask_and_the_ladder_offers_both_standing_options() {
     );
 }
 
-/// **The label names the rule the button writes.**
-///
-/// The operator's report (2026-09-18): the offer said "add tool and verb to
-/// the permissions file" without ever saying **which**, and did not let them
-/// adjust it. The derived pattern is in the label now — the same helper the
-/// recording site uses, so what is signed and what is written cannot drift —
-/// **A gate with a durable sink carries on numbering where it left off.**
-///
-/// Without this, `next_id` restarts at 1 on every daemon and `INSERT OR
-/// IGNORE` drops every colliding row — the whole-session corpus outage
-/// measured in the operator's store on 2026-09-20.
+/// Without this, `next_id` restarts at 1 on every daemon and `INSERT OR IGNORE` drops every
+/// colliding row, so a resumed session loses its corpus.
 #[test]
 fn a_resumed_gate_does_not_reissue_request_ids() {
     /// A sink that reports a history, the way a store-backed one does.
@@ -585,12 +484,8 @@ fn a_resumed_gate_does_not_reissue_request_ids() {
     assert_eq!(id, "adj-s-42-0647", "a restart re-emitted a stored id");
 }
 
-/// **The consented point admits a shell command without asking.**
-///
-/// The operator, 2026-09-20: *"switched leticl session to allow-all, pressed
-/// y, got a warning, still asked about grep"*. The move itself is tested in
-/// `wired`; this is the half that matters afterwards — that the point the
-/// move lands on actually stops asking about `bash`.
+/// The point a consenting move lands on stops asking about `bash`: the move itself is tested
+/// elsewhere, and this is the half that matters afterwards.
 #[test]
 fn the_consented_point_admits_a_shell_command_unasked() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -623,15 +518,8 @@ fn the_consented_point_admits_a_shell_command_unasked() {
     assert_eq!(g.log[0].decision.by, "gate:mode", "{:?}", g.log[0].decision);
 }
 
-/// **The durable rule names the program that needs authority, not the first
-/// word of the line.**
-///
-/// `always_pattern_for_command` took `command.split_whitespace().next()`,
-/// which is the program only when the command is one stage. On the
-/// operator's screen, 2026-09-20, `cd /home/dead/Projects/letibot/letibot &&
-/// python3 - <<'PY' …` offered *Allow `python3` for the session* beside
-/// *Always allow `cd*`* — two derivations of the same question, and the
-/// durable one, the one written to their config, had the naive answer.
+/// The durable rule names the stage that needs the authority, not the first word of the line: a
+/// rule over `cd` would be written to the operator's config and grant nothing.
 #[test]
 fn a_compound_commands_durable_rule_names_the_last_stage_not_the_cd() {
     let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
@@ -646,10 +534,8 @@ fn a_compound_commands_durable_rule_names_the_last_stage_not_the_cd() {
         },
     )))
     .with_mode(crate::mode::Mode::WRITES_ALLOWED)
-    // **A measured boundary, because R98 would otherwise take both standing rungs away** —
-    // `cargo test` runs the project's own code, and on a host with no boundary that asks every
-    // time by design. This fixture is about which STAGE the durable rule names, so it sits
-    // where the ladder still has one.
+    // A measured boundary, because `cargo test` runs the project's own code and a host with none
+    // offers no standing rung; this fixture is about which stage the rule names.
     .with_boundary(Some(measured_boundary()), None)
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
@@ -674,15 +560,8 @@ fn a_compound_commands_durable_rule_names_the_last_stage_not_the_cd() {
     );
 }
 
-/// **A rule the matcher could never consult is not offered at all.**
-///
-/// `bash_segments` refuses to split a command carrying a heredoc, and
-/// `evaluate_bash` turns that into `Ask` before any rule is read — so for
-/// these commands *Always allow* is inert however it is spelled. Offering it
-/// invites the operator to sign something durable that does nothing, and
-/// then asks them again next time. The rule this seam already states: *"an
-/// operator is never shown a button whose effect the gate would then decline
-/// to honour."*
+/// `bash_segments` refuses to split a command carrying a heredoc, so a rule over one is inert
+/// however it is spelled: offering it invites the operator to sign something that does nothing.
 #[test]
 fn a_heredoc_is_offered_no_durable_rule_because_none_could_match() {
     let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
@@ -718,7 +597,8 @@ fn a_heredoc_is_offered_no_durable_rule_because_none_could_match() {
     assert!(req.option("deny").is_some());
 }
 
-/// and a glob typed after `allow_always` in the composer still overrides it.
+/// The label names the rule the button writes, derived by the same helper the recording site uses,
+/// so what is signed and what is written cannot drift.
 #[test]
 fn the_always_allow_label_shows_the_rule_it_writes() {
     let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
@@ -733,8 +613,8 @@ fn the_always_allow_label_shows_the_rule_it_writes() {
         },
     )))
     .with_mode(crate::mode::Mode::WRITES_ALLOWED)
-    // The ladder over `cargo test` where a boundary is measured: R98 takes both standing rungs
-    // off the ladder for a runner on a host with none, and this fixture is about the label.
+    // The ladder over `cargo test` where a boundary is measured, because a host with none offers a
+    // runner no standing rung and this fixture is about the label.
     .with_boundary(Some(measured_boundary()), None)
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
@@ -781,10 +661,8 @@ fn the_always_allow_label_shows_the_rule_it_writes() {
     );
 }
 
-/// *"good old Allow Always"* (the operator, 2026-09-14): the answer writes a
-/// rule over the program and its verb, the rule admits the next call before
-/// the mode is consulted, `git log; rm x` under `git log*` still asks, and
-/// the sink saw the rule once.
+/// The answer writes a rule over the program and its verb, the rule admits the next call before
+/// the mode is consulted, and a compound hiding a second command behind the prefix still asks.
 #[test]
 fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -812,11 +690,9 @@ fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
     }))
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
-    // **`sed -i`, and not `cargo run`.** R98 (the amendment of 2026-10-27) says a command that
-    // runs the project's own code is not settled by a durable rule on a host with no boundary —
-    // so this fixture, whose subject IS the rule a durable answer writes, needs a command that
-    // is not a runner. `sed -n*` is on the shipped list and `sed -i` is not, which is why the
-    // first call asks and the rule is what answers the second.
+    // `sed -i` and not `cargo run`: a command that runs the project's own code is not settled by a
+    // durable rule on a host with no boundary. `sed -n*` is on the shipped list and `sed -i` is
+    // not, so the first call asks and the rule answers the second.
     let args = json!({"command": "sed -i s/x/y/ crates/tools/src/lib.rs"});
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -839,9 +715,9 @@ fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
 
-/// **The operator's own command, at `allow-all`: admitted, with nobody asked.**
-///
-/// This is the case that filed the ruling, verbatim from their pane:
+/// The operator's `$?` widens nothing: `echo` takes a string, not a place, so the command reads as
+/// it would with the `$?` replaced by `0`. At `allow-all` the point admits it; at `always-ask` a
+/// person is asked, because the widening is a scope and not a bypass.
 ///
 /// ```text
 /// Ran "cd … && make lint; echo \"exit=$?\"; …"   · not run · 17 lines
@@ -850,31 +726,12 @@ fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
 /// basis: … parameter_expansion: `$?` … decides the argument: "\"exit=$?\""
 /// ...for allow all mode
 /// ```
-///
-/// The `$?` widens nothing — `echo` takes a string, not a place — so the command
-/// reads as it would with a literal `$?` replaced by `0`, and the point admits it.
-///
-/// **And since 2026-10-26 it is read that way in the resolver, not only in this
-/// paragraph** (`intent::parameters::NUMERIC`): the ruling said what the reading should
-/// be, and until then the parser's refusal still outranked it, so the row said *the
-/// meaning was never resolved* about a command whose every word is known. The first half
-/// of this test was written against THAT behaviour — admitted, but unread — and it now
-/// asserts the ruling: the same call, read, and admitted by the point because it is a
-/// build with a status printed after it.
-///
-/// **Measured at the point that has the rule in it**: `ALLOW_ALL_HERE`, which is
-/// `exec: Admit` and `OperatorConsented`, with an adjudicator that FAILS if it is
-/// consulted. Nothing is asked, which is the whole of what "for allow all mode"
-/// meant. The second half is the other side of the ruling: the same command at
-/// `always-ask` is NOT admitted by the point, so a person is asked — the widening is
-/// a scope, not a bypass.
 #[test]
 fn the_operators_echo_dollar_question_is_admitted_at_allow_all_and_asks_elsewhere() {
     use crate::mode::Mode;
 
-    // **`NoAdjudicator` fails closed on everything**, so an `Admit` here can only have
-    // come from the point. That is a stronger statement than "nobody was asked": it
-    // is that nobody COULD have admitted it and it was admitted anyway.
+    // `NoAdjudicator` fails closed on everything, so an `Admit` here can only have come from the
+    // point: nobody could have admitted it, and it was admitted anyway.
     let cmd = json!({"command": "cd /w && make lint; echo \"exit=$?\""});
 
     let mut permissive = AdjudicatedGate::new(Box::new(NoAdjudicator))
@@ -886,9 +743,8 @@ fn the_operators_echo_dollar_question_is_admitted_at_allow_all_and_asks_elsewher
         GateDecision::Admit,
         "allow-all is the point that admits this; the adjudicator refuses everything"
     );
-    // And the row says what was READ — which since 2026-10-26 is the whole command:
-    // `$?` is a number the shell keeps, a number is not a place, and the note that says
-    // so travels with the reading so a person can check it against their own line.
+    // The row says what was read: `$?` is a number the shell keeps, a number is not a place, and
+    // the note travels with the reading so a person can check it against their own line.
     assert!(
         permissive.log[0].request.resolved,
         "the operator's own command is still unread: {}",
@@ -915,8 +771,7 @@ fn the_operators_echo_dollar_question_is_admitted_at_allow_all_and_asks_elsewher
         "nothing said what `$?` became: {findings:?}"
     );
 
-    // The same command where the point does not admit exec: a person decides, and no
-    // model is offered the question.
+    // The same command where the point does not admit exec: a person decides.
     use std::sync::atomic::{AtomicUsize, Ordering};
     let asked = std::sync::Arc::new(AtomicUsize::new(0));
     let a = asked.clone();
@@ -942,16 +797,9 @@ fn the_operators_echo_dollar_question_is_admitted_at_allow_all_and_asks_elsewher
     assert_eq!(asked.load(Ordering::Relaxed), 1, "a person was asked");
 }
 
-/// **A command the grammar could not read is admitted at `allow-all`, and says so.**
-///
-/// The operator's case, verbatim from the session store (2026-10-07): a heredoc whose
-/// opening line also redirects and pipes. Valid bash; tree-sitter-bash recovers from it
-/// at the `|`, so layer A's verdict is `NotRun` — which refused it before any mode was
-/// consulted, `allow-all` included. *"im very tired of substitutions - at least for
-/// allow-all"*.
-///
-/// At `allow-all` it now goes on to the mode, which admits it, and the decision says it
-/// ran unread. At a point that does not admit everything the refusal is unchanged.
+/// The operator's case: a heredoc whose opening line also redirects and pipes. Valid bash, but
+/// layer A recovers at the `|` and its `NotRun` refused it before any mode was consulted. At
+/// `allow-all` it goes on to the mode, which admits it and says it ran unread.
 #[test]
 fn an_unreadable_command_runs_at_allow_all_and_is_still_refused_elsewhere() {
     use crate::mode::Mode;
@@ -993,22 +841,9 @@ fn an_unreadable_command_runs_at_allow_all_and_is_still_refused_elsewhere() {
     }
 }
 
-/// **A standing grant never settles a command whose meaning was never resolved.**
-///
-/// This is the property the instruction of 2026-10-02 protects — *"that field must
-/// stop being derived from it and start being carried on its own"* — and it is the
-/// one place the change could have gone wrong invisibly. `Grant::covers` takes
-/// `resolved` as an argument and refuses an unresolved action before it looks at
-/// coverage (its own unit tests cover that); what those tests cannot see is whether
-/// the GATE passes the right thing. It used to derive the flag from the verdict, and
-/// the verdict for an unresolvable construct is no longer `NotRun` — so a version that
-/// kept deriving it would pass `true` here and an `allow_session` taken over one
-/// `cat` would quietly cover every later `cat $ANYTHING`.
-///
-/// The pair is chosen so the grant CANNOT be refused for an incidental reason: the
-/// two calls must have the same class and the same intents, which the assertion says
-/// out loud rather than assuming. If that ever stops holding, this test fails on the
-/// assertion rather than passing vacuously.
+/// `Grant::covers` refuses an unresolved action before it looks at coverage, so what this pins is
+/// that the gate carries `resolved` on its own rather than deriving it from the verdict: a version
+/// that derived it would let one `cat` cover every later `cat $ANYTHING`.
 #[test]
 fn a_standing_grant_does_not_cover_a_command_whose_meaning_was_never_resolved() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1039,8 +874,8 @@ fn a_standing_grant_does_not_cover_a_command_whose_meaning_was_never_resolved() 
         "the first call asked once"
     );
 
-    // Second: the same shape with one word the grammar cannot read. Same program,
-    // same class, same intents — so only `resolved` can keep the grant off it.
+    // Second: the same shape with one word the grammar cannot read, so only `resolved` can keep
+    // the grant off it.
     let opaque = json!({"command": "cd /w && make $TARGET"});
     let resolved_row = g.request_for(&bash(&plain));
     let opaque_row = g.request_for(&bash(&opaque));
@@ -1048,11 +883,8 @@ fn a_standing_grant_does_not_cover_a_command_whose_meaning_was_never_resolved() 
         resolved_row.class, opaque_row.class,
         "the pair must differ only in resolution, or this test proves nothing"
     );
-    // **THE MODEL IS ASKED NOW**, which is the 2026-10-05 ruling and the reason this
-    // assertion changed: a session grant covers a RESOLVED call, and the unresolved twin
-    // is answered by the oracle rather than by the point or the person. What the pair
-    // still proves is that `resolved` is carried separately — the two requests differ in
-    // nothing else — and that the grant itself does not silently cover it.
+    // An adjudicator may answer the unresolved twin, because a session grant covers a resolved
+    // call; the pair still proves `resolved` is carried separately and the grant does not cover it.
     assert!(
         opaque_row.adjudicable().is_some(),
         "an adjudicator may answer the unresolved twin — this gate's adjudicator is a \
@@ -1067,21 +899,9 @@ fn a_standing_grant_does_not_cover_a_command_whose_meaning_was_never_resolved() 
     );
 }
 
-/// **An unresolvable command now reaches the POINT, and the point decides.**
-///
-/// This test was `an_unresolvable_command_reaching_the_gate_is_not_run_and_never_admitted`
-/// and it asserted a refusal. The instruction of 2026-10-02 changed that — *"in
-/// allow-all, stop refusing a command because the grammar could not resolve a
-/// construct"* — so `/bin/cat $FILE` is admitted at a permissive point, and the two
-/// facts that make that safe are what this pins:
-///
-/// * **`resolved` is still `false`.** It is carried on its own now rather than read
-///   off the verdict, so no corpus row claims a resolution that never happened.
-/// * **`adjudicable()` is `Some` now** — the operator's ruling of 2026-10-05 (*"the rest
-///   is oracle"*) overrules the sentence that stood here (*"a meaning nobody could read
-///   is never handed to a MODEL to approve"*). At a permissive point the action is
-///   admitted before any gate, so nothing is asked; at a narrow one the oracle answers,
-///   and only its UNSURE reaches a person.
+/// An unresolvable command reaches the point, and the two facts that make that safe are what this
+/// pins: `resolved` stays false, so no corpus row claims a resolution that never happened, and
+/// `adjudicable()` is `Some`, so the oracle may answer an unread meaning.
 #[test]
 fn an_unresolvable_command_reaching_the_gate_is_admitted_at_a_permissive_point() {
     let mut g = permissive_gate();
@@ -1094,20 +914,9 @@ fn an_unresolvable_command_reaching_the_gate_is_admitted_at_a_permissive_point()
     );
 }
 
-/// **And the same command at a point that does not admit it asks whoever this gate
-/// wires** — a person, in this fixture.
-///
-/// The other half of the ruling, and the half that keeps it from being a bypass: the
-/// widening is not an admission, it is a *scope*, and a narrow point finds an unbounded
-/// scope outside its grant for the same reason it refuses the literal. MEASURED here —
-/// `always-ask` with `exec_follows_mode` off, which is the strongest form of the
-/// assertion because no point admits exec there.
-///
-/// **What changed on 2026-10-05 is only whose adjudicator may answer.** The witness is
-/// minted for an unresolved action now (the operator: *"the rest is oracle"*), so
-/// `adjudicable()` is `Some` — and in THIS gate the adjudicator is `AskAdjudicator`, a
-/// person. That is why the test still reads as it does: the witness says *an adjudicator
-/// may answer this*, and which adjudicator is the gate's wiring, not the witness's.
+/// The widening is a scope and not an admission: at a narrow point the unbounded scope falls
+/// outside the grant for the same reason the literal does, so somebody is asked. Which adjudicator
+/// answers is the gate's wiring, not the witness's.
 #[test]
 fn an_unresolvable_command_at_a_narrow_point_reaches_a_person_and_not_a_model() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1117,8 +926,8 @@ fn an_unresolvable_command_at_a_narrow_point_reaches_a_person_and_not_a_model() 
         "human:test",
         move |req: &AdjudicationRequest| {
             a.fetch_add(1, Ordering::Relaxed);
-            // The person is shown the widened scope, which is the point of widening
-            // rather than refusing: they can see *what* is unknown.
+            // The person is shown the widened scope: that is the point of widening rather than
+            // refusing.
             assert!(
                 req.baseline.contains("unbounded"),
                 "the card must say the scope is unbounded: {}",
@@ -1154,8 +963,8 @@ fn an_unresolvable_command_at_a_narrow_point_reaches_a_person_and_not_a_model() 
 
 #[test]
 fn a_bare_command_name_is_not_run_when_the_shell_was_not_declared_fixed() {
-    // The alias defeat: `AdjudicatedGate::new` leaves `ShellTrust::Unknown`, so a
-    // gate nobody configured refuses a name that something upstream could redefine.
+    // The alias defeat: `AdjudicatedGate::new` leaves `ShellTrust::Unknown`, so a name something
+    // upstream could redefine is refused.
     let mut g = AdjudicatedGate::new(Box::new(NoAdjudicator));
     let args = json!({"command": "ls -la"});
     match g.admit(&bash(&args)) {

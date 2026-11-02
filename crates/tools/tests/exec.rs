@@ -1,14 +1,6 @@
-//! Acceptance tests for the exec substrate: T21.1, T21.2, T24's reaper record,
-//! and the two gates a command has to pass.
-//!
-//! # Why several of these end with `Err(e) => …` rather than a skip
-//!
-//! The substrate needs a delegated cgroup v2 subtree, and a host without one is a
-//! real thing. A `#[ignore]` there would be a green suite that measured nothing —
-//! the same defect as the reaper whose zero is unfalsifiable, one layer up. So
-//! every test that needs real processes asserts **something** on both branches:
-//! either the behaviour, or that the refusal names what was missing and that
-//! nothing was started.
+//! Acceptance tests for the exec substrate: the gates a command has to pass and the
+//! reaper's record. A test that needs real processes asserts the behaviour, or else
+//! that the refusal names what was missing and that nothing was started.
 
 use letibot_tools::exec::{ProcessHost, ScopeKind};
 use letibot_tools::testing::{runner_harness, runner_harness_with_gate};
@@ -45,11 +37,11 @@ fn no_cgroups(e: &letibot_tools::exec::ExecError, test: &str) {
         "a refusal must name what was missing: {msg}"
     );
     // Announced through `apparatus` so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the skip; an
-    // `eprintln!` and a `return` it could not see (R67 item 18).
+    // `eprintln!` and a `return` it could not see.
     letibot_tokencore::apparatus::absent("a cgroup v2 subtree this user may write");
 }
 
-// ------------------------------------------------------------------ T21.1
+// A pkill that matches the harness itself, and the pid a daemon protects.
 
 #[test]
 fn t21_1_a_pkill_matching_the_harness_is_refused_with_what_it_matches_and_the_handle_form() {
@@ -80,17 +72,15 @@ fn t21_1_a_pkill_matching_the_harness_is_refused_with_what_it_matches_and_the_ha
         matches!(r.outcome, ToolOutcome::Failed { .. }),
         "a self-matching pkill must not run: {body}"
     );
-    // 1. The diagnosis.
     assert!(body.contains("was NOT run"), "{body}");
-    // 2. What it currently matches — the shell, by construction.
+    // What it matches is the shell that will evaluate the line, by construction.
     assert!(
         body.contains("the shell that will evaluate this command"),
         "the refusal must say WHAT it matches: {body}"
     );
-    // 3. The handle-shaped alternative, which has no pattern.
+    // The handle-shaped alternative, which has no pattern.
     assert!(body.contains("job_kill"), "{body}");
     assert!(body.contains("job_list"), "{body}");
-    // And nothing ran.
     assert_eq!(h.processes.as_ref().unwrap().jobs().len(), 0);
 }
 
@@ -115,8 +105,8 @@ fn t21_1_the_managed_pid_is_named_with_its_reason_not_a_category() {
         "bash",
         &serde_json::json!({ "command": "pkill -f llama-server" }).to_string(),
     );
-    // The point of this case is the *reason string*, not the refusal: a refusal
-    // that says "protected" gives the model nothing to act on.
+    // The point of this case is the reason string, not the refusal: a refusal that
+    // says "protected" gives the model nothing to act on.
     let _ = r;
     let protected = host.protected();
     let server = protected
@@ -127,7 +117,7 @@ fn t21_1_the_managed_pid_is_named_with_its_reason_not_a_category() {
     assert!(protected.iter().any(|p| p.pid == std::process::id()));
 }
 
-// ------------------------------------------------------------------ T21.2
+// A waiter on the model server is a deadlock the harness can see.
 
 #[test]
 fn t21_2_a_waiter_on_the_model_server_is_refused_as_a_deadlock_the_harness_can_see() {
@@ -160,7 +150,7 @@ fn t21_2_a_waiter_on_the_model_server_is_refused_as_a_deadlock_the_harness_can_s
 #[test]
 fn t21_2_a_waiter_whose_predicate_matches_its_own_shell_is_refused() {
     let mut h = runner!("t21_2_self");
-    // The canonical form. `zzz-nothing-like-this` matches no process on the box —
+    // The canonical form. `zzz-nothing-like-this` matches no process on the box,
     // except the shell that will hold this very command line, which is exactly why
     // the loop either never fires or fires at once.
     let r = h.call(
@@ -182,7 +172,6 @@ fn t21_2_a_waiter_whose_predicate_matches_its_own_shell_is_refused() {
 #[test]
 fn the_wait_verb_takes_a_handle_and_the_three_endings_are_three_outcomes() {
     let mut h = runner!("wait_verb");
-    // 1. It happened.
     let started = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 0.4; echo done", "background": true}).to_string(),
@@ -195,7 +184,7 @@ fn the_wait_verb_takes_a_handle_and_the_three_endings_are_three_outcomes() {
     assert_eq!(ok.outcome, ToolOutcome::Ok, "{}", ok.render());
     assert!(ok.payload.contains("exited 0"), "{}", ok.payload);
 
-    // 2. The deadline passed quietly, and it is NOT reported as completion.
+    // The deadline passed quietly, and it is not reported as completion.
     let slow = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 30", "background": true}).to_string(),
@@ -213,13 +202,13 @@ fn the_wait_verb_takes_a_handle_and_the_three_endings_are_three_outcomes() {
         late.payload
     );
 
-    // 3. Nothing was ever there: absence without presence is a boot window.
+    // Nothing was ever there: absence without presence is a boot window.
     let never = h.call(
         "job_wait",
         &serde_json::json!({"scope": "explicit", "timeout_ms": 200}).to_string(),
     );
-    // No explicit scope is open, so this is the unknown-scope miss — which is
-    // clause 1's job and must list what there is.
+    // No explicit scope is open, so this is the unknown-scope miss, which must list
+    // what there is.
     assert!(never.payload.contains("scope"), "{}", never.render());
 }
 
@@ -241,7 +230,7 @@ fn waiting_on_a_scope_that_never_held_anything_is_a_boot_window_and_says_so() {
     let _ = host.end_scope(&empty);
 }
 
-// -------------------------------------------------- T24: the reaper record
+// The reaper's record: what it killed, and that the processes are gone.
 
 #[test]
 fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone() {
@@ -352,7 +341,7 @@ fn an_empty_scope_and_a_reaper_that_did_nothing_are_different_records() {
     let r = host.end_scope(&empty).expect("end");
     assert_eq!(r.mechanism, "nothing to kill");
     assert!(r.summary().contains("observed 0"), "{}", r.summary());
-    // It is `clean`, and that is honest — but the summary says WHY it is clean,
+    // It is `clean`, and that is honest - but the summary says WHY it is clean,
     // which is the difference between a zero from vigilance and a zero from a
     // mechanism.
     assert!(r.clean());
@@ -371,8 +360,8 @@ fn the_reap_log_reaches_the_model_through_job_list() {
 
     let started = h.call(
         "bash",
-        // `; :` keeps the shell beside `sleep` on every `sh` — macOS's is bash, which would
-        // otherwise `exec` it, and the record would be one process caught mid-exec.
+        // `; :` keeps the shell beside `sleep` on every `sh`: macOS's is bash, which
+        // would otherwise `exec` it, and the record would be one process caught mid-exec.
         &serde_json::json!({"command": "sleep 60; :", "background": true}).to_string(),
     );
     let id = job_id(&started.payload);
@@ -380,10 +369,9 @@ fn the_reap_log_reaches_the_model_through_job_list() {
     // forking records one process, and the count below is about the record, not the race.
     let host = h.processes.clone().unwrap();
     let job = letibot_tools::JobId(id.clone());
-    // **Thirty seconds, and it is a hang detector rather than a bet on the box.** Five was the
-    // number and it lost on the merge gate: a shell forking one child inside five seconds is a
-    // hundred times what a quiet box needs and not enough beside 227 test binaries, and the count
-    // assertion below then failed about a race rather than about the record.
+    // Thirty seconds is a hang detector rather than a bet on the box: the count
+    // assertion below is about the record, so it must not fail on a race with a slow
+    // fork.
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while host.job_pids(&job).len() < 2 && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -416,7 +404,7 @@ fn the_reap_log_reaches_the_model_through_job_list() {
     assert!(after.payload.contains("sleep"), "{}", after.payload);
 }
 
-// ------------------------------------------------------- the two gates
+// The two gates: an adjudicator, and a backend that cannot exec.
 
 #[test]
 fn with_no_adjudicator_bash_is_not_run_and_it_is_not_denied() {
@@ -426,7 +414,7 @@ fn with_no_adjudicator_bash_is_not_run_and_it_is_not_denied() {
         &serde_json::json!({"command": "echo hi"}).to_string(),
     );
     match &r.outcome {
-        // `NotRun` — nobody decided. `Denied` would claim a decision was made.
+        // `NotRun`, because nobody decided. `Denied` would claim a decision was made.
         ToolOutcome::NotRun { why } => {
             assert!(why.contains("exec"), "{why}");
             assert!(why.contains("not a denial"), "{why}");
@@ -441,8 +429,8 @@ fn a_session_whose_backend_cannot_exec_refuses_at_the_backend_naming_which() {
     // The second mechanism, independent of the gate: the coder harness has an
     // allowing adjudicator and a writable-but-not-executable backend.
     let mut h = letibot_tools::testing::writable_harness();
-    // `bash` is not even registered there, which is the third mechanism — the
-    // role. That refusal is clause 1's unknown-tool path and must list what is.
+    // `bash` is not even registered there, which is the third mechanism: the role.
+    // That refusal is the unknown-tool path and must list what is.
     let r = h.call(
         "bash",
         &serde_json::json!({"command": "echo hi"}).to_string(),
@@ -469,12 +457,8 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
         letibot_tools::builtins::retrieval::Unavailable,
     ))
     .unwrap();
-    // The runner role seats eleven; with the ceiling raised to 16 for leticode it
-    // is under the ceiling rather than over it, but its own number still stands.
-    // **Eleven since RH8's `fanout` and `scenario`** — the operator's ask, 2026-10-26: *"since we
-    // introduced remote hosts we can do map reduce now — usually agents hand roll orchestration that
-    // span multiple hosts"*. Both take their own seat rather than trading for one, and the runner's
-    // number moves with them, here, where somebody deciding can read it.
+    // The runner seats eleven; the ceiling was raised to 16 for leticode's tool
+    // union, so this role is under it rather than over.
     let role = roles::m2_runner();
     assert_eq!(role.max_tools, 11, "the runner's own number is 11");
     assert_eq!(
@@ -510,15 +494,9 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
         );
     }
 
-    // **`coder` names `bash`, and that arrived by decision on 2026-09-11.** The
-    // operator asked for a seat that can run the project's own tests, and a shaped
-    // `test` verb was the alternative that was put to them and not taken.
-    //
-    // This assertion is written as an exact set rather than a "does not contain"
-    // list, because the guard it replaces was the thing that caught the seat moving
-    // at all: `bash` is one decision and the job/monitor tools are a different one
-    // that nobody has made. A role that quietly grew `job_kill` alongside it would
-    // pass a contains-check and is precisely what this file exists to refuse.
+    // `coder` names `bash` by decision, and this is an exact set rather than a
+    // contains-check: a role that quietly grew `job_kill` alongside it would pass the
+    // latter, which is precisely what this file exists to refuse.
     let coder = roles::m2_coder();
     let coder_exec: Vec<&str> = EXEC_TOOLS
         .iter()
@@ -532,12 +510,9 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
          without one"
     );
 
-    // And the seat is still only the NAME of a permission. Whether a session gets
-    // the tool is `--bash` on the daemon, which strips it back off when absent —
-    // `crates/harnessd` owns that half and tests it there. The two are deliberately
-    // separate: a role that names a tool no session is given is a role that can be
-    // read, and a daemon flag that adds a tool to a role that never named it would
-    // be an exec path with no declaration anywhere.
+    // The seat is only the NAME of a permission: whether a session gets the tool is
+    // `--bash` on the daemon, which strips it back off when absent. The two are
+    // deliberately separate, and `crates/harnessd` tests its half.
 }
 
 /// Named once, because a list that is retyped per assertion is a list that drifts.
@@ -548,15 +523,13 @@ const EXEC_TOOLS: &[&str] = &[
     "job_list",
     "job_output",
     "monitor",
-    // **`fanout` and `scenario` are exec surface too** (RH8): a seat that cannot run a command
-    // here has no business running one on three machines, so they are on this list and the two
-    // guards below cover them — `m1_orchestrator` must not gain them and `m2_coder`'s set must
-    // stay the one decision it was.
+    // `fanout` and `scenario` are exec surface too: a seat that cannot run a command
+    // here has no business running one on three machines.
     "fanout",
     "scenario",
 ];
 
-// ----------------------------------------------------- output and denominators
+// Output caps, denominators, and what an empty answer means.
 
 #[test]
 fn a_capped_result_says_it_capped_and_job_output_has_the_rest() {
@@ -564,13 +537,9 @@ fn a_capped_result_says_it_capped_and_job_output_has_the_rest() {
     let r = h.call(
         "bash",
         &serde_json::json!({
-            // Was `i=0; while [ $i -lt 3000 ]; do echo "line $i ..."; i=$((i+1)); done`,
-            // and layer 2's normaliser now refuses that with `NotRun`: `$i` and
-            // `$((i+1))` are values that do not exist until the shell runs, so nothing
-            // could decide about the command. That refusal is correct and this test is
-            // not about it — it is about the output cap — so the command is respelled
-            // with the same volume and no unresolvable construct. `seq` does the
-            // counting the shell variable was doing.
+            // Respelled with `seq`: `$i` and `$((i+1))` are values that do not exist
+            // until the shell runs, so the normaliser refuses that command before it
+            // runs. Same volume, and this test is about the output cap.
             "command": "seq 0 2999 | sed 's/^/line /; s/$/ padding padding padding/'"
         })
         .to_string(),
@@ -747,17 +716,11 @@ fn a_bad_cwd_is_a_miss_with_the_listing_and_nothing_runs() {
     assert_eq!(h.processes.as_ref().unwrap().jobs().len(), 0);
 }
 
-// ------------------------------------------------------------- housekeeping
+// Housekeeping: a session that ends leaves nothing behind.
 
-/// A session that ends leaves no cgroup directory behind, not merely no process.
-///
-/// Written **after looking**, not after a failure: the suite was green, no
-/// process had leaked, and six empty `letibot.<pid>/` directories had accumulated
-/// — one per test-binary run. Nothing was holding anything, so no reap record was
-/// wrong, and the count still went up by one per session. That is the shape of
-/// the thirteen abandoned worktrees T24 was opened about, and the only reason it
-/// was noticed is that somebody went and looked — which is exactly the vigilance
-/// the fleet said a mechanism has to replace.
+/// A session that ends leaves no cgroup directory behind, not merely no process:
+/// an empty cgroup holds nothing and is still one more row somebody has to decide
+/// about.
 #[test]
 fn a_session_that_ends_leaves_no_empty_cgroup_directory_either() {
     let h = runner!("housekeeping");
@@ -795,13 +758,13 @@ fn a_session_that_ends_leaves_no_empty_cgroup_directory_either() {
     );
 }
 
-// ------------------------------------------------------------------ helpers
+// Helpers: scope membership, and a job id out of a result body.
 
 fn tree_members(
     host: &letibot_tools::exec::HostProcesses,
     scope: &letibot_tools::exec::ScopeId,
 ) -> usize {
-    // The tree's own reading of membership — the file the reaper reads on Linux, the
+    // The tree's own reading of membership: the file the reaper reads on Linux, the
     // live members of the recorded groups on macOS. See `scope::live_members`.
     let _ = host;
     letibot_tools::exec::live_members(scope).len()
@@ -826,22 +789,13 @@ fn job_id_from_note(text: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-// ------------------------------------------- the operator's own `!` shell line
-//
-// The ungated half of the runtime (`invoke_operator`) is what the daemon runs an
-// operator's `!` line through. Its contract is the door's own ruling — *nobody left
-// to ask* — and these pin the two properties that ruling has:
-//
-// 1. **No gate call appears.** Not `admit`, and not the view-grant ask `bash` can
-//    raise when its output names a path the boundary hid. A gate the operator must
-//    answer for their own command is the feature not working.
-// 2. **Everything else is identical.** Same tool, same execution path, same caps —
-//    which is the reason the daemon runs it rather than a head.
+// The operator's own `!` shell line, which the daemon runs through the ungated
+// half of the runtime (`invoke_operator`): no gate call appears, and everything
+// else is identical to a model's call.
 
-/// A gate that refuses everything and counts every way it was consulted.
-///
-/// The counting is the point: the assertion is not "the call succeeded" (a permissive
-/// gate would give that too) but "the gate has no calls on its books at all".
+/// A gate that refuses everything and counts every way it was consulted: the
+/// assertion is not that the call succeeded (a permissive gate gives that too) but
+/// that the gate has no calls on its books at all.
 struct Counting {
     admits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     grants: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -877,11 +831,9 @@ impl letibot_tools::runtime::Gate for Counting {
     }
 }
 
-/// **The contrast case first, because it is what makes the other test mean anything.**
-///
-/// A MODEL's `bash` call goes through `invoke`, and `bash` is `Access::Exec` — so the
-/// gate is consulted exactly once and its refusal stops the call. If this test were
-/// green while the operator's ran, the difference would be the gate and not the test.
+/// The contrast case first, because it is what makes the other test mean anything: a
+/// MODEL's `bash` call goes through `invoke`, so the gate is consulted exactly once
+/// and its refusal stops the call.
 #[test]
 fn a_model_bash_call_consults_the_gate_and_is_stopped_by_it() {
     let admits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -907,10 +859,8 @@ fn a_model_bash_call_consults_the_gate_and_is_stopped_by_it() {
     );
 }
 
-/// **An operator's own `!` line runs the command and consults nothing.**
-///
-/// This is the test that would fail if a gate call appeared on the `!` path: the gate
-/// counts both ways it can be reached, and both counters must stay at zero while the
+/// An operator's own `!` line runs the command and consults nothing: the gate counts
+/// both ways it can be reached, and both counters must stay at zero while the
 /// command's own output lands in the row.
 #[test]
 fn an_operators_own_bash_line_runs_and_no_gate_call_appears() {
@@ -949,24 +899,9 @@ fn an_operators_own_bash_line_runs_and_no_gate_call_appears() {
     );
 }
 
-/// **The operator's own run gets a terminal and a model's does not** — part A of the
-/// ANSI requirement, asserted on what the command itself can see.
-///
-/// The operator reported it more than once: *"i run `! ls -la` and the output is plain,
-/// while in a proper terminal directory names are highlighted"*. `ls --color=auto`
-/// colourises only when `isatty(1)` is true, and a pipe is not a terminal, so the fix
-/// is not a colour of our choosing but **a pty for their run** (`exec::pty` carries the
-/// measurement, the cost and why the environment cannot do it).
-///
-/// The assertion is the command's own answer rather than an inspection of the request,
-/// because that is the property that has to be true: `[ -t 1 ]` is `ls`'s question, put
-/// to the same fd, and it is asked twice through the two entries of one runtime — the
-/// ungated one a `!` line takes and the gated one a model's call takes. A model's call
-/// must keep its pipe: the payload is tokens it reads, and an escape sequence around
-/// every directory name is a cost it pays and cannot see.
-///
-/// **What this cannot cover is the operator's screen**: whether the colour that now
-/// reaches the row is *drawn* is part B and is asserted in `letibot-tui`'s frame tests.
+/// The operator's own run gets a pty and a model's call does not, asserted on what the
+/// command itself can see (`[ -t 1 ]` is `ls`'s own question) rather than on the
+/// request, because that is the property that has to be true.
 #[test]
 fn the_operators_own_run_gets_a_terminal_and_a_models_call_does_not() {
     let mut h = runner!("operator tty");
@@ -1001,38 +936,14 @@ fn the_operators_own_run_gets_a_terminal_and_a_models_call_does_not() {
     );
 }
 
-/// **The operator's own run is a job-control shell, and bash's two lines about not having
-/// one are gone** — gone because their cause is gone and not because anything filtered them.
-///
-/// The operator's answer to the first cut of this was *"nah, i think that bash should feel
-/// comfortable actually"*: a filter that drops `bash: no job control in this shell` leaves a
-/// shell that still has none — no `jobs`, no `^Z`/`fg`/`bg`, no signal behaviour like their
-/// own console. So this asserts the **cause** and the **want**, and the two absent sentences
-/// are the consequence rather than the thing bought:
-///
-/// * `$-` contains `m` — bash's own answer that **monitor mode**, which is job control, is on.
-///   Measured on this box, 2026-10-07: `bash -ic` with this pty as its controlling terminal
-///   answers `MONITOR`; the same shell with the same pty **not** its controlling terminal
-///   answers `NO-MONITOR` and prints the two lines.
-/// * `/dev/tty` **opens** — so the terminal it opened is this pty, which is what makes the
-///   first true. It is the same question [`letibot_tools::exec::term`]'s pane test asks.
-///
-/// **`(exec 9</dev/tty)` and not `[ -r /dev/tty ]`**, and the difference is not style: measured
-/// in the same pair, `[ -r /dev/tty ]` answers *yes* **without a controlling terminal too**,
-/// because it is a mode check on a device node rather than an open. The obvious probe lies, and
-/// a test written on it would be green on a box where this whole change did nothing.
-///
-/// **The control is the model's entry in the same test.** Its run has no pty at all —
-/// `/dev/null` on fd 0 and pipes for output — so it must answer *not a terminal* on both
-/// descriptors, which is what keeps `MONITOR` above from being a fact about `bash` on this box
-/// rather than about this path. (`MONITOR` itself is only asserted on the operator's entry: the
-/// model's run is `/bin/sh`, a different shell, so *it does not say MONITOR* would prove
-/// nothing about the terminal.)
+/// The operator's own run is a job-control shell: `$-` carries `m` and `/dev/tty`
+/// opens, so this pty is its controlling terminal. `(exec 9</dev/tty)` and not
+/// `[ -r /dev/tty ]`, which answers yes without a controlling terminal.
 #[test]
 fn the_operators_own_run_is_a_job_control_shell_and_its_two_bash_lines_are_gone() {
     let mut h = runner!("operator job control");
-    // **An exact line and not `contains`**: `NO-MONITOR` contains `MONITOR`, so the obvious
-    // spelling of the assertion below would be green on the run this change did not fix.
+    // An exact line and not `contains`: `NO-MONITOR` contains `MONITOR`, so the obvious
+    // spelling of the assertion below would pass on a run with no job control.
     fn said(body: &str, word: &str) -> bool {
         body.lines().any(|l| l.trim() == word)
     }
@@ -1046,7 +957,7 @@ fn the_operators_own_run_is_a_job_control_shell_and_its_two_bash_lines_are_gone(
         arguments: serde_json::json!({ "command": question }).to_string(),
     };
 
-    // ---- The operator's own run.
+    // The operator's own run.
     let theirs = h.rt.invoke_operator("", &call, &mut h.sink);
     assert!(
         matches!(theirs.outcome, ToolOutcome::Ok),
@@ -1074,7 +985,7 @@ fn the_operators_own_run_is_a_job_control_shell_and_its_two_bash_lines_are_gone(
         "bash's own `cannot set terminal process group` line reached the row: {body}"
     );
 
-    // ---- The control: a model's call has no terminal at all.
+    // The control: a model's call has no terminal at all.
     let pty_probe = concat!(
         "if [ -t 0 ]; then echo STDIN-TTY; else echo STDIN-NOT-TTY; fi; ",
         "if [ -t 1 ]; then echo STDOUT-TTY; else echo STDOUT-NOT-TTY; fi"
@@ -1091,21 +1002,9 @@ fn the_operators_own_run_is_a_job_control_shell_and_its_two_bash_lines_are_gone(
     );
 }
 
-/// **The operator's own case, against the program they reported it about.**
-///
-/// `[ -t 1 ]` is the mechanism; this is the fact. The operator's report was *"i run
-/// `! ls -la` and the output is plain, while in a proper terminal directory names are
-/// highlighted"*, so what has to be true is that **`ls` itself writes the SGR** on their run
-/// — and `--color=auto` is the spelling that decides by asking the same question every
-/// well-behaved program asks. The fixture tree has three directories in it, so a run that
-/// colours has something to colour.
-///
-/// The assertion is on the payload the runtime produced, not on a screen: the head's half is
-/// `letibot-tui`'s
-/// (`on_a_head_that_emits_colour_a_foreign_escape_arrives_as_a_role_and_nothing_else`), and
-/// the two together are the whole requirement — the run writes it, the row draws it.
-/// **A model's call has the same assertion backwards**: its payload must carry no escape at
-/// all, which is what keeps the model's context free of bytes it cannot see.
+/// The operator's own case, against the program they reported it about: `ls` itself
+/// writes the SGR on their run, and a model's payload must carry no escape at all.
+/// The head's half, whether the row draws it, is `letibot-tui`'s.
 #[test]
 fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
     let mut h = runner!("operator ls colour");
@@ -1115,13 +1014,13 @@ fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
         // GNU `ls` colours on `--color=auto`; BSD `ls` (macOS) ignores it and takes `-G`.
         arguments: serde_json::json!({
             "command": if cfg!(target_os = "macos") {
-                // …and colours only on a terminal it knows, so it is given a `TERM`; it is
-                // still the terminal, not the variable, that turns the colour on.
+                // It colours only on a terminal it knows, so it is given a `TERM`; the
+                // terminal, not the variable, is what turns the colour on.
                 "TERM=xterm-256color ls -G"
             } else {
-                // GNU `ls` also reads `TERM` before it colours, and a run inherits whatever the
-                // environment says — on lab2x1 a systemd user service carries the desktop's
-                // `TERM=qterminal`, which `ls` does not count as a colour terminal (2026-10-26).
+                // GNU `ls` also reads `TERM` before it colours, and a run inherits whatever
+                // the environment says: a systemd user service can carry a `TERM` that `ls`
+                // does not count as a colour terminal.
                 "TERM=xterm-256color ls --color=auto"
             }
         })
@@ -1138,8 +1037,8 @@ fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
         "`ls --color=auto` must colour on the operator's own run, or part A bought nothing: {}",
         theirs.render()
     );
-    // **The same command on the model's entry, and it is plain.** This is the control that
-    // makes the assertion above mean *the pty* rather than *this `ls` always colours*.
+    // The same command on the model's entry, and it is plain: the control that makes the
+    // assertion above mean the pty rather than this `ls` always colours.
     let mine = h.call(
         "bash",
         &serde_json::json!({ "command": "ls --color=auto" }).to_string(),
@@ -1151,39 +1050,13 @@ fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
     );
 }
 
-// ------------------------------------------- a command that wants the terminal
-//
-// The operator's second report, in the same breath as the colour one: *"what if I do
-// `! sudo ls /root` … and we also have to think about things like nano. what happens
-// when I run something long and running and that wants to own everything"*.
-//
-// The pty that makes `ls --color=auto` colourise is a **capture**: one transcript row,
-// `/dev/null` on stdin. So a program that takes the screen draws cursor-addressing
-// escapes into that row and then waits for a keystroke that cannot arrive — worse than
-// plain, and the state to make honest.
-//
-// [`letibot_tools::exec::terminal`] is the rule, and its own tests are the pure
-// predicate: refused or not, by which program, for which class, with no process ever
-// started. These two are the **wiring**: that the rule is consulted on the operator's
-// entry and NOT on the model's, and that the refusal is said rather than silent.
+// A command that wants the terminal: the pty that makes `ls` colour is a capture, so a
+// program that takes the screen draws into one row and waits for a keystroke that cannot
+// arrive. `exec::terminal` is the rule; these are the wiring.
 
-/// **The operator's own `!` line is refused, by name, with the sentence.**
-///
-/// `text_only_runner_harness` rather than `runner!`, and deliberately: the rule is the
-/// FIRST thing `bash` decides — ahead of the backend, the scope and the predicate —
-/// because it is a fact about the command text alone. So a session whose backend cannot
-/// start a process still gets the right sentence, and this test then measures something
-/// on a host with no delegated cgroup instead of taking `runner!`'s refusal branch.
-///
-/// Three assertions, and the last two are what make the first mean *this rule* rather
-/// than *this harness refuses everything*:
-///
-/// 1. `nano` on the operator's entry is `NotRun` and the row carries the sentence.
-/// 2. **The operator's own example from the same sentence** — `! sudo ls /root` — is not
-///    refused by this rule: it reaches the backend and is refused for the backend's
-///    reason, which says nothing about a terminal.
-/// 3. A **pipeline** is refused for its interactive member, which is what makes this a
-///    rule over the line's stages rather than over its first word.
+/// The operator's own `!` line is refused, by name, with the sentence: the rule is the
+/// first thing `bash` decides, so a session whose backend cannot start a process still
+/// gets it.
 #[test]
 fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_sentence() {
     let mut h = letibot_tools::testing::text_only_runner_harness();
@@ -1193,9 +1066,8 @@ fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_
         arguments: serde_json::json!({ "command": command }).to_string(),
     };
 
-    // 1. Refused, and SAID. The hard requirement is that the refusal is never silent,
-    //    so the assertions are on the text: the program's name, that nothing ran, what
-    //    the run actually is, and what to do instead.
+    // Refused, and said: the assertions are on the text - the program's name, that
+    // nothing ran, what the run actually is, and what to do instead.
     let r =
         h.rt.invoke_operator("", &bang("bang-nano", "nano /etc/fstab"), &mut h.sink);
     assert!(
@@ -1212,9 +1084,8 @@ fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_
         body.contains("needs the terminal and letibot cannot hand you one"),
         "the refusal must be the operator's sentence: {body}"
     );
-    // **The remedy names the verb that works.** *"run it in another window"* was the
-    // answer while there was no pane, and it sent the operator out of the harness for a
-    // program this harness now runs itself — see `exec::term`.
+    // The remedy names the verb that works: `!term` runs the program in a pane, rather
+    // than sending the operator out of the harness.
     assert!(
         body.contains("`!term <command>`"),
         "the refusal must say what to do instead: {body}"
@@ -1228,9 +1099,8 @@ fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_
         "the row must say what the operator's own run actually is: {body}"
     );
 
-    // 2. The operator's own example, from the same sentence as `nano`, and it must run
-    //    — which here means *reach the backend*: this harness has no process host, so
-    //    the reason is the backend's. The assertion is that it is NOT this rule's.
+    // `sudo ls /root` must reach the backend: this harness has no process host, so the
+    // reason it is refused is the backend's and not this rule's.
     let ordinary =
         h.rt.invoke_operator("", &bang("bang-ls", "sudo ls /root"), &mut h.sink);
     let text = ordinary.render();
@@ -1240,7 +1110,7 @@ fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_
          terminal rule: {text}"
     );
 
-    // 3. A pipeline is judged member by member.
+    // A pipeline is judged member by member.
     let piped =
         h.rt.invoke_operator("", &bang("bang-less", "ls | less"), &mut h.sink);
     assert!(
@@ -1255,15 +1125,9 @@ fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_
     );
 }
 
-/// **The rule is not consulted on a model's call**, and that is a decision rather than
-/// an oversight.
-///
-/// A model's `bash` call has no pty — `InvokeCtx::tty` is `!gated`, and this is the
-/// gated entry — so `nano` there reads EOF on `/dev/null` and exits instead of hanging
-/// in a screen nobody is watching. That is a different defect and `exec::terminal` lists
-/// it among its own misses; what this test pins is that the rule stays on the side of
-/// the line it was written for, because a rule that fired on both would tell the model
-/// to *run it in the pane*, which is advice a model cannot take.
+/// The rule is not consulted on a model's call, and that is a decision: a model has no
+/// pty, so `nano` reads EOF and exits, and a rule that fired on both would tell the
+/// model to run it in a pane - advice a model cannot take.
 #[test]
 fn the_terminal_rule_does_not_fire_on_a_models_call() {
     let mut h = letibot_tools::testing::text_only_runner_harness();
@@ -1276,8 +1140,8 @@ fn the_terminal_rule_does_not_fire_on_a_models_call() {
         !text.contains("cannot hand you one"),
         "a model's call keeps its pipe and must not be refused by the terminal rule: {text}"
     );
-    // It still does not RUN, and the reason is the one that applies here: this harness
-    // has no process host. The contrast is the point — a different reason, from a
+    // It still does not run, and the reason is the one that applies here: this harness
+    // has no process host. The contrast is the point - a different reason, from a
     // different guard.
     assert!(
         matches!(mine.outcome, ToolOutcome::Failed { .. }),
@@ -1285,14 +1149,9 @@ fn the_terminal_rule_does_not_fire_on_a_models_call() {
     );
 }
 
-/// **The end-to-end version, against the real substrate**, for a host that has one.
-///
-/// The two tests above prove the wiring without needing a process. This one proves the
-/// thing the operator will actually see: on a session that CAN run commands, `! nano`
-/// is refused with the sentence and **nothing is started**, while `! ls` on the same
-/// entry runs and its output lands in the row. `runner!` needs a delegated cgroup v2
-/// subtree, so on a host without one this takes the refusal branch and says so — the
-/// house pattern for every test in this file that needs a real process.
+/// The end-to-end version, against the real substrate: on a session that can run
+/// commands `! nano` is refused with the sentence and nothing is started, while `! ls`
+/// on the same entry runs.
 #[test]
 fn on_a_real_substrate_the_operators_nano_is_refused_and_their_ls_still_runs() {
     let mut h = runner!("operator terminal rule");
@@ -1332,15 +1191,9 @@ fn on_a_real_substrate_the_operators_nano_is_refused_and_their_ls_still_runs() {
     );
 }
 
-/// **The view-grant ask specifically, on a boundary that produces one.**
-///
-/// `grant_view` fires when a command's output names a path the confinement hid —
-/// reachable only on a confined session, which is why this one is built with
-/// `confined_harness_with_gate` rather than the plain runner. On a MODEL's call that
-/// is a card the operator answers; on their OWN command it would be a question about
-/// a line they just typed, so the ungated path takes none and the row keeps the
-/// absence note `bash` already wrote (`absence_notes` and `outside_paths` scan the
-/// same output for the same paths — nothing is lost but the ask).
+/// The view-grant ask specifically: `grant_view` fires when a command's output names a
+/// path the confinement hid, so this needs a confined harness. The ungated path takes
+/// none and the row keeps the absence note `bash` already wrote.
 #[test]
 fn an_operators_own_command_does_not_ask_to_grant_a_path_into_the_view() {
     let admits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1354,9 +1207,8 @@ fn an_operators_own_command_does_not_ask_to_grant_a_path_into_the_view() {
     }) {
         Ok(h) => h,
         Err(e) => {
-            // The confined substrate needs a usable unprivileged namespace boundary,
-            // and a host without one is a real host (`kernel.apparmor_restrict_
-            // unprivileged_userns=1`). The refusal is asserted rather than skipped,
+            // The confined substrate needs a usable unprivileged namespace boundary, and a
+            // host without one is a real host. The refusal is asserted rather than skipped,
             // for the same reason `runner!`'s is.
             eprintln!(
                 "an_operators_own_command_does_not_ask: no boundary here, so there is \
@@ -1371,12 +1223,9 @@ fn an_operators_own_command_does_not_ask_to_grant_a_path_into_the_view() {
     };
     let outside =
         std::path::PathBuf::from(format!("/opt/letibot-bang-outside-{}", std::process::id()));
-    // A command whose OUTPUT names a path the boundary hid. The path does not have
-    // to exist on the host — `outside_paths` classifies LEXICALLY, on purpose (a
-    // stat would turn the note into a disclosure about the operator's disk), and
-    // `/opt` is past every bound and replaced root, so the token is `Outside` and
-    // nothing under `/tmp` would be: `/tmp` is one of the REPLACED roots, a fresh
-    // tmpfs, and a path there is absent for a different reason that raises no ask.
+    // A command whose OUTPUT names a path the boundary hid; `outside_paths` classifies
+    // lexically, so the path need not exist. `/opt` is past every bound and replaced
+    // root; `/tmp` is a replaced root, whose absence raises no ask.
     let command = format!("ls {d}/gone.txt 2>&1; true", d = outside.display());
     let call = letibot_transcript::ToolCall {
         id: "bang-2".into(),
@@ -1394,7 +1243,7 @@ fn an_operators_own_command_does_not_ask_to_grant_a_path_into_the_view() {
         said.contains("No such file or directory"),
         "the command's own output is the finding: {said}"
     );
-    // The absence is still NAMED on the row — bash's own note, not a gate question.
+    // The absence is still NAMED on the row - bash's own note, not a gate question.
     assert!(
         said.contains("not in this session's filesystem view")
             || said.contains("outside this session's view")
@@ -1414,25 +1263,13 @@ fn an_operators_own_command_does_not_ask_to_grant_a_path_into_the_view() {
     let _ = outside;
 }
 
-// ------------------------------------------- the world their console gives it
-//
-// The operator's first report was *"i run `! ls -la` and the output is plain, while
-// in a proper terminal directory names are highlighted"*, and the pty above is only
-// half of it: on this box `ls` colourises because their `~/.bashrc` says
-// `alias ls='ls --color=auto'`, and an alias is shell state that no `/bin/sh -c`
-// reads. `letibot_tools::exec::console` carries the decision, what it changes, and
-// why a model's call gets none of it; these are the wiring, against a real process.
+// The world their console gives it: their `~/.bashrc` aliases `ls` to `--color=auto`,
+// and an alias is shell state that no `/bin/sh -c` reads. `exec::console` carries the
+// decision; these are the wiring, against a real process.
 
-/// **The operator's own line is read by their shell, so their alias is their
-/// command.**
-///
-/// The console's rc is a file, so this is testable without a daemon: the daemon's
-/// only part is `HOME`, which it puts on the standing environment
-/// (`harness.rs` `set_standing_env`), and a test can put the same pair there. The
-/// assertion is the alias's own output rather than an inspection of the argv,
-/// because the property is *the line met their shell* and not *the argv had `-i`
-/// in it* — and the model's entry is the control that makes it mean that: the same
-/// command, the same host, the gated path, where `sh` has never heard of the name.
+/// The operator's own line is read by their shell, so their alias is their command.
+/// The console's rc is a file, so `HOME` on the standing environment is the whole
+/// wiring, and the model's entry is the control.
 #[test]
 fn the_operators_own_run_reads_their_rc_so_their_alias_is_their_command() {
     let mut h = runner!("operator rc");
@@ -1466,7 +1303,7 @@ fn the_operators_own_run_reads_their_rc_so_their_alias_is_their_command() {
     );
 
     // The control: the same command on the model's entry. `sh` has no alias table
-    // here, so the name is not a command — which is R10 layer 1 working, not a bug.
+    // here, so the name is not a command.
     let mine = h.call(
         "bash",
         &serde_json::json!({ "command": "letibot-rc-probe" }).to_string(),
@@ -1478,17 +1315,9 @@ fn the_operators_own_run_reads_their_rc_so_their_alias_is_their_command() {
     );
 }
 
-/// **The operator's own run gets the console's environment; a model's does not.**
-///
-/// `PAGER` is the assertion because it is the one pair that is **forced** rather
-/// than inherited, so it does not depend on what this test process happens to carry
-/// — the console's own `PAGER` cannot survive into a run nobody can type at, and a
-/// model's run has no console at all. `printenv` prints nothing and exits non-zero
-/// for a variable that is not there, which is the second half of the contrast.
-///
-/// The pure version of the whole six-pair environment is
-/// `exec::console::tests::the_operators_run_is_given_the_consoles_terminal_and_pagers_that_cannot_page`;
-/// this is the wiring from that function to a process.
+/// The operator's own run gets the console's environment; a model's does not. `PAGER`
+/// is the assertion because it is forced rather than inherited, so it does not depend
+/// on what this test process happens to carry.
 #[test]
 fn the_operators_own_run_gets_the_consoles_pagers_and_a_models_call_does_not() {
     let mut h = runner!("operator console env");

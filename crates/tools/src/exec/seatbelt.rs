@@ -1,84 +1,6 @@
-//! **macOS's boundary: a mandatory-access policy the kernel applies, measured.**
-//!
-//! Linux's boundary is a set of namespaces ([`super::confine::Bwrap`]) and its whole
-//! strength is *absence*: a file outside the mount view is not there, so no rule, no path
-//! list and no classifier is in the way of the guarantee. macOS has none of that — no
-//! mount namespace, no PID namespace, no cgroup — and until this module existed a Mac
-//! session that wanted to run a command had one of two choices: a firecode VM, which is
-//! slow and needs a Linux guest, or an unconfined whole-host shell, which is what the
-//! operator's own sessions do today.
-//!
-//! What macOS does have is **Seatbelt**: `sandbox-exec -f <profile>`, a mandatory-access
-//! policy the kernel evaluates on every filesystem, mach, network and process operation the
-//! process and everything it execs performs. It is deprecated and it is present, and it is
-//! what Chrome ships to three hundred million people. This module renders letibot's
-//! [`ViewSpec`] as one of those profiles and then **measures** it, because a profile that
-//! was written is a request and this tree does not accept requests as evidence.
-//!
-//! # One policy, two renderings
-//!
-//! The view is the same type on both platforms — the project read-write at its own path,
-//! the system roots read-only, the toolchain read-only, `$HOME` the session's own, `/tmp`
-//! the session's own, egress a decision — and it is what decides **what is inside**. What
-//! differs is the medium: [`super::confine::pieces_of`] turns a view into a bubblewrap
-//! argv, and [`render_profile`] turns the same view into SBPL text. Neither reads the other,
-//! and both are driven by the same [`ViewSpec`], which is the reason a policy cannot drift
-//! between the platforms: there is one place to change and two functions that must both
-//! consume the change or fail to compile.
-//!
-//! # Denied, not absent — and the deny list outranks every grant
-//!
-//! The difference between the two platforms is not cosmetic and is not hidden:
-//!
-//! | | Linux (mount namespace) | macOS (policy) |
-//! |---|---|---|
-//! | `~/.ssh/id_ed25519` | **not there** — no spelling reaches it | **there, and `open` answers `EPERM`** |
-//! | a listing of the operator's home | absent | `EPERM` |
-//! | a write outside the checkout | absent | `EPERM` |
-//!
-//! [`super::confine::Boundary::describe`] says which of the two it is holding, and
-//! [`super::confine::Boundary::absence_notes`] is written differently for each: on Linux an
-//! `ENOENT` under `/tmp` is the boundary, on macOS the words are `Operation not permitted`
-//! and a note written only for `ENOENT` would say nothing at all.
-//!
-//! The deny list has a second job that the mount view cannot do. A grant widens the view, and
-//! on Linux a grant of `/home/dead` binds the whole home directory — `.ssh` inside it
-//! included, because a bind mount cannot exclude a path within itself. Here the denies are
-//! emitted **after** every allow, so a widened view still cannot read the operator's
-//! credentials, keychains, shell profiles or letibot store. That is the one place where the
-//! weaker mechanism is stricter, and it is measured rather than argued: the probe writes a
-//! canary inside a directory the profile allows read-write and requires the deny rule to win.
-//!
-//! # What this boundary does not give, which is stated rather than papered over
-//!
-//! * **No PAX, no PID namespace: other processes are not absent.** What is measured instead
-//!   is that the command cannot *reach* them: `kill -0 <pid outside>` is `EPERM` (the
-//!   launcher's own pid is one of the probe's subjects), `ps` is refused, and a child of the
-//!   command remains killable — job control works. A process's existence is not absent the
-//!   way a PID namespace makes it absent, and [`Prop::ProcessAbsence`] says `ABSENT` for
-//!   exactly this.
-//! * **No cgroup.** The lifetime half is [`super::scope::ProcessGroups`], which reaps by
-//!   process group: a group can be left with `setsid` and a group id is a pid. That is the
-//!   tree's own documented weakening on macOS and this module does not claim more.
-//! * **No `PR_SET_NO_NEW_PRIVS`.** There is no flag to set; what there is, is that the kernel
-//!   applies the policy at exec, so a setuid program inside inherits it. Measured (a nested
-//!   `sh -c` is denied the same path); reported as [`super::confine::Seal::NotApplicable`]
-//!   for the property the Linux way, because claiming `held` would be claiming a mechanism
-//!   that is not there.
-//! * **`mach-lookup` is a short list, not a filter over everything.** A program that needs a
-//!   system service not on [`MACH_SERVICES`] fails with the service's name in the error and
-//!   the fix is one line in that list. It is a list because a profiled process reaching an
-//!   arbitrary privileged XPC service is exactly what a boundary is for.
-//! * **Nothing here reads `~/.ssh`, a keychain or a shell profile.** The paths are denied by
-//!   name and never opened; the probe's canary is a file this module creates.
-//!
-//! # The cost, measured
-//!
-//! MEASURED 2026-10-27 on the operator's Mac (arm64, macOS 26.7.1): **100 `true` calls cost
-//! 0.30 s unconfined and 0.41 s under `sandbox-exec`** — about **1.1 ms per call**, which is
-//! `execve` plus the kernel evaluating the policy, and it does not grow with the profile's
-//! length in any way a tool call notices. `docs/boundary-and-adjudication.md` §4k has the
-//! measurement, the rule-count and what it cost to build.
+//! macOS's boundary: `sandbox-exec -f <profile>`, a policy the kernel applies to every
+//! operation the process and everything it execs performs. [`render_profile`] renders the
+//! same [`ViewSpec`] Linux renders as namespaces, and the profile is measured, not believed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -99,14 +21,9 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// is on the other platform.
 pub const SANDBOX_ENV: &str = "LETIBOT_SANDBOX_EXEC";
 
-/// **The read-only roots a command needs to be a command**, on this platform.
-///
-/// The list is the answer to *what does `/bin/sh` need to exist*, not a security decision —
-/// the security decision is everything not on it. Three entries are here because they were
-/// missing in the first profile written and each one broke a tool: `/Library` (the macOS
-/// toolchain shims `git`, `make` and `/usr/bin/python3` `dlopen` `libxcrun` from
-/// `/Library/Developer/CommandLineTools`), `/System` (the dyld shared cache), and
-/// `/Applications/Xcode.app` (a real toolchain, when one is installed).
+/// The read-only roots a command needs to be a command: the answer to *what does `/bin/sh`
+/// need to exist*, not a security decision, which is everything not on it. `/Library` is
+/// here for the `xcrun` shims and `/System` for the dyld shared cache.
 pub const SYSTEM_ROOTS: &[&str] = &[
     "/usr",
     "/bin",
@@ -120,14 +37,9 @@ pub const SYSTEM_ROOTS: &[&str] = &[
     "/opt/homebrew",
 ];
 
-/// **The mach services a shell, `git`, `cargo`/`rustc`, `python3` and `make` need**, measured
-/// by building a crate with a registry dependency under a profile that allowed only these.
-///
-/// `com.apple.system.logger` is `syslog(3)`; `com.apple.cfprefsd.agent` is `CFPreferences`;
-/// `com.apple.SecurityServer` is the keychain *service* — the daemon that answers, never the
-/// keychain files, which are denied by name in [`DENY_UNDER_HOME`]; `libinfo` is
-/// `getpwnam`/`getgrnam`; `distributed_notifications@Uv3` is what `notify(3)` and a
-/// terminal-less program's notifications use; `notification_center` is the same family.
+/// The mach services a shell, `git`, `cargo`/`rustc`, `python3` and `make` need: a program
+/// wanting one not here fails naming it, and the fix is one line. `com.apple.SecurityServer`
+/// is the keychain service, never the keychain files, which [`DENY_UNDER_HOME`] denies.
 pub const MACH_SERVICES: &[&str] = &[
     "com.apple.system.logger",
     "com.apple.system.notification_center",
@@ -137,16 +49,9 @@ pub const MACH_SERVICES: &[&str] = &[
     "com.apple.distributed_notifications@Uv3",
 ];
 
-/// **What is put back inside the view read-only, out of the operator's own home.**
-///
-/// The session's `$HOME` is a fresh directory, so `cargo`, `rustc`, `python3` and the mise
-/// shims are not under it and must be granted — read-only, because they are the operator's
-/// toolchain and a session that could rewrite `~/.cargo/bin` would be writing the binaries
-/// the operator runs (`docs/remote-hosts.md` RH5's rule, one platform over). The cost is
-/// stated rather than discovered: **a new dependency cannot be fetched into a read-only
-/// registry**, so an offline build sees the registry as it was and a build that needs
-/// something new fails saying so. `.gitconfig` is here for the reason RH5 gives: without it
-/// every commit inside the boundary fails with *Author identity unknown*.
+/// What is put back inside the view read-only out of the operator's own home, since the
+/// session's `$HOME` holds no toolchain. Read-only, because rewriting `~/.cargo/bin` would be
+/// writing the binaries the operator runs; `.gitconfig` is here or a commit has no author.
 pub const TOOLCHAIN_UNDER_HOME: &[&str] = &[
     ".cargo",
     ".rustup",
@@ -159,19 +64,9 @@ pub const TOOLCHAIN_UNDER_HOME: &[&str] = &[
     ".gitconfig",
 ];
 
-/// **Denied for read and write, after every allow, whatever the view grants.**
-///
-/// These are relative to the **operator's** home, not the session's: the session's `$HOME` is
-/// a directory this module made, and the point of the list is the operator's own data. The
-/// list is a *deny* rather than part of the allow-list because a deny has to win over a
-/// widened view — `HostBackend::grant_into_view_impl` can put the operator's whole home
-/// inside the view on the operator's word, and it must not put `~/.ssh` there.
-///
-/// Every entry is a fact about this platform, not a guess: `.ssh` is `docs/boundary-and-adjudication.md`
-/// §3's absolute; `Library/Keychains` is where a login keychain lives; the four shell profiles
-/// are what `bash -l` would read (the ordinary path here is `/bin/sh -c`, which reads none);
-/// `.local/share/letibot` and `.config/letibot` are this tool's own store and modes, which a
-/// session must not be able to rewrite under itself.
+/// Denied for read and write after every allow, whatever the view grants, and relative to the
+/// operator's home. A deny rather than an allow-list entry, because it has to win over a
+/// widened view: a grant of the whole home must not bring `~/.ssh` or this tool's store in.
 pub const DENY_UNDER_HOME: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -198,12 +93,8 @@ pub const DENY_UNDER_HOME: &[&str] = &[
 ];
 
 /// A file this module creates inside the session's `$HOME` so that the deny rule can be
-/// measured **winning over an allow**.
-///
-/// Without it the probe would only show that a path outside the view is unreachable, which is
-/// the allow-list doing its job. The canary is in a directory the profile allows read-write
-/// and is denied by name, so a successful read of it means the deny list does not work and
-/// [`Seatbelt::probe`] refuses.
+/// measured winning over an allow: the directory is read-write in the profile and the file is
+/// denied by name, so a successful read means the deny does not work and the probe refuses.
 pub const CANARY: &str = ".letibot-canary";
 
 /// The content of the canary. Not a secret and not read by anything: it exists so that a
@@ -211,10 +102,9 @@ pub const CANARY: &str = ".letibot-canary";
 const CANARY_BODY: &str =
     "letibot: this file exists so that a boundary can be measured refusing to read it\n";
 
-/// **The paths one profile names, resolved once.**
-///
-/// Public because the renderer is public and a golden test must be able to say exactly what
-/// the layout was. [`Layout::of`] is the real one; a test builds the struct.
+/// The paths one profile names, resolved once. Public because the renderer is public and a
+/// golden test must be able to say exactly what the layout was; [`Layout::of`] is the real
+/// one and a test builds the struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
     /// The workspace, read-write at its own path.
@@ -223,7 +113,7 @@ pub struct Layout {
     pub home: PathBuf,
     /// Where the command's `TMPDIR` points and where its scratch belongs.
     pub tmp: PathBuf,
-    /// The operator's home. Only ever used to *deny* paths inside it.
+    /// The operator's home. Only ever a source of deny paths.
     pub operator_home: PathBuf,
     /// The toolchain directories that are really there, read-only.
     pub toolchain: Vec<PathBuf>,
@@ -238,12 +128,9 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Resolve a view's paths. **Creates nothing** — [`Seatbelt::probe`] makes the
-    /// directories, because a resolve that has side effects cannot be used by a test.
-    ///
-    /// `dir` is where the profile and the directories a view did not name live: it is outside
-    /// the checkout on purpose, because a profile written into the tree the command can write
-    /// is a policy the command can edit.
+    /// Resolve a view's paths, and create nothing: [`Seatbelt::probe`] makes the directories,
+    /// because a resolve with side effects cannot be used by a test. `dir` is outside the
+    /// checkout on purpose, because a policy the command can edit is not a policy.
     pub fn of(view: &ViewSpec, operator_home: &Path, dir: &Path) -> Layout {
         let home = match &view.home {
             HomeView::Tmpfs => dir.join("home"),
@@ -292,24 +179,16 @@ impl Layout {
     }
 
     /// The `xcrun` cache file the macOS toolchain shims write, and the only thing in the
-    /// per-user temp directory this profile allows.
-    ///
-    /// MEASURED: without it **every** `git`, `make` and `/usr/bin/python3` call prints
-    /// `xcrun: error: couldn't create cache file '/var/folders/…/T/xcrun_db-…'` — those three
-    /// are shims that `dlopen` a cache into `confstr(_CS_DARWIN_USER_TEMP_DIR)`, which is not
-    /// `TMPDIR` and so cannot be redirected into the session's own directory. It is a
-    /// performance cache of "which developer directory is selected" and nothing else in that
-    /// directory is reachable.
+    /// per-user temp directory this profile allows. Those shims cache into
+    /// `confstr(_CS_DARWIN_USER_TEMP_DIR)`, which is not `TMPDIR` and cannot be redirected.
     pub fn xcrun_cache(&self) -> String {
         format!("{}/xcrun_db", self.user_temp.display())
     }
 }
 
-/// **The SBPL text for a view.** The macOS rendering of the one policy.
-///
-/// Deterministic: no timestamps, no iteration over a hash map, and every path rendered as
-/// written. The order is load-bearing — SBPL is last-match-wins, so the denies are emitted
-/// after every allow, and `(deny default)` comes first.
+/// The SBPL text for a view: the macOS rendering of the one policy. Deterministic, so no
+/// timestamps, no hash-map iteration and every path as written. The order is load-bearing,
+/// because SBPL is last-match-wins: `(deny default)` first, the denies after every allow.
 pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     let mut s = String::new();
     s.push_str("(version 1)\n");
@@ -335,11 +214,9 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     );
     s.push_str("(allow file-read-metadata)\n");
     s.push_str("(allow file-read*\n");
-    // **`(literal \"/\")` is not decoration.** MEASURED 2026-10-27: a profile that allows
-    // `file-read*` on `/usr` and the rest but not on `/` itself makes *every* process abort
-    // with SIGABRT before `main` — the sandbox's own check-in reads the root directory. The
-    // root's entries are the top-level names (`ls /`), and nothing below them is reachable
-    // unless it is allowed on its own line.
+    // `(literal "/")` is not decoration: without it every process aborts with SIGABRT before
+    // `main`, because the sandbox's own check-in reads the root directory. That reaches the
+    // top-level names only; anything below needs a line of its own.
     s.push_str("  (literal \"/\")\n");
     for p in SYSTEM_ROOTS {
         s.push_str(&format!("  (subpath \"{p}\")\n"));
@@ -361,10 +238,9 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
                 "(allow file-read* file-write* (subpath \"{}\"))\n",
                 path.display()
             )),
-            // An agent socket is a unix socket, which Seatbelt has no operation for: a unix
-            // socket is reached with `file-read*`/`file-write*` on its path, and this is that
-            // — and it is the *only* grant that puts a credential inside the view without
-            // putting a key in it, so it is allowed by name and nothing wider.
+            // Seatbelt has no operation for a unix socket, so it is reached with
+            // `file-read*`/`file-write*` on its path: the one grant that puts a credential
+            // inside the view without putting a key in it, so it is allowed by name only.
             Grant::AgentSocket { path, .. } => s.push_str(&format!(
                 "(allow file-read* file-write* (literal \"{}\"))\n",
                 path.display()
@@ -383,11 +259,9 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     s.push_str("  (literal \"/dev/null\")\n");
     s.push_str("  (literal \"/dev/stdout\")\n");
     s.push_str("  (literal \"/dev/stderr\")\n");
-    // **`/dev/tty`, because a program's own terminal is not a path it chose.** stdio already
-    // points there and `write(2)` on an open descriptor is not filtered, but a program that
-    // *opens* its controlling terminal — `sudo` asking for a password, a pager, a shell's job
-    // control — would be refused one it can already write to. It is the session's own tty and
-    // never a device of another user's.
+    // `/dev/tty`, because a program's own terminal is not a path it chose: stdio already
+    // points there, but a program that opens its controlling terminal would be refused one it
+    // can already write to. It is the session's own tty, never another user's device.
     s.push_str("  (literal \"/dev/tty\")\n");
     s.push_str("  (literal \"/dev/dtracehelper\"))\n");
     for g in &view.grants {
@@ -423,16 +297,9 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     s
 }
 
-/// **The script the probe runs inside the profile.**
-///
-/// One `probe <name> <outcome>` line per fact, so the parser has no opinions about a
-/// program's prose. The subjects are handed in as arguments rather than written into it:
-/// `$1` the canary, `$2` a path outside the view to write, `$3` a path inside it, `$4` the
-/// launcher's own pid, `$5`/`$6` the two egress destinations.
-///
-/// **It never sends a byte.** The two network subjects are a loopback port nothing listens on
-/// and `192.0.2.1` (TEST-NET-1, RFC 5737: reserved for documentation, routed nowhere), and
-/// `nc -z` closes as soon as the answer arrives.
+/// The script the probe runs inside the profile: one `probe <name> <outcome>` line per fact,
+/// subjects handed in as arguments (`$1` the canary, `$2` outside, `$3` inside, `$4` the
+/// launcher's pid). It never sends a byte: the far subject is TEST-NET-1, routed nowhere.
 const PROBE: &str = "\
 p() { echo \"probe $1 $2\"; }
 if [ -r \"$1\" ]; then p read-denied allowed; else p read-denied denied; fi
@@ -479,7 +346,7 @@ impl Outcome {
     }
 }
 
-/// **What the probe measured**, before it is judged.
+/// What the probe measured, before it is judged.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Probe {
     pub facts: BTreeMap<String, Outcome>,
@@ -514,7 +381,7 @@ pub fn read_probe(said: &str) -> Probe {
     }
 }
 
-/// **A measured macOS boundary**, and the profile file every spawn is wrapped in.
+/// A measured macOS boundary, and the profile file every spawn is wrapped in.
 #[derive(Debug, Clone)]
 pub struct Seatbelt {
     helper: PathBuf,
@@ -527,24 +394,16 @@ pub struct Seatbelt {
 }
 
 impl Seatbelt {
-    /// **Render the profile, run the probe inside it, and believe only what it measured.**
-    ///
-    /// The refusals, each naming what is missing: no `sandbox-exec`; the profile could not be
-    /// written; the helper would not run; the probe printed nothing it could read; the canary
-    /// was readable (the deny list does not work); a write inside the view failed (the profile
-    /// is unusable); fork/exec failed; a write outside the view succeeded; a nested child was
-    /// not confined; an egress decision that did not take.
+    /// Render the profile, run the probe inside it, and believe only what it measured. The
+    /// refusals: no helper, an unwritable profile, a canary that was readable, a write inside
+    /// that failed or outside that succeeded, a child unconfined, an egress that did not take.
     pub fn probe(view: ViewSpec, egress: Egress) -> Result<Seatbelt, ExecError> {
         Seatbelt::probe_with(view, egress, Vec::new())
     }
 
-    /// [`Seatbelt::probe`], with paths **added to the deny list** — the seam a test needs to
-    /// put a fixture's `$HOME` behind the same rule as the operator's own.
-    ///
-    /// The real caller passes nothing: the list is [`DENY_UNDER_HOME`] expanded against
-    /// `$HOME`, which is the operator's. A test cannot use that list to point at a temporary
-    /// directory, and a test that instead measured the operator's real credentials would be
-    /// measuring — and reading — the thing the boundary exists to protect.
+    /// [`Seatbelt::probe`], with paths added to the deny list: the seam a test needs to put a
+    /// fixture's `$HOME` behind the same rule as the operator's own. The real caller passes
+    /// nothing, and a test must not point the operator's real credentials at a measurement.
     pub fn probe_with(
         view: ViewSpec,
         egress: Egress,
@@ -657,10 +516,9 @@ impl Seatbelt {
     }
 }
 
-/// **The refusals a measurement has to survive**, in the order they matter.
-///
-/// The first one is the case the whole module is written against: a profile that is written
-/// but does not take looks exactly like one that does, from everywhere except inside.
+/// The refusals a measurement has to survive, in the order they matter. The first is what the
+/// module is written against: a profile that is written but does not take looks exactly like
+/// one that does, from everywhere except inside.
 #[allow(clippy::too_many_arguments)]
 fn judged(
     helper: PathBuf,
@@ -753,9 +611,9 @@ fn judged(
         },
     };
 
-    // **The egress decision, measured against the decision.** A run that asked for the host's
-    // network and did not get it is a refusal and not a partial boundary: the profile would
-    // make every `curl` inside fail while the disclosure said the opposite.
+    // The egress decision, measured against the decision. A run that asked for the host's
+    // network and did not get it is a refusal and not a partial boundary: every `curl` inside
+    // would fail while the disclosure said the opposite.
     let net = match &egress {
         Egress::Denied => ("net-loopback", "net-external"),
         Egress::Host { .. } => ("net-loopback", "net-external"),
@@ -840,8 +698,8 @@ fn judged(
         },
     );
 
-    // **The view as it will actually be**, not as it was asked for: `$HOME` and `/tmp` are
-    // the resolved directories, so a disclosure and an `ENOENT` note describe the same place.
+    // The view as it will actually be, not as it was asked for: `$HOME` and `/tmp` are the
+    // resolved directories, so a disclosure and an `ENOENT` note describe the same place.
     view.project = layout.project.clone();
     view.home = HomeView::Dir(layout.home.clone());
     view.tmp = TmpView::Session(layout.tmp.clone());
@@ -874,17 +732,9 @@ fn judged(
     })
 }
 
-/// The argv, from the helper up to but **not including** the command.
-///
-/// `sandbox-exec` takes `-f <profile>` and then a program; the caller of
-/// [`Confinement::wrap`] appends its own shell and command, so the program here is a `/bin/sh`
-/// that puts the environment right and `exec`s what it is handed. That shim exists because a
-/// profile cannot set an environment variable and `wrap` returns an argv and not a
-/// `Command`: `HOME` has to be the session's own directory (otherwise `cargo`, `git` and
-/// `ssh` write into the operator's home, where the deny list would refuse them), `TMPDIR` has
-/// to be the session's own (and not `/var/folders/…`, which the profile refuses), and
-/// `CARGO_HOME`/`RUSTUP_HOME` have to name the operator's read-only toolchain, because the
-/// session's home holds no toolchain at all.
+/// The argv, from the helper up to but not including the command: `sandbox-exec -f <profile>`
+/// and then a `/bin/sh` shim, because a profile cannot set an environment and `wrap` returns
+/// an argv. `HOME`, `TMPDIR`, `CARGO_HOME` and `RUSTUP_HOME` all have to name an allowed path.
 fn wrap_with(
     helper: &Path,
     profile: &Path,
@@ -932,8 +782,8 @@ impl Confinement for Seatbelt {
     }
 
     fn wrap(&self, _plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
-        // **The cwd is not the profile's business.** The caller sets it on the `Command`, and
-        // the profile names the checkout as writable wherever the command starts from.
+        // The cwd is not the profile's business: the caller sets it on the `Command`, and the
+        // profile names the checkout as writable wherever the command starts from.
         Ok(wrap_with(
             &self.helper,
             &self.profile,
@@ -956,10 +806,9 @@ impl Confinement for Seatbelt {
         self.boundary.outside_paths(output)
     }
 
-    /// `sandbox-exec`'s own diagnostics are prefixed `sandbox-exec: `. The same heuristic
-    /// [`super::confine::Bwrap`] uses for `bwrap: `, and the same caveat: a command that
-    /// printed such a line would be misattributed, which is better than reporting a boundary
-    /// that failed to start as the command's answer.
+    /// `sandbox-exec`'s own diagnostics are prefixed `sandbox-exec: `, the same heuristic
+    /// [`super::confine::Bwrap`] uses for `bwrap: ` and with the same caveat: a command that
+    /// printed such a line is misattributed, which beats calling a failed launch the answer.
     fn launcher_failure(&self, output: &str) -> Option<String> {
         let line = output
             .lines()
@@ -1008,11 +857,9 @@ fn operator_home() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// A directory of this daemon's own for profiles, outside every checkout.
-///
-/// Per process and in the per-user temp directory, like `ProcessGroups::probe`'s scope root:
-/// the profile names the paths a session may touch and is written where the operator can find
-/// it, but never inside the tree the command can write.
+/// A directory of this daemon's own for profiles, outside every checkout: per process and in
+/// the per-user temp directory, like `ProcessGroups::probe`'s scope root, so the operator can
+/// find the policy but it never sits inside the tree the command can write.
 fn profile_dir() -> Result<PathBuf, ExecError> {
     let dir = std::env::temp_dir().join(format!("letibot-seatbelt-{}", std::process::id()));
     {
@@ -1094,9 +941,9 @@ mod tests {
         }
     }
 
-    /// **The golden.** The whole profile, character for character: a policy that changes
-    /// without anybody noticing is the thing this test exists to prevent, and a `contains`
-    /// assertion would let a rule be added or reordered silently.
+    /// The golden: the whole profile, character for character. A policy that changes without
+    /// anybody noticing is what this test prevents, and a `contains` assertion would let a
+    /// rule be added or reordered silently.
     #[test]
     fn the_profile_for_a_view_is_exactly_this() {
         let view = ViewSpec::project_only("/Users/x/proj");
@@ -1167,10 +1014,9 @@ mod tests {
 
     #[test]
     fn the_deny_list_survives_a_grant_that_names_the_whole_home() {
-        // **The one place the weaker mechanism is stricter, and the reason the denies are
-        // emitted last.** A grant is the operator widening the view — on Linux a bind of the
-        // home directory would carry `~/.ssh` inside it, because a bind cannot exclude a path
-        // within itself. Here it cannot.
+        // The one place the weaker mechanism is stricter, and why the denies are emitted last:
+        // a grant is the operator widening the view, and a bind of the home directory on Linux
+        // would carry `~/.ssh` inside it. Here it cannot.
         let view = ViewSpec::project_only("/Users/x/proj").granting(Grant::ReadOnly {
             path: PathBuf::from("/Users/x"),
             why: "the operator said `--grant-ro ~`".into(),
@@ -1362,8 +1208,8 @@ probe nonsense whatever
             measured_at: SystemTime::now(),
         };
         assert!(b.complete(), "{}", b.describe());
-        // D16 applies here too: every required property held, egress denied, and the one
-        // seal macOS cannot have is not applicable rather than missing.
+        // Every required property held, egress denied, and the one seal macOS cannot have is
+        // not applicable rather than missing.
         assert!(
             b.encloses(),
             "a measured Seatbelt boundary is D16's: {}",

@@ -1,34 +1,11 @@
-//! **Resource leases on shared hosts, and the teardown that removes exactly what a session made**
-//! (RH9).
+//! Resource leases on shared hosts, and the teardown that removes exactly what a session made.
 //!
-//! # What went wrong, in the operator's own numbers
+//! Ports come from a block nobody else has: taken inside the store's `BEGIN IMMEDIATE` so two daemons
+//! cannot pick the same one, and outside the host's ephemeral range. A teardown removes only names under
+//! the lease's prefix, and the never-touch list wins, because the operator's own workloads live beside
+//! every agent's.
 //!
-//! The Stroppy session that this package answers (`docs/remote-hosts.md` § *What an agent
-//! hand-rolled without builtins*, item 6) built its own compose-project and port code — `docker ps`
-//! ×430 — and still hit: *ephemeral-port collisions, loopback exhaustion, "address already in use"
-//! ×18, "too many open files" ×34, a container left 19 h*. Every one of those is a resource two
-//! sessions picked independently on a machine neither of them owns.
-//!
-//! So there are three rules here, and each is structural rather than remembered:
-//!
-//! 1. **Ports come from a block nobody else has** — [`crate::store::Lease`], taken inside the
-//!    store's `BEGIN IMMEDIATE` so two daemons cannot pick the same one, and **outside the host's
-//!    own ephemeral range**, because a port inside it is one the kernel will hand to somebody
-//!    else's outgoing connection whenever it feels like it.
-//! 2. **What a session creates is named under a prefix**, so a teardown can find it again —
-//!    [`Lease::prefix`].
-//! 3. **A teardown removes only that prefix's own things, and the operator's never-touch list
-//!    wins** — [`Blocks::release`]. Nothing here enumerates *everything not mine*: on these hosts
-//!    the operator's own workloads live beside every agent's (pgfuzz on lubuntu1,
-//!    flowy-dogfood-pg on lubuntu3, the etcd fuzz on lab2x1), and *everything not mine* would take
-//!    them with it.
-//!
-//! # The one thing this cannot do, said plainly
-//!
-//! A lease is a record, not a reservation. The kernel cannot be asked to keep a port free, so what
-//! the block guarantees is **no other session of letibot's took it** and **nothing was listening
-//! there when it was taken**. A program on that machine that binds one of those ports without
-//! asking is not stopped by anything here.
+//! A lease is a record, not a reservation: nothing is stopped if a program binds one of those ports.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -40,32 +17,30 @@ use letibot_tokencore::store::{Ask, Lease};
 use crate::fleet::{LOCAL, shell};
 use crate::remote::{Host, Hosts, Paths, Ssh};
 
-/// **How many ports a lease is, when the caller does not say.** Eight: a service fixture is a
-/// database, a client and a couple of sidecars, and a block that has to be re-taken because it ran
-/// out is a second allocation on a shared machine.
+/// How many ports a lease is, when the caller does not say. Eight: a service fixture
+/// is a database, a client and a couple of sidecars, and a block that has to be
+/// re-taken because it ran out is a second allocation on a shared machine.
 pub const PORTS: u16 = 8;
 
-/// **The prefix every name of a lease starts with.** `letibot-` first, so a person reading
-/// `docker ps` on the operator's machine can tell an agent's container from anything else that is
-/// there — and so a teardown's own query is a prefix and never a pattern nothing bounds.
+/// The prefix every name of a lease starts with. `letibot-` first, so a person reading `docker ps` on the
+/// operator's machine can tell an agent's container from anything else there.
 pub const PREFIX_HEAD: &str = "letibot";
 
-/// **The store, as this module needs it.** A seam rather than a `Store`: this crate is below the
-/// daemon and a tool has no store path, which is [`crate::fleet::ProcessBook`]'s reason one layer
-/// down. The daemon registers a book bound to its own store and session
-/// (`harnessd::leases::StoreLeases`); everywhere else [`NoLeases`] answers, which is the truth for
-/// a run with no daemon behind it.
+/// The store, as this module needs it. A seam rather than a `Store`, since this crate is below the daemon
+/// and a tool has no store path; everywhere else [`NoLeases`] answers, which is the truth for a run with
+/// no daemon behind it.
 pub trait Leases: Send + Sync {
-    /// Take a block, **atomically against every other caller in every process on the box**.
+    /// Take a block, atomically against every other caller in every process on the
+    /// box.
     fn take(&self, ask: &Ask<'_>) -> Result<Lease, String>;
-    /// Give one back. `Ok(())` when it was already released: a close, a call's end and the reaper
-    /// can all reach the same lease, and two of them arriving is a fact about the code.
+    /// Give one back. `Ok(())` when it was already released: a close, a call's end
+    /// and the reaper can all reach the same lease.
     fn release(&self, id: i64, by: &str) -> Result<(), String>;
 }
 
-/// **A book that holds nothing** — a run with no store. A `lease` asked of it is a REFUSAL, not a
-/// quiet empty block: a session told it has ports 0–0 would bind nothing and report why thirty
-/// seconds later.
+/// A book that holds nothing - a run with no store. A `lease` asked of it is a
+/// refusal, not a quiet empty block: a session told it has ports 0-0 would bind
+/// nothing and report why thirty seconds later.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoLeases;
 
@@ -84,21 +59,19 @@ impl Leases for NoLeases {
     }
 }
 
-/// **What a host's own kernel says about its ports** — the two facts the allocation is decided
-/// from, gathered in one read-only round trip.
+/// What a host's own kernel says about its ports - the two facts the allocation is
+/// decided from, gathered in one read-only round trip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Census {
     /// `(low, high)` from `/proc/sys/net/ipv4/ip_local_port_range`, or the `sysctl` equivalent.
     pub ephemeral: (u16, u16),
-    /// **Every port something is listening on there right now.**
+    /// Every port something is listening on there right now.
     pub listening: BTreeSet<u16>,
 }
 
-/// **The script a census runs.** It only reads: two files or two `sysctl`s, and whatever the
-/// machine's own `ss` or `netstat` says about listening sockets.
-///
-/// `ephemeral=` first and the addresses after it, because the parser on this side then has no
-/// opinions about the far side's locale — [`crate::remote::probe`]'s own shape, and its own reason.
+/// The script a census runs. It only reads two files or two `sysctl`s and whatever the machine's own `ss`
+/// or `netstat` says. `ephemeral=` comes first and the addresses after it, so the parser here has no
+/// opinions about the far side's locale.
 fn census_script() -> String {
     r#"set +e
 if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
@@ -124,18 +97,15 @@ exit 0
     .to_string()
 }
 
-/// **The port out of a socket's local address**, whichever spelling the machine printed.
-///
-/// Four shapes and no more: `127.0.0.1:5432` (`ss`), `127.0.0.1.5432` (`netstat` on a BSD),
-/// `[::]:22` and `*:5432`. The port is after the last `:` or `.`, so one split answers all four —
-/// and a line whose tail is not a number (a header, a word) is nothing rather than a zero, because
-/// zero would be read as *port 0 is busy*.
+/// The port out of a socket's local address, whichever spelling the machine printed: `127.0.0.1:5432`,
+/// `127.0.0.1.5432`, `[::]:22` and `*:5432` all answer to a split at the last `:` or `.`. A tail that is
+/// not a number is nothing rather than zero, because zero would read as port 0 is busy.
 fn port_of(address: &str) -> Option<u16> {
     let tail = address.rsplit([':', '.']).next()?.trim();
     tail.parse::<u16>().ok().filter(|p| *p > 0)
 }
 
-/// **What a host answered**, read out of [`census_script`]'s output.
+/// What a host answered, read out of [`census_script`]'s output.
 fn read_census(said: &str) -> Census {
     let mut ephemeral = (0u16, 0u16);
     let mut listening = BTreeSet::new();
@@ -160,11 +130,8 @@ fn read_census(said: &str) -> Census {
     }
 }
 
-/// **The lease engine for one session**: a `hosts.toml`, an ssh policy, and the store behind it.
-///
-/// One per session, built by the daemon beside the process book
-/// (`harnessd::harness`'s fleet-tool registration), and given to `scenario` and `fanout`. A test
-/// builds one over the fake-ssh rig.
+/// The lease engine for one session: a `hosts.toml`, an ssh policy and the store behind it, built by the
+/// daemon beside the process book.
 pub struct Blocks {
     hosts: Hosts,
     paths: Paths,
@@ -173,12 +140,12 @@ pub struct Blocks {
     /// The bound on this module's own steps, never on a command.
     bound: Duration,
     leases: Arc<dyn Leases>,
-    /// **The session that holds what is taken here** — the owner a close, a call's end and the
-    /// reaper all go by.
+    /// The session that holds what is taken here - the owner a close, a call's end and
+    /// the reaper all go by.
     session: String,
-    /// **A test's door onto the ephemeral range.** `None` asks the host, which is what production
-    /// does. A test that needs a *deterministic* block cannot move a kernel's range, and a test
-    /// that allocated wherever the box happened to have room would assert nothing.
+    /// A test's door onto the ephemeral range. `None` asks the host, which is what
+    /// production does: a test that allocated wherever the box happened to have room
+    /// would assert nothing.
     ephemeral: Option<(u16, u16)>,
 }
 
@@ -219,7 +186,7 @@ impl Blocks {
         self
     }
 
-    /// Run this program instead of `ssh` — a test's fake, which never touches a network.
+    /// Run this program instead of `ssh` - a test's fake, which never touches a network.
     pub fn with_ssh(mut self, program: impl Into<PathBuf>) -> Blocks {
         self.ssh = Some(program.into());
         self
@@ -235,22 +202,22 @@ impl Blocks {
         self
     }
 
-    /// **Say what the host's ephemeral range is instead of asking it** — a test's door, and the
-    /// only way a test can assert *this exact block* rather than *some block above whatever this
-    /// box's kernel says today*.
+    /// Say what the host's ephemeral range is instead of asking it - a test's door, and
+    /// the only way a test can assert this exact block rather than some block above
+    /// whatever the box's kernel says today.
     pub fn with_ephemeral(mut self, ephemeral: (u16, u16)) -> Blocks {
         self.ephemeral = Some(ephemeral);
         self
     }
 
-    /// The hosts file this engine reads — what a refusal lists.
+    /// The hosts file this engine reads - what a refusal lists.
     pub fn declared(&self) -> Vec<String> {
         self.hosts.names()
     }
 
-    /// The host, or the refusal naming the ones there are. `local` is this box and needs no entry:
-    /// a lease on it is a lease on the machine the tools already run on, whose ports are just as
-    /// shared.
+    /// The host, or the refusal naming the ones there are. `local` is this box and
+    /// needs no entry: a lease on it is a lease on the machine the tools already run
+    /// on, whose ports are just as shared.
     fn host(&self, name: &str) -> Result<Host, String> {
         if name == LOCAL {
             return Ok(Host {
@@ -264,11 +231,9 @@ impl Blocks {
             .ok_or_else(|| format!("{} Nothing was leased.", self.hosts.refusal(name)))
     }
 
-    /// **The prefix a lease's names start with** — `letibot-<session>-<n>`, where the session is
-    /// cut down to what a compose project name and a container name both accept.
-    ///
-    /// The number is the lease's own id, so two blocks on one host from one session cannot share a
-    /// prefix: the teardown of one would otherwise take the other's containers with it.
+    /// The prefix a lease's names start with, `letibot-<session>-<n>`, with the session cut down to what a
+    /// compose project and a container name both accept. The number is the lease's own id, so two blocks on
+    /// one host from one session cannot share a prefix.
     pub fn prefix(host: Option<&str>, session: &str, id: i64) -> String {
         let mut who: String = session
             .chars()
@@ -295,12 +260,8 @@ impl Blocks {
         }
     }
 
-    /// **What a host says about its own ports** — one read-only round trip, or one local `sh` for
-    /// [`LOCAL`].
-    ///
-    /// A host that did not answer its ephemeral range is a REFUSAL rather than a guess: allocating
-    /// *below* a range this side invented would hand out ports the kernel is free to reassign, and
-    /// that is the collision the block exists to remove.
+    /// What a host says about its own ports, in one read-only round trip. A host that did not answer its
+    /// ephemeral range is a refusal rather than a guess, which would hand out ports the kernel can reassign.
     pub fn census(&self, host: &str) -> Result<Census, String> {
         let script = census_script();
         let said = if host == LOCAL {
@@ -335,13 +296,13 @@ impl Blocks {
         })
     }
 
-    /// **Take a block on one host**, or the refusal naming what is there.
+    /// Take a block on one host, or the refusal naming what is there.
     pub fn take(&self, host: &str, ports: u16) -> Result<Lease, String> {
         let census = self.census(host)?;
         let place = if host == LOCAL { None } else { Some(host) };
-        // The prefix needs the lease's id, which the store assigns — so the block is taken with a
-        // placeholder and renamed below. Two writes to one row would be the alternative, and a row
-        // whose prefix is filled in later is a row a teardown could find half-written.
+        // The prefix needs the lease's id, which the store assigns, so the block is
+        // taken with a placeholder and renamed below. A row whose prefix is filled in
+        // later is a row a teardown could find half-written.
         let provisional = Self::prefix(place, &self.session, 0);
         let lease = self.leases.take(&Ask {
             session: &self.session,
@@ -358,14 +319,9 @@ impl Blocks {
         })
     }
 
-    /// **Give a block back and remove exactly what it created** — the one teardown, called by a
-    /// scenario's end, a fanout's end, a session's close and the supervisor's reaper.
-    ///
-    /// The order is the rule: **what was removed is decided first, and the record is released
-    /// second.** A release that happened first would leave a lease nobody holds whose containers
-    /// are still up, and the next session's block could be the one that collides with them.
-    ///
-    /// Returns what was said, one line per host, so a caller can put it in a row.
+    /// Give a block back and remove exactly what it created, called by a scenario's end, a fanout's end, a
+    /// session's close and the reaper. What was removed is decided first and the record released second: a
+    /// release first would leave a lease nobody holds whose containers are up.
     pub fn release(&self, lease: &Lease, by: &str) -> Vec<String> {
         let mut said = Vec::new();
         let host = lease.host.as_deref().unwrap_or(LOCAL);
@@ -389,17 +345,9 @@ impl Blocks {
         said
     }
 
-    /// **Remove exactly what `prefix` created on `host`, and nothing else.**
-    ///
-    /// Two round trips and no more: what is there (one `docker ps` and one `docker compose ls`),
-    /// then the removals. A host with no `docker` is a no-op with a sentence, because a machine
-    /// that runs no containers is an ordinary machine and a failed teardown there would be a
-    /// refusal about nothing.
-    ///
-    /// **Every name is checked against the never-touch list before anything is removed**, and a
-    /// name that matches is left alone and reported with the pattern. That is the second wall
-    /// behind the prefix, and the order matters: the prefix says *what is mine*, the never-touch
-    /// list says *what is not*, and the operator's list wins.
+    /// Remove exactly what `prefix` created on `host`, in two round trips: what is there, then the
+    /// removals. A host with no `docker` is a no-op with a sentence. Every name is checked against the
+    /// never-touch list, and a name that matches is left alone and reported with the pattern.
     pub fn teardown(&self, host: &str, prefix: &str) -> Result<Vec<String>, String> {
         let named = if host == LOCAL {
             None
@@ -425,8 +373,8 @@ impl Blocks {
                 None => remove.push(name.clone()),
             }
         }
-        // **The compose project is the prefix itself**, so it is the project that would be
-        // downed — and it is asked of the never-touch list the same way, as a name.
+        // The compose project is the prefix itself, so it is the project that would be
+        // downed - and it is asked of the never-touch list the same way, as a name.
         let mut down = None;
         if projects.iter().any(|p| p == prefix) {
             match named.as_ref().and_then(|h| h.never_touch_hit(prefix)) {
@@ -465,8 +413,8 @@ impl Blocks {
         Ok(out)
     }
 
-    /// One script on one host — the local box through `sh`, a named one through the tree's one ssh
-    /// policy.
+    /// One script on one host - the local box through `sh`, a named one through the
+    /// tree's one ssh policy.
     fn sh(&self, host: &str, script: &str) -> Result<(String, String, i32), String> {
         if host == LOCAL {
             let out = std::process::Command::new("sh")
@@ -491,11 +439,9 @@ impl Blocks {
     }
 }
 
-/// **What is on a host's docker, by name** — and nothing about what is *not*.
-///
-/// `command -v docker` first: a machine with no docker is an ordinary machine, and asking a shell
-/// to run a missing program is a 127 that reads like a fault. `no-docker` is printed as a word
-/// rather than as an error so the caller can say it in a sentence.
+/// What is on a host's docker, by name, and nothing about what is not. `command -v docker` comes first,
+/// because running a missing program is a 127 that reads like a fault; `no-docker` is printed as a word so
+/// the caller can say it in a sentence.
 fn list_script() -> String {
     r#"set +e
 if ! command -v docker >/dev/null 2>&1; then echo no-docker; exit 0; fi
@@ -536,9 +482,9 @@ fn read_listing(said: &str) -> (Vec<String>, Vec<String>) {
     (containers, projects)
 }
 
-/// **The removals, one line each** — `docker rm -f` per name and `docker compose -p … down` for
-/// the project. Every argument is single-quoted by [`shell`]: a container name is the caller's
-/// text, and half of what a name can contain is quotes.
+/// The removals, one line each - `docker rm -f` per name and `docker compose -p ...
+/// down` for the project. Every argument is single-quoted by [`shell`]: a container
+/// name is the caller's text, and half of what a name can contain is quotes.
 fn remove_script(containers: &[String], project: Option<&str>) -> String {
     let mut s = String::from(
         "set +e\nif ! command -v docker >/dev/null 2>&1; then echo no-docker; exit 0; fi\n",
@@ -574,8 +520,9 @@ mod tests {
         );
     }
 
-    /// **A header is not port zero**, and a host that answered nothing is `(0, 0)` — which
-    /// [`Blocks::census`] turns into a refusal rather than an allocation from port 1 upwards.
+    /// A header is not port zero, and a host that answered nothing is `(0, 0)` - which
+    /// [`Blocks::census`] turns into a refusal rather than an allocation from port 1
+    /// upwards.
     #[test]
     fn a_machine_that_says_nothing_has_no_range_and_no_ports() {
         let c = read_census("Local Address:Port\nNetid State\n");
@@ -591,8 +538,8 @@ mod tests {
         assert_eq!(p, vec!["letibot-a-1"]);
     }
 
-    /// The prefix is a name docker and compose both accept, and it carries the lease's number so
-    /// two blocks from one session cannot share it.
+    /// The prefix is a name docker and compose both accept, and it carries the lease's
+    /// number so two blocks from one session cannot share it.
     #[test]
     fn a_prefix_is_a_name_and_carries_the_number() {
         assert_eq!(
@@ -600,13 +547,13 @@ mod tests {
             "letibot-lab2x1-s-1793-abc-3"
         );
         assert_eq!(Blocks::prefix(None, "s-1", 4), "letibot-s-1-4");
-        // Long ids are cut, because a container name that overruns what docker accepts is a name
-        // nothing can find again.
+        // Long ids are cut, because a container name that overruns what docker accepts is a
+        // name nothing can find again.
         let long = Blocks::prefix(Some("h"), &"x".repeat(80), 1);
         assert_eq!(long, format!("letibot-h-{}-1", "x".repeat(24)));
     }
 
-    /// **The removals quote every name**, and a name with a quote in it cannot become two
+    /// The removals quote every name, and a name with a quote in it cannot become two
     /// commands.
     #[test]
     fn a_removal_script_quotes_its_names() {

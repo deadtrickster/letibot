@@ -1,44 +1,12 @@
-//! **What holds each firecode VM slot, read off firecode's own records — and the reaper that
-//! frees one whose owner is gone.**
-//!
-//! What this was written against, 2026-10-15: the merge queue's reviewer for
-//! `feat/memory-engine` said *"VM slots exhausted · waited 33 min, every slot busy"* for hours,
-//! and all four taps (`fccode1`–`fccode4`) were held by firecracker VMs whose parent was pid 1.
-//! Three belonged to grandchildren of one session whose daemon (`d-404553`) had died without an
-//! orderly stop on 2026-10-14 at 18:21 UTC — so `down_all` never ran — and whose rows in
-//! `subagent_run` still said `running` a day later; the fourth was a pg-noop great-grandchild
-//! from 2026-10-12. Each VM's launcher (`firecode exec …`, a session leader of its own) was alive
-//! and holding it, and nothing on the host asked whose it was. The capacity notice could only say
-//! *"every slot is busy"*.
-//!
-//! # The record is firecode's, and every build wrote it
-//!
-//! `firecode up` leaves `runs/<run>/` beside the CLI: `project` (the copy it booted — for a
-//! letibot child, `~/.cache/letibot/firecode/<child id>`, see [`super::FirecodeBackend::project_of`]),
-//! `name`, `jail` (the jailer's root, whose `vm-config.json` names the tap), `cgroup` (the run's
-//! delegated cgroup) and `launcher`. A VM is live when a `firecracker` process carries
-//! `--id <run>` — the fact itself, not the run directory's age or a pid file. Nothing here starts
-//! firecode to ask: a listing is file reads, so the queue may make it on every long wait.
-//!
-//! # Reaping is firecode's `down`, then SIGKILL, then a look
-//!
-//! [`reap`] asks firecode to bring the run down by its id (the guest's idle loop ends, the work is
-//! copied out beside the project the way any `down` delivers it). A jailed VM is pid 1 of its own
-//! pid namespace and ignores SIGTERM — measured on the operator's box the same day: a plain
-//! `kill` ended the nine unjailed orphans and none of the four jailed tap holders. So a VM still
-//! there after the wait is killed with the run's own `cgroup.kill` (SIGKILL to everything in the
-//! run's cgroup), then — if it is STILL there — with SIGKILL to the pid itself, after checking the
-//! pid is still the firecracker for that run. And the answer is what `/proc` says afterwards,
-//! never what was sent: a reap that sent SIGKILL and found the process alive says so.
-//!
-//! Whether a VM MAY be reaped is not decided here: that is the daemon's records' question
-//! (`harnessd`'s `vm_reap`). This module only says what holds a slot and does the reaping.
+//! What holds each firecode VM slot, read off firecode's own records, and the reaper that frees one
+//! whose owner is gone. A VM is live when a `firecracker` process carries `--id <run>`, so a listing
+//! is file reads and starts no firecode. Whether a VM MAY be reaped is the daemon's question.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// **One live firecode VM, as its run's records describe it.**
+/// One live firecode VM, as its run's records describe it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldVm {
     /// The run id (`firecode-20261014-191759-812644`) — what `firecode down` takes.
@@ -85,7 +53,7 @@ impl HeldVm {
     }
 }
 
-/// **firecode's `runs/` directory** for the CLI at `bin` — the checkout's `runs`, beside the
+/// firecode's `runs/` directory for the CLI at `bin` — the checkout's `runs`, beside the
 /// `bin/` the CLI is in, the way [`super::FirecodeBackend`] finds a run's record.
 pub fn runs_dir(bin: &Path) -> Option<PathBuf> {
     let real = std::fs::canonicalize(bin).ok().or_else(|| {
@@ -100,7 +68,7 @@ pub fn runs_dir(bin: &Path) -> Option<PathBuf> {
     runs.is_dir().then_some(runs)
 }
 
-/// **When a run was started, read off its id** — `firecode-YYYYMMDD-HHMMSS-<pid>`.
+/// When a run was started, read off its id — `firecode-YYYYMMDD-HHMMSS-<pid>`.
 pub fn started_of(run: &str) -> Option<String> {
     let mut parts = run.strip_prefix("firecode-")?.split('-');
     let d = parts.next()?;
@@ -134,7 +102,7 @@ fn cmdline(proc_root: &Path, pid: u32) -> Option<Vec<String>> {
     )
 }
 
-/// **The run a process is the firecracker of**, if it is one: its program (or, for an
+/// The run a process is the firecracker of, if it is one: its program (or, for an
 /// interpreted stand-in, its script) is named `firecracker` and it was given `--id <run>`.
 pub fn firecracker_run(args: &[String]) -> Option<String> {
     let named = args
@@ -148,7 +116,7 @@ pub fn firecracker_run(args: &[String]) -> Option<String> {
     args.get(i + 1).filter(|r| !r.is_empty()).cloned()
 }
 
-/// **Whether `pid` is a process that can still act** — present in `<proc>` and not a zombie. A
+/// Whether `pid` is a process that can still act — present in `<proc>` and not a zombie. A
 /// zombie has exited; its entry stays until its parent reaps it, and that is not a VM holding a
 /// tap.
 pub fn alive(proc_root: &Path, pid: u32) -> bool {
@@ -161,7 +129,7 @@ pub fn alive(proc_root: &Path, pid: u32) -> bool {
         .is_none_or(|state| state != "Z" && state != "X")
 }
 
-/// **Every firecracker process on the host, by the run it serves** — `(run, pid)`.
+/// Every firecracker process on the host, by the run it serves — `(run, pid)`.
 pub fn firecrackers(proc_root: &Path) -> Vec<(String, u32)> {
     let Ok(dir) = std::fs::read_dir(proc_root) else {
         return Vec::new();
@@ -197,7 +165,7 @@ fn read_trimmed(p: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// **Every live VM firecode has a record of** — a run directory under `runs` whose firecracker
+/// Every live VM firecode has a record of — a run directory under `runs` whose firecracker
 /// is alive in `proc_root` (`/proc`), oldest run first.
 pub fn live_vms(runs: &Path, proc_root: &Path) -> Vec<HeldVm> {
     let mut by_run: std::collections::BTreeMap<String, Vec<u32>> = Default::default();
@@ -222,7 +190,7 @@ pub fn live_vms(runs: &Path, proc_root: &Path) -> Vec<HeldVm> {
         .collect()
 }
 
-/// **How long [`reap`] gives each step.**
+/// How long [`reap`] gives each step.
 #[derive(Debug, Clone, Copy)]
 pub struct Patience {
     /// `firecode down` itself: it waits up to a minute for the guest, then on the copy-out.
@@ -243,7 +211,7 @@ impl Default for Patience {
     }
 }
 
-/// **How a reap ended — what `/proc` said afterwards, not what was sent.**
+/// How a reap ended — what `/proc` said afterwards, not what was sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reaped {
     /// `firecode down` brought it down: the guest stopped and its work was copied out.
@@ -326,7 +294,7 @@ fn down(bin: &Path, run: &str, within: Duration) {
     }
 }
 
-/// **Bring one VM down, and say how it went.** `firecode down <run>`, then the run's
+/// Bring one VM down, and say how it went. `firecode down <run>`, then the run's
 /// `cgroup.kill`, then SIGKILL to each pid that is still the firecracker for this run, with a
 /// look at `/proc` after each. See the module docs for why SIGTERM is not among the steps.
 pub fn reap(bin: &Path, vm: &HeldVm, proc_root: &Path, patience: Patience) -> Reaped {

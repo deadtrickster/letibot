@@ -1,71 +1,6 @@
-//! T21.1 and T21.2: a process predicate that matches the process evaluating it.
-//!
-//! # Read this before adding a spelling to the table
-//!
-//! **This module is not the mechanism.** `TODO.md` T24 is explicit about why:
-//!
-//! > On 2026-09-09 a process check self-matched five times in one session, with
-//! > `process-checks-that-self-match` loaded in memory and T21 open in this file.
-//! > The fifth used the bracket trick — which defeats `pgrep`, but the shell
-//! > wrapper echoes the expanded pattern back into its own command line, so the
-//! > literal string was there to be found. A hazard with that many spellings is not
-//! > one you check for; it is one you make unspellable.
-//!
-//! The mechanism is [`super::scope`]: `pkill -f X` is not *guarded*, it is
-//! **unnecessary**, because `job_kill` takes a handle and `job_wait` takes a
-//! cgroup. Nothing here would survive a determined spelling, and it is not
-//! supposed to have to.
-//!
-//! What this module is for is `docs/tool-design-brief.md` §2.1 applied to a guard:
-//! *a miss is self-correcting in the SAME call*. A model that wrote the pattern
-//! form gets back, in one call, **the diagnosis, the pids it currently matches,
-//! and the handle-shaped command that does what it meant** — the same shape as
-//! `edit`'s read-before-write refusal handing over the file's contents.
-//!
-//! # Three responses, graded by what the command would do
-//!
-//! | the command | response |
-//! |---|---|
-//! | kills by pattern (`pkill`, `killall`, `kill $(pgrep …)`) and the pattern matches anything the harness owns | **refused** — the diagnosis and the handle form |
-//! | waits on a pattern (`until pgrep …`) that matches its own shell, or a process that cannot exit while the session runs | **refused** — that loop cannot terminate, and the harness can see it while the model cannot |
-//! | merely *asks* (`pgrep`, `ps \| grep`) | **runs**, with a note saying what else it matched and the count it is inflating |
-//!
-//! The third is the "instrument before you restrict" half of `docs/closed-loop.md`
-//! §1. A read-only probe that self-matches produces a wrong number, not a dead
-//! server, and a refusal there would buy nothing the note does not.
-//!
-//! # SUPERSEDED as a parser, kept as a diagnosis
-//!
-//! `letibot_code::shell` is now the mechanism for reading a command, and it is a real
-//! grammar. This module's own confession — *"not a shell parser… `eval`, here-docs,
-//! aliases, `$(...)` nesting past one level are unhandled"* — was quoted in
-//! `docs/boundary-and-adjudication.md` §4 as the reason layer 2 had to exist, and it is
-//! now measurably out of date: the normaliser resolves nested substitutions to any
-//! depth, distinguishes a quoted here-document from an expanded one, reports what it
-//! cannot resolve with a position, and refuses to treat a bare name as itself in a
-//! shell nobody declared fixed.
-//!
-//! **It is deliberately left in place and still wired.** Two reasons, and neither is
-//! inertia:
-//!
-//! 1. What it does is not what the normaliser does. The normaliser answers *what is
-//!    this command*; this answers *what does this command's predicate currently match
-//!    on this box*, from `/proc` and from what the daemon declared it manages. That is
-//!    the encoder half of `docs/closed-loop.md` — a fact about the running machine that
-//!    no parser can supply — and its `Verdict::Annotate` path is a clause-1 recovery
-//!    with no equivalent above.
-//! 2. Removing a guard in the same change that adds one is how a safety property goes
-//!    missing. The two run in series: the gate refuses an unresolvable command before
-//!    `examine` is reached, and `examine` still refuses a resolvable `pkill` whose
-//!    pattern matches the harness.
-//!
-//! **What should change, and is not this change's to do:** [`predicates`] should take
-//! `letibot_code::shell::Normalised` instead of a `&str` and drop [`words`], so the
-//! predicate finder reads the same tree the gate decided on rather than re-lexing the
-//! text. That is a mechanical refactor with one risk worth stating — `examine` is
-//! reached for commands the gate has already resolved, so re-lexing and parsing agree
-//! today, and they would stop agreeing silently if either side changed. Filed here
-//! rather than in a doc because this is where somebody will look.
+//! A process predicate that matches the process evaluating it, and the diagnosis that makes a
+//! miss self-correcting in the same call: what it matches now and the handle-shaped verb that
+//! does what was meant. The mechanism is [`super::scope`], and this module only annotates.
 
 use letibot_transcript::text::clip_chars;
 
@@ -96,11 +31,9 @@ pub struct Predicate {
     pub intent: Intent,
 }
 
-/// A process, or a command line, that a predicate currently matches.
-///
-/// `pid` is `None` for the one witness the model has the least chance of
-/// predicting: **the shell that will evaluate this very command**, whose
-/// `/proc/<pid>/cmdline` holds the command text and therefore the pattern.
+/// A process, or a command line, that a predicate currently matches. `pid` is `None` for the
+/// witness the model is least likely to predict: the shell that will evaluate this very
+/// command, whose `/proc/<pid>/cmdline` holds the text and therefore the pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Witness {
     pub pid: Option<u32>,
@@ -137,9 +70,8 @@ pub struct Hazard {
 pub enum Verdict {
     /// Nothing to say.
     Clear,
-    /// The command runs and the model is told what its predicate also matches.
-    /// Clause 1 without a refusal: the count it is about to read is inflated and
-    /// it can correct for that without a second call.
+    /// The command runs and the model is told what its predicate also matches: the count it is
+    /// about to read is inflated and it can correct for that without a second call.
     Annotate(Vec<Hazard>),
     /// The command does not run.
     Refuse(Vec<Hazard>),
@@ -154,12 +86,9 @@ impl Verdict {
     }
 }
 
-/// Analyse a command against what the harness knows.
-///
-/// `protected` is the harness's own pid, its parent chain, and whatever a daemon
-/// declared it manages — see [`super::host::HostProcesses::protect_listener`].
-/// `command` is matched against **itself** as well, because the shell that
-/// evaluates it carries it in its own command line.
+/// Analyse a command against what the harness knows. `protected` is the harness's own pid, its
+/// parent chain and whatever a daemon declared it manages; `command` is matched against itself
+/// too, because the shell that evaluates it carries it in its own command line.
 pub fn examine(command: &str, protected: &[Protected]) -> Verdict {
     let preds = predicates(command);
     if preds.is_empty() {
@@ -229,13 +158,9 @@ pub fn examine(command: &str, protected: &[Protected]) -> Verdict {
     }
 }
 
-/// Does `pattern` — read the way `pgrep` reads it, as an ERE — match `hay`?
-///
-/// A pattern that will not compile falls back to a **literal substring** test.
-/// That is not the approximation `grep` refuses: there the question was whether
-/// the search found what was asked for, and an approximation would have been an
-/// answer to a different question. Here the question is "could this hurt", and a
-/// broader test is the conservative direction.
+/// Does `pattern`, read the way `pgrep` reads it as an ERE, match `hay`? One that will not
+/// compile falls back to a literal substring test, which is the conservative direction: the
+/// question here is "could this hurt", and a broader test answers it.
 fn matches(pattern: &str, hay: &str) -> bool {
     match regex::Regex::new(pattern) {
         Ok(re) => re.is_match(hay),
@@ -248,12 +173,9 @@ fn clip(s: &str, n: usize) -> String {
     clip_chars(s.trim(), n)
 }
 
-/// Split a command into words, treating shell separators as words of their own
-/// and honouring quotes.
-///
-/// Not a shell parser and does not need to be: it is looking for the *presence* of
-/// a predicate, not evaluating one. `$( )` and backticks become separators so a
-/// `pgrep` inside a substitution is a word rather than part of one.
+/// Split a command into words, shell separators as words of their own and quotes honoured. Not
+/// a shell parser and does not need to be: it looks for the presence of a predicate, not an
+/// evaluation, and `$( )` and backticks become separators so a `pgrep` inside one is a word.
 fn words(command: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -314,10 +236,9 @@ fn basename(w: &str) -> &str {
 pub fn predicates(command: &str) -> Vec<Predicate> {
     let ws = words(command);
     let lowered: Vec<String> = ws.iter().map(|w| basename(w).to_string()).collect();
-    // A loop keyword anywhere makes a predicate inside it a WAIT. Coarse on
-    // purpose: `until … ; do sleep 1; done` and `while ! …` and a `for` retry loop
-    // are the same hazard, and distinguishing them would need a real parser to
-    // buy nothing.
+    // A loop keyword anywhere makes a predicate inside it a WAIT. Coarse on purpose: an
+    // `until`, a `while` and a retry `for` are the same hazard, and telling them apart would
+    // need a real parser to buy nothing.
     let looping = lowered
         .iter()
         .any(|w| w == "until" || w == "while" || w == "done");
@@ -420,12 +341,9 @@ fn operand(rest: &[String]) -> (Option<String>, bool) {
     (None, full)
 }
 
-/// The refusal body: the diagnosis, what it currently matches, and the command
-/// that does what was meant.
-///
-/// Structured as one function so that the shape cannot drift between the kill case
-/// and the wait case: both get all three parts, because a refusal missing the
-/// third is one the model routes around.
+/// The refusal body: the diagnosis, what it currently matches, and the command that does what
+/// was meant. One function so the shape cannot drift between the kill and the wait case, since
+/// a refusal missing the third part is one the model routes around.
 pub fn refusal(command: &str, hazards: &[Hazard]) -> String {
     let mut s = String::new();
     s.push_str(
@@ -471,8 +389,8 @@ pub fn refusal(command: &str, hazards: &[Hazard]) -> String {
     s
 }
 
-/// What to call instead. **The point of the whole module**: the alternative has no
-/// pattern, so there is nothing that can match the caller.
+/// What to call instead, and the point of the whole module: the alternative has no pattern, so
+/// there is nothing that can match the caller.
 fn remedy(hazards: &[Hazard]) -> &'static str {
     let waiting = hazards.iter().any(|h| h.predicate.intent == Intent::Wait);
     if waiting {
@@ -492,14 +410,14 @@ fn remedy(hazards: &[Hazard]) -> &'static str {
     }
 }
 
-/// The note an admitted probe carries. Clause 1 without a refusal.
+/// The note an admitted probe carries: a wrong number, not a refusal.
 pub fn annotation(hazards: &[Hazard]) -> String {
     let mut s = String::from(
         "this predicate also matches the process asking, so the count it returns is \
          inflated by at least one and is not a measurement of what you meant: ",
     );
-    // R93.F27: several predicates in one command each name the evaluating shell, and the
-    // note said "the evaluating shell (…), the evaluating shell (…)". Each witness once.
+    // Several predicates in one command each name the evaluating shell, and the note would say
+    // "the evaluating shell (...), the evaluating shell (...)". Each witness once.
     let mut parts: Vec<String> = Vec::new();
     for h in hazards {
         for w in &h.witnesses {
@@ -592,9 +510,8 @@ mod tests {
 
     #[test]
     fn the_bracket_trick_still_self_matches_through_the_shell() {
-        // The fifth failure of the five. `[h]arnessd` as an ERE does not match the
-        // literal `[h]arnessd` in the shell's own cmdline — so this witness comes
-        // from the PROTECTED process, not from the shell, and the diagnosis says
+        // `[h]arnessd` as an ERE does not match the literal `[h]arnessd` in the shell's own
+        // cmdline, so this witness comes from the protected process and the diagnosis says
         // which. A guard that claimed the shell here would be wrong.
         let cmd = "until ps aux | grep -E '[h]arnessd'; do sleep 1; done";
         let v = examine(
@@ -626,7 +543,7 @@ mod tests {
         assert!(note.contains("job_list"), "{note}");
     }
 
-    /// **Two probes in one command name the evaluating shell once** (R93.F27).
+    /// Two probes in one command name the evaluating shell once.
     #[test]
     fn two_probes_name_the_shell_once() {
         let v = examine("pgrep -f cargo | wc -l; pgrep -f rustc | wc -l", &[]);

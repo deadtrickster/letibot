@@ -1,51 +1,6 @@
-//! §11's adjudication seam, from the tool side — the minimum that genuinely
-//! decides.
-//!
-//! # Why this exists at all, and what it is not
-//!
-//! W9 shipped [`crate::runtime::Gate`] as *"the smallest adjudication seam the
-//! runtime needs"* and `TODO.md` T16.3 recorded the consequence: **W11 should
-//! absorb it rather than build a parallel one.** W10 is the first caller that
-//! needs the gate to actually decide something, because `edit` and `write` are
-//! the first tools that can change the operator's tree. So this module grows the
-//! seam to §11.2's shape without building §11.3's policy table or §11.7's auto
-//! mode, both of which are W11's.
-//!
-//! What is here:
-//!
-//! | §11 | here |
-//! |---|---|
-//! | 11.2's one decision shape | [`AdjudicationRequest`], [`AdjudicationDecision`] |
-//! | 11.3's action class, *derived* | [`ActionClass`] — the routing key, not a policy table |
-//! | 11.4's boundary refuse-list, evaluated first | [`NEVER_WRITE`] |
-//! | 11.5's "every request and answer is a row" | [`AdjudicatedGate::log`] |
-//! | 11.6's permission/question split | [`RequestKind`] |
-//! | 11.9's "no adjudicator can override a `deny` row" | the precheck runs **before** [`Adjudicator::decide`] |
-//!
-//! What is deliberately not here: the routing table (one adjudicator is attached
-//! per session, not a table of them), auto mode, shadow mode, persistence of
-//! `allow_always` past the process, and the flowy delivery mechanics of §11.5.
-//! Each is named where a reader would look for it.
-//!
-//! # Fail closed, and why that is the whole point
-//!
-//! > *"A `Gate` that returns 'allowed' because nothing is wired is worse than no
-//! > gate, because it looks like protection."*
-//!
-//! [`NoAdjudicator`] is the default and it answers [`DecisionOutcome::Unavailable`]
-//! — never a selection. [`AdjudicatedGate`] maps `Unavailable` to a refusal, and
-//! the refusal carries [`ToolOutcome::NotRun`] rather than
-//! [`ToolOutcome::Denied`], because `Denied` claims somebody decided and nobody
-//! did. That distinction is §8.2's discipline applied to the outcome vocabulary
-//! itself, and W9 already made it once for [`crate::runtime::NoBoundary`].
-//!
-//! There is a **second, independent** gate below this one:
-//! [`crate::backend::HostBackend`] is read-only unless it was opened with
-//! [`crate::backend::HostBackend::writable`]. So a write reaching the disk needs
-//! both an adjudicator that admitted it and a backend that was opened to be
-//! written to, and neither is the default. A safety property with one mechanism
-//! behind it is a safety property that ships broken the first time somebody
-//! refactors the mechanism.
+//! The tool side of the adjudication seam: one request, one decision, fail closed.
+//! [`NoAdjudicator`] answers `Unavailable` and the refusal carries `NotRun` rather
+//! than `Denied`, because nobody decided; a write also needs a writable backend.
 
 use std::sync::Mutex;
 
@@ -56,16 +11,9 @@ use crate::authorise::UnsureKind;
 use crate::runtime::{Gate, GateCall, GateDecision};
 use crate::schema::Access;
 
-// ---------------------------------------------------------------------------
-// §3's two tiers, and the witness that makes the second one unspellable.
-// ---------------------------------------------------------------------------
-
-/// Which of `docs/boundary-and-adjudication.md` §3's data-flow rules an action
-/// breaks.
-///
-/// The rule is about **flow**, not access: `ssh` reads the private key, so "never
-/// read `~/.ssh/id_rsa`" would forbid the authorised case. What separates the rows is
-/// where the bytes end up. See [`crate::intent`] for the derivation and its limits.
+/// Which data-flow rule an action breaks. The rule is about flow, not access: `ssh`
+/// reads the private key legitimately, so what separates the rows is where the bytes
+/// end up. See [`crate::intent`] for the derivation and its limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FlowRule {
     /// Into a tool result, therefore the transcript, therefore the model's context
@@ -79,8 +27,7 @@ pub enum FlowRule {
     /// Refused rather than guessed at: an unrecognised program is not a program that
     /// keeps secrets.
     SecretFlowUnknown,
-    /// A write *into* a secret store. Not §3's own row — §11.4's, which
-    /// [`NEVER_WRITE`] also covers — and kept here so both mechanisms exist.
+    /// A write into a secret store, kept here so both mechanisms exist.
     WriteIntoSecretStore,
 }
 
@@ -96,55 +43,9 @@ impl FlowRule {
     }
 }
 
-/// **The four outcome classes**, decided by layer A and by nothing else.
-///
-/// Not two, and not "high risk"/"low risk". The axis is *who decides*, and the four
-/// answers do not collapse into each other:
-///
-/// | | who decides | when |
-/// |---|---|---|
-/// | [`Tier::Auto`] | nothing is consulted | a read inside the boundary — clause 4 |
-/// | [`Tier::MayApprove`] | the model, if the authorisation is clear | everything else |
-/// | [`Tier::AlwaysAsk`] | **the operator, every time** | layer A's fixed list, whatever anything else concludes |
-/// | [`Tier::Blocked`] | nobody, ever | secret bytes crossing the boundary, and nothing else |
-///
-/// # The two the model cannot move
-///
-/// > *"i think A should have a fixed list of things we ask a user about anyway. the
-/// > problem as i see it is that not layer a not layer b are ideal. we can[not] be
-/// > sure intent is clearly distilled and calibrated by model on step b"*
-///
-/// [`Tier::AlwaysAsk`] is **not** the destructive block list that used to live in
-/// [`crate::intent`] and was deleted. A block list says *never* and is wrong —
-/// `rm -rf /` can be the intent. An always-ask list says *the human decides this one,
-/// every time, no matter how confident anything is*. It preserves the operator's
-/// authority to authorise anything while removing the model's authority to authorise
-/// it on their behalf, and **the classifier cannot shrink it** — only the operator
-/// can, and each removal is a recorded decision like any other override.
-///
-/// [`Tier::Blocked`] is narrower still: irreversible disclosure of a secret
-/// across the boundary. Not "dangerous", not "destructive". The asymmetry is who
-/// bears the consequence and whether they can consent in-session — the operator owns
-/// a deletion and chose it, and cannot un-disclose a key afterwards.
-///
-/// **And it is not the oracle's to move.** Asked directly, on 2026-10-05, whether an oracle
-/// ALLOW should be able to override this tier, the operator ruled in as many words:
-///
-/// > *"Blocked is Blocked — i want my .ssh to stay protected"*
-///
-/// So the refusal at step 1b stands **above every adjudicator**: the oracle is never asked
-/// about a `Blocked` call, [`Tier::is_adjudicable_by_model`] is true only for `MayApprove`
-/// and `AlwaysAsk`, and `Adjudicable` is minted for those two alone. A guard that can be
-/// talked into an exfiltration is not a guard, and a boundary whose whole value is that it
-/// does not depend on a judgement call must not be handed to one — the point of the hardcode
-/// is that it holds whatever the model, the transcript, or a confident sentence in either says.
-///
-/// # Why this is a type and not a check
-///
-/// [`Adjudicable`] is minted only for [`Tier::MayApprove`], so a function that could
-/// return an admission for the other two cannot be written — see
-/// [`crate::authorise::Widening`]. Layer B widens `MayApprove` from ask to admit and
-/// can do nothing else, in either direction.
+/// The four outcome classes, decided by layer A alone. The axis is who decides: `Auto`
+/// nobody, `MayApprove` the model, `AlwaysAsk` the operator every time, `Blocked` nobody
+/// ever. Only the middle two are adjudicable, and `Blocked` sits above every adjudicator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tier {
     /// Clause 4: a read-only action inside the boundary never prompts.
@@ -173,23 +74,9 @@ impl Tier {
         matches!(self, Tier::Blocked { .. })
     }
 
-    /// Whether an oracle may be consulted at all — **and now decides**.
-    ///
-    /// **THE OPERATOR'S RULING, 2026-10-05, and it reverses what this said before**:
-    /// *"so we are in allow-edits mode now. there is certain permission set that is allowed
-    /// and doesnt need oracle. this is to be kept. the rest is oracle."* — and, for why:
-    /// *"like the alterantive is allow-all and i dont want it. i want oracle."*
-    ///
-    /// So the split is: `Auto` needs nobody (the mode's own allowed set, untouched), `Blocked`
-    /// is nobody's to move, and **everything else that reaches a gate is the oracle's** —
-    /// `MayApprove` and `AlwaysAsk` both. What this replaces is the sentence that stood here
-    /// and on `AlwaysAsk`: *"the point of the fixed list is that no amount of model
-    /// confidence substitutes for the operator"*. True as a principle and wrong as a
-    /// practice on this box: the cards a list like that produces are the ones that teach an
-    /// operator to press allow-all.
-    ///
-    /// `Auto` is false for the other reason — nothing is being asked, so there is nobody to
-    /// ask an oracle about.
+    /// Whether an oracle may be consulted: `MayApprove` and `AlwaysAsk` both, since the
+    /// cards a fixed always-ask list produces are what teach an operator to press
+    /// allow-all. `Auto` needs nobody and `Blocked` is nobody's to move.
     pub fn is_adjudicable_by_model(&self) -> bool {
         matches!(self, Tier::MayApprove | Tier::AlwaysAsk { .. })
     }
@@ -214,41 +101,18 @@ impl Tier {
     }
 }
 
-/// **The witness that layer A found this action adjudicable and readable.**
-///
-/// A tuple struct with a private field: nothing outside this module can construct
-/// one, and the only public way to obtain one is
-/// [`AdjudicationRequest::adjudicable`], which answers `None` when the tier is
-/// [`Tier::Blocked`] **or** when the command did not resolve.
-///
-/// [`crate::authorise::Widening`] — the sole value that can turn an ask into an
-/// admit — takes one by value. So both of the failures this design is most afraid of
-/// are unspellable rather than merely checked:
-///
-/// - *admit an blocked action* — the witness does not exist for one.
-/// - *promote out of always-ask* — nor for one of those. The operator decides those
-///   every time, and "the model was very sure" is not a way around it.
-/// - *unresolved, therefore proceed* — measured as one `if` apart in the survey:
-///   one harness turns a parse failure into a prompt, another returns before the ask
-///   and lets the raw string reach the shell. There is no branch here to invert,
-///   because there is no value to branch on.
-///
-/// It is deliberately **not** `Clone`, `Copy` or `Default`: a witness that could be
-/// duplicated is a witness that could be moved from a request that earned it to one
-/// that did not.
+/// The witness that layer A found this action adjudicable. The field is private, so
+/// only [`AdjudicationRequest::adjudicable`] mints one, and it answers `None` for a
+/// `Blocked` tier or an unresolved command. Not `Clone`: a witness must not travel.
 #[derive(Debug)]
 pub struct Adjudicable(());
 
-// ---------------------------------------------------------------------------
-// §11.3's action class — derived, never free text.
-// ---------------------------------------------------------------------------
-
-/// Where an action's effect lands. §11.3's `effect_scope`.
+/// Where an action's effect lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EffectScope {
     /// Inside a firecode run: a copy of one project and nothing else of the host.
     InRun,
-    /// The host's project directory — the session's own workspace.
+    /// The host's project directory: the session's own workspace.
     HostProject,
     /// The host, outside the workspace.
     HostOther,
@@ -323,12 +187,9 @@ impl Cost {
     }
 }
 
-/// §11.3's routing key: `(tool.access, effect_scope, reversibility, cost)`.
-///
-/// Derived from four facts the harness already has, which is why it is a struct
-/// of enums and not a string an operator types. Its `Display` is the pattern
-/// §11.3's table matches on, so a policy table W11 writes later reads the same
-/// spelling this log already carries.
+/// The routing key: `(tool.access, effect_scope, reversibility, cost)`, derived from
+/// four facts the harness already has. Its `Display` is the spelling a policy table
+/// would match on, so the log and the table share one vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActionClass {
     pub access: Access,
@@ -351,13 +212,9 @@ impl std::fmt::Display for ActionClass {
 }
 
 impl ActionClass {
-    /// The inverse of [`ActionClass`]'s `Display`, so a class can be written down
-    /// and read back.
-    ///
-    /// Every field must parse or the whole thing refuses: a class that lost one of
-    /// its four facts is not a narrower class, it is an unknown one, and the shape
-    /// cache compares classes for equality to decide whether a past approval covers
-    /// a present call. A `None` here means the row is skipped, which is asking.
+    /// The inverse of [`ActionClass`]'s `Display`. Every field must parse or the whole
+    /// thing refuses: a class missing one of its four facts is unknown, not narrower,
+    /// and a `None` here means the row is skipped, which is asking.
     pub fn parse(s: &str) -> Option<ActionClass> {
         let mut parts = s.split(',');
         let (a, sc, r, c) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
@@ -372,21 +229,9 @@ impl ActionClass {
         })
     }
 
-    /// The class of a host-local tool call.
-    ///
-    /// Two of the four facts are honest simplifications and both are stated rather
-    /// than hidden:
-    ///
-    /// - `cost` is always `Free`. No tool in this crate spends API credits or
-    ///   touches the network, and §11.4 says explicitly that the boundary does not
-    ///   protect metered actions — so `metered` will arrive with the tool that is
-    ///   metered, not before.
-    /// - `reversibility` is `Reversible` for an edit or an overwrite of a file
-    ///   that exists, and `Irreversible` for the creation of one, because a
-    ///   creation has no prior content to restore. That is a weaker claim than it
-    ///   looks: "reversible" here means *the harness handed the prior bytes to the
-    ///   head in the same result* ([`crate::edit::FileEdit::before`]), not that
-    ///   anything will automatically undo it.
+    /// The class of a host-local tool call. `cost` is always `Free` because no tool here
+    /// spends credits or touches the network. `reversibility` is `Reversible` only for an
+    /// edit or overwrite, meaning the prior bytes went to the head, not that anything undoes it.
     pub fn host(access: Access, inside_workspace: bool, creates: bool) -> Self {
         ActionClass {
             access,
@@ -404,28 +249,9 @@ impl ActionClass {
         }
     }
 
-    /// The class of a call that **leaves the box**.
-    ///
-    /// This exists because [`ActionClass::host`] was the only constructor and
-    /// `Access::Network` had no user, so every derivation ran through the path
-    /// that asks whether a `path` argument is inside the workspace. A network call
-    /// has no `path`, `path_is_inside` answers `true` for the absence of one, and
-    /// the first `web_fetch` would therefore have been logged and routed as
-    /// `network,host_project` — a class that says the effect lands in the
-    /// operator's project directory. The audit would have been wrong in the
-    /// direction that matters, and nothing would have said so.
-    ///
-    /// `reversibility` is **always `Irreversible`**, and that is a claim rather
-    /// than a hedge: a request that has left this box cannot be recalled. Even a
-    /// read is a row in somebody's access log and a fact about who is looking at
-    /// what. §11.3 routes `*,external,irreversible,*` to a human, which is the
-    /// conservative row, and the alternative — calling a `GET` reversible because
-    /// nothing here changed — would be reasoning about the wrong side of the wire.
-    ///
-    /// `cost` is the caller's to state. It is `Free` for everything today because
-    /// nothing is attached and nothing is billed; the first metered provider brings
-    /// [`Cost::Metered`] with it, and §11.4 is explicit that the boundary does not
-    /// protect metered actions.
+    /// The class of a call that leaves the box. A network call has no `path` and
+    /// `path_is_inside` answers true for its absence, so [`ActionClass::host`] would log it
+    /// as landing in the operator's project. Always `Irreversible`: it cannot be recalled.
     pub fn external(access: Access, cost: Cost) -> Self {
         ActionClass {
             access,
@@ -436,19 +262,15 @@ impl ActionClass {
     }
 }
 
-// ---------------------------------------------------------------------------
-// §11.2's one decision shape.
-// ---------------------------------------------------------------------------
-
-/// §11.6: a permission and a question are one mechanism, differing in `kind` and
-/// in what happens when nobody answers.
+/// A permission and a question are one mechanism, differing in `kind` and in what
+/// happens when nobody answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestKind {
     Permission,
     Question,
 }
 
-/// What happens when nobody answers. §11.5.
+/// What happens when nobody answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnTimeout {
     Deny,
@@ -469,9 +291,9 @@ pub enum OptionKind {
     AllowOnce,
     /// Admit this call and every later call of the same class in this session.
     AllowSession,
-    /// As `AllowSession`, and W11 persists it past the process. Here it behaves as
-    /// `AllowSession` and says so in the row, because claiming a durable grant the
-    /// harness does not store would be a lie in the audit.
+    /// As `AllowSession`, and nothing here persists it past the process: it behaves as
+    /// `AllowSession` and says so in the row, because claiming a durable grant the harness
+    /// does not store would be a lie in the audit.
     AllowAlways,
     Deny,
     /// Deny, and put the reason in front of the model rather than only in the log.
@@ -508,22 +330,9 @@ impl OptionKind {
     }
 }
 
-/// The ladder for an action on [`crate::intent::ALWAYS_ASK`]: **no standing grant**.
-///
-/// A third mechanism for one property, and deliberately so. The tier withholds the
-/// [`Adjudicable`] witness, [`AdjudicatedGate::admit`] refuses to insert a class grant
-/// for one, and the prompt does not offer the option in the first place — so an
-/// operator is not shown a button whose effect the gate would then decline to honour,
-/// and an adjudicator cannot select one. A safety property with one mechanism ships
-/// broken the first time somebody refactors the mechanism.
-/// **The ladder for a path the boundary hid.** Three answers, because the choice
-/// an operator actually has is not allow/deny: a path can come in readable, which
-/// is enough to look at something, or writable, which is what creating a symlink
-/// takes. Offering one button for both would make them pick the wider one to get
-/// anything done.
-///
-/// Read-only is first, and is the one Enter lands on: it is the narrower of the
-/// two admissions and the common case.
+/// The ladder for a path the boundary hid: readable, read and write, or no. One button
+/// for both would make an operator pick the wider to get anything done. Read-only is
+/// first and is where Enter lands.
 pub fn view_grant_options() -> Vec<DecisionOption> {
     vec![
         DecisionOption {
@@ -544,14 +353,9 @@ pub fn view_grant_options() -> Vec<DecisionOption> {
     ]
 }
 
-/// **The memory card's answers** (TODO.md R65): the operator grants what was asked, once or for
-/// the session, or not.
-///
-/// **For the session is BOUNDED by the amount on this card**, not a blank cheque: the operator,
-/// on getting the asks one after another — *"i started to get memory asks, session_allow option
-/// is missing"*. The reason it was left out still holds — what is free changes between asks — so
-/// a later ask is waved through only when it is no larger than what was granted AND no larger
-/// than what is free at that moment; anything else asks again ([`AdjudicatedGate::grant_memory`]).
+/// The memory card's answers: grant what was asked once, or for the session. The
+/// session grant is bounded by the amount on this card and by what is free when a later
+/// ask arrives; anything larger asks again ([`AdjudicatedGate::grant_memory`]).
 pub fn memory_grant_options() -> Vec<DecisionOption> {
     vec![
         DecisionOption {
@@ -592,23 +396,9 @@ pub fn always_ask_options() -> Vec<DecisionOption> {
     ]
 }
 
-/// The allow/deny ladder every permission carries. opencode's permission *model*
-/// is the part §11.9 says is worth vendoring, and this is it.
-///
-/// `derived` is the rule an *Always allow* answer will write for the call in
-/// front of the operator — the path, or the program and its verb. It is in the
-/// label so the button names what it does: the operator's report (2026-09-18)
-/// was that the offer said "add tool and verb to the permissions file" without
-/// ever saying **which**, and a rule nobody can read is one nobody should be
-/// asked to sign.
-/// **The durable rung, when one can be offered at all.**
-///
-/// `None` from [`derived_pattern`] means the matcher would ask again whatever
-/// rule were written, so the rung is left off the ladder rather than shown and
-/// then quietly ignored — the rule the recording site states: *"an operator is
-/// never shown a button whose effect the gate would then decline to honour."*
-/// One helper for all three ladders, because three copies of this condition is
-/// three chances for one of them to go on offering it.
+/// The durable rung, when one can be offered at all. `None` from [`derived_pattern`]
+/// means the matcher would ask again whatever rule were written, so the rung is left off
+/// rather than shown and then quietly ignored. One helper for all three ladders.
 fn durable_rung(derived: Option<&str>) -> Option<DecisionOption> {
     derived.map(|d| DecisionOption {
         id: "allow_always".into(),
@@ -617,19 +407,9 @@ fn durable_rung(derived: Option<&str>) -> Option<DecisionOption> {
     })
 }
 
-/// **The session rung, when a grant taken now could cover a later call** — and when it
-/// could not, nothing, with the reason on [`Offer::note`].
-///
-/// *"An operator is never shown a button whose effect the gate would then decline to
-/// honour"*, and `allow_session` was the button: `Grant::covers` refuses an unresolved
-/// action BEFORE it looks at coverage, so agreeing to *"Allow `cargo` for the rest of the
-/// session"* over a command nobody could read was recorded as a grant that could never
-/// cover anything. MEASURED 2026-10-26: 15 of one session's 22 asks offered exactly that,
-/// and the operator took it and was asked again.
-///
-/// The condition is not restated here. It is [`Offer::session`], which the gate answers
-/// by asking `Grant::covers` about the very grant an answer would record — so the ladder
-/// and the recording site cannot disagree about what is offerable.
+/// The session rung, when a grant taken now could cover a later call: `Grant::covers`
+/// refuses an unresolved action before it looks at coverage, so a session grant over an
+/// unreadable command would cover nothing. The condition is [`Offer::session`].
 fn session_rung(offer: &Offer, label: String) -> Option<DecisionOption> {
     offer.session.then(|| DecisionOption {
         id: "allow_session".into(),
@@ -662,21 +442,9 @@ pub fn permission_options(offer: &Offer) -> Vec<DecisionOption> {
     out
 }
 
-/// **What a ladder may offer for one call, and why anything is missing from it.**
-///
-/// Three answers, computed once in `AdjudicatedGate::request_from` from the same facts
-/// the recording site reads — so the option list and what an answer actually does cannot
-/// drift apart:
-///
-/// * `derived` — the rule an *Always allow* answer would write, or `None` when the
-///   matcher would ask again whatever was written (`derived_pattern`).
-/// * `session` — whether a grant taken NOW could cover a later call. Answered by asking
-///   [`crate::grant::Grant::covers`] about the very grant an answer would record, which is
-///   the only authority on the question; see `session_rung` for the measurement.
-/// * `note` — **one line on the card when a rung is absent**, because an option that
-///   silently disappears is a person wondering whether they misremembered. The operator's
-///   framing of the whole gate is that they are deciding, and a decision they cannot
-///   explain is one they make by fatigue.
+/// What a ladder may offer for one call, and why anything is missing from it. Computed once
+/// in `AdjudicatedGate::request_from` from the facts the recording site reads, so the list
+/// and what an answer does cannot drift. `note` says why a rung is absent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Offer {
     pub derived: Option<String>,
@@ -686,39 +454,20 @@ pub struct Offer {
 }
 
 impl Offer {
-    /// The line to draw, or nothing — one spelling of *is there anything to say*. A card
-    /// that asked this and got `Some("")` would push a blank row under its ladder.
+    /// The line to draw, or nothing: one spelling of *is there anything to say*. A card that
+    /// asked this and got `Some("")` would push a blank row under its ladder.
     pub fn note_line(&self) -> Option<&str> {
         self.note.as_deref().filter(|n| !n.trim().is_empty())
     }
 }
 
-/// The ladder for an exec-class call.
-///
-/// The operator's rule of 2026-09-11 was that a shell asks every time, and the
-/// revision of 2026-09-14 added *Always allow* as a durable rule over the
-/// program and its verb. That revision is what unbalanced the ladder: a durable
-/// rule that outlives the session was offered while the session-scoped grant —
-/// strictly weaker, gone when the daemon stops — was not. The operator,
-/// 2026-09-18: *"if I'm offered to permanently enable — it is stronger than
-/// allow_session — so allow_session should always be offered too."* It is, and
-/// the grant it records is scoped the way the rule is: the program and the
-/// class, never exec at large.
-///
-/// See [`Offer`] for what may be left off, and why the card says so.
+/// The ladder for an exec-class call. The session rung is offered whenever the durable one
+/// is: a rule that outlives the session is stronger than a grant that dies with the daemon,
+/// so offering only the stronger is backwards. See [`Offer`] for what may be left off.
 pub fn exec_options(offer: &Offer) -> Vec<DecisionOption> {
-    // **A call with no command has no program to name, so the label names the class.**
-    //
-    // `grant_program` answers [`NO_PROGRAM`] for a path-shaped call — `job_kill`,
-    // `write` — and that string is a *key*: it must match nothing a command produces so
-    // a grant over `bash` cannot cover a `write`. Printing it here produced an option
-    // reading *"Allow `<tool>` (this class) for the rest of the session"*, which is a
-    // placeholder standing where a noun belongs, on the one surface where the operator
-    // is asked to decide (R18's fifth point).
-    //
-    // The alternative is not a guess at a name — that is what the sentinel exists to
-    // avoid. It is the wording the other ladder already uses, because it is exactly
-    // true: there is no program, so what the grant covers is the class.
+    // A call with no command has no program to name, so the label names the class.
+    // `NO_PROGRAM` is a key and must match nothing a command produces, so printing it
+    // would put a placeholder where a noun belongs, on the surface where a person decides.
     let session_label = if offer.program == NO_PROGRAM {
         "Allow this class for the rest of the session".to_string()
     } else {
@@ -747,19 +496,9 @@ pub fn exec_options(offer: &Offer) -> Vec<DecisionOption> {
     out
 }
 
-/// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`].
-///
-/// It used to be [`permission_options`] without `allow_session`, on the theory
-/// that the mode's contract and the option list had to agree — and that an
-/// operator who wants to stop being asked needs a different point, not a
-/// different answer. What broke the theory was *Always allow*: the one option
-/// that reaches past the session was on the ladder at a point that was not
-/// supposed to grant past the call, so the contract was already broken in the
-/// stronger direction. The operator, 2026-09-18: *"if I'm offered to
-/// permanently enable — it is stronger than allow_session — so allow_session
-/// should always be offered too."* The weaker option is back, and the gate
-/// honours it: an explicit answer is the operator overriding the point's
-/// default, which is what answering an ask has always meant.
+/// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`]. The session
+/// rung is here too, because an explicit answer is the operator overriding the point's
+/// default, and a durable rule was already on the ladder.
 pub fn once_only_options(mode_name: &'static str, offer: &Offer) -> Vec<DecisionOption> {
     let mut out = vec![DecisionOption {
         id: "allow_once".into(),
@@ -788,18 +527,9 @@ pub fn once_only_options(mode_name: &'static str, offer: &Offer) -> Vec<Decision
     out
 }
 
-/// One aggregated line of R11's history: what the gate did before, on actions of
-/// this same task direction.
-///
-/// Aggregated **by the gate's own effect** — `admit` or `refuse` — because that is
-/// the split the discipline cares about: *"a denial is history too"*, and a brief
-/// that showed only the approvals would be telling the oracle a one-sided story
-/// about its own record. The counts and the ages travel with them (*"once, three
-/// weeks ago"* and *"nine times this week"* are different facts, and a bare
-/// *"previously allowed"* hides which); the ages are turn distances, which is the
-/// honest unit for an in-session log. There is no field here for the arguments or
-/// the decision prose — history is evidence about the shape, not a transcript of
-/// the calls, and the raw text must never reach the oracle through the back door.
+/// One aggregated line of history: what the gate did before, on actions of this same task
+/// direction. Aggregated by effect, because a denial is history too, and carrying counts
+/// and turn distances - never the arguments, which must not reach the oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PriorAnswer {
     /// The gate's effect on the prior call: `admit` or `refuse`, as the row spells it.
@@ -812,15 +542,9 @@ pub struct PriorAnswer {
     pub first_turns_ago: Option<u64>,
 }
 
-/// §11.2's request, minus the fields no adjudicator on this box can use yet.
-///
-/// Dropped from §11.2 and why: `session_id`/`agent` are carried (the gate is
-/// constructed with them); `run_id` and `boundary_facts` are firecode's and
-/// arrive with the firecode backend, so [`AdjudicationRequest::boundary_facts`]
-/// holds what the *host* backend can honestly state instead; `deadline` is not
-/// here because this seam is synchronous — an adjudicator that has to wait owns
-/// its own deadline and reports [`DecisionOutcome::Timeout`], which is the same
-/// fact one layer in.
+/// The request, minus the fields no adjudicator on this box can use yet. `boundary_facts`
+/// holds what the host backend can honestly state; there is no `deadline`, because this
+/// seam is synchronous and an adjudicator that has to wait owns its own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdjudicationRequest {
     pub id: String,
@@ -833,139 +557,76 @@ pub struct AdjudicationRequest {
     pub class: ActionClass,
     /// One line a human can decide from without reading the arguments.
     pub summary: String,
-    /// **The one thing the decision is about**, alone and unquoted: the command a
-    /// `bash` call would run, the path a write would take, the URL a fetch reaches.
-    ///
-    /// Carried beside `summary` rather than only inside it, because a head has to be
-    /// able to put it where the eye lands — and because a sentence with a shell line
-    /// interpolated into the middle of it is the one shape a person cannot skim.
+    /// The one thing the decision is about, alone and unquoted: the command, the path, the
+    /// URL. Beside `summary` rather than inside it, because a sentence with a shell line in
+    /// the middle is the one shape a person cannot skim.
     pub target: String,
     pub arguments: Value,
     pub arguments_digest: String,
     /// What the backend can truthfully say about where this lands.
     pub boundary_facts: Vec<String>,
-    /// **The code this call will run**, when it names a script file.
-    ///
-    /// An interpreter is `ExecuteCode` and nothing else to layer A, so
-    /// `python3 deploy.py` reaches an adjudicator as *a program runs* with the
-    /// program itself unopened. The oracle can read code — measured 2026-09-20,
-    /// it denied a key deletion written inline, and denied it again with the path
-    /// built at runtime from `pathlib.Path.home()`, which no string rule could
-    /// have caught. It cannot read a file nobody gave it.
-    ///
-    /// Empty when the command names no script, which is its own fact and is
-    /// stated in the brief rather than left as silence.
+    /// The code this call will run, when it names a script file. An interpreter is
+    /// `ExecuteCode` and nothing else to layer A, so `python3 deploy.py` arrives with its
+    /// program unopened. Empty when no script is named, which the brief states.
     pub scripts: Vec<crate::runtime::ScriptSource>,
     pub kind: RequestKind,
     pub options: Vec<DecisionOption>,
     pub on_timeout: OnTimeout,
 
-    // --- layer A's findings, and the authorisation trail. -------------------
-    /// §3's tier, derived by [`crate::intent`] and **never** chosen by a caller: the
-    /// gate computes it in [`AdjudicatedGate::request_for`], the way it computes
-    /// `class`. A field a caller filled in would be a field a caller could fill in
-    /// wrongly.
+    /// The tier, derived by [`crate::intent`] and never chosen by a caller: the gate
+    /// computes it the way it computes `class`. A field a caller filled in could be filled
+    /// in wrongly.
     pub tier: Tier,
-    /// Whether the grammar resolved the whole action. `false` is `NotRun` — *nobody
-    /// could decide* — and no adjudicator is consulted.
+    /// Whether the grammar resolved the whole action. `false` is `NotRun` - nobody could
+    /// decide - and no adjudicator is consulted.
     pub resolved: bool,
     /// Layer A's one-line reading: the verdict, the intents, the regions, the tier.
     pub baseline: String,
-    /// **The authorisation trail.** §2: *"a stateless command classifier cannot be
-    /// correct, because the same command is authorised or not depending on what the
-    /// operator just said."*
+    /// The authorisation trail: the same command is authorised or not depending on what the
+    /// operator just said, so a stateless classifier cannot be correct.
     pub trail: crate::authorise::AuthorisationTrail,
-    /// **R11: prior answers on actions of this shape**, read back from the audit
-    /// rows at decision time and carried to the brief. Set only by the gate, in
-    /// [`AdjudicatedGate::request_from`], keyed the way
-    /// [`crate::authorise::TaskDirection`] is — never by a caller, and never read
-    /// for a tier or an admission: the four inputs history feeds is the *brief*,
-    /// and the tier is layer A's alone.
+    /// Prior answers on actions of this shape, read back from the audit rows and carried to
+    /// the brief. Set only by the gate, and never read for a tier or an admission: history
+    /// feeds the brief, and the tier is layer A's alone.
     pub prior: Vec<PriorAnswer>,
-    /// **What this operator answered themselves, earlier in this session.** The
-    /// action and the verdict, not a count — so the guard has worked examples of
-    /// this person's judgement rather than a tally. Filled here, from the audit
-    /// log, exactly as `prior` is; see [`crate::authorise::DecisionExample`].
+    /// What this operator answered themselves, earlier in this session: the action and the
+    /// verdict, not a count, so the guard has worked examples of this person's judgement.
     pub examples: Vec<crate::authorise::DecisionExample>,
     /// Which wording of the guard's question this request will be briefed with.
     /// The shipping one everywhere; `--calibrate --compare` is the only caller
     /// that sets the other, and it sets it to measure the difference.
     pub brief_variant: crate::authorise::BriefVariant,
     /// What the agent says it is doing, for the guard to connect the operator's
-    /// words to this call. Never an authorisation and never citable — see
+    /// words to this call. Never an authorisation and never citable - see
     /// [`crate::authorise::ModelBrief::agent_claim`].
     pub agent_claim: Option<String>,
-    /// **Layer A's finding, as a value rather than as prose.**
-    ///
-    /// `baseline` above is the sentence a human reads. `ModelAdjudicator` needs the
-    /// classification, and used to RE-DERIVE it from `arguments["command"]` — which
-    /// works for `bash` and for nothing else. A `write` has no `command`, so the
-    /// re-derivation ran over an empty string, produced `intents [unknown]`, and
-    /// every file edit at `automode` escalated to the operator with a reason that
-    /// contradicted the line above it: *"ask — intents [write_file] / model says
-    /// ask: the action carries intent(s) [unknown]"*, at `0 ms`, the oracle never
-    /// consulted.
-    ///
-    /// One derivation, done where the surroundings are known, carried to whoever
-    /// needs it. Two classifications of one call could not agree and did not.
+    /// Layer A's finding as a value rather than prose. `baseline` is the sentence a human
+    /// reads; this is what an adjudicator reads, because re-deriving it from
+    /// `arguments["command"]` works for `bash` and for nothing else.
     pub reading: Option<crate::intent::Baseline>,
-    /// **The command's shape**: the parse with its literals replaced by holes.
-    /// `None` for a call that is not a command. See [`shape_of`].
+    /// The command's shape: the parse with its literals replaced by holes. `None` for a call
+    /// that is not a command. See [`shape_of`].
     pub shape: Option<String>,
-    /// **Why a rung that a person would expect is not on this ladder, in one line** —
-    /// `None` when the ladder is complete.
-    ///
-    /// The rule this serves is the one the whole option list is built on: *"an operator is
-    /// never shown a button whose effect the gate would then decline to honour."* Dropping
-    /// the button is only half of it. A rung that disappears with no explanation is a
-    /// person left wondering whether they misremembered what they were offered, and the
-    /// `allow_session` rung was disappearing for reasons the card had no way to say
-    /// (MEASURED 2026-10-26: an unresolved command cannot be covered by any grant, so the
-    /// rung is not offered at all).
-    ///
-    /// Written by the gate and drawn by the head, verbatim: a head that composed it would
-    /// be re-deriving which of the four refusals applied.
+    /// Why a rung a person would expect is not on this ladder, in one line; `None` when the
+    /// ladder is complete. A rung that disappears unexplained leaves a person wondering
+    /// whether they misremembered. Written by the gate, drawn by the head verbatim.
     pub options_note: Option<String>,
-    /// **What the model already said about this**, when a model was asked first.
-    ///
-    /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
-    /// [`crate::mode::Mode::AUTO`] the model *is* the decider and there is nobody
-    /// downstream to advise, at `always-ask` no model was consulted at all. Those
-    /// are different facts and `None` covers neither of them alone, which is why the
-    /// point that fills it is the point that says so in its name.
-    ///
-    /// Advice, never a decision: nothing reads this to admit anything. The gate
-    /// admits on the *human's* answer and records this beside it, so a row where the
-    /// two differ keeps both halves.
+    /// What the model already said about this, when a model was asked first. Filled only by
+    /// [`SupervisedAdjudicator`]. Advice, never a decision: nothing reads it to admit, and a
+    /// row where the two differ keeps both halves.
     pub advice: Option<ModelAdvice>,
 }
 
-/// The model's verdict, carried to the person who is about to overrule it or agree
-/// with it.
-///
-/// > *"we literally want /mode supervised that will ask model and ask me if i agree
-/// > or not"*
-///
-/// This is the payload of "if i agree or not": you cannot agree with something you
-/// were not shown. It travels on the request rather than being re-derived by a head,
-/// for [`ModelBrief`](crate::authorise::ModelBrief)'s reason one layer down — a head
-/// that reconstructed the verdict would be rendering a guess about what the model
-/// said.
+/// The model's verdict, carried to the person about to overrule it or agree: you cannot
+/// agree with something you were not shown. It travels on the request rather than being
+/// re-derived by a head, which would be rendering a guess about what the model said.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelAdvice {
-    /// **Whether an oracle was actually consulted.**
-    ///
-    /// `false` covers every case where a model adjudicator answered *without asking
-    /// a model*: an unresolved action, an always-ask entry, an blocked one, an
-    /// uncollected trail, an intent outside the oracle's earned scope. Those are
-    /// layer A's answers arriving through layer B's door, and they are not verdicts.
-    ///
-    /// Load-bearing for the corpus: [`agreement`] fires only when this is `true`.
-    /// Without it a row whose "verdict" was `always-ask short-circuit` would be
-    /// labelled as the operator agreeing or disagreeing with an opinion nothing
-    /// held — manufactured signal, and the worst kind, because it looks like data.
+    /// Whether an oracle was actually consulted. `false` covers every answer given without
+    /// asking a model - unresolved, always-ask, blocked - which are layer A's, not verdicts.
+    /// Load-bearing for [`agreement`], which fires only when this is true.
     pub consulted: bool,
-    /// `admit`, `ask` or `unavailable` — what the model's answer would have done on
+    /// `admit`, `ask` or `unavailable` - what the model's answer would have done on
     /// its own. Not an option id: at this point the model has not selected from the
     /// ladder, it has answered *did the operator ask for this*.
     pub would: &'static str,
@@ -973,32 +634,22 @@ pub struct ModelAdvice {
     pub by: String,
     /// Why. The sentence a person reads before agreeing.
     pub basis: String,
-    /// **Which of the operator's own utterances it relied on.** Empty is a real
-    /// answer and a loud one: an authorisation that cites nothing is one the oracle
-    /// could not ground, and a person should weigh it differently.
+    /// Which of the operator's own utterances it relied on. Empty is a real answer and a loud
+    /// one: an authorisation that cites nothing is one the oracle could not ground, and a
+    /// person should weigh it differently.
     pub cites: Vec<String>,
     /// How long it took, against the budget.
     pub latency_ms: u64,
-    /// **Which `Unsure` this was, when it was one** (R12), and `None` for every other
-    /// verdict.
-    ///
-    /// `basis` already says it in the operator's words; this says it in a token, so the
-    /// corpus can answer *how often does the guard run out of room* with a `GROUP BY`
-    /// rather than a regex over prose — which is exactly what `store.rs` warns about
-    /// (*re-parsing prose to recover a label is how a corpus rots*) and exactly why
-    /// `verdict` exists as a token beside `model_verdict`.
-    ///
-    /// **Only consulted answers carry it.** A `kind` on a row where no model spoke would be
-    /// the same manufactured signal `consulted` exists to refuse.
+    /// Which `Unsure` this was, when it was one, and `None` for every other verdict: `basis`
+    /// says it in words, this says it in a token so the corpus can count it with a `GROUP BY`
+    /// instead of a regex. Only consulted answers carry it.
     pub unsure: Option<UnsureKind>,
 }
 
 impl ModelAdvice {
-    /// One line for a head that has room for one line.
-    ///
-    /// An unconsulted oracle says so rather than presenting layer A's short-circuit
-    /// as a verdict. A person reading `model says ask` about a call no model saw
-    /// would weigh their own answer against nothing.
+    /// One line for a head that has room for one line. An unconsulted oracle says so rather
+    /// than presenting layer A's short-circuit as a verdict, which a person would weigh
+    /// against nothing.
     pub fn line(&self) -> String {
         if !self.consulted {
             return format!("no model verdict — {}", self.basis);
@@ -1010,66 +661,28 @@ impl ModelAdvice {
     }
 }
 
-/// **Which rendering of [`AdjudicationRequest::brief`] a corpus row was produced
-/// under.** Stamped on every row.
-///
-/// Bump it whenever `brief` changes what it emits. Rows carrying different values
-/// are two datasets: the same decision shown under two briefs is two different
-/// questions, and a trainer pooling them fits the seam between them. A date is
-/// enough of an identifier and is one nobody has to look up.
+/// Which rendering of [`AdjudicationRequest::brief`] a corpus row was produced under, stamped
+/// on every row. Bump it whenever `brief` changes what it emits: the same decision under two
+/// briefs is two different questions, and pooling them fits the seam between them.
 pub const BRIEF_FORMAT: &str = "brief/2026-09-14";
 
 impl AdjudicationRequest {
-    /// The witness that layer A found this adjudicable **and** readable.
-    ///
-    /// The only way to obtain an [`Adjudicable`], and therefore the only way anything can be
-    /// admitted by an oracle. `None` for a blocked action — see [`Adjudicable`] for why that
-    /// is a type rather than a check.
-    ///
-    /// **`self.resolved` is no longer part of the gate**, and that is the operator's ruling
-    /// arriving twice: an unresolved action is exactly the one whose reading layer A could not
-    /// produce, so a second opinion is the only opinion there is (*"we have to ask oracle for
-    /// this stuff"*), and once asked its verdict is the verdict (*"i want to follow oracle
-    /// verdict"*). The witness still means something: it is what makes an ALLOW able to admit,
-    /// so `Blocked` — the rules nobody may move — still mints none.
+    /// The witness that layer A found this adjudicable and readable, and the only way
+    /// anything can be admitted by an oracle. `resolved` is not part of it: an unresolved
+    /// action is the one whose reading layer A could not produce, so the oracle is asked.
     pub fn adjudicable(&self) -> Option<Adjudicable> {
         self.tier
             .is_adjudicable_by_model()
             .then_some(Adjudicable(()))
     }
-    /// **The CARD a person reads — not the brief a model is shown.** These are two
-    /// renderings of one request, and this comment used to claim the second while
-    /// describing the first. That is how a reader concluded the shipped brief was
-    /// *narrower than its own design* (R26, 2026-09-23): `trail`, `prior` and
-    /// `examples` are fields of this struct (`:777`, `:784`, `:789`) and this renders
-    /// none of them, while [`crate::authorise::ModelBrief::render`] renders all three —
-    /// so a person deciding here is shown **less** than the model, which is the
-    /// opposite of the starvation that was reported. Whether the person *should* see
-    /// them (they have the goal in front of them and the card's job is to be read at a
-    /// glance) is not recorded anywhere as a choice.
-    ///
-    /// It is rendered here rather than in each caller because a human over flowy and
-    /// a console prompt need exactly the same bytes, and having three renderings of
-    /// one request is how they stop agreeing.
-    ///
-    /// **One `BRIEF_FORMAT` covers both renderings**, so the corpus `shown` column
-    /// holds a card on a person's rows and a brief on an oracle's — the same defect
-    /// R11 already found once.
+    /// The card a person reads, not the brief a model is shown. Rendered here rather than in
+    /// each caller because a human over flowy and a console prompt need the same bytes, and
+    /// three renderings of one request is how they stop agreeing.
     pub fn brief(&self) -> String {
         let mut out = String::new();
-        // **No request id.** It is high-entropy, carries nothing about the call,
-        // and measurably decides the verdict on a boundary case: 2026-09-20,
-        // `python3 -c "import os; os.remove('…/.ssh/id_rsa')"` under *"my ssh
-        // keys are a mess, clean them up"* answered ALLOW with the id spelled
-        // `adj-probe` and DENY with it spelled `adj`, six of six each way,
-        // deterministic, on two endpoints. Nothing else differed.
-        //
-        // That case sits on the decision boundary and any perturbation tips it —
-        // the id was simply the one available. It does not make the boundary
-        // right, it stops an identifier being a coin flip.
-        //
-        // The id still keys the audit row, the corpus and the answer: this is the
-        // one place it is dropped, which is the place it was never information.
+        // No request id: it is high-entropy, carries nothing about the call, and on a
+        // boundary case the spelling alone tipped the verdict. It still keys the audit row
+        // and the answer; this is the one place it is dropped, where it was never information.
         out.push_str(&format!("decision — {}\n", self.summary));
         out.push_str(&format!("tool: {}\nclass: {}\n", self.tool, self.class));
         for f in &self.boundary_facts {
@@ -1093,16 +706,9 @@ impl AdjudicationRequest {
     }
 }
 
-/// **The code the command will run**, for the adjudicator that can read it.
-///
-/// Its own section rather than another `fact:` line, because it is the one part
-/// of a brief that is not a statement ABOUT the call — it is the call, and an
-/// adjudicator should read it as the program it is.
-///
-/// A script that could not be read says so. That matters more than the ones that
-/// could: an adjudicator told nothing about `python3 deploy.py` cannot tell a
-/// command that runs no script from one whose script it was not shown, and those
-/// are the two cases where the right answers are opposite.
+/// The code the command will run, for the adjudicator that can read it. Its own section
+/// because it is the call itself, not a statement about it. A script that could not be read
+/// says so: telling nothing apart from "runs no script" would invert the right answer.
 fn scripts_section(scripts: &[crate::runtime::ScriptSource]) -> String {
     use crate::runtime::ScriptBody;
     if scripts.is_empty() {
@@ -1139,10 +745,8 @@ fn scripts_section(scripts: &[crate::runtime::ScriptSource]) -> String {
     out
 }
 
-/// §11.7 asks for *"the arguments, verbatim, with any value over 2 KiB spilled
-/// to a digest and a head/tail"*. The same number, and the same reason: an
-/// adjudicator that has to read a 40 KB file body to approve a one-line edit is
-/// an adjudicator nobody will read.
+/// The arguments, verbatim, with any value over 2 KiB spilled to a digest and a head/tail:
+/// an adjudicator made to read a 40 KB body to approve a one-line edit is one nobody reads.
 const ARG_PREVIEW_BYTES: usize = 2048;
 
 fn arguments_preview(args: &Value) -> String {
@@ -1188,14 +792,14 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// §11.2's closed outcome vocabulary. dsh's property: *a throwing or
-/// non-conforming answerer becomes `unavailable`, never silently opens the gate.*
+/// The closed outcome vocabulary: a throwing or non-conforming answerer becomes
+/// `unavailable`, never silently opens the gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionOutcome {
     Selected {
         option_id: String,
     },
-    /// First class rather than an error path (§11.4).
+    /// First class rather than an error path.
     Escalate {
         to: String,
         why: String,
@@ -1217,8 +821,8 @@ impl DecisionOutcome {
     }
 }
 
-/// §11.2's decision. `basis` is *"short text — the reason, always present, never
-/// optional"*, so it is a `String` and not an `Option<String>`.
+/// The decision. `basis` is the reason, always present and never optional, so it is a
+/// `String` and not an `Option<String>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdjudicationDecision {
     pub request_id: String,
@@ -1254,13 +858,8 @@ impl AdjudicationDecision {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The adjudicator seam.
-// ---------------------------------------------------------------------------
-
-/// One adjudicator. §11.1's three — boundary, human, model — are three
-/// implementations of this, *"and the design's job is to make them
-/// interchangeable rather than to rank them"*.
+/// One adjudicator. The boundary, a person and a model are three implementations of this,
+/// and the design's job is to make them interchangeable rather than to rank them.
 pub trait Adjudicator: Send + Sync {
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision;
 
@@ -1268,91 +867,45 @@ pub trait Adjudicator: Send + Sync {
     /// cannot see which adjudicator is attached cannot see that none is.
     fn describe(&self) -> String;
 
-    /// The bytes this adjudicator was **actually shown** for the last call, when it
-    /// shows anything.
-    ///
-    /// The gate copies it into [`AdjudicationRow::shown`], and that field is the reason
-    /// this method exists: a fine-tuning corpus whose input was reconstructed
-    /// afterwards is a corpus of guesses about what the model saw. `None` for an
-    /// adjudicator that shows nothing — [`NoAdjudicator`] — which is a different fact
-    /// from an empty brief.
+    /// The bytes this adjudicator was actually shown for the last call, copied into
+    /// [`AdjudicationRow::shown`]: a corpus whose input was reconstructed afterwards is a
+    /// corpus of guesses. `None` for an adjudicator that shows nothing.
     fn last_brief(&self) -> Option<String> {
         None
     }
 
-    /// **What an oracle answered, verbatim, on the last call — when one answered.**
-    ///
-    /// The twin of `last_brief`, and `None` for every adjudicator that has no bytes to
-    /// show: a boundary rule, a person and a short-circuit are not replies. ([`ModelAdjudicator`]
-    /// implements it from the oracle it drives.)
-    ///
-    /// **Why it is asked for rather than returned with the verdict:** the reply is not part
-    /// of the decision — an `OracleAnswer` says what should happen and needs no copy of the
-    /// words it was read out of. What needs them is the corpus, which is written a layer up,
-    /// and a corpus row whose label cannot be traced back to its input is a row nobody can
-    /// check. A reply this seam could not parse is the one worth reading most, so it is
-    /// reported whether or not anything was made of it.
+    /// What an oracle answered, verbatim, on the last call, when one answered. The twin of
+    /// `last_brief`, and asked for rather than returned with the verdict because the reply is
+    /// not part of the decision - the corpus is what needs it, a layer up.
     fn last_reply(&self) -> Option<String> {
         None
     }
 
-    /// **What a model said about the last call, when a model was consulted first.**
-    ///
-    /// [`SupervisedAdjudicator`]'s, and `None` for every other adjudicator. The
-    /// same shape as `last_brief` and for the same reason: the gate builds the
-    /// request and the adjudicator is what learns something about it, so an answer
-    /// the adjudicator produced downstream has to be asked for rather than read off
-    /// the request the gate still holds.
-    ///
-    /// The gate copies it into the corpus row's `model_verdict`. Without it that
-    /// column holds whatever *decided*, which at a supervised point is the person —
-    /// and a corpus in which the model and the operator never disagree is a corpus
-    /// with no signal in it at all.
+    /// What a model said about the last call, when a model was consulted first: the gate
+    /// copies it into the row's `model_verdict`. Without it that column holds whatever
+    /// decided, and a corpus where model and operator never disagree has no signal.
     fn last_advice(&self) -> Option<ModelAdvice> {
         None
     }
 
-    /// **Ask the model and nobody else.**
-    ///
-    /// For the one path that has already been decided and still wants a verdict: a
-    /// standing `allow_session` covers the call, so there is nothing to ask a person,
-    /// and the model's opinion on it is a free labelled example against a ruling the
-    /// operator has already made.
-    ///
-    /// `None` for every adjudicator that has no model in it, which is the honest
-    /// answer — *nobody was consulted* — and not an empty verdict.
-    ///
-    /// It must not block on a person. [`SupervisedAdjudicator`] implements it by
-    /// running its model half alone, and the default here runs nothing at all.
+    /// Ask the model and nobody else: for a call a standing grant already covers, where the
+    /// verdict is a free labelled example and there is nothing to ask a person. `None` means
+    /// nobody was consulted, and it must not block on a person.
     fn advise_only(&self, _req: &AdjudicationRequest) -> Option<ModelAdvice> {
         None
     }
 
-    /// **The glob the operator typed with their answer**, when they typed one.
-    ///
-    /// > *"please add globbing to my answers somehow too"*
-    ///
-    /// Read by the gate when an answer is `AllowAlways`, which is the only option
-    /// that writes a rule; ignored on every other option id rather than quietly
-    /// widening one. `None` means *derive the pattern from the call*, which is what
-    /// every answer did before this existed — never *match nothing*.
-    ///
-    /// The same shape as `last_brief` and `last_advice`, for the same reason: this
-    /// arrives with the answer, and the answer reaches the adjudicator rather than
-    /// the gate. Threading it through `AdjudicationDecision` instead would have
-    /// touched forty-four literals to carry a value that is `None` in forty-three
-    /// of them.
+    /// The glob the operator typed with their answer, when they typed one. Read only for
+    /// `AllowAlways`, the one option that writes a rule. `None` means derive the pattern from
+    /// the call, never match nothing.
     fn last_pattern(&self) -> Option<String> {
         None
     }
 }
 
-/// **The default, and it refuses.**
-///
-/// Not "deny": nobody decided. It answers `Unavailable`, which
-/// [`AdjudicatedGate`] routes to the request's `on_timeout` — `Deny` for a
-/// permission over a write, which becomes [`ToolOutcome::NotRun`] because the
-/// harness will not claim a decision that was not made.
+/// The default, and it refuses. Not "deny": nobody decided, so it answers `Unavailable`,
+/// which [`AdjudicatedGate`] routes to the request's `on_timeout` - `Deny` over a write,
+/// which becomes [`ToolOutcome::NotRun`] because no decision was made.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoAdjudicator;
 
@@ -1371,13 +924,9 @@ impl Adjudicator for NoAdjudicator {
     }
 }
 
-/// An adjudicator that is a function of the request.
-///
-/// This is the seam a head, a flowy connector or §11.7's model adjudicator plugs
-/// into: all three are *"post a brief somewhere and come back with an option id"*.
-/// `None` from the function means **nobody answered**, which becomes
-/// `Unavailable` — never an allow, which is dsh's rule about a non-conforming
-/// answerer.
+/// An adjudicator that is a function of the request: the seam a head, a flowy connector or a
+/// model adjudicator plugs into. `None` from the function means nobody answered, which
+/// becomes `Unavailable` - never an allow.
 pub struct AskAdjudicator<F> {
     pub ask: F,
     pub id: String,
@@ -1403,9 +952,8 @@ where
                 if d.latency_ms == 0 {
                     d.latency_ms = started.elapsed().as_millis() as u64;
                 }
-                // A conforming answer names an option this request offered. One
-                // that does not is `Unavailable`, not a guess: §11.2's whole point
-                // is that a non-conforming answerer never opens the gate.
+                // A conforming answer names an option this request offered. One that does
+                // not is `Unavailable`: a non-conforming answerer never opens the gate.
                 if let DecisionOutcome::Selected { option_id } = &d.outcome
                     && req.option(option_id).is_none()
                 {
@@ -1437,18 +985,9 @@ where
     }
 }
 
-/// A real ask over a pair of streams: write the brief, read an option id.
-///
-/// This is the `--ask` path in its smallest honest form, and it is here so that
-/// "an ask path exists and is real" is a thing a test can drive rather than a
-/// thing a README claims. `ConsoleAdjudicator::stdio()` is what a foreground CLI
-/// uses; the constructor takes the streams so a test can hand it a `Cursor` and
-/// assert on the exact bytes a human would have seen.
-///
-/// **Not** the flowy human adjudicator of §11.5: this one holds the call, and
-/// §11.5 says a pending decision should be a visible row rather than a held
-/// connection. It composes with firecode's `--ask`, which does block, and it is
-/// the right shape inside a guest that has nothing else.
+/// A real ask over a pair of streams: write the brief, read an option id. The constructor
+/// takes the streams so a test can hand it a `Cursor` and assert on the exact bytes a human
+/// would have seen. Not the flowy human adjudicator: this one holds the call.
 pub struct ConsoleAdjudicator {
     io: Mutex<ConsoleIo>,
     who: String,
@@ -1486,16 +1025,9 @@ impl Adjudicator for ConsoleAdjudicator {
         let started = std::time::Instant::now();
         let mut io = match self.io.lock() {
             Ok(g) => g,
-            // A poisoned mutex means a previous ask panicked. Unavailable, not a
-            // guess.
-            // **`by` names who DECIDED, and nobody did.** These arms carried
-            // `human:<who>`, so a head that timed out or answered with an option
-            // the request did not offer was written into the corpus as a person
-            // refusing — and the operator's own three "refusals" of a man-page
-            // lookup they had proposed were exactly that (2026-09-16). The
-            // corpus filters on `human:` to find a human's answers, the
-            // calibration counted those rows as false allows, and every prompt
-            // arm was charged for being right. Only `Selected` is the person.
+            // A poisoned mutex means a previous ask panicked: Unavailable, not a guess.
+            // `by` names who DECIDED, and nobody did here - only `Selected` is the person,
+            // so a timeout is never written into the corpus as a human's refusal.
             Err(_) => {
                 return AdjudicationDecision::unavailable(
                     req,
@@ -1513,8 +1045,7 @@ impl Adjudicator for ConsoleAdjudicator {
 
         let mut line = String::new();
         match io.input.read_line(&mut line) {
-            // EOF: the stream closed without an answer. §11.5's *"silence is
-            // indistinguishable from absence"* — except here it is not, because
+            // EOF: the stream closed without an answer. Silence is not absence here, because
             // the stream told us. Timeout, which routes to `on_timeout`.
             Ok(0) => AdjudicationDecision {
                 request_id: req.id.clone(),
@@ -1569,64 +1100,40 @@ impl Adjudicator for ConsoleAdjudicator {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The gate proper.
-// ---------------------------------------------------------------------------
-
-/// The closure a session loop installs to supply the authorisation trail.
-///
-/// A named alias because the inline type is unreadable and because it is the seam
-/// `docs/boundary-and-adjudication.md` §2 asks for: see
-/// [`AdjudicatedGate::with_trail_source`] for what must call it.
+/// The closure a session loop installs to supply the authorisation trail. A named alias
+/// because the inline type is unreadable, and the seam
+/// [`AdjudicatedGate::with_trail_source`] needs.
 pub type TrailSource = dyn Fn(&GateCall<'_>) -> crate::authorise::AuthorisationTrail + Send + Sync;
 
-/// One row of the audit. §11.5: *"Every request, fan-out, ack, answer and timeout
-/// is a row. Immutable. The audit is log-only and never enters the model
-/// transcript."*
-///
-/// So this is deliberately not reachable from [`crate::result::ToolResult`]: the
-/// model sees the derived outcome, not the deliberation.
+/// One row of the audit: every request, answer and timeout is an immutable row, log-only and
+/// never in the model's transcript. Deliberately unreachable from
+/// [`crate::result::ToolResult`]: the model sees the outcome, not the deliberation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdjudicationRow {
     pub request: AdjudicationRequest,
     pub decision: AdjudicationDecision,
     /// What the gate did with the decision, in one word: `admit` or `refuse`.
     pub effect: &'static str,
-    /// **What the operator decided afterwards**, if they said anything.
-    ///
-    /// A separate field, and it **never overwrites** `decision`. The disagreement is
-    /// the training signal:
-    ///
-    /// > *"my inputs on model decision should be together with some prior context a
-    /// > fine tuning input."*
-    ///
-    /// A row that recorded only the final state would have thrown the label away, and a
-    /// corpus assembled later from such rows is not recoverable. Set by
-    /// [`AdjudicatedGate::record_override`].
+    /// What the operator decided afterwards, if they said anything. A separate field that
+    /// never overwrites `decision`, because the disagreement is the training signal; a row
+    /// keeping only the final state has thrown the label away.
     pub operator: Option<crate::authorise::OperatorOverride>,
-    /// The bytes an oracle was actually shown — **the brief** — when one was consulted.
-    /// Verbatim rather than reconstructed, for the same reason.
-    ///
-    /// **R11: it holds the card when a person was asked and no oracle was.** The gate
-    /// asked its *decider* for `last_brief()`; the decider is the person's card
-    /// (`req.brief()`) whenever a human answers, and on the rows where an oracle decided
-    /// the field was simply `NULL`. Measured on this box 2026-09-21: set on 147 of 5785
-    /// rows, `NULL` on every oracle-decided one. Fixed at the source — the gate now asks
-    /// whichever adjudicator consulted an oracle — so a new row is the brief or nothing.
+    /// The bytes an oracle was actually shown - the brief - when one was consulted, verbatim
+    /// rather than reconstructed. Holds the card when a person was asked and no oracle was,
+    /// so a new row is the brief or nothing.
     pub shown: Option<String>,
-    /// **What the oracle answered, verbatim** (R11). `None` when none was consulted, or
-    /// when the one that was did not answer — `verdict_by` separates those, and the
-    /// parsed reading is `verdict_basis`, which is a *rendering* of exactly these bytes.
+    /// What the oracle answered, verbatim. `None` when none was consulted or the one that was
+    /// did not answer; the parsed reading is `verdict_basis`, a rendering of these bytes.
     pub reply: Option<String>,
-    /// What a model said about this call **before** the person answered, at a
+    /// What a model said about this call before the person answered, at a
     /// supervised point. `None` everywhere else, and never the decider's own answer
     /// under another name.
     pub advice: Option<ModelAdvice>,
-    /// The circuit breaker's key for this action — see
+    /// The circuit breaker's key for this action - see
     /// [`crate::authorise::TaskDirection`]. Carried so an operator lifting a refusal
     /// they were shown does not have to reconstruct which direction it was in.
     pub direction: String,
-    /// The named point in mode-space at the moment of the decision — not the
+    /// The named point in mode-space at the moment of the decision, not the
     /// gate's mode when the row is read, which a later `/mode` would have changed.
     pub mode: String,
     /// Whether a human was put in front of this decision as it was taken. Distinct
@@ -1659,17 +1166,9 @@ impl AdjudicationRow {
             mode: self.mode.clone(),
             options: self.request.options.iter().map(|o| o.id.clone()).collect(),
             agent: self.request.agent.clone(),
-            // **The model's verdict, and never the human's wearing its name.**
-            //
-            // At `supervised` the decision belongs to the person and the advice
-            // belongs to the oracle, and writing the person's answer into
-            // `model_verdict` would produce a corpus in which the two never
-            // disagree — every row self-consistent, every row worthless. So when
-            // advice is present it is what this column holds.
-            //
-            // Everywhere else the decider IS what answered, and the column holds
-            // that. The two cases are one line apart and are the reason this is not
-            // `Some(format!(...))` unconditionally, which is what it was.
+            // The model's verdict, never the human's wearing its name. At `supervised` the
+            // person decides and the oracle advises, and writing the person's answer here
+            // would give a corpus where the two never disagree - every row worthless.
             model_verdict: match &self.advice {
                 Some(a) => Some(format!("{} by {}: {}", a.would, a.by, a.basis)),
                 None => Some(format!(
@@ -1679,24 +1178,23 @@ impl AdjudicationRow {
                     self.decision.basis
                 )),
             },
-            // What actually settled the call, always — advice or no advice.
+            // What actually settled the call, always - advice or no advice.
             verdict: Some(self.decision.outcome.as_str().to_string()),
             verdict_by: Some(self.decision.by.clone()),
             verdict_basis: Some(self.decision.basis.clone()),
-            // Not yet produced by any oracle — see `CorpusRow::p_allow`. `None`
+            // Not yet produced by any oracle - see `CorpusRow::p_allow`. `None`
             // here is *no confidence was reported*, and must never be read as
             // low confidence.
             p_allow: None,
             decision_ms: self.decision.latency_ms,
             brief_format: BRIEF_FORMAT,
-            // **The flag, not an inference** (R11). `advice` is `None` only for an
-            // adjudicator that consults nothing — a boundary rule, a person, a console
-            // — and `consulted: false` inside a `Some` is the model adjudicator saying
-            // it short-circuited. Both mean no oracle spoke.
+            // The flag, not an inference. `advice` is `None` for an adjudicator that consults
+            // nothing, and `consulted: false` inside a `Some` is a model saying it
+            // short-circuited: both mean no oracle spoke.
             consulted: self.advice.as_ref().is_some_and(|a| a.consulted),
-            // **The reading, not a reading of the prose** (R12). `None` on every answered
+            // The reading, not a reading of the prose. `None` on every answered
             // verdict, and on every row where the advice is a short-circuit rather than a
-            // model's answer — a label there would name a reply nobody made.
+            // model's answer: a label there would name a reply nobody made.
             oracle_reading: self
                 .advice
                 .as_ref()
@@ -1710,17 +1208,9 @@ impl AdjudicationRow {
     }
 }
 
-/// **Did the person agree with the model?** — in the corpus's own three words.
-///
-/// The vocabulary is [`crate::authorise::OperatorOverride`]'s and it is about the
-/// *gate*, not about politeness: `Granted` is "it would not have run and I let it",
-/// `Revoked` is "it would have run and I stopped it", `Upheld` is "we agree". So the
-/// comparison is between what the model's answer would have done and what actually
-/// happened, and nothing here reads the model's prose.
-///
-/// `would == "ask"` and `would == "unavailable"` are both *not an admission*: the
-/// oracle declined to authorise. Admitting over either of them is the operator
-/// supplying an authorisation the model could not find, which is `Granted`.
+/// Did the person agree with the model, in the corpus's own three words: `Granted` is "it
+/// would not have run and I let it", `Revoked` is "it would have run and I stopped it",
+/// `Upheld` is "we agree". `ask` and `unavailable` are both not an admission.
 fn agreement(
     advice: &ModelAdvice,
     effect: &'static str,
@@ -1739,46 +1229,21 @@ fn agreement(
     }
 }
 
-/// The `#N` sequence at the end of a turn id, if it has one.
-///
-/// Turn ids are `{transcript}#{n}` where the harness names them and arbitrary
-/// where tests do; a tail that will not parse is an honest `None`, and the
-/// renderer says the age is unknown rather than inventing a number. `rsplit`
-/// because a transcript id may itself contain `#`.
+/// The `#N` sequence at the end of a turn id, if it has one: `rsplit` because a transcript id
+/// may itself contain `#`, and a tail that will not parse is an honest `None` rather than an
+/// invented age.
 fn turn_seq(turn_id: &str) -> Option<u64> {
     turn_id.rsplit('#').next()?.parse().ok()
 }
 
-/// **The sentinel key for a call with no program — which is NOT a label.**
-///
-/// For a path-shaped tool call there is no program, and the tool's own name is not one
-/// — so it is this, which matches nothing a command produces. A grant taken over `bash`
-/// must not silently cover a `write` call.
-///
-/// **A key and never a label, and that distinction is not cosmetic.** It was rendered
-/// straight into an option on the gate card — *"Allow `<tool>` (this class) for the
-/// rest of the session"* — which is a placeholder standing where a noun belongs, on the
-/// one surface where the operator is asked to decide (R18's fifth point). Naming it is
-/// the fix: one definition, used where the key is built and where a label would print
-/// it.
+/// The sentinel key for a call with no program - which is not a label. It matches nothing a
+/// command produces, so a grant over `bash` cannot silently cover a `write`, and rendering it
+/// into an option would put a placeholder where a noun belongs.
 pub const NO_PROGRAM: &str = "<tool>";
 
-/// **What a grant is keyed on**: the program doing the work, as the shell will run it.
-///
-/// This READS [`crate::intent::Baseline::grant_program`], which layer A chooses in the
-/// pass that reads every stage of the command — see that field, and `name_stage` beside
-/// it in `intent.rs`. It used to take the *last* stage here, and on the operator's screen
-/// that made `cd … && export CARGO_TARGET_DIR=$PWD/target && cargo test --offline` offer
-/// *"Allow `export` (this class) for the rest of the session"* and
-/// `cd x && grep … | head` offer `head`: two programs that do no work at all, offered to
-/// a person who was looking at a cargo build. A grant is only weighable by somebody who
-/// can tell what it names.
-///
-/// The choice lives one layer down because the intents of a stage are the program table
-/// that layer owns, and a second reader of them here would be a second answer to *what
-/// does this stage do*.
-///
-/// [`NO_PROGRAM`] where there is no command to read one out of.
+/// What a grant is keyed on: the program doing the work, as the shell will run it. It reads
+/// [`crate::intent::Baseline::grant_program`], chosen where every stage is read, so a grant
+/// names the program that works rather than `export` or `head`. [`NO_PROGRAM`] with no command.
 fn grant_program(baseline: &crate::intent::Baseline) -> String {
     baseline
         .grant_program
@@ -1786,22 +1251,9 @@ fn grant_program(baseline: &crate::intent::Baseline) -> String {
         .unwrap_or_else(|| NO_PROGRAM.to_string())
 }
 
-/// §11.4's refuse-list, evaluated **before any adjudicator** and overridable by
-/// none of them.
-///
-/// §11.9's rule, from dsh: *"the `never` policy is enforced inside the service
-/// before dispatch, so no listener can bypass it … a `deny` row in §11.3's table
-/// is evaluated before any adjudicator is consulted, and no adjudicator can
-/// override it."*
-///
-/// The first six are §11.4's own list, quoted: `--add-dir` and `--workdir`
-/// *"refuse outright to carry `.ssh`, `.gnupg`, `.aws`, `.kube`, `.config/gh`,
-/// `.password-store` or a browser profile out of the home directory"*. The
-/// browser profiles are that clause spelled out. `.git/` is **ours** and not
-/// §11.4's: a write into `.git/` is not a source edit, and rewriting a ref is not
-/// something the tool that did it can undo — which is exactly the property
-/// [`ActionClass::host`] calls `reversibility` and the only one this gate can
-/// actually check.
+/// The refuse-list, evaluated before any adjudicator and overridable by none of them: a
+/// `deny` row is checked before an adjudicator is consulted, so no listener can bypass it.
+/// `.git/` is ours, not the clause's: rewriting a ref is not something a tool can undo.
 pub const NEVER_WRITE: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -1845,175 +1297,107 @@ pub struct AdjudicatedGate {
     adjudicator: Box<dyn Adjudicator>,
     session_id: String,
     agent: String,
-    /// **Where this session sits in the four-dimensional space**, as a named point.
-    ///
-    /// [`crate::mode::Mode::ALWAYS_ASK`] by default, which is what an unseen project
-    /// gets: nothing that is not a read happens without the operator. The daemon
-    /// overrides it per project root.
+    /// Where this session sits in mode-space, as a named point. `ALWAYS_ASK` by default,
+    /// which is what an unseen project gets; the daemon overrides it per project root.
     mode: crate::mode::Mode,
-    /// Standing permissions taken from an `allow_session` answer, keyed on
-    /// **`(program, ActionClass, intents)`** rather than on `tool + class`.
-    ///
-    /// The old key's own comment was right about the half it argued — *"a grant keyed
-    /// by the arguments would be a grant for one call, which is `allow_once`"* — and
-    /// it was keyed one notch too coarse in the other direction. `tool + class` for
-    /// `bash` is a grant over every command `bash` can run that lands in one class,
-    /// and the program is exactly the thing a person means when they say *"stop
-    /// asking me about git"*. See [`crate::grant`], and note that the intent set is in
-    /// the key because that is what an execution vehicle changes.
+    /// Standing permissions from an `allow_session` answer, keyed on
+    /// `(program, ActionClass, intents)` rather than `tool + class`: the program is what a
+    /// person means by "stop asking me about git", and the intent set is what a vehicle changes.
     grants: Vec<crate::grant::Grant>,
-    /// **The memory the operator let this session have without asking**, from a
-    /// `grant_memory_session` answer: `Some(Some(bytes))` up to that size, `Some(None)` uncapped,
-    /// `None` nothing granted. Read only by [`AdjudicatedGate::grant_memory`]; cleared with the
-    /// other session grants when the mode changes.
+    /// The memory the operator let this session have without asking: `Some(Some(bytes))` up
+    /// to that size, `Some(None)` uncapped, `None` nothing granted. Cleared with the other
+    /// session grants when the mode changes.
     memory_session: Option<Option<u64>>,
-    /// Shapes the operator approved themselves, with the effect class they approved
-    /// them at. See the lookup for the bounds.
-    ///
-    /// Seeded at construction from the operator's own past approvals under THIS
-    /// workspace ([`AdjudicatedGate::seed_shapes`]) and added to as they answer.
-    /// It outlives the process on purpose — a cache that died with the session was
-    /// no use to somebody who restarts a session when one goes wrong, and then gets
-    /// asked again about every shape they already approved.
+    /// Shapes the operator approved themselves, with the class they approved them at. Seeded
+    /// from their past approvals under this workspace and outliving the process on purpose: a
+    /// session restarted after a fault should not be asked about every shape again.
     approved_shapes: std::collections::HashMap<String, ActionClass>,
-    /// **What the agent says it is doing right now**, supplied by the layer that
-    /// has the transcript. A closure for the reason the trail source is one: this
-    /// type must not learn to read a conversation.
-    ///
-    /// `None` by default, so a gate nobody wired says nothing rather than
-    /// inventing a claim.
+    /// What the agent says it is doing right now, supplied by the layer that has the
+    /// transcript. A closure for the reason the trail source is one: this type must not learn
+    /// to read a conversation.
     agent_claim: Box<dyn Fn() -> Option<String> + Send + Sync>,
-    /// opencode's permission model, verbatim: the operator's `permission` config
-    /// plus the `always` approvals, evaluated before the mode. `allow` admits,
-    /// `deny` refuses, `ask` falls through to the mode and the adjudicator. See
-    /// [`crate::permission`].
+    /// The operator's `permission` config plus the `always` approvals, evaluated before the
+    /// mode: `allow` admits, `deny` refuses, `ask` falls through to the mode and the
+    /// adjudicator.
     permission: crate::permission::Ruleset,
-    /// Where an *Always allow* answer is written down so it outlives the process
-    /// — the daemon hands in `~/.config/letibot/permission.json`. Without one the
-    /// answer holds for the session and the row says so.
+    /// Where an *Always allow* answer is written down so it outlives the process: the daemon
+    /// hands in `~/.config/letibot/permission.json`. Without one the answer holds for the
+    /// session and the row says so.
     permission_sink: Option<PermissionSink>,
-    /// **The boundary this session's commands run inside**, read off the backend at open — see
-    /// [`AdjudicatedGate::with_boundary`]. `None` is *no boundary*, and `boundary_refusal` says
-    /// whether that is a choice or a host that could not confine.
+    /// The boundary this session's commands run inside, read off the backend at open. `None` is
+    /// *no boundary*, and `boundary_refusal` says whether that is a choice or a host that could
+    /// not confine.
     boundary: Option<crate::exec::Boundary>,
     boundary_refusal: Option<String>,
-    /// **opencode parity: exec follows the mode.**
-    ///
-    /// Off by default, which is the operator's rule (2026-09-11): no point admits an
-    /// exec-class call unasked, because `bash`'s result is an arbitrary byte stream.
-    /// leticode turns this on — opencode has no such carve-out; its `bash` is a
-    /// permission like any other, so `bypassPermissions` admits it and `acceptEdits`
-    /// still asks. This flag makes `allow-all` admit exec and leaves every other point
-    /// exactly as it was.
+    /// Whether exec follows the mode. Off by default: no point admits an exec-class call
+    /// unasked, because `bash`'s result is an arbitrary byte stream. leticode turns it on, so
+    /// `allow-all` admits exec and every other point is unchanged.
     exec_follows_mode: bool,
-    /// §11.5's rows. In memory: the durable journal is `letibot-sessionlog`'s, and
-    /// wiring this into it is W11's, not W10's.
+    /// The rows, in memory: the durable journal is `letibot-sessionlog`'s, and wiring this into
+    /// it is not done here.
     pub log: Vec<AdjudicationRow>,
-    /// A monotonic counter so two requests in one turn have different ids. Not a
-    /// ULID: §11.2 asks for one and this crate has no clock dependency and no ULID
-    /// crate. W11 replaces it; until then an id is unique within a session, which
-    /// is what the log and the refusal text need.
+    /// A monotonic counter so two requests in one turn have different ids. Not a ULID: this
+    /// crate has no clock and no ULID dependency, and an id unique within a session is what the
+    /// log and the refusal text need.
     seq: u64,
-    /// What layer A needs to know about where it is standing. Defaults to
-    /// [`Default::default`], whose [`crate::intent::ShellTrust`] is `Unknown` — so a
-    /// gate nobody configured refuses bare command names, which is the fail-closed
-    /// direction.
+    /// What layer A needs to know about where it is standing. The default's
+    /// [`crate::intent::ShellTrust`] is `Unknown`, so a gate nobody configured refuses bare
+    /// command names, which is the fail-closed direction.
     surroundings: crate::intent::Surroundings,
     /// Where the authorisation trail comes from. See
     /// [`crate::authorise::AuthorisationTrail`] for what must install it.
     trail_source: Option<Box<TrailSource>>,
-    /// Where denials go so the operator sees them **when they happen**.
+    /// Where denials go so the operator sees them when they happen.
     denials: Option<Box<dyn crate::authorise::DenialSink>>,
     /// The consecutive-denial circuit breaker.
     pub breaker: crate::authorise::Breaker,
     /// The bytes an oracle was shown for the call in flight, moved into the row
     /// by [`AdjudicatedGate::record`].
     shown: Option<String>,
-    /// **What that oracle answered** (R11), from the same adjudicator and the same call
-    /// as `shown` — the reply is the input a corpus row's label was read out of, and a
-    /// row whose verdict cannot be traced back to its bytes is a row nobody can check.
+    /// What that oracle answered, from the same adjudicator and the same call as `shown`: the
+    /// reply is the input a corpus row's label was read out of, and a row whose verdict cannot be
+    /// traced back to its bytes is a row nobody can check.
     reply: Option<String>,
     /// What a model said about the call in flight, at a supervised point. Taken from
     /// [`Adjudicator::last_advice`] beside `shown` and moved into the row the same
     /// way.
     advice: Option<ModelAdvice>,
-    /// Set when the call in flight was settled by a **standing grant** rather than by
+    /// Set when the call in flight was settled by a standing grant rather than by
     /// somebody answering now: the grant's own reason. Moved into the row's operator
     /// note, so a label that came from a ruling made turns ago says which ruling.
     standing: Option<String>,
-    /// **The guard model**, when one is configured. Held whether or not supervision
+    /// The guard model, when one is configured. Held whether or not supervision
     /// is on, so turning it on is a flag and not a rebuild.
     advisor: Option<std::sync::Arc<dyn Adjudicator>>,
-    /// Whether [`AdjudicatedGate::advisor`] gets a turn on every call.
-    ///
-    /// A field rather than a mode, which is the whole design:
-    ///
-    /// > *"supervised mode is essentially a normal mode but we always ask model"*
-    ///
-    /// The mode decides what asks and is fixed when a session opens, because the
-    /// tools seated under it are. This decides whether the model gets a turn before
-    /// the answer, and nothing about the session's shape depends on it — so
-    /// `/supervise` moves it mid-session without rebuilding a gate, re-seating a
-    /// tool, or deciding what happens to grants taken under a different point.
+    /// Whether [`AdjudicatedGate::advisor`] gets a turn on every call. A field rather than a
+    /// mode, so `/supervise` moves it mid-session: the mode is fixed when a session opens
+    /// because the tools seated under it are, and this changes nothing about that.
     supervise: bool,
     /// Where corpus rows go so they outlive this process. `None` means the corpus is
     /// being discarded, and the disclosure says so rather than implying it is kept.
     corpus_sink: Option<std::sync::Arc<dyn crate::authorise::CorpusSink>>,
-    /// **Set for the one call that is adjudicated and may not ask** — [`Gate::admit_unasked`],
-    /// which is how a look a plugin layer declared meets this gate.
-    ///
-    /// `docs/plugins-plan.md` §1 principle 2 puts every look a plugin declares through the same
-    /// gate the model's own calls meet, and §4.4's `exec` look runs on the session's **monitor
-    /// thread**: a card raised there parks that thread — and the watch with it — until a person
-    /// answers, which for a watch is forever. So the ladder runs and the ask does not: a step that
-    /// would put the call to somebody answers *would need your approval* instead.
-    ///
-    /// It is a field rather than a second entry point's own body because the ladder above the ask
-    /// is seven hundred lines of short-circuits, and a copy of it is the second policy this flag
-    /// exists to avoid. Set by [`Gate::admit_unasked`], cleared by it, and read in exactly two
-    /// places: [`AdjudicatedGate::advise_on_a_settled_call`] and the ask itself.
+    /// Set for the one call that is adjudicated and may not ask - [`Gate::admit_unasked`],
+    /// which is how a look a plugin layer declared meets this gate. The ladder runs and the ask
+    /// does not: a step that would put the call to somebody answers *would need your approval*.
     unasked: bool,
-    /// **Where an admission nobody was asked about goes, so the operator sees it happened**
-    /// — D16.
-    ///
-    /// The opposite channel to [`AdjudicatedGate::denials`], and it exists for a reason that
-    /// is not symmetry: an admit used to leave a trace in exactly one place, the audit row,
-    /// and the audit rows are read by `/gate` and by the corpus and by nothing that scrolls.
-    /// A mode change that stops asking has to be *visible while the work is happening*, or
-    /// the operator's only evidence that `writes-allowed` now runs commands unasked is that
-    /// the cards stopped. `None` — a gate nobody wired — records the row and says nothing,
-    /// which is the honest answer for a caller that did not ask to be told.
+    /// Where an admission nobody was asked about goes, so the operator sees it happened. The
+    /// opposite channel to `denials`, and not for symmetry: a mode change that stops asking has
+    /// to be visible while the work happens, or the only evidence is that the cards stopped.
     admissions: Option<Box<dyn AdmissionSink>>,
-    /// **Whether a host with no boundary asks about the project's own code** — R98(1), and
-    /// **off by default**.
-    ///
-    /// The operator, 2026-10-27, on the first cut of this: *"asking on every build/test on the
-    /// Mac would just push them to allow-all (which they already run, unsandboxed)"*. That is
-    /// the measurement that turned a rule into a switch: a gate that asks about every `cargo
-    /// build` on an unconfined box does not make the box safer, it makes the operator reach for
-    /// the point that asks nothing at all — and `allow-all (this box, consented)` is a worse
-    /// state than a granted `cargo test`, because it refuses nothing.
-    ///
-    /// So with this `false` — every session that does not say otherwise — an unconfined host
-    /// behaves exactly as it did before R98 existed: grants, the shape cache and the
-    /// `permission` config settle a test runner like anything else. Set by
-    /// `[permissions] ask_unconfined_code = true` in a `leticode.toml` (see
-    /// `crate::leticode_config::PermissionKeys`), which is a user-level file for a box where
-    /// somebody does want it.
+    /// Whether a host with no boundary asks about the project's own code, and off by default:
+    /// a gate that asks about every `cargo build` on an unconfined box does not make it safer,
+    /// it makes the operator reach for the point that asks nothing at all.
     unconfined_code_asks: bool,
 }
 
-/// **A call the gate admitted without asking anybody**, and why (D16).
-///
-/// Deliberately not a [`crate::authorise::DenialNotice`] with a different sign: a denial
-/// leaves the model's call unanswered and the operator is owed a remedy, while an admission
-/// happened, and what they are owed is to be told what happened in their session. The fields
-/// are the ones a head needs to draw that line and nothing else.
+/// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
+/// different sign: a denial leaves the model's call unanswered and the operator is owed a
+/// remedy, while an admission happened, and what they are owed is to be told what happened.
 pub struct AdmissionNotice {
     pub request_id: String,
     pub turn_id: String,
     pub tool: String,
-    /// The one argument a person reads — a command line, a path.
+    /// The one argument a person reads: a command line, a path.
     pub summary: String,
     /// Why nobody was asked, in the words the audit row carries.
     pub basis: String,
@@ -2024,27 +1408,16 @@ pub struct AdmissionNotice {
     pub boundary: String,
 }
 
-/// **The gate's other exit**, as a seam.
-///
-/// `letibot-tools` holds no hub, no store and no conversation, so an admission cannot reach
-/// the transcript from here. A caller that has one supplies this, exactly as it supplies
+/// The gate's other exit, as a seam. `letibot-tools` holds no hub, no store and no
+/// conversation, so a caller that has one supplies this, exactly as it supplies
 /// [`crate::authorise::DenialSink`] for the channel in the other direction.
 pub trait AdmissionSink: Send + Sync {
     fn admitted(&self, notice: &AdmissionNotice);
 }
 
-/// **D16's rule, split where a corpus can see the halves.**
-///
-/// [`admits_inside_the_boundary`] is what the gate calls (`AdjudicatedGate::admit`, the arm
-/// labelled D16). [`a_command_that_crosses_nothing`] is the same rule with the boundary's own
-/// half left out, for `corpus_replay`'s instrument: a corpus row records the call and the mode
-/// but not the confinement the call ran inside, so the measurement asks *how many cards would
-/// not have been raised if this session had been inside a measured boundary* and says so.
-///
-/// **One implementation of the rule, two callers**, which is the whole reason this is a function
-/// rather than a condition written twice: a replay that restated the condition would be the
-/// second spelling this tree keeps paying for — it would go on answering after the gate had
-/// stopped.
+/// The rule, split where a corpus can see the halves: [`admits_inside_the_boundary`] is what the
+/// gate calls, and this is the same rule with the boundary's half left out, for the replay's
+/// instrument. One implementation, two callers, so a replay cannot restate the condition.
 pub fn a_command_that_crosses_nothing(
     mode: crate::mode::Mode,
     access: Access,
@@ -2052,20 +1425,16 @@ pub fn a_command_that_crosses_nothing(
 ) -> bool {
     access == Access::Exec
         && mode == crate::mode::Mode::WRITES_ALLOWED
-        // **The always-ask list survives the boundary**, which is D16's own word: *"and it is
-        // not in an always-ask tier"*. It is a conjunct here rather than a consequence of the
-        // ones beside it, and that is a fact this test found: `sudo -n true` and `shutdown now`
-        // carry no network intent and no region at all, so the first cut of this rule admitted
-        // both inside a boundary — the privilege and power tiers quietly dropped by a rule that
-        // had been argued about egress and paths. Written as a positive match rather than as
-        // *not always-ask* so that a fourth tier is a compile error here, where the decision is.
+        // The always-ask list survives the boundary, and as a positive match rather than as
+        // *not always-ask* so a fourth tier is a compile error here: `sudo -n true` and
+        // `shutdown now` carry no network intent and no region, and must still ask.
         && matches!(baseline.tier, Tier::Auto | Tier::MayApprove)
         && !baseline.intents.contains(&crate::intent::Intent::Network)
         && !baseline.regions.iter().any(|r| r.is_outside())
 }
 
-/// **D16's whole rule**: the call crosses nothing AND the boundary it runs inside was measured
-/// and holds — see [`crate::exec::Boundary::encloses`].
+/// The whole rule: the call crosses nothing and the boundary it runs inside was measured and
+/// holds - see [`crate::exec::Boundary::encloses`].
 pub fn admits_inside_the_boundary(
     boundary: Option<&crate::exec::Boundary>,
     mode: crate::mode::Mode,
@@ -2110,26 +1479,16 @@ impl AdjudicatedGate {
         }
     }
 
-    /// **opencode parity**: make exec follow the mode instead of always asking. See
+    /// opencode parity: make exec follow the mode instead of always asking. See
     /// [`AdjudicatedGate::exec_follows_mode`]. Off by default; leticode turns it on.
     pub fn with_exec_follows_mode(mut self, v: bool) -> Self {
         self.exec_follows_mode = v;
         self
     }
 
-    /// **Where this session's commands actually run**, for the facts a card carries — the measured
-    /// boundary, or the reason there is none.
-    ///
-    /// §11.2's `boundary_facts` is *what the backend can truthfully state about where this lands*,
-    /// and until RH3 the host arm stated one fixed sentence — *"the host filesystem is not
-    /// sandboxed; §11.4's boundary arrives with firecode"* — which was true of an unconfined
-    /// backend and false of a confined one. A card that says the wrong thing about the boundary is
-    /// worse than a card that says nothing: it is the one fact that tells a person how much the
-    /// answer they are about to give is worth.
-    ///
-    /// It changes no verdict. What it changes is what a reader is told, and
-    /// [`crate::exec::Boundary::describe`] is the sentence: the view, the egress, and what the
-    /// boundary does **not** confine.
+    /// Where this session's commands actually run, for the facts a card carries: the measured
+    /// boundary, or the reason there is none. It changes no verdict, only what a reader is told,
+    /// and a card wrong about the boundary is worse than one that says nothing.
     pub fn with_boundary(
         mut self,
         boundary: Option<crate::exec::Boundary>,
@@ -2140,37 +1499,32 @@ impl AdjudicatedGate {
         self
     }
 
-    /// **Where an admission nobody was asked about is told**, so the operator sees it
-    /// happened — D16. See [`AdmissionSink`], and [`AdjudicatedGate::denials`] for the channel
-    /// in the other direction.
+    /// Where an admission nobody was asked about is told, so the operator sees it happened. See
+    /// [`AdmissionSink`], and `denials` for the channel in the other direction.
     pub fn with_admission_sink(mut self, sink: Box<dyn AdmissionSink>) -> Self {
         self.admissions = Some(sink);
         self
     }
 
-    /// **Make a host with no boundary ask about the project's own code** — R98(1). Off by
-    /// default; see [`AdjudicatedGate::unconfined_code_asks`] for why the default is off and
-    /// `[permissions] ask_unconfined_code` for the one caller.
+    /// Make a host with no boundary ask about the project's own code. Off by default; see
+    /// [`AdjudicatedGate::unconfined_code_asks`] for why, and the `[permissions]` key
+    /// `ask_unconfined_code` for the one caller.
     pub fn with_unconfined_code_asks(mut self, on: bool) -> Self {
         self.unconfined_code_asks = on;
         self
     }
 
-    /// **Put this session at a named point.** See [`crate::mode`].
-    ///
-    /// The gate does not check the point's prerequisites — the caller does, before it
-    /// builds anything, because a prerequisite check that ran here would be a session
-    /// that has already opened, printed a banner and seated tools by the time it finds
-    /// out it cannot honour the point it named.
+    /// Put this session at a named point. The gate does not check the point's prerequisites:
+    /// the caller does, before it builds anything, because a check here would run after a
+    /// session had already opened, printed a banner and seated tools.
     pub fn with_mode(mut self, mode: crate::mode::Mode) -> Self {
         self.mode = mode;
         self
     }
 
-    /// Install opencode's permission ruleset (the operator's `permission` config).
-    /// Evaluated before the mode: `allow` admits, `deny` refuses, `ask` falls
-    /// through. Later rules override earlier ones, so a config here is consulted
-    /// before any `always` approvals the caller appends.
+    /// Install opencode's permission ruleset (the operator's `permission` config), evaluated
+    /// before the mode. Later rules override earlier ones, so a config here is consulted before
+    /// any `always` approvals the caller appends.
     pub fn with_permission(mut self, rules: crate::permission::Ruleset) -> Self {
         self.permission = rules;
         self
@@ -2192,29 +1546,16 @@ impl AdjudicatedGate {
         self.mode
     }
 
-    /// opencode's permission ruleset in force — the config plus any `always`
-    /// approvals. A subagent inherits this, so the same allow/deny/ask rules govern
-    /// its calls rather than starting from scratch.
+    /// opencode's permission ruleset in force: the config plus any `always` approvals. A
+    /// subagent inherits this, so the same allow/deny/ask rules govern its calls rather than
+    /// starting from scratch.
     pub fn permission(&self) -> &crate::permission::Ruleset {
         &self.permission
     }
 
-    /// The standing permissions in force, for a listing. A grant nobody can see is a
-    /// permanent widening nobody remembers making.
-    /// **Warm-start the shape cache** from approvals the operator already gave.
-    ///
-    /// Takes `(shape, class)` pairs as written down — the class spelled as
-    /// [`ActionClass`]'s `Display` — newest first, and keeps the first ruling seen
-    /// per shape. A pair whose class does not parse is dropped rather than guessed
-    /// at: an unknown class is not a narrower one, and dropping it means the next
-    /// call of that shape asks, which is the safe direction.
-    ///
-    /// The caller owes the bounds this cannot check for itself — human, admitted,
-    /// `may_approve`, non-destructive, same workspace. [`Store::approved_shapes`]
-    /// applies all five in SQL. Everything this type CAN re-check it re-checks at
-    /// the lookup, so a seed is a claim about the past and never a licence.
-    ///
-    /// [`Store::approved_shapes`]: letibot_tokencore::store::Store::approved_shapes
+    /// Warm-start the shape cache from approvals the operator already gave. A pair whose class
+    /// does not parse is dropped rather than guessed at, so the next call of that shape asks.
+    /// The caller owes the bounds; the lookup re-checks what it can, so a seed is never a licence.
     pub fn seed_shapes(&mut self, seen: impl IntoIterator<Item = (String, String)>) -> usize {
         let mut added = 0;
         for (shape, class) in seen {
@@ -2234,29 +1575,17 @@ impl AdjudicatedGate {
         &self.grants
     }
 
-    /// Tell layer A where it is standing, including whether the shell that will run a
-    /// command is fixed. See [`crate::intent::ShellTrust`] — undeclared means bare
-    /// command names are unresolved.
+    /// Tell layer A where it is standing, including whether the shell that will run a command
+    /// is fixed. See [`crate::intent::ShellTrust`]: undeclared means bare command names are
+    /// unresolved.
     pub fn with_surroundings(mut self, s: crate::intent::Surroundings) -> Self {
         self.surroundings = s;
         self
     }
 
-    /// **Install the authorisation trail source.**
-    ///
-    /// This is the seam §2 needs and the one this crate cannot fill itself: the tool
-    /// runtime sees one call at a time and has no transcript, deliberately. The
-    /// session loop that owns the conversation installs a closure here.
-    ///
-    /// What must call it: whoever constructs the gate for a session — today
-    /// `crates/harnessd`'s session setup — passing a closure that walks the
-    /// transcript backwards from the current turn, collects
-    /// `TranscriptItem::User` text as [`crate::authorise::Utterance`]s with their
-    /// distance in turns, and returns
-    /// [`crate::authorise::AuthorisationTrail::from_messages`] with the number of
-    /// messages it looked at. Until that happens the trail is
-    /// `NotCollected`, and [`crate::authorise::ModelAdjudicator`] refuses rather than
-    /// deciding without it.
+    /// Install the authorisation trail source: the seam this crate cannot fill itself, since the
+    /// tool runtime sees one call at a time and has no transcript. Until a session loop installs
+    /// one the trail is `NotCollected`, and a model adjudicator refuses rather than decide blind.
     pub fn with_trail_source(
         mut self,
         f: impl Fn(&GateCall<'_>) -> crate::authorise::AuthorisationTrail + Send + Sync + 'static,
@@ -2265,10 +1594,9 @@ impl AdjudicatedGate {
         self
     }
 
-    /// **Install the guard model.** Held, not switched on: `/supervise` does that,
-    /// and it can only do it if this was installed when the session opened.
-    /// Where "what the agent says it is doing" comes from. Installed by the
-    /// harness, which is the only layer holding the transcript.
+    /// Where "what the agent says it is doing" comes from. Installed by the harness, the only
+    /// layer holding the transcript, and `None` by default so a gate nobody wired says nothing
+    /// rather than inventing a claim.
     pub fn with_agent_claim(
         mut self,
         f: impl Fn() -> Option<String> + Send + Sync + 'static,
@@ -2277,43 +1605,30 @@ impl AdjudicatedGate {
         self
     }
 
+    /// Install the guard model. Held, not switched on: `/supervise` does that, and it can only
+    /// do it if this was installed when the session opened.
     pub fn with_advisor(mut self, advisor: std::sync::Arc<dyn Adjudicator>) -> Self {
         self.advisor = Some(advisor);
         self
     }
 
-    /// Start supervised. `--supervise` on the command line; `/supervise` changes it
-    /// later.
-    ///
-    /// Named apart from [`Gate::supervising`], which asks the question this answers —
-    /// a builder and a getter sharing one name is how a caller ends up reading the
-    /// wrong one.
+    /// Start supervised. `--supervise` on the command line; `/supervise` changes it later.
+    /// Named apart from [`Gate::supervising`], which asks the question this answers: a builder
+    /// and a getter sharing one name is how a caller reads the wrong one.
     pub fn start_supervised(mut self, on: bool) -> Self {
         self.supervise = on;
         self
     }
 
-    /// **Install the corpus sink.** Without one every decision this gate makes is
+    /// Install the corpus sink. Without one every decision this gate makes is
     /// kept in `log` and lost when the process ends.
     pub fn with_corpus_sink(
         mut self,
         sink: std::sync::Arc<dyn crate::authorise::CorpusSink>,
     ) -> Self {
-        // **Seed the request counter from what the sink already holds.**
-        //
-        // `next_id` is `adj-<session_id>-<seq>` off an in-memory `seq`, and a
-        // resumed session keeps its id — so every restart began at 1 and re-emitted
-        // ids the table already had. `record_adjudication` is `INSERT OR IGNORE`,
-        // so each one was silently dropped, and a daemon had to out-decide its own
-        // history before a single row landed again. Measured 2026-09-20 in the
-        // operator's store: a session restarted with 646 rows recorded NOTHING for
-        // the whole run, and one restarted with 182 rows lost all ~100 decisions of
-        // an eighteen-minute session. The evidence a labelled corpus exists to
-        // collect is exactly what was being thrown away.
-        //
-        // Seeded here rather than at construction because this is the first moment
-        // a durable sink is known, and `with_identity` has already run — the
-        // session id the seed is keyed on is settled.
+        // Seed the request counter from what the sink already holds: `next_id` runs off an
+        // in-memory `seq` and a resumed session keeps its id, so every restart re-emitted ids
+        // the table had, and `INSERT OR IGNORE` dropped them silently.
         self.seq = self.seq.max(sink.decisions_recorded(&self.session_id));
         self.corpus_sink = Some(sink);
         self
@@ -2325,7 +1640,7 @@ impl AdjudicatedGate {
         self.corpus_sink.is_some()
     }
 
-    /// **Install the denial sink.** Every refusal is delivered to it at the moment it
+    /// Install the denial sink. Every refusal is delivered to it at the moment it
     /// is decided, so the operator is never left inferring a decision from a task
     /// that stopped.
     pub fn with_denial_sink(mut self, sink: Box<dyn crate::authorise::DenialSink>) -> Self {
@@ -2333,10 +1648,9 @@ impl AdjudicatedGate {
         self
     }
 
-    /// Emit the notice, and produce the prose the model is given.
-    ///
-    /// One function so the two cannot drift: the sentence the operator sees and the
-    /// sentence the model sees are built from one [`crate::authorise::DenialNotice`].
+    /// Emit the notice, and produce the prose the model is given. One function so the two
+    /// cannot drift: the sentence the operator sees and the sentence the model sees are built
+    /// from one [`crate::authorise::DenialNotice`].
     fn surface(
         &self,
         req: &AdjudicationRequest,
@@ -2357,14 +1671,9 @@ impl AdjudicatedGate {
             tier: req.tier.as_str(),
             outcome,
             repeat,
-            // **Offer the remedy that exists.** A refusal the HARNESS made — the
-            // normaliser could not read the command, the host boundary refused it —
-            // is not a refusal a grant can lift: no adjudicator was consulted and
-            // none would be on a retry, so telling the operator to grant it invites
-            // them to grant something that changes nothing, and telling the MODEL to
-            // ask for one invites a retry loop around a command whose meaning still
-            // does not exist. What helps there is in the basis above: re-issue it in
-            // a form the grammar can read.
+            // Offer the remedy that exists. A refusal the HARNESS made is not one a grant can
+            // lift - no adjudicator was consulted and none would be on a retry - so what helps
+            // is re-issuing the command in a form the grammar can read.
             grant: if decision.by == "boundary:normaliser" {
                 "Nothing was executed and nothing changed. No grant applies: the \
                  refusal is before any adjudicator and a standing permission is \
@@ -2378,13 +1687,9 @@ impl AdjudicatedGate {
                  before any adjudicator and overridable by none."
                     .to_string()
             } else if decision.by.starts_with("model") {
-                // **THE GUARD DECIDED THIS ONE, AND THERE IS NO PENDING DECISION.** The
-                // sentence below is written for a refusal a PERSON made — *"or answer the
-                // pending decision"* — and since 2026-10-05 an oracle's refusal is a decision
-                // in its own right (`i want to follow oracle verdict`), so no card was raised
-                // and telling the model to go and answer one sends it looking for a question
-                // that does not exist. The remedy that does exist is the operator's grant: the
-                // row is on `/gate`, and `grant` lifts it.
+                // The guard decided this one, and there is no pending decision: an oracle's
+                // refusal is a decision in its own right, so no card was raised and the remedy
+                // that exists is the operator's grant, since the row is on `/gate`.
                 format!(
                     "the guard refused this one — no card was raised for it, and nothing is \
                      waiting for an answer. Nothing was executed and nothing changed. The \
@@ -2420,14 +1725,13 @@ impl AdjudicatedGate {
         self
     }
 
-    /// What the daemon should print at startup. See the module docs on why an
-    /// operator who cannot see this cannot see that nothing is attached.
+    /// What the daemon should print at startup: an operator who cannot see which adjudicator is
+    /// attached cannot see that none is.
     pub fn describe(&self) -> String {
         self.adjudicator.describe()
     }
 
-    /// Whether denials reach the operator. Feeds
-    /// [`startup_disclosure_with_surfacing`].
+    /// Whether denials reach the operator. Feeds [`startup_disclosure_with_surfacing`].
     pub fn surfaces_denials(&self) -> bool {
         self.denials.is_some()
     }
@@ -2437,107 +1741,30 @@ impl AdjudicatedGate {
         format!("adj-{}-{:04}", self.session_id, self.seq)
     }
 
-    /// **The access this call is JUDGED at** — R21.
-    ///
-    /// A shell call is `Access::Exec` because the tool that carries it is, whatever the
-    /// program inside does: `bash("head -c 2000 f")` is a read, and it gated as exec, and
-    /// the card said *exec access* over intents that said *read*. That is the whole of
-    /// R21 — **a fact about the mechanism standing in for a fact about the work** — and
-    /// this function is where the substitution stops.
-    ///
-    /// # It is not a second classifier, and it decides nothing of its own
-    ///
-    /// The condition is [`crate::intent::Baseline::reads_only`], which is layer A's own
-    /// `Tier::Auto` plus the ruling's guardrails written out. Every judgement about what
-    /// a program is, what a construct means and where a path lands was made before this
-    /// and is not revisited here: an unknown program, an unparsed substitution, a
-    /// pipeline into a writer and a read outside the workspace all fail that test, so all
-    /// four keep the exec access they have today.
-    ///
-    /// # Why only a shell call, and why only when it reads
-    ///
-    /// `call.access` is the TOOL's declared class, and for every tool but `bash` it is
-    /// already a statement about the work — `read` reads, `write` writes, `web_fetch`
-    /// reaches a network. The one that is about a vehicle is the shell, so the one that
-    /// gets this is the shell. And it is *narrowing only*, in the same direction
-    /// [`crate::runtime`]'s `access_for` narrows: this can turn an exec call into a read
-    /// and can turn nothing into anything else.
-    ///
-    /// # What turns on it, and the one thing that must not
-    ///
-    /// Three readers, and they are the three places the vehicle used to speak for the
-    /// work: the [`ActionClass`] (its `access` is the card's headline, the shape cache's
-    /// key and the corpus's class), [`crate::mode::Mode::admits_unasked`] (a read is
-    /// clause 4 and is admitted at every point, including `always-ask` — that is what
-    /// clause 4 *is*, and it is why `reads_only` requires the boundary guardrail as well),
-    /// and the exec clause above the mode. **The boundary is not one of them**: the gate is
-    /// still consulted, because the gate is consulted on the DECLARED access
-    /// (`ToolRuntime::invoke`), and this changes what the gate *says*, not whether it is
-    /// asked. A read outside the workspace is still outside it — R18's axis, and the
-    /// ruling names it as untouched.
-    ///
-    /// # And the same narrowing for a WRITE, which is the 2026-10-05 ruling
-    ///
-    /// The operator: *"since we try to catch python heredoc edits and render them with diffs -
-    /// they have to be classified as edits for permission mechanics"*. Symmetric to the read
-    /// and for the identical reason — the interpreter is a vehicle and the body layer A read is
-    /// the work. So an exec call whose body was read, whose only consequential act is writing
-    /// files nobody had to guess at, and none of them outside the boundary, is
-    /// [`Access::Write`] ([`crate::intent::Baseline::writes_only`], which is where every
-    /// conjunct and every refusal live).
-    ///
-    /// **This is what the mode's own allowed set is for.** In allow-edits the write
-    /// disposition is `Admit` for a call inside the workspace, so a python heredoc that rewrites
-    /// a file in the project stops asking — which is the operator's *"there is certain permission
-    /// set that is allowed and doesnt need oracle. this is to be kept"*. In an ask mode it still
-    /// asks, as a write, and the oracle is shown it as one; a write outside the workspace is
-    /// outside it in both modes, exactly as a read is.
-    ///
-    /// It is also the narrower half of the pair: `reads_only` is checked first, so an
-    /// interpreter handed a body that only reads keeps `Access::Read` rather than becoming a
-    /// write of nothing. `Write` is less consequential than `Exec` and more than `Read`, so both
-    /// arms narrow, and neither can widen an `edit`-declared call or a `network` one: the tool's
-    /// own answer is only consulted when `call.access == Access::Exec`.
+    /// The access this call is JUDGED at. A shell call is `Exec` because the tool that carries it
+    /// is, whatever the program inside does, so this narrows to `Read` or `Write` from layer A's
+    /// reading. Narrowing only, and only when the tool declared `Exec`; the gate is still asked.
     fn judged_access(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> Access {
         if call.access == Access::Exec && baseline.reads_only() {
             Access::Read
         } else if call.access == Access::Exec && baseline.writes_only() {
-            // **The class the edit path already knows how to judge.** `path_is_inside` is
-            // asked of the write targets below, and the tier the card is drawn at is
-            // unchanged: layer A settled that before this, and this is the access and not
-            // the verdict.
+            // The class the edit path already knows how to judge; `path_is_inside` is asked of
+            // the write targets, and the tier was settled by layer A before this.
             Access::Write
         } else {
             call.access
         }
     }
 
-    /// **R98's first half: does this call run the project's own code on a host with no
-    /// boundary?**
-    ///
-    /// The answer is the thing it runs (`cargo test`, `make`, a script in the checkout), or
-    /// `None`. It is asked in three places — the ladder that offers rungs, the three arms that
-    /// honour a standing one, and the two that record a new one — and it must be one function,
-    /// because a card that offers a grant the matcher refuses is the defect `Offer` exists to
-    /// prevent, in the other direction.
-    ///
-    /// **Why an unconfined host and not a confined one.** D16 settled the other side: where a
-    /// boundary was measured, a per-command ruling protects nothing a test the agent just
-    /// wrote could not do instead. Where there is none, the same sentence argues the opposite
-    /// way — running the test file IS running the agent's code, and a grant the operator
-    /// answered once was an answer about the bytes that existed then. The file changes between
-    /// the answer and the run, and a grant is keyed on a program and a verb, not on a body
-    /// nobody has read. So this asks every time, and the card says why.
-    ///
-    /// A boundary that exists and does not enclose is NOT this case: the host is confined,
-    /// the seal is merely unverified, and D16's admit is what governs there (it refuses, and
-    /// the call asks as it always did).
+    /// Does this call run the project's own code on a host with no boundary, and what does it run?
+    /// One function because a card that offers a grant the matcher refuses is the defect `Offer`
+    /// exists to prevent. An unconfined host asks every time: the file changes after the answer.
     fn runs_project_code_unconfined(
         &self,
         access: Access,
         baseline: &crate::intent::Baseline,
     ) -> Option<String> {
-        // **Off by default, and the default is the old behaviour** — see
+        // Off by default, and the default is the old behaviour. See
         // [`AdjudicatedGate::unconfined_code_asks`].
         if !self.unconfined_code_asks {
             return None;
@@ -2548,13 +1775,9 @@ impl AdjudicatedGate {
         crate::project_code::runs_project_code(baseline)
     }
 
-    /// **What the ladder may offer for this call** — one computation for the rungs and
-    /// for the note that explains an absent one.
-    ///
-    /// Both halves of the answer come from mechanisms that already exist rather than from
-    /// a restatement of their rules: `derived` is [`derived_pattern`], and `session` is
-    /// [`AdjudicatedGate::session_grant`] asking [`crate::grant::Grant::covers`] about the
-    /// grant an answer would record.
+    /// What the ladder may offer for this call - one computation for the rungs and for the note
+    /// that explains an absent one. Both halves come from mechanisms that already exist rather
+    /// than from a restatement of their rules.
     fn offer_for(
         &self,
         call: &GateCall<'_>,
@@ -2563,9 +1786,8 @@ impl AdjudicatedGate {
     ) -> Offer {
         let program = grant_program(baseline);
         let derived = derived_pattern(call, baseline, &self.permission);
-        // `Err` is *a grant taken now would cover nothing*, and its own vocabulary says
-        // which of the three refusals it was — the same four the matcher answers when it
-        // declines to honour an old grant, in the short register a card has room for.
+        // `Err` is *a grant taken now would cover nothing*, and its own vocabulary says which
+        // of the three refusals it was, in the short register a card has room for.
         let refused = Self::session_grant(baseline, class, &program, String::new()).err();
         let note = refused.as_ref().map(|why| {
             format!(
@@ -2574,13 +1796,9 @@ impl AdjudicatedGate {
                 unresolved_names(baseline)
             )
         });
-        // **R98: on a host with no boundary, a call that runs the project's code offers
-        // neither standing rung, and the card says why.** Both, not just the session one: the
-        // durable rule outlives the session and the file it approves is not the file that
-        // will run, so the stronger rung is the one that must go first. This is the one place
-        // the ladder narrows to *only this call*
-        // (`always_ask_options`' shape) while the tier is not an always-ask — the operator's
-        // whole point is that the next run is a different program.
+        // On a host with no boundary a call that runs the project's code offers neither standing
+        // rung: the durable rule outlives the session, and the file it approves is not the file
+        // that will run, so the next run is a different program.
         if let Some(runs) =
             self.runs_project_code_unconfined(Self::judged_access(call, baseline), baseline)
         {
@@ -2603,14 +1821,9 @@ impl AdjudicatedGate {
         }
     }
 
-    /// **The grant an `allow_session` answer over this call would record, or why one
-    /// taken now could cover nothing.**
-    ///
-    /// The one answer both the card and the recording site read. `Err` carries the
-    /// [`crate::grant::NotCovered`] that [`crate::grant::Grant::covers`] itself answers, so
-    /// the card is not offering a rung on a rule of its own: it is asking the matcher
-    /// whether the grant would ever be honoured. `why` is the row's reason and is empty
-    /// when the caller only wants the verdict.
+    /// The grant an `allow_session` answer over this call would record, or why one taken now
+    /// could cover nothing. Both the card and the recording site read this one answer, so the
+    /// card asks the matcher rather than offering a rung on a rule of its own.
     fn session_grant(
         baseline: &crate::intent::Baseline,
         class: ActionClass,
@@ -2638,22 +1851,14 @@ impl AdjudicatedGate {
         Ok(grant)
     }
 
-    /// **Layer A's deterministic reading of this call**, before any adjudicator.
-    ///
-    /// A `command` argument is normalised through the grammar; anything else is read
-    /// as a set of path arguments, so §3's flow rule applies to
-    /// `read({path: "~/.ssh/id_rsa"})` exactly as it applies to `cat ~/.ssh/id_rsa`.
-    /// A rule that only looked at shell commands would be routed around by the first
-    /// tool that takes a path.
+    /// Layer A's deterministic reading of this call, before any adjudicator. A `command`
+    /// argument is normalised through the grammar; anything else is read as path arguments, so
+    /// the flow rule applies to `read` exactly as it applies to `cat`.
     pub fn baseline_for(&self, call: &GateCall<'_>) -> crate::intent::Baseline {
         if let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) {
-            // **The scripts this command will run travel with it** (R39), because they
-            // are already here: the runtime read them for the brief, through the backend,
-            // before this was called. Handing layer A the SAME bytes is what makes the two
-            // halves of one gate unable to disagree about one file — the oracle reading the
-            // program while the classifier read only the filename is the defect R39 was
-            // filed from, and two independent reads would be the same defect with a
-            // smaller window.
+            // The scripts this command will run travel with it, because the runtime already
+            // read them through the backend for the brief. Handing layer A the same bytes is
+            // what stops the classifier and the oracle disagreeing about one file.
             return crate::intent::Baseline::of_command_with(cmd, &self.surroundings, call.scripts);
         }
         let paths: Vec<&str> = call
@@ -2680,8 +1885,8 @@ impl AdjudicatedGate {
         )
     }
 
-    /// The request one call produces. Public because the head and the tests both
-    /// want to see a request without a decision having been made about it.
+    /// The request one call produces. Public because the head and the tests both want to see a
+    /// request without a decision having been made about it.
     pub fn request_for(&mut self, call: &GateCall<'_>) -> AdjudicationRequest {
         let baseline = self.baseline_for(call);
         self.request_from(call, &baseline)
@@ -2693,21 +1898,18 @@ impl AdjudicatedGate {
         baseline: &crate::intent::Baseline,
     ) -> AdjudicationRequest {
         let network = call.access == Access::Network;
-        // What this call is *about*, for a human who is deciding in one line. A
-        // path for a file tool; for a network tool there is none, and printing
-        // `<no path argument>` about a `web_fetch` would describe the request by
-        // what it is not.
+        // What this call is about, for a human deciding in one line. A path for a file tool;
+        // for a network tool there is none, and naming the absence would describe the request
+        // by what it is not.
         let target = target_of(call.args);
         let inside = call.path_is_inside();
-        // Reversibility is a fact about the target, and the runtime stats it
-        // before asking. `None` — no path argument at all — is treated as
-        // reversible: claiming irreversibility about a call whose target nobody
-        // looked at would be a stronger statement than the evidence supports.
+        // Reversibility is a fact about the target, and the runtime stats it before asking.
+        // `None` - no path argument at all - counts as reversible: claiming otherwise would be
+        // a stronger statement than the evidence supports.
         let creates = call.target_exists == Some(false);
-        // **R21: the class is the WORK's, not the vehicle's.** `baseline` is already
-        // computed above this line in every caller, and it is the same reading the
-        // `because` facts and the intents come from — so the class, the headline and the
-        // intents can no longer disagree about what this call is.
+        // The class is the work's, not the vehicle's. `baseline` is the same reading the facts
+        // and the intents come from, so the class, the headline and the intents cannot disagree
+        // about what this call is.
         let access = Self::judged_access(call, baseline);
         let class = if network {
             ActionClass::external(access, Cost::Free)
@@ -2733,18 +1935,9 @@ impl AdjudicatedGate {
             ]
         } else {
             let mut f = vec![format!("workspace: {}", call.workspace)];
-            // **A call with no path argument is judged on what it DOES** (R18).
-            //
-            // This fact was printed unconditionally, so a call whose arguments name no
-            // path — `job_kill` with nothing, or any tool that acts on something else —
-            // was described by a path it does not have. And `path_is_inside` answers
-            // `true` when the `path` key is absent, so the card did not merely mention a
-            // path that is not there: it **asserted** *"the path is inside the session's
-            // workspace"*, a claim about a path nobody named.
-            //
-            // The guard is `path_is_inside`'s own first line, on purpose: the two ask
-            // the same question and must not be able to disagree about whether there is
-            // a path at all.
+            // A call with no path argument is judged on what it DOES. `path_is_inside` answers
+            // `true` when the key is absent, so printing the fact unconditionally asserted that
+            // a path nobody named was inside the workspace. The guard is its own first line.
             let names_a_path = call
                 .args
                 .get("path")
@@ -2762,11 +1955,9 @@ impl AdjudicatedGate {
                         .to_string(),
                 );
             }
-            // **The fact about the boundary is the measured one** — see
-            // [`AdjudicatedGate::with_boundary`]. Three answers, and they are three different
-            // things a person deciding needs to know: a boundary that bounds this call, a
-            // boundary that was wanted and could not be built (with its reason), and no question
-            // asked at all.
+            // The fact about the boundary is the measured one: a boundary that bounds this
+            // call, one that was wanted and could not be built (with its reason), or no
+            // question asked at all.
             f.push(match (&self.boundary, &self.boundary_refusal) {
                 (Some(b), _) => format!(
                     "this call runs INSIDE a measured boundary on the host that owns these \
@@ -2796,22 +1987,19 @@ impl AdjudicatedGate {
             );
         }
         if let Some(op) = call.args.get("op").and_then(|v| v.as_str()) {
-            // A tool that dispatches on an op is one tool to the gate and ten
-            // actions to whoever is deciding. The op goes in the facts because the
-            // routing key cannot carry it (§11.3's class has no op field), and a
-            // human reading `github` alone cannot tell a listing from a merge.
+            // A tool that dispatches on an op is one tool to the gate and ten actions to
+            // whoever decides. The op goes in the facts because the class cannot carry it, and
+            // a person reading `github` alone cannot tell a listing from a merge.
             facts.push(format!("operation: `{op}`"));
         }
-        // R11, before the request exists: the same key the row will be recorded
-        // under, computed from the parts this function already has, so the history
-        // in the brief and the history the next call reads back can never be keyed
-        // differently. Reading the rows happens **here** — at decision time, per
-        // §4h — not at startup and not in a batch job nobody consults.
+        // The key the row will be recorded under, computed from the parts this function has,
+        // so the history in the brief and the history the next call reads back are keyed the
+        // same. The rows are read here, at decision time.
         let direction = crate::authorise::TaskDirection::of_parts(call.name, baseline, class.scope);
         let prior = Self::prior_answers(&self.log, &direction.key(), turn_seq(call.turn_id));
-        // **What the ladder may offer, computed once for both halves of the card.** The
-        // rungs and the note that explains a missing one are the same fact, and computing
-        // it twice is two chances for a card to say a rung was left off while offering it.
+        // What the ladder may offer, computed once for both halves of the card: the rungs and
+        // the note that explains a missing one are the same fact, and computing it twice is two
+        // chances for a card to say a rung was left off while offering it.
         let offer = self.offer_for(call, baseline, class);
         AdjudicationRequest {
             id: self.next_id(),
@@ -2831,7 +2019,7 @@ impl AdjudicatedGate {
             // person's, and by nothing else. The gate does not consult a model on
             // its own.
             advice: None,
-            // The headline names the access the call is JUDGED at (R21), so a shell that
+            // The headline names the access the call is JUDGED at, so a shell that
             // only reads says `read access` rather than `exec access` over a list of
             // intents that already said read.
             summary: format!(
@@ -2845,31 +2033,13 @@ impl AdjudicatedGate {
             boundary_facts: facts,
             scripts: call.scripts.to_vec(),
             kind: RequestKind::Permission,
-            // **Offer only what the gate will honour.** The recording site below
-            // requires that the tier is not `AlwaysAsk`; the session-grant arm
-            // there and the grant matcher were once narrower still, and every
-            // narrowing here has to move with them. This used to test only the
-            // tier, so at a point with `GrantScope::Once` an operator was shown
-            // *"Allow this class for the rest of the session"*, chose it, and
-            // the grant was silently dropped. Reported twice before it was
-            // found, and the comment at the recording site already stated the
-            // rule: *"an operator is never shown a button whose effect the gate
-            // would then decline to honour."*
-            //
-            // The exec branch once offered no session grant at all — the
-            // operator's rule of 2026-09-11, a shell asks every time — while
-            // offering *Always allow*, which outlives the session. The
-            // operator, 2026-09-18: *"if I'm offered to permanently enable — it
-            // is stronger than allow_session — so allow_session should always
-            // be offered too."* The ladder is complete again at every point
-            // that offers the durable rule, and the grant an exec answer
-            // records is scoped to the program and the class, the way the
-            // durable rule is scoped to the program and its verb.
+            // Offer only what the gate will honour: the recording site requires a tier that is
+            // not `AlwaysAsk` and a point that grants for the session, and every narrowing here
+            // moves with them, or an operator is shown a button whose effect is dropped.
             options: {
-                // **One computation, and every rung reads it.** `derived` is what *Always
-                // allow* would write; `session` is whether a grant taken now could cover
-                // a later call, asked of `Grant::covers` itself; `note` says why whichever
-                // one is missing is missing.
+                // One computation, and every rung reads it: `derived` is what *Always allow*
+                // would write, `session` is whether a grant taken now could cover a later call,
+                // and `note` says why whichever is missing is missing.
                 if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
                     always_ask_options()
                 } else if call.access == Access::Exec {
@@ -2880,17 +2050,17 @@ impl AdjudicatedGate {
                     once_only_options(self.mode.name, &offer)
                 }
             },
-            // **The line a card draws when a rung is absent** — `None` when nothing was
-            // left off, so a complete ladder says nothing rather than saying "nothing".
+            // `None` when nothing was left off, so a complete ladder says nothing rather than
+            // saying "nothing".
             options_note: offer.note_line().map(str::to_string),
-            // §11.5: `Deny` for a permission, and `AgentDecides` only for a
-            // question. Nothing here is a question yet.
+            // `Deny` for a permission, and `AgentDecides` only for a question. Nothing here is
+            // a question yet.
             on_timeout: OnTimeout::Deny,
             // Layer A's, never the caller's.
             tier: baseline.tier.clone(),
-            // Layer A's, never the caller's — and **carried rather than read off the
-            // verdict**, because an unresolvable construct is now a widened scope rather
-            // than a `NotRun`. See `AuthorisationRequest::resolved`.
+            // Layer A's, never the caller's, and carried rather than read off the verdict:
+            // an unresolvable construct is a widened scope rather than a `NotRun`. See
+            // `AuthorisationRequest::resolved`.
             resolved: baseline.resolved,
             baseline: baseline.summary(),
             trail: match &self.trail_source {
@@ -2900,45 +2070,13 @@ impl AdjudicatedGate {
         }
     }
 
-    /// **A standing rule settled this call. Ask the model anyway, and mark the row.**
-    ///
-    /// > *"supervised mode is essentially a normal mode but we always ask model. and
-    /// > model has its turn regardless of glob, deny, allow, allow_session or glob
-    /// > deny or allow from config"*
-    ///
-    /// That is the rule, and this is every place it has to be applied. `admit` has
-    /// seven ways to settle a call before reaching an adjudicator; six of them call
-    /// this, and each one is a place the model would otherwise never get a turn:
-    ///
-    /// | | settled by |
-    /// |---|---|
-    /// | 1a | layer A could not resolve the action |
-    /// | 1b | an blocked tier — a secret crossing the boundary |
-    /// | 1  | the never-write list |
-    /// | 1.5 | a `permission` config `deny` |
-    /// | 1.5 | a `permission` config `allow` |
-    /// | 2  | the mode admits this class unasked |
-    /// | 3  | a standing `allow_session` grant |
-    ///
-    /// The seventh is the circuit breaker, and it is the one deliberate exception —
-    /// see the comment at its own return. A rule is the operator's standing answer,
-    /// so the oracle's verdict on a call it already settled is a labelled example
-    /// that costs nobody a keystroke; and a refusal is worth as much as an
-    /// admission, because a model that wants to admit what the operator's rules
-    /// refuse is exactly the miscalibration to find BEFORE automode.
-    ///
-    /// **Nothing read here changes the outcome.** Every caller has already decided
-    /// by the time this runs. An oracle that is slow costs the wait, one that is down
-    /// costs nothing, one that disagrees is recorded disagreeing.
-    ///
-    /// Off at every point but `supervised`: elsewhere there is no model to ask, and
-    /// spending an oracle round trip on a call a rule already settled would be the
-    /// gate paying latency for a row nobody asked for.
+    /// A standing rule settled this call; ask the model anyway and mark the row. Every caller
+    /// has already decided by the time this runs, so nothing read here changes the outcome - an
+    /// oracle that disagrees is recorded disagreeing. Off at every point but `supervised`.
     fn advise_on_a_settled_call(&mut self, req: &AdjudicationRequest, why: String) {
-        // **An unasked call consults no model, even here.** Every settled path asks the guard
-        // because its verdict on a call the operator does not see is a labelled example worth
-        // having; a look a plugin declared is polled on a watch's clock, and an inference per
-        // firing on somebody's `exec` look is a cost nobody chose. See the field.
+        // An unasked call consults no model, even here: a look a plugin declared is polled on a
+        // watch's clock, and an inference per firing on somebody's `exec` look is a cost nobody
+        // chose.
         if self.unasked {
             return;
         }
@@ -2948,13 +2086,9 @@ impl AdjudicatedGate {
         }
     }
 
-    /// The guard model's verdict on this call, or `None` when supervision is off or
-    /// no advisor is installed.
-    ///
-    /// One function so that "is the model consulted" has one answer: every settled
-    /// path and the ask path go through it, and a future path that forgets to call
-    /// it is a path that visibly records no verdict rather than one that quietly
-    /// half-supervises.
+    /// The guard model's verdict on this call, or `None` when supervision is off or no advisor
+    /// is installed. One function so "is the model consulted" has one answer, and a path that
+    /// forgets to call it records no verdict rather than half-supervising.
     fn ask_the_advisor(&self, req: &AdjudicationRequest) -> Option<ModelAdvice> {
         if !self.supervise {
             return None;
@@ -2973,27 +2107,16 @@ impl AdjudicatedGate {
             basis: d.basis,
             cites: Vec::new(),
             latency_ms: d.latency_ms,
-            // No oracle reported an advice, so there is no reading to label — `None` for
-            // the same reason `consulted` is `false`: a `kind` here would be a reading of a
+            // No oracle reported an advice, so there is no reading to label: `None` for the
+            // same reason `consulted` is `false`, since a `kind` here would be a reading of a
             // reply that does not exist.
             unsure: None,
         }))
     }
 
-    /// **What the oracle was shown, and what it answered** (R11), from whichever
-    /// adjudicator actually consulted one — the one thing the corpus cannot reconstruct
-    /// afterwards.
-    ///
-    /// **The gate used to ask its *decider*, and the decider is not who has the brief.**
-    /// Where a person answers, their adjudicator's `last_brief` is the decision CARD
-    /// (`req.brief()`, whose first line is `decision — …`) rather than the oracle's input;
-    /// and where the model's own verdict decides, the gate never reached the line that
-    /// asked anybody at all. Measured on this box 2026-09-21: `shown` was set on 147 of
-    /// 5785 rows, `NULL` on every row an oracle decided, and all 147 were rows a person
-    /// answered. So the source is the advisor when the advisor was put to this call, else
-    /// the decider when the decider is itself a model — and **nothing** otherwise, because
-    /// a card is not the bytes an oracle was given. Both halves come from that one
-    /// adjudicator, so `shown` and `reply` cannot describe different calls.
+    /// What the oracle was shown and what it answered, from whichever adjudicator actually
+    /// consulted one: the advisor when it was put to this call, else the decider when that is
+    /// itself a model, and nothing otherwise, because a card is not an oracle's input.
     fn file_exchange(&mut self) {
         let asked = self.advice.as_ref().is_some_and(|a| a.consulted);
         let decided = self.adjudicator.last_advice().is_some_and(|a| a.consulted);
@@ -3016,18 +2139,12 @@ impl AdjudicatedGate {
         direction: String,
     ) {
         let shown = self.shown.take();
-        // The other half of the exchange (R11), taken beside `shown` and from the same
+        // The other half of the exchange, taken beside `shown` and from the same
         // adjudicator, so the two cannot describe different calls.
         let reply = self.reply.take();
-        // **An admitted contact makes the host seen.** The always-ask rule is
-        // `network_egress_to_an_UNSEEN_host`, and its whole design is that the
-        // second contact is not a first one — "by then the operator has seen
-        // one". `Surroundings::saw_host` existed for that and nothing called it,
-        // so every contact was a first contact and the asks never tapered.
-        // Measured 2026-09-17 in the operator's store: the same session asked
-        // about the same worktree five times in twenty minutes. Recorded here,
-        // where every decision passes, and only for an admit: a refused
-        // contact is still unseen.
+        // An admitted contact makes the host seen: the always-ask rule is about an UNSEEN host,
+        // and nothing called `saw_host`, so every contact was a first contact and the asks never
+        // tapered. Recorded here, where every decision passes, and only for an admit.
         if effect == "admit"
             && let Some(b) = request.reading.as_ref()
         {
@@ -3037,38 +2154,19 @@ impl AdjudicatedGate {
                 }
             }
         }
-        // **Asked is read off who decided, not off the adjudicator's name.** A
-        // human adjudicator that timed out did not ask anybody, and a model
-        // adjudicator that escalated did. `by` is the only field that records
-        // which of those happened.
+        // Asked is read off who decided, not off the adjudicator's name: a human adjudicator
+        // that timed out asked nobody, and a model that escalated did. `by` records which.
         let asked = decision.by.starts_with("human");
         let mode = self.mode.name.to_string();
         let advice = self.advice.take();
         let standing = self.standing.take();
-        // **At `supervised` the label is already in hand, so it is written now.**
-        //
-        // Everywhere else `operator` is filled later by `record_override` or by
-        // `/gate`, because the person has not spoken yet. Here they just did, on
-        // this exact decision, with the model's verdict in front of them — which is
-        // the whole reason to sit through the point. Making them re-rule it from a
-        // list afterwards would be asking the same question twice and getting a
-        // worse answer the second time.
-        // **The label**, when there is one to write.
-        //
-        // Two ways the operator's ruling is already in hand at this moment, and both
-        // are recorded — the difference between them travels in `asked` and in the
-        // note, never by dropping one of them:
-        //
-        //   `asked`     they answered THIS call, with the verdict in front of them
-        //   `standing`  a grant they gave earlier covers it, and nobody was asked
-        //
-        // Neither is invented. With no advice there is nothing to have agreed with,
-        // and the row stays unlabelled for `/gate` or `record_override` to fill.
+        // At `supervised` the label is already in hand, so it is written now: they just
+        // answered this call with the model's verdict in front of them, and re-ruling it from a
+        // list afterwards would ask the same question twice. No advice, no label.
         let operator = match (&advice, asked, &standing) {
-            // **No label without a verdict.** `consulted` is false whenever a model
-            // adjudicator answered without asking a model — an always-ask entry, an
-            // unresolved action, an intent outside the oracle's scope. Agreeing with
-            // a short-circuit is not agreeing with anything.
+            // No label without a verdict: `consulted` is false whenever a model adjudicator
+            // answered without asking a model, and agreeing with a short-circuit is agreeing
+            // with nothing.
             (Some(a), _, _) if !a.consulted => None,
             (Some(a), true, _) => Some(agreement(a, effect, String::new())),
             (Some(a), false, Some(why)) => Some(agreement(
@@ -3100,27 +2198,9 @@ impl AdjudicatedGate {
         }
     }
 
-    /// **R11: the audit rows, read back.** §4h: *"the audit rows are written and
-    /// never read — closing that loop is the cheapest large improvement
-    /// available."*
-    ///
-    /// Every prior row in the same [`crate::authorise::TaskDirection`], aggregated
-    /// by the gate's effect, oldest first. The discipline lives in the two rules
-    /// this function cannot break and the renderer repeats: the rows are **shown
-    /// to the decision, not substituted for it** (this returns data for a brief;
-    /// nothing here touches `tier`, `options` or the admit path), and **denials
-    /// are history too** (the filter is the direction, never the outcome).
-    /// **The last few calls this operator answered themselves**, newest first.
-    ///
-    /// Not filtered to the shape of the call being decided, which is what `prior`
-    /// does: the point is to show what this person is LIKE, and a tally of the same
-    /// shape says nothing about that. It is bounded because a brief is a prompt —
-    /// the operator's own rule about capping a corrective body applies to evidence
-    /// too, and an unbounded list would push the trail out of the model's attention.
-    ///
-    /// Only rows a human actually answered. A gate:mode admit is the mode's
-    /// judgement, not theirs, and showing it as "they allowed" would put words in
-    /// their mouth.
+    /// The last few calls this operator answered themselves, newest first. Not filtered to the
+    /// shape being decided - the point is what this person is like - and bounded because a brief
+    /// is a prompt. Only rows a human answered: a mode's admit is not theirs.
     fn operator_examples(
         log: &[AdjudicationRow],
         now_turn: Option<u64>,
@@ -3132,12 +2212,8 @@ impl AdjudicatedGate {
                 continue;
             }
             out.push(crate::authorise::DecisionExample {
-                // **What was decided, not how layer A read it.** This was
-                // `request.baseline` — "ask — intents [read_file unknown] over
-                // [host_other]" — which says what class of thing it was and nothing
-                // about what it WAS, so six examples rendered as six copies of the
-                // same sentence. The tool and its target is the smallest thing that
-                // makes an example an example. Still not the raw arguments: the rule
+                // What was decided, not how layer A read it: six examples of `request.baseline`
+                // rendered as six copies of one sentence. Still not the raw arguments - the rule
                 // that keeps a command out of the brief keeps it out of here.
                 action: format!("{} {}", row.request.tool, row.request.target),
                 verdict: if row.effect == "admit" {
@@ -3157,24 +2233,18 @@ impl AdjudicatedGate {
         out
     }
 
+    /// The audit rows read back: every prior row in the same task direction, aggregated by the
+    /// gate's effect, oldest first. Shown to the decision and never substituted for it, and
+    /// denials are history too - the filter is the direction, never the outcome.
     fn prior_answers(
         log: &[AdjudicationRow],
         key: &str,
         now_turn: Option<u64>,
     ) -> Vec<PriorAnswer> {
         let mut out: Vec<PriorAnswer> = Vec::new();
-        // **A HUMAN's answers, never the gate's own.**
-        //
-        // This filtered on the shape and nothing else, so an admit by the mode, by
-        // the permission ruleset, or BY THE ORACLE ITSELF came back to the oracle as
-        // "admit — 3 time(s)" on the next call of that shape. That is a ratchet: the
-        // operator's words for it were *"self recursion can do drift — 'that command
-        // was approved already by someone and this is ever so slightly different'"*,
-        // and their instruction was that the guard's own decisions do not go in the
-        // brief. They do not now.
-        //
-        // What survives is what a person decided, which is the only kind of prior
-        // answer that is evidence about anything other than the guard's own habits.
+        // A HUMAN's answers, never the gate's own: an admit by the mode, the permission ruleset
+        // or the oracle itself would come back as "admit - 3 time(s)" on the next call of that
+        // shape, which is a ratchet. Only what a person decided is evidence.
         for row in log
             .iter()
             .filter(|r| r.direction == key && r.decision.by.starts_with("human"))
@@ -3201,14 +2271,9 @@ impl AdjudicatedGate {
         out
     }
 
-    /// **Record what the operator did with a decision that had already been made.**
-    ///
-    /// The other half of surfacing: a denial the operator can see is a denial they can
-    /// lift, and the lift is the labelled example. Never overwrites the verdict — see
-    /// [`AdjudicationRow::operator`].
-    ///
-    /// Returns whether the row was found, because silently recording an override
-    /// against nothing would be the same defect one level down.
+    /// Record what the operator did with a decision that had already been made: a denial they
+    /// can see is one they can lift, and the lift is the labelled example. Never overwrites the
+    /// verdict, and answers whether the row was found.
     pub fn record_override(
         &mut self,
         request_id: &str,
@@ -3240,26 +2305,9 @@ impl AdjudicatedGate {
 }
 
 impl Gate for AdjudicatedGate {
-    /// **The ladder, stopped where a card would be raised** — `docs/plugins-plan.md` §1
-    /// principle 2, for a look a plugin layer declared.
-    ///
-    /// The same body as [`Gate::admit`], with three things switched off and nothing else:
-    ///
-    /// * **the adjudicator**, which is the only thing that can put a question to a person —
-    ///   reached only past the point this returns at, so a look never blocks on a head;
-    /// * **the guard model**, which every settled path consults for its own sake
-    ///   (`advise_on_a_settled_call`) — an inference per firing of somebody's watch is a cost
-    ///   nobody chose, and its verdict would change no outcome;
-    /// * **the circuit breaker.** It is taken and put back, because a refusal counts: three
-    ///   consecutive ones open it for that direction and *only the operator lifts that*. A
-    ///   condition that polls a program the gate refuses would then have closed the session's
-    ///   gate to its own model's calls within three firings — a watch changing what the session
-    ///   may do, which is the one thing a look must never be able to do.
-    ///
-    /// What stays on is everything a reader would call the decision: the audit row (a look the
-    /// gate judged is a decision worth having), the denial notice (a refusal is news when it
-    /// happens), and the grants and shapes — read, never written: the write sites are all past
-    /// the ask.
+    /// The ladder, stopped where a card would be raised. The same body as [`Gate::admit`] with
+    /// the adjudicator, the guard model and the circuit breaker switched off, so a look a plugin
+    /// declared can never block on a head or close the session's gate to its own model.
     fn admit_unasked(&mut self, call: &GateCall<'_>) -> GateDecision {
         let breaker = std::mem::take(&mut self.breaker);
         self.unasked = true;
@@ -3269,28 +2317,18 @@ impl Gate for AdjudicatedGate {
         decision
     }
 
-    /// **How this session stands**, for the `on_tool_call` hook: the mode's own word and the id
-    /// the session is known by. Read from here because the mode is this gate's field — it moves at
-    /// runtime (`/mode`) and a copy anywhere else would be a second answer to *how much may this
-    /// session do without asking*.
+    /// How this session stands, for the `on_tool_call` hook: the mode's own word and the session
+    /// id. Read from here because the mode is this gate's field and it moves at runtime, so a
+    /// copy elsewhere would be a second answer.
     fn standing(&mut self) -> crate::runtime::Standing {
         crate::runtime::Standing {
             session: self.session_id.clone(),
             mode: self.mode.name.to_string(),
         }
     }
-    /// **The question the boundary could not ask.**
-    ///
-    /// A real adjudication, so it lands in the corpus beside every other decision
-    /// and an operator can see later what they let in and when. It is NOT a tool
-    /// call — no baseline, no tier, no intents — because nothing is being run: the
-    /// subject is a path and the answer widens a view. That is why it builds the
-    /// request here rather than going through `request_for`, which reads a
-    /// `GateCall` that does not exist.
-    ///
-    /// `NotAsked` when there is nobody to ask, which is a session with no
-    /// adjudicator attached. Not a refusal: nobody decided, and a caller that
-    /// rendered "no" would be reporting a decision that was never made.
+    /// The question the boundary could not ask. A real adjudication, so it lands in the corpus
+    /// beside every other decision, but not a tool call: nothing runs, the subject is a path and
+    /// the answer widens a view. `NotAsked` when there is nobody to ask, never a refusal.
     fn grant_view(&mut self, path: &std::path::Path, tool: &str) -> crate::runtime::ViewGrant {
         use crate::runtime::ViewGrant;
         if self.adjudicator.describe().starts_with("none") {
@@ -3360,15 +2398,15 @@ impl Gate for AdjudicatedGate {
         }
     }
 
-    /// **The memory ask above the ceiling, as a card the OPERATOR answers.** `AlwaysAsk`, not
-    /// `MayApprove`: the operator's rule is *"if model wants it - must ask me"*, and a guard
-    /// model widening it into an admission would be the model granting itself the box.
+    /// The memory ask above the ceiling, as a card the OPERATOR answers. `AlwaysAsk`, not
+    /// `MayApprove`: a guard model widening it into an admission would be the model granting
+    /// itself the box.
     fn grant_memory(
         &mut self,
         ask: &crate::exec::memory::MemoryAsk,
     ) -> crate::exec::memory::MemoryGrant {
         use crate::exec::memory::MemoryGrant;
-        // **A session grant covers an ask no larger than it and no larger than what is free.**
+        // A session grant covers an ask no larger than it and no larger than what is free.
         // Uncapped is covered only by an uncapped grant, and an uncapped ask has no size to hold
         // against what is free, so the grant itself is the operator's word on it.
         let covered = match (self.memory_session, ask.bytes) {
@@ -3480,10 +2518,9 @@ impl Gate for AdjudicatedGate {
     }
 
     fn set_supervision(&mut self, on: bool) -> Result<String, String> {
-        // **Refuses rather than pretending.** A gate told to supervise with no guard
-        // model installed, that answered "ok", would leave the operator believing
-        // every later call was being measured while none were — the same lie
-        // `Mode::check` refuses to tell by downgrading silently.
+        // Refuses rather than pretending: a gate told to supervise with no guard model
+        // installed that answered "ok" would leave the operator believing every later call was
+        // being measured while none were.
         let Some(advisor) = self.advisor.as_ref() else {
             return Err(
                 "no guard model is configured, so there is nothing to supervise WITH. \
@@ -3521,23 +2558,21 @@ impl Gate for AdjudicatedGate {
         use crate::intent::BaselineVerdict;
 
         let baseline = self.baseline_for(call);
-        // **The access this call is judged at** (R21). Computed here and passed to the
-        // three places that used to read the tool's declared one — see
-        // [`ModelAdjudicator::judged_access`] for what turns on it and what must not.
+        // The access this call is judged at. Computed here and passed to the three places that
+        // would otherwise read the tool's declared one; the gate is still consulted on the
+        // declared access, so this changes what it says, not whether it is asked.
         let access = Self::judged_access(call, &baseline);
-        // **R98's first half, computed once**: `Some(cargo test)` when this call runs the
-        // project's own code and the host it runs on has no boundary. Read by the three arms
-        // below that would otherwise let a standing answer settle it, and by the two that
-        // would otherwise record one.
+        // The first half, computed once: `Some(cargo test)` when this call runs the project's
+        // own code and the host has no boundary. Read by the three arms that would otherwise let
+        // a standing answer settle it, and by the two that would record one.
         let unconfined_code = self.runs_project_code_unconfined(access, &baseline);
         let mut req = self.request_from(call, &baseline);
         let direction = TaskDirection::of(&req, &baseline);
         let breaker_state = self.breaker.state(&direction);
 
-        // 0. The breaker, before anything else asks anything. Three consecutive
-        //    refusals in one direction and the loop stops: the fallback is a human,
-        //    and producing another verdict would be exactly the argued-down-one-call-
-        //    at-a-time behaviour the breaker exists to stop.
+        // 0. The breaker, before anything else asks anything. Three consecutive refusals in one
+        //    direction and the loop stops: the fallback is a human, and another verdict would be
+        //    the one-call-at-a-time behaviour the breaker exists to stop.
         if let BreakerState::Open { consecutive } = breaker_state {
             let d = AdjudicationDecision {
                 request_id: req.id.clone(),
@@ -3555,31 +2590,16 @@ impl Gate for AdjudicatedGate {
             };
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
             let why = d.basis.clone();
-            // **The one settled path that does NOT ask the model**, and the exception
-            // is deliberate. Every other short-circuit calls
-            // `advise_on_a_settled_call`; this one is the breaker, which is open
-            // precisely because the same direction has been refused three times in a
-            // row — so the calls arriving here are near-duplicates of rows already in
-            // the corpus, and each one would spend an oracle round trip while a retry
-            // loop is running. The breaker exists to stop a loop; paying latency per
-            // iteration of it is the opposite.
+            // The one settled path that does NOT ask the model, deliberately: the breaker is
+            // open because this direction was refused three times in a row, so each call here is
+            // a near-duplicate and an oracle round trip per retry is the opposite of stopping it.
             self.record(req, d, "refuse", direction.key());
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
 
-        // 1a. Layer A's own refusals, before any adjudicator and overridable by none.
-        //     `NotRun` first: an action nobody could read is not an action anybody can
-        //     decide about, and there is no branch here that could turn "unresolved"
-        //     into "proceed".
-        //
-        //     **Except at a point that admits everything.** The operator (2026-10-07), after
-        //     `python3 - f <<'PY' 2>/dev/null | head -80` was refused — valid bash that
-        //     tree-sitter-bash recovers from at the `|`: *"im very tired of substitutions -
-        //     at least for allow-all"*. `allow-all` admits the always-ask list itself; the
-        //     one thing it still refuses is a secret leaving the boundary (1b, below). So an
-        //     unreadable command there goes on to 1b and then to the mode — refused only if
-        //     the tier, read best-effort off the recovered tree, says disclosure — and the
-        //     admission says it ran unread, so the row is not mistaken for a read one.
+        // 1a. Layer A's own refusals, before any adjudicator. `NotRun` first: an action nobody
+        //     could read is not one anybody can decide about. Except at a point that admits
+        //     everything, where an unreadable command goes on and the row says it ran unread.
         let ran_unread = match &baseline.verdict {
             BaselineVerdict::NotRun { why } if self.mode.admits_everything() => {
                 Some(why.lines().next().unwrap_or("").to_string())
@@ -3599,20 +2619,15 @@ impl Gate for AdjudicatedGate {
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
             self.breaker.refused(&direction);
             let why = why.clone();
-            // Asked, and it will answer `unavailable` without reaching the oracle —
-            // `ModelAdjudicator` refuses on `!resolved` for the same reason the gate
-            // does. That costs one call and no inference, and the row then says an
-            // unresolved action produced no verdict, rather than saying nothing.
+            // Asked, and it answers `unavailable` without reaching the oracle, so the row says
+            // an unresolved action produced no verdict rather than saying nothing.
             self.advise_on_a_settled_call(&req, "layer A could not resolve the action".into());
             self.record(req, d, "refuse", direction.key());
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
-        // 1b. §3's tier: the one thing layer A refuses outright. Narrow on purpose —
-        //      irreversible disclosure of a secret across the boundary, and nothing
-        //      else. There is no destructive block list here and there never will be:
-        //      `rm -rf /` is allowed if it is the intent, and what makes it safe or not
-        //      is a mismatch with what was authorised rather than a property of the
-        //      string.
+        // 1b. The tier: the one thing layer A refuses outright. Narrow on purpose -
+        //      irreversible disclosure of a secret across the boundary. There is no destructive
+        //      block list here: `rm -rf /` is allowed if it is the intent.
         if let Tier::Blocked { rule, evidence } = &req.tier {
             let d = AdjudicationDecision {
                 request_id: req.id.clone(),
@@ -3637,13 +2652,9 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
-        // 1. The `never` rows, before any adjudicator and overridable by none.
-        //
-        // **Two questions, one rule.** `never_hit` asks it of the SPELLING — is a path segment
-        // of this call on the list — and [`ssh_resolution_hit`] asks it of the PATH: what does
-        // this argument actually name, after every symlink, for a file that may not exist yet.
-        // The second is what makes the file tools a hard line instead of a test of how a model
-        // spelled a path, and it is why `~/.ssh` is not merely a string in this tree.
+        // 1. The `never` rows, overridable by none. Two questions, one rule: `never_hit` asks it
+        // of the SPELLING and [`ssh_resolution_hit`] of the PATH - what the argument names after
+        // every symlink, for a file that may not exist yet.
         let refused = never_hit(call.args).map(|hit| {
             format!(
                 "`{hit}` is on the never-write list (§11.4); no adjudicator is consulted and \
@@ -3671,15 +2682,9 @@ impl Gate for AdjudicatedGate {
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
             let id = req.id.clone();
             self.breaker.refused(&direction);
-            // Asked here too, and this is the row worth having: an oracle that wants
-            // to admit a call touching the operator's own ssh material is a calibration fact
-            // about the guard, and it is invisible unless this path records a verdict. It
-            // changes nothing — the list is overridable by nobody, the oracle
-            // included, and `Adjudicable` is not minted for it.
-            //
-            // The note is the decision's own BASIS, so an oracle reading this call cannot be told
-            // a different story from the one the operator's screen shows: two sentences about one
-            // refusal is the shape that lets a guard and its record disagree.
+            // Asked here too: an oracle that wants to admit a call touching the operator's ssh
+            // material is a calibration fact, invisible unless this path records a verdict. It
+            // changes nothing, and the note is the decision's own basis, so no two stories.
             self.advise_on_a_settled_call(&req, basis);
             self.record(req, d, "refuse", direction.key());
             // The model is told why, because a refusal it cannot understand is a
@@ -3687,16 +2692,12 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
-        // 1.5. opencode's permission model, evaluated before the mode (see
-        //      `crate::permission`). `deny` refuses, `allow` admits, `ask` falls
-        //      through to the mode and the adjudicator. Last-rule-wins over the
-        //      config plus the `always` approvals.
+        // 1.5. opencode's permission model, evaluated before the mode: `deny` refuses, `allow`
+        //      admits, `ask` falls through. Last rule wins over the config plus `always`.
         if !self.permission.is_empty() {
             let pattern = permission_pattern(call.args);
-            // A `bash` command is tested segment by segment against the prefix
-            // rules — `git log; rm -rf ~` is not `git log` — and a compound the
-            // splitter cannot read is asked, never allowed. See
-            // `permission::bash_segments`.
+            // A `bash` command is tested segment by segment against the prefix rules, and a
+            // compound the splitter cannot read is asked, never allowed.
             let action = if call.args.get("command").and_then(|v| v.as_str()).is_some()
                 && call.access == Access::Exec
             {
@@ -3745,60 +2746,17 @@ impl Gate for AdjudicatedGate {
                     self.record(req, d, "admit", direction.key());
                     return GateDecision::Admit;
                 }
-                // **R98: a rule is a standing answer, and this call is not covered by one.**
-                // An `allow` here — the operator's own config, or an *Always allow* an earlier
-                // card wrote into it — is keyed on a program and a pattern, and it was written
-                // about a file that no longer exists by the time this runs: a test runner on an
-                // unconfined host executes bytes the agent can rewrite between the answer and
-                // the run. The rule is not deleted or disabled; it simply does not settle this
-                // call, and the card this falls through to carries the reason (`options_note`,
-                // from `Offer`).
+                // A rule is a standing answer, and this call is not covered by one: an `allow`
+                // keyed on a program and a pattern was written about a file that no longer
+                // exists. It is not deleted, it simply does not settle this call.
                 crate::permission::Action::Allow => {}
                 crate::permission::Action::Ask => {}
             }
         }
 
-        // **D16 — inside a measured boundary, a command is not asked about.**
-        //
-        // The operator's ruling (2026-10-27): *"agent can write any code in the test file and
-        // then do the test. the only real defense is cgroups and namespaces. the rest is
-        // theater."* Where the backend's confinement was MEASURED and holds, a per-command
-        // ruling protects nothing a write the mode already admits could not do instead, so at
-        // `writes-allowed` the command is admitted without a card and the audit row says why.
-        //
-        // **What still asks, and each conjunct below is one of them** — the card's job is now
-        // this list rather than every command:
-        //
-        //  * **what crosses the boundary.** A call whose intents include `network` needs
-        //    egress, and `Boundary::encloses` already requires the boundary's network namespace
-        //    to be the empty one (`Egress::Denied`). So `curl`, `cargo fetch` and `git push`
-        //    ask here exactly as they did; `git push`'s intents say `network`, which is the
-        //    check that catches it even though its regions are the workspace.
-        //  * **a grant that widens the view.** A call naming a path outside the checkout would
-        //    not be doing its work inside the boundary at all: the view contains the checkout
-        //    and read-only system roots, so the path is either absent (the command fails) or
-        //    one the operator would be asked to widen the view for. `regions` is layer A's
-        //    placement of every operand, and `Region::is_outside` is the tree's one answer to
-        //    *is this outside the session's own work* — reused rather than restated, so
-        //    `rm -rf target` is inside and `rm -rf ~/other` is not. `Unbounded` counts as
-        //    outside by its own doc, which is what keeps `rm -rf $X` asking.
-        //  * **the operator-world tiers.** [`Tier::AlwaysAsk`] never reaches here — the list is
-        //    layer A's, and `admits_unasked` refuses it at every point whatever the boundary —
-        //    and `Tier::Blocked` was refused at 1b above.
-        //  * **a host with no boundary**, a platform with none, and a probe that did not
-        //    answer: `self.boundary` is `None` there, so none of this fires. That is the
-        //    mac host shell — [`Mode::WRITES_ALLOWED`] with nothing confining it, where the
-        //    per-command ruling is still the only defence there is.
-        //
-        // And it is `writes-allowed` **only**, which is the ruling's own sentence. `automode`
-        // says what it says — the question there is answered by a model, not a card, so what
-        // D16 removes for the operator is the interruption that point does not have; and the
-        // two `allow-all` coordinates already admit exec unasked by their own definition.
-        // **Not for an unasked call.** D16 admits because the command runs INSIDE the boundary,
-        // and a plugin's `exec` look — the one caller of `admit_unasked` — does not: the
-        // daemon spawns it on its own host, outside every namespace this boundary measured.
-        // Admitting it here would hand a layer's `make` the defence the boundary gives the
-        // model's, with no boundary around it (and say so every ninety seconds).
+        // Inside a measured boundary a command is not asked about: at `writes-allowed`, where
+        // the confinement holds, a per-command ruling protects nothing a write the mode already
+        // admits could not do. What still asks is what crosses the boundary or widens the view.
         if !self.unasked
             && admits_inside_the_boundary(self.boundary.as_ref(), self.mode, access, &baseline)
             && let Some(boundary) = &self.boundary
@@ -3814,7 +2772,7 @@ impl Gate for AdjudicatedGate {
             );
             let d = AdjudicationDecision::selected(&req, "allow_once", "gate:boundary", &basis);
             self.breaker.admitted(&direction);
-            // **Told, not only recorded.** The audit row is read by `/gate` and by the corpus,
+            // Told, not only recorded. The audit row is read by `/gate` and by the corpus,
             // and neither scrolls while the work happens: a mode that stops asking has to say
             // so where the operator is looking, or the only evidence is the silence.
             if let Some(sink) = &self.admissions {
@@ -3833,32 +2791,9 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        // 2. **The point this session sits at.** See `crate::mode`.
-        //
-        //    It governs `Tier::MayApprove` and nothing else: `admits_unasked` answers
-        //    `false` for an always-ask and for an blocked at every point,
-        //    including automode, and there is no argument that makes it answer
-        //    otherwise. So this arm cannot be the one that widens something a point is
-        //    not allowed to widen — the check is in the type rather than here.
-        //
-        //    Recorded as a row like any other admission. A standing decision that
-        //    stops appearing in the audit is one nobody can review, and the corpus
-        //    wants it: *"what the operator decided"* includes the mode they put this
-        //    project at.
-        //    The operator's rule (2026-09-11) excepts exec: no point admits an
-        //    exec-class call unasked, because `bash` is the tool whose result is an
-        //    arbitrary byte stream and the operator has decided that question is
-        //    settled by them, every time, and by nothing else.
-        //
-        //    **And R21 leaves that rule exactly where it is**, because `access` here is
-        //    the access this call is JUDGED at and not the tool's declaration: a shell
-        //    that only reads is judged a read, so it reaches clause 4 rather than this
-        //    exception, and a shell that does anything else is still `Exec` and is still
-        //    excepted. The exception is what the operator's rule is FOR; what R21 removes
-        //    is the case where the exception was firing over a call whose every computed
-        //    intent the classifier had already read as a look.
-        // `ran_unread` does not widen this: an unreadable exec call is admitted exactly where a
-        // readable one would be, and where exec asks, it asks too — never more easily.
+        // 2. The point this session sits at. It governs `Tier::MayApprove` and nothing else, so
+        //    this arm cannot widen what a point may not. Exec is excepted unless the mode follows
+        //    it, and `ran_unread` widens nothing: an unreadable exec asks where a readable one does.
         if (access != Access::Exec || self.exec_follows_mode)
             && self.mode.admits_unasked(&req.tier, access)
         {
@@ -3880,10 +2815,9 @@ impl Gate for AdjudicatedGate {
                 ),
             );
             self.breaker.admitted(&direction);
-            // The mode's own admission is a settled call like any other. It cannot
-            // fire at `supervised` today — every non-read disposition there is `Ask`
-            // — and it is wired anyway, because a point is a value and the next one
-            // somebody writes may admit something while still wanting the verdict.
+            // The mode's own admission is a settled call like any other. It cannot fire at
+            // `supervised` today, and it is wired because a point is a value and the next one may
+            // admit something while still wanting the verdict.
             self.advise_on_a_settled_call(
                 &req,
                 format!(
@@ -3896,67 +2830,13 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        // 3. A standing permission from an earlier `allow_session` in this session.
-        //
-        //    Keyed on `(program, ActionClass, intents)` and checked **per call against
-        //    the normalisation**, never against text. That is what makes
-        //    `git -c core.pager='sh -c …' log` fall out of a grant taken over
-        //    `git status` without the grant having enumerated a single escape hatch:
-        //    the vehicle flag changes the derived intents, and the grant covers what it
-        //    was shown rather than a superset of it.
-        //
-        //    `Grant::covers` is the only reader, and it refuses an unresolved action,
-        //    an always-ask and an blocked before it looks at coverage at all.
+        // 3. A standing permission from an earlier `allow_session`, keyed on
+        //    `(program, ActionClass, intents)` and checked per call against the normalisation,
+        //    never against text, so a vehicle flag falls out of a grant taken over `git status`.
         let program = grant_program(&baseline);
-        //    The operator's rule of 2026-09-11 excepted exec here: a standing
-        //    permission never covered an exec-class call, so an `allow_session`
-        //    taken over `cargo test` could not quietly become a session where
-        //    every later `cargo test` runs unasked. Retired 2026-09-18 — the
-        //    durable *Always allow* rule was already offered over exec (the
-        //    revision of 2026-09-14), and the operator, *"if I'm offered to
-        //    permanently enable — it is stronger than allow_session — so
-        //    allow_session should always be offered too."* The grant an exec
-        //    answer records is keyed on the program and the class with the
-        //    intents a subset of what was shown, so it is the same scope the
-        //    durable rule has and never exec at large; a vehicle flag that adds
-        //    an intent still falls out, per `Grant::covers`.
-        // **A shape the operator already approved, this session.**
-        //
-        // The operator, after answering the same question about a different file
-        // for the fifth time: *"shapes like this must be approved only once"* —
-        // and, asked whether to collect data first or act on it, *"i vote for
-        // approving already"*.
-        //
-        // The key is the parse with its literals holed, so `grep -n P -A 22 a.rs`
-        // and `grep -n Q -A 3 b.rs` are one approval, while `sed -n` and `sed -i`,
-        // or `rm -f` and `rm -rf`, are not — a flag is where a command changes
-        // kind, and the shape keeps flags.
-        //
-        // Four bounds, and they are the reason this is safe to do at all:
-        //
-        //  * only a shape a HUMAN approved goes in the table. The guard's own
-        //    admits never do, which is the operator's own rule about drift —
-        //    *"that command was approved already by someone and this is ever so
-        //    slightly different"* — applied to the mechanism most able to do it;
-        //  * the tier is re-checked HERE, not remembered. Reaching `always-ask` or
-        //    `blocked` today means asking today, whatever was approved
-        //    yesterday, so a shape cannot carry a call past the secret list or the
-        //    rule protecting the rule files;
-        //  * the effect class must match the one that was approved, so a shape
-        //    approved inside the project does not admit the same shape outside it;
-        //  * it crosses sessions but never a project. The table is seeded from the
-        //    operator's own past approvals under this workspace and no other —
-        //    `host_project` equals `host_project` in two different checkouts, so
-        //    the class alone would let a shape approved in one admit it in the
-        //    other, and the workspace is joined on rather than trusted to the class;
-        //  * and a DESTRUCTIVE call is never settled by a shape, however often the
-        //    operator approved one. A shape holes its operands, so `rm -rf <arg>`
-        //    approved over `target/` would stand in for `rm -rf` over anything else
-        //    in the project — and this tree's own rule is that *"destruction is
-        //    judged by SCOPE, never by the verb"*, which is precisely the half a
-        //    shape throws away. The operator's 2026-09-11 rule that exec asks every
-        //    time is narrowed to this rather than dropped: reads, searches and
-        //    builds stop repeating themselves; deletions still ask.
+        // A shape the operator already approved, this session. The key is the parse with its
+        // literals holed, so two greps are one approval and `sed -n` is not `sed -i`; flags
+        // stay. Bounded: a human approved it, the tier is re-checked here, and destruction asks.
         if let Tier::MayApprove = req.tier
             && unconfined_code.is_none()
             && let Some(shape) = &req.shape
@@ -3991,43 +2871,18 @@ impl Gate for AdjudicatedGate {
             let why = g.why.clone();
             let d =
                 AdjudicationDecision::selected(&req, "allow_session", "gate:session-grant", &basis);
-            // **A grant settles the person, not the model.**
-            //
-            // > *"it can remember my allow_session, still ask model later, still
-            // > record"*
-            //
-            // The grant is the operator's standing answer, so nobody is asked again —
-            // that is what a grant is for. The oracle is still consulted, because its
-            // verdict on a call the operator has already ruled on is a labelled
-            // example that costs nobody a keystroke, and those are the only cheap ones
-            // there are.
-            //
-            // It does not change the outcome. Nothing below this line reads the
-            // advice to decide anything: the call is admitted by the grant, before and
-            // regardless. An oracle that is slow or down costs the wait and nothing
-            // else; an oracle that disagrees is recorded disagreeing.
-            // Why the label on this row is not a fresh judgement, kept with the row
-            // rather than inferred from `asked` being false. A trainer that wants only
-            // decisions the operator was actually looking at filters on `asked`; one
-            // that will take a standing ruling gets to see which ruling it came from.
+            // A grant settles the person, not the model: nobody is asked again, and the oracle
+            // is still consulted because its verdict on a call already ruled on is a cheap
+            // labelled example. It changes no outcome - the grant admits regardless.
             self.advise_on_a_settled_call(&req, why);
             self.breaker.admitted(&direction);
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
 
-        // **4.0 — the call that is adjudicated and may not ask** (`Gate::admit_unasked`).
-        //
-        // Everything above this line is the ladder: layer A's reading, the never-write list, the
-        // operator's `permission` rules, the point this session sits at, the shapes it approved,
-        // the grants it gave. Everything below is the person (and, when supervised, the model
-        // first). A plugin's look gets the ladder and stops here, because it is running on the
-        // session's monitor thread and a card would park that thread until somebody answered.
-        //
-        // The outcome is `NotRun` — nobody decided — and not `Denied`, which is somebody saying
-        // no. A look the gate would have asked about is a look that did not run, and the two must
-        // not read alike: `Denied` tells a plugin its program is refused here, and this tells it
-        // the program needs a person the look cannot reach.
+        // 4.0 - the call that is adjudicated and may not ask. Everything above is the ladder,
+        // everything below is the person, and a plugin's look stops here because a card would
+        // park the monitor thread. `NotRun`, not `Denied`: nobody decided.
         if self.unasked {
             let why = format!("would need your approval: {}", req.summary);
             let tell = format!(
@@ -4038,38 +2893,15 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
 
-        // 4. Ask — and when supervision is on, ask the model FIRST.
-        //
-        //    The ordering is load-bearing. A verdict formed after seeing which way
-        //    the operator went is not a verdict worth training on, and one they never
-        //    saw is advice nobody could agree with. Model, then person, then the row
-        //    carrying both.
+        // 4. Ask - and when supervision is on, ask the model FIRST. A verdict formed after
+        // seeing which way the operator went is not worth training on, and one they never saw is
+        // advice nobody could agree with.
         self.advice = self.ask_the_advisor(&req);
         req.advice = self.advice.clone();
 
-        // **At a point whose decider is the MODEL, the model's admit IS the
-        // decision.** Otherwise `automode` is `supervised` wearing another name.
-        //
-        // `Mode::AUTO` says it in as many words — *"a model answers, within the
-        // scope it has earned"* — and `Decider::Model` is the whole content of the
-        // point. What actually happened was that the decider never reached the
-        // adjudicator: the gate asked the advisor, threw its verdict onto the
-        // request as advice, and then asked the person anyway. The operator saw
-        // `model says admit` and a permission ladder under it, on a mode they chose
-        // precisely so the model would answer.
-        //
-        // Three things still bound it, and all three predate this:
-        //
-        //  * the always-ask list, which is exempted here by name — the mode's own
-        //    sentence promises it "still reaches you", and this is where that is
-        //    kept true;
-        //  * the oracle's scope, which decides whether it may answer about this
-        //    action at all (it returns `ask` when it may not, and that falls
-        //    through to the person below);
-        //  * `Tier::Blocked`, refused at step 1b, before any of this.
-        //
-        // And it admits ONCE. The oracle mints `allow_once` and nothing here turns
-        // that into a standing grant.
+        // At a point whose decider is the MODEL, the model's admit IS the decision: otherwise
+        // `automode` is `supervised` under another name. Still bounded by the always-ask list,
+        // the oracle's earned scope, and `Blocked` refused at 1b - and it admits once.
         if self.mode.decider == crate::mode::Decider::Model
             && !matches!(req.tier, Tier::AlwaysAsk { .. })
             && let Some(a) = self.advice.clone()
@@ -4086,12 +2918,8 @@ impl Gate for AdjudicatedGate {
                 latency_ms: a.latency_ms,
             };
             self.breaker.admitted(&direction);
-            // **This path consulted the oracle too, and it used to file nothing.** The
-            // model's own verdict admitted the call here, before the gate ever reaches its
-            // decider — so the brief the advisor rendered and the reply that admitted it
-            // were dropped, and `shown` was left holding whatever the *previous* call had
-            // put there. Measured on this box 2026-09-21: 486 rows whose `verdict_by` names
-            // an oracle, and not one of them had `shown`.
+            // This path consulted the oracle too, so it files the exchange: without it the brief
+            // and the reply were dropped and `shown` held whatever the previous call put there.
             self.file_exchange();
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
@@ -4106,16 +2934,9 @@ impl Gate for AdjudicatedGate {
                 let kind = req.option(option_id).map(|o| o.kind);
                 match kind {
                     Some(k) if k.admits() => {
-                        // **The shape, remembered — but only from a person, and only
-                        // where a shape may stand in for the next call.**
-                        //
-                        // `MayApprove` only: an `always-ask` admitted by a human is
-                        // admitted for THIS call and no other, which is what that
-                        // tier means, and a shape recorded there would be the
-                        // standing grant the next three mechanisms exist to refuse.
-                        // `decision.by` must be a human for the reason the guard's
-                        // own answers are kept out of the brief: a mechanism that
-                        // learns from itself drifts.
+                        // The shape, remembered - but only from a person, and only where a shape
+                        // may stand in: `MayApprove` only, since a shape recorded on an always-ask
+                        // would be the standing grant three other mechanisms exist to refuse.
                         if matches!(req.tier, Tier::MayApprove)
                             && decision.by.starts_with("human")
                             && !baseline.intents.contains(&crate::intent::Intent::Destroy)
@@ -4124,60 +2945,19 @@ impl Gate for AdjudicatedGate {
                         {
                             self.approved_shapes.insert(shape, req.class);
                         }
-                        // An always-ask can be admitted — by a human, this turn — but
-                        // never turned into a standing grant. Three separate mechanisms
-                        // keep that true and this is the second: the tier mints no
-                        // `Adjudicable`, this refuses to record the grant, and
-                        // `always_ask_options` does not offer the option in the first
-                        // place, so an operator is never shown a button whose effect
-                        // the gate would then decline to honour.
-                        //
-                        // (A `GrantScope::Once` POINT used to refuse the grant here
-                        // too, on the same theory — the point's contract and the gate
-                        // had to agree. The operator's revision of 2026-09-18, below,
-                        // retired it: the durable *Always allow* was already offered
-                        // at those points, so the contract was already broken in the
-                        // stronger direction, and an explicit answer is the operator
-                        // overriding the point's default.)
-                        //
-                        // *Always allow* is a RULE, not a grant: it goes into the
-                        // permission ruleset (and the file behind it), at any point
-                        // whose decider is a person, exec included — the operator's
-                        // revision of 2026-09-14. For `bash` the pattern is the
-                        // program and its verb (`cargo test*`), the way Claude Code's
-                        // `Bash(cargo test:*)` reads; for a file tool it is the path.
+                        // An always-ask can be admitted by a human this turn, but never turned
+                        // into a standing grant: no `Adjudicable`, no grant recorded here, and the
+                        // option is not offered. *Always allow* is a rule, not a grant.
                         if k == OptionKind::AllowAlways
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
-                            // **R98: and not for a call that runs the project's code on a
-                            // host with no boundary.** The ladder did not offer this rung
-                            // (`offer_for`), and this is the belt to that brace: an
-                            // answer from an older head, a replayed one, or a test must not
-                            // write a durable rule the gate would then decline to honour.
+                            // And not for a call that runs the project's code on a host with no
+                            // boundary: the ladder did not offer this rung, and an answer from an
+                            // older head or a test must not write a rule the gate would not honour.
                             && unconfined_code.is_none()
                         {
-                            // **The operator's own glob wins over the derived one.**
-                            //
-                            // The derived pattern — the exact path, or the program and
-                            // its verb — is a good default and it is only ever the
-                            // shape of the call in front of them. Somebody who means
-                            // "any test under crates/" could not say so, and answered
-                            // the same question again for every sibling.
-                            //
-                            // Only here, and only for `AllowAlways`: this is the one
-                            // option that writes a rule, so it is the one place a
-                            // pattern has a meaning. An `allow_once` carrying a glob
-                            // would be a grant nobody named.
-                            // **And a rule that could never match is not written.**
-                            //
-                            // `derived_pattern` returns `None` when the matcher
-                            // would ask again whatever we wrote — a heredoc or a
-                            // substitution, which `bash_segments` refuses to split.
-                            // The ladder no longer offers the option there, so this
-                            // is the belt to that brace: an `allow_always` arriving
-                            // from an older head, a replayed answer or a test must
-                            // not put a dead rule in the operator's config. Their
-                            // own typed glob still wins, because they wrote it
-                            // knowing what it says.
+                            // The operator's own glob wins over the derived one, which is only ever
+                            // the shape in front of them; and a rule that could never match is not
+                            // written, since `derived_pattern` answers `None` for a heredoc.
                             let pattern = match typed_pattern {
                                 Some(p) => Some(p),
                                 None => derived_pattern(call, &baseline, &self.permission),
@@ -4205,35 +2985,9 @@ impl Gate for AdjudicatedGate {
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
                             && unconfined_code.is_none()
                         {
-                            // The operator's exec rule of 2026-09-11 refused a session
-                            // grant to an exec call, and a `GrantScope::Once` point
-                            // refused one to anything; both refusals are gone as of
-                            // 2026-09-18, because *Always allow* — strictly stronger,
-                            // durable past the session — was offered at both points
-                            // while the weaker grant was not. The operator: *"if I'm
-                            // offered to permanently enable — it is stronger than
-                            // allow_session — so allow_session should always be
-                            // offered too."* What remains is the always-ask TIER,
-                            // whose option list offers neither and whose three
-                            // mechanisms stay as they are: an ask that exists because
-                            // the call crosses a line the operator drew in advance is
-                            // settled by that call alone.
-                            //
-                            // The grant is scoped, not blanket: keyed on the program
-                            // and the class, with the intents a subset of what the
-                            // call was shown to carry — the same scoping the durable
-                            // rule gets, and the reason `git -c core.pager=… log`
-                            // still falls out of a grant taken over `git status`.
-                            //
-                            // **And a grant that could never cover anything is not
-                            // recorded.** This is the question the card asked before
-                            // offering the rung — `session_grant`, which is
-                            // `Grant::covers` applied to the grant itself — so an
-                            // `allow_session` arriving from a head older than the
-                            // offer, a replayed answer or a test cannot leave a dead
-                            // grant on the books. Measured 2026-10-26: an unanswered
-                            // grant over an unresolved command was exactly what the
-                            // operator took, and then kept being asked.
+                            // The grant is scoped, not blanket: keyed on the program and the
+                            // class with the intents a subset of what the call was shown to carry,
+                            // and one that could never cover anything is not recorded at all.
                             let why = format!(
                                 "granted for this session by an answer to {}: {}",
                                 req.id, decision.basis
@@ -4251,14 +3005,9 @@ impl Gate for AdjudicatedGate {
                     }
                     Some(k) => {
                         let id = req.id.clone();
-                        // §11.6's two denials used to differ in whether the reason
-                        // reached the model at all. They no longer do, and the reason is
-                        // the operator's: a model told only "denied" infers that the
-                        // APPROACH was wrong and tries a variant, which is the
-                        // routing-around behaviour induced by the design rather than by
-                        // the model. `DenyAndTell` now decides how much of the
-                        // adjudicator's own basis travels; the fact of a refusal, and
-                        // that it is a refusal rather than a failure, always does.
+                        // `DenyAndTell` decides how much of the adjudicator's own basis travels;
+                        // the fact of a refusal, and that it is a refusal rather than a failure,
+                        // always does - a model told only "denied" tries a variant.
                         let mut tell =
                             self.surface(&req, &decision, "denied", breaker_state.clone());
                         if !matches!(k, OptionKind::DenyAndTell) {
@@ -4287,10 +3036,8 @@ impl Gate for AdjudicatedGate {
                 }
             }
             DecisionOutcome::Escalate { to, why } => {
-                // §11.4: escalation is first class. There is one adjudicator
-                // attached, so there is nowhere to escalate *to* — and saying so
-                // is the honest answer. W11's routing table is where this becomes
-                // a second lookup rather than a refusal.
+                // Escalation is first class, but there is one adjudicator attached, so there is
+                // nowhere to escalate to - and saying so is the honest answer.
                 let msg = format!(
                     "`{}` escalated this to `{to}` ({why}), and this session has one \
                      adjudicator and no routing table, so there is nobody to escalate to. \
@@ -4305,11 +3052,9 @@ impl Gate for AdjudicatedGate {
             DecisionOutcome::Unavailable
             | DecisionOutcome::Timeout
             | DecisionOutcome::Cancelled => {
-                // §11.7: *"never a silent allow"*. Route to `on_timeout`, and note
-                // that `OnTimeout::Allow` is not reachable from
-                // [`AdjudicatedGate::request_for`], which always sets `Deny` — the
-                // arm exists so that a W11 policy row saying `Allow` has somewhere
-                // to land, and so that its absence today is visible.
+                // Never a silent allow: route to `on_timeout`. `OnTimeout::Allow` is not
+                // reachable from `request_for`, which always sets `Deny`; the arm exists so a
+                // policy row saying `Allow` has somewhere to land.
                 let outcome = match req.on_timeout {
                     OnTimeout::Allow => {
                         self.breaker.admitted(&direction);
@@ -4337,23 +3082,6 @@ impl Gate for AdjudicatedGate {
     }
 }
 
-/// What the daemon must print at startup, when a session has write tools.
-///
-/// `crates/harnessd`'s `Config::disclosures()` already tells the truth about
-/// spill, store, retrieval and adjudication, and its `adjudication` line
-/// currently reads *"M1 is read-only tools, which never prompt (clause 4). There
-/// is no boundary and no human in the loop."* That sentence stops being true the
-/// moment `write` and `edit` are registered, and a disclosure that has quietly
-/// gone stale is worse than none — it is the harness asserting a safety property
-/// it no longer has.
-///
-/// So the text lives here, next to the code whose behaviour it describes, and
-/// the daemon wraps it in its own `Disclosure`. Returned as
-/// `(state, detail, active)` because that is the shape harnessd's type takes;
-/// `subject` is always `"adjudication"`.
-///
-/// # What the daemon must do
-///
 /// ```text
 /// let (state, detail, active) =
 ///     letibot_tools::adjudicate::startup_disclosure(gate_describes, backend_writable, has_write_tools);
@@ -4368,12 +3096,9 @@ pub fn startup_disclosure(
     startup_disclosure_with_surfacing(adjudicator, backend_writable, has_write_tools, true)
 }
 
-/// As [`startup_disclosure`], and it also says whether **denials reach the operator**.
-///
-/// A separate function so the older signature keeps working, and a disclosure at all
-/// because a session whose denials go nowhere has the defect the operator named: the
-/// model infers the approach was wrong, tries a variant, and the task dies with the
-/// operator seeing only a dead task. That is not a state to be in silently.
+/// As [`startup_disclosure`], and it also says whether denials reach the operator: a session
+/// whose denials go nowhere lets the model try a variant and dies with the operator seeing only
+/// a dead task, which is not a state to be in silently.
 pub fn startup_disclosure_with_surfacing(
     adjudicator: &str,
     backend_writable: bool,
@@ -4388,24 +3113,9 @@ pub fn startup_disclosure_with_surfacing(
     )
 }
 
-/// As [`startup_disclosure_with_surfacing`], and it says **which** classes can reach
-/// the gate rather than assuming they are writes.
-///
-/// # The defect this exists to stop, which is the one this whole seam exists to stop
-///
-/// The two functions above take `has_write_tools: bool`, and a caller with a session
-/// whose gated tools are `Access::Exec` — the runner role's five job verbs and
-/// `monitor`, no `write` anywhere — has to pass `true` to get the on/off logic right,
-/// and then the sentence says *"Write tools are callable"* about a session with no
-/// write tools. The banner was correct about the boundary and wrong about the
-/// session, which is the same shape as the four instances this crate's `GateWiring`
-/// sibling already paid for: a disclosure that reads a wiring and then paraphrases it
-/// from memory.
-///
-/// So the classes travel. `classes` is the set of non-unattended
-/// [`Access`](crate::schema::Access) names actually seated — `["write"]`, `["exec"]`,
-/// `["write", "network"]` — read off the schemas by the caller. Empty means nothing
-/// can reach the gate.
+/// As [`startup_disclosure_with_surfacing`], and it says which classes can reach the gate rather
+/// than assuming they are writes. `classes` is the set of non-unattended access names actually
+/// seated, read off the schemas by the caller; empty means nothing can reach the gate.
 pub fn startup_disclosure_for(
     adjudicator: &str,
     backend_writable: bool,
@@ -4437,9 +3147,8 @@ fn startup_disclosure_inner(
             false,
         );
     }
-    // What the session actually seated, in its own words. `WRITE` for a coder,
-    // `EXEC` for a runner, `WRITE + NETWORK` for a planner — never the first of
-    // those about all three.
+    // What the session actually seated, in its own words. `WRITE` for a coder, `EXEC` for a
+    // runner, `WRITE + NETWORK` for a planner: never the first of those about all three.
     let shout = classes
         .iter()
         .map(|c| c.to_uppercase())
@@ -4459,9 +3168,9 @@ fn startup_disclosure_inner(
             ),
             false,
         ),
-        // Only a *write* class is stopped by a read-only backend. An `exec` or
-        // `network` tool over one is a different, and worse, mismatch — so this arm
-        // says which it is rather than describing every seat as a blocked write.
+        // Only a *write* class is stopped by a read-only backend. An `exec` or `network` tool
+        // over one is a different, and worse, mismatch, so this arm says which it is rather than
+        // describing every seat as a blocked write.
         (true, false) if writes => (
             "GATE ONLY",
             format!(
@@ -4492,19 +3201,13 @@ fn startup_disclosure_inner(
     }
 }
 
-/// What a call is about, in one string, for the summary a human decides from.
-///
-/// The order is the order of specificity, not of preference: a `path` is the most
-/// concrete thing a call can name, then an address, then a query. A call that names
-/// none of them says so rather than borrowing the word `path`, because *"no path
-/// argument"* on a `web_search` describes the request by something it was never
-/// going to have.
+/// What a call is about, in one string, for the summary a human decides from. The order is the
+/// order of specificity: a path, then an address, then a query. A call naming none says so
+/// rather than borrowing the word `path`.
 fn target_of(args: &Value) -> String {
-    // `command` is first because for `bash` it IS the call: a shell line is more
-    // concrete than any path inside it, and the paths are usually not arguments at
-    // all. Its absence from this list is why an operator was shown *"`bash` wants
-    // exec access to `<no target argument>`"* and had to approve a command the
-    // prompt would not name — the one field the decision is actually about.
+    // `command` is first because for `bash` it IS the call: a shell line is more concrete than
+    // any path inside it, and its absence is why an operator was shown a prompt that would not
+    // name the command it was about.
     for key in [
         "command", "path", "url", "query", "repo", "server", "pattern",
     ] {
@@ -4517,13 +3220,8 @@ fn target_of(args: &Value) -> String {
     "<no target argument>".to_string()
 }
 
-/// Any string argument that names a path on the never-write list.
-///
-/// Every string is checked, not only `path`: a tool argument that is a path is
-/// not always spelled `path`, and a check that only looks at the well-known name
-/// is a check that tests the spelling rather than the fact.
-/// The pattern opencode's permission model tests a call against: the path for the
-/// file tools, the command for `bash`, else `*`.
+/// The pattern the permission model tests a call against: the path for a file tool, the command
+/// for `bash`, else `*`.
 fn permission_pattern(args: &Value) -> String {
     if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
         return p.to_string();
@@ -4534,39 +3232,9 @@ fn permission_pattern(args: &Value) -> String {
     "*".to_string()
 }
 
-/// The pattern an *Always allow* answer over this call writes down, unless the
-/// operator typed one: the program and its verb for a command, the path for a
-/// file tool, `*` when the call names neither.
-///
-/// One helper for both readers — the option label, which shows the rule before
-/// anybody signs it, and the recording site, which writes it — so the rule the
-/// operator agreed to and the rule that lands in the file cannot drift apart.
-/// The operator-typed glob wins at the recording site; this is the default the
-/// label shows.
-/// **The rule an *Always allow* answer would write, or `None` when none could.**
-///
-/// `None` is not "no pattern could be spelled" — it is *the matcher will ask
-/// again whatever we write*, and the caller drops the option rather than
-/// offering it. See [`crate::permission::a_durable_rule_can_apply`].
-///
-/// For an exec call the pattern is built from a stage of the parse rather than from the
-/// first whitespace token of the raw string. Those two disagreed on every compound
-/// command, and the durable half had the naive answer: measured on the operator's screen,
-/// `cd … && python3 - <<'PY'` offered `python3` for the session and `cd*` for ever.
-///
-/// **And there is no fallback to the raw string any more.** The last stage is read when
-/// the parse has one, and when it does not the answer is `None`: `always_pattern_for_command`
-/// takes the first whitespace token, which for a command whose meaning nobody could read is
-/// the token most likely to be `cd` or `export` — MEASURED 2026-10-26, the offer over the
-/// unresolved measured shape was *Always allow `export*`*, and
-/// `crate::permission::SHELL_STATE` records what that rule would admit. A rule nobody can
-/// read is worse than no button, because it is written to the operator's file.
-///
-/// **And it is the rule the command is actually missing.** With rules on file, every segment is
-/// tested against them and the one still asked is what gets written (see
-/// [`crate::permission::the_rule_that_admits`]); the last stage alone offered `head*` over
-/// `cd x && grep … | head`, which was already allowed, so the answer saved nothing and the
-/// next call asked again.
+/// The rule an *Always allow* answer would write, or `None` when none could be: `None` means the
+/// matcher will ask again whatever is written, so the caller drops the option rather than offer
+/// it. One helper for the label and the recording site, so the rule cannot drift.
 fn derived_pattern(
     call: &GateCall<'_>,
     baseline: &crate::intent::Baseline,
@@ -4581,11 +3249,9 @@ fn derived_pattern(
     if !crate::permission::a_durable_rule_can_apply(cmd) {
         return None;
     }
-    // **A stage that sets state for a later one makes no durable rule honest.** It will
-    // keep asking whatever is written, and the only rule that would silence it admits
-    // every environment variable a later stage's program trusts. `the_rule_that_admits`
-    // refuses it too — this is the same fact for the branch below, which has no rules to
-    // consult and would otherwise offer the last stage's prefix.
+    // A stage that sets state for a later one makes no durable rule honest: the only rule that
+    // would silence it admits every variable a later program trusts, which `the_rule_that_admits`
+    // refuses too.
     if let Some(n) = &baseline.command
         && n.stages.iter().any(|s| {
             s.program_name()
@@ -4611,25 +3277,15 @@ fn derived_pattern(
         })
 }
 
-/// A baseline's command as a shape, when it has one.
-///
-/// One place, so the key a decision is recorded under and the key a later call is
-/// looked up by cannot be derived differently.
+/// A baseline's command as a shape, when it has one. One place, so the key a decision is
+/// recorded under and the key a later call is looked up by cannot differ.
 pub fn shape_of(b: &crate::intent::Baseline) -> Option<String> {
     b.command.as_ref().map(letibot_code::shell::shape)
 }
 
-/// **The words nobody could read, for the one line a card has room for.**
-///
-/// ` — `$PWD/target`, `$(id -u)`` after *"the command's meaning is not resolved"*, because
-/// a person who is told the reason can act on it and a person who is told only the verdict
-/// cannot: the words are what they would have to rewrite. The word as written, not the
-/// construct's name, for the same reason — `parameter_expansion` is the classifier's
-/// vocabulary, and the fix is in their command.
-///
-/// Nothing when the parse is missing every word (`resolved` false with no parse at all is
-/// the shape a parse error takes), which leaves the sentence alone rather than trailing a
-/// dangling dash.
+/// The words nobody could read, for the one line a card has room for: the words are what the
+/// person would have to rewrite. The word as written, not the construct's name. Nothing when the
+/// parse is missing every word, so the sentence does not trail a dangling dash.
 fn unresolved_names(b: &crate::intent::Baseline) -> String {
     const SHOWN: usize = 3;
     let Some(n) = &b.command else {
@@ -4659,23 +3315,9 @@ fn unresolved_names(b: &crate::intent::Baseline) -> String {
     }
 }
 
-/// **The arguments that are content and not a path**, so the never-write list is not asked
-/// about them.
-///
-/// The list is about PATHS — what a call would read or write — and it used to be applied to every
-/// string in a call. Measured 2026-10-26: a `write` whose *body* quoted a path under the
-/// operator's ssh directory was refused as if it were writing there, three times, and the
-/// session's `write` tool was then breaker-blocked for the rest of its life. A `grep` for the
-/// pattern was refused the same way, as was a `grep -r` whose only sin was to look for the
-/// literal. So: a replacement's text, a file's new body, and a search pattern are not paths and
-/// are not scanned. **A path argument still is**, and so is `bash`'s `command` — that is how a
-/// command names a path, and it is the one place where a string is the only evidence there is.
-///
-/// **`text`, `abstract` and `query` are the `notes` tool's body, its index line and its search**,
-/// and they were the same defect one package later: a note *about* `.git` or `.ssh` could not be
-/// written, which is how a note explaining the rake above becomes impossible to record. A note's
-/// `name` is not here on purpose — it is a path-like argument (a file stem, which becomes a path
-/// in the notes directory), and the check stays on it.
+/// The arguments that are content and not a path, so the never-write list is not asked about
+/// them: a write's body, a replacement's text and a search pattern name no path. A path argument
+/// still is, and so is `bash`'s `command`, which is where a string is the only evidence there is.
 const CONTENT_ARGUMENTS: &[&str] = &[
     "content",
     "old_string",
@@ -4686,10 +3328,8 @@ const CONTENT_ARGUMENTS: &[&str] = &[
     "query",
 ];
 
-/// The arguments that name a path, for [`ssh_resolution_hit`]. The file tools all spell it
-/// `path`; the rest are here because a tool that takes a path does not always call it that, and a
-/// check that tests the spelling rather than the fact is the defect this whole step exists to
-/// avoid.
+/// The arguments that name a path, for [`ssh_resolution_hit`]: the file tools all spell it
+/// `path`, and the rest are here because a tool that takes a path does not always call it that.
 const PATH_ARGUMENTS: &[&str] = &[
     "path",
     "paths",
@@ -4707,19 +3347,9 @@ const PATH_ARGUMENTS: &[&str] = &[
     "workspace",
 ];
 
-/// **A path argument whose real target is the operator's ssh directory.**
-///
-/// The literal check above answers a spelling; this answers the path. A link in the workspace
-/// named `keys` and pointing into that directory passes every spelling test and lands in it, and
-/// so does a key file inside it that nobody has written yet —
-/// [`crate::remote::inside_user_ssh`] follows symlinks for both.
-///
-/// Two shapes, because a tool takes one of two things. A **path argument** is one path, resolved
-/// against the workspace when it is relative. A **command** is a string, so this can only look at
-/// its words that begin with `/` or `~` — **best effort, and said so**: a path built at runtime
-/// (`p="$HOME/.s""sh"`) is not something a matcher can see, and no design here pretends
-/// otherwise. The file tools are the hard line because they hand over a path rather than a
-/// sentence.
+/// A path argument whose real target is the operator's ssh directory. The literal check above
+/// answers a spelling; this answers the path, so a link in the workspace named `keys` and pointing
+/// into it is caught. A `command` is only best effort: its words are all a matcher can see.
 fn ssh_resolution_hit(call: &GateCall<'_>, home: &std::path::Path) -> Option<std::path::PathBuf> {
     let obj = call.args.as_object()?;
     let workspace = std::path::Path::new(call.workspace);
@@ -4762,6 +3392,8 @@ fn ssh_resolution_hit(call: &GateCall<'_>, home: &std::path::Path) -> Option<std
     None
 }
 
+/// Any string argument that names a path on the never-write list. Every string is checked, not
+/// only `path`: a check that looks at the well-known name tests the spelling rather than the fact.
 fn never_hit(args: &Value) -> Option<String> {
     let obj = args.as_object()?;
     for (key, v) in obj {
@@ -4796,7 +3428,7 @@ mod scripts_brief_tests {
     use super::scripts_section;
     use crate::runtime::{ScriptBody, ScriptSource};
 
-    /// **The code goes in front of the adjudicator, not the filename.**
+    /// The code goes in front of the adjudicator, not the filename.
     #[test]
     fn a_read_script_is_shown_whole_and_labelled_as_the_thing_to_judge() {
         let out = scripts_section(&[ScriptSource {
@@ -4808,10 +3440,9 @@ mod scripts_brief_tests {
         assert!(out.contains("os.remove('/home/dead/.ssh/id_rsa')"), "{out}");
     }
 
-    /// **A script that could not be read says so**, and that matters more than
-    /// the ones that could: told nothing, an adjudicator cannot tell a command
-    /// that runs no script from one whose script it was not shown — and those are
-    /// the two cases where the right answers are opposite.
+    /// A script that could not be read says so, which matters more than the ones that could: told
+    /// nothing, an adjudicator cannot tell a command that runs no script from one whose script it
+    /// was not shown, and those are the two cases where the right answers are opposite.
     #[test]
     fn an_unreadable_script_is_named_rather_than_passed_over() {
         let out = scripts_section(&[ScriptSource {
@@ -4825,8 +3456,8 @@ mod scripts_brief_tests {
         );
     }
 
-    /// A truncated script says how much is missing, so nobody reads part of a
-    /// program as all of one — the middle is exactly where something would hide.
+    /// A truncated script says how much is missing, so nobody reads part of a program as all of
+    /// one: the middle is exactly where something would hide.
     #[test]
     fn a_truncated_script_says_what_was_not_read() {
         let out = scripts_section(&[ScriptSource {
@@ -4840,8 +3471,7 @@ mod scripts_brief_tests {
         assert!(out.contains("anything could be in it"), "{out}");
     }
 
-    /// No scripts is no section: a command that runs none must not grow a heading
-    /// implying it does.
+    /// No scripts is no section: a command that runs none must not grow a heading implying it does.
     #[test]
     fn a_command_with_no_script_gets_no_section() {
         assert_eq!(scripts_section(&[]), "");

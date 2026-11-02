@@ -1,32 +1,6 @@
-//! The execution-backend interface — the seam between W9 and W10.
-//!
-//! `docs/workstreams.md` §3 names this as one of the six interfaces worth fixing
-//! early, and says exactly why:
-//!
-//! > **The execution-backend interface** for tools (`run(cmd, cwd, env) ->
-//! > (stdout, stderr, exit)` plus read/write/list). Names the seam between W9 and
-//! > W10, so tools ship host-local in M1 and firecode becomes a swap in M2 rather
-//! > than a rewrite.
-//!
-//! And its §5 verdict on the W9 → W10 edge: *"tools are algorithms … firecode is a
-//! **backend swap**, not a prerequisite, provided the execution interface is
-//! named."* This module is that naming. Every built-in reaches the world through
-//! this trait and through nothing else — no `std::fs` calls in the tools — which
-//! is what makes the M2 swap one `Box<dyn ExecBackend>`.
-//!
-//! # What is implemented, and what is still refused
-//!
-//! [`HostBackend`] implements read, list, stat and — since W10 — **write**, but
-//! only when it was opened with [`HostBackend::writable`]. [`HostBackend::new`]
-//! still refuses, and that asymmetry is the second of the two gates a write must
-//! pass; see the type's own docs.
-//!
-//! `run` is still refused outright. Exec needs §11.4's boundary — *the guest sees
-//! a copy of one project and nothing else of the host* — and a boundary is a
-//! substrate, not a policy: no adjudicator on this side of it can make an
-//! unsandboxed `bash` on the operator's box into something the plan describes. It
-//! arrives with the firecode backend, which implements all four methods with
-//! nothing above this line changing.
+//! The execution-backend interface: the one seam every built-in reaches the world
+//! through, and through nothing else. [`HostBackend`] implements read, list, stat and
+//! write; `run` only once a boundary exists, because a boundary is a substrate.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -100,35 +74,22 @@ pub trait ExecBackend: Send + Sync {
     /// `run(cmd, cwd, env) -> (stdout, stderr, exit)`.
     fn run(&self, cmd: &Command) -> Result<Output, BackendError>;
 
-    /// **The boundary this backend's commands run inside**, when it has one: the view and the
-    /// egress that were *measured*, not the ones that were asked for.
-    ///
-    /// This is the seam that makes *is this session confined* a fact read off the backend rather
-    /// than a field a caller sets. It matters twice: `harnessd` reads it as `backend_confined`
-    /// (which the mode's `Confinement` prerequisite and `allow-all` turn on), and the gate reads
-    /// it for the facts a card carries about where a call lands. Before RH3 the remote arm of
-    /// `Harness::open` hardcoded that answer to `true` for a placement that confined nothing.
-    ///
-    /// By value because a local backend's confinement can be *replaced* by a grant, so it lives
-    /// behind a lock and cannot be borrowed out of it.
+    /// The boundary this backend's commands run inside, when it has one: the view and the
+    /// egress that were measured, not the ones that were asked for. By value, because a grant
+    /// can replace it, so it lives behind a lock and cannot be borrowed out of it.
     fn boundary(&self) -> Option<crate::exec::Boundary> {
         None
     }
 
-    /// **Why a command here is not confined, when confinement was wanted and is not there** —
-    /// the probe's own reason, for the card and the banner. `None` means *no question was asked*
-    /// (an unconfined seat by choice), which is a different fact from *asked and the host could
-    /// not answer*.
+    /// Why a command here is not confined, when confinement was wanted and is not there. `None`
+    /// means no question was asked, which is a different fact from asked and unanswerable.
     fn boundary_refusal(&self) -> Option<String> {
         None
     }
 
-    /// **Bind a path into this session's view**, after somebody decided it may be.
-    ///
-    /// Refusing is the right answer for a backend with no view — an unconfined
-    /// session can already reach the path, and a VM's view is the VM's — and it is
-    /// a refusal rather than a silent success so that a caller never reports a
-    /// grant nobody made. Returns the view as it now stands.
+    /// Bind a path into this session's view, after somebody decided it may be. Refusing is the
+    /// right answer for a backend with no view, and a refusal rather than a silent success so
+    /// that a caller never reports a grant nobody made. Returns the view as it now stands.
     fn grant_into_view(
         &self,
         _path: &Path,
@@ -142,25 +103,9 @@ pub trait ExecBackend: Send + Sync {
 
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError>;
 
-    /// **The same answers as [`Self::read`], for a whole page of paths, in one call** —
-    /// the seam a backend whose `read` is a round trip overrides.
-    ///
-    /// `grep` walks its candidates in pages ([`crate::builtins::grep`]) and asks for a
-    /// page at a time. Over the host that is a syscall either way, so the default **is**
-    /// the per-file loop and every existing backend keeps today's behaviour byte for
-    /// byte. Over firecode one `read` is one `firecode in` vsock call — measured at
-    /// ~0.5 s apiece — so a repository-sized `grep` was a few hundred of them: minutes
-    /// in which the tool had produced no result at all, and a reviewer in a VM read as
-    /// hung while it held the queue's slot.
-    ///
-    /// One entry per path, **in the order asked**, each exactly what [`Self::read`]
-    /// would have answered for that path — `Ok` with the bytes, or the error that path
-    /// raises (`NotFound`, `IsADirectory`, …). A path that cannot be read is *that
-    /// entry's* problem and never the call's.
-    ///
-    /// `Err` from the call as a whole means the channel failed and says nothing about
-    /// any path: a caller must fall back to [`Self::read`] rather than read it as N
-    /// unreadable files, which would silently drop matches.
+    /// The same answers as [`Self::read`], for a whole page of paths, in one call: the seam a
+    /// backend whose `read` is a round trip overrides, and the default is the per-file loop.
+    /// `Err` means the channel failed and says nothing about any path, so fall back to `read`.
     fn read_many(
         &self,
         paths: &[&str],
@@ -168,41 +113,21 @@ pub trait ExecBackend: Send + Sync {
         Ok(paths.iter().map(|p| self.read(p)).collect())
     }
 
-    /// Replace a file's contents.
-    ///
-    /// **Required to be atomic**, and that is part of the interface rather than an
-    /// implementation note: a half-written file is worse than a refused edit,
-    /// because it is a file whose contents nobody — not the model, not the
-    /// operator, not the next tool call — can predict. An implementation that
-    /// cannot write atomically must fail rather than write partially.
-    ///
-    /// Missing parent directories are created. A tool that had to call `mkdir`
-    /// first would either need a `mkdir` in this trait or a shell, and both are
-    /// larger holes than this is a convenience.
+    /// Replace a file's contents. Required to be atomic, as part of the interface: a
+    /// half-written file is one whose contents nobody can predict. Missing parent directories
+    /// are created.
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError>;
 
-    /// The process host, when this backend can start a process whose **lifetime
-    /// is owned by something**.
-    ///
-    /// `None` by default, and that default is the whole safety property: an
-    /// existing backend gains no exec path by this method existing, and a tool
-    /// that wants one gets a refusal naming the backend rather than a process
-    /// nothing will reap. See [`crate::exec`] — and note what it is *not*: a
-    /// cgroup bounds a process's lifetime, not what it can read, so this is not
-    /// §11.4's guest boundary and must never be described as one.
+    /// The process host, when this backend can start a process whose lifetime is owned by
+    /// something. `None` by default, and that default is the whole safety property: no backend
+    /// gains an exec path by this method existing. A cgroup bounds a lifetime, not a view.
     fn processes(&self) -> Option<&dyn crate::exec::ProcessHost> {
         None
     }
 
-    /// The same host as an **owned** handle, for a watcher that has to outlive the
-    /// call that noticed the job: a background job settles between turns, when no
-    /// invocation is in scope to borrow through. `None` when this backend cannot
-    /// start processes — no host, no jobs, no watcher.
-    ///
-    /// **No default, on purpose** (R92.1). It had one, `None`, and `FirecodeBackend` implemented
-    /// [`ExecBackend::processes`] without it: every firecode session ran jobs nobody watched, and
-    /// a finished job sat `running` until the operator typed. A backend that can start processes
-    /// must say so here too, and the compiler is what makes it.
+    /// The same host as an owned handle, for a watcher that outlives the call that noticed the
+    /// job. No default, so a backend that can start processes must say so here too, or its jobs
+    /// run unwatched.
     fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>>;
 
     /// A tool's `cwd` argument — relative to where the session sits — in the form
@@ -212,115 +137,56 @@ pub trait ExecBackend: Send + Sync {
         Ok(cwd.to_string())
     }
 
-    /// Whether [`ExecBackend::write`] can do anything.
-    ///
-    /// Defaults to `false` — a backend that has not said it is writable is not
-    /// writable, which is the same fail-closed default the gate keeps one layer
-    /// up. A tool asks so that its refusal can name *which* of the two gates
-    /// stopped it, because "permission denied" that does not say by whom is the
-    /// refusal that costs an hour.
+    /// Whether [`ExecBackend::write`] can do anything. Defaults to `false`, the same fail-closed
+    /// default the gate keeps one layer up, so that a tool's refusal can name which of the two
+    /// gates stopped it.
     fn is_writable(&self) -> bool {
         false
     }
 
-    /// The backend's root as a path a caller may compare an argument against.
-    ///
-    /// `None` by default: a tar channel, or a firecode guest seen from the host,
-    /// has no host path that means anything here, and inventing one would make
-    /// [`crate::runtime::GateCall::path_is_inside`] answer confidently about a
-    /// filesystem it is not looking at.
+    /// The backend's root as a path a caller may compare an argument against. `None` by
+    /// default, because a substrate with no host path would make
+    /// [`crate::runtime::GateCall::path_is_inside`] answer about a filesystem it is not looking at.
     fn root_path(&self) -> Option<String> {
         None
     }
 
-    /// **Where a relative path starts, as this backend is actually configured.**
-    /// `None` when the substrate has no such thing.
-    ///
-    /// **This is not [`Self::root_path`], and conflating them is R18.** An unconfined
-    /// session's root is `/` — that is what *unconfined* means, and it is the right
-    /// answer to *is this path inside the boundary*, which is what `root_path` is for.
-    /// It is the wrong answer to *which directory is this session working in*: a fact
-    /// named `workspace` filled from `root_path` told every card in such a session
-    /// `workspace: /` — the whole filesystem, the least true reading available, on the
-    /// one surface where the operator is asked to decide.
-    ///
-    /// Measured 2026-09-22: a daemon started with `--workspace /home/dead/Projects/`
-    /// `letibot` put `because: workspace: /` on four consecutive cards, including two
-    /// ordinary `cargo test` invocations inside the tree. The configuration was right;
-    /// the accessor was answering a different question.
-    ///
-    /// A **trait** method rather than a downcast, because the fact is wanted by the
-    /// code that fills `GateCall` and that code holds a `dyn ExecBackend`.
+    /// Where a relative path starts, as this backend is actually configured. Not
+    /// [`Self::root_path`]: an unconfined session's root is `/`, which answers whether a path is
+    /// inside the boundary and not which directory the session is working in.
     fn workspace_path(&self) -> Option<String> {
         None
     }
 
-    /// **Which machine the tools run on**, when it is not this one. `None` for every
-    /// backend whose files are here, which is every backend but one.
-    ///
-    /// [`Self::workspace_path`] answers *which directory*; over ssh a directory alone is
-    /// the least useful half of the answer, because `/home/dead/letibot-remote/x` names a
-    /// path the operator cannot open and a machine the card never mentions. The one
-    /// caller is the gate's own sentence (`crate::runtime`), which is the surface where a
-    /// person decides — and a person deciding a `bash` call needs to know it lands on
-    /// another machine.
+    /// Which machine the tools run on, when it is not this one. `None` for every backend whose
+    /// files are here. [`Self::workspace_path`] answers which directory; over ssh a directory
+    /// alone names a path the operator cannot open and a machine the card never mentions.
     fn host_label(&self) -> Option<String> {
         None
     }
 
-    /// The session's scratch directory, where tools put working artifacts that are
-    /// too big for the transcript — a fetched page, a generated script. Per-session
-    /// and set by whoever opened the session, so every tool in it sees the same
-    /// place and no tool has to know how it was chosen.
-    ///
-    /// `None` by default: a backend with no scratch has nowhere to spill, and a
-    /// tool that wants one gets a refusal rather than a guess.
+    /// The session's scratch directory, where tools put working artifacts too big for the
+    /// transcript. Per-session, set by whoever opened the session. `None` by default, so a tool
+    /// that wants one gets a refusal rather than a guess.
     fn scratch_dir(&self) -> Option<String> {
         None
     }
 
-    /// **The operator's home, as this backend expands a leading `~`.** `None` by default,
-    /// and the default is right for the same reason [`Self::root_path`]'s is: a substrate
-    /// that reads no host path has no home to name.
-    ///
-    /// Wanted by one caller (R39): the reader that pulls the script an interpreter was
-    /// handed so the adjudicator can be shown it. It must not open a path in a secret
-    /// store, and the store tables are keyed partly on the home directory — so the reader
-    /// asks the backend the same question [`HostBackend::resolve`] answers when it expands
-    /// `~`, rather than reading `$HOME` a second time.
+    /// The operator's home, as this backend expands a leading `~`. `None` by default, for the
+    /// same reason [`Self::root_path`]'s is. The reader that pulls the script an interpreter was
+    /// handed asks here rather than reading `$HOME` a second time.
     fn home_path(&self) -> Option<String> {
         None
     }
 
-    /// One directory, not recursive. Recursion belongs to the tools, which then
-    /// works identically over a tar channel that has no `walkdir`.
-    ///
-    /// **That rule is a trade, and the trade is the condition to weigh before
-    /// overriding [`Self::list_tree`].** One directory per call is right when one
-    /// call is cheap — a tar channel's `list` is local, and nothing is gained by
-    /// teaching it a second command. It is wrong when one call is a network round
-    /// trip: firecode's is one `firecode in` vsock call, **measured at 0.645–0.688 s**
-    /// (2026-10-08), so a walk of the 122-directory tree behind the first `glob` of
-    /// a VM-placed session cost 122 of them — 79.1 s of a 125 s boot-to-answer.
-    /// `list` stays the per-directory primitive either way; [`Self::list_tree`] is
-    /// where a backend says which of the two it is.
+    /// One directory, not recursive: recursion belongs to the tools, which then works the same
+    /// over a tar channel with no `walkdir`. A backend whose `list` is a round trip overrides
+    /// [`Self::list_tree`] instead of paying one call per directory.
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError>;
 
-    /// **The tree under `root`, in the order a walk of [`Self::list`] produces** —
-    /// the seam a backend whose `list` is expensive overrides.
-    ///
-    /// The default *is* that walk: breadth-first over `list`, each directory's
-    /// children in the order `list` returned them, `skip` tested before descent so a
-    /// skipped directory's contents are never fetched, and `limit` stopping it where
-    /// it stands (the second element of the pair says it did). A backend that does
-    /// not override this keeps today's behaviour byte for byte — and so does every
-    /// tool above it, which is the point: `glob`, `grep` and `outline` reach the tree
-    /// through [`walk`] and through nothing else.
-    ///
-    /// An override must return the **same entries in the same order**, `skip` and
-    /// `limit` included, or a tool's answer would depend on the substrate it ran on.
-    /// A backend that fetches the tree in one command has already paid for all of it,
-    /// so there the limit bounds what is *returned*, not the work of finding it.
+    /// The tree under `root`, in the order a walk of [`Self::list`] produces: the seam a backend
+    /// whose `list` is expensive overrides. An override must return the same entries in the same
+    /// order, or a tool's answer would depend on the substrate it ran on.
     fn list_tree(
         &self,
         root: &str,
@@ -339,8 +205,8 @@ pub trait ExecBackend: Send + Sync {
                     continue;
                 }
                 if out.len() >= limit {
-                    // Bounded, and the caller is told it was bounded. A silent cut is
-                    // the failure §8.3 refuses one layer up.
+                    // Bounded, and the caller is told it was bounded. A silent cut is the
+                    // failure the truncation rule one layer up refuses.
                     truncated = true;
                     return Ok((out, truncated));
                 }
@@ -359,64 +225,34 @@ pub trait ExecBackend: Send + Sync {
     /// For `EXPLAIN` and for the head: which substrate the tools are talking to.
     fn describe(&self) -> String;
 
-    /// A head asked to move the running command to the background, and this is the
-    /// identity of whoever asked. `None` when no such request is pending. **Taking
-    /// it clears it**, so the `bash` tool acts once.
-    ///
-    /// `None` by default: a backend with no exec path has nothing to move. The host
-    /// backend carries the shared channel the daemon wires from the hub, so the
-    /// `bash` tool's wait loop can honour the request without the worker — which is
-    /// blocked inside that wait — having to deliver it.
+    /// A head asked to move the running command to the background, and this is the identity of
+    /// whoever asked. Taking it clears it, so the `bash` tool acts once. `None` by default: a
+    /// backend with no exec path has nothing to move.
     fn promote_requested(&self) -> Option<String> {
         None
     }
 
-    /// The session is over: release what the backend holds and say where its
-    /// work went, if anywhere a caller should know about. `None` by default — a
-    /// host backend holds nothing and its writes were where they always were.
-    /// A firecode backend brings its VM down and names the sibling directory
-    /// the guest's tree landed in.
+    /// The session is over: release what the backend holds and say where its work went, if
+    /// anywhere a caller should know about. `None` by default. A firecode backend brings its VM
+    /// down and names the sibling directory the guest's tree landed in.
     fn close(&self) -> Option<String> {
         None
     }
 }
 
-/// The host filesystem, confined to a root.
-///
-/// The confinement is not a sandbox and does not pretend to be one — M2's boundary
-/// is the sandbox. It is the smallest thing that makes clause 4's "a read-only
-/// tool never prompts" safe to ship before that boundary exists: a read tool that
-/// can reach `~/.ssh` is a tool that should have prompted.
-///
-/// # Writable is a constructor, not a flag
-///
-/// [`HostBackend::new`] gives a **read-only** backend and [`HostBackend::writable`]
-/// gives one that can write. That asymmetry is the point: every caller that
-/// existed before write tools did keeps a backend that physically cannot write,
-/// so a write tool registered into an old session refuses at the backend even if
-/// something went wrong at the gate. Two independent mechanisms, because a safety
-/// property with one mechanism behind it is a safety property that ships broken
-/// the first time somebody refactors the mechanism.
+/// The host filesystem, confined to a root. Not a sandbox and does not pretend to be one: the
+/// smallest thing that makes "a read-only tool never prompts" safe before a boundary exists.
+/// [`HostBackend::new`] cannot write and [`HostBackend::writable`] can.
 #[derive(Debug, Clone)]
 pub struct HostBackend {
     root: PathBuf,
     writable: bool,
-    /// The operator's home directory, for expanding a leading `~` the way opencode's
-    /// `os.homedir()` does. Read once at construction, so `resolve` does not reach
-    /// into the environment on every call and so the value is a property of the
-    /// backend rather than of the process that happens to be calling it.
+    /// The operator's home directory, for expanding a leading `~`. Read once at construction,
+    /// so the value is a property of the backend rather than of the calling process.
     home: PathBuf,
-    /// Where a RELATIVE path starts. The root for a confined backend; the session's
-    /// workspace for one rooted at `/`.
-    ///
-    /// Measured 2026-09-14, twice, on a leticode one-shot: `read
-    /// crates/flowy/src/context.rs` answered `no file`, because the path was joined
-    /// to the root and the root was `/`. The model then went looking for the file
-    /// with `glob` and `grep` from `/home` downwards, read a 27 GB model shard into
-    /// memory on the way, and the daemon spent twelve minutes in the kernel. A
-    /// relative path is relative to where the session sits, the way opencode's
-    /// `read` joins it to the worktree — being able to reach the whole host is not
-    /// the same as starting there.
+    /// Where a RELATIVE path starts: the root for a confined backend, the session's workspace
+    /// for one rooted at `/`. Being able to reach the whole host is not the same as starting
+    /// there, and a path joined to `/` is how a read came to look from `/home` downwards.
     cwd: PathBuf,
     /// A head asked to move the running command to the background, and this is who.
     /// `None` when no request is pending. Wired by the daemon from the session's
@@ -428,10 +264,8 @@ pub struct HostBackend {
     /// The session's scratch directory, set by the daemon. `None` when the session
     /// has no scratch, and a tool that wants one gets a refusal rather than a guess.
     scratch: Option<PathBuf>,
-    /// **This session's `/tmp`**, when its commands run inside a boundary — the one
-    /// directory [`HostBackend::with_session_tmp`] bound there. Kept so that closing the
-    /// session can remove what its commands left behind, which nothing else knows the name
-    /// of.
+    /// This session's `/tmp`, when its commands run inside a boundary, so that closing the
+    /// session can remove what its commands left behind.
     session_tmp: Option<PathBuf>,
 }
 
@@ -483,16 +317,9 @@ impl HostBackend {
         self
     }
 
-    /// Set the session's scratch directory. The daemon calls this after
-    /// construction; a backend a test built without it has no scratch, and a tool
-    /// that wants one gets a refusal rather than a guess.
-    ///
-    /// **Both halves, from one call.** The tools read it through [`ExecBackend::scratch_dir`],
-    /// and the process host writes a promoted run's output into it
-    /// ([`crate::exec::ProcessHost::promote`]); a host pointed at a different directory than
-    /// the tools would be the same defect the daemon's own single `scratch_dir()` exists to
-    /// prevent, one layer down — so the host takes it here rather than from a second builder
-    /// somebody has to remember.
+    /// Set the session's scratch directory. Both halves from one call: the tools read it through
+    /// [`ExecBackend::scratch_dir`] and the process host writes a promoted run's output there, so
+    /// a host pointed elsewhere would be the same defect one layer down.
     pub fn with_scratch_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.scratch = Some(dir.as_ref().to_path_buf());
         if let Some(host) = &self.processes {
@@ -501,28 +328,17 @@ impl HostBackend {
         self
     }
 
-    /// **Give this session a `/tmp` that outlives one command**, by binding `dir` there.
-    ///
-    /// A confined session's `/tmp` was a fresh tmpfs per command, so a file one call wrote was
-    /// gone in the next — MEASURED 2026-10-27, and the failure reads as a broken shell rather
-    /// than as a boundary (`cat: /tmp/x: No such file or directory`, with `ls -d /tmp`
-    /// succeeding and `TMPDIR` empty). Agents write scratch there constantly: a heredoc patch
-    /// in one call, `git apply` in the next.
-    ///
-    /// **A new view and a new probe, for the reason [`HostBackend::grant_into_view_impl`]
-    /// gives**: the argv is built once, so what was measured has to be what runs. A backend
-    /// with no view — unconfined, or a VM's — is returned unchanged and says nothing: its `/tmp`
-    /// is already the machine's own, which is the persistence this is for.
-    ///
-    /// The directory is created by the probe, and removed by [`ExecBackend::close`].
+    /// Give this session a `/tmp` that outlives one command, by binding `dir` there: a confined
+    /// session's `/tmp` was a fresh tmpfs per command, so a file one call wrote was gone in the
+    /// next. A new view and a new probe, because the argv is built once.
     pub fn with_session_tmp(mut self, dir: impl AsRef<Path>) -> Result<Self, BackendError> {
         let dir = dir.as_ref().to_path_buf();
         let Some(host) = self.processes.as_ref() else {
             return Ok(self);
         };
-        // **The boundary that was measured is the basis of the one that replaces it** — the
-        // view and the egress decision both, so a re-probe cannot quietly change a decision
-        // nobody asked it to revisit.
+        // The boundary that was measured is the basis of the one that replaces it, the view
+        // and the egress decision both, so a re-probe cannot quietly change a decision nobody
+        // asked it to revisit.
         let Some(boundary) = host.boundary() else {
             return Ok(self);
         };
@@ -536,10 +352,8 @@ impl HostBackend {
         Ok(self)
     }
 
-    /// A backend that can change the operator's tree.
-    ///
-    /// Spelled as its own constructor so that `grep -rn 'HostBackend::writable'`
-    /// finds every place in the tree where that became possible.
+    /// A backend that can change the operator's tree, spelled as its own constructor so that
+    /// `grep -rn 'HostBackend::writable'` finds every place that became possible.
     pub fn writable(root: impl AsRef<Path>) -> Result<Self, BackendError> {
         Ok(HostBackend {
             writable: true,
@@ -547,46 +361,16 @@ impl HostBackend {
         })
     }
 
-    /// A backend that can start processes: writable, **and unsandboxed**.
-    ///
-    /// The third constructor, for the same reason there is a second one — so that
-    /// `grep -rn 'HostBackend::executable'` finds every place in the tree where an
-    /// exec path became reachable. It is not a flag on the other two and it is not
-    /// reachable from them.
-    ///
-    /// # What this does and does not buy
-    ///
-    /// What it buys is [`crate::exec`]: every process lands in a cgroup owned by a
-    /// scope, a scope that ends kills its cgroup and records what it killed, and
-    /// `pkill`/`pgrep` become unnecessary rather than merely discouraged.
-    ///
-    /// What it does **not** buy is §11.4's boundary — *the guest sees a copy of
-    /// one project and nothing else of the host*. A command started here runs with
-    /// this user's rights over this user's whole filesystem. A cgroup bounds a
-    /// lifetime, not a view. [`ExecBackend::describe`] says `NOT CONFINED` for
-    /// exactly this reason: a disclosure that lists only the guarantees reads as a
-    /// claim about the rest, which is `docs/closed-loop.md`'s banner defect.
-    ///
-    /// **Since layer 1, this is a choice and not the only option.**
-    /// [`HostBackend::confined`] adds the namespaces, and the difference between
-    /// the two backends is a [`crate::exec::Confinement`] that names itself:
-    /// [`crate::exec::Unconfined`] here (*not asked for*) against a measured
-    /// [`crate::exec::Bwrap`] there. What neither ever is:
-    /// [`crate::exec::NoConfinement`] silently behaving like this one.
-    ///
-    /// Fails, rather than degrading, when there is no cgroup v2 subtree to
-    /// delegate: a process with no owner is the leak `TODO.md` T24 exists to stop.
+    /// A backend that can start processes: writable, and unsandboxed. Every process lands in a
+    /// cgroup a scope owns and a scope that ends kills it, but a command still runs with this
+    /// user's rights over the whole filesystem, so [`ExecBackend::describe`] says NOT CONFINED.
     pub fn executable(root: impl AsRef<Path>) -> Result<Self, BackendError> {
         let base = Self::writable(root)?;
         let host = crate::exec::HostProcesses::new(base.root.clone())
             .map_err(|e| BackendError::Io(e.to_string()))?
-            // **The operator's own `!` line runs under this one, and `/bin/bash` on a stock
-            // Mac is 3.2** while the rc chain it reads with `-ic` is written for bash 4 or
-            // later — the row came back as `bash: declare: -A: invalid option` before the
-            // operator's command. `crate::console_bash` picks the program and leaves the
-            // flags alone. Only this constructor: a confined view's `$HOME` is a tmpfs, so
-            // the rc there is nobody's, and a bash found outside the view is one a command
-            // inside the boundary cannot exec.
+            // The operator's own `!` line runs under this one, and `/bin/bash` on a stock Mac
+            // is 3.2 while the rc chain `-ic` reads is written for bash 4. Only this
+            // constructor: a confined view's `$HOME` is a tmpfs, so the rc there is nobody's.
             .with_console_shell(crate::console_bash::shell());
         Ok(HostBackend {
             processes: Some(std::sync::Arc::new(host)),
@@ -594,63 +378,16 @@ impl HostBackend {
         })
     }
 
-    /// A backend that can start processes **inside a project-scoped boundary**.
-    ///
-    /// The fourth constructor, and the first one that is a *narrowing* rather than
-    /// a widening — but it is spelled the same way for the same reason: `grep -rn
-    /// 'HostBackend::confined'` finds every session that has a boundary, and the
-    /// absence of the string is then evidence about a session rather than a
-    /// question about it.
-    ///
-    /// # What this buys over [`HostBackend::executable`]
-    ///
-    /// `docs/boundary-and-adjudication.md` §4's layer 1: a mount namespace rooted
-    /// at this project (so the operator's `~/.ssh` is **absent**, not denied), a
-    /// PID namespace (so the daemon, the model server and a sibling job are
-    /// invisible and unsignalable), a network namespace with no route out (so
-    /// egress is a decision), and a user namespace, which is what makes the other
-    /// three possible unprivileged.
-    ///
-    /// # What it does not buy
-    ///
-    /// §3's invariant has two halves and this is the first. Secret bytes stay
-    /// outside the view, so they cannot be *read* — but a tool result that already
-    /// contains something still travels into the transcript, and the choke point
-    /// for that is open (§5). And an authorised credential is usable only through
-    /// [`crate::exec::Grant::AgentSocket`]; there is no grant that binds a key.
-    ///
-    /// # It fails rather than degrading
-    ///
-    /// Two independent ways to fail and the error says which: no delegated cgroup
-    /// v2 subtree (a process with no owner), or no usable boundary (a command that
-    /// would read the operator's disk while a disclosure said otherwise). Neither
-    /// falls back to [`HostBackend::executable`].
-    ///
-    /// # Which mechanism is a fact about the platform
-    ///
-    /// `crate::exec::confine::probe` decides it and this constructor does not: Linux
-    /// enters namespaces through `bwrap`, macOS applies a Seatbelt profile through
-    /// `sandbox-exec` (`crate::exec::seatbelt::Seatbelt`), and what a caller gets either way
-    /// is a measured [`crate::exec::Boundary`] whose `describe` says what it is and what it
-    /// could not give. What the Mac's version buys in *this* paragraph's terms: the operator's
-    /// `~/.ssh`, keychains and shell profiles are **denied** rather than absent, egress is a
-    /// decision, a process outside the boundary cannot be signalled — and there is no PID
-    /// namespace and no cgroup, which its description says on its own lines.
+    /// A backend that can start processes inside a project-scoped boundary: a mount namespace
+    /// rooted at this project, a PID namespace, a network namespace with no route out, and a
+    /// user namespace. Two independent ways to fail, and the error says which.
     pub fn confined(root: impl AsRef<Path>) -> Result<Self, BackendError> {
         Self::confined_granting(root, Vec::new())
     }
 
-    /// A confined backend whose view also holds `grants`.
-    ///
-    /// **A grant is a decision with a consequence**, and the consequence is the reason
-    /// this takes them rather than hardcoding any: a `ReadOnly` path is readable inside
-    /// the view and therefore readable *into the transcript*, since §3's second half is
-    /// not enforced by the confinement module. `Boundary::describe` prints that next to
-    /// each grant, and every `Grant` carries a `why`, because *"a grant nobody can
-    /// explain is a grant nobody can revoke"*.
-    ///
-    /// Nothing here decides what to grant. The caller does, from a flag the operator
-    /// typed — which is what keeps a capability from arriving as a side effect.
+    /// A confined backend whose view also holds `grants`. A grant is a decision with a
+    /// consequence: a `ReadOnly` path is readable into the transcript too, so `Boundary::describe`
+    /// prints that next to each grant. Nothing here decides what to grant; the caller does.
     pub fn confined_granting(
         root: impl AsRef<Path>,
         grants: Vec<crate::exec::confine::Grant>,
@@ -683,18 +420,9 @@ impl HostBackend {
         })
     }
 
-    /// **Bind a path into this session's view, now**, and re-probe so the boundary
-    /// that is described is the boundary that runs.
-    ///
-    /// The argv a confined command is wrapped in is built ONCE, at probe time,
-    /// precisely so that what was measured is what runs — so widening the view is
-    /// not an edit to a live namespace. It is a new `ViewSpec`, a new probe, and
-    /// the result taking the old one's place. Commands already running keep the
-    /// namespace they started in; the next one gets this.
-    ///
-    /// Refuses on a backend with no view, rather than reporting a grant it did not
-    /// make: an unconfined session can already reach the path, and a VM's view is
-    /// the VM's.
+    /// Bind a path into this session's view, now, and re-probe so the boundary described is the
+    /// boundary that runs: the argv is built once, at probe time. Commands already running keep
+    /// the namespace they started in. Refuses on a backend with no view.
     fn grant_into_view_impl(
         &self,
         path: &Path,
@@ -741,50 +469,16 @@ impl HostBackend {
         &self.root
     }
 
-    /// Override the home directory used to expand a leading `~`.
-    ///
-    /// The harness sets this from the session's [`crate::intent::Surroundings`]
-    /// rather than leaving the backend to read `$HOME` itself, so a test can pin the
-    /// home and a session's `~` is a property of the session, not of the process.
+    /// Override the home directory used to expand a leading `~`, so a test can pin the home and
+    /// a session's `~` is a property of the session rather than of the process.
     pub fn with_home(mut self, home: impl Into<PathBuf>) -> Self {
         self.home = home.into();
         self
     }
 
-    /// Resolve a tool-supplied path inside the root, **following symlinks as it
-    /// goes** rather than checking one at the end.
-    ///
-    /// # The escape this used to have
-    ///
-    /// It ended in `if let Ok(real) = out.canonicalize() && !real.starts_with(root)`.
-    /// `canonicalize` fails on a path that does not exist, and `if let Ok` turns
-    /// that failure into *no check at all* — so for a **new** file the containment
-    /// test was skipped, invisibly. With `root/escape -> /elsewhere`, resolving
-    /// `escape/new.txt` returned a path inside `root` in name only, and `write`
-    /// then created `/elsewhere/new.txt`. `write`'s own comment asserted the
-    /// opposite: *"`resolve` already refused one that points out of the root"*. A
-    /// guard whose failure mode is silence is the shape `docs/closed-loop.md` calls
-    /// an open-loop stepper.
-    ///
-    /// A dangling link was the same hole with a different spelling:
-    /// `root/escape -> /elsewhere/gone` canonicalises to nothing, so nothing was
-    /// checked, and a write created the target.
-    ///
-    /// # Why this is not made moot by [`crate::exec::confine`]
-    ///
-    /// The mount namespace confines the **exec** path. `read`, `write`, `edit`,
-    /// `glob` and `grep` are in-process calls in the daemon's own mount namespace
-    /// and go through this function instead. Layer 1 covers one of the two ways in;
-    /// this is the other one, and it is why the fix is here rather than deferred to
-    /// a boundary.
-    ///
-    /// # What it does now
-    ///
-    /// Lexical normalisation first (so `a/../../etc` is refused without touching
-    /// the disk), then [`resolve_under`] walks the components from the root
-    /// downwards, resolving each link against its own parent and requiring
-    /// containment at every step — which is answerable about a path whose tail does
-    /// not exist yet, and is the only form that is.
+    /// Resolve a tool-supplied path inside the root, following symlinks as it goes: a check
+    /// `canonicalize` skips for a path that does not exist is not a check. Lexical normalisation
+    /// first, then [`resolve_under`] walks down from the root requiring containment at each step.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, BackendError> {
         // A leading `~` is the operator's home, read the way a shell reads it.
         // opencode expands it, and a path the model writes as `~/x` must not resolve
@@ -828,7 +522,7 @@ impl HostBackend {
 }
 
 impl ExecBackend for HostBackend {
-    /// **The boundary this backend's commands run inside**, read off the process host rather
+    /// The boundary this backend's commands run inside, read off the process host rather
     /// than off the constructor that was called: a grant replaces the confinement, so the
     /// measured one is the one that answers.
     fn boundary(&self) -> Option<crate::exec::Boundary> {
@@ -844,15 +538,9 @@ impl ExecBackend for HostBackend {
         self.grant_into_view_impl(path, writable, why)
     }
 
-    /// Runs only on a backend built by [`HostBackend::executable`], and even there
-    /// it runs **through the job machinery** rather than beside it.
-    ///
-    /// There is deliberately no second exec path. A `Command` that bypassed
-    /// [`crate::exec`] would be a process with no scope to reap it, no capture to
-    /// read afterwards and no denominator on its output — three properties this
-    /// substrate exists to give — so this spawns a job in the turn scope and waits
-    /// for it. The synchronous shape is kept because `docs/workstreams.md` names
-    /// the seam that way and a firecode backend will implement it directly.
+    /// Runs only on a backend built by [`HostBackend::executable`], and even there it runs
+    /// through the job machinery: a `Command` that bypassed [`crate::exec`] would be a process
+    /// with no scope to reap it and no capture to read afterwards.
     fn run(&self, cmd: &Command) -> Result<Output, BackendError> {
         let Some(host) = &self.processes else {
             // Unchanged for every backend that did not ask to be executable, and
@@ -884,10 +572,8 @@ impl ExecBackend for HostBackend {
                 scope_name: None,
                 background: false,
                 env: cmd.env.clone(),
-                // **No terminal.** This is the synchronous `run(cmd, cwd, env)` seam
-                // a built-in reaches the world through, and its reader is a tool
-                // that wants bytes: the operator's own colour is set on the `bash`
-                // path, where the caller is known to be the person.
+                // No terminal: this is the synchronous seam a built-in reaches the world
+                // through, and its reader is a tool that wants bytes.
                 tty: false,
                 memory: None,
             })
@@ -930,25 +616,9 @@ impl ExecBackend for HostBackend {
         })
     }
 
-    /// Atomic by construction: a temp file beside the target, then `rename`.
-    ///
-    /// The order matters and each step is a failure somebody has met:
-    ///
-    /// 1. the temp file is created in the **same directory**, because `rename` is
-    ///    only atomic within a filesystem and `/tmp` is routinely a different one;
-    /// 2. the original's mode is copied onto the temp file before the rename, or
-    ///    an edit to an executable script silently disarms it;
-    /// 3. the data is `sync_all`'d before the rename, so a crash between the two
-    ///    leaves either the old file or the new one and never a rename that
-    ///    published an empty inode;
-    /// 4. the *directory* is synced after, so the rename itself survives;
-    /// 5. a symlink is followed to its target rather than replaced, because
-    ///    replacing it is a different edit from the one that was asked for. The
-    ///    target has already been checked to be inside the root by
-    ///    [`HostBackend::resolve`].
-    ///
-    /// The temp file is removed on every failure path, so a refused write leaves
-    /// no litter to be mistaken for a partial one.
+    /// Atomic by construction: a temp file in the same directory (rename is only atomic within
+    /// one filesystem), the original's mode copied onto it, the data synced before the rename and
+    /// the directory after, and a symlink followed rather than replaced. No litter on failure.
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
         use std::io::Write;
 
@@ -958,12 +628,9 @@ impl ExecBackend for HostBackend {
                  a session that may change files opens it with HostBackend::writable",
             ));
         }
-        // (5) `resolve` has already followed every symlink on the way down and
-        // refused any that left the root — **including on a path whose tail does
-        // not exist yet**, which is the case this comment used to be wrong about.
-        // The `canonicalize` is belt and braces for a component that changed
-        // between the resolve and now, and it falls back to the resolved path
-        // because a file that is about to be created has nothing to canonicalise.
+        // `resolve` has already followed every symlink on the way down, including on a path
+        // whose tail does not exist. The `canonicalize` is belt and braces for a component that
+        // changed since, falling back because a file about to be created has nothing to resolve.
         let resolved = self.resolve(path)?;
         let target = match resolved.canonicalize() {
             Ok(c) if c.starts_with(&self.root) => c,
@@ -1002,14 +669,9 @@ impl ExecBackend for HostBackend {
             // (3) the data reaches the disk before the rename publishes it.
             f.sync_all()?;
             drop(f);
-            // (2) inherit the original's mode. A **new** file gets 0644 rather
-            // than keeping the 0600 it was created with: a source file the
-            // operator's editor, build or web server cannot read is a surprise
-            // that shows up somewhere else entirely, and the confidentiality it
-            // would buy inside a project tree is nil. Fixed rather than
-            // umask-derived because `std` does not expose the umask, and a
-            // predictable mode beats one that depends on how the daemon was
-            // started.
+            // Inherit the original's mode. A new file gets 0644 rather than the 0600 it was
+            // created with: a source file the operator's editor or build cannot read is a
+            // surprise elsewhere, and fixed beats umask-derived, which `std` does not expose.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1043,10 +705,8 @@ impl ExecBackend for HostBackend {
         Some(self.root.to_string_lossy().to_string())
     }
 
-    /// The session's working directory** — which for an unconfined session is *not*
-    /// the root. See [`ExecBackend::workspace_path`]: `harnessd` builds an unconfined
-    /// seat as `HostBackend::executable("/").with_cwd(&cfg.workspace)`, so `/` is the
-    /// root and the workspace is the cwd. Both are true and they are different facts.
+    /// The session's working directory, which for an unconfined session is not the root: `/` is
+    /// the root and the workspace is the cwd. Both are true and they are different facts.
     fn workspace_path(&self) -> Option<String> {
         Some(self.cwd.to_string_lossy().to_string())
     }
@@ -1062,13 +722,9 @@ impl ExecBackend for HostBackend {
         (!h.is_empty()).then_some(h)
     }
 
-    /// **The session is over, so its `/tmp` goes with it.** The directory holds whatever a
-    /// confined command left there, and nothing outside this session can want it; leaving it
-    /// would be a scratch directory per session id, accumulating on the operator's runtime dir
-    /// for the life of the daemon. Best effort, and deliberately silent: a session whose
-    /// cleanup failed is not a session whose work did not land, and the answer this returns is
-    /// the one the operator reads — a remote host's branch, a VM's copy. There is no such
-    /// sentence here.
+    /// The session is over, so its `/tmp` goes with it. Best effort and deliberately silent: a
+    /// session whose cleanup failed is not a session whose work did not land, and the answer
+    /// this returns is the one the operator reads.
     fn close(&self) -> Option<String> {
         if let Some(dir) = &self.session_tmp {
             let _ = std::fs::remove_dir_all(dir);
@@ -1111,20 +767,9 @@ impl ExecBackend for HostBackend {
         })
     }
 
-    /// **Found while adding exec:** this used to say `read-only` for every
-    /// `HostBackend`, including one built by [`HostBackend::writable`]. A hard-coded
-    /// banner asserting a property the session does not have is the exact defect
-    /// `docs/tool-design-brief.md` §1 names — *"a banner asserted 'read-only tools'
-    /// about a session that had write tools"* — and it was in the disclosure the
-    /// daemon prints at startup. It is now read off the fields.
-    /// ... and the *same fix, a second time*, in the half this constructor added.
-    ///
-    /// `(_, true) => "writable + UNSANDBOXED EXEC"` was correct for every backend
-    /// that existed when it was written and became a hard-coded claim the moment
-    /// [`HostBackend::confined`] existed. So the exec half is read from the process
-    /// host too, through [`crate::exec::Confinement::describe`], which reads it from
-    /// a boundary that was measured from inside itself. There is no constant in
-    /// this function that asserts a confinement property.
+    /// Read off the fields rather than asserted: a banner claiming a property the session does
+    /// not have is the defect this function exists to avoid, so the exec half comes from
+    /// [`crate::exec::Confinement::describe`], measured from inside the boundary itself.
     fn describe(&self) -> String {
         let mode = match (self.writable, self.processes.as_ref()) {
             (_, Some(p)) => {
@@ -1163,10 +808,8 @@ impl ExecBackend for HostBackend {
             .map(|p| p as std::sync::Arc<dyn crate::exec::ProcessHost>)
     }
 
-    /// The request's `cwd` is relative to where the session sits, the same as
-    /// every other path a tool hands this backend; the process host wants it
-    /// relative to the root. They differ only for a backend rooted at `/`, and
-    /// there `.` used to mean the root of the filesystem.
+    /// The request's `cwd` is relative to where the session sits; the process host wants it
+    /// relative to the root. They differ only for a backend rooted at `/`.
     fn workdir(&self, cwd: &str) -> Result<String, BackendError> {
         let dir = self.resolve(cwd)?;
         Ok(dir
@@ -1191,30 +834,9 @@ impl ExecBackend for HostBackend {
 /// have refused too, so no legitimate tree becomes unusable.
 const MAX_SYMLINK_HOPS: usize = 40;
 
-/// A `realpath` for a path whose **tail may not exist yet**.
-///
-/// This is the containment primitive, and its shape is forced by the requirement:
-/// `std::fs::canonicalize` cannot answer for a file that is about to be created,
-/// and a check that is skipped when it cannot answer is not a check. So the walk
-/// goes *down* from the root, one component at a time:
-///
-/// - a component that does not exist ends the resolving — nothing under a
-///   non-existent directory can exist either, so the rest is appended literally
-///   and the containment already established stands;
-/// - a component that is a **symlink** is replaced by its target, pushed back onto
-///   the front of the queue so the target's own components are resolved in turn.
-///   An absolute target restarts from the root and must land inside it;
-/// - `..` pops, and popping past the root is a refusal rather than a clamp: a
-///   clamp silently answers a different question from the one asked.
-///
-/// `None` means *outside the root, or unresolvable* — the caller turns it into
-/// [`BackendError::Outside`], which already carries the path. Returning an
-/// `Option` rather than a `bool` plus an out-parameter is deliberate: there is no
-/// way to spell "refused" and still have a path to use.
-/// A leading `~` is the operator's home directory, read the way a shell reads it.
-/// `~` alone is the home itself; `~/x` is `x` under it. A path that is not
-/// `~`-prefixed, or a home that is empty, is returned unchanged — a literal `~`
-/// directory is the honest failure rather than a guessed home.
+/// A `realpath` for a path whose tail may not exist yet: a missing component ends the resolving,
+/// a symlink is replaced by its target and resolved in turn, and `..` past the root is a refusal.
+/// A leading `~` is the operator's home, read the way a shell reads it: `~/x` is `x` under it.
 fn expand_tilde(path: &str, home: &Path) -> String {
     if home.as_os_str().is_empty() {
         return path.to_string();
@@ -1228,16 +850,9 @@ fn expand_tilde(path: &str, home: &Path) -> String {
     path.to_string()
 }
 
-/// **An absolute path, as a remainder under `root`** — also when it is spelled
-/// through a symlinked ancestor.
-///
-/// The root is canonical, and an absolute path need not be: on macOS the temp dir is
-/// `/var/folders/…` and its canonical form `/private/var/folders/…`, so a link written
-/// with the first never `strip_prefix`es the second, and an internal link was refused as
-/// outside. When the plain strip fails, the longest existing ancestor is canonicalised and
-/// the strip is tried again. Containment is not decided here: the remainder still goes
-/// through [`resolve_under`]'s walk from the root. A `..` in the tail ends the attempt
-/// (`file_name` has none), which is a refusal and never a guess.
+/// An absolute path, as a remainder under `root`, also when it is spelled through a symlinked
+/// ancestor: the root is canonical and the path need not be, so when the plain strip fails the
+/// longest existing ancestor is canonicalised and the strip is tried again. `..` ends the attempt.
 fn relative_to_root(p: &Path, root: &Path) -> Option<PathBuf> {
     if let Ok(r) = p.strip_prefix(root) {
         return Some(r.to_path_buf());
@@ -1285,10 +900,9 @@ fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
             continue;
         }
         let cand = out.join(&name);
-        // `symlink_metadata` and not `metadata`: the question is whether THIS
-        // component is a link, not whether its target exists. A dangling link
-        // answers `Ok` here and `Err` to `metadata`, and it is the dangling one
-        // that used to get through.
+        // `symlink_metadata` and not `metadata`: the question is whether THIS component is a
+        // link, not whether its target exists. A dangling link answers `Ok` here and `Err` to
+        // `metadata`, and it is the dangling one that used to get through.
         let Ok(meta) = std::fs::symlink_metadata(&cand) else {
             // Does not exist. Everything left is new; append it literally.
             out = cand;
@@ -1316,10 +930,9 @@ fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
             return None;
         }
         let target = std::fs::read_link(&cand).ok()?;
-        // Prepend the target's components so they are resolved in turn. An
-        // absolute target restarts the walk at the root and must lie inside it —
-        // this is the check the old code did once, at the end, and therefore not
-        // at all for a path that did not exist.
+        // Prepend the target's components so they are resolved in turn. An absolute target
+        // restarts the walk at the root and must lie inside it, which is the check the old code
+        // did once, at the end, and therefore not at all for a path that did not exist.
         let mut front: VecDeque<OsString> = VecDeque::new();
         if target.is_absolute() {
             let inside = relative_to_root(&target, root)?;
@@ -1349,11 +962,9 @@ fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
     out.starts_with(root).then_some(out)
 }
 
-/// Single-quote one argv element for a shell, the only way that is total: close
-/// the quote, escape the quote, reopen. Used solely by [`ExecBackend::run`], whose
-/// contract is argv and whose substrate takes a command string — and, since a plugin's
-/// `exec` look goes through the gate as a command line, by
-/// [`crate::runtime::command_of_argv`].
+/// Single-quote one argv element for a shell, the only way that is total: close the quote,
+/// escape the quote, reopen. Used by [`ExecBackend::run`], whose contract is argv and whose
+/// substrate takes a command string, and by [`crate::runtime::command_of_argv`].
 pub(crate) fn shell_quote(s: &str) -> String {
     if !s.is_empty()
         && s.chars()
@@ -1364,18 +975,9 @@ pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// Recursive listing, over [`ExecBackend::list_tree`].
-///
-/// Written against the trait rather than with `std::fs` so that it works unchanged
-/// over a backend whose "filesystem" is a tar channel. The loop itself now lives in
-/// [`ExecBackend::list_tree`]'s default, so a backend whose per-directory call is a
-/// network round trip can replace it with one command; this stays the call the tools
-/// make, and its answer does not depend on which of the two ran. `limit` bounds the
-/// walk: a tool that walks an unbounded tree is a tool that hangs on a home
-/// directory.
-///
-/// An error — a root that does not exist, most often — is an empty walk, which is
-/// what the per-directory loop has always done with a directory it could not list.
+/// Recursive listing, over [`ExecBackend::list_tree`]. Written against the trait rather than
+/// with `std::fs`, so it works unchanged over a backend whose filesystem is a tar channel, and
+/// `limit` bounds the walk. An error, a root that does not exist most often, is an empty walk.
 pub fn walk(
     backend: &dyn ExecBackend,
     root: &str,
@@ -1392,26 +994,18 @@ pub fn default_skip(e: &DirEntry) -> bool {
         e.name.as_str(),
         ".git" | "target" | "node_modules" | ".venv" | "__pycache__" | ".cache"
     ) ||
-    // On a backend rooted at `/` a walk can reach the kernel's own trees. `/proc`
-    // holds files whose size lies and whose reads block; `/sys` and `/dev` are not
-    // files; `/run` is sockets and pid files. None is a place a search for source
-    // would find it. Matched on the absolute path, so a project directory that
-    // happens to be called `dev` is still walked.
+    // On a backend rooted at `/` a walk can reach the kernel's own trees: `/proc` holds files
+    // whose size lies and whose reads block, and `/sys`, `/dev` and `/run` are no place a search
+    // would find source. Matched on the absolute path, so a project called `dev` is still walked.
     matches!(e.path.as_str(), "/proc" | "/sys" | "/dev" | "/run")
 }
 
 #[cfg(test)]
 mod tests {
 
-    /// **R18's root cause, in one assertion.**
-    ///
-    /// An unconfined seat is built as
-    /// `HostBackend::executable("/").with_cwd(&workspace)`, so the two accessors answer
-    /// two different questions — and filling a fact named `workspace` from `root_path()`
-    /// put `because: workspace: /` on four of the operator's cards on 2026-09-22,
-    /// including two ordinary `cargo test` calls well inside the tree. The daemon's
-    /// configuration was right the whole time; the accessor was answering *is this path
-    /// inside the boundary* when the card was asking *where is this session*.
+    /// The two accessors answer two different questions, and filling a fact named `workspace`
+    /// from `root_path()` says `workspace: /` for a seat rooted at the host. The configuration
+    /// is right; the accessor answers where the boundary is, not where the session works.
     #[test]
     fn a_seat_rooted_at_the_host_still_reports_its_own_workspace() {
         let dir = std::env::temp_dir()
@@ -1432,7 +1026,7 @@ mod tests {
         // The property the second question exists for: a relative path starts here,
         // not at `/`.
         assert_eq!(b.cwd(), dir.as_path());
-        // **A confined seat has the two equal, which is why this hid.** With
+        // A confined seat has the two equal, which is why this hid. With
         // `root == workspace` the two accessors agree, so the wrong one looks right.
         let c = HostBackend::new(&dir).expect("a project-rooted backend");
         assert_eq!(c.root_path(), c.workspace_path());
@@ -1450,10 +1044,9 @@ mod tests {
         (d, b)
     }
 
-    /// A backend rooted at `/` with the workspace as its cwd: a relative path is
-    /// the workspace's, an absolute one is the host's, and what is shown back is
-    /// relative to the workspace when under it and absolute otherwise. The
-    /// measured failure was `read crates/x.rs` -> `/crates/x.rs` -> "no file".
+    /// A backend rooted at `/` with the workspace as its cwd: a relative path is the
+    /// workspace's, an absolute one is the host's, and what is shown back is relative to the
+    /// workspace when under it and absolute otherwise.
     #[test]
     fn relative_paths_start_at_the_cwd_not_the_root() {
         let d = tempdir::TempDir::new();
@@ -1542,7 +1135,7 @@ mod tests {
         assert_eq!(b.resolve("~").unwrap(), d.path().canonicalize().unwrap());
     }
 
-    /// The promote channel the daemon wires from the hub is read **and cleared** by
+    /// The promote channel the daemon wires from the hub is read and cleared by
     /// the `bash` wait loop, so a head's Ctrl+B is honoured once.
     #[test]
     fn a_promote_request_is_taken_not_merely_read() {
@@ -1580,21 +1173,9 @@ mod tests {
         assert!(format!("{e}").contains("11.4"), "{e}");
     }
 
-    /// **A first-party containment escape, found by reading, and it is the one the
-    /// namespaces do NOT make moot.**
-    ///
-    /// `resolve` ended in `if let Ok(real) = out.canonicalize()`. `canonicalize`
-    /// fails on a path that does not exist, so for a **new** file the containment
-    /// check was not merely weak — it was *skipped*, and the `let Ok(..)` made the
-    /// skip invisible. A symlinked-out parent plus a filename that is not there yet
-    /// wrote outside the root, and `write`'s own comment asserted the opposite:
-    /// *"`resolve` already refused one that points out of the root"*.
-    ///
-    /// Why this matters after layer 1 exists: `read`, `write`, `edit`, `glob` and
-    /// `grep` do **not** go through a namespace. They are in-process calls on the
-    /// daemon's own mount namespace, so the mount view confines the exec path and
-    /// nothing else. A boundary that covers one of two paths in is not a boundary,
-    /// and this is the second path.
+    /// A containment escape the namespaces do NOT make moot: `canonicalize` fails on a path that
+    /// does not exist, so a check that skips it is no check. Read, write, edit, glob and grep are
+    /// in-process calls on the daemon's own namespace, which confines the exec path only.
     #[test]
     fn a_new_file_under_a_symlinked_out_parent_is_refused() {
         let d = tempdir::TempDir::new();
@@ -1628,10 +1209,9 @@ mod tests {
         assert!(!outside.join("a").exists(), "a deep write escaped the root");
     }
 
-    /// **A link spelled through a symlinked ancestor is still inside.** The root is
-    /// canonical; the link's absolute target need not be — on macOS the temp dir is
-    /// `/var/folders/…`, canonically `/private/var/folders/…`. Built here with an explicit
-    /// symlinked ancestor so it means the same on a box whose temp dir is canonical.
+    /// A link spelled through a symlinked ancestor is still inside: the root is canonical and
+    /// the link's target need not be, so the fixture builds the ancestor explicitly to mean the
+    /// same on a box whose temp dir is canonical.
     #[test]
     fn an_absolute_link_through_a_symlinked_ancestor_stays_inside() {
         let d = tempdir::TempDir::new();
@@ -1714,10 +1294,8 @@ mod tests {
         assert!(truncated);
     }
 
-    /// **The tree the two walk paths have to agree on**: a directory, a name with a
-    /// space in it, a nested file, and a `target/` that [`default_skip`] must drop
-    /// *before* descending into it — the pruning that made the measured tree 122
-    /// directories instead of 522.
+    /// The tree the two walk paths have to agree on: a directory, a name with a space in it, a
+    /// nested file, and a `target/` that [`default_skip`] must drop before descending into it.
     const TREE: &[(&str, &str, bool, u64)] = &[
         ("/w", "a b", true, 0),
         ("/w", "empty", true, 0),
@@ -1751,7 +1329,7 @@ mod tests {
         entries.iter().map(|e| e.path.as_str()).collect()
     }
 
-    /// A backend that is the tree in memory, with **no** `list_tree` of its own: the
+    /// A backend that is the tree in memory, with no `list_tree` of its own: the
     /// trait's default drives it one directory at a time, and the count of `list`
     /// calls is what says so.
     struct TreeFake {
@@ -1786,7 +1364,7 @@ mod tests {
         }
     }
 
-    /// The same shape with `list_tree` **defined**, as firecode defines it. An
+    /// The same shape with `list_tree` defined, as firecode defines it. An
     /// override that quietly fell back on the loop would still return entries, so the
     /// counts are the assertion and the entries alone are not.
     struct OneCallFake {
@@ -1836,10 +1414,8 @@ mod tests {
         }
     }
 
-    /// **The seam's cost, counted.** A backend whose `list_tree` is defined is asked
-    /// once for the whole tree and never per directory. The measured reason: on
-    /// firecode `list` is one vsock round trip at 0.645–0.688 s, and 122 of them were
-    /// 80.48 s of a 125 s boot-to-answer (2026-10-08).
+    /// The seam's cost, counted: a backend whose `list_tree` is defined is asked once for the
+    /// whole tree and never per directory.
     #[test]
     fn a_defined_list_tree_is_one_call_and_never_the_loop() {
         let b = OneCallFake {
@@ -1883,14 +1459,9 @@ mod tests {
         );
     }
 
-    /// **`find`'s listing and the loop's answer are the same list**, entry for entry
-    /// and in the same order, which is the whole contract an override has to keep.
-    ///
-    /// The listing is written the way `find` prints it — depth-first, which is *not*
-    /// the loop's order — and it carries the two things a byte-level parser gets wrong
-    /// first: a name with a space in it, and a directory entry. It also carries a
-    /// `target/` and everything `find` printed beneath it, which the skip set must drop
-    /// even though the command already fetched them.
+    /// `find`'s listing and the loop's answer are the same list, entry for entry and in the same
+    /// order, which is the whole contract an override has to keep. The listing is written the way
+    /// `find` prints it, depth-first, with a name containing a space and a directory entry.
     #[test]
     fn the_find_listing_parses_byte_identically_to_the_loop() {
         let b = TreeFake {
@@ -1920,7 +1491,7 @@ mod tests {
         assert_eq!(paths(&few_find), vec!["/w/a b", "/w/empty"]);
     }
 
-    /// A backend whose `read` is counted and whose `read_many` is the **default**: the
+    /// A backend whose `read` is counted and whose `read_many` is the default: the
     /// shape of every backend that has not said its `read` is a round trip.
     struct PerFileReads {
         read_calls: AtomicUsize,
@@ -1954,12 +1525,8 @@ mod tests {
         }
     }
 
-    /// **The default `read_many` is the per-file loop**, one `read` per path and the
-    /// same answers in the same order — a backend that has not overridden it keeps
-    /// today's behaviour, which is what makes this seam safe to add under `grep`.
-    ///
-    /// The measured contrast is [`crate::builtins::grep`]'s own test, where an
-    /// override turns one call per file into one call per page.
+    /// The default `read_many` is the per-file loop, one `read` per path and the same answers in
+    /// the same order, which is what makes this seam safe to add under `grep`.
     #[test]
     fn the_default_read_many_is_the_per_file_loop() {
         let b = PerFileReads {
@@ -1985,10 +1552,8 @@ mod tests {
     }
 }
 
-/// A tiny temp-directory helper for this crate's tests.
-///
-/// The workspace has no `tempfile` dependency and this is fifteen lines of it. It
-/// is `pub` because the built-ins' tests need the same fixture.
+/// A tiny temp-directory helper for this crate's tests: the workspace has no `tempfile`
+/// dependency. `pub` because the built-ins' tests need the same fixture.
 #[cfg(any(test, feature = "testing"))]
 pub mod tempdir {
     use std::path::{Path, PathBuf};

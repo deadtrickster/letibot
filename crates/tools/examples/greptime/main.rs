@@ -1,22 +1,10 @@
 // Where does grep's time actually go: walking, reading, or matching?
 //
-// It used to be matching, by a factor that made the other two rounding errors:
-// 23.7 ms of a 25.0 ms search over `crates/`, for a search ripgrep answers in
-// 9-10 ms. That measurement is what got the hand-rolled matcher replaced by
-// `regex`, so this example now times BOTH — the old engine is in `legacy.rs`
-// beside this file, kept for exactly one purpose, which is to keep the claim
-// falsifiable.
-//
 //   cargo run --release -p letibot-tools --example greptime -- [ROOT] [PATTERN]
 //
-// Three matchers are timed over the same bytes:
-//
-//   legacy      the hand-rolled backtracker, one call per line
-//   regex/line  the new engine, still one call per line
-//   regex/buf   the new engine over the whole file, which is what `grep` does
-//
-// The middle row is there so the two changes do not get credited to each other:
-// legacy -> regex/line is the engine, and regex/line -> regex/buf is the scan.
+// Three matchers over the same bytes - `legacy` (one call per line, hand-rolled), and
+// `regex/line` and `regex/buf` (the whole file, which is what `grep` does) - so the two
+// changes are not credited to each other: the engine first, then the scan.
 mod legacy;
 
 use letibot_tools::backend::{ExecBackend, HostBackend, default_skip, walk};
@@ -104,8 +92,8 @@ fn main() {
     let pat = match Pattern::compile(&src, false) {
         Ok(p) => p,
         Err(e) => {
-            // The point of phase 1's clause 3, visible from the bench: a pattern
-            // that does not compile produces the engine's message, not a search.
+            // A pattern that does not compile produces the engine's message, not a
+            // search.
             println!(
                 "\n  regex refused the pattern:\n{}\n\n{}",
                 e.message,

@@ -1,29 +1,11 @@
 //! Finding processes by what they look like, without ever finding yourself.
 //!
-//! The one finder behind the `pkill` tool and the monitor's `process` pattern.
-//! Its whole reason to exist is the failure this tree has paid for eight times
-//! (`monitor.rs`, module docs): a pattern matched against `ps` output matches
-//! the shell that is running the `ps`, because the shell's own command line
-//! carries the pattern. Every one of those was a shell. There is no shell here:
-//! the finder reads `/proc` in-process, and **this process, every ancestor of
-//! it, pid 1, and everything the process host has declared protected are
-//! removed from the candidates before the pattern is looked at**. Self-match is
-//! not refused; it is unspellable, because the self is not in the set.
+//! A pattern matched against `ps` output matches the shell running the `ps`, because that
+//! shell's command line carries the pattern. There is no shell here: the finder reads `/proc`
+//! in-process and removes this process, its ancestors, pid 1 and everything declared protected
+//! before looking, so a self-match is unspellable rather than refused.
 //!
-//! # A handle, not a pattern, is what gets acted on
-//!
-//! [`find`] answers with [`ProcInfo`]s — pid **and start time**. A pid is
-//! reused; a (pid, start time) pair is not. [`alive`] and [`kill`] take the
-//! pair, so a process that exited and whose pid came back as something else is
-//! reported gone, not killed. The pattern is for finding; the handle is for
-//! acting.
-//!
-//! # Only this user's processes
-//!
-//! `/proc/<pid>/status` `Uid` is compared to the caller's own uid. Another
-//! user's process is not listed, not because it could be killed (it could not)
-//! but because a listing that names what you cannot act on reads as a claim
-//! that you can.
+//! What gets acted on is a (pid, start time) handle, and only this user's processes are listed.
 
 #[cfg(not(target_os = "macos"))]
 use std::path::Path;
@@ -91,11 +73,8 @@ pub fn age_word(d: Duration) -> String {
     }
 }
 
-/// Read one process. `None` when it is gone or not ours to read.
-///
-/// macOS: the same fields from `libproc` (see [`super::darwin`]). `start` is the
-/// start time in microseconds since the epoch rather than in ticks since boot —
-/// it is only ever compared with itself, as half of the pid's identity.
+/// Read one process. `None` when it is gone or not ours to read. `start` is microseconds since
+/// the epoch, compared only with itself as half of the pid's identity.
 #[cfg(target_os = "macos")]
 pub fn read(pid: u32) -> Option<ProcInfo> {
     let i = super::darwin::info(pid)?;
@@ -356,11 +335,8 @@ pub fn kill_exact(pid: u32, start: u64, sig: Signal) -> Result<(), KillRefused> 
     Ok(())
 }
 
-/// A monitor condition over process **handles**: fires when every one of them
-/// is gone. The handles come from [`find`] at declaration — a pattern is
-/// consumed there and never looked at again — or from a pid the caller named,
-/// resolved to its start time at declaration. This is the `until ! pgrep -f X`
-/// loop the transcripts are full of, keyed on what it should have been keyed on.
+/// A monitor condition over process handles: fires when every one is gone. The handles come
+/// from [`find`] at declaration, or from a pid resolved to its start time there.
 #[derive(Debug)]
 pub struct ProcessCondition {
     handles: Vec<ProcInfo>,
@@ -455,10 +431,8 @@ mod tests {
 
     #[test]
     fn the_finder_never_returns_itself_or_an_ancestor_even_on_a_pattern_they_carry() {
-        // The test binary's own path carries the crate's name, and so does the
-        // `cargo test -p letibot-tools …` that is our ancestor. A `pgrep -f`
-        // for it would list both; this must list neither, whatever else it
-        // finds on the box.
+        // The test binary's own path carries the crate's name, and so does the `cargo test`
+        // that is our ancestor: this must list neither.
         let me = self_and_ancestors();
         assert!(me.contains(&std::process::id()));
         let own_cmdline = read(std::process::id()).unwrap().cmdline;
@@ -480,10 +454,8 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        // **Until the shell's fork has become `sleep`.** `sh -c "sleep 30; :"` forks a child for
-        // `sleep`, and until that child execs it still carries the shell's command line, marker
-        // and all — so a fixed 200 ms read two matches on a loaded box (a full workspace run). The
-        // count settles at one when the exec lands; waited for, not assumed.
+        // Until the shell's fork has become `sleep`, the child still carries the shell's command
+        // line, marker and all: the count settles at one when the exec lands, so it is waited for.
         let started = std::time::Instant::now();
         while find(&marker, &[]).len() != 1 && started.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(50));

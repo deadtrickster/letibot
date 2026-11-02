@@ -1,41 +1,6 @@
-//! Clause 5: **output is bounded and spilled, never truncated** (§8.3), with D6's
-//! correction applied from the start.
-//!
-//! # D6: `max_inline_bytes` is not a number
-//!
-//! The operator's answer was *"configurable, with the ability to plug in a
-//! prediction model"*. So the threshold is an **interface** — [`InlineBudget`] —
-//! and a fixed byte count is merely its simplest implementation:
-//!
-//! | implementation | here |
-//! |---|---|
-//! | unset (a genuine no-op) | [`NoBudget`] |
-//! | fixed threshold | [`FixedBudget`] |
-//! | per-tool threshold | [`PerToolBudget`] |
-//! | predicted | [`PredictedBudget`], which takes the predictor as a function |
-//!
-//! It keeps **no default**. `NoBudget` is not "unlimited chosen by us"; it is the
-//! policy declining to have an opinion, and [`Spiller::apply`] then leaves the
-//! output exactly as the tool produced it. That distinction is the reason D6 says
-//! unset must stay a no-op rather than a silent guess.
-//!
-//! # The arithmetic, from §8.3, in order
-//!
-//! - the preview budget is `cap − reserve`, where `reserve` is the byte cost of
-//!   the notice computed against a **worst-case digit count**, so
-//!   `preview + "\n\n" + notice` never exceeds `cap`;
-//! - if the notice alone would exceed the cap, **spill is abandoned** and the
-//!   original is left inline rather than truncated silently;
-//! - head/tail split of the preview budget: `head = ceil(budget/2)`,
-//!   `tail = floor(budget/2)`;
-//! - the notice is `(Omitted <N> bytes. Full <kind> result stored at: <locator>.
-//!   <hint>)`;
-//! - the full original is stored, and **a storage failure falls back to the
-//!   untouched inline content rather than erroring the call**.
-//!
-//! Ours differs from DeepSeek's in one way, and it is clause 1 applied to spilling
-//! itself: the locator is a content hash and `read_spill(hash, range)` is a tool,
-//! so the hint is actionable rather than advisory.
+//! Output is bounded by spilling: the middle goes to a store keyed by content
+//! hash and the model is told where, so nothing is silently truncated. An unset
+//! budget is a true no-op, not an unlimited one chosen by default.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -47,22 +12,21 @@ use sha2::{Digest, Sha256};
 pub struct SpillContext<'a> {
     /// The tool that produced the output.
     pub tool: &'a str,
-    /// The arguments it was called with. A predictor needs these: "the whole file"
-    /// and "lines 1–40 of it" deserve different budgets, and only the arguments
-    /// say which one this is.
+    /// The arguments it was called with. A predictor needs them: the whole file and
+    /// forty lines of it deserve different budgets, and only these say which.
     pub args: &'a serde_json::Value,
     /// The size of the full output in UTF-8 bytes.
     pub bytes: usize,
 }
 
-/// D6's interface. **The threshold is a decision, not a constant.**
+/// The threshold is a decision, not a constant.
 pub trait InlineBudget: Send + Sync {
-    /// The most bytes this output may occupy inline, or `None` for "no opinion",
+    /// The most bytes this output may occupy inline, or `None` for no opinion,
     /// which is a genuine no-op and not an unlimited budget chosen by default.
     fn max_inline_bytes(&self, ctx: &SpillContext<'_>) -> Option<usize>;
 
-    /// How this policy describes itself in `EXPLAIN`. A number nobody can trace to
-    /// a decision is the thing §6 exists to abolish.
+    /// How this policy describes itself in `EXPLAIN`: a number nobody can trace
+    /// back to a decision is worse than none.
     fn describe(&self) -> String;
 }
 
@@ -79,7 +43,7 @@ impl InlineBudget for NoBudget {
     }
 }
 
-/// One number for every tool. What M1 ships, when the operator sets one.
+/// One number for every tool.
 #[derive(Debug, Clone, Copy)]
 pub struct FixedBudget(pub usize);
 
@@ -92,9 +56,8 @@ impl InlineBudget for FixedBudget {
     }
 }
 
-/// A number per tool, because *"a `find` and a `read` do not deserve the same
-/// budget"*. A tool with no entry falls back to `default`, which may itself be
-/// unset.
+/// One number per tool, because a `find` and a `read` do not deserve the same
+/// budget. A tool with no entry falls back to `default`, which may itself be unset.
 #[derive(Debug, Clone, Default)]
 pub struct PerToolBudget {
     pub default: Option<usize>,
@@ -118,11 +81,9 @@ impl InlineBudget for PerToolBudget {
     }
 }
 
-/// The predicted case, whose whole point is that it is the **same trait**.
-///
-/// The predictor is a function of the call, so plugging a model in later means
-/// writing that function — not touching a tool, a result type or a call site,
-/// which is what D6 says retrofitting behind a constant comparison would cost.
+/// The predicted case, deliberately the same trait: the predictor is a function of
+/// the call, so plugging a model in means writing that function and touching no
+/// tool, result type or call site.
 pub struct PredictedBudget<F> {
     pub predict: F,
     pub label: String,
@@ -176,12 +137,8 @@ pub struct SpillEntry {
     pub bytes: usize,
 }
 
-/// Where full outputs live.
-///
-/// §8.3 puts them in a `tool_spill` table keyed by content hash; that table is the
-/// token core's to own, so this is the interface it will implement. [`FileStore`]
-/// is the host-local one M1 runs on and follows DeepSeek's mechanics: `0600` under
-/// a per-session hashed directory.
+/// Where full outputs live, keyed by content hash. [`FileStore`] is the
+/// host-local one: `0600` under a per-session hashed directory.
 pub trait SpillStore: Send + Sync {
     fn put(&self, tool: &str, bytes: &[u8]) -> Result<String, SpillError>;
     /// A byte range of a stored output. `None` is the whole thing.
@@ -190,17 +147,15 @@ pub trait SpillStore: Send + Sync {
     fn list(&self) -> Vec<SpillEntry>;
 }
 
-/// The content hash a locator is. SHA-256, truncated for legibility — the same
-/// hash the ledger uses, and long enough that a collision is not the failure mode
-/// anybody will meet.
+/// SHA-256 truncated for legibility: the hash the ledger uses too, and long enough
+/// that a collision is not the failure mode anybody meets.
 pub fn content_hash(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())[..16].to_string()
 }
 
-/// In-process storage. What the tests and a headless run without a session
-/// directory use.
+/// In-process storage, for tests and for a headless run with no session directory.
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     inner: Mutex<BTreeMap<String, (String, Vec<u8>)>>,
@@ -266,9 +221,8 @@ pub struct FileStore {
 }
 
 impl FileStore {
-    /// `base/<hash of session id>/`. The session id is hashed rather than used
-    /// directly because it can carry a name, and a directory listing is a place
-    /// names leak.
+    /// `base/<hash of session id>/`: the id is hashed because it can carry a name,
+    /// and a directory listing is a place names leak.
     pub fn new(base: impl AsRef<std::path::Path>, session_id: &str) -> Result<Self, SpillError> {
         let dir = base.as_ref().join(content_hash(session_id.as_bytes()));
         std::fs::create_dir_all(&dir).map_err(SpillError::Io)?;
@@ -322,8 +276,8 @@ impl SpillStore for FileStore {
             };
             out.push(SpillEntry {
                 hash: hash.to_string(),
-                // The store does not carry the tool; the journal does. Present and
-                // empty rather than invented.
+                // The store does not carry the tool; the journal does. Empty rather
+                // than invented.
                 tool: String::new(),
                 bytes: e.metadata().map(|m| m.len() as usize).unwrap_or(0),
             });
@@ -332,15 +286,15 @@ impl SpillStore for FileStore {
     }
 }
 
-/// The policy and the store, together. One of these lives on the runtime.
+/// The policy and the store together; one of these lives on the runtime.
 pub struct Spiller {
     pub budget: Box<dyn InlineBudget>,
     pub store: Box<dyn SpillStore>,
 }
 
 impl Spiller {
-    /// The M1 default: **no threshold** and an in-process store. Nothing spills
-    /// until somebody configures a budget, which is D6's "unset is a no-op".
+    /// No threshold and an in-process store: nothing spills until a budget is
+    /// configured, because unset is a no-op.
     pub fn unset() -> Self {
         Spiller {
             budget: Box::new(NoBudget),
@@ -352,8 +306,7 @@ impl Spiller {
         Spiller { budget, store }
     }
 
-    /// Bound one output. Returns what goes inline and, if it spilled, where the
-    /// rest is.
+    /// Bound one output: what goes inline, and where the rest is if it spilled.
     pub fn apply(&self, payload: String, ctx: &SpillContext<'_>) -> (String, Option<SpillRef>) {
         let Some(cap) = self.budget.max_inline_bytes(ctx) else {
             return (payload, None);
@@ -362,23 +315,22 @@ impl Spiller {
             return (payload, None);
         }
 
-        // The reserve is computed against the worst case: the omitted count can
-        // never have more digits than the full length has.
+        // The reserve assumes the worst case: the omitted count can never have more
+        // digits than the full length has.
         let digits = decimal_digits(payload.len());
         let hash_width = 16;
         let reserve = notice(&"9".repeat(digits), ctx.tool, &"0".repeat(hash_width)).len();
 
-        // `preview + "\n\n" + notice` must fit. If the notice alone cannot, spill
-        // is abandoned and the original is left inline **untruncated**.
+        // Preview, join and notice must fit the cap; if they cannot, spill is
+        // abandoned and the original is left inline untruncated.
         let Some(budget) = cap.checked_sub(reserve + 2).filter(|b| *b > 0) else {
             return (payload, None);
         };
 
         let hash = match self.store.put(ctx.tool, payload.as_bytes()) {
             Ok(h) => h,
-            // A storage failure falls back to the untouched inline content rather
-            // than erroring the call. Losing the output is worse than exceeding a
-            // budget.
+            // A storage failure falls back to the untouched payload: losing the
+            // output is worse than exceeding a budget.
             Err(_) => return (payload, None),
         };
 
@@ -425,9 +377,9 @@ fn decimal_digits(n: usize) -> usize {
     d
 }
 
-/// `head = ceil(budget/2)`, `tail = floor(budget/2)`, both shrunk to a char
-/// boundary and, where it costs nothing, to a line boundary — a head cut mid-line
-/// and joined to a tail cut mid-line reads as one line that never existed.
+/// Half the budget each way, shrunk to a char boundary and, where free, to a line
+/// boundary: a head cut mid-line joined to a tail cut mid-line reads as one line
+/// that never existed.
 fn head_tail(s: &str, budget: usize) -> String {
     if s.len() <= budget {
         return s.to_string();

@@ -1,65 +1,6 @@
-//! **The parameter expansions whose value this call already fixes**, put back into the
-//! command text before the grammar reads it.
-//!
-//! # The measurement this exists for
-//!
-//! One package session, 178 gate decisions, 15 of them asks whose baseline read *"the
-//! meaning was never resolved (N construct(s); each scope is taken as the widest it
-//! could reach)"*. Every one of those commands looked like
-//!
 //! ```text
 //! cd /home/dead/Projects/… && export CARGO_TARGET_DIR=$PWD/target && cargo test --offline -p …
 //! ```
-//!
-//! and none of them was actually a mystery. `$PWD` is the directory the call runs in;
-//! `$HOME` is the operator's home; `export X=…` earlier in the same command is a value
-//! this text states itself. Writing those off as *unreadable* cost more than the reading
-//! did: an unresolved action is `NotRun` for the card's standing offers (a session grant
-//! can never cover it — `Grant::covers` refuses before it looks at coverage), so the
-//! person was asked the same question for ever with the cheap answers taken away.
-//!
-//! # What is resolved, and what deliberately is not
-//!
-//! | | |
-//! |---|---|
-//! | `$PWD` | the directory the call runs in, **after a literal `cd`** earlier in the command |
-//! | `$HOME` | the harness's own home, the same value every path in [`crate::intent`] is placed against |
-//! | `$X` where `X` is assigned earlier **as its own statement**, or by `export`/`declare`/`typeset`/`readonly` | the value the text gives it |
-//! | `$X` where nothing in this command sets it, and the **session's shell holds it** | the value the shell reported (D14/R95), said on the card with where it came from — see [`crate::intent::env`] |
-//! | `$?`, `$$`, `$!`, `$#`, `$RANDOM`, `$PIPESTATUS`, … — **the shell's own numbers** | the number `0`, because a number is not a place (see [`NUMERIC`]) |
-//! | `$(…)`, a backquote, `$((…))`, `<(…)`, `$'…'`, `{a,b}` | unresolved, as they were |
-//! | `$@`, `$*`, `$1`, `$0`, a name nobody assigned | unresolved, as they were |
-//! | `X=1 cmd $X` | unresolved: bash expands the argument list BEFORE the prefix assignment lands, and `X=1 echo $X` prints an empty line — so treating it as `1` would be a false claim about what runs |
-//! | `$X` that the session holds and that **looks like a credential** | held, said on the card masked, and **not written into the reading** — the post-substitution text becomes the approval key (§4j.4) |
-//!
-//! # The session's environment is the second source, and never the first
-//!
-//! What this command states about a name wins, **including `unset`**: a `$X` after an `unset
-//! X` in the same command does not fall through to a value the session holds, because the
-//! shell would not have one either. Where the command says nothing, the value comes from
-//! [`crate::intent::env::SessionEnv`] and the note says which of its two sources it was —
-//! the pairs every spawn is given (`HOME`, the pinned `PATH`, `CARGO_TARGET_DIR`) or what the
-//! session's shell reported after a line. `crate::intent::env`'s header is the measurement
-//! behind that split, and §4j is the design.
-//!
-//! # Why the text is rewritten rather than the words patched
-//!
-//! Everything downstream reads the [`shell::Normalised`] — regions, the shapes, per-stage
-//! intents, the shape a decision is recorded under. A substitution that only fixed the
-//! argument list would leave `$PWD/target` placing as `Region::Unbounded` and the shape
-//! carrying `<?>`; substituting into the text and re-normalising fixes all of them at
-//! once, and it is the definition of *the command now means this* rather than a second
-//! opinion beside it.
-//!
-//! # The one thing that could go wrong, and the guard against it
-//!
-//! A substitution is a claim, and a wrong one is worse than the unresolved construct it
-//! replaced. So a value is only put back when the shell would deliver exactly those
-//! bytes as exactly one word: no whitespace (field splitting would make two words), no
-//! `*`, `?` or `[` (pathname expansion would make it a set of files), and **plain** — see
-//! [`as_one_word`], because a splice lands where the expansion was and that may be inside
-//! double quotes. Everything else stays unresolved, which is the fail-closed direction and
-//! the one the operator's ruling of 2026-10-02 already covers.
 
 use letibot_code::shell::{self, Construct};
 
@@ -67,49 +8,13 @@ use super::Surroundings;
 use super::env::{self, From};
 
 /// How many times the text is re-read.
-///
-/// One round resolves every expansion whose value is written literally; a value that is
-/// itself an expansion (`export A=x; export B=$A; cat $B/f`) needs the round after the
-/// one that read it. The bound only has to be larger than a plausible chain — each round
-/// strictly removes a construct or makes no progress and stops, so this is a ceiling on
-/// pathology rather than a budget.
+/// One round resolves the values written literally and a value that is itself an
+/// expansion needs the round after; a round that makes no progress stops.
 const ROUNDS: usize = 8;
 
-/// **The shell's own numbers: expansions whose value is a count, a status or a pid.**
-///
-/// None of them is in the text, and none of them ever will be — and that is not a reason
-/// to refuse the command, because **a number is not a place**. What an unknown word costs
-/// the gate is scope: an unresolvable argument widens the action to
-/// `Region::Unbounded` (`intent::Baseline::widen_argument`), which is outside everything
-/// and which no session grant can cover. A value that can only be `0`–`255` (`$?`), a
-/// count (`$#`), a pid (`$$`, `$!`) or a small integer (`$RANDOM`, `$LINENO`) reaches no
-/// directory that a number does not already name.
-///
-/// # The measurement that made this a rule
-///
-/// MEASURED 2026-10-26, the operator's three corpora (161,099 bash decisions): after `$PWD`
-/// and the earlier assignments were resolved, **`$?` was the largest single reason a
-/// command was still unresolved — 6,019 commands, 4,827 of them unresolved for that alone**
-/// — and every one of them was the same idiom: a build or a test, then `echo "exit=$?"` to
-/// say how it went. The ruling of 2026-10-02 already says what that costs and how to read
-/// it, in the operator's own words about this very shape — *"`$?` inside `echo` widens
-/// nothing `echo` can act on, so it is admitted even in a narrow mode — which is the
-/// actually-correct answer, not a concession"*. It was not admitted, because the parser's
-/// refusal outranked the reading. This list is that ruling applied where it belongs.
-///
-/// # What is written back, and why `0` rather than a placeholder of another shape
-///
-/// A number, because the value IS a number: `echo "exit=0"`, `head -$?` → `head -0`. The
-/// alternative — keeping the word unresolved — claims the command is unreadable, which is
-/// false: the program, its arguments and every path in them are all read. The one thing
-/// this can get wrong is WHICH number, and a number names a file only when a program
-/// treats it as a filename — `cat $?`, `rm dir/$?` — where the difference is one digit of
-/// one path inside the same region, not a different region, program or intent.
-///
-/// **What is deliberately absent**: `$@`, `$*`, `$1`, `$0`, `$-` and every name nobody
-/// assigned. Those CAN be paths, so they stay unresolved and fail closed. `${!x}` (indirect)
-/// is a name, not a number, and `named()` reports its `x` rather than its `!` — it never
-/// arrives here.
+/// The shell's own numbers: expansions whose value is a count, a status or a pid.
+/// A number is not a place, so these are read as `0` rather than left unresolved; `$@`,
+/// `$1` and unassigned names can be paths, so they stay unresolved and fail closed.
 const NUMERIC: &[&str] = &[
     // The special parameters. `$#` is a count, `$$` and `$!` pids, `$?` a status.
     "?",
@@ -139,30 +44,16 @@ fn numeric(name: &str) -> bool {
     NUMERIC.contains(&name)
 }
 
-/// **Whether the expansion is exactly one name's value — and nothing done to it.**
-///
-/// The grammar nests a great deal inside one `expansion` node and hands every one of them
-/// the same `variable_name`: `${#X}` (a LENGTH), `${X%.*}` (a suffix stripped), `${X/a/b}`
-/// (replaced), `${X:0:3}` (a slice), `${!X}` (the value of the variable X NAMES) and
-/// `${arr[0]}` (one element of an array). A resolver keyed on the name alone writes the
-/// value of `X` for all six, which is a claim about a command the operator did not write.
-///
-/// MEASURED 2026-10-26 on the grammar's own tree: `${!X}` and `${#X}` come back with the
-/// transform in an `operator` child and the name `X` beside it, so the reported NAME cannot
-/// tell them apart from `${X}` — and for `${PIPESTATUS[0]}` the reported name is the whole
-/// braces content, `{PIPESTATUS[0]}`, because the `variable_name` is inside a `subscript`.
-/// The check is therefore lexical and exact, against the operator's own text.
+/// Whether the expansion is exactly one name's value, with nothing done to it.
+/// The grammar reports `${#X}`, `${X%.*}`, `${!X}` and `${arr[0]}` under the same name,
+/// so the check is lexical against the operator's own text.
 fn plain(text: &str, name: &str) -> bool {
     text == format!("${name}") || text == format!("${{{name}}}")
 }
 
-/// A number the shell keeps, read from the TEXT of the expansion.
-///
-/// `${PIPESTATUS[0]}` and `${PIPESTATUS[@]}` are allowed because every element of a
-/// numeric array is a number; any other subscript stays unresolved, since `${arr[0]}` is
-/// one element of a value this module does not model. A transform is never a number:
-/// `${#X}` is a length and `${!X}` is another variable's value, and neither is in [`NUMERIC`]
-/// under that spelling.
+/// A number the shell keeps, read from the text of the expansion.
+/// Only a `[0]` or `[@]` subscript is a number: `${arr[0]}` is one element of a value
+/// this module does not model, and a transform is never a number.
 fn numeric_text(text: &str) -> bool {
     let Some(rest) = text.strip_prefix('$') else {
         return false;
@@ -186,29 +77,21 @@ fn numeric_text(text: &str) -> bool {
             .all(|c| c.is_ascii_digit() || c == '@' || c == '*')
 }
 
-/// **The command with every parameter it already fixes written out**, and what it cost.
+/// The command with every parameter it already fixes written out, and what it cost.
 ///
-/// Two facts travel together because a caller that used one without the other would be
-/// making the claim this module is careful about: the text is the reading, and the notes are
-/// what the card says about where a value came from.
+/// The text is the reading; the notes are what the card says about where a value came from.
 #[derive(Debug, Default)]
 pub(super) struct Fixed {
     pub text: String,
     pub notes: Vec<String>,
-    /// **Where the value that resolved `$PATH` came from**, when one did.
-    ///
-    /// It is carried for one decision and one only — `intent::apply_path`'s third outcome.
-    /// A `PATH` **this command's own text fixed** (`export PATH=/w/bin`) was already read
-    /// before this feature existed, so a stage under it must not be turned into a refusal:
-    /// that would make a working command unread. A `PATH` that needed the **session's**
-    /// environment to be written out is the new capability, and the command that rests on it
-    /// was unread until now, so leaving it unread costs nothing and is the fail-closed end.
+    /// Where the value that resolved `$PATH` came from, when one did.
+    /// A `PATH` this command's own text fixed must not turn a stage into a refusal, but one
+    /// that needed the session's environment is the new capability and stays unread.
     pub path: Option<Source>,
 }
 
-/// **Where a value came from.**[`Source::Command`] is this text, which needs no
-/// justification; the other two are the session's environment (see [`crate::intent::env`]
-/// for which is true of what).
+/// Where a value came from. `Source::Command` is this text; the other two are the
+/// session's environment (see `crate::intent::env` for which is true of what).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
     /// An assignment or an `export` in this command, before this point.
@@ -228,7 +111,7 @@ impl Source {
         }
     }
 
-    /// **How the card says which `PATH` this was** — see `intent::apply_path`.
+    /// How the card says which `PATH` this was; see `intent::apply_path`.
     pub(super) fn path_phrase(self) -> &'static str {
         match self {
             Source::Command => "this command set",
@@ -238,22 +121,16 @@ impl Source {
     }
 }
 
-/// **The command with every parameter it already fixes written out.**
-///
-/// Returns the (possibly unchanged) text and a note per substitution, for the audit row:
-/// a card whose regions were placed against a directory the operator never typed should
-/// say where that directory came from.
+/// The command with every parameter it already fixes written out.
+/// Returns the (possibly unchanged) text and a note per substitution, so a card whose
+/// regions were placed against a directory nobody typed says where it came from.
 pub(super) fn resolve(command: &str, env: &Surroundings) -> Fixed {
     resolve_without(command, env, &[])
 }
 
-/// **The same, with one name deliberately left unresolved.**
-///
-/// One caller: [`crate::intent::Baseline::of_command_with`], which asks for the reading with
-/// `PATH` written out and — when it cannot name the file a bare stage would then run — asks
-/// again for the reading where `PATH` is *not* written out. That is how §4j.5's third
-/// outcome is spelled without an undo: the command ends up exactly as unread as it was
-/// before this feature existed, which is the property that makes the whole thing safe.
+/// The same, with one name deliberately left unresolved.
+/// The caller asks again with `PATH` unwritten when it cannot name the file a bare stage
+/// would run, which leaves the command exactly as unread as it was before.
 pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) -> Fixed {
     let mut text = command.to_string();
     let mut notes: Vec<String> = Vec::new();
@@ -267,19 +144,13 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
             break;
         }
         let timeline = timeline(&n, env);
-        // **Back to front**, so a splice cannot move the span of one still to be done.
-        // The spans are the grammar's own byte offsets, which is why this is exact and
-        // a search for the text is not: `'$PWD'` in single quotes is a literal and the
-        // grammar knows it, while a string search would rewrite it.
+        // Back to front, so a splice cannot move the span of one still to be done: the
+        // spans are the grammar's byte offsets, so `'$PWD'` in single quotes is not rewritten.
         let mut splices: Vec<(usize, usize, String, String, Option<Source>)> = Vec::new();
         for u in &n.unresolved {
             let written = n.source.get(u.span.start..u.span.end).unwrap_or("");
-            // **`$(pwd)` is `$PWD`**, which [`timeline`] already has: the directory the call
-            // runs in, moved by a literal `cd` earlier in the command. It is the one
-            // substitution whose value IS in the text — the idiom `cd "$(pwd)/x"` is what
-            // agents write and what §4i.4 named as the safe exception. Nothing else inside a
-            // `$(…)` is touched: the inner command is already read on its own terms and its
-            // output is still a runtime fact.
+            // `$(pwd)` is `$PWD`, which `timeline` already has: the one substitution
+            // whose value is in the text. Nothing else inside a `$(...)` is touched.
             if u.construct == Construct::CommandSubstitutionValue
                 && is_pwd(written)
                 && let Some((value, _)) = value_at(&timeline, env, "PWD", u.span.start)
@@ -297,24 +168,17 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
             let Construct::ParameterExpansion { name } = &u.construct else {
                 continue;
             };
-            // **Only the expansions that ARE the value of one name.** `${#X}`, `${X%.*}`,
-            // `${!X}` and `${arr[0]}` are other expressions of it — see [`plain`], which is
-            // the one place that decides, so a transform added to the grammar cannot
-            // silently become a value here.
-            // **What the text states comes first**: `X=/tmp; cat $X` is about `/tmp`, and no
-            // rule about numbers may overrule a value somebody wrote down. The session's
-            // environment is consulted only where the command says nothing — see
-            // [`value_at`] for why `unset` does not fall through.
+            // Only the expansions that ARE the value of one name: `${#X}`, `${X%.*}` and
+            // `${arr[0]}` are other expressions of it (see `plain`). What the text states
+            // comes first; the session's environment answers only where the command is silent.
             if plain(written, name)
                 && !skip.contains(&name.as_str())
                 && let Some((value, from)) = value_at(&timeline, env, name, u.span.start)
                 && let Some(word) = as_one_word(&value)
             {
-                // **A credential is held and not written down.** The post-substitution
-                // text is what `shape_of` renders into the approval key that every row
-                // stores, and what the oracle is shown — so a token spliced here is a token
-                // in the store, which D12 forbids. It stays unresolved, exactly as it was
-                // before this feature, and the card says why.
+                // A credential is held and not written down: the post-substitution text is
+                // what the approval key stores and what the oracle is shown, so it stays
+                // unresolved and the card says why.
                 if from != Source::Command && env.session.is_secret(name) {
                     let note = format!(
                         "`${name}` is `{}` — {}, and it looks like a credential, so it is not \
@@ -340,8 +204,7 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
                 ));
                 continue;
             }
-            // Then the shell's own numbers — see [`NUMERIC`] for the measurement and for
-            // what the claim is (and is not).
+            // Then the shell's own numbers: see `NUMERIC` for what the claim is and is not.
             if numeric_text(written) {
                 splices.push((
                     u.span.start,
@@ -360,16 +223,9 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
         if splices.is_empty() {
             break;
         }
-        // **One splice per span, and no two splices may touch the same byte.** A `for` body
-        // is walked once per pass with the SAME byte offsets — that is what the unrolling in
-        // `shell` does — so a `$?` inside a loop body is reported once per iteration against
-        // one place in the text; and a nested construct is reported at both the outer and the
-        // inner span. Applying two splices to one place replaces the value AND the bytes
-        // after it: MEASURED 2026-10-26 on lab2x1, commands where `echo "rc=$?"` became
-        // `echo "rc=0` with the closing quote eaten and the rest of the command failed to
-        // parse. Keeping the FIRST of an overlapping run is the safe choice: the dropped
-        // one stays unresolved, the text is re-read next round, and nothing is claimed about
-        // bytes two splices disagree over.
+        // One splice per span, and no two splices may touch the same byte: a `for` body is
+        // walked once per pass with the same offsets, and two splices on one place replace
+        // the value and the bytes after it. The first of an overlapping run wins.
         splices.sort_by_key(|(start, _, _, _, _)| *start);
         let mut disjoint: Vec<(usize, usize, String, String, Option<Source>)> = Vec::new();
         for s in splices {
@@ -387,13 +243,9 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
                 path = Some(*from);
             }
         }
-        // **A substitution may never make a command LESS parseable than it was.** A span is
-        // a claim about bytes, and a wrong one replaces the value AND its neighbour — which
-        // is how `echo "rc=$?"` once became `echo "rc=0` and the rest of the line stopped
-        // parsing. The whole round is abandoned rather than applied: the command keeps its
-        // constructs and stays unread, which is the fail-closed direction and is the same
-        // answer the parser would have given. MEASURED 2026-10-26: 36 commands on lab2x1
-        // still arrive here, and every one of them stays unread.
+        // A substitution may never make a command less parseable than it was. A span is a
+        // claim about bytes, so a round that breaks the parse is abandoned whole and the
+        // command keeps its constructs, which is the fail-closed answer.
         if !n.partial && shell::normalise(&next).partial {
             break;
         }
@@ -408,13 +260,9 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
     Fixed { text, notes, path }
 }
 
-/// **Whether this substitution is `pwd` and nothing else** — `$(pwd)`, `` `pwd` ``, and the
-/// same with the spaces bash allows inside the parens.
-///
-/// Everything else is a value the text does not hold: `$(pwd -P)` resolves symlinks,
-/// `$(cd x && pwd)` is a directory, `$(pwd)/x` arrives as this substitution plus the literal
-/// `/x` and is handled by the ordinary splice because the substitution's own text is still
-/// `$(pwd)`. A `cd` inside it is not modelled — see [`timeline`].
+/// Whether this substitution is `pwd` and nothing else: `$(pwd)`, `` `pwd` ``, and the
+/// spaces bash allows inside the parens.
+/// `$(pwd -P)`, `$(cd x && pwd)` and `$(date)` are values the text does not hold.
 fn is_pwd(text: &str) -> bool {
     let inner = text
         .strip_prefix("$(")
@@ -432,11 +280,8 @@ struct Binding {
     value: Option<String>,
 }
 
-/// **What the shell would have in each name, and from where** — because a value in an
-/// assignment is a value only from the point the shell runs it.
-///
-/// Ordered by the END of the construct that sets it, so an expansion inside the
-/// assignment itself is not resolved by its own value: `X=$X` is not a fixed point.
+/// What the shell would have in each name, and from where.
+/// Ordered by the end of the construct that sets it, so `X=$X` is not a fixed point.
 fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
     let mut out: Vec<Binding> = Vec::new();
     let mut set = |at: usize, name: &str, value: Option<&str>| {
@@ -446,10 +291,8 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
             value: value.map(str::to_string),
         })
     };
-    // `$PWD` is where the call runs. That is `env.workspace`, the same directory every
-    // relative operand is placed against (`Baseline::cwd`), so the two cannot disagree
-    // about where a relative path lands — including its limitation, which is that a
-    // `bash` call naming its own `cwd` argument is not modelled here.
+    // `$PWD` is where the call runs, the same directory every relative operand is placed
+    // against, so the two cannot disagree; a `bash` call naming its own `cwd` is not modelled.
     let mut cwd = env.workspace.clone();
     if let Some(w) = &cwd {
         set(0, "PWD", Some(w));
@@ -457,7 +300,7 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
     if let Some(h) = &env.home {
         set(0, "HOME", Some(h));
     }
-    // A standalone `X=…` is a statement of its own: it sets the shell's variable for
+    // A standalone `X=...` is a statement of its own: it sets the shell's variable for
     // everything after it.
     for a in &n.assignments {
         if let Some(v) = a.value.literal() {
@@ -466,10 +309,8 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
     }
     for stage in &n.stages {
         match stage.program_name().unwrap_or("") {
-            // `export X=…` is how a command hands a value to the stages after it. The
-            // grammar records the assignment on the stage (`export` is its program and
-            // `X=…` its argument), which is why this reads `stage.assignments` rather
-            // than `argv`.
+            // `export X=...` hands a value to the stages after it; the grammar records it
+            // on the stage, which is why this reads `stage.assignments` and not `argv`.
             "export" | "declare" | "typeset" | "readonly" => {
                 for a in &stage.assignments {
                     if let Some(v) = a.value.literal() {
@@ -486,9 +327,8 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
                     }
                 }
             }
-            // **A `cd` moves `$PWD` for every stage after it**, so it moves it here too.
-            // Only a literal target: nothing on this side guesses at a directory, for the
-            // reason `Baseline::of_command_with` gives when it places a relative path.
+            // A `cd` moves `$PWD` for every stage after it, so it moves it here too. Only
+            // a literal target: nothing on this side guesses at a directory.
             "cd" | "pushd" => {
                 if let Some(t) = stage.argv.first().and_then(|w| w.literal())
                     && !t.is_empty()
@@ -509,24 +349,14 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
         }
     }
     // A stable sort keeps two bindings set at the same offset in the order they were
-    // made, so the later statement wins — `binding.at <= at` below reads "set at or
-    // before this point".
+    // made, so the later statement wins and `binding.at <= at` reads "at or before".
     out.sort_by_key(|b| b.at);
     out
 }
 
 /// The value in force for `name` at byte offset `at`, and where it came from.
-///
-/// Two sources, in one order, and the order carries a rule:
-///
-/// 1. **What this command says.** The last binding at or before `at`, *including a binding
-///    to nothing*: `unset X; cat $X` must not fall through to a value the session holds,
-///    because the shell would not have one either. That is the difference between
-///    [`Binding::value`]'s `None` and no binding at all, and it is why this cannot be a
-///    `find` over a map.
-/// 2. **What the session's environment holds** (D14/R95), with its source, so the card can
-///    say whether the reading rests on the pairs every spawn gets or on what a shell
-///    reported after a line.
+/// What this command says wins, including `unset`, which is why a binding to nothing
+/// differs from no binding; otherwise the session's environment answers, with its source.
 fn value_at(
     timeline: &[Binding],
     env: &Surroundings,
@@ -546,23 +376,9 @@ fn value_at(
     ))
 }
 
-/// **The value as the one word the shell will deliver**, or `None` when it cannot be put
-/// back safely.
-///
-/// The exclusions are the ways a shell changes an expansion on its way out, and each of
-/// them would make the substitution a claim about a command that is not the one in front of
-/// the operator:
-///
-/// * **whitespace** — field splitting. `X='a b'; cmd $X` is two arguments, and writing `a
-///   b` back into the text makes it two words of a different command.
-/// * **`*`, `?`, `[`** — pathname expansion. `X='*'; cmd $X` is every file in the
-///   directory.
-/// * **anything outside the plain set** — because the splice lands exactly where the
-///   expansion was, and that may be **inside double quotes** (`echo "p=$PWD"`), where a
-///   quote of our own would become part of the argument. A plain word is the same bytes
-///   bare and inside quotes, which is why it is the only shape written back. The cost is
-///   named: a value containing `=`, `+` or `~` stays unresolved and the command goes on
-///   asking, which is the fail-closed direction.
+/// The value as the one word the shell will deliver, or `None` when it cannot be put back
+/// safely: whitespace splits fields, `*` `?` `[` expand to files, and a quote of our own
+/// inside double quotes would become part of the argument.
 fn as_one_word(v: &str) -> Option<&str> {
     let plain = !v.is_empty()
         && v.chars()

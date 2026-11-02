@@ -1,23 +1,9 @@
-//! **A command on a remote host, inside a boundary** — `docs/remote-hosts.md`'s RH3 row.
+//! A command on a remote host, inside a boundary.
 //!
-//! The local half of Layer 1 has had its own suite since it landed (`tests/confine.rs`): a view,
-//! an egress decision, a measured readback, and a refusal when the helper cannot deliver any of
-//! it. This suite is the same properties one machine over, and it is written the way RH1's is —
-//! a fake `ssh` that runs the command locally against a temporary "remote" — because a test that
-//! contacted a real host would be a test nobody can run.
-//!
-//! # The fake's `bwrap`
-//!
-//! Two of the questions here are *what argv crosses the connection* and *what the backend does
-//! with the answer*, and neither needs a real bubblewrap. So the fake remote gets a `bwrap` shim
-//! that answers `--version`, records its argv, **fabricates a namespace readback** (the probe's
-//! own vocabulary: `ns <name> <inode>` and `seal <name> <verdict>`), and otherwise execs the
-//! command it was handed. That makes the probe's answer a fact of the test rather than of the
-//! kernel, so the same assertions hold on a Mac with no `bwrap` at all and on a Linux box with
-//! one — and `remote_hosts.rs`'s fixture pins `confine: Some(false)` for the same reason.
-//!
-//! The kernel itself is measured once, elsewhere: `tests/confine.rs` runs the real `/usr/bin/bwrap`
-//! for every local spawn.
+//! The local half of the boundary has its own suite; this is the same properties one machine over,
+//! against a fake `ssh` that runs the command locally, because a test that contacted a real host is one
+//! nobody can run. The fake remote gets a `bwrap` shim, so the probe's answer is a fact of the test
+//! rather than of the kernel.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,11 +15,8 @@ use letibot_tools::remote::{Host, Paths, SshBackend, SshSpec};
 /// The short id this suite's session gets: the last eight of `s-01abcdef`.
 const SHORT: &str = "01abcdef";
 
-/// **The readback a real helper would produce**, from a fake that is not a namespace at all.
-///
-/// Every inode differs from the outer one, so the probe reads the boundary as entered — and the
-/// comparison is against numbers this file made up, which is exactly what makes it a test of the
-/// *plumbing* and not of the kernel.
+/// The readback a real helper would produce, from a fake that is not a namespace at all: every inode
+/// differs from the outer one, which is what makes this a test of the plumbing and not of the kernel.
 const FAKE_READBACK: &str = "\
 printf 'ns user user:[4026535001]\\n'
 printf 'ns mnt mnt:[4026535002]\\n'
@@ -45,11 +28,11 @@ printf 'ns cgroup cgroup:[4026535007]\\n'
 printf 'seal nested held\\n'
 printf 'seal nnp 1\\n'";
 
-/// **One fake remote**: a home that stands in for that machine's, a repository to send, an `ssh`
-/// that runs a command against the first, and a `bwrap` that answers the probe.
+/// One fake remote: a home standing in for that machine's, a repository to send, an `ssh` that
+/// runs a command against the first, and a `bwrap` that answers the probe.
 struct Rig {
     dir: PathBuf,
-    /// The fake remote's `$HOME` — where the toolchain grants are found.
+    /// The fake remote's `$HOME`, where the toolchain grants are found.
     home: PathBuf,
     /// Where the checkout lands, on the "remote".
     worktree: PathBuf,
@@ -64,9 +47,8 @@ struct Rig {
 }
 
 impl Rig {
-    /// `readback` is the shell fragment the fake helper prints when it is asked to *measure* the
-    /// boundary; `mode` says whether it pretends to be a helper at all (`None` is a host with no
-    /// `bwrap` on its `PATH`).
+    /// `readback` is the shell fragment the fake helper prints when asked to measure the boundary;
+    /// `with_bwrap` is whether it pretends to be a helper at all.
     fn new(tag: &str, readback: &str, with_bwrap: bool) -> Rig {
         let dir = std::env::temp_dir().join(format!(
             "letibot-confine-{tag}-{}-{}",
@@ -81,8 +63,8 @@ impl Rig {
         std::fs::create_dir_all(&bin).expect("bin");
         std::fs::create_dir_all(&home).expect("home");
 
-        // **A `setsid` for the boxes that have none**, as RH1's rig does: a job has to lead its
-        // own process group or `job_kill`'s group signal is not the thing under test.
+        // A `setsid` for the boxes that have none: a job has to lead its own process group, or
+        // `job_kill`'s group signal is not the thing under test.
         if !on_path("setsid") {
             write_executable(
                 &bin.join("setsid"),
@@ -95,8 +77,8 @@ impl Rig {
             write_executable(&bin.join("bwrap"), &bwrap_shim(&bwrap_log, readback));
         }
 
-        // **The toolchain the view is expected to hold**, and the one config file a commit needs:
-        // the probe reports what exists, so these have to exist for the grants to appear.
+        // The toolchain the view is expected to hold, and the one config file a commit needs: the
+        // probe reports what exists, so these have to exist for the grants to appear.
         std::fs::create_dir_all(home.join(".cargo")).expect("a cargo home");
         std::fs::create_dir_all(home.join(".rustup")).expect("a rustup home");
         std::fs::write(home.join(".gitconfig"), b"[user]\n\tname = a test\n").expect("a gitconfig");
@@ -115,10 +97,9 @@ impl Rig {
             ),
         );
         let paths = Paths::in_home(dir.join("letibot-home"));
-        // **A host of this rig's own**, for the reason RH6's breaker test gives: the probe's answer
-        // is cached per host name for the life of the process, so two rigs sharing a name would
-        // share one answer — and a test whose whole point is *this host has no helper* would read
-        // the answer a different rig got.
+        // A host of this rig's own: the probe's answer is cached per host name for the life of
+        // the process, so two rigs sharing a name would share one answer, and a test about a host
+        // with no helper would read what another rig got.
         let name = format!("conf-{tag}");
         let hostname = format!("{name}.invalid");
         std::fs::create_dir_all(paths.keys()).expect("the keys directory");
@@ -174,8 +155,8 @@ impl Rig {
             paths: Some(self.paths.clone()),
             bound: Some(Duration::from_secs(10)),
             egress,
-            // **Asked**, which is production's own value: `None`. The fake remote answers with
-            // its `bwrap`, and a rig built without one answers that it has none.
+            // Asked, which is production's own value: `None`. The fake remote answers with its
+            // `bwrap`, and a rig built without one answers that it has none.
             confine: None,
             vm: false,
         }
@@ -189,7 +170,7 @@ impl Rig {
         b
     }
 
-    /// **What the helper was handed**, one line per invocation.
+    /// What the helper was handed, one line per invocation.
     fn bwrap_calls(&self) -> Vec<String> {
         std::fs::read_to_string(&self.bwrap_log)
             .unwrap_or_default()
@@ -202,7 +183,7 @@ impl Rig {
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        // **Only the pids this rig wrote down**, never a pattern.
+        // Only the pids this rig wrote down, never a pattern.
         if let Ok(entries) = std::fs::read_dir(&self.jobs) {
             for e in entries.flatten() {
                 if e.path().extension().is_some_and(|x| x == "pid")
@@ -221,14 +202,9 @@ impl Drop for Rig {
     }
 }
 
-/// The fake helper: `--version`, the argv it was handed, a fabricated readback for the probe's own
-/// question, and otherwise the command after `--`, run with the `--clearenv` + `--setenv`
-/// environment and in the `--chdir` it was given.
-///
-/// **The two flags it implements are the two whose semantics an assertion needs**: what the command
-/// sees as `$HOME` and on `$PATH` is decided by them, and a fake that ignored them would let a
-/// wrong environment pass. The binds and the namespaces it does not implement — those are asserted
-/// as argv, because that is where their meaning is.
+/// The fake helper: `--version`, the argv it was handed, a fabricated readback, and otherwise the command
+/// after `--`, run in the environment and directory it was given. The binds and namespaces it does not
+/// implement, and those are asserted as argv because that is where their meaning is.
 fn bwrap_shim(log: &Path, readback: &str) -> String {
     format!(
         "#!/bin/bash\n\
@@ -268,20 +244,18 @@ fn bwrap_shim(log: &Path, readback: &str) -> String {
     )
 }
 
-/// The readback a helper that entered **nothing** produces: the caller's own inodes, read from
-/// the shell that is running the helper. That is what a kernel refusing the namespaces looks
-/// like, and it is the answer the probe has to refuse rather than believe.
+/// The readback a helper that entered nothing produces: the caller's own inodes. That is what a
+/// kernel refusing the namespaces looks like, and the probe has to refuse it rather than believe
+/// it.
 const SAME_INODES: &str = "\
 for n in user mnt pid net ipc uts cgroup; do \
   printf 'ns %s %s\\n' \"$n\" \"$(readlink /proc/self/ns/$n)\"; done\n\
 printf 'seal nested held\\n'\n\
 printf 'seal nnp 1\\n'";
 
-/// A fake program on the rig's own `PATH`.
-///
-/// Written through [`letibot_tools::testing::write_stub`], which does not return until the file
-/// can be exec'd: this rig writes four of them and then runs a session that forks — the
-/// `Text file busy` the note on that function describes is exactly this shape.
+/// A fake program on the rig's own `PATH`, written through [`letibot_tools::testing::write_stub`],
+/// which does not return until the file can be exec'd: this rig writes four of them and then runs
+/// a session that forks.
 fn write_executable(path: &Path, text: &str) {
     letibot_tools::testing::write_stub(path, text);
 }
@@ -306,12 +280,9 @@ fn git(repo: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// **A command of the model's runs inside the helper, with the view the local policy builds.**
-///
-/// This is the whole of RH3's item 2 in one assertion set: the checkout writable at its own path,
-/// the toolchain read-only, `$HOME` a directory of letibot's own and not the operator's, the
-/// command after `--`, and — the one that is easy to lose — **no `--new-session`**, because the
-/// remote process group is what an interrupt kills.
+/// A command of the model's runs inside the helper, with the view the local policy builds: the checkout
+/// writable, the toolchain read-only, `$HOME` a directory of letibot's own, and no `--new-session`, since
+/// the remote process group is what an interrupt kills.
 #[test]
 fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
     let mut rig = Rig::new("view", FAKE_READBACK, true);
@@ -342,8 +313,8 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
 
     let calls = rig.bwrap_calls();
     assert_eq!(calls.len(), 2, "a probe and then the command: {calls:#?}");
-    // **The command's own argv**, not the probe's: the probe measures the `--new-session` argv
-    // because that is what a local spawn asks for, and the command must not be that one.
+    // The command's own argv, not the probe's: the probe measures the `--new-session` argv because
+    // that is what a local spawn asks for, and the command must not be that one.
     let argv = calls.last().expect("the command's call");
     for want in [
         // The namespaces, and the two seals, exactly as a local spawn asks for them.
@@ -360,9 +331,9 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         "--ro-bind-try /usr /usr",
         "--proc /proc",
         "--dev /dev",
-        // **`/tmp` is the session's own directory on that machine**, not a fresh tmpfs: a file
-        // one call writes is there for the next call of the same session. It lives beside the
-        // session's `$HOME`, both under the host's `root` — never the operator's `/tmp`.
+        // `/tmp` is the session's own directory on that machine, not a fresh tmpfs, so a file one
+        // call writes is there for the next call. It lives beside the session's `$HOME`, never at
+        // the operator's `/tmp`.
         &format!(
             "--bind {0}/letibot-remote/.letibot-home/{SHORT}/tmp /tmp",
             std::fs::canonicalize(&rig.home)
@@ -373,7 +344,7 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         "--tmpfs /var/tmp",
         // The project, read-write, at its own path.
         &format!("--bind {} {}", b.worktree_path(), b.worktree_path()),
-        // The operator's toolchain, read-only — and the one file a commit needs.
+        // The operator's toolchain, read-only, and the one file a commit needs.
         &format!(
             "--ro-bind {}/.cargo {}/.cargo",
             rig.home.display(),
@@ -389,21 +360,17 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
             rig.home.display(),
             rig.home.display()
         ),
-        // `$HOME` is letibot's own directory on that host, NOT the operator's. The view resolves
-        // it, so it is spelled through the canonical root: on a Mac the temp dir is `/var/…` and
-        // its real path `/private/var/…`, and the argv carries the real one.
+        // `$HOME` is letibot's own directory on that host, not the operator's, and the view
+        // resolves it through the canonical root: on a Mac the argv carries `/private/var/...`.
         &format!(
             "--setenv HOME {}/letibot-remote/.letibot-home/{SHORT}",
             std::fs::canonicalize(&rig.home)
                 .unwrap_or_else(|_| rig.home.clone())
                 .display()
         ),
-        // The keep-list is expanded by the FAR shell — a `$PATH` taken from this box is a list of
-        // directories that do not exist there. The fake ssh puts its own `bin` in front of the
-        // fake remote's `PATH`, and this process's `PATH` has no such directory, so a value that
-        // carries it can only have come from that shell.
-        // The mirror the checkout is a worktree of, writable — without it `git` inside the view
-        // has no repository (measured: the first packages placed after RH3 could not commit).
+        // The keep-list is expanded by the FAR shell: a `$PATH` taken from this box names directories that
+        // do not exist there. The mirror the checkout is a worktree of is writable, because without it `git`
+        // inside the view has no repository.
         &format!(
             "--bind {0}/letibot-remote/the-repo.git {0}/letibot-remote/the-repo.git",
             std::fs::canonicalize(&rig.home)
@@ -433,9 +400,8 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         argv.ends_with("pwd"),
         "the command's own argv is what runs, and last:\n{argv}"
     );
-    // **The operator's ssh directory is not in the view** — never bound, at any path, under any
-    // name. RH5's hard refusal is about letibot never reading it, and this is the half that would
-    // make it readable to a command.
+    // The operator's ssh directory is never bound, at any path or under any name: this is the half
+    // of that rule that would make it readable to a command.
     let their_ssh = rig.paths.user_ssh().display().to_string();
     assert!(
         !argv.contains(&their_ssh) && !argv.contains(".ssh"),
@@ -450,9 +416,8 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         "`$HOME` itself is never writable, nor bound at its own path:\n{argv}"
     );
 
-    // **`$HOME` inside is the session's own**, so a command that writes to `~` does not write to
-    // the operator's home. The fake helper does not implement the namespace, so what is asserted
-    // is the environment it was handed.
+    // `$HOME` inside is the session's own, so a command writing to `~` does not touch the
+    // operator's home. The fake implements no namespace, so the environment is what is asserted.
     let round = b
         .run(&Command {
             argv: vec!["sh".into(), "-c".into(), "echo $HOME".into()],
@@ -469,9 +434,8 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
     assert_ne!(home_in_view, rig.home.display().to_string());
 }
 
-/// **The session's network rule is the boundary's**, and it is a decision rather than a default:
-/// a point that seats network calls shares the host's namespace, and one that does not gets an
-/// empty one.
+/// The session's network rule is the boundary's, and a decision rather than a default: a session
+/// that seats network calls shares the host's namespace, and one that does not gets an empty one.
 #[test]
 fn the_network_namespace_follows_the_sessions_rule() {
     let mut denied = Rig::new("netdenied", FAKE_READBACK, true);
@@ -507,10 +471,9 @@ fn the_network_namespace_follows_the_sessions_rule() {
     assert!(described.contains("CONFINED"), "{described}");
 }
 
-/// **A host with no `bwrap` at all**: the probe's answer is the fact, and the refusal names what is
-/// missing. No fake host can produce this one — the machine behind the fake has `/usr/bin/bwrap`
-/// on its `PATH` and `command -v` would find it — so the answer is built the way the probe builds
-/// it, from what a host with no helper prints.
+/// A host with no `bwrap` at all: the probe's answer is the fact, and the refusal names what is
+/// missing. No fake host can produce this, since the machine behind it has `/usr/bin/bwrap`, so the
+/// answer is built the way the probe builds it.
 #[test]
 fn a_host_with_no_helper_is_refused_and_says_which_helper() {
     use letibot_tools::exec::confine::{measured_from_probe, read_probe};
@@ -532,12 +495,8 @@ fn a_host_with_no_helper_is_refused_and_says_which_helper() {
     );
 }
 
-/// **A host that cannot confine runs exactly as it did before RH3, and says so** — unconfined,
-/// every call a decision, with the probe's own reason on the placement and in `describe`.
-///
-/// The reason here is the measured one (the helper ran and entered nothing), because that is the
-/// failure a fake host can produce honestly; `a_host_with_no_helper_is_refused_and_says_which_helper`
-/// above is the other one, and both end in the same fallback.
+/// A host that cannot confine runs as it did before the boundary existed, and says so: unconfined, every
+/// call a decision, with the probe's own reason on the placement.
 #[test]
 fn a_host_that_cannot_confine_falls_back_and_names_the_reason() {
     let mut rig = Rig::new("nobwrap", SAME_INODES, true);
@@ -580,9 +539,8 @@ fn a_host_that_cannot_confine_falls_back_and_names_the_reason() {
     );
 }
 
-/// **A helper that runs but enters nothing is refused, not believed.** The readback is compared
-/// against the caller's own inodes, which is the only honest test of *did the namespace take*, and
-/// this is the answer `kernel.apparmor_restrict_unprivileged_userns=1` produces.
+/// A helper that runs but enters nothing is refused, not believed: the readback is compared
+/// against the caller's own inodes, which is the only honest test of whether the namespace took.
 #[test]
 fn a_probe_whose_namespaces_did_not_take_falls_back_with_that_reason() {
     let mut rig = Rig::new("samens", SAME_INODES, true);
@@ -596,11 +554,9 @@ fn a_probe_whose_namespaces_did_not_take_falls_back_with_that_reason() {
     assert!(why.contains("user"), "{why}");
 }
 
-/// **A background job runs inside the boundary too, and `job_kill` still ends its group.**
-///
-/// The second half is the reason [`letibot_tools::exec::Session::Kept`] exists: `--new-session`
-/// would move the sandbox out of the process group the launcher recorded, and a group kill would
-/// then end the launcher and leave the work running.
+/// A background job runs inside the boundary too, and `job_kill` still ends its group, which is why
+/// [`letibot_tools::exec::Session::Kept`] exists: `--new-session` would move the sandbox out of the group
+/// the launcher recorded.
 #[test]
 fn a_job_runs_inside_the_boundary_and_its_group_is_killed() {
     let mut rig = Rig::new("job", FAKE_READBACK, true);
@@ -664,15 +620,9 @@ fn a_job_runs_inside_the_boundary_and_its_group_is_killed() {
     ));
 }
 
-/// **A file tool on a confined session can see what a command can see, and nothing else.**
-///
-/// This is the half that RH5's refusal cannot reach on a placed session: that rule resolves a path
-/// on *this* box, so a path on the far machine resolves to nothing here and passes. The view is
-/// the answer — a directory that is not in it produces `Outside` rather than a read.
-///
-/// And it is the VIEW's rule, not the checkout's: `/etc/passwd` is bound read-only into a
-/// command's sandbox, so `read` reaches it too. One answer to one question, rather than a command
-/// that can `cat` a file its own `read` tool denies.
+/// A file tool on a confined session sees what a command sees and nothing else. This is the half a path
+/// refusal on this box cannot reach on a placed session, where a path on the far machine resolves to
+/// nothing here and passes.
 #[test]
 fn the_boundary_bounds_the_file_tools_and_not_only_the_commands() {
     use letibot_tools::backend::BackendError;
@@ -692,15 +642,10 @@ fn the_boundary_bounds_the_file_tools_and_not_only_the_commands() {
         b.read(&granted).is_ok(),
         "a grant is in the view, so the tools see it too"
     );
-    // Inside, and bound read-only as a system root — a command can read it, so the tools can.
+    // Inside, and bound read-only as a system root: a command can read it, so the tools can.
     assert!(b.read("/etc/hostname").is_ok() || b.read("/etc/passwd").is_ok());
-    // **Outside the view**: refused, and named as a boundary rather than as a miss.
-    //
-    // `/srv` and not something under the fixture's own `/tmp`: `/tmp` is one of the
-    // **replaced** roots — a fresh tmpfs inside the sandbox, so a path there is absent for a
-    // different reason and `ViewSpec::outside` deliberately says *not outside* (it exists and can
-    // be used, it is simply empty). A refusal that said *outside* about `/tmp` would be the wrong
-    // note; this is what the right one looks like.
+    // Outside the view: refused, and named as a boundary rather than as a miss. `/srv` and not something
+    // under the fixture's `/tmp`, which is one of the replaced roots and so absent for another reason.
     let outside = "/srv/notes-the-view-does-not-hold".to_string();
     let refused = b
         .read(&outside)
@@ -710,7 +655,7 @@ fn the_boundary_bounds_the_file_tools_and_not_only_the_commands() {
         "a location the view does not hold is a boundary answer, not `no such file`: {refused:?}"
     );
     assert!(b.list(&outside).is_err() && b.stat(&outside).is_none());
-    // And the unconfined half of the same fact: no view, no claim about the far machine's
+    // And the unconfined half of the same fact: no view, so no claim about the far machine's
     // filesystem.
     let mut plain = Rig::new("rootpathnone", SAME_INODES, true);
     let unbounded = plain.place(Egress::Denied);
@@ -723,12 +668,8 @@ fn the_boundary_bounds_the_file_tools_and_not_only_the_commands() {
     );
 }
 
-/// **The card is told where the call lands, and it is told the truth.**
-///
-/// Until RH3 the host arm of `boundary_facts` was one fixed sentence — *"the host filesystem is not
-/// sandboxed; §11.4's boundary arrives with firecode"* — which was false for a confined session.
-/// The three answers are now three different sentences, and the difference between them is the
-/// difference between *the answer you are about to give is worth less* and *worth more*.
+/// The card is told where the call lands, and the three answers are three different sentences: the
+/// difference between them is the difference between the answer being worth less and worth more.
 #[test]
 fn the_gate_is_told_about_the_boundary_and_not_shown_a_fixed_sentence() {
     use letibot_tools::GateCall;
@@ -789,24 +730,9 @@ fn the_gate_is_told_about_the_boundary_and_not_shown_a_fixed_sentence() {
     assert!(!said.contains("INSIDE a measured boundary"), "{said}");
 }
 
-/// **What a confined session is not asked about, and what it still is** — the inside/outside
-/// boundary, through the gate a placed session actually uses.
-///
-/// This is the honest form of the sentence *"a remote command that ran confined is adjudicated as
-/// confined"*, and the reason it is written as a pair: **there is one gate and it has no
-/// confinement input at all.** A local confined session and a placed one reach the same rules, so
-/// *parity with a local confined command* is a property of the code being shared rather than of a
-/// second lowering — and what RH3 had to fix was the **fact** (a hardcoded `backend_confined`,
-/// and a card that recited *"the host filesystem is not sandboxed"* over a session that had a
-/// boundary).
-///
-/// So what is measured here is the line the confinement makes meaningful:
-///
-/// * a shell command that only **looks**, and only at paths layer A cannot place as outside, is
-///   `Access::Read` — clause 4 — and is admitted at `writes-allowed` with nobody asked;
-/// * the same shell reading a path the classifier CAN name as outside keeps exec access, and exec
-///   asks at every point (the operator's rule of 2026-09-11). That is what stops a `cat` of a
-///   credential from riding clause 4.
+/// What a confined session is asked about and what it still is: one gate, with no confinement input, so
+/// what is measured is the line confinement makes meaningful. A shell that only looks at paths layer A
+/// cannot place as outside is a read; one naming a path it can call outside keeps exec access.
 #[test]
 fn an_inside_read_is_admitted_unasked_and_an_outside_one_still_asks() {
     use letibot_tools::adjudicate::AdjudicatedGate;
@@ -841,13 +767,13 @@ fn an_inside_read_is_admitted_unasked_and_an_outside_one_still_asks() {
         gate.admit(&call)
     };
 
-    // Inside the view, and only looking: clause 4, nobody asked.
+    // Inside the view, and only looking: admitted at writes-allowed with nobody asked.
     assert!(
         matches!(decide(&mut gate, "cat README"), GateDecision::Admit),
         "a read inside the workspace is admitted without asking at writes-allowed"
     );
-    // Outside the view, and layer A can name it: still exec, so it still asks — and this gate has
-    // nobody behind it, which is what makes the difference visible rather than a card.
+    // Outside the view, and layer A can name it: still exec, so it still asks, and this gate has
+    // nobody behind it, which makes the difference visible rather than a card.
     assert!(
         !matches!(decide(&mut gate, "cat ~/.bashrc"), GateDecision::Admit),
         "a read of a path the classifier can name as outside keeps exec access and asks"
@@ -858,8 +784,8 @@ fn an_inside_read_is_admitted_unasked_and_an_outside_one_still_asks() {
     );
 }
 
-/// **The placement is where the mode's answer comes from**, and a host that confines nothing must
-/// not read as one — the fact `harnessd` takes as `backend_confined`.
+/// The placement is where the mode's answer comes from, and a host that confines nothing must not
+/// read as one: the fact `harnessd` takes as `backend_confined`.
 #[test]
 fn confined_is_a_fact_read_off_the_backend() {
     let mut confined = Rig::new("factyes", FAKE_READBACK, true);

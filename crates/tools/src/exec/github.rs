@@ -1,22 +1,9 @@
-//! **A monitor on a GitHub pull request or issue** — through the operator's own `gh`.
+//! A monitor on a GitHub pull request or issue, through the operator's own `gh`.
 //!
-//! The operator, 2026-10-15: *"we should add more waiting criteria such as github issue or pr"* —
-//! closed or merged, checks finished, a review, a new comment, and CodeRabbit *"to be watched in
-//! particular and as a separate thing"*. Each is a [`Condition`], so a GitHub watch is a monitor
-//! like any other: the poller, an owner, the restart rules, the monitors pane, and a todo row may
-//! wait on it (`TodoNeed::Monitor`).
-//!
-//! # How it looks
-//!
-//! **`gh`, and nothing else**: the operator's authenticated CLI is the one door to GitHub, so a
-//! watch sees what they can see and nothing in the daemon holds a token. It is spawned at most
-//! once per interval (default [`EVERY`]) and its child is polled with `try_wait`, the way a
-//! command monitor's is, so a slow network never stalls the poller. **What it saw first is the
-//! baseline**: a review, comment or CodeRabbit pass is news only if it came after the watch was
-//! armed — except a state that is already the answer (a pull request already merged, its checks
-//! already finished), which fires at once. A `gh` that is missing or not logged in fires with
-//! that, because a watch that can never see anything must not read as one still waiting; a
-//! network blip is retried at the next interval.
+//! Closed or merged, checks finished, a review, a new comment and a CodeRabbit pass are each
+//! a [`Condition`], so a GitHub watch is a monitor like any other. `gh` is the one door, so a
+//! watch sees what the operator can see and no token lives in the daemon; what it saw first is
+//! the baseline, except a state that is already the answer, which fires at once.
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -27,14 +14,14 @@ use serde_json::Value;
 
 use super::monitor::Condition;
 
-/// **How often a watch asks GitHub**, unless the call says. A pull request's checks take minutes
+/// How often a watch asks GitHub, unless the call says. A pull request's checks take minutes
 /// and a review hours; ninety seconds is prompt for both and a few hundred calls a day.
 pub const EVERY: Duration = Duration::from_secs(90);
 
 /// The shortest interval a call may ask for.
 pub const EVERY_MIN: Duration = Duration::from_secs(30);
 
-/// **How long a GitHub watch may live** — reviews take days, and a monitor's ordinary hour would
+/// How long a GitHub watch may live — reviews take days, and a monitor's ordinary hour would
 /// expire before most of them. Renewable like any monitor.
 pub const GITHUB_MAX_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
@@ -113,7 +100,7 @@ pub struct Target {
 }
 
 impl Target {
-    /// **A pull request or issue URL** — `https://github.com/o/r/pull/12`, `…/issues/7`.
+    /// A pull request or issue URL — `https://github.com/o/r/pull/12`, `…/issues/7`.
     pub fn from_url(url: &str) -> Option<Target> {
         let rest = url
             .trim()
@@ -151,7 +138,7 @@ impl Target {
 struct Seen {
     state: String,
     head: String,
-    /// **Every submitted review but CodeRabbit's** — approving, asking for changes, or commenting,
+    /// Every submitted review but CodeRabbit's — approving, asking for changes, or commenting,
     /// the operator's own included: `(when, author, state, first line)`, oldest first.
     reviews: Vec<(String, String, String, String)>,
     /// Who a review is still requested from.
@@ -179,7 +166,7 @@ struct State {
     checks_told: Option<String>,
     /// The head whose conflict with the base was already reported.
     conflict_told: Option<String>,
-    /// **The pull request is closed and that has been said** — nothing more can happen on it, so
+    /// The pull request is closed and that has been said — nothing more can happen on it, so
     /// GitHub is not asked again for the rest of the watch's life.
     done: bool,
 }
@@ -190,11 +177,11 @@ enum Step {
     View,
 }
 
-/// **A watch on a pull request or issue.** See the module docs.
+/// A watch on a pull request or issue. See the module docs.
 #[derive(Debug)]
 pub struct GithubCondition {
     target: Target,
-    /// **What it waits for — one look serves them all**: a pull request's checks, reviews,
+    /// What it waits for — one look serves them all: a pull request's checks, reviews,
     /// CodeRabbit, comments and closing are one `gh` call, not five (the operator: *"we can
     /// coalesce monitors sets like these"*).
     untils: Vec<Until>,
@@ -268,11 +255,8 @@ impl GithubCondition {
         let first = st.base.is_none();
         let base = st.base.get_or_insert_with(|| seen.clone()).clone();
         let what = self.target.describe();
-        // **A pull request in conflict will not merge and will not be checked** — GitHub runs no
-        // CI on a branch that conflicts with its base — so a watch for its merging or its checks
-        // is waiting on something that cannot happen. Measured on stroppy-io/stroppy#206: a
-        // `merged` watch and a model "waiting for CI" over `mergeable: CONFLICTING`. Said once
-        // per head, including at arming: resolving and pushing is the next step either way.
+        // A pull request in conflict will not merge and will not be checked, since GitHub runs
+        // no CI on a branch that conflicts with its base: said once per head, including at arming.
         if self
             .untils
             .iter()
@@ -294,7 +278,7 @@ impl GithubCondition {
             .iter()
             .filter_map(|u| self.evaluate_one(*u, st, &seen, &base, first))
             .collect();
-        // **A pull request that is no longer open is the end of every watch on it** — said once,
+        // A pull request that is no longer open is the end of every watch on it — said once,
         // even to a watch that never asked about closing, and then nothing more is asked of
         // GitHub (`State::done`).
         if seen.state != "OPEN" && !st.done {
@@ -357,7 +341,7 @@ impl GithubCondition {
                     )
                 })
             }
-            // **Any review, by whoever was asked** — the operator: *"reviews can come via normal
+            // Any review, by whoever was asked — the operator: *"reviews can come via normal
             // reviewers route"*. A review submitted as a COMMENT, which is how review bots and
             // many people review, findings inline and maybe no text of its own, is a review too.
             Until::Review if !first && seen.reviews.len() > base.reviews.len() => {
@@ -425,10 +409,8 @@ impl GithubCondition {
             Until::CodeRabbit if !first && seen.rabbit.len() > base.rabbit.len() => {
                 let (how, said) = seen.rabbit.last()?;
                 let how = how.to_lowercase().replace('_', " ");
-                // **A review whose own text is empty has said everything on the diff** — CodeRabbit
-                // posts its findings as inline comments and often leaves the review body blank, and
-                // quoting `""` read as a review that said nothing (the operator: *"empty line looks
-                // suspicious"*). Say where its words are instead.
+                // A review with an empty body has said everything on the diff, as CodeRabbit's
+                // do: point at its words there rather than quoting nothing.
                 Some(if said.is_empty() {
                     format!(
                         "CodeRabbit reviewed {what} ({how}); its review has no summary text, so what \
@@ -470,7 +452,7 @@ fn is_rabbit(who: &str) -> bool {
     who.to_ascii_lowercase().starts_with("coderabbit")
 }
 
-/// **One look, read** — `gh pr view --json` or `gh issue view --json`.
+/// One look, read — `gh pr view --json` or `gh issue view --json`.
 fn parse(json: &str, viewer: Option<&str>) -> Option<Seen> {
     let v: Value = serde_json::from_str(json).ok()?;
     let arr = |k: &str| {
@@ -648,7 +630,7 @@ impl Condition for GithubCondition {
     }
 
     fn rearm(&self) {
-        // **The look that fired is the next baseline**, so a repeating watch reports what came
+        // The look that fired is the next baseline, so a repeating watch reports what came
         // after it: the next review, the next comment, the checks of the next push.
         let mut st = self.state.lock().expect("github watch");
         st.base = st.latest.clone();
@@ -779,7 +761,7 @@ mod tests {
         }
     }
 
-    /// **A CodeRabbit review with no text of its own says where its findings are** — the
+    /// A CodeRabbit review with no text of its own says where its findings are — the
     /// operator, on `pr206-coderabbit` firing with `: ""`: *"empty line looks suspicious"*.
     #[test]
     fn an_empty_rabbit_review_points_at_its_inline_comments() {
@@ -813,7 +795,7 @@ mod tests {
         );
     }
 
-    /// **A pull request in conflict says so to a watch for its merging or its checks** — once per
+    /// A pull request in conflict says so to a watch for its merging or its checks — once per
     /// head, at arming too — and a watch for reviews is not told.
     #[test]
     fn a_conflicting_pull_request_is_said_once_per_head() {
@@ -838,10 +820,8 @@ mod tests {
         assert_eq!(c.evaluate(&mut st, parse(dirty, None).unwrap()), None);
     }
 
-    /// **A review is any review** — a reviewer's comment-only review with nothing but inline
-    /// comments is one (the operator: *"reviews can come via normal reviewers route"*), the
-    /// operator's own is named as theirs, CodeRabbit's stays its own watch's, and who is still
-    /// asked is said.
+    /// A review is any review, including a comment-only one with nothing but inline comments;
+    /// the operator's own is named as theirs and CodeRabbit's stays its own watch's.
     #[test]
     fn every_submitted_review_is_news_whatever_its_kind() {
         let t = Target::from_url("https://github.com/stroppy-io/stroppy/pull/206").unwrap();
@@ -866,10 +846,9 @@ mod tests {
         );
     }
 
-    /// **One watch for several things** — the operator: *"we can coalesce monitors sets like
-    /// these"*. Two that happen in one look are one firing; the pull request closing is said once,
-    /// after which GitHub is not asked again; and a watch that never asked about closing is still
-    /// told the pull request is gone.
+    /// One watch for several things: two that happen in one look are one firing, the closing is
+    /// said once and GitHub is not asked again, and a watch that never asked about closing still
+    /// learns the pull request is gone.
     #[test]
     fn one_watch_serves_several_and_stops_when_the_pull_request_closes() {
         let t = Target::from_url("https://github.com/o/r/pull/24").unwrap();
@@ -948,7 +927,7 @@ mod tests {
         );
     }
 
-    /// **Through a stub `gh`, end to end** — spawned, polled, read: the watch fires on the look
+    /// Through a stub `gh`, end to end — spawned, polled, read: the watch fires on the look
     /// that shows the change, and a `gh` that is not logged in fires with that.
     #[test]
     fn a_stub_gh_is_asked_and_answers() {

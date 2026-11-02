@@ -1,15 +1,11 @@
-//! Surfacing denials, and the breaker.
+//! Surfacing denials to the operator, and the breaker that stops the asking.
 
 use super::*;
 
-// -----------------------------------------------------------------------
-// Surfacing, and the breaker.
-// -----------------------------------------------------------------------
-
 #[test]
 fn every_denial_reaches_the_operator_with_the_grant_path_attached() {
-    // The operator's complaint, closed: they are told when it happens, and the
-    // notice carries what they can do about it.
+    // A refusal taken on the operator's behalf is news while the work is happening, and it has
+    // to say what they can do about it.
     let sink = std::sync::Arc::new(crate::authorise::RecordingDenialSink::default());
     struct Shared(std::sync::Arc<crate::authorise::RecordingDenialSink>);
     impl crate::authorise::DenialSink for Shared {
@@ -32,8 +28,8 @@ fn every_denial_reaches_the_operator_with_the_grant_path_attached() {
 
 #[test]
 fn three_refusals_in_one_direction_open_the_breaker_and_stop_asking() {
-    // What stops a classifier being argued down one call at a time: after three,
-    // the gate does not produce another verdict at all.
+    // What stops a classifier being argued down one call at a time: after three, the gate does
+    // not produce another verdict at all.
     let consulted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = consulted.clone();
     let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
@@ -51,12 +47,9 @@ fn three_refusals_in_one_direction_open_the_breaker_and_stop_asking() {
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
 
-    // Three re-spellings of one intention. The counter must not be reset by the
-    // re-spelling, which is the whole point of the direction key.
-    // **Three re-spellings of one intention, and they have to be exec** (R21):
-    // `cat`/`head`/`tail` are reads inside the workspace and clause 4 admits them
-    // without asking anything, so a breaker test built on them would never open.
-    // `sed -n` is the same direction and still asks (see `Baseline::reads_only`).
+    // Three re-spellings of one intention, and the counter must not be reset by the
+    // re-spelling. They have to be exec: `sed -n` reads and still asks, where `cat` would be
+    // clause 4 and no breaker could ever reach it (see `Baseline::reads_only`).
     for cmd in [
         "/bin/sed -n 1p /w/secret-ish.txt",
         "/usr/bin/sed -n 2p /w/other.txt",
@@ -70,9 +63,8 @@ fn three_refusals_in_one_direction_open_the_breaker_and_stop_asking() {
     }
     assert_eq!(consulted.load(std::sync::atomic::Ordering::Relaxed), 3);
 
-    // The fourth is not adjudicated at all — and it is exec for the same reason the
-    // three above are (R21): `less` is a read, so it would be clause 4 and no
-    // breaker could ever reach it.
+    // The fourth is not adjudicated at all, and it is exec for the same reason the three above
+    // are.
     let args = json!({"command": "/usr/bin/sed -n 4p /w/fourth.txt"});
     match g.admit(&bash(&args)) {
         GateDecision::Refuse {
@@ -106,12 +98,8 @@ fn an_admission_clears_the_direction_so_the_breaker_is_not_a_permanent_ban() {
     )))
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
-    // Exec, and still asking (R21): a read would be admitted and there would be no
-    // refusal to count. **The fourth is a different SHAPE and the same direction**,
-    // because a human `allow_once` on a `MayApprove` exec call records an approved
-    // shape — so an identical fourth call would be settled by that cache and never
-    // reach the breaker this test is about. Two programs, one direction: the count
-    // is keyed on the direction, and the shape is not.
+    // The fourth call is a different program and the same direction: an identical call would be
+    // settled by the approved shape an `allow_once` records, and never reach the breaker.
     let args = json!({"command": "/bin/sed -n 1p /w/a.txt"});
     assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
     assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
@@ -138,8 +126,8 @@ fn a_second_attempt_at_the_same_thing_is_named_as_one_rather_than_read_as_fresh(
 
 #[test]
 fn a_trail_source_is_what_puts_the_operators_words_in_front_of_an_adjudicator() {
-    // The seam §2 needs. Without it the trail says NOT COLLECTED, which is a
-    // different fact from the operator having said nothing.
+    // Without a trail source the trail says NOT COLLECTED, which is a different fact from the
+    // operator having said nothing.
     let mut bare = AdjudicatedGate::closed().with_surroundings(pinned());
     let args = json!({"command": "/bin/ls /w"});
     let req = bare.request_for(&bash(&args));

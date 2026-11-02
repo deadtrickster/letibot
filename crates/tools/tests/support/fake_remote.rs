@@ -1,29 +1,9 @@
-//! **A fake ssh, and the "remote machines" it stands in for** — the rig `fanout` and `scenario`
-//! are tested against (RH1's pattern, reused).
-//!
-//! # No network, and no real host, ever
-//!
-//! The `ssh` this writes accepts every flag the client passes (`-i`, the `-o` options, the
-//! destination), ignores them, and **executes the last argument locally** — which is the remote
-//! command. The "remote machine" is this test's temporary home, exported as `HOME` inside the
-//! fake, so `root = "~/letibot-remote"` is expanded **on the far side** exactly as it is over a
-//! real connection, and every absolute path the client spells from then on is one this fake can
-//! open.
-//!
-//! What that buys is the real thing under test: the command text, the base64 channel, the `setsid`
-//! launch, the job files and the group kill are the production ones. What it does not test is ssh
-//! itself — a test that reached a second machine from here could not run in this suite, and would
-//! prove the network rather than the fleet.
-//!
-//! # The hosts a rig hands out
-//!
-//! * `fake1`, `fake2`, … — the same box, the same home, one entry in `hosts.toml` each. Two hosts
-//!   that are really one filesystem is the right shape here: what is under test is *one job per
-//!   host, one row per host*, not that machines differ.
-//! * `gone` — a host whose ssh says `Could not resolve hostname` and exits 255, which is rule 5's
-//!   failure as a HOST rather than as a job. It is added on request ([`Rig::unreachable`]) because
-//!   the circuit breaker is process-wide and keyed by name: a suite that always declared a dead
-//!   host would open that breaker for every other test in the same binary.
+//! A fake ssh, so a test can drive the fleet with no network: it accepts every flag the client
+//! passes and runs the last argument locally, with `HOME` set to a temporary home so `~` expands
+//! on the far side as it would over a real connection. The command text, the base64 channel, the
+//! `setsid` launch, the job files and the group kill are therefore the production ones; only ssh
+//! itself is not under test. A dead host is declared on request, because the circuit breaker is
+//! process-wide and keyed by name.
 
 #![allow(dead_code)]
 
@@ -61,9 +41,8 @@ impl Rig {
         std::fs::create_dir_all(&bin).expect("bin");
         std::fs::create_dir_all(&home).expect("home");
 
-        // **A `setsid` for boxes that have none** — Linux does, Darwin does not — so a job on the
-        // fake remote leads its own process group exactly as it does on a Linux host: the group
-        // kill is only safe when it does, and `RemoteProcesses::kill` asks before it signals.
+        // A `setsid` for boxes that have none, so a job on the fake remote leads its own process
+        // group as it does on a Linux host: the group kill is only safe when it does.
         if !on_path("setsid") {
             write_executable(
                 &bin.join("setsid"),
@@ -73,11 +52,9 @@ impl Rig {
 
         let ssh = bin.join("ssh");
         let log = dir.join("ssh.log");
-        // One name in the argv is a machine that is down; everything else runs the command HERE,
-        // with `HOME` set to the fake remote's home so `~` means what it would over there.
-        // **Matched on the HOSTNAME, not on the bare word**: a work directory is named after the
-        // call, and a case glob over `$*` that matched `gone` anywhere would take a healthy host
-        // down because its job directory was called `fanout-gone`. Measured here first.
+        // One name in the argv is a machine that is down; everything else runs the command here,
+        // with `HOME` on the fake remote. Matched on the HOSTNAME and never on the bare word: a
+        // job directory named after the call would otherwise take a healthy host down.
         let script = format!(
             "#!/bin/bash\n\
              [ $# -eq 0 ] && exit 0\n\
@@ -97,8 +74,8 @@ impl Rig {
         );
         write_executable(&ssh, &script);
 
-        // **letibot's own key and known host**, in a config directory of this test's own — the two
-        // facts a connection is refused without, and neither is the operator's.
+        // letibot's own key and known host, in a config directory of this test's own: a connection
+        // is refused without them, and neither is the operator's.
         let paths = Paths::in_home(dir.join("letibot-home"));
         std::fs::create_dir_all(paths.keys()).expect("the keys directory");
         std::fs::write(paths.known_hosts(), b"").expect("the host key file");
@@ -139,7 +116,7 @@ impl Rig {
         std::fs::write(self.paths.known_hosts(), known).expect("known hosts");
     }
 
-    /// Add a host whose ssh refuses to resolve it — [`Rig::declare`] plus the name the fake fails on.
+    /// Add a host whose ssh refuses to resolve it: [`Rig::declare`] plus the name it fails on.
     pub fn unreachable(&mut self) {
         self.declare(&["gone"]);
     }
@@ -156,7 +133,7 @@ impl Rig {
         self.paths.clone()
     }
 
-    /// The far side's `root` — `<home>/letibot-remote`, after `~` is expanded there.
+    /// The far side's `root`: `<home>/letibot-remote`, after `~` is expanded there.
     pub fn remote_root(&self) -> PathBuf {
         self.home.join("letibot-remote")
     }
@@ -166,7 +143,7 @@ impl Rig {
         &self.bin
     }
 
-    /// **Every ssh call this rig made**, in order — one line per call, its whole argv.
+    /// Every ssh call this rig made, in order: one line per call, its whole argv.
     pub fn ssh_calls(&self) -> Vec<String> {
         std::fs::read_to_string(&self.log)
             .unwrap_or_default()
@@ -178,8 +155,8 @@ impl Rig {
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        // **Only the pids this rig wrote down**, never a pattern: a job a panic left running would
-        // otherwise keep writing into a tree this drop removes.
+        // Only the pids this rig wrote down, never a pattern: a job a panic left running would
+        // keep writing into a tree this drop removes.
         for jobs in jobs_dirs(&self.remote_root()) {
             let Ok(entries) = std::fs::read_dir(&jobs) else {
                 continue;
@@ -216,8 +193,8 @@ fn jobs_dirs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// **Is this port listening on this box right now?** — the assertion a teardown is measured by,
-/// asked of the kernel rather than of the tool's own row.
+/// Is this port listening on this box right now? Asked of the kernel rather than of the tool's
+/// own row, which is what makes it a measurement of the teardown.
 pub fn listening(port: u16) -> bool {
     let out = std::process::Command::new("sh")
         .arg("-c")
@@ -231,8 +208,8 @@ pub fn listening(port: u16) -> bool {
     }
 }
 
-/// A port nothing is listening on right now: bound once by the test, then released, so the service
-/// under test can take it.
+/// A port nothing is listening on right now: bound once, then released, so the service under test
+/// can take it.
 pub fn free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
     let port = l.local_addr().expect("the address").port();

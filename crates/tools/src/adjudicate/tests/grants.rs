@@ -2,26 +2,12 @@
 
 use super::*;
 
-/// **R18's fifth point: the option label carried the literal `<tool>`.**
-///
-/// `grant_program` answers [`NO_PROGRAM`] for a path-shaped call — `job_kill`,
-/// `write` — and that string is a **key**: it must match nothing a command produces
-/// so a grant taken over `bash` cannot cover a `write`. It was also being printed
-/// into the ladder, so the operator's card offered
-///
-///     Allow `<tool>` (this class) for the rest of the session
-///
-/// which is a placeholder standing where a noun belongs, on the one surface where a
-/// person is asked to decide. The card was reproduced from the operator's screen on
-/// 2026-09-22 with `job_kill` and no argument — an Exec-access tool whose arguments
-/// contain no command line, which is exactly the case that reaches this arm.
-///
-/// The fix is not a guess at a name; it is the wording the other ladder already uses
-/// for the same situation, because it is exactly true when there is no program: what
-/// the grant covers is the class.
+/// [`NO_PROGRAM`] is a key and not a noun: it must match nothing a command produces, so a grant
+/// taken over `bash` cannot cover a `write`. Printed into a label it becomes a placeholder standing
+/// where a person is asked to decide, so a path-shaped call says what the grant covers instead.
 #[test]
 fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placeholder() {
-    // The bug, as an assertion: the sentinel must not appear in any label.
+    // The sentinel is a key and must never reach a label.
     for (program, offered) in [
         (NO_PROGRAM, exec_options(&offered(None, NO_PROGRAM))),
         ("cargo", exec_options(&offered(None, "cargo"))),
@@ -41,8 +27,8 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
         }
     }
 
-    // And the two cases still say different things, which is the point of naming the
-    // program when there is one.
+    // The two cases still say different things: naming the program is the point when there is
+    // one.
     let named = exec_options(&offered(None, "cargo"));
     let session = named
         .iter()
@@ -61,9 +47,8 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
         "a call with no program must name the class, not a placeholder"
     );
 
-    // **The ladder is otherwise unchanged**: same ids, same order, and the durable
-    // rung still appears when — and only when — the matcher would honour it. A fix to
-    // one label must not quietly reshape the ladder.
+    // The ladder is otherwise unchanged: same ids, same order, and the durable rung only where
+    // the matcher would honour it.
     let with_durable = exec_options(&offered(Some("cargo test"), "cargo"));
     let ids: Vec<&str> = with_durable.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(
@@ -86,10 +71,8 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
     );
 }
 
-/// **A host the operator admitted once is not a first contact again.** The
-/// rule is `network_egress_to_an_UNSEEN_host`; `saw_host` existed for the
-/// second contact and nothing called it, so a session asked about the same
-/// host on every call. A refused contact stays unseen.
+/// A host admitted once is not a first contact again, and a refused contact stays unseen: the
+/// rule keys on what was admitted, not on what was asked.
 #[test]
 fn an_admitted_contact_makes_the_host_seen_and_a_refused_one_does_not() {
     let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
@@ -146,12 +129,8 @@ fn an_admitted_contact_makes_the_host_seen_and_a_refused_one_does_not() {
     );
 }
 
-/// **A shape the operator approved is not asked again — and the things that
-/// must always ask, still do.**
-///
-/// *"shapes like this must be approved only once"*, and the shape is the parse
-/// with its literals holed, so the second call is a different command and the
-/// same question.
+/// The shape is the parse with its literals holed, so a second call is a different command asking
+/// the same question.
 #[test]
 fn a_shape_the_operator_approved_is_not_asked_twice() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -171,9 +150,7 @@ fn a_shape_the_operator_approved_is_not_asked_twice() {
     )))
     .with_surroundings(pinned());
 
-    // **Exec, so that asking is what is being measured** (R21): a `grep` over the
-    // workspace is a read and clause 4 settles it with nobody asked, which would
-    // make this test green about the shape cache it is not exercising.
+    // Exec, so asking is what is measured: a read is settled by clause 4 with nobody asked.
     let one = json!({"command": "sed -n 1p /w/a.rs"});
     assert!(matches!(
         g.admit(&bash_at(&one, "s#1")),
@@ -193,7 +170,7 @@ fn a_shape_the_operator_approved_is_not_asked_twice() {
         "the same shape asked the operator a second time"
     );
 
-    // **A flag is where a command changes kind**, so this is NOT that shape.
+    // A flag is where a command changes kind, so this is not that shape.
     let write = json!({"command": "sed -i s/a/b/ /w/a.rs"});
     let _ = g.admit(&bash_at(&write, "s#3"));
     assert_eq!(
@@ -202,9 +179,8 @@ fn a_shape_the_operator_approved_is_not_asked_twice() {
         "a write was admitted by a read's shape"
     );
 
-    // **A deletion is never settled by a shape.** A shape holes its operands,
-    // and this tree judges destruction by SCOPE — so `rm -rf <arg>` approved
-    // over one directory must not stand in for another. Asked both times.
+    // A deletion is never settled by a shape: operands are holed, and destruction is judged by
+    // scope, so an approval over one directory must not stand in for another.
     let del = json!({"command": "rm -rf /w/target"});
     let _ = g.admit(&bash_at(&del, "s#4"));
     let before = asked.load(Ordering::Relaxed);
@@ -217,11 +193,8 @@ fn a_shape_the_operator_approved_is_not_asked_twice() {
     );
 }
 
-/// **A shape survives the restart** — the whole point of persisting it.
-///
-/// The operator restarts a session when one has gone wrong, which was exactly
-/// when the in-memory cache threw away every approval they had given. A gate
-/// seeded from the store must not ask again.
+/// The cache is persisted because a restart is exactly when an in-memory one would throw away
+/// every approval the operator had given.
 #[test]
 fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -241,10 +214,8 @@ fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
     )))
     .with_surroundings(pinned());
 
-    // What the previous session wrote down: the shape, and the class it was
-    // approved at, spelled the way the row holds it.
-    // **Exec** (R21): a read would be admitted by clause 4 and this would be a
-    // green test about a shape cache that never ran.
+    // What the previous session wrote down: the shape and the class, spelled the way the row
+    // holds it. Exec, because a read is admitted by clause 4 and never reaches the cache.
     let first = json!({"command": "sed -n 1p /w/a.rs"});
     let class = {
         let mut probe = AdjudicatedGate::closed().with_surroundings(pinned());
@@ -259,7 +230,7 @@ fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
 
     assert_eq!(g.seed_shapes([(shape, class)]), 1);
 
-    // A different line and file — one shape, and nobody is asked.
+    // A different line and file: one shape, and nobody is asked.
     let now = json!({"command": "sed -n 2p /w/b.rs"});
     assert!(matches!(
         g.admit(&bash_at(&now, "s#1")),
@@ -272,9 +243,8 @@ fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
     );
 }
 
-/// A seeded shape whose class does not match the call in front of it settles
-/// nothing. The class is the half of the pair that says *what* was approved,
-/// and equality on it is what stops a read's approval admitting a write.
+/// The class is the half of the pair that says what was approved, so equality on it is what stops
+/// a read's approval admitting a write.
 #[test]
 fn a_seeded_shape_does_not_admit_a_different_class() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -294,8 +264,7 @@ fn a_seeded_shape_does_not_admit_a_different_class() {
     )))
     .with_surroundings(pinned());
 
-    // **Exec** (R21): a read is clause 4 and would be admitted whatever the seeded
-    // class said, so the call this test is about has to be one that asks.
+    // Exec: a read is clause 4 and would be admitted whatever the seeded class said.
     let cmd = "sed -n 1p /w/b.rs";
     let shape = crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(cmd, &pinned()))
         .expect("a command has a shape");
@@ -317,8 +286,8 @@ fn a_seeded_shape_does_not_admit_a_different_class() {
     );
 }
 
-/// A class that cannot be read back is dropped, never guessed at. The next call
-/// of that shape asks, which is the safe direction.
+/// A class that cannot be read back is dropped rather than guessed at, so the next call of that
+/// shape asks.
 #[test]
 fn an_unreadable_seeded_class_is_dropped_rather_than_guessed() {
     let mut g = AdjudicatedGate::closed();
@@ -333,9 +302,8 @@ fn an_unreadable_seeded_class_is_dropped_rather_than_guessed() {
     );
 }
 
-/// Every class an approval can be recorded at reads back as itself. A class that
-/// did not round-trip would silently stop matching after a restart, which reads
-/// as "the cache does not work" and not as a bug.
+/// A class that did not round-trip would silently stop matching after a restart, which reads as
+/// "the cache does not work" rather than as a bug.
 #[test]
 fn a_class_reads_back_as_what_was_written() {
     for access in [
@@ -366,15 +334,13 @@ fn a_class_reads_back_as_what_was_written() {
     }
 }
 
-/// The guard's own admits never become shapes. The operator's rule about
-/// drift, applied to the mechanism most able to do it: a gate that learned from
-/// its own answers would widen one slightly-different call at a time.
+/// A gate that learned from its own answers would widen one slightly-different call at a time, so
+/// an admit nobody was consulted about records no shape.
 #[test]
 fn the_gates_own_admits_do_not_become_approved_shapes() {
     let mut g = AdjudicatedGate::closed().with_mode(crate::mode::Mode::WRITES_ALLOWED);
     let args = json!({"command": "grep -n x /w/a.rs"});
-    // `writes-allowed` admits a read unasked; nobody was asked, so nothing is
-    // learned from it.
+    // `writes-allowed` admits a read unasked, so nothing is learned from it.
     let _ = g.admit(&bash_at(&args, "s#1"));
     assert!(
         g.approved_shapes.is_empty(),
@@ -383,9 +349,8 @@ fn the_gates_own_admits_do_not_become_approved_shapes() {
     );
 }
 
-/// **`/mode` moves the session it is typed in.** The gate reads its mode when
-/// it decides, so the move is a field write — and the standing grants go with
-/// the old point, because they were answers to questions asked under it.
+/// The standing grants go with the old point, because they were answers to questions asked under
+/// it.
 #[test]
 fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
     use crate::mode::Mode;
@@ -431,12 +396,8 @@ fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
     assert!(g.grants().is_empty());
     assert_eq!(g.mode().name, "always-ask");
 
-    // And the new point is the one deciding: a write that writes-allowed admits
-    // unasked now reaches the adjudicator. The answer takes a grant, and since
-    // the operator's revision of 2026-09-18 an explicit `allow_session` stands
-    // at a `Once` point too — the durable *Always allow* was always offered
-    // here, and the weaker option follows it. What the move still proves is
-    // that what stands is the NEW point's grant: the old one stayed dropped.
+    // The new point is the one deciding: a write that writes-allowed admits unasked now reaches
+    // the adjudicator, and what stands afterwards is the new point's grant, not the old one.
     let write = GateCall {
         name: "write",
         access: Access::Write,
@@ -456,12 +417,9 @@ fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
     );
 }
 
-/// **`automode` means the model answers.** It advised and the person was asked
-/// anyway, which is `supervised` under another name — and the operator chose
-/// the point precisely so the model would decide.
-///
-/// The always-ask list is the exemption the mode's own sentence promises, and
-/// it is asserted here beside the admit so the two cannot drift apart.
+/// At `automode` the model's answer is the decision; asking the person anyway would be
+/// `supervised` under another name. The always-ask exemption is asserted beside the admit so the
+/// two cannot drift apart.
 #[test]
 fn at_automode_the_models_admit_is_the_decision_and_always_ask_still_asks() {
     use crate::authorise::{AuthorisationTrail, OracleAnswer, Widening};
@@ -490,8 +448,7 @@ fn at_automode_the_models_admit_is_the_decision_and_always_ask_still_asks() {
         }
     }
 
-    /// A person who would refuse. If the ladder is reached at all, the call is
-    /// denied — so an admit below can only have come from the model.
+    /// A person who refuses: an admit below can only have come from the model.
     struct Refuses;
     impl Adjudicator for Refuses {
         fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
@@ -544,8 +501,8 @@ fn at_automode_the_models_admit_is_the_decision_and_always_ask_still_asks() {
         "the model authorised it and the person was asked anyway: {d:?}"
     );
 
-    // The always-ask list still reaches the person, who refuses — so the point
-    // has not become allow-all by another route.
+    // The always-ask list still reaches the person, so the point has not become allow-all by
+    // another route.
     let secret = serde_json::json!({"path": "/home/dead/.ssh/id_rsa"});
     let mut g = gate();
     let d = g.admit(&GateCall {
@@ -564,11 +521,8 @@ fn at_automode_the_models_admit_is_the_decision_and_always_ask_still_asks() {
     );
 }
 
-/// **A `bash` call is about its command**, and the prompt has to be able to say
-/// so. Measured 2026-09-15: every exec permission the operator was shown read
-/// *"`bash` wants exec access to `<no target argument>`"* — the placeholder for
-/// a call that names nothing, on the one tool whose whole argument is the
-/// thing being decided. `command` was simply not in the list.
+/// A `bash` call is about its command: without it in the list, every exec permission read as a
+/// call that names nothing, on the one tool whose whole argument is the thing being decided.
 #[test]
 fn the_thing_a_call_is_about_includes_a_shell_command() {
     use serde_json::json;
@@ -581,17 +535,15 @@ fn the_thing_a_call_is_about_includes_a_shell_command() {
         super::target_of(&json!({"path": "src/main.rs"})),
         "src/main.rs"
     );
-    // And a call that genuinely names nothing still says so rather than
-    // borrowing a word it never had.
+    // A call that genuinely names nothing says so rather than borrowing a word.
     assert_eq!(
         super::target_of(&json!({"limit": 5})),
         "<no target argument>"
     );
 }
 
-/// `Gate::describe` defaults to naming the absence, and an attached gate names
-/// its adjudicator. The daemon's banner is computed from this, so a gate that
-/// answered vaguely would put a vague sentence in front of the operator.
+/// The daemon's banner is computed from this, so a gate that answered vaguely would put a vague
+/// sentence in front of the operator.
 #[test]
 fn a_gate_says_who_is_adjudicating_or_that_nobody_is() {
     use crate::runtime::{Gate, NoBoundary};
