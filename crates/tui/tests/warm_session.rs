@@ -1,42 +1,11 @@
-//! **A head that asks a running daemon for a stored session must end up holding its rows.**
+//! A head that asks a running daemon for a stored session must end up holding its rows.
 //!
-//! MEASURED 2026-10-26 ~14:10 on macOS: the operator's daemon for `~/Projects/stroppy-io`
-//! was up and seated on one session; they ran `leticode --session s-1793…`, a session the
-//! store had with 166 rows. The head drew that session's title in its status line and an
-//! **empty transcript**, and a prompt typed into it sat `queued`.
-//!
-//! The daemon's half was fine: its log says `s-1793017817134441000 · resumed 166 row(s),
-//! 537946 tokens` and the prompt that followed was appended as seq 166 of a conversation
-//! the model went on talking about. What failed is the head's half — the path from
-//! *"ask for a session this daemon does not hold"* to *"draw the conversation in it"*.
-//!
-//! # The path, in five frames
-//!
-//! 1. `ResumeSession { id }` — the head asks (what `leticode --session ID` becomes, via
-//!    `letibot-tui --resume ID`).
-//! 2. `Sessions { created: Some(id) }` — the daemon registered a hub for it and rung the
-//!    worker to open it.
-//! 3. `Switch { id }` — the head goes there, because a created session is what
-//!    `want_new_session` means.
-//! 4. `Hello { snapshot }` — **and here the snapshot is cut from a hub whose restore has
-//!    likely not started**: `Work::Open` runs on the worker, behind whatever turn it is
-//!    running at that moment.
-//! 5. the restored rows, as `TranscriptAppended` + `TranscriptContent`, published when the
-//!    worker gets to the resume.
-//!
-//! So the head's ability to draw the conversation does not depend on the snapshot: it
-//! depends on those two events landing on a session it is attached to, and on it holding
-//! them. That is what this file measures, with a real `Registry` and a real socket.
-//!
-//! # Why the rows are published by the test and not by a `Harness`
-//!
-//! A `Harness` is `letibot-harnessd`'s, and this crate is below it (the daemon links the
-//! head's protocol, not the other way round). What the head sees is a hub, and a hub is a
-//! registry's — so the restore is stood up as the events it publishes, at the two moments
-//! it can publish them: before the head switches (the restore won the race) and after
-//! (the worker was busy, which is the operator's case). The end-to-end half — a real
-//! store, a real resume, a real prompt during it — is `letibot-harnessd`'s
-//! `tests/warm_open.rs`.
+//! The `Hello { snapshot }` a switching head gets is cut from a hub whose restore has likely not
+//! started, because `Work::Open` runs on the worker behind whatever turn it is on - so what the head
+//! can draw does not depend on the snapshot. It depends on the restored rows arriving as
+//! `TranscriptAppended` + `TranscriptContent` on the session the head is attached to, and on the
+//! head keeping them. `Harness` lives above this crate, so the restore is stood up here as the
+//! events it publishes, at the two moments it can: before the head switches, and after.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -172,12 +141,9 @@ fn start(
     )
 }
 
-/// **The restore was published after the head switched** — the operator's case, where the
-/// worker was running another session's turn and the resume waited behind it.
-///
-/// This is the frame the operator saw, and the whole of the fix is in the two assertions
-/// before the rows arrive: the screen says the conversation is IN the store and has not been
-/// loaded, and it does not say the session has said nothing.
+/// The restore was published after the head switched: the worker was running another session's
+/// turn and the resume waited behind it. The two assertions before the rows arrive are the point -
+/// the screen says the conversation is IN the store and not loaded, and not that it said nothing.
 #[test]
 fn a_session_whose_rows_are_still_being_restored_says_so_rather_than_looking_empty() {
     let (registry, _seated, server) = start("late");

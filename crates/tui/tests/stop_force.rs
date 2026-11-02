@@ -1,47 +1,10 @@
-//! **An exit-and-stop that the ordinary stop cannot finish is finished by the head itself, the
-//! forced way — and the head says so.**
-//!
-//! The operator: *"yeah when i exited letidb and chose to stop daemon too - it couldnt. had to
-//! --stop --force"*. The daemon's log showed an OLD build — `head "stop-force" (kind "remote")
-//! attached speaking protocol 47, newer than this daemon's 45` — and asked whether the head
-//! should detect an older daemon and take the force path itself, with a line saying why:
-//! *"yes"*.
-//!
-//! # What this file asserts
-//!
-//! 1. **A same-version daemon that stops is not forced.** The ordinary stop, end to end, and no
-//!    escalation and no sentence on the way out.
-//! 2. **A daemon that hears the stop and does not go is forced once, automatically**, after
-//!    the ordinary deadline: `the daemon did not stop within 15s — stopping it the forced way`,
-//!    and its process ends.
-//! 3. **An older daemon is forced directly**: no stop frame, no deadline wait, and the line
-//!    `the daemon is an older build (protocol N, this head speaks M) — stopping it the forced
-//!    way`.
-//!
-//! # Why the daemon is a real process, and what it is
-//!
-//! The force path signals a pid, and the head may signal only the process at the other end of
-//! its socket — so the daemon here has to be **a separate process** that the head attaches to
-//! and reads `SO_PEERCRED` from, exactly as the binary does. It is this test executable run
-//! again with `--exact fixture_daemon` and an environment that says which daemon to be, and
-//! what it runs is the daemon's own **`serve_registry`** over a real `Registry` — the server
-//! `harnessd` runs — so the stop frame, the interrupt half's session discovery, the
-//! `ListSessions` round trip and the goodbye are all the real ones. What the fixture changes is
-//! only what each case is about:
-//!
-//! * `orderly` — exits once the registry is closed, as `harnessd`'s worker loop does;
-//! * `wedged` — the real server takes the stop (ack, goodbye, registry closed) and the process
-//!   then stays, ignoring SIGTERM: the measured 2026-10-06 shape of a daemon whose worker is
-//!   inside something that will not end, and `harnessd`'s SIGTERM handler only closes a
-//!   registry that is already closed;
-//! * `older` — the real server behind a relay that rewrites the `Hello`'s protocol to an older
-//!   one and **drops the stop frame**, as a build that cannot read it would. A head that asked
-//!   it the ordinary way would wait out the whole deadline; one that forces directly does not.
-//!
-//! No `harnessd` binary: `CARGO_BIN_EXE_harnessd` is not visible from this crate, and a live
-//! daemon needs a vocabulary or a provider this test has no business needing. Never a running
-//! daemon of the operator's: every socket is in a scratch directory and every pid is a child
-//! this test spawned.
+//! An exit-and-stop the ordinary stop cannot finish is finished by the head itself, the forced way,
+//! and the head says so. The force path signals a pid, and a head may signal only the process at the
+//! other end of its socket - so the daemon here is a separate process: this test executable run again
+//! with `--exact fixture_daemon`, serving the real `serve_registry` over a real `Registry`, so the
+//! stop frame, the session discovery, the `ListSessions` round trip and the goodbye are the real
+//! ones. The modes differ only in how each answers the stop: `orderly` exits, `wedged` stays and
+//! ignores SIGTERM, `older` sits behind a relay that rewrites the protocol and drops the stop frame.
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -182,18 +145,9 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// **The fixture daemon, killed even when the test never reaches its `wait`.**
-///
-/// A `Child` whose test panics is not reaped — Rust does not kill on `Drop` — so every red run of
-/// this suite left daemons behind, and nobody saw them: twelve were found on this box, three of them
-/// from a gate four hours old, every one of them `stop_force --exact fixture_daemon`. The gate's own
-/// cgroup reaped its share (*"5 process(es) the step left running were killed with its cgroup"*);
-/// the ones a person started had nothing to reap them. A guard makes the leak impossible rather
-/// than unlikely.
-///
-/// **`SIGKILL`, not `SIGTERM`**: the `wedged` mode ignores `SIGTERM` on purpose — that is what the
-/// force path is tested against — so a polite kill would leave exactly the daemon most likely to
-/// be a leak.
+/// The fixture daemon, killed even when the test never reaches its `wait`: Rust does not kill on
+/// `Drop`, so a panic would leave a daemon behind. `SIGKILL`, not `SIGTERM`, because `wedged`
+/// ignores `SIGTERM` on purpose - a polite kill would leak exactly the daemon most likely to be.
 struct FixtureDaemon(Child);
 
 impl FixtureDaemon {
@@ -243,10 +197,9 @@ fn spawn_daemon(mode: &str, dir: &Path) -> (FixtureDaemon, PathBuf) {
     (FixtureDaemon(child), socket)
 }
 
-/// **The guard itself, proved.** A fixture daemon whose test never reaches `wait` — a panic, a
-/// timeout, a run somebody killed — is a process that is gone once the handle drops, and the proof
-/// is the pid leaving `/proc`. Without the guard this test is a leak of exactly the kind twelve of
-/// them were.
+/// The guard itself, proved: a fixture daemon whose test never reaches `wait` is a process that is
+/// gone once the handle drops, and the proof is the pid leaving `/proc`. Without the guard this
+/// test is a leak of exactly the kind the guard was written for.
 #[test]
 fn a_fixture_daemon_that_the_test_did_not_wait_for_is_killed() {
     let dir = scratch("guard");
@@ -383,10 +336,9 @@ fn an_orderly_stop_is_not_forced() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **(b) A daemon that hears the stop and does not go is forced once, and its process ends.**
-///
-/// The real deadline is waited out — fifteen seconds, then the force path's own five between
-/// SIGTERM and SIGKILL — because the number is what the operator reads.
+/// A daemon that hears the stop and does not go is forced once, and its process ends. The real
+/// deadline is waited out - fifteen seconds, then the force path's five between SIGTERM and
+/// SIGKILL - because that number is what the operator reads.
 #[test]
 fn a_daemon_that_does_not_go_is_forced_after_the_deadline() {
     let dir = scratch("wedged");

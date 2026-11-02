@@ -1,36 +1,11 @@
-//! **The editor pane: rano, inside the head.**
+//! The editor pane: rano, inside the head.
 //!
-//! The operator's words for what this is: *"rano blended with letibot — i review in rano, i
-//! send for review from it, and i can go to rano from diffs, writes — either via shortcut or
-//! mouse click"*. So the pane is three movements and one rectangle:
-//!
-//! - **Going there.** A click on an edit or write row of the conversation, or `ctrl-]` for the
-//!   newest one, opens rano on that file — on the change, with the change drawn over the text
-//!   as rano's own review view ([`rano::editor::Editor::open_review`]). See [`FileRef`] for
-//!   what a row has to carry to be one you can click. **The standing-notes pane's Enter comes in
-//!   through the same door** — the note's file, with no change on it, opened on the text.
-//! - **Reading and editing there.** The pane takes the conversation's rectangle — the header,
-//!   the composer and the hint bar keep their rows, exactly as a `!term` pane leaves them — and
-//!   while it has the keyboard every key, paste and mouse report inside it is rano's.
-//! - **Coming back with something to say.** rano's `alt-s` sends the reader's place, and this
-//!   head's answer to a send is to put a reference to it in the composer — `path:line`, or
-//!   `path:start-end` and the selected text fenced — and move the keyboard there. The operator
-//!   writes the instruction and sends it with Enter as usual; **nothing is submitted for them**.
-//!
-//! # Who has the keyboard
-//!
-//! One side at a time, and `ctrl-]` crosses — from the composer it opens the pane (or goes back
-//! into it), from the pane it comes back. rano is told about the chord through a host keymap
-//! ([`rano::editor::Editor::push_keymap`]), so it reaches this head over an open prompt or a
-//! diff view as well as over the text. With the composer focused the head's keys are exactly
-//! the keys it always had.
-//!
-//! # Leaving
-//!
-//! rano's own exit (`^X`, or `ctrl-q`, which the host keymap binds to the same command) closes
-//! the pane — after rano has asked about unsaved edits, because that question is rano's and a
-//! host that closed around it would lose work. `wants_quit` is how the pane learns rano is done;
-//! it **never** quits the head.
+//! Going there: a click on an edit or write row, or `ctrl-]` for the newest, opens rano on that file
+//! with the change drawn over the text as a review, and the standing-notes pane's Enter comes in
+//! through the same door with no change on it. There the pane takes the conversation's rectangle and
+//! owns every key, paste and mouse report inside it. Coming back: rano's `alt-s` puts a reference in
+//! the composer and nothing is submitted for the operator. `ctrl-]` is the only crossing, and rano's
+//! own exit closes the pane after its unsaved-edits question - it never quits the head.
 
 use super::*;
 use letibot_sessionlog::view::CallState;
@@ -60,18 +35,9 @@ const CLOSE: &str = "C-q";
 /// The pane polls first when rano wants to be ticked sooner than this.
 pub(crate) const READ_PACE: Duration = Duration::from_millis(100);
 
-/// **A place in a file that a row is about** — what a click on that row, or `ctrl-]`, opens.
-///
-/// Only rows of the conversation that carry the change itself are places: a finished `edit` or
-/// `write` whose before/after excerpt reached this head (`ToolEditExcerpt`). That excerpt is what
-/// makes the open a *review* rather than a bare jump — it is the change, at the file's own line
-/// numbers — and it is also what names the file and the line. A row without one is not a place,
-/// and a click on it does what a click on it always did.
-///
-/// **A place does not have to be a change.** The standing-notes pane's Enter opens a note's file
-/// through this same door with no change on it ([`FileRef::file`]), because a note is read rather
-/// than reviewed — and the pane that opens, the keyboard it takes and the way back out are the
-/// same pane, key and way.
+/// A place in a file that a row is about: what a click on that row, or `ctrl-]`, opens. Only a
+/// finished `edit`/`write` whose excerpt reached this head is one, because that excerpt is what
+/// makes the open a review at the file's own line numbers rather than a bare jump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileRef {
     /// As the row names it: relative to the session's workspace, or absolute.
@@ -101,12 +67,9 @@ impl FileRef {
         }
     }
 
-    /// **A file with no change on it**: its first line, to be read rather than reviewed — what
-    /// the standing-notes pane's Enter opens.
-    ///
-    /// Nothing places the cursor beyond the top, because there is nothing in particular to look
-    /// at: a note is prose, the reader wants it from the beginning, and a `line` invented here
-    /// would be this head guessing which part of somebody's note matters.
+    /// A file with no change on it: its first line, to be read rather than reviewed - what the
+    /// standing-notes pane's Enter opens. A `line` invented here would be this head guessing which
+    /// part of somebody's note matters.
     pub(crate) fn file(path: &str) -> FileRef {
         FileRef {
             path: path.to_string(),
@@ -121,11 +84,9 @@ pub struct EditorPane {
     pub(crate) ed: Rano,
     /// The pane has the keyboard. False is the composer's turn, with the pane still drawn.
     pub(crate) focused: bool,
-    /// **Put away, not closed** — `ctrl-e` on an empty prompt. The conversation has its
-    /// rectangle back and rano keeps every buffer, cursor and undo as they were; the same key
-    /// brings it back. The operator, 2026-10-09: *"how to switch from open edit back to
-    /// conversation without closing file?"* — and *"editor is just a pane"*, so typing in the
-    /// prompt never hides it: only the key does.
+    /// Put away, not closed - `ctrl-e` on an empty prompt. The conversation has its rectangle back
+    /// and rano keeps every buffer, cursor and undo; the same key brings it back. Typing in the
+    /// prompt never hides it, because the editor is just a pane: only the key does.
     pub(crate) hidden: bool,
     /// The rectangle last given to rano, in terminal cells: mouse reports are hit-tested
     /// against it, and rano maps them through the same one.
@@ -155,10 +116,9 @@ impl EditorPane {
         #[cfg(test)]
         let config = rano::config::Config::default();
         let mut ed = Rano::new(rano::buffer::Buffer::new(), config);
-        // **No nano chrome**: the head frames the pane in its own look — the file in the top edge,
-        // rano's keys in the bottom one (`App::editor_rows`) — so rano draws only the text and its
-        // status row. The operator, 2026-10-09: *"we still have rano header on top, the ranos
-        // keymap with white backgrounds for each key, it just feels alien"*.
+        // No nano chrome: the head frames the pane in its own look - the file in the top edge,
+        // rano's keys in the bottom one (`App::editor_rows`) - so rano draws only the text and its
+        // status row.
         ed.set_chrome(rano::editor::Chrome::BARE);
         let mut keys = Keymap::new("letibot");
         keys.bind(CROSS, TO_COMPOSER);
@@ -194,10 +154,9 @@ impl EditorPane {
 }
 
 impl App {
-    /// **Is the editor pane on the screen** — open, and not covered by a `!term` pane or the diff
-    /// popup, which `main_area` draws over it. `drawn()`'s answer (R69): this used to ask about
-    /// the `!term` pane only, so with the popup up over rano, `route` would have handed rano the
-    /// keys and the mouse of a screen showing the popup (the review's finding 15).
+    /// Is the editor pane on the screen: open, and not covered by a `!term` pane or the diff popup
+    /// that `main_area` draws over it. Asking about the `!term` pane alone would hand rano the keys
+    /// and the mouse of a screen showing the popup.
     pub fn editor_drawn(&self) -> bool {
         self.drawn() == Drawn::Editor
     }
@@ -218,14 +177,9 @@ impl App {
         }
     }
 
-    /// **Open the pane on `f`** — on its change, or on the file itself when the row carries no
-    /// change — with the keyboard.
-    ///
-    /// The pane is made on first use and kept: a second open is rano switching to that file
-    /// (or to the buffer that already shows it), with whatever else is open left as it was — so
-    /// a note opened while the pane is already on another file costs nobody the file they were
-    /// reading. A file that cannot be opened is said, and a pane made only for it is not left
-    /// standing: nothing is opened, and the caller's own surface stays where it was.
+    /// Open the pane on `f` - on its change, or on the file itself when the row carries none - with
+    /// the keyboard. The pane is made once and kept, so a second open is rano switching to that
+    /// file and costs nobody the file they were reading; a failed open leaves no pane standing.
     pub(crate) fn open_in_editor(&mut self, f: &FileRef) {
         let path = self.resolve_path(&f.path);
         let fresh = self.edit_pane.is_none();
@@ -237,9 +191,8 @@ impl App {
         if !area.is_empty() {
             pane.set_area(area);
         }
-        // **Two kinds of place, one door.** A row that carries a change opens on rano's review
-        // view; a row that only names a file opens on the text, from its own first line. What a
-        // reader gets either way is the FILE — the whole of it, editable — which is the reason
+        // Two kinds of place, one door: a change opens rano's review view, a bare path opens the
+        // text from its first line. Either way the reader gets the FILE, editable - which is why
         // the note pane comes through here rather than rendering what the index carries.
         let opened = match &f.change {
             Some(change) => pane.ed.open_review(&path, change.clone()),
@@ -283,10 +236,9 @@ impl App {
         None
     }
 
-    /// **Whether `ctrl-e` is the editor right now**: the prompt is empty and the conversation
-    /// is what is in front of the operator — no card asking for an answer, no pane or listing
-    /// over the conversation (each of those reads `End` as its own key). The editor pane being
-    /// open does not count against it: `ctrl-e` goes back into it.
+    /// Whether `ctrl-e` is the editor right now: the prompt is empty and the conversation is what
+    /// is in front of the operator. Every card, pane and listing reads `End` as its own key, so an
+    /// open editor pane is the one surface that does not count against it - `ctrl-e` goes back in.
     pub(crate) fn ctrl_e_opens_editor(&self) -> bool {
         self.editor.text().is_empty()
             && self.mode_confirm.is_none()
@@ -304,17 +256,9 @@ impl App {
             && self.surfaces.is_empty()
     }
 
-    /// **`ctrl-e` on an empty prompt: the editor, on any file — and away again.**
-    ///
-    /// With no pane, rano opens with its own `Open:` prompt up (its `open-file`, F8), so the
-    /// next thing typed is a path — relative to the directory the head runs in, as rano reads
-    /// one. Nothing has to have changed first, which is what `ctrl-]` needs.
-    ///
-    /// With a pane, the key **toggles it**: on the screen, it is put away and the conversation
-    /// comes back (`hidden`); put away, it comes back with the keyboard, as it was left. The
-    /// key only reaches here from the composer — inside rano `ctrl-e` is rano's — so "on the
-    /// screen" means drawn behind the composer, which is exactly when a reader wants the
-    /// conversation back without losing the file.
+    /// `ctrl-e` on an empty prompt: the editor on any file, and away again. With no pane rano opens
+    /// its own `Open:` prompt, so nothing has to have changed first; with a pane the key toggles it,
+    /// because the key only reaches here from the composer - inside rano `ctrl-e` is rano's.
     pub(crate) fn open_editor(&mut self) {
         if let Some(p) = self.edit_pane.as_mut() {
             p.hidden = !p.hidden;
@@ -374,17 +318,9 @@ impl App {
         edit.map(FileRef::of)
     }
 
-    /// **Open what a call the turn is still drawing has behind it** — the click on a live card
-    /// (`Target::LiveCall`), and it is deliberately the same act the call's own row performs once
-    /// it lands: a change opens the diff popup, and a call with no change says there is nothing
-    /// to open.
-    ///
-    /// **Why the second arm exists at all.** The brief that found this asked whether the click
-    /// should be inert on purpose. It should not: a row drawn in the working's register is a row
-    /// a person points at, and a click that answers nothing reads as a head that stopped
-    /// listening — which is the operator's report. But a call that has not returned has no body
-    /// (`call_card`'s own note: `ToolFinished` carries digests and byte counts, never a payload),
-    /// so the honest answer for the running case is a sentence, not a popup.
+    /// Open what a call the turn is still drawing has behind it: deliberately the same act the
+    /// call's own row performs once it lands, because a click that answers nothing reads as a head
+    /// that stopped listening. A call that has not returned has no body, so the running case says so.
     pub(crate) fn open_call(&mut self, call_id: &str) {
         // **The call, copied out** — the frame's record names it by id, and everything below
         // writes to the head.
@@ -404,10 +340,9 @@ impl App {
         };
         // The verb the card was DRAWN as, so this asks the same question the drawing did.
         let name = crate::ui::drawn_as(&name, edit.as_ref()).to_string();
-        // **The change is on the card already, and the popup is the whole file with it** — the
-        // same place a click on the landed row opens, so the two cannot disagree about what a
-        // change's door is. The gate is `change_of_row`'s: a verb that is an edit, and an
-        // excerpt to show.
+        // The change is on the card already, and the popup is the whole file with it - the same
+        // place a click on the landed row opens, so the two cannot disagree about a change's door.
+        // The gate is `change_of_row`'s: an edit verb, and an excerpt to show.
         if let Some(e) = edit.as_ref().filter(|_| card::Verb::of(&name).is_an_edit()) {
             let f = FileRef::of(e);
             self.open_diff_popup(&f);
@@ -443,22 +378,9 @@ impl App {
         self.after_editor();
     }
 
-    /// **What the terminal said, routed**: the pane's share goes to rano, the rest comes back
-    /// as this head's keys, in order. Returns those keys, and whether rano took anything — a
-    /// read rano consumed is not one whose bytes a `!term` pane may scan for its way out.
-    ///
-    /// # What is the pane's
-    ///
-    /// - **Every key and paste while it has the keyboard.** A key rano hands back as the
-    ///   crossing chord moves the keyboard to the composer, and the rest of the read follows it.
-    /// - **Every mouse report inside its rectangle**, focused or not: the wheel over the pane
-    ///   scrolls the file, and a press there also takes the keyboard — clicking into the
-    ///   editor is how a reader expects to get into it.
-    /// - **A press outside it while it has the keyboard** gives the keyboard back to the
-    ///   composer, and is then the head's click like any other.
-    ///
-    /// The terminal's facts about itself — focus, the background colour — are the head's
-    /// always. With a `!term` pane drawn nothing is routed: that pane owns the keyboard.
+    /// What the terminal said, routed: the pane's share goes to rano, the rest comes back as this
+    /// head's keys, in order, plus whether rano took anything - a read rano consumed is not one whose
+    /// bytes a `!term` pane may scan for its way out. With a `!term` pane drawn nothing is routed.
     pub fn route(&mut self, events: Vec<Event>) -> (Vec<Key>, bool) {
         let mut keys = Vec::new();
         let mut took = false;
@@ -538,10 +460,9 @@ impl App {
         }
     }
 
-    /// **A send from rano, into the composer**: the reference, then the keyboard.
-    ///
-    /// Inserted where the composer's cursor is, so a draft already there keeps its words and
-    /// gains the reference — and nothing is sent: the instruction is the operator's to write.
+    /// A send from rano, into the composer: the reference, then the keyboard. Inserted at the
+    /// composer's cursor so a draft keeps its words and gains the reference, and nothing is sent -
+    /// the instruction is the operator's to write.
     pub(crate) fn take_send(&mut self, e: &SendEvent) {
         let text = self.reference(e);
         let draft = self.editor.text();
@@ -562,15 +483,9 @@ impl App {
         }
     }
 
-    /// **How a send reads in the composer**: `path:line ` with no selection — the operator's
-    /// words follow on the same line — and `path:start-end` then the selection fenced, with the
-    /// operator's words to follow underneath, when there is one.
-    ///
-    /// The path is the workspace's relative one where the file is inside it, because that is
-    /// the spelling the model's own tools use for it. A selection that ends at the start of a
-    /// line does not include that line (rano's end is exclusive), so the range says so too. A
-    /// buffer with edits rano has not saved is marked, because the model reading the file will
-    /// not see them.
+    /// How a send reads in the composer: `path:line` with no selection, or `path:start-end` and the
+    /// selection fenced. The path is the workspace's relative one where the file is inside it, and a
+    /// buffer with unsaved edits is marked, because the model reading the file will not see them.
     pub(crate) fn reference(&self, e: &SendEvent) -> String {
         let path = match &e.path {
             Some(p) => self.workspace_relative(p),
@@ -603,12 +518,8 @@ impl App {
     }
 
     /// `p` relative to the workspace when it is inside it, as it is otherwise. Both sides are
-    /// canonicalised, because rano's path is and a workspace spelled through a symlink
-    /// (`/tmp` on macOS) would otherwise never be a prefix of it.
-    ///
-    /// **No workspace is the directory this head runs in** — a `--replay` has no session to
-    /// name one, and the pane already opens a relative row against it, so a send names the
-    /// place the same way instead of as `/private/var/folders/…/notes.txt:11`.
+    /// canonicalised, because rano's path is and a workspace spelled through a symlink would
+    /// otherwise never be a prefix of it. No workspace is the directory this head runs in.
     pub(crate) fn workspace_relative(&self, p: &Path) -> String {
         let ws = &self.wiring.workspace;
         let root = if ws.is_empty() {
