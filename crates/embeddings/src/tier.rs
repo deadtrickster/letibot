@@ -93,6 +93,10 @@ pub struct Tier {
     engine: Engine,
     cache: Cache,
     index: Index,
+    /// The first failure this session, held until a caller says it: the tier falls back to
+    /// the lexical score on every failure, and a line per round would be worse than the
+    /// silence. `Mutex` because a caller reaches a tier from another thread.
+    fault: std::sync::Mutex<Option<String>>,
 }
 
 impl Tier {
@@ -114,6 +118,7 @@ impl Tier {
             engine,
             cache,
             index: Index::default(),
+            fault: std::sync::Mutex::new(None),
         }))
     }
 
@@ -124,6 +129,30 @@ impl Tier {
             engine,
             cache,
             index: Index::default(),
+            fault: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// **The first failure, once.** The tier falls back to the lexical score whenever it
+    /// cannot answer, so a caller that says every failure would say it every round; a
+    /// caller that says nothing would hide a wrong URL for a whole session. This is the
+    /// sentence, handed out exactly once.
+    pub fn take_fault(&self) -> Option<String> {
+        self.fault.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Remember why this call could not answer, keeping the first reason of the session,
+    /// and hand the caller the narrow variant it can act on.
+    fn fail(&self, e: crate::cache::EmbedOrCacheError) -> TierError {
+        {
+            let mut fault = self.fault.lock().unwrap_or_else(|p| p.into_inner());
+            if fault.is_none() {
+                *fault = Some(e.to_string());
+            }
+        }
+        match e {
+            crate::cache::EmbedOrCacheError::Cache(c) => TierError::Cache(c),
+            crate::cache::EmbedOrCacheError::Embed(m) => TierError::Embed(m),
         }
     }
 
@@ -186,10 +215,7 @@ impl Tier {
                     .map(normalise)
                     .map_err(|e| e.to_string())
             })
-            .map_err(|e| match e {
-                crate::cache::EmbedOrCacheError::Cache(c) => TierError::Cache(c),
-                crate::cache::EmbedOrCacheError::Embed(e) => TierError::Embed(e),
-            })?;
+            .map_err(|e| self.fail(e))?;
         Ok(vector)
     }
 
@@ -352,6 +378,23 @@ mod tests {
         let query = tier.query("alpha", now()).unwrap();
         assert!(tier.cosine("note/paraphrase", &query).is_some());
         assert_eq!(tier.cosine("note/missing", &query), None);
+    }
+
+    /// The tier falls back on every failure and is said once: the first reason is kept,
+    /// handed over, and never repeated.
+    #[test]
+    fn a_failure_is_said_once_and_kept() {
+        let data = Dir::new("fault");
+        let settings =
+            Settings::from_toml("[embeddings]\nmode = \"http://127.0.0.1:1\"\nmodel = \"m\"\n")
+                .unwrap();
+        let tier = Tier::open(&settings, data.path()).unwrap().expect("a tier");
+        assert!(tier.take_fault().is_none());
+        assert!(tier.query("alpha", now()).is_err());
+        assert!(tier.query("beta", now()).is_err());
+        let said = tier.take_fault().expect("the first failure is said");
+        assert!(said.contains("127.0.0.1:1"), "{said}");
+        assert_eq!(tier.take_fault(), None);
     }
 
     /// A URL mode against a server that is not there fails, and it fails as an error the

@@ -23,6 +23,9 @@ pub enum RemoteError {
     Refused { status: u16, body: String },
     /// A 2xx whose body is not this API's shape.
     Malformed(String),
+    /// Any of the above, and which endpoint said it: a box with two of them written in a
+    /// file needs the one that failed named.
+    At { url: String, why: String },
 }
 
 impl std::fmt::Display for RemoteError {
@@ -45,6 +48,7 @@ impl std::fmt::Display for RemoteError {
                     "the embeddings endpoint answered a body this API does not: {why}"
                 )
             }
+            RemoteError::At { url, why } => write!(f, "{url}: {why}"),
         }
     }
 }
@@ -114,8 +118,20 @@ impl Remote {
         format!("{prefix}/{ROUTE}")
     }
 
+    /// The URL as the config wrote it, for a sentence that has to name one endpoint.
+    pub fn url(&self) -> String {
+        format!("http://{}{}", self.endpoint.authority(), self.prefix)
+    }
+
     /// One vector per text, in the order they were handed over.
     pub fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, RemoteError> {
+        self.ask(texts).map_err(|e| RemoteError::At {
+            url: self.url(),
+            why: e.to_string(),
+        })
+    }
+
+    fn ask(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, RemoteError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
