@@ -19,18 +19,30 @@ use letibot_tools::exec::{ShellConfig, ShellSession};
 use letibot_tools::intent::env::SessionEnv;
 use letibot_tools::intent::{Baseline, Region, ShellTrust, Surroundings};
 
+/// The bash these tests drive, `LETIBOT_TEST_BASH` first: a box whose bash is somewhere else can
+/// still run them, and pointing it at nothing is how the skip below is measured on a box that has
+/// `/bin/bash`.
+fn bash_path() -> std::path::PathBuf {
+    std::env::var_os("LETIBOT_TEST_BASH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/bin/bash".into())
+}
+
 /// The shell the tests drive: bash with no rc, so an assertion is about this chain and not
-/// about whatever a `.bashrc` exports.
+/// about whatever a `.bashrc` exports. A bash with `compgen -e` is apparatus, so the skip goes
+/// through `apparatus` and `LETIBOT_REQUIRE_APPARATUS=1` refuses it instead of passing quietly.
 fn shell() -> Option<Vec<String>> {
-    let bash = std::path::Path::new("/bin/bash");
-    bash.exists().then(|| {
-        vec![
-            "/bin/bash".to_string(),
-            "--norc".to_string(),
-            "--noprofile".to_string(),
-            "-i".to_string(),
-        ]
-    })
+    let bash = bash_path();
+    letibot_tokencore::apparatus::present(
+        "a bash with `compgen -e` (the shell whose trailer is read)",
+        bash.exists(),
+    )?;
+    Some(vec![
+        bash.display().to_string(),
+        "--norc".to_string(),
+        "--noprofile".to_string(),
+        "-i".to_string(),
+    ])
 }
 
 fn tmp(name: &str) -> std::path::PathBuf {
@@ -45,7 +57,6 @@ fn tmp(name: &str) -> std::path::PathBuf {
 #[test]
 fn an_export_in_one_line_resolves_a_command_adjudicated_after_it() {
     let Some(shell) = shell() else {
-        eprintln!("skipped: no /bin/bash on this box, so there is no compgen -e to report");
         return;
     };
     let dir = tmp("export");
@@ -111,7 +122,6 @@ fn an_export_in_one_line_resolves_a_command_adjudicated_after_it() {
 #[test]
 fn an_unset_on_a_later_line_stops_resolving() {
     let Some(shell) = shell() else {
-        eprintln!("skipped: no /bin/bash on this box");
         return;
     };
     let dir = tmp("unset");
@@ -157,7 +167,6 @@ fn an_unset_on_a_later_line_stops_resolving() {
 #[test]
 fn a_credential_the_shell_reports_is_masked_and_not_spliced() {
     let Some(shell) = shell() else {
-        eprintln!("skipped: no /bin/bash on this box");
         return;
     };
     let dir = tmp("credential");
