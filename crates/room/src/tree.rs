@@ -285,23 +285,43 @@ mod tests {
     /// **A room's name runs both ways.** Two readers derive it — the daemon that opens the
     /// connection and the coordinator that holds the room — and a name either of them guessed
     /// would be a room the other cannot find.
+    ///
+    /// **The directory is one this test makes**: a key is the resolved folder, so a path the
+    /// machine happens to have would make the answer a fact about the machine.
     #[test]
     fn a_room_is_the_host_and_the_project_and_the_name_derives_back() {
-        let project = project_key("/home/dead/Projects/letibot/letibot");
+        let root = std::env::temp_dir().join(format!("letibot-room-key-{}", std::process::id()));
+        let folder = root.join("project");
+        std::fs::create_dir_all(&folder).expect("a directory to be a project");
+        let at = folder.display().to_string();
+
+        let project = project_key(&at);
         assert_eq!(project.len(), PROJECT_KEY_LEN, "{project}");
         assert!(
             project.bytes().all(|b| b.is_ascii_hexdigit()),
             "a key is hex: {project}"
         );
-        // The same folder is the same room, whatever path reaches it.
+        // The same folder is the same room, whatever path reaches it: a trailing slash, and a
+        // path that walks away and back.
         assert_eq!(
             project,
-            project_key("/home/dead/Projects/letibot/letibot/"),
+            project_key(&format!("{at}/")),
             "a trailing slash is one folder, not two"
         );
+        assert_eq!(
+            project,
+            project_key(&format!("{at}/../project")),
+            "a path that resolves to this folder is this folder"
+        );
+        // And a second folder is a second room, so the key above is not a constant.
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).expect("a second directory");
+        assert_ne!(project, project_key(&other.display().to_string()));
+
         let name = room_name(KEY, &project);
         assert_eq!(name, format!("{KEY}/{project}"));
         assert_eq!(room_of_name(KEY, &name).as_deref(), Some(project.as_str()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **Two projects are two rooms, and two boxes are two rooms of the same project** — the two
