@@ -7,20 +7,9 @@ use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::view::Warned;
 
 impl App {
-    /// **A confirmation of `allow-all` that another head asked for, and how it ended** —
-    /// `PROTOCOL_VERSION` 54, B8.
-    ///
-    /// The daemon posts the request to every head of the session that may decide except the
-    /// one that made it, so this is *a machine wants `allow-all` for this session* arriving on a
-    /// person's screen. It raises the same card the operator's own `/mode allow-all` raises —
-    /// same warning, same keys, same `mode_confirm` — and records what differs: the request's
-    /// id, which the answer has to name, and who asked.
-    ///
-    /// **`ModeSettled` is the card going away, whoever said what.** Another head may have
-    /// answered first (the daemon settles with whoever does, exactly as it settles a decision),
-    /// and the person's own `yes` comes back here too — so the settlement says what happened
-    /// rather than leaving a screen quietly showing a question that is over. A settlement for a
-    /// request this head is not holding is dropped: it is somebody else's card.
+    /// A confirmation of `allow-all` that another head asked for, and how it ended. The daemon posts
+    /// it to every head that may decide except the asker, and it raises the same card the operator's
+    /// own `/mode allow-all` raises; `ModeSettled` is that card going away, whoever answered.
     pub(crate) fn on_mode_card(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
             ServerFrame::ModeConfirm {
@@ -86,31 +75,15 @@ impl App {
             } => {
                 // Kept whole, like the `Hello` arm above — see it for why the filter is gone.
                 self.sessions = sessions;
-                // **A LIST DOES NOT SEAT A HEAD** — `current` is where the daemon's socket is,
-                // and `self.session_id` is the session this head is DRAWING. The two are made
-                // equal by a seating (`load`), and this arm used to write the daemon's answer
-                // over the head's own, which moved the id without moving the rows: from then on
-                // the head claimed to be in a session whose transcript it did not hold, and
-                // `/sessions`' Enter on that session said `already here` and did nothing — the
-                // operator's *"/sessions showed me you but enter didnt work"*, from the one
-                // state in which the row he pointed at really was not where he was.
-                //
-                // When they disagree the ROWS are what is wrong, and the one frame that
-                // re-reads the session the daemon says this head is in is a resync — a
-                // `Switch` would be answered `already here`, because the daemon is already
-                // there. One ask, no new state, and it terminates: the snapshot's own
-                // `session_id` is the daemon's, so the next answer agrees.
+                // A LIST DOES NOT SEAT A HEAD: `current` is where the daemon's socket is and
+                // `self.session_id` is the session this head is DRAWING. When they disagree the ROWS
+                // are what is wrong, so this asks for a resync - a `Switch` would answer `already here`.
                 if current != self.session_id {
                     self.queued.push(Action::Resync);
                 }
-                // **And the rows the list is the source of are re-derived from it, here.**
-                //
-                // A `Sessions` frame REPLACES `self.sessions`, and `self.sessions` is what
-                // [`App::fold_subagents`] folds the subagent rows and the composer's count
-                // from — so a list that lands without this line moves the picker and leaves
-                // the pane and the count standing on the list that was just thrown away.
-                // That is the defect this arm had, and it is what made a re-ask useless:
-                // the answer to *what are my children now* arrived and was not applied.
+                // And the rows the list is the source of are re-derived from it here: a `Sessions`
+                // frame REPLACES `self.sessions`, which is what [`App::fold_subagents`] folds the
+                // subagent rows and the composer's count from, so a stale pane would outlive the list.
                 self.fold_subagents();
                 match created {
                     // A session was made *because this head asked*. Going there is
@@ -121,26 +94,17 @@ impl App {
                         self.queued.push(Action::Switch(id));
                     }
                     Some(id) => self.say(&format!("session {id} created")),
-                    // **Not** `self.picker = true`. A `Sessions` frame is the answer
-                    // to three different questions — a list, a rename, and a switch
-                    // to the session you are already in — and only the first of them
-                    // wants a picker. Opening it here put the session list over the
-                    // screen after `/rename`, which the operator then had to dismiss
-                    // to see the header they had just changed. The key and the
-                    // command that ask for a list already open it themselves.
+                    // NOT `self.picker = true`. A `Sessions` frame answers three questions - a list, a
+                    // rename and a switch to the session you are already in - and only the first wants a
+                    // picker; opening it here put the list over the header `/rename` had just changed.
                     None => {}
                 }
                 self.redraw = true;
                 Disposition::Control
             }
-            // The bootstrap read for the todos pane. The session named is the one
-            // the daemon answered for; a head that has since switched keeps what
-            // it has until the pane is opened again, which re-asks.
-            // **The daemon's job table, whole.** Which jobs are listed, what the
-            // command reads as and what the state word is are all its answers —
-            // the head used to fold them out of the event stream and join the
-            // command against whichever turn it happened to be showing, which is
-            // how a job that outlived its turn lost its name.
+            // The daemon's job table, whole: which jobs are listed, what the command reads as and what
+            // the state word is are all its answers, so the head no longer folds them out of the event
+            // stream and loses the name of a job that outlived its turn.
             ServerFrame::Jobs {
                 session_id,
                 jobs,
@@ -158,11 +122,9 @@ impl App {
                 }
                 Disposition::Control
             }
-            // **The standing notes, whole.** The pane's bootstrap read, and the rows are the
-            // daemon's own reading of the corpus — the abstract the index shows and the FORM
-            // the budget gave each file — so a head draws what the model was given rather than
-            // a second opinion about it. Only the file's size, its age and whether it is still
-            // there are the head's own, read at DRAW time; see `ui/panes/standing.rs`.
+            // The standing notes, whole - the pane's bootstrap read, and the rows are the daemon's own
+            // reading of the corpus, so the head draws what the model was given rather than a second
+            // opinion. Only the file's size, age and presence are read at DRAW time.
             ServerFrame::StandingNotes { session_id, notes } => {
                 if session_id == self.session_id {
                     self.standing = notes;
@@ -195,17 +157,9 @@ impl App {
                 self.redraw = true;
                 Disposition::Control
             }
-            // **The model's proposed `!` completions, answered.** The answer to a
-            // `SuggestShell` this head sent, correlated by the id it minted: a
-            // suggestion cached under the wrong prefix is a wrong suggestion, and the
-            // id is what tells one answer from another. An id this head is not
-            // holding — the transcript advanced and the ask was cleared — is stale
-            // and is dropped, because a suggestion about a conversation that moved is
-            // a suggestion about the wrong conversation.
-            //
-            // **Nothing here fills the composer.** The lines are cached and drawn as
-            // candidates, with their provenance; only a Tab fills the composer with
-            // one, and Enter is still the operator's.
+            // The model's proposed `!` completions, answered: correlated by the id this head minted, so
+            // a suggestion is cached under the prefix it was asked for, and an id no longer held is
+            // stale and dropped. Nothing here fills the composer - only a Tab does, and Enter is yours.
             ServerFrame::ShellSuggestions {
                 client_request_id,
                 prefix: _,
@@ -220,19 +174,17 @@ impl App {
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
-                    // **The board has been read HERE, and from now on it is the truth about who
-                    // waits on the operator** — see [`App::asks_board`]. The settings row's copy
-                    // is a sentence from attach time that nothing refreshes, so it may not speak
-                    // over a board this head has in its hands.
+                    // The board has been read HERE, and from now on it is the truth about who waits on
+                    // the operator (see [`App::asks_board`]): the settings row's copy is a sentence from
+                    // attach time that nothing refreshes.
                     self.asks_board = Some(self.session_id.clone());
                     // The board is the truth once it arrives: a row answered from here is either
                     // off it or — the answer refused — still asking, and asked again.
                     self.todo_answered.clear();
                     self.prune_todo_asks();
-                    // **A waiting seed runs here too** — this is the REPLY to the `ListTodos` the
-                    // attach queues when a seed is due, and it reads the board as whole as the
-                    // event does. One seed, two arrivals, because the wire has two: the reply and
-                    // the announcement.
+                    // A waiting seed runs here too: this is the REPLY to the `ListTodos` the attach
+                    // queues when a seed is due, and it reads the board as whole as the event does. One
+                    // seed, two arrivals, because the wire has two.
                     if self.todo_seed_pending {
                         self.todo_seed_pending = false;
                         self.seed_todos();
@@ -241,22 +193,11 @@ impl App {
                 }
                 Disposition::Control
             }
-            // The answer to the tree's read key (`p`, or `/peek ID`): the named subagent's
-            // scrollback, scrubbed as a replay. Read, never folded — these events are not
-            // this session's history, and folding them would lie about whose
-            // turn is whose. The pane shows the tool results; the whole view is
-            // spilled to a file so no cap on the pane is a cap on the record.
             ServerFrame::Settings { rows } => {
                 self.settings = rows;
-                // **The stood-down compaction, for a head that attached AFTER the
-                // guard fired.** The warning arm is the live half; this is the
-                // durable one, read whenever settings arrive (attach, `/config`,
-                // `/models`, a session switch). Keyed on the `off —` spelling
-                // rather than bare `off`, because the daemon writes `off — …`
-                // only for the guard's finding and a `--no-auto-compact` the
-                // operator typed is not news to them — and `on` CLEARS it, so a
-                // switch to a session the guard never fired on takes the line
-                // away rather than leaving stale state above the composer.
+                // The stood-down compaction, for a head that attached AFTER the guard fired: the warning
+                // arm is the live half, this is the durable one, read whenever settings arrive. Keyed on
+                // the `off -` spelling, because a `--no-auto-compact` the operator typed is not news.
                 self.auto_compact_off = self.settings.iter().find_map(|r| {
                     (r.key == "auto-compact").then(|| {
                         r.value
@@ -264,10 +205,9 @@ impl App {
                             .map(|why| format!("auto-compaction is off: {}", why.trim()))
                     })?
                 });
-                // **The operator's `/nag pause`, for a head that attached after it** — the
-                // durable half, as `auto_compact_off` reads its row above. Keyed on the
-                // `paused` spelling the daemon writes only for a pause; `on`, or a daemon too
-                // old to send the row, clears it.
+                // The operator's `/nag pause`, for a head that attached after it - the durable half, as
+                // `auto_compact_off` reads its row above. Keyed on the `paused` spelling the daemon
+                // writes only for a pause; `on`, or a daemon too old to send the row, clears it.
                 self.nags_paused = self.settings.iter().find_map(|r| {
                     (r.key == "nags").then(|| {
                         r.value
@@ -275,11 +215,9 @@ impl App {
                             .map(|until| until.trim().to_string())
                     })?
                 });
-                // **Whether the board waits on the operator**, for a head that attached after
-                // the question was asked — the durable half of the `waiting on you` line, as the
-                // two rows above are for theirs. `none`, or a daemon too old to send the row,
-                // clears it. And the board itself is read when this head has none, so the line
-                // can name the question and the card can offer its options.
+                // Whether the board waits on the operator, for a head that attached after the question
+                // was asked - the durable half of the `waiting on you` line. `none`, or a daemon too old
+                // to send the row, clears it; with no board of its own the head reads one.
                 self.asks_setting = self
                     .settings
                     .iter()
@@ -293,14 +231,9 @@ impl App {
                 // Stamped, so the header can tell whether a turn has named a model
                 // since. See `model_from_settings_at`.
                 self.model_from_settings_at = self.seq;
-                // **A PICKER THAT OPENED BEFORE ITS OWN LIST ARRIVED SEEDS NOW** — see
-                // [`App::pick_unseeded`]. `/mode` and `/models` send the ask and draw the card in
-                // the same breath, so on a head whose rows have not landed the cursor goes to row
-                // 0 and the current row is marked further down with the cursor somewhere else.
-                //
-                // **Only while the cursor is still untouched.** A frame landing mid-arrow must not
-                // snap the reader back to where they started, which is the reason this was not
-                // re-seeded at all before; the flag is what tells the two cases apart.
+                // A PICKER THAT OPENED BEFORE ITS OWN LIST ARRIVED SEEDS NOW (see [`App::pick_unseeded`]):
+                // `/mode` and `/models` send the ask and draw the card in the same breath, so an unseeded
+                // cursor sits on row 0 with the mark further down. Only while the cursor is untouched.
                 if self.pick.is_some() && self.pick_unseeded {
                     self.seed_pick();
                 }
@@ -315,28 +248,9 @@ impl App {
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_replies(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
-            // **A fetched row window the head did not ask for.**
-            //
-            // `FetchRow` exists and is answered (see `ClientFrame::FetchRow` and the
-            // server's arm), and **this head does not send it yet**. Its paging works over
-            // the rows the snapshot gave it: `ViewBounds` is 2000 rows and 8 MB, and the
-            // head's own paging draws windows of a payload it already holds. What is
-            // missing is the case where the row is *not* held — trimmed by those bounds —
-            // and that needs the head to ask, track the answer, and render a partial body.
-            // Filed in `TODO.md` R19.2 rather than half-built here.
-            //
-            // The arm is explicit rather than a wildcard so that the day the head starts
-            // asking, a frame that arrives unhandled is visible here rather than swallowed
-            // by a `_ =>`.
-            // **R11's locator, answered.** The bytes go to the pane that asked, on the same
-            // channel `Peeked` and `JobOutput` use — a pane, not the conversation, because a
-            // head asked for them to READ and a brief scrolled past in the chat is a brief
-            // nobody finds again.
-            //
-            // **`None` reads as *not recorded*, never as empty.** The store holds `NULL` on
-            // every row written before R11 kept the exchange, and an oracle that never answered
-            // has no reply either — the two are one sentence to a reader and neither is *"here
-            // it is, and it is nothing"*.
+            // R11's locator, answered: the bytes go to the pane that asked, on the channel `Peeked` and
+            // `JobOutput` use - a pane, not the conversation, because a brief scrolled past in the chat
+            // is one nobody finds again. `None` reads as NOT RECORDED, never as empty.
             ServerFrame::Diagnostic {
                 request_id,
                 kind,
@@ -373,6 +287,9 @@ impl App {
                 self.push_surface(Surface::Listing);
                 Disposition::Control
             }
+            // The head does not send `FetchRow`: its paging works over the rows the snapshot gave
+            // it, so this arm stays explicit rather than a wildcard, and an answer that arrives one
+            // day is visible here instead of swallowed.
             ServerFrame::RowFetched { .. } => Disposition::Control,
             ServerFrame::Peeked {
                 session_id,
@@ -386,11 +303,9 @@ impl App {
                 if self.sub_out_pending.take().is_none() {
                     return Disposition::Control;
                 }
-                // **The session's rows, when the daemon sent them** — and the whole point of the
-                // field is that this is the ORDINARY path now. A child is a session (the operator,
-                // 2026-10-03: *"yes subagents are not even scratch session they are session, just
-                // sub sessions"*), so its rows are drawn by the one renderer that draws rows, and
-                // the hand-rolled plain-string path below is what an older daemon falls back to.
+                // The session's rows, when the daemon sent them - and that is the ORDINARY path now: a
+                // child is a session, so its rows are drawn by the one renderer that draws rows, and the
+                // plain-string path below is what an older daemon falls back to.
                 let (lines, degraded) = match &snapshot {
                     Some(s) => (self.sub_out_from_rows(&s.items), false),
                     None => (subagent_out_lines(&events), true),
@@ -433,52 +348,37 @@ impl App {
                 self.resyncs += 1;
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
-                // **Through `say`, so this line has a clock like every other.** It used to
-                // be a direct write to the slot, which armed no countdown: the sentence
-                // then stood until the next notice replaced it, for the rest of the
-                // session. The reason is worth reading and is not worth keeping — the
-                // `resyncs` counter holds it, the alarm triangle repeats it, and
-                // `/status` spells it out — so it is news like the rest, and `say` is the
-                // one writer that starts a clock.
+                // Through `say`, so this line has a clock like every other: the `resyncs` counter holds
+                // it, the alarm triangle repeats it and `/status` spells it out, so it is news like the
+                // rest, and `say` is the one writer that starts a countdown.
                 self.say(&format!("resync: {reason}"));
                 self.load(*snapshot);
-                // **And the board is re-read, for the reason the attach reads it** — a resync is
-                // the daemon saying this head fell behind, and the board is not in a snapshot, so
-                // the copy in hand may name a row whose question was taken back while the events
-                // were being dropped. See [`App::asks_board`].
+                // And the board is re-read, for the reason the attach reads it: a resync is the daemon
+                // saying this head fell behind, and the board is not in a snapshot, so the copy in hand
+                // may name a row whose question was taken back while the events were dropped.
                 if !self.queued.contains(&Action::ListTodos) {
                     self.queued.push(Action::ListTodos);
                 }
                 Disposition::Control
             }
             ServerFrame::Accepted { note, seq, .. } => {
-                // **The daemon answering a STOP is the one acceptance that is not
-                // routine.** R30: it is the only evidence that the request was *read* —
-                // the frame being written says the bytes went to the kernel, and this says
-                // a process on the other end understood them. Recorded rather than said:
-                // the head is already drawing `stopping the daemon: the daemon answered`
-                // from the state, and a notice on top of it would be the same fact twice.
+                // The daemon answering a STOP is the one acceptance that is not routine: it is the only
+                // evidence the request was READ, where the frame being written says only that the bytes
+                // reached the kernel. Recorded rather than said - a notice would be the same fact twice.
                 if note == letibot_sessionlog::NOTE_STOPPING
                     && let Some(s) = &mut self.stopping
                 {
                     s.acked = true;
                     self.redraw = true;
                 } else if note != letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED {
-                    // Telling the person who just pressed enter that their prompt was
-                    // accepted is not information — and the old head left exactly that
-                    // sitting on the input line for the rest of the session. Anything
-                    // *other* than the routine acceptance still gets said.
+                    // Telling the person who just pressed enter that their prompt was accepted is not
+                    // information, and the old head left exactly that sitting on the input line for the
+                    // rest of the session. Anything OTHER than the routine acceptance still gets said.
                     self.say(&note);
                 }
-                // **The daemon saying where it is** (R17). This is the only route by
-                // which a head learns it is *behind* rather than *at the end*: both
-                // look the same from inside — an empty queue and a screen that has
-                // drawn everything it was given — and on 2026-09-22 the difference
-                // was 36 rows that were in the ledger and not on the screen.
-                //
-                // A `seq` below this head's own is a redelivery, not a gap; only a
-                // greater one is a distance, and it is a lower bound, because the
-                // daemon has moved on since it answered.
+                // The daemon saying where it is: the only route by which a head learns it is BEHIND
+                // rather than at the end, since both look the same from inside. A `seq` below this head's
+                // own is a redelivery, not a gap; only a greater one is a distance, and a lower bound.
                 self.behind = seq.saturating_sub(self.seq);
                 Disposition::Control
             }
@@ -494,19 +394,15 @@ impl App {
                 // Both numbers, so the operator can see what they were looking at.
                 // A peek answered with one of these also ends its waiting.
                 self.sub_out_pending = None;
-                // And a refusal while the head is between seats is the trip's: not in the
-                // store, a restore that failed, a switch to a session that went away. Any of
-                // them ends the wait — the head stays where it is, and the line below says
-                // why. Matched on the state rather than the reason, because a failed restore
-                // carries whatever the store said.
+                // And a refusal while the head is between seats is the trip's: not in the store, a restore
+                // that failed, a switch to a session that went away. Any of them ends the wait - the head
+                // stays where it is and the line below says why. Matched on the state, not the reason.
                 if self.fetching.take().is_some() {
                     self.attaching = false;
                 }
-                // **And this is the daemon naming a seq this head has not reached**
-                // (R17) — the same fact `Accepted` carries, stated the other way round.
-                // A refusal "for a stale `expected_seq`" is exactly what being behind
-                // produces, so the head had better know the distance rather than
-                // apologising for the operator's screen.
+                // And this is the daemon naming a seq this head has not reached - the same fact `Accepted`
+                // carries, stated the other way round. A refusal "for a stale `expected_seq`" is what
+                // being behind produces, so the head had better know the distance.
                 self.behind = actual_seq.saturating_sub(self.seq);
                 self.say(&format!(
                     "rejected: {reason} (you saw {expected_seq}, the session is at {actual_seq})"
@@ -514,11 +410,9 @@ impl App {
                 Disposition::Control
             }
             ServerFrame::Bye { reason } => {
-                // Into the transcript, AND kept for after the terminal is restored.
-                // A `Bye` is the last thing this head will draw, and the frame it is
-                // drawn into is about to be torn down with the alternate screen — so
-                // on the path that matters most, a version skew, the operator saw a
-                // head vanish and nothing else. See `App::farewell`.
+                // Into the transcript, AND kept for after the terminal is restored: a `Bye` is the last
+                // thing this head draws and the frame it lands in is about to go with the alternate
+                // screen, so on the path that matters most - a skew - a head must not vanish silently.
                 self.say(&format!("daemon: {reason}"));
                 self.bye = Some(reason.clone());
                 self.quit = true;
@@ -533,16 +427,9 @@ impl App {
     pub(crate) fn on_event_frame(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
             ServerFrame::Event(env) => {
-                // **R17: `seq` is dense, so a jump is proof of a miss.**
-                //
-                // The daemon assigns it and nobody else does; a head that assigns
-                // unconditionally cannot tell a delivered row from a dropped one.
-                // Guarded on the session so a `Switch` — whose events may arrive on
-                // the same socket before the new `Hello` has been folded — cannot
-                // read the other session's numbering as a gap in this one's.
-                //
-                // Nothing is done about a `self.seq` of 0: that is a head with no
-                // mark yet, and the first thing it hears is not a gap.
+                // `seq` is dense, so a jump is proof of a miss: the daemon assigns it and nobody else does,
+                // and a head that assigned unconditionally could not tell a delivered row from a dropped
+                // one. Guarded on the session so a `Switch` cannot read as a gap; 0 is a head with no mark.
                 if self.seq > 0 && env.session_id == self.session_id && env.seq > self.seq + 1 {
                     let lost = env.seq - self.seq - 1;
                     self.gaps += 1;

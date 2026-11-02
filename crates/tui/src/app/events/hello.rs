@@ -11,12 +11,9 @@ impl App {
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_hello(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
-            // Once per *attachment*, which is now more than once per connection: a
-            // `Switch` is answered with a second `Hello`, and this arm is the whole
-            // of the head's switch path. That is the reason the daemon answers a
-            // switch with a `Hello` rather than a frame of its own — the late-join
-            // path is the best-tested path in this head, and a second one that
-            // "also seats you somewhere" is a second one to keep in step.
+            // Once per ATTACHMENT, not per connection: a `Switch` is answered with a second `Hello`,
+            // and this arm is the whole of the head's switch path - which is why the daemon answers a
+            // switch with a `Hello` rather than a frame of its own, the late-join path being proven.
             ServerFrame::Hello {
                 protocol_version,
                 session_id,
@@ -29,26 +26,17 @@ impl App {
                 ..
             } => {
                 let moved = !self.session_id.is_empty() && self.session_id != session_id;
-                // **The reseat card is the daemon's to raise, on every attach** (`seat_in` says
-                // `prefix_stale` right after this `Hello` while it is still true), so a seating
-                // forgets it: a switch to another session, a reattach after a restart that found
-                // the prompt current, and a reattach that will hear the sentence again a frame
-                // from now all start from the daemon's word rather than this head's memory.
+                // The reseat card is the daemon's to raise, on every attach (`seat_in` says
+                // `prefix_stale` right after this `Hello` while it is still true), so a seating forgets
+                // it: the daemon's word, not this head's memory, decides what is stale.
                 self.reseat = None;
-                // **And a board this head read is not a board THIS attachment read** — see
-                // [`App::asks_board`]. An attach, a re-attach and the return from a switch are all
-                // this frame, and all three may land on a board that moved while the head was
-                // away: until the read asked for below comes back, the `asks` settings row is the
-                // only thing that knows a question was asked, and the board the head is holding
-                // may name a row that no longer waits.
+                // A board this head read is not a board THIS attachment read (see [`App::asks_board`]):
+                // an attach, a re-attach and a return from a switch all land here, and the board may
+                // have moved while the head was away - so it is dropped and asked for again below.
                 self.asks_board = None;
-                // The daemon has answered, so whatever the head drew while it was
-                // asking is about to be replaced by the truth. See `attaching`.
-                //
-                // **Unless this is the stop on the way.** A head that asked for a stored
-                // session is seated somewhere first; that `Hello` is not the answer, and
-                // ending the wait on it drew the placeholder as "said nothing yet". See
-                // `fetching`.
+                // The daemon has answered, so whatever the head drew while asking is about to be
+                // replaced by the truth (see `attaching`) - unless this is the stop on the way: a head
+                // that asked for a stored session is seated elsewhere first, and that is not the answer.
                 match self.fetching.as_deref() {
                     Some(asked) if asked != session_id => {}
                     _ => {
@@ -56,47 +44,22 @@ impl App {
                         self.attaching = false;
                     }
                 }
-                // **The version the daemon is TOLD to be, checked at the handshake.**
-                //
-                // This is the one moment a skew is cheap to say: nothing has been read
-                // yet, the direction is known, and the sentence can name both numbers
-                // while the operator is still looking at the head rather than at a frame
-                // that failed to parse. `protocol_skew` is `None` when they match — the
-                // normal case says nothing at all, so a line here is a fact and not
-                // furniture.
-                //
-                // **It does not exit.** A skew is usually survivable — that is R3's whole
-                // argument — so the head says which way round it is and carries on. What
-                // differs is what the operator should expect, and that is why the two
-                // directions get different sentences: a newer daemon means frames this
-                // head will report and skip, an older one means the next command the two
-                // do not share ends the session.
+                // The version the daemon is TOLD to be, checked at the handshake - the one moment a
+                // skew is cheap to say, with nothing read yet and both numbers nameable. It does not
+                // exit: a skew is usually survivable, so the head says which way round it is and goes on.
                 self.daemon_protocol = Some(protocol_version);
-                // **And which daemon that is.** A head outlives the daemon that gave it its
-                // facts — the operator's box has had three `letibot-tui` processes up for days
-                // while the daemon was replaced underneath them — so the party at the other end
-                // of this socket has to be checked rather than assumed. The pid is re-read per
-                // connection by the caller that opened it, so by the time this arm runs it is
-                // *this* daemon's, and the protocol rides this frame.
-                //
-                // **The check is on the SEATING, and the seating is where it belongs**: a
-                // `Hello` is an attach, a re-attach and the return from a switch, and a switch
-                // is answered on the same socket by the same process — so this fires once per
-                // connection that lands somewhere new, and not once per keystroke.
+                // And which daemon that is: a head outlives the daemon that gave it its facts, so the
+                // party at the other end is checked rather than assumed. The pid is re-read per
+                // connection, and the check is on the SEATING - once per attach, not per keystroke.
                 let seat = DaemonSeat {
                     pid: self.daemon_pid,
                     protocol: protocol_version,
                 };
                 let was = self.daemon_seat;
                 self.daemon_seat = Some(seat);
-                // **Held, not filed.** `load` replaces `self.notes` wholesale a few lines down,
-                // so a note written here is thrown away — the same reason the skew's sentence
-                // and the reattach's are held rather than said. See `App::link_up`.
-                //
-                // **Both numbers on both sides, and `None` is said as `not told`.** A pid the
-                // kernel declined to name is not a pid of zero, and the same rule R30 keeps on
-                // the farewell applies here: a head that printed a number it did not have would
-                // send the operator to `ps` for a process that is not there.
+                // Held, not filed: `load` replaces `self.notes` wholesale a few lines down, so a note
+                // written here is thrown away (see `App::link_up`). Both numbers on both sides, and
+                // `None` is said as `not told` - a pid the kernel declined is not a pid of zero.
                 let replaced_said = was.filter(|w| *w != seat).map(|w| {
                     format!(
                         "this is not the daemon this head was attached to. That one was {} and \
@@ -111,54 +74,29 @@ impl App {
                         seat.protocol,
                     )
                 });
-                // **The `Hello` is what says the link is back.** It is the frame that
-                // seats this connection, so it is the only honest answer to "are we
-                // attached" — a socket that accepts and then says nothing is not.
-                // `link_up` is a no-op when nothing was down, which is every ordinary
-                // attach and the second `Hello` a `Switch` produces.
+                // The `Hello` is what says the link is back: it is the frame that seats this
+                // connection, so it is the only honest answer to "are we attached". `link_up` is a
+                // no-op when nothing was down - every ordinary attach, and a `Switch`'s second `Hello`.
                 let reattached = self.link_up();
                 let mut skew_said = None;
                 if let Some(said) = letibot_sessionlog::protocol_skew(
                     protocol_version,
                     letibot_sessionlog::protocol::PROTOCOL_VERSION,
                 ) {
-                    // **Held until after the snapshot is folded in.** `load` replaces
-                    // `self.notes` wholesale — a snapshot's warnings are the head's whole
-                    // warning history — so a note filed before it is not "anchored at the
-                    // frame that revealed this", it is thrown away. Found by the test
-                    // that asserts the sentence exists, which is the only reason this is
-                    // not a silence nobody would have noticed.
+                    // Held until after the snapshot is folded in: `load` replaces `self.notes`
+                    // wholesale, so a note filed before it is thrown away rather than anchored at the
+                    // frame that revealed it.
                     skew_said = Some(said);
                 }
-                // **And every session-scoped read this head owes itself, in one place.**
-                //
-                // This is the attach, the re-attach (a reconnect is answered with a
-                // `Hello` too) and the return from a switch — the daemon answers a
-                // `Switch` with a second `Hello`, which is why there is one call here
-                // and not three. See [`App::refetch_session_facts`] for what a switch
-                // drops and why each of the three is asked for rather than waited on.
-                //
-                // **And what this session's pane is running** — the read behind the head's own
-                // line about a program it is not drawing. Asked here, with the others, for
-                // the same shape of reason: the daemon answers a read and never volunteers one,
-                // and a head that has just been SEATED somewhere knows nothing about the pane
-                // there — its own pane went with the session it left (see [`App::load`]), and
-                // the pane in the new one is the session's, not this head's.
-                //
-                // **`Unasked` rather than `None`**, because those are different facts and one
-                // of them decides whether `!term close` asks or refuses — see [`PaneFact`].
+                // Every session-scoped read this head owes itself, in one place - an attach, a
+                // re-attach and the return from a switch are all this frame, so there is one call and
+                // not three. `term_fact` starts `Unasked` rather than `None`: they are different facts.
                 self.term_fact = PaneFact::Unasked;
                 self.close_pending = false;
                 self.term_ask = None;
-                // **The seating's own asks are held while the attach is read-only, and this is
-                // not an optimisation — it is the feature working at all.** Every ask below
-                // is a frame the daemon may not know, sent *without the operator typing
-                // anything*: `TermStatus` arrived at protocol 34, `ListJobs` at 21, `Settings`
-                // at 17, `ListSessions` at 2 — against the operator's own case (a head at 36,
-                // a daemon at 22) the first two would fail the daemon's deserialiser a tick
-                // after this `Hello`, and the read-only attach would die of the head's own
-                // courtesy. [`App::attach_anyway`] sends these the moment the lock lifts, so
-                // an overridden head is not a head with a stale header forever.
+                // The seating's own asks are held while the attach is read-only, and that is the feature
+                // working at all: each is a frame an older daemon may not know, sent without the operator
+                // typing anything, and one refusal would kill the attach. `App::attach_anyway` re-sends.
                 if !self.skew_locked() {
                     self.queued.push(Action::TermStatus);
                     self.refetch_session_facts();
@@ -166,32 +104,19 @@ impl App {
                 self.head_id = head_id.clone();
                 self.seated = Some(head_id);
                 self.wiring = wiring;
-                // **Sub-sessions are KEPT, and the belief that used to filter them here is the
-                // defect this line closes.** The operator, 2026-10-03: *"yes subagents are not even
-                // scratch session they are session, just sub sessions"*, and *"why readonly?
-                // subagent session is more like you driving others via tmux"*. A child is a
-                // session the daemon holds, a head can post to it and it answers — so a head that
-                // drops it is throwing away a session it can DRIVE.
-                //
-                // What the filter was protecting against was noise, and that is
-                // [`App::session_rows`]'s business now: nested, collapsed by default, with the
-                // parent's id already on the row.
+                // Sub-sessions are KEPT: a child is a session the daemon holds, a head can post to it
+                // and it answers, so dropping it throws away a session the head can DRIVE. The noise
+                // the filter was for is [`App::session_rows`]'s business - nested, folded by default.
                 self.sessions = sessions;
-                // **A removal is about a row of the daemon's list, so it goes when the row does** —
-                // and it goes for the chain down to where this head has just been seated, which is
-                // the refusal seen from the other side (`App::prune_removed`): a head that
-                // switches onto a row it had removed would otherwise stand in a subtree its own
-                // list filters out. One door, because a switch, a resume and a reconnect are all
-                // this frame.
+                // A removal is about a row of the daemon's list, so it goes when the row does - down
+                // the chain to where this head has just been seated (`App::prune_removed`), or a switch
+                // onto a removed row stands in a subtree the head's own list filters out.
                 self.prune_removed(&session_id);
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
-                // `session_id` is assigned by `load` and **not before it**: `load`
-                // decides whether this is the same session by comparing the two,
-                // and assigning first made that comparison always true — so a
-                // switch kept the previous session's token count and model on the
-                // header, over the new session's empty transcript. Seen under tmux:
-                // a brand-new session claiming `4470 ctx · 34% cached`.
+                // `session_id` is assigned by `load` and NOT before it: `load` decides whether this is
+                // the same session by comparing the two, and assigning first made that comparison always
+                // true - so a switch kept the previous session's token count over an empty transcript.
                 match snapshot {
                     Some(s) => self.load(*s),
                     // A resume served from the scrollback: no snapshot, and the
@@ -205,12 +130,9 @@ impl App {
                 // read before the gap may be one whose zero it never saw; the daemon says the
                 // count again after every attach.
                 self.held = None;
-                // **Now it can be said.** A note rather than a `say`: this is a fact about
-                // the connection that outlives the next keystroke, and it belongs in the
-                // conversation with everything else that happened — anchored at the end of
-                // whatever the snapshot carried, which is where the reader is. `note`
-                // dedupes on `(code, detail, ts)`, so the second `Hello` a `Switch`
-                // produces does not say it twice.
+                // Now it can be said. A note rather than a `say`: this outlives the next keystroke and
+                // belongs in the conversation, anchored at the end of whatever the snapshot carried.
+                // `note` dedupes on `(code, detail, ts)`, so a `Switch`'s second `Hello` says it once.
                 if let Some(said) = skew_said {
                     self.note(Note::Warned(Warned {
                         code: "protocol_skew".into(),
@@ -232,12 +154,9 @@ impl App {
                         ts: 0,
                     }));
                 }
-                // A daemon that restarted has no turn state in the snapshot —
-                // `TurnFinished` is ephemeral, and a view rebuilt from the
-                // transcript has no turn — so the context the last turn left
-                // behind comes from the session's own row: the daemon writes it
-                // on every round finish, and the brief carries it here. A live
-                // session's snapshot already set the usage, and that wins.
+                // A daemon that restarted has no turn state in the snapshot (`TurnFinished` is
+                // ephemeral, and a view rebuilt from the transcript has no turn), so the context comes
+                // from the session's own row. A live session's snapshot already set it, and that wins.
                 if self.usage.is_none()
                     && let Some(b) = self
                         .sessions
@@ -245,10 +164,9 @@ impl App {
                         .find(|s| s.session_id == self.session_id)
                     && let Some(tokens) = b.context_tokens
                 {
-                    // The row knows the prompt size; it knows the cache fraction
-                    // only if a turn finished after the column existed. A
-                    // backfilled row has the size and not the fraction, and the
-                    // header shows the percentage only when it was measured.
+                    // The row knows the prompt size, and the cache fraction only if a turn finished
+                    // after that column existed: a backfilled row has the size and not the fraction,
+                    // and the header shows the percentage only when it was measured.
                     self.usage_cache_measured = b.context_cached.is_some();
                     self.usage = Some(Usage {
                         prompt_tokens: tokens,
@@ -260,29 +178,23 @@ impl App {
                         cost_micros_usd: None,
                     });
                 }
-                // **And what the store says this session holds, while the head holds nothing**
-                // — the disagreeing sources, made into a state the screen can draw instead of
-                // the empty-transcript banner. `load` asks it for the snapshot arm; this asks it
-                // for the arm with no snapshot, and for a switch either way.
+                // And what the store says this session holds, while the head holds nothing - the
+                // disagreeing sources as a state the screen can draw instead of the empty-transcript
+                // banner. `load` asks it for the snapshot arm; this asks it for the arm without one.
                 self.restoring = self.rows_the_store_holds();
                 if moved {
-                    // The picker is closed by arriving, not by the key that opened
-                    // it: the switch is the answer to the question the picker
-                    // asked, and leaving it up over the session you just joined is
-                    // a screen the operator has to dismiss for no reason.
+                    // The picker is closed by arriving, not by the key that opened it: the switch is
+                    // the answer to the question the picker asked, and leaving it up over the session
+                    // just joined is a screen the operator has to dismiss for no reason.
                     self.close_surface(Surface::Picker);
                     self.say(&format!(
                         "switched to {}",
                         self.session_label(&self.session_id)
                     ));
                 }
-                // **AND THE STARTER TODOS** — leticl's `%seed-operator-todos`, on the one moment
-                // leticl runs it: the HELLO, where a head learns its project (its own docstring:
-                // *"this is the one function where a head learns its list, so it is the one place
-                // a list can be STARTED"*). A switch lands here too, so each project is checked
-                // in its own right. The seed itself waits for the board — see `todo_seed_pending`
-                // — because this head keeps no second list and must not send a half it has not
-                // read.
+                // And the starter todos, on the one moment a head learns its project: the HELLO. A
+                // switch lands here too, so each project is checked in its own right, and the seed
+                // itself waits for the board (`todo_seed_pending`) - this head keeps no second list.
                 if self.todo_seed_due() {
                     self.queued.push(Action::ListTodos);
                     self.todo_seed_pending = true;
