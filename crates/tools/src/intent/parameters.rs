@@ -300,12 +300,11 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
     if let Some(h) = &env.home {
         set(0, "HOME", Some(h));
     }
-    // A standalone `X=...` is a statement of its own: it sets the shell's variable for
-    // everything after it.
+    // A standalone `X=...` sets the shell's variable for everything after it. A value this
+    // round cannot read sets NOTHING rather than keeping the old one, which would read
+    // `X=/w; X=$X/y` back as `/w`; the next round reads it once the assignment is literal.
     for a in &n.assignments {
-        if let Some(v) = a.value.literal() {
-            set(a.span.end, &a.name, Some(v));
-        }
+        set(a.span.end, &a.name, a.value.literal());
     }
     for stage in &n.stages {
         match stage.program_name().unwrap_or("") {
@@ -313,9 +312,7 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
             // on the stage, which is why this reads `stage.assignments` and not `argv`.
             "export" | "declare" | "typeset" | "readonly" => {
                 for a in &stage.assignments {
-                    if let Some(v) = a.value.literal() {
-                        set(stage.span.end, &a.name, Some(v));
-                    }
+                    set(stage.span.end, &a.name, a.value.literal());
                 }
             }
             // A name that is unset has no value, and a stale binding would let the next

@@ -1495,6 +1495,35 @@ fn a_loop_over_a_brace_list_reports_one_write_per_pass() {
     assert_eq!(words(&typed), words(&x));
 }
 
+/// A variable reassigned from its own value keeps the rest of the word: `X=/w; X=$X/y` holds
+/// `/w/y`, and reading the name back as `/w` claims a target nobody wrote.
+#[test]
+fn a_name_reassigned_from_itself_is_the_whole_word() {
+    let arg = |cmd: &str| -> Option<String> {
+        b(cmd)
+            .command
+            .as_ref()?
+            .stages
+            .last()?
+            .argv
+            .last()?
+            .literal()
+            .map(str::to_string)
+    };
+    for (cmd, want) in [
+        ("X=/w; X=$X/y; cat $X", "/w/y"),
+        ("d=/w; d=$d/src; ls $d", "/w/src"),
+        ("X=/w/; X=${X}y; cat $X", "/w/y"),
+        ("X=/a; export X=$X/b; cat $X", "/a/b"),
+        ("p=/w; p=$p/x; p=$p/y; cat $p", "/w/x/y"),
+    ] {
+        assert_eq!(arg(cmd).as_deref(), Some(want), "{cmd}");
+    }
+    // And a name overwritten by something this round cannot read is NOT the value it used to
+    // hold: the old one is stale the moment the second assignment runs.
+    assert!(!b("X=/a; X=$UNSET; cat $X").resolved);
+}
+
 /// `$HOME` and a variable the same command assigned are values; nothing else is. A
 /// substitution's value is not in the text, or nothing assigned it, or bash expands the
 /// argument list before a prefix assignment lands.
