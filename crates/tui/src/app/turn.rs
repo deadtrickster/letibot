@@ -109,6 +109,11 @@ pub(crate) struct TurnPane {
     /// snapshot and has no honest duration.
     pub(crate) think_started_ms: u64,
     pub(crate) think_last_ms: u64,
+    /// The daemon's word on the last finish this pane saw: `Some(false)` is a ROUND that ended
+    /// with the prompt still running, so the row stays up. `None` until one arrives, because a
+    /// snapshot carries a state and no finish, and reading that as *the turn continues* would
+    /// leave a row nobody can stand down.
+    pub(crate) ends_turn: Option<bool>,
 }
 
 impl TurnPane {
@@ -316,6 +321,12 @@ impl App {
             return false;
         };
         if matches!(t.state, Some(TurnState::Running)) {
+            return true;
+        }
+        // **And the same boundary from the frame that ended the round** (`TurnFinished::ends_turn`):
+        // a round whose calls have all landed is not the prompt's end, and the daemon said so. This
+        // is what closes the window without the activity, which a head that attached late has none of.
+        if t.ends_turn == Some(false) {
             return true;
         }
         t.calls

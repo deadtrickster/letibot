@@ -1004,11 +1004,19 @@ pub enum SessionEvent {
         #[serde(default)]
         edit: Option<ToolEdit>,
     },
+    /// One ROUND's ending: the generation stopped, and the calls it proposed are the caller's to
+    /// run. Whether the prompt is over is [`SessionEvent::TurnFinished`]'s `ends_turn`, because only
+    /// the daemon knows what follows a round.
     TurnFinished {
         turn_id: String,
         finish_reason: FinishReason,
         usage: Usage,
         timings: Timings,
+        /// Whether this finish is the whole prompt's end or only one ROUND of it. One is published
+        /// per round, so a head that took each for an ending wrote *Responded* at every boundary;
+        /// absent means an ending, which is all a daemon older than this field ever published.
+        #[serde(default = "an_ending")]
+        ends_turn: bool,
     },
     TurnInterrupted {
         turn_id: String,
@@ -1344,6 +1352,12 @@ pub enum SessionEvent {
     },
 }
 
+/// The default for a `TurnFinished` that does not say: absent means an ending, because a daemon
+/// older than the field published nothing else.
+fn an_ending() -> bool {
+    true
+}
+
 impl SessionEvent {
     /// Could publishing this have moved what the session is waiting on? The set `Hub::publish`
     /// re-derives on, so an event that cannot move it costs nothing.
@@ -1447,6 +1461,38 @@ mod tests {
     }
 
     use super::*;
+
+    /// A daemon older than the field published only endings, so a head must read its frame as one:
+    /// the default is what keeps an old daemon's turn visible instead of a turn that never ended.
+    #[test]
+    fn a_turn_finished_without_the_field_is_an_ending() {
+        let old = r#"{"event":"turn_finished","turn_id":"t1","finish_reason":"eos",
+                      "usage":{"prompt_tokens":10,"cached_tokens":0,"predicted_tokens":2},
+                      "timings":{"prompt_ms":1.0,"predicted_ms":2.0,"wall_ms":3}}"#;
+        let event: SessionEvent =
+            serde_json::from_str(old).expect("an older daemon's frame parses");
+        assert!(matches!(
+            event,
+            SessionEvent::TurnFinished {
+                ends_turn: true,
+                ..
+            }
+        ));
+        // And a round that says it is not the end stays readable as one, in both directions.
+        let round = serde_json::json!({"event":"turn_finished","turn_id":"t1","finish_reason":"eos",
+                                       "usage":{"prompt_tokens":0,"cached_tokens":0,
+                                                "predicted_tokens":0},
+                                       "timings":{"prompt_ms":0.0,"predicted_ms":0.0,"wall_ms":0},
+                                       "ends_turn":false});
+        let event: SessionEvent = serde_json::from_value(round).expect("the field is on the wire");
+        assert!(matches!(
+            event,
+            SessionEvent::TurnFinished {
+                ends_turn: false,
+                ..
+            }
+        ));
+    }
 
     /// The wire's title rule is the STORE's title rule: the test that makes a copy safe. The enum
     /// copies get their bound from the store's own.

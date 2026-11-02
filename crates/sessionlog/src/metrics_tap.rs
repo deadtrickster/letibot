@@ -317,6 +317,7 @@ mod tests {
                 finish_reason: FinishReason::Eos,
                 usage: Usage::default(),
                 timings: Timings::default(),
+                ends_turn: true,
             },
         );
         assert_eq!(t.now().state, "idle");

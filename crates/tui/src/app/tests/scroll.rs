@@ -3725,6 +3725,7 @@ fn two_complete_turns_draw_each_reply_once() {
                 finish_reason: letibot_sessionlog::event::FinishReason::Eos,
                 usage: Default::default(),
                 timings: Default::default(),
+                ends_turn: true,
             },
         )));
         seq += 1;

@@ -576,6 +576,9 @@ impl SessionView {
                 finish_reason,
                 usage,
                 timings,
+                // Not read: this view answers *is the model generating*, which a round's end
+                // does settle. Whether the PROMPT is over is a head's rule, from the field.
+                ends_turn: _,
             } => {
                 if let Some(t) = self.turn.as_mut()
                     && &t.turn_id == turn_id

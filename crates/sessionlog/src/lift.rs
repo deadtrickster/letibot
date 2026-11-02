@@ -101,10 +101,14 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
         TurnEvent::TurnFinished {
             turn_id,
             finish_reason,
+            proposed_calls,
             metrics,
         } => SessionEvent::TurnFinished {
             turn_id,
             finish_reason: lift_finish(finish_reason),
+            // The round's own fact, translated: calls it just made are unanswered, so the prompt
+            // cannot be over. What follows them is the daemon's, and this says nothing about it.
+            ends_turn: !proposed_calls,
             usage: Usage {
                 prompt_tokens: metrics.prompt_tokens,
                 cached_tokens: metrics.cached_tokens,

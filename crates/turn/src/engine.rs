@@ -637,6 +637,7 @@ impl TurnEngine {
             sink.emit(TurnEvent::TurnFinished {
                 turn_id: turn_id.clone(),
                 finish_reason: FinishReason::Aborted,
+                proposed_calls: false,
                 metrics: Box::new(
                     self.metrics_for(
                         &turn_id,
@@ -736,6 +737,7 @@ impl TurnEngine {
             sink.emit(TurnEvent::TurnFinished {
                 turn_id: turn_id.clone(),
                 finish_reason: outcome.final_chunk.finish_reason,
+                proposed_calls: false,
                 metrics: Box::new(metrics.clone()),
             });
             // §5.7 fails the turn and commits nothing; the operator's words are input, not
@@ -826,6 +828,7 @@ impl TurnEngine {
             sink.emit(TurnEvent::TurnFinished {
                 turn_id: turn_id.clone(),
                 finish_reason: outcome.final_chunk.finish_reason,
+                proposed_calls: false,
                 metrics: Box::new(metrics.clone()),
             });
             // §5.7 fails the turn and commits nothing; the operator's words are input,
@@ -1007,6 +1010,7 @@ impl TurnEngine {
         sink.emit(TurnEvent::TurnFinished {
             turn_id: turn_id.clone(),
             finish_reason: outcome.final_chunk.finish_reason,
+            proposed_calls: !calls.is_empty(),
             metrics: Box::new(metrics.clone()),
         });
 
@@ -1156,6 +1160,7 @@ impl TurnEngine {
                 sink.emit(TurnEvent::TurnFinished {
                     turn_id: turn_id.clone(),
                     finish_reason: FinishReason::Aborted,
+                    proposed_calls: false,
                     metrics: Box::new(self.messages_metrics(
                         &turn_id,
                         &model,
@@ -1220,6 +1225,9 @@ impl TurnEngine {
             });
         }
 
+        // `ToolCalls` folds into `Eos` on purpose: a head's `finish_reason` is what the model
+        // stopped ON, and *this round asked for calls* travels as `proposed_calls` instead - the
+        // one fact a head needs to know an ending is a round's and not the prompt's.
         let finish_reason = match done.finish {
             Finish::Length => FinishReason::Length,
             Finish::Stop | Finish::ToolCalls | Finish::Other(_) => FinishReason::Eos,
@@ -1246,6 +1254,7 @@ impl TurnEngine {
             sink.emit(TurnEvent::TurnFinished {
                 turn_id: turn_id.clone(),
                 finish_reason,
+                proposed_calls: false,
                 metrics: Box::new(metrics.clone()),
             });
             // §5.7 fails the turn and commits nothing; the operator's words are input, not
@@ -1334,6 +1343,7 @@ impl TurnEngine {
         sink.emit(TurnEvent::TurnFinished {
             turn_id: turn_id.clone(),
             finish_reason,
+            proposed_calls: !done.tool_calls.is_empty(),
             metrics: Box::new(metrics.clone()),
         });
 

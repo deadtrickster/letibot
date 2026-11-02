@@ -804,11 +804,16 @@ impl State {
                     self.streaming.push_str(&text);
                 }
             }
-            SessionEvent::TurnFinished { usage, .. } => {
-                // **The turn is over at the level this event can see; whether it is really over
-                // is the daemon's** - a round that proposed calls leaves the session busy with
-                // them, and that reaches this head as `ActivityChanged`. Nothing here decides it.
-                self.turn = Turn::Idle;
+            SessionEvent::TurnFinished {
+                usage, ends_turn, ..
+            } => {
+                // **Whether this frame ended the PROMPT is the daemon's field**: a round that
+                // proposed calls is not an ending, and a head that read it as one wrote a report
+                // over a turn still running. The metrics are per ROUND and stay so.
+                if ends_turn {
+                    self.turn = Turn::Idle;
+                    self.events.push(Entry::of("turn", "ended"));
+                }
                 self.turned = true;
                 if !self.streaming.is_empty() {
                     self.last_row = std::mem::take(&mut self.streaming);
@@ -828,7 +833,6 @@ impl State {
                 if let Some(c) = usage.cost_micros_usd {
                     *self.spent.cost_micros_usd.get_or_insert(0) += c;
                 }
-                self.events.push(Entry::of("turn", "ended"));
             }
             SessionEvent::TurnInterrupted { reason, .. } => {
                 // An interrupted turn is over, whatever its calls were left as.
@@ -2087,6 +2091,31 @@ mod tests {
         );
     }
 
+    /// A round's finish is not the turn's: the state says *over* only on the frame the daemon marked
+    /// as the prompt's end, so a bridge that reported on every round reported over running work.
+    #[test]
+    fn a_rounds_finish_does_not_end_the_turn_until_the_daemon_marks_it() {
+        let mut state = State::default();
+        let mut seq = 0;
+        let mut feed = |state: &mut State, event: SessionEvent| {
+            seq += 1;
+            state.fold(ServerFrame::Event(env(seq, event)));
+        };
+        feed(&mut state, testing::turn_started("t1"));
+        feed(&mut state, testing::turn_finished_round("t1"));
+        assert_eq!(
+            state.rounds, 1,
+            "the round is counted, and its figures with it"
+        );
+        assert_eq!(
+            state.turn,
+            Turn::Running,
+            "a round that proposed calls is not the turn's end"
+        );
+        feed(&mut state, testing::turn_finished("t1"));
+        assert_eq!(state.turn, Turn::Idle, "the marked end is");
+    }
+
     /// **The report outlives the chatter after it, and the spend is the package's.** P1
     /// reported, was woken by its own jobs, said *nothing new in them* and stopped: the
     /// report must still be there, and the cost must be every round's, not the last one's.
@@ -2104,6 +2133,7 @@ mod tests {
                 finish_reason,
                 mut usage,
                 timings,
+                ends_turn,
             } => {
                 usage.cost_micros_usd = Some(micros);
                 SessionEvent::TurnFinished {
@@ -2111,6 +2141,7 @@ mod tests {
                     finish_reason,
                     usage,
                     timings,
+                    ends_turn,
                 }
             }
             _ => unreachable!(),

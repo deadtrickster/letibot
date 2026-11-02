@@ -168,6 +168,8 @@ pub fn tool_progress(call_id: &str, note: &str) -> SessionEvent {
     }
 }
 
+/// A turn's ENDING: the prompt is over, and a head may write its report. A round of a longer
+/// turn is [`turn_finished_round`].
 pub fn turn_finished(turn_id: &str) -> SessionEvent {
     SessionEvent::TurnFinished {
         turn_id: turn_id.into(),
@@ -183,6 +185,28 @@ pub fn turn_finished(turn_id: &str) -> SessionEvent {
             predicted_ms: 900.0,
             wall_ms: 950,
         },
+        ends_turn: true,
+    }
+}
+
+/// **A round's ending, with the turn still running**: a call it proposed is unanswered, so the
+/// prompt is not over and nothing a head writes about an ending may be written yet.
+pub fn turn_finished_round(turn_id: &str) -> SessionEvent {
+    match turn_finished(turn_id) {
+        SessionEvent::TurnFinished {
+            turn_id,
+            finish_reason,
+            usage,
+            timings,
+            ..
+        } => SessionEvent::TurnFinished {
+            turn_id,
+            finish_reason,
+            usage,
+            timings,
+            ends_turn: false,
+        },
+        _ => unreachable!("turn_finished answers a TurnFinished"),
     }
 }
 

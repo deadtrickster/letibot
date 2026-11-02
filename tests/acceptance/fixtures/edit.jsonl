@@ -12,4 +12,4 @@
 {"session_id":"acceptance","seq":12,"ts":0,"event":"delta","turn_id":"s#1","target":"text","text":"Line eleven is fixed."}
 {"session_id":"acceptance","seq":13,"ts":0,"event":"transcript_appended","item_id":"s.4","kind":"assistant","ledger_head":"beef"}
 {"session_id":"acceptance","seq":14,"ts":0,"event":"transcript_content","item_id":"s.4","item":{"type":"assistant","text":"Line eleven is fixed."}}
-{"session_id":"acceptance","seq":15,"ts":0,"event":"turn_finished","turn_id":"s#1","finish_reason":"eos","usage":{"prompt_tokens":1000,"cached_tokens":900,"predicted_tokens":42},"timings":{"prompt_ms":40.0,"predicted_ms":900.0,"wall_ms":950}}
+{"session_id":"acceptance","seq":15,"ts":0,"event":"turn_finished","turn_id":"s#1","finish_reason":"eos","usage":{"prompt_tokens":1000,"cached_tokens":900,"predicted_tokens":42},"timings":{"prompt_ms":40.0,"predicted_ms":900.0,"wall_ms":950},"ends_turn":true}

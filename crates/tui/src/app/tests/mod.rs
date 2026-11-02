@@ -220,6 +220,7 @@ fn finished_costing(turn: &str, micros: Option<u64>) -> SessionEvent {
             predicted_ms: 1.0,
             wall_ms: 2,
         },
+        ends_turn: true,
     }
 }
 

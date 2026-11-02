@@ -33,6 +33,14 @@ impl App {
             // itself*. The last value is the truth - it publishes only on change - and it is drawn as
             // one muted line on the status row, never a transcript row: a fact about now, not when.
             SessionEvent::ActivityChanged { activity } => {
+                // A QUIET value is the daemon saying the prompt is over, and it outranks a round's
+                // `ends_turn: false`. Only quiet: a card open mid-turn hides the turn from the list
+                // rather than ending anything, and a session owed a turn is not ended either.
+                if activity.is_quiet()
+                    && let Some(t) = self.turn.as_mut()
+                {
+                    t.ends_turn = Some(true);
+                }
                 self.activity = activity;
                 self.redraw = true;
                 Disposition::Control
@@ -229,6 +237,7 @@ impl App {
                 finish_reason,
                 usage,
                 timings,
+                ends_turn,
                 ..
             } => {
                 // Kept on the head, not only on the pane: the header says how much context the
@@ -250,6 +259,9 @@ impl App {
                 self.queued.push(Action::ListJobs);
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
+                    // The round's own ending, and the daemon's word on whether it ended the PROMPT:
+                    // the row reads it in `turn_busy`, so a round boundary does not stand the row down.
+                    t.ends_turn = Some(ends_turn);
                     t.state = Some(TurnState::Finished {
                         finish_reason,
                         usage,
@@ -276,6 +288,7 @@ impl App {
                     && (t.turn_id == turn_id || turn_id.is_empty())
                 {
                     t.progress = None;
+                    t.ends_turn = Some(true);
                     t.state = Some(TurnState::Failed {
                         error,
                         partial_kept,
@@ -294,6 +307,7 @@ impl App {
             } => {
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
+                    t.ends_turn = Some(true);
                     t.state = Some(TurnState::Interrupted {
                         reason,
                         partial_kept,

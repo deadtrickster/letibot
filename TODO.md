@@ -1750,6 +1750,20 @@ no longer needed *by this head*, and what is left of the row is the other half: 
 whether an explicit `TurnEnded` marker is still wanted at all now that the prompt's span is on the
 wire for any head to fold (the two routes above are unchanged if it is).
 
+**LANDED as a third route: a field on the frame that already ends a round.** Neither a filtered
+`TurnEnded` (a new variant is a frame an older head cannot parse — it dies at the first turn end, and
+this daemon answers a skewed `Attach` by serving it rather than refusing it) nor a bump (the same
+death). `SessionEvent::TurnFinished` gains `ends_turn`, `#[serde(default = "an_ending")]`, so **absent
+means an ending**: an old daemon's frame reads as today, an old head ignores the field and keeps its
+flicker, and no peer is handed a shape it has no arm for. The producer is the engine's own round fact —
+`TurnEvent::TurnFinished.proposed_calls` is `!done.tool_calls.is_empty()`, and `lift` translates it to
+`ends_turn: !proposed_calls` — so no second frame is published and no head is billed twice. Frames:
+`crates/harnessd/tests/turn_end_marker.rs` (round one `false`, round two `true`, exactly two frames).
+Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it. **Residual, and it is
+the guess this row warned about**: a round that proposed NO calls but is followed by a nudge or a
+steering round still says `true`, so the flicker survives there — only a marker at the convergence
+point could remove it. `Hub::turn_in_flight` is unchanged and still reads the round, not the field.
+
 ## Which side owns WEATHER — a classification both heads must answer the same way — **SETTLED 2026-11-02 on this side: the daemon classifies, and what was broken was the head's FILING; `model_endpoint_retry` is the ruling still open**
 
 The operator ruled: *"both heads should not emit it inside conversation"* for `model_slow_first_byte` —

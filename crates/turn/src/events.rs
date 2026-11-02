@@ -70,6 +70,10 @@ pub enum TurnEvent {
     TurnFinished {
         turn_id: String,
         finish_reason: FinishReason,
+        /// Whether this round ended with calls for the caller to run. A round cannot be the
+        /// prompt's end while calls it has just made are unanswered, and only the caller knows
+        /// what follows them: this is the fact, not a verdict on whether a next round comes.
+        proposed_calls: bool,
         metrics: Box<TurnMetrics>,
     },
     TurnInterrupted {

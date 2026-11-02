@@ -59,9 +59,13 @@ fn esc_twice_interrupts_a_turn_that_is_only_waiting_on_a_call() {
     );
 }
 
-/// The status row is drawn for the whole life of the turn, including through a
-/// call: `TurnFinished` per round would erase `Responding · 4.2s` the moment a
-/// call starts, and a model waiting on a command is still doing something.
+/// The status row is drawn for the whole life of the turn: through a call, and across the round
+/// boundary after it. A round's `TurnFinished` says `ends_turn: false`, so nothing a head writes
+/// about an ending is written until the daemon marks the PROMPT's end.
+///
+/// The assertion this test used to make - *the call lands and nothing else is outstanding, so the
+/// work is over and the row stands down* - pinned the flicker the operator reported on leticl:
+/// `Responding → Responded → Responding` across every round boundary of one prompt.
 #[test]
 fn the_status_row_survives_a_tool_call() {
     // `began_ms` is the PROMPT's stamp, the same on every round of it, which is
@@ -86,7 +90,12 @@ fn the_status_row_survives_a_tool_call() {
         2,
         testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
     )));
-    a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+    // The round's generation ends, and the frame says which ending it is: a ROUND of a turn that
+    // runs on, because the call it proposed is the caller's to run.
+    a.apply(ServerFrame::Event(env(
+        3,
+        testing::turn_finished_round("t1"),
+    )));
     a.clock(5_000);
     let line = a.turn_status(120);
     assert!(
@@ -97,9 +106,8 @@ fn the_status_row_survives_a_tool_call() {
         line.contains("4.0s"),
         "and it counts from the prompt, through the call: {line:?}"
     );
-    // The call lands and nothing else is outstanding, so the work is over and the row stands
-    // down. **This is the tense's own question**: not *is there a turn open* but *is the model
-    // working*, and here the answer is no until the next round starts.
+    // The call lands, so nothing is generating and no call is unfinished - the window the round
+    // event alone cannot distinguish. The daemon said the turn runs on, so the row does.
     a.apply(ServerFrame::Event(env(
         4,
         SessionEvent::ToolFinished {
@@ -115,12 +123,13 @@ fn the_status_row_survives_a_tool_call() {
         },
     )));
     assert!(
-        !a.turn_busy(),
-        "the call finished and nothing is generating"
+        a.turn_busy(),
+        "the round said the prompt was not over, and nothing else is outstanding"
     );
     assert!(
-        a.turn_status(120).is_empty(),
-        "the row stands down with the work"
+        !a.turn_status(120).is_empty(),
+        "so the row is still drawn: {:?}",
+        a.turn_status(120)
     );
     // **And a second round does not move the base** (R51 item 2's *must not differ*). Round
     // two's `TurnStarted` arrives three seconds later carrying the SAME `began_ms`, and the clock
@@ -131,6 +140,14 @@ fn the_status_row_survives_a_tool_call() {
     assert!(
         line.contains("5.0s"),
         "the round boundary did not restart it: {line:?}"
+    );
+    // And the MARKED end is the only frame that stands it down.
+    a.apply(ServerFrame::Event(env(6, testing::turn_finished("t2"))));
+    assert!(!a.turn_busy(), "the prompt is over");
+    assert!(
+        a.turn_status(120).is_empty(),
+        "the row stands down with the turn: {:?}",
+        a.turn_status(120)
     );
 }
 
@@ -307,6 +324,7 @@ fn a_turn_that_was_cut_short_does_not_read_like_one_that_finished() {
             finish_reason: letibot_sessionlog::event::FinishReason::Length,
             usage: Default::default(),
             timings: Default::default(),
+            ends_turn: true,
         },
     )));
     let screen = a.screen(120, 16).join("\n");
@@ -643,6 +661,7 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
             cost_micros_usd: None,
         },
         timings: Default::default(),
+        ends_turn: true,
     });
     a.apply(hello(
         "s",
@@ -693,6 +712,7 @@ fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
                 predicted_ms: 2_000.0,
                 wall_ms: 12_300,
             },
+            ends_turn: true,
         },
     )));
     let header = a.header_line(200);
@@ -738,6 +758,7 @@ fn while_a_turn_runs_the_header_shows_no_clock() {
                 predicted_ms: 4_474.0,
                 wall_ms: 4_474,
             },
+            ends_turn: true,
         },
     )));
     // A call of that round is still running, which is what makes the turn BUSY across the round
@@ -1404,6 +1425,7 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
             finish_reason: letibot_sessionlog::event::FinishReason::Eos,
             usage: Usage::default(),
             timings: Default::default(),
+            ends_turn: true,
         },
     )));
     seq += 1;
