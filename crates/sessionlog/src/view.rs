@@ -224,6 +224,10 @@ pub struct CallView {
     #[serde(default)]
     pub target: String,
     pub state: CallState,
+    /// The log's `ts` of `ToolStarted`, so a head that attaches mid-call can say how long it
+    /// has run. 0 while proposed, and in a view folded by a daemon older than the field.
+    #[serde(default)]
+    pub started_ts: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -601,6 +605,7 @@ impl SessionView {
                         args_digest: args_digest.clone(),
                         target: target.clone(),
                         state: CallState::Proposed,
+                        started_ts: 0,
                     });
                 }
             }
@@ -692,6 +697,7 @@ impl SessionView {
             SessionEvent::ToolStarted { call_id, name, .. } => {
                 if let Some(c) = self.call_mut(call_id) {
                     c.state = CallState::Running;
+                    c.started_ts = env.ts;
                 } else if let Some(t) = self.turn.as_mut() {
                     t.calls.push(CallView {
                         call_id: call_id.clone(),
@@ -701,6 +707,7 @@ impl SessionView {
                         // invented: the verb alone is what is true here.
                         target: String::new(),
                         state: CallState::Running,
+                        started_ts: env.ts,
                     });
                 }
             }

@@ -718,7 +718,10 @@ mod tests {
         // And the picture sits where the reading happened: after the payload that describes it.
         let payload = text.find("shot.png").expect("the payload is there");
         let marker = text.find("<__media__>").expect("the marker is there");
-        assert!(payload < marker, "the marker is before its own payload: {text}");
+        assert!(
+            payload < marker,
+            "the marker is before its own payload: {text}"
+        );
     }
 
     #[test]

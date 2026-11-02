@@ -38,7 +38,10 @@ fn chunked_server(chunks: Vec<Vec<u8>>) -> (letibot_http::Endpoint, std::thread:
         };
         serve(conn, chunks);
     });
-    (letibot_http::Endpoint::new("127.0.0.1", addr.port()), handle)
+    (
+        letibot_http::Endpoint::new("127.0.0.1", addr.port()),
+        handle,
+    )
 }
 
 fn serve(mut conn: TcpStream, chunks: Vec<Vec<u8>>) {
@@ -54,8 +57,10 @@ fn serve(mut conn: TcpStream, chunks: Vec<Vec<u8>>) {
             break;
         }
     }
-    let _ = conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                              Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+    let _ = conn.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                              Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+    );
     for (i, c) in chunks.iter().enumerate() {
         // Every other chunk carries an extension after the size, because a real server sends them
         // (`;` parameters are legal and the parser must ignore them rather than fail the parse).
@@ -105,8 +110,14 @@ fn a_frame_split_across_two_chunks_is_one_frame() {
 
 #[test]
 fn two_frames_inside_one_chunk_are_two_frames() {
-    let (endpoint, server) = chunked_server(vec![format!("{ONE}{TWO}").into_bytes(), THREE.as_bytes().to_vec()]);
-    assert_eq!(payloads(&endpoint), vec!["{\"n\":1}", "{\"n\":2}", "{\"n\":3}"]);
+    let (endpoint, server) = chunked_server(vec![
+        format!("{ONE}{TWO}").into_bytes(),
+        THREE.as_bytes().to_vec(),
+    ]);
+    assert_eq!(
+        payloads(&endpoint),
+        vec!["{\"n\":1}", "{\"n\":2}", "{\"n\":3}"]
+    );
     server.join().unwrap();
 }
 

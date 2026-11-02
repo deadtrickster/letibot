@@ -529,8 +529,8 @@ impl App {
             self.model = t.model.clone();
             let mut pane = TurnPane {
                 turn_id: t.turn_id,
-                // No timestamps in a snapshot, so every one of these renders
-                // without a duration rather than with a fabricated one.
+                // A running call carries its start in the log's clock; nothing else here
+                // has one, so the rest render without a duration.
                 calls: t
                     .calls
                     .into_iter()
@@ -539,10 +539,10 @@ impl App {
                         name: c.name,
                         target: c.target,
                         state: c.state,
-                        started_ms: 0,
-                        // A snapshot has no timestamps, so a running call is measured from
-                        // when this head first saw it: a lower bound, never an epoch.
-                        started_at: now,
+                        // The log's clock. 0 from an older daemon, so the call is measured
+                        // from when this head first saw it: a lower bound, never an epoch.
+                        started_ms: c.started_ts,
+                        started_at: if c.started_ts == 0 { now } else { 0 },
                         ended_ms: 0,
                         note: None,
                         decision: None,

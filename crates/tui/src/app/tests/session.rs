@@ -1738,12 +1738,15 @@ fn a_running_call_joined_from_a_snapshot_shows_no_epoch() {
         name: "edit".into(),
         access: "write".into(),
     });
+    let snap = hub.snapshot();
+    let started = snap.turn.as_ref().unwrap().calls[0].started_ts;
+    assert!(started > 0, "the daemon sends the call's start");
     let mut a = app();
-    a.now_ms = 1_788_984_000_000;
-    a.apply(hello("s", vec![], hub.snapshot()));
+    a.now_ms = started;
+    a.apply(hello("s", vec![], snap));
     a.apply(ServerFrame::Event(env_at(
         99,
-        a.now_ms + 3_000,
+        started + 3_000,
         testing::tool_progress("c1", "half"),
     )));
     a.now_ms += 3_000;
@@ -1755,6 +1758,10 @@ fn a_running_call_joined_from_a_snapshot_shows_no_epoch() {
             .windows(2)
             .any(|w| w[0].is_ascii_digit() && w[1] == 'h'),
         "an epoch rendered as a duration: {screen}"
+    );
+    assert!(
+        screen.contains("3.0s"),
+        "measured from the call's start: {screen}"
     );
 }
 
