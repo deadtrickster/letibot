@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;
-use letibot_harnessd::jobwatch::{BackgroundKind, JobCompletion, JobWatchers};
+use letibot_harnessd::jobwatch::{BackgroundKind, JobCompletion, JobWatchers, TurnEnd};
 use letibot_harnessd::memwatch::{self, Counting};
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Registry;
@@ -370,7 +370,7 @@ fn a_result_delivered_every_turn_does_not_grow_the_read_record() {
             Some(&format!("slug-{turn}")),
         )];
         watch.read_now(&done);
-        watch.turn_ended();
+        watch.turn_ended(TurnEnd::Done);
         most = most.max(watch.retained().read);
     }
     let kept = watch.retained();
