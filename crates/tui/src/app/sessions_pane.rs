@@ -193,7 +193,13 @@ impl Host {
         resolved
     }
 
-    /// The failure the last call recorded, taken — the seam [`App::take_sessions_failure`] reads
+    /// The failure the last call recorded, without taking it - the queue pane's refusal sentence
+    /// reads it on every draw, and taking it would eat the notice the picker owes its reader.
+    pub(crate) fn peek_problem(&self) -> Option<String> {
+        self.problem.lock().ok().and_then(|p| p.clone())
+    }
+
+    /// The failure the last call recorded, taken - the seam [`App::take_sessions_failure`] reads
     /// through, and the one a test uses to see that a broken layer was SEEN rather than skipped.
     #[cfg(test)]
     fn take_problem(&self) -> Option<String> {

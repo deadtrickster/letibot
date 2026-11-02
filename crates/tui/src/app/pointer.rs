@@ -244,13 +244,9 @@ impl App {
             // queue's strip, the git field on the header, the queue's standings on the bottom
             // edge. The rectangle is the drawn one, so the mark covers the words and stops where
             // they stop: a click one cell outside them is nobody's.
-            Target::CountLabel(_)
-            | Target::QueueTab(_)
-            | Target::GitField
-            | Target::QueueStandings => Some(Hovered::one(
-                row,
-                Some((hit.rect.x, hit.rect.x + hit.rect.w)),
-            )),
+            Target::CountLabel(_) | Target::GitField | Target::QueueStandings => Some(
+                Hovered::one(row, Some((hit.rect.x, hit.rect.x + hit.rect.w))),
+            ),
             // **A link lights exactly the cells it covers**, like the labels above and for the
             // same reason: the rectangle was read off the row the link was drawn on, so the hand
             // appears over the words and nowhere else.

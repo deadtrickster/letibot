@@ -1,68 +1,41 @@
-//! **The review queue and the merge queue** (R61) — two queues, two views, one pane.
+//! **The merge queue, hosted** - the pane on this surface is the `queue` layer's answer
+//! (`plugins/builtin/queue`, drawn through `app::queue_pane`). This file keeps what a host owes
+//! it: the input routing (the cursor, the verbs, `tab`, the reviewer door), the feed, and the
+//! reading of the snapshot that the composer's edge draws on every screen.
 //!
-//! The operator: *"review is review and merge is merge. separate steps. separate queues."*, and
-//! of the pane before this one: *"it doesnt show me review queue state transitions"*, *"nor there
-//! are separate views for review and merge queues"*. The review of 2026-10-11 named what the pane
-//! could not say (R61 defect 12): a failed read drawn as an empty queue, an age measured from
-//! creation rather than from the current state, no owner and no liveness, and no history.
+//! # What stayed here, and why
 //!
-//! So the pane draws, from the daemon's one snapshot (`QueueSnapshot`):
+//! * **The standings** (`standings_where`) - the composer's bottom edge is not the pane: it is
+//!   drawn on every screen, host-side, from the same snapshot.
+//! * **The scope** (`QueueScope`/`Filter`) - the head is what knows which repository this session
+//!   is in, and both the feed and the edge are cut by it.
+//! * **The verbs** (`verb_moves`) - the daemon's own rule, mirrored once: the feed carries the
+//!   answer so the layer never re-derives it, and the keys ask it before sending.
+//! * **The gate tails** (`track_gate_tails`) - whether a step's output has MOVED is a fact about
+//!   two snapshots, and the head is the only reader of two. It goes into the feed as `still_ms`.
 //!
-//! * **The emergencies first** — a red target branch at emergency severity (*"red main is a
-//!   high-severity emergency"*), a target timed out or blocked, and a snapshot that could not be
-//!   read, said in its own words and never drawn as an empty queue.
-//! * **The view's queue** (`tab` switches): every open row, then the recent finished ones. Each
-//!   row is ONE line — its state, how long it has been IN that state, and its reason — and the
-//!   row under the cursor adds what only it needs: the id `/queue approve` takes, the sha, its
-//!   last moves (from, to, when, by whom, why), the gate's steps and its verbs. Enter opens the
-//!   row whole with its full history.
-//! * **One chrome line under the rows** — who serves each repository (the lease's owner, its
-//!   build, how old its heartbeat is; STALE past the lease's lifetime), the repositories that
-//!   never asked for a queue, and the archive.
-//!
-//! The states are the daemon's WORDS (the wire carries words), and the marks are this head's
-//! reading of them.
-//!
-//! **One line per entry is the operator's ruling, not a style** (2026-10-29): *"the queue pane is
-//! illegible mess"*, *"the queue is the most automatic and opaque thing in the whole project rn"*.
-//! Every entry used to carry a second line whose first field was a 39-character session id — an
-//! address that exists so it can be typed into `/queue approve`, repeated on every row and read
-//! by nobody — beside the repository and the owner the pane had already named. So a row says a
-//! field ONCE (`Said`): the repository only when the snapshot holds more than one, the owner only
-//! when the claim is not the serving daemon's.
+//! The rows, the chrome, the alarms and the row read whole are the layer's drawing; the one-line
+//! facts it needs (marks, owners, `gate running on ...`) are produced here as feed material.
 
 use crate::app::*;
-use crate::ui::render::{dur_human, row_strings, trim_to, visible_width, wrap};
-use letibot_sessionlog::event::{
-    MergeGateOutcome, MergeGateStep, QueueMerge, QueueMove, QueueReview, QueueSnapshot,
-};
+use crate::ui::render::row_strings;
+use letibot_sessionlog::event::QueueSnapshot;
 use rano::agent::pane::{self, PaneLines};
-use rano::agent::text::{clean_line, one};
-use rano::render::{Line, Span};
-use rano::style::Role;
 
-/// **How long a heartbeat may be silent before the pane calls the owner STALE** — the daemon's
+/// **How long a heartbeat may be silent before the pane calls the owner STALE** - the daemon's
 /// lease lifetime (`mergequeue::lease::LEASE_TTL_MS`), so the pane's word and the daemon's
 /// takeover agree.
 pub(crate) const LEASE_STALE_MS: u64 = 90_000;
 
-/// How often an open pane asks for a fresh snapshot — the heartbeats move without an event.
+/// How often an open pane asks for a fresh snapshot - the heartbeats move without an event.
 pub(crate) const REFRESH_MS: u64 = 5_000;
 
-/// How long a finished row stays in the view — the recent past, not every row ever (rows are
-/// never deleted; the history is the record).
+/// How long a finished row counts as today's work - the window the edge's `landed` column reads.
 pub(crate) const RECENT_MS: u64 = 24 * 60 * 60 * 1000;
-
-/// **One row of the current view**, by index into the snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QRow {
-    Review(usize),
-    Merge(usize),
-}
 
 /// **Is the review queue working on this row?** The daemon's own rule, in one place: the feed a
 /// plugin reads carries the answer (`live`), so a layer never has to guess *in flight* from a state
-/// word — a second copy of this predicate is a copy that drifts.
+/// word - a second copy of this predicate is a copy that drifts.
 pub(crate) fn review_open(state: &str) -> bool {
     matches!(state, "waiting" | "reviewing" | "blocked")
 }
@@ -78,8 +51,8 @@ impl App {
         self.queues.at_ms.saturating_add(since)
     }
 
-    /// **Note when each running gate's tail last CHANGED** — called once per snapshot, because the
-    /// answer to *is it stuck?* is a comparison and the daemon sends only one half of it.
+    /// **Note when each running gate's tail last CHANGED** - called once per snapshot, because
+    /// the answer to *is it stuck?* is a comparison and the daemon sends only one half of it.
     ///
     /// A step whose tail is byte-for-byte what it was keeps the stamp it already had; a step whose
     /// tail grew, or a step this head has not seen before, starts now. A step that is gone drops out
@@ -118,70 +91,110 @@ impl App {
         self.gate_tails = fresh;
     }
 
-    /// **The rows the current view lists, in order** — open rows first (a red target's review
-    /// before every other review), oldest first; then the finished ones of the last day, newest
-    /// first. The one enumeration the drawn `▸`, the arrows, Enter, a click and a verb read.
-    pub(crate) fn queue_rows(&self) -> Vec<QRow> {
-        let now = self.queue_now();
-        let recent = |ms: u64| now.saturating_sub(ms) <= RECENT_MS;
-        match self.queue_view {
-            QueueView::Review => {
-                let r = &self.queues.reviews;
-                let mut open: Vec<usize> =
-                    (0..r.len()).filter(|&i| review_open(&r[i].state)).collect();
-                open.sort_by_key(|&i| (r[i].kind != "target", r[i].created_ms, r[i].id.clone()));
-                let mut done: Vec<usize> = (0..r.len())
-                    .filter(|&i| !review_open(&r[i].state) && recent(r[i].state_ms))
-                    .collect();
-                done.sort_by_key(|&i| std::cmp::Reverse(r[i].state_ms));
-                open.into_iter().chain(done).map(QRow::Review).collect()
-            }
-            QueueView::Merge => {
-                let m = &self.queues.merges;
-                let mut open: Vec<usize> =
-                    (0..m.len()).filter(|&i| merge_open(&m[i].state)).collect();
-                open.sort_by_key(|&i| (m[i].fixes.is_none(), m[i].created_ms, m[i].id.clone()));
-                let mut done: Vec<usize> = (0..m.len())
-                    .filter(|&i| !merge_open(&m[i].state) && recent(m[i].state_ms))
-                    .collect();
-                done.sort_by_key(|&i| std::cmp::Reverse(m[i].state_ms));
-                open.into_iter().chain(done).map(QRow::Merge).collect()
-            }
-        }
+    /// **The edge's standings: this session's repository only** - whatever scope the pane is
+    /// showing, the composer's edge is about the project this session works in. A session of no
+    /// repository has none; a daemon too old to say which repository the session is in gets every
+    /// repository's, as before.
+    pub(crate) fn queue_standings(&self) -> Standings {
+        let f = self.queue_filter(&QueueScope::Here);
+        standings_where(&self.queues_all, self.queue_now(), |r| f.keeps(r))
     }
 
-    /// The row the cursor is on, if the view has any.
-    pub(crate) fn queue_selected(&self) -> Option<QRow> {
-        let rows = self.queue_rows();
-        rows.get(self.queue_sel.min(rows.len().saturating_sub(1)))
-            .copied()
-    }
-
-    /// **How many stops the pane on the screen has** — the plugin view's when a layer is drawing
-    /// it, this file's own rows when not. The arrows clamp against this, so the cursor cannot walk
-    /// off a list the plugin drew.
-    pub(crate) fn queue_stop_count(&self) -> usize {
-        if self.queue_plugin_stops > 0 {
-            self.queue_plugin_stops
-        } else {
-            self.queue_rows().len()
-        }
-    }
-
-    /// **The entry the row under the cursor NAMES** — the id `/queue approve` and the overlay take,
-    /// and what the person's `a`/`v`/`r`/`d` act on.
+    /// **Ask for a fresh snapshot, on the pane's own clock** - the rows AND the detail, because a
+    /// screen showing a running gate is a screen whose whole point is that the numbers move.
     ///
-    /// A plugin row answers with the entry its own act carries (`{"verb":…,"id":…}`), which is
-    /// the whole point of `Act::Verb`: a row can draw one entry and mean it, whatever the host's
-    /// own enumeration would have put there. The head's own pane answers with the row's id.
-    pub(crate) fn queue_selected_id(&self) -> Option<String> {
-        if self.queue_plugin_stops > 0 {
-            return self.queue_plugin_entry();
+    /// **The detail asks for itself.** It is a surface of its own (`Surface::QueueEntry`) and
+    /// `main_area` draws exactly one surface, so the ask inside [`Self::queue_lines`] never ran
+    /// while a row was open: no `Queues` frame arrived, `App::track_gate_tails` froze, and
+    /// `queue_now()` went on advancing - so the layer's detail would say *may be stuck* about a
+    /// gate that was writing. The clock is the same five seconds, and `queues_asked_ms` is one
+    /// field, so two surfaces on one frame ask once.
+    fn ask_for_queues(&mut self) {
+        if self.now_ms.saturating_sub(self.queues_asked_ms) >= REFRESH_MS {
+            self.queues_asked_ms = self.now_ms;
+            if !self.queued.contains(&Action::ListMergeQueue) {
+                self.queued.push(Action::ListMergeQueue);
+            }
         }
-        self.queue_selected().map(|row| self.queue_row_id(row))
     }
 
-    /// **Into the session of the reviewer working the row** — the row opened whole, else the one
+    /// **The pane - the `queue` layer's answer, hosted.** Everything the person reads on this
+    /// surface is the plugin's drawing; what is left here is the host's own state: a snapshot that
+    /// has not arrived is nobody's to draw (an empty `reviews` would read as an empty queue), and a
+    /// layer that did not answer is said in the host's words with the way out.
+    ///
+    /// Records `queue_stop_rows` either way, so the arrows, Enter and a click always read what was
+    /// drawn - or read nothing, when nothing was.
+    pub(crate) fn queue_lines(&mut self, w: usize) -> Vec<String> {
+        self.ask_for_queues();
+        let mut out = PaneLines::new();
+        if self.queues_got_ms == 0 {
+            self.queue_plugin_stops = 0;
+            self.queue_stop_rows = Vec::new();
+            self.queue_held = None;
+            out.push(pane::title("the queue"));
+            out.blank();
+            out.push(pane::faint("    asking the daemon for the queues…"));
+            return row_strings(&out.lines, self.cfg.palette());
+        }
+        if let Some(lines) = self.queue_plugin_lines(w) {
+            return lines;
+        }
+        self.queue_plugin_stops = 0;
+        self.queue_stop_rows = Vec::new();
+        self.queue_held = None;
+        out.push(pane::title("the queue"));
+        out.blank();
+        let why = self.queue_why.as_deref().unwrap_or("it answered nothing");
+        out.push(pane::faint(crate::ui::render::trim_to(
+            &format!("    the queue layer did not draw the pane: {why}"),
+            w,
+        )));
+        out.push(pane::faint(crate::ui::render::trim_to(
+            "    `/queue plugin` asks it again",
+            w,
+        )));
+        row_strings(&out.lines, self.cfg.palette())
+    }
+
+    /// **The entry read whole - the plugin's `detail`, hosted.** The layer writes the prose on the
+    /// row; the host finds the row by the id Enter opened and re-asks on every draw, so a gate that
+    /// writes while the overlay is up is drawn writing (the ask is the pane's own five-second
+    /// clock, [`Self::ask_for_queues`]).
+    pub(crate) fn queue_out_lines(&mut self, w: usize) -> Vec<String> {
+        self.ask_for_queues();
+        let Some(id) = self.queue_open.clone() else {
+            return Vec::new();
+        };
+        let view = self.queue_plugin_view();
+        let screen = crate::ui::panes::plugin::Screen::Overview;
+        let lines = match view {
+            Some(v) => {
+                // The stop whose row IS the open entry. The feed carries the id as `open`, so the
+                // layer draws the row even when it has left the live list; a row that is gone
+                // altogether is the renderer's own "that row is gone".
+                let n = crate::ui::panes::plugin::stops(&v, screen).len();
+                let at = (0..n).find(|&i| {
+                    crate::ui::panes::plugin::target_of(&v, screen, i).is_some_and(|t| t.id() == id)
+                });
+                crate::ui::panes::plugin::detail(&v, screen, at.unwrap_or(usize::MAX), w)
+            }
+            None => {
+                let mut out = PaneLines::new();
+                out.push(pane::title("the queue entry"));
+                out.blank();
+                let why = self.queue_why.as_deref().unwrap_or("it answered nothing");
+                out.push(pane::faint(crate::ui::render::trim_to(
+                    &format!("    the queue layer did not answer: {why} - esc goes back"),
+                    w,
+                )));
+                out
+            }
+        };
+        row_strings(&lines.lines, self.cfg.palette())
+    }
+
+    /// **Into the session of the reviewer working the row** - the row opened whole, else the one
     /// under the cursor. A row nobody is reviewing says so and goes nowhere.
     pub(crate) fn go_to_reviewer(&mut self) -> Option<Action> {
         let review = match &self.queue_open {
@@ -191,7 +204,7 @@ impl App {
                 .and_then(|id| self.queues.reviews.iter().find(|r| r.id == id)),
         };
         let Some(r) = review else {
-            self.say("that row is a landing, not a review — it has no reviewer");
+            self.say("that row is a landing, not a review - it has no reviewer");
             self.redraw = true;
             return None;
         };
@@ -208,628 +221,62 @@ impl App {
         self.switch_to(id)
     }
 
-    /// The id of a row — what `/queue VERB ID` and the overlay take.
-    pub(crate) fn queue_row_id(&self, row: QRow) -> String {
-        match row {
-            QRow::Review(i) => self.queues.reviews[i].id.clone(),
-            QRow::Merge(i) => self.queues.merges[i].id.clone(),
-        }
+    /// **How many stops the pane on the screen has** - the plugin view's, which is the only pane
+    /// there is. Zero is a pane the arrows have nothing to walk.
+    pub(crate) fn queue_stop_count(&self) -> usize {
+        self.queue_plugin_stops
     }
 
-    /// **The edge's standings: this session's repository only** (R92 item 5) — whatever scope
-    /// the pane is showing, the composer's edge is about the project this session works in. A
-    /// session of no repository has none; a daemon too old to say which repository the session
-    /// is in gets every repository's, as before.
-    pub(crate) fn queue_standings(&self) -> Standings {
-        let f = self.queue_filter(&QueueScope::Here);
-        standings_where(&self.queues_all, self.queue_now(), |r| f.keeps(r))
-    }
-
-    /// **Ask for a fresh snapshot, on the pane's own clock** — the rows AND the detail, because a
-    /// screen showing a running gate is a screen whose whole point is that the numbers move.
+    /// **The entry the row under the cursor NAMES** - what `/queue approve` and the overlay take,
+    /// and what the person's `a`/`v`/`r`/`d` act on.
     ///
-    /// **The detail asks for itself.** It is a surface of its own (`Surface::QueueEntry`) and
-    /// `main_area` draws exactly one surface, so the ask inside [`Self::queue_lines`] never ran
-    /// while a row was open: no `Queues` frame arrived, `App::track_gate_tails` froze, and
-    /// `queue_now()` went on advancing — so after `GATE_QUIET_MS` the one screen built to answer
-    /// *is it stuck?* said *may be stuck* about a gate that was writing. The clock is the same
-    /// five seconds, and `queues_asked_ms` is one field, so two surfaces on one frame ask once.
-    fn ask_for_queues(&mut self) {
-        if self.now_ms.saturating_sub(self.queues_asked_ms) >= REFRESH_MS {
-            self.queues_asked_ms = self.now_ms;
-            if !self.queued.contains(&Action::ListMergeQueue) {
-                self.queued.push(Action::ListMergeQueue);
-            }
+    /// A plugin row answers with the entry its own act carries (`{"verb":…,"id":…}`), which is
+    /// the whole point of `Act::Verb`: a row can draw one entry and mean it, whatever the host's
+    /// own enumeration would have put there.
+    pub(crate) fn queue_selected_id(&self) -> Option<String> {
+        self.queue_plugin_entry()
+    }
+
+    /// **`scope`, resolved** against the snapshot's word about this session's repository.
+    pub(crate) fn queue_filter(&self, scope: &QueueScope) -> Filter {
+        match scope {
+            QueueScope::All => Filter::Every,
+            QueueScope::Path(p) => Filter::Path(
+                std::fs::canonicalize(p).unwrap_or_else(|_| std::path::PathBuf::from(p)),
+            ),
+            QueueScope::Here => match &self.queues_all.here {
+                None => Filter::Every,
+                Some(h) => match (&h.repository, h.repositories.as_slice()) {
+                    (Some(r), _) => Filter::Repo(r.clone()),
+                    (None, []) => Filter::Nowhere(h.workspace.clone()),
+                    (None, many) => Filter::Repos(many.to_vec()),
+                },
+            },
         }
     }
 
-    /// **The pane** — see the module docs. Takes `&mut self` to record where each row was drawn
-    /// (the arrows and a click read it) and to ask for a fresh snapshot while the pane is open.
-    ///
-    /// **The plugin's pane, unless it cannot be one.** `plugins/builtin/queue` draws the queue from
-    /// the snapshot the head holds (`app::queue_pane`), and `/queue builtin` — or a layer that is
-    /// missing, broken or refused — falls back to this file's own rows. Both paths record
-    /// `queue_stop_rows`, so the arrows, Enter and a click read what was drawn whichever it was.
-    pub(crate) fn queue_lines(&mut self, w: usize) -> Vec<String> {
-        self.ask_for_queues();
-        // **A snapshot that has not arrived is nobody's to draw.** The plugin is not asked: an
-        // empty `reviews` would be a queue it drew as empty, which is the one thing the host pane
-        // never does (R61 defect 12).
-        if self.queues_got_ms > 0
-            && let Some(lines) = self.queue_plugin_lines(w)
-        {
-            return lines;
-        }
-        // The head's own pane from here down: the plugin did not answer, or `/queue builtin`.
-        self.queue_held = None;
-        self.queue_plugin_stops = 0;
-        let now = self.queue_now();
-        let mut out = PaneLines::new();
-        out.push(pane::title("review queue · merge queue"));
-        if self.queues_got_ms == 0 {
-            out.blank();
-            out.push(pane::faint("    asking the daemon for the queues…"));
-            self.queue_stop_rows = Vec::new();
-            self.queue_tabs = None;
-            return row_strings(&out.lines, self.cfg.palette());
-        }
-        // ---- Whose queues these are (R92 item 5): this session's repository unless the
-        // operator named another scope, and said either way. ONE resolution, because a row's
-        // fields are decided by whether this line already names the repository.
-        let filter = self.queue_filter(&self.queue_scope);
-        match &filter {
-            Filter::Nowhere(ws) => {
-                out.push(note_line(
-                    "◆",
-                    Role::Attention,
-                    &format!(
-                        "this session's workspace {ws} is in no repository, so it has no queue of \
-                         its own — `/queue all` shows every repository's queues"
-                    ),
-                    w,
-                ));
-                self.queue_stop_rows = Vec::new();
-                self.queue_tabs = None;
-                return row_strings(&out.lines, self.cfg.palette());
-            }
-            Filter::Repo(r) => out.push(pane::faint(trim_to(
-                &format!(
-                    "    {} — this session's repository · `/queue all` shows every repository",
-                    repo_name(r)
-                ),
-                w,
-            ))),
-            Filter::Repos(rs) => out.push(pane::faint(trim_to(
-                &format!(
-                    "    {} — this session's repositories, one project · `/queue all` shows every \
-                     repository",
-                    rs.iter()
-                        .map(|r| repo_name(r))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                w,
-            ))),
-            Filter::Path(p) => out.push(pane::faint(trim_to(
-                &format!(
-                    "    {} — named · `/queue` alone is this session's repository",
-                    p.display()
-                ),
-                w,
-            ))),
-            Filter::Every if self.queue_scope == QueueScope::All => out.push(pane::faint(trim_to(
-                "    every repository · `/queue` alone is this session's repository",
-                w,
-            ))),
-            Filter::Every => out.push(pane::faint(trim_to(
-                "    every repository — this daemon does not say which repository this session \
-                 is in",
-                w,
-            ))),
-        }
-
-        // ---- Emergencies and failures to read, first. They are the reason to look at the pane,
-        // so they stay above the rows; the lease, the repositories that never asked and the
-        // archive are chrome and go in ONE faint line under them.
-        let alarms = out.lines.len();
-        if let Some(why) = &self.queues.unreadable {
-            out.push(note_line(
-                "⚠",
-                Role::Failure,
-                &format!("the store {why}"),
-                w,
-            ));
-        }
-        for t in &self.queues.targets {
-            let short: String = t.sha.chars().take(10).collect();
-            let repo = repo_name(&t.repository);
-            match t.state.as_str() {
-                "red" => out.push(Line::new(vec![
-                    Span::role("  ‼ EMERGENCY ", Role::Failure),
-                    Span::role(
-                        trim_to(
-                            &format!(
-                                "`{}` is RED at {short} in {repo} — nothing lands but its fix; its \
-                                 tip is first in review · {}",
-                                t.target,
-                                dur_human(now.saturating_sub(t.checked_ms))
-                            ),
-                            w.saturating_sub(14),
-                        ),
-                        Role::Failure,
-                    ),
-                ])),
-                "timed_out" | "blocked" => out.push(note_line(
-                    "⚠",
-                    Role::Attention,
-                    &format!(
-                        "`{}` in {repo} is {} at {short}: {} — nothing lands until it is green",
-                        t.target,
-                        t.state.replace('_', " "),
-                        first_line(&t.evidence)
-                    ),
-                    w,
-                )),
-                "gating" => out.push(note_line(
-                    "…",
-                    Role::Pending,
-                    &format!(
-                        "`{}` in {repo}: {}",
-                        t.target,
-                        gate_running_words(&t.sha, now.saturating_sub(t.checked_ms))
-                    ),
-                    w,
-                )),
-                _ => out.push(note_line(
-                    "✓",
-                    Role::Success,
-                    &format!("`{}` in {repo} is green at {short}", t.target),
-                    w,
-                )),
-            }
-        }
-        // ---- A landing's gate: what every other landing of that repository waits for.
-        for m in self.queues.merges.iter().filter(|m| m.state == "gating") {
-            if let Some(sha) = m.rebased_sha.as_deref() {
-                out.push(note_line(
-                    "…",
-                    Role::Pending,
-                    &format!(
-                        "landing `{}` onto `{}` in {}: {}",
-                        clean_line(&m.branch),
-                        m.target,
-                        repo_name(&m.repository),
-                        gate_running_words(sha, now.saturating_sub(m.state_ms))
-                    ),
-                    w,
-                ));
-            }
-        }
-        if out.lines.len() > alarms {
-            out.blank();
-        }
-
-        // ---- The strip.
-        let (strip, at) = tab_row(
-            self.queue_view,
-            &standings_where(&self.queues, self.queue_now(), |_| true),
-        );
-        let tabs = QueueTabs {
-            row: out.lines.len(),
-            ..at
-        };
-        out.push(strip);
-        out.blank();
-
-        // ---- The view's rows.
-        let rows = self.queue_rows();
-        let cursor = self.queue_sel.min(rows.len().saturating_sub(1));
-        if rows.is_empty() {
-            out.push(pane::faint(match self.queue_view {
-                QueueView::Review => {
-                    "    none. A branch is put up for review when a `task_start` child finishes."
-                }
-                QueueView::Merge => {
-                    "    none. A branch lands here once its review approves it, at the head that \
-                     was reviewed."
-                }
-            }));
-        }
-        let running = gates_running(&self.queues, now);
-        let said = Said::of(
-            &self.queues,
-            matches!(filter, Filter::Repo(_) | Filter::Repos(_)),
-        );
-        let mut stops = Vec::with_capacity(rows.len());
-        for (k, row) in rows.iter().enumerate() {
-            let picked = k == cursor;
-            stops.push(out.lines.len());
-            out.push_stop(match *row {
-                QRow::Review(i) => review_row(&self.queues.reviews[i], &said, now, picked, w),
-                QRow::Merge(i) => {
-                    let m = &self.queues.merges[i];
-                    let waits = (m.state == "queued")
-                        .then(|| running.get(m.repository.as_str()))
-                        .flatten()
-                        .map(String::as_str);
-                    merge_row(m, &said, now, waits, picked, w)
-                }
-            });
-            // ---- Everything else about a row belongs to the row under the cursor: the id and
-            // the sha `/queue approve` takes, its last moves, the gate's steps and the verbs.
-            if !picked {
-                continue;
-            }
-            match *row {
-                QRow::Review(i) => {
-                    let r = &self.queues.reviews[i];
-                    out.push(detail_line(&r.id, "head", &r.head_sha, w));
-                }
-                QRow::Merge(i) => {
-                    let m = &self.queues.merges[i];
-                    out.push(detail_line(&m.id, "approved", &m.approved_sha, w));
-                }
-            }
-            let id = self.queue_row_id(*row);
-            for l in moves_lines(&self.queues.recent, &id, 3, now, w) {
-                out.push(l);
-            }
-            match *row {
-                QRow::Review(i) => {
-                    out.extend_lines(verb_rows(&Selected::Review(&self.queues.reviews[i]), w))
-                }
-                QRow::Merge(i) => {
-                    let m = &self.queues.merges[i];
-                    for l in gate_lines(&m.gate_steps, m.state == "gating", w, GateRows::Pane) {
-                        out.push(l);
-                    }
-                    out.extend_lines(verb_rows(&Selected::Merge(m), w));
-                }
-            }
-        }
-        out.blank();
-        out.push(self.queue_chrome(now, w));
-        self.queue_stop_rows = stops;
-        self.queue_tabs = Some(tabs);
-        row_strings(&out.lines, self.cfg.palette())
+    /// **The pane's copy, cut again** - after a snapshot lands or the scope changes.
+    pub(crate) fn rescope_queues(&mut self) {
+        let f = self.queue_filter(&self.queue_scope);
+        self.queues = scoped(&self.queues_all, &f);
     }
 
-    /// **The pane's ONE chrome line** — who serves each repository and how alive it is, the
-    /// repositories that never asked for a queue, and the archive. None of it is what the pane is
-    /// opened for and all of it is worth knowing once, so it is one faint line under the rows:
-    /// the lease's heartbeat and the STALE warning keep their words, and a stale (or absent)
-    /// lease turns the whole line into an alarm.
-    fn queue_chrome(&self, now: u64, w: usize) -> Line {
-        let mut said: Vec<String> = Vec::new();
-        let mut stale = false;
-        for l in &self.queues.leases {
-            let age = now.saturating_sub(l.heartbeat_ms);
-            let old = age > LEASE_STALE_MS;
-            stale |= old;
-            said.push(format!(
-                "{} served by {} (pid {}, {}) · heartbeat {} ago{}",
-                repo_name(&l.repository),
-                l.host,
-                l.pid,
-                l.build,
-                dur_human(age),
-                if old {
-                    " — STALE: another daemon takes it over"
-                } else {
-                    ""
-                }
-            ));
-        }
-        if self.queues.leases.is_empty() {
-            stale = true;
-            said.push("no daemon holds a queue lease — nothing is serving the queues".into());
-        }
-        // ---- The repositories that are no queue target at all (2026-10-26): the queue is the
-        // repositories that asked for it, and asking is a `Merge gate` section.
-        if !self.queues.not_queued.is_empty() {
-            said.push(format!(
-                "not queued: no `Merge gate` section in AGENTS.md — {}",
-                self.queues
-                    .not_queued
-                    .iter()
-                    .map(|r| repo_name(r))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        if self.queues.archived > 0 {
-            said.push(format!(
-                "{} row(s) of the pre-split queue are archived (merge_queue_v23)",
-                self.queues.archived
-            ));
-        }
-        let role = if stale { Role::Attention } else { Role::Faint };
-        Line::new(vec![
-            Span::raw("  "),
-            Span::role(if stale { "⚠" } else { "◆" }, role),
-            Span::raw(" "),
-            Span::role(trim_to(&said.join(" · "), w.saturating_sub(4)), role),
-        ])
-    }
-
-    /// **One row, whole** — the overlay Enter opens: every field the snapshot carries, the
-    /// reasons, the gate's steps in full, and the row's moves.
-    ///
-    /// **It asks for a snapshot itself** ([`Self::ask_for_queues`]): this is a surface of its own,
-    /// so the ask inside the pane never runs while it is on the screen, and a running gate's step
-    /// and tail would freeze at the instant the row was opened.
-    pub(crate) fn queue_out_lines(&mut self, w: usize) -> Vec<String> {
-        self.ask_for_queues();
-        let Some(id) = self.queue_open.as_deref() else {
-            return Vec::new();
-        };
-        let now = self.queue_now();
-        let mut lines: Vec<Line> = vec![one(format!("  {id}"), Role::Strong), Line::default()];
-        let field = |k: &str, v: &str| -> Vec<Line> {
-            wrap(&clean_line(v), w.saturating_sub(16))
-                .into_iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    Line::new(vec![
-                        Span::role(
-                            if i == 0 {
-                                format!("  {k:<12}  ")
-                            } else {
-                                " ".repeat(16)
-                            },
-                            Role::Faint,
-                        ),
-                        Span::raw(l),
-                    ])
-                })
-                .collect()
-        };
-        if let Some(r) = self.queues.reviews.iter().find(|r| r.id == id) {
-            lines.extend(field("queue", "review"));
-            lines.extend(field("kind", &r.kind));
-            lines.extend(field("repository", &r.repository));
-            lines.extend(field("target", &r.target));
-            lines.extend(field("branch", &r.branch));
-            lines.extend(field(
-                "state",
-                &format!(
-                    "{} · {} in it",
-                    r.state,
-                    dur_human(now.saturating_sub(r.state_ms))
-                ),
-            ));
-            if !r.owner.is_empty() {
-                lines.extend(field("owner", &r.owner));
-            }
-            if let Some(c) = &r.reviewer {
-                lines.extend(field("reviewer", c));
-            }
-            lines.extend(field("head", &r.head_sha));
-            if let Some(v) = &r.verdict {
-                lines.extend(field(
-                    "verdict",
-                    &format!(
-                        "{v} at {} by {}",
-                        r.reviewed_sha.as_deref().unwrap_or("?"),
-                        r.verdict_by.as_deref().unwrap_or("?")
-                    ),
-                ));
-            }
-            for reason in &r.reasons {
-                lines.extend(field("reason", reason));
-            }
-            // **The failure is drawn whether or not an attempt was counted** (R92.34). A row that
-            // is WAITING — for the reviewer's tree, for a VM slot — carries the reason with
-            // `attempts` still 0 (`review::wait_for_tree` says so in as many words: *"waits with
-            // the clone's words on it, visible in the queue's own pane"*), and the pane drew it
-            // only under `attempts > 0`, so a person opening a parked row read no reason at all.
-            if !r.failure.is_empty() {
-                lines.extend(field("failure", &r.failure));
-            }
-            if r.attempts > 0 {
-                lines.extend(field("attempts", &r.attempts.to_string()));
-            }
-            if let Some(f) = &r.fixes {
-                lines.extend(field("fixes", f));
-            }
-            lines.extend(field("why", &r.evidence));
-            lines.extend(field("ask", &r.brief));
-        } else if let Some(m) = self.queues.merges.iter().find(|m| m.id == id) {
-            lines.extend(field("queue", "merge"));
-            lines.extend(field("repository", &m.repository));
-            lines.extend(field("target", &m.target));
-            lines.extend(field("branch", &m.branch));
-            lines.extend(field(
-                "state",
-                &format!(
-                    "{} · {} in it",
-                    m.state,
-                    dur_human(now.saturating_sub(m.state_ms))
-                ),
-            ));
-            if !m.owner.is_empty() {
-                lines.extend(field("owner", &m.owner));
-            }
-            lines.extend(field(
-                "approved",
-                &format!(
-                    "{} by {} (review {})",
-                    m.approved_sha, m.approved_by, m.review_id
-                ),
-            ));
-            if let Some(s) = &m.rebased_sha {
-                lines.extend(field("rebased", s));
-            }
-            if let Some(s) = &m.landed_sha {
-                lines.extend(field("landed", s));
-            }
-            if !m.pushed.is_empty() {
-                lines.extend(field("push", &m.pushed));
-            }
-            lines.extend(field("why", &m.evidence));
-            // **Is it stuck?** — the question the row exists to answer, and the one the pane could
-            // not: a `gating` landing shows the step its gate is on, how long that step has been
-            // going, whether its output has moved, and the end of that output. A `queued` landing
-            // shows the same for the TARGET's gate it is waiting on, which is the other way a
-            // queue sits still with nothing failing.
-            let running = match &m.running_gate {
-                Some(g) => Some((g, format!("{}#{}", m.id, g.step))),
-                None if m.state == "queued" => self
-                    .queues
-                    .targets
-                    .iter()
-                    .find(|t| t.repository == m.repository && t.target == m.target)
-                    .and_then(|t| {
-                        t.running_gate
-                            .as_ref()
-                            .map(|g| (g, format!("{}#{}#{}", t.repository, t.target, g.step)))
-                    }),
-                None => None,
-            };
-            if let Some((g, key)) = running {
-                lines.extend(running_gate_lines(
-                    g,
-                    self.gate_tails.get(&key),
-                    now,
-                    self.now_ms.saturating_sub(self.queues_got_ms),
-                    w,
-                ));
-            }
-            lines.push(Line::default());
-            lines.push(one("  the gate's steps", Role::Strong));
-            lines.extend(gate_lines(
-                &m.gate_steps,
-                m.state == "gating",
-                w,
-                GateRows::Whole,
-            ));
+    /// **`/queue all` and `/queue /PATH`** - the pane, on that scope. Opening it asks for a
+    /// fresh snapshot; switching an open pane's scope only re-cuts the one it has.
+    pub(crate) fn queue_in(&mut self, scope: QueueScope) -> Option<Action> {
+        self.queue_scope = scope;
+        self.queue_sel = 0;
+        self.rescope_queues();
+        self.redraw = true;
+        if self.is_open(Surface::Queue) {
+            None
         } else {
-            lines.push(pane::faint(
-                "    the row is not in the last snapshot — it may have moved out of the window",
-            ));
+            self.open_surface(Surface::Queue)
         }
-        lines.push(Line::default());
-        lines.push(one("  its moves", Role::Strong));
-        lines.extend(moves_lines(&self.queues.recent, id, usize::MAX, now, w));
-        row_strings(&lines, self.cfg.palette())
     }
 }
 
-/// **How old a snapshot may be before the pane stops calling a quiet tail stuck** — several of the
-/// pane's own [`REFRESH_MS`] asks. Past this the head is reading its own clock and not the
-/// daemon's, and *nothing has changed* would be a claim about a screen nobody refreshed: the pane
-/// says *no snapshot for N* instead, and stops short of a verdict it cannot support.
-pub(crate) const GATE_SNAPSHOT_STALE_MS: u64 = 30_000;
-
-/// **The step a gate is running, as a person reads it** — which step of how many, how long it has
-/// been going, whether its output has moved since the last snapshot, and the end of that output.
-///
-/// The last of those is the whole point: a tail that has not moved in minutes is a step that is
-/// stuck, and one that is growing is not, and a person should be able to tell those apart without
-/// opening a file on the daemon's box. `seen` is what this head last read for this step (see
-/// [`GateTail`]); `snapshot_age` is how long ago the snapshot arrived, because *it has not moved*
-/// is a fact about two answers and never about one.
-fn running_gate_lines(
-    g: &letibot_sessionlog::event::QueueRunningGate,
-    seen: Option<&GateTail>,
-    now: u64,
-    snapshot_age: u64,
-    w: usize,
-) -> Vec<Line> {
-    let mut out = vec![Line::new(vec![
-        Span::role(format!("  {:<12}  ", "gate"), Role::Faint),
-        Span::role(
-            format!(
-                "step {} of {} · running {}",
-                g.step.max(1),
-                g.of.max(1),
-                dur_human(now.saturating_sub(g.started_ms))
-            ),
-            Role::Pending,
-        ),
-    ])];
-    let room = w.saturating_sub(16);
-    for l in wrap(&clean_line(&g.command), room) {
-        out.push(Line::new(vec![
-            Span::role(
-                format!("  {:<12}  ", if out.len() == 1 { "step" } else { "" }),
-                Role::Faint,
-            ),
-            Span::raw(l),
-        ]));
-    }
-    // **Has it moved?** — the one question the snapshot alone cannot answer, because it says what
-    // the tail IS and not what it was. `quiet` is the longest a step's output may stand still
-    // before the pane says so; a build can legitimately print nothing for a minute.
-    if let Some(s) = seen {
-        let still = now.saturating_sub(s.since_ms);
-        let ago = if still < 1_000 {
-            "just now".to_string()
-        } else {
-            format!("{} ago", dur_human(still))
-        };
-        let (words, role) = if snapshot_age > GATE_SNAPSHOT_STALE_MS {
-            // **Not an answer, so not a verdict** — the daemon has not replied, and a head that
-            // turned its own silence into *it may be stuck* would be inventing the one fact the
-            // screen exists to establish.
-            (
-                format!(
-                    "no snapshot for {} — this is what the daemon said then ({} byte(s) written)",
-                    dur_human(snapshot_age),
-                    g.log_bytes
-                ),
-                Role::Attention,
-            )
-        } else if still >= GATE_QUIET_MS {
-            (
-                format!(
-                    "the tail has not moved in {} — it may be stuck ({} byte(s) written)",
-                    dur_human(still),
-                    g.log_bytes
-                ),
-                Role::Attention,
-            )
-        } else {
-            (
-                format!("the tail moved {ago} ({} byte(s) written)", g.log_bytes),
-                Role::Faint,
-            )
-        };
-        out.push(Line::new(vec![
-            Span::role(format!("  {:<12}  ", "moving"), Role::Faint),
-            Span::role(trim_to(&words, room), role),
-        ]));
-    }
-    if g.tail.is_empty() {
-        out.push(Line::new(vec![
-            Span::role(format!("  {:<12}  ", "tail"), Role::Faint),
-            Span::role("nothing written yet", Role::Faint),
-        ]));
-        return out;
-    }
-    out.push(Line::new(vec![
-        Span::role(format!("  {:<12}  ", "tail"), Role::Faint),
-        Span::role("the end of what it has written", Role::Faint),
-    ]));
-    for (i, l) in g.tail.lines().enumerate() {
-        let label = if i == 0 { OUTPUT_AT } else { "             " };
-        out.push(Line::new(vec![
-            Span::raw(label),
-            Span::role(
-                trim_to(&clean_line(l), w.saturating_sub(OUTPUT_AT.len())),
-                Role::Faint,
-            ),
-        ]));
-    }
-    out
-}
-
-/// **How long a running step's output may stand still before the pane calls it stuck** — a `cargo
-/// test` between two test binaries, a build between two crates, are minutes of silence; ten of them
-/// with no byte written is a step that is not going anywhere.
-pub(crate) const GATE_QUIET_MS: u64 = 10 * 60 * 1000;
-
-/// **The tail a gate's step had when this head last looked, and when it last CHANGED** — the
+/// **The tail a gate's step had when this head last looked, and when it last CHANGED** - the
 /// daemon's snapshot says what the tail is now; only a reader that has seen two of them can say
 /// whether it moved, and the head is that reader. Keyed by `entry#step`, so a step moving on starts
 /// its own clock rather than inheriting the last one's.
@@ -839,7 +286,7 @@ pub(crate) struct GateTail {
     pub since_ms: u64,
 }
 
-/// The repository's last path component — the name a person knows it by.
+/// The repository's last path component - the name a person knows it by.
 pub(crate) fn repo_name(repo: &str) -> String {
     if repo.is_empty() {
         return "(unresolved)".into();
@@ -848,10 +295,6 @@ pub(crate) fn repo_name(repo: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| repo.to_string())
-}
-
-fn first_line(s: &str) -> String {
-    clean_line(s.lines().next().unwrap_or_default())
 }
 
 /// The owner as a person reads it: `host/pid`, the start stamp dropped.
@@ -863,158 +306,26 @@ pub(crate) fn owner_word(owner: &str) -> String {
     }
 }
 
-pub(crate) fn mark_of(state: &str) -> (&'static str, Role) {
+pub(crate) fn mark_of(state: &str) -> (&'static str, rano::style::Role) {
     match state {
-        "waiting" | "queued" => ("[ ]", Role::Pending),
-        "reviewing" | "gating" => ("[~]", Role::Code),
-        "approved" | "landed" => ("[x]", Role::Success),
-        "blocked" | "failed" | "timed_out" | "conflict" => ("[!]", Role::Failure),
-        "rejected" | "cannot_decide" => ("[!]", Role::Attention),
-        _ => ("[-]", Role::Faint),
+        "waiting" | "queued" => ("[ ]", rano::style::Role::Pending),
+        "reviewing" | "gating" => ("[~]", rano::style::Role::Code),
+        "approved" | "landed" => ("[x]", rano::style::Role::Success),
+        "blocked" | "failed" | "timed_out" | "conflict" => ("[!]", rano::style::Role::Failure),
+        "rejected" | "cannot_decide" => ("[!]", rano::style::Role::Attention),
+        _ => ("[-]", rano::style::Role::Faint),
     }
 }
 
-/// **How many repositories the snapshot holds** — a row says which one it is of when there is more
-/// than one to tell apart (see [`Said`]).
-fn repositories(q: &QueueSnapshot) -> usize {
-    let mut seen: Vec<&str> = q
-        .reviews
-        .iter()
-        .map(|r| r.repository.as_str())
-        .chain(q.merges.iter().map(|m| m.repository.as_str()))
-        .collect();
-    seen.sort_unstable();
-    seen.dedup();
-    seen.len()
-}
-
-/// **What the pane has already said**, so a row says a field once — the repository when the scope
-/// line above has named it (and there is one to name), and the daemon serving it: a claim by the
-/// daemon holding that repository's lease is this pane's own, and `by …` is for a claim from
-/// somewhere else (a stale one, or another machine's).
-struct Said<'a> {
-    q: &'a QueueSnapshot,
-    name_repository: bool,
-}
-
-impl<'a> Said<'a> {
-    /// `scoped` is whether the pane's scope line already names the repositories the rows are in —
-    /// `/queue` and `/queue /PATH`-of-one do, `every repository` does not, and then a row has to
-    /// say which one it is of even when there is only one.
-    fn of(q: &'a QueueSnapshot, scoped: bool) -> Said<'a> {
-        Said {
-            q,
-            name_repository: !scoped || repositories(q) > 1,
-        }
-    }
-
-    fn serves(&self, repository: &str, owner: &str) -> bool {
-        let who = owner_word(owner);
-        self.q
-            .leases
-            .iter()
-            .any(|l| l.repository == repository && format!("{}/{}", l.host, l.pid) == who)
-    }
-}
-
-/// **A row's one line** — its mark, its branch, the state it has been in for how long, whatever
-/// else the pane has not already said, and then the REASON, which is what the row is for. The
-/// reason is placed after the fixed fields and given every column they leave, so a long one is
-/// cut at the pane's edge rather than crowding the row out of the pane.
-// A row's parts are its caller's own facts; grouping them would name a shape nothing else uses.
-#[allow(clippy::too_many_arguments)]
-fn row_line(
-    picked: bool,
-    mark: &str,
-    role: Role,
-    what: &str,
-    what_role: Role,
-    tail: &str,
-    why: &str,
-    w: usize,
-) -> Line {
-    let left = format!("{mark} {what} {tail}");
-    // The mark column (`▸ ` or `  `) is drawn before this, so it is spent here too.
-    let room = w.saturating_sub(visible_width(&left) + 2 + 3);
-    let said = if why.is_empty() || room < 16 {
-        String::new()
-    } else {
-        format!(" · {}", trim_to(why, room))
-    };
-    Line::new(vec![
-        Span::raw(format!("{} ", pane::mark(picked))),
-        Span::role(mark, role),
-        Span::role(format!(" {what} "), what_role),
-        Span::role(format!("{tail}{said}"), Role::Faint),
-    ])
-}
-
-/// **The picked row's second line** — the id `/queue approve` takes and the sha it was judged at,
-/// and nothing else: everything else about the row is one keypress away (`enter`).
-fn detail_line(id: &str, what: &str, sha: &str, w: usize) -> Line {
-    let short: String = sha.chars().take(10).collect();
-    let mut said = id.to_string();
-    if !short.is_empty() {
-        said.push_str(&format!(" · {what} {short}"));
-    }
-    pane::faint(trim_to(&format!("      {said}"), w))
-}
-
-fn review_row(r: &QueueReview, said: &Said, now: u64, picked: bool, w: usize) -> Line {
-    let (mark, role) = mark_of(&r.state);
-    let what = if r.kind == "target" {
-        format!("RED TARGET `{}`", r.target)
-    } else {
-        clean_line(&r.branch)
-    };
-    let state = r.state.replace('_', " ");
-    let mut tail = format!(
-        "· {state} for {}",
-        dur_human(now.saturating_sub(r.state_ms))
-    );
-    if said.name_repository {
-        tail.push_str(&format!(" · {}", repo_name(&r.repository)));
-    }
-    if !r.owner.is_empty() && !said.serves(&r.repository, &r.owner) {
-        tail.push_str(&format!(" · by {}", owner_word(&r.owner)));
-    }
-    // **The verdict, unless it is the state said twice** — a `cannot_decide` review whose verdict
-    // is `cannot_decide` has one fact, not two.
-    let mut why = match &r.verdict {
-        Some(v) if v.replace('_', " ") != state => v.clone(),
-        _ => String::new(),
-    };
-    if !r.evidence.is_empty() {
-        if !why.is_empty() {
-            why.push_str(" — ");
-        }
-        why.push_str(&first_line(&r.evidence));
-    }
-    row_line(
-        picked,
-        mark,
-        role,
-        &what,
-        if r.kind == "target" {
-            Role::Failure
-        } else {
-            Role::Strong
-        },
-        &tail,
-        &why,
-        w,
-    )
-}
-
-/// **`gate running on <sha> for Nm`** — the words for a gate in flight, from when it started.
+/// **`gate running on <sha> for Nm`** - the words for a gate in flight, from when it started.
 pub(crate) fn gate_running_words(sha: &str, for_ms: u64) -> String {
     let short: String = sha.chars().take(10).collect();
     format!("gate running on {short} for {}m", for_ms / 60_000)
 }
 
-/// **The gate each repository is running** (one at a time: R92 item 8) — what its queued
-/// landings wait for. The store has it: a `gating` target since its `checked_ms`, or a `gating`
-/// landing since its `state_ms`, rebased.
+/// **The gate each repository is running** (one at a time) - what its queued landings wait for.
+/// The store has it: a `gating` target since its `checked_ms`, or a `gating` landing since its
+/// `state_ms`, rebased.
 pub(crate) fn gates_running(
     q: &QueueSnapshot,
     now: u64,
@@ -1037,146 +348,50 @@ pub(crate) fn gates_running(
     out
 }
 
-fn merge_row(
-    m: &QueueMerge,
-    said: &Said,
-    now: u64,
-    waits: Option<&str>,
-    picked: bool,
-    w: usize,
-) -> Line {
-    let (mark, role) = mark_of(&m.state);
-    let mut tail = format!(
-        "· {} for {} · onto `{}`",
-        m.state.replace('_', " "),
-        dur_human(now.saturating_sub(m.state_ms)),
-        m.target
-    );
-    if said.name_repository {
-        tail.push_str(&format!(" · {}", repo_name(&m.repository)));
-    }
-    if !m.owner.is_empty() && !said.serves(&m.repository, &m.owner) {
-        tail.push_str(&format!(" · by {}", owner_word(&m.owner)));
-    }
-    if m.fixes.is_some() {
-        tail.push_str(" · FIX for the red target");
-    }
-    // **What a queued landing waits for** (R92 item 8) — the repository's gate, on its own line
-    // no longer: it is the row's reason, so it goes where the reason goes.
-    let mut why = waits.map(|g| format!("waits: {g}")).unwrap_or_default();
-    if !m.evidence.is_empty() {
-        if !why.is_empty() {
-            why.push_str(" — ");
-        }
-        why.push_str(&first_line(&m.evidence));
-    }
-    row_line(
-        picked,
-        mark,
-        role,
-        &clean_line(&m.branch),
-        Role::Strong,
-        &tail,
-        &why,
-        w,
-    )
-}
-
-/// **A row's moves** — the last `n` of them, from the snapshot's recent history.
-fn moves_lines(recent: &[QueueMove], id: &str, n: usize, now: u64, w: usize) -> Vec<Line> {
-    let mine: Vec<&QueueMove> = recent.iter().filter(|t| t.entry_id == id).collect();
-    let from = mine.len().saturating_sub(n);
-    if mine.is_empty() {
-        return vec![note_line(
-            "·",
-            Role::Faint,
-            "no moves in the recent history",
-            w,
-        )];
-    }
-    mine[from..]
-        .iter()
-        .map(|t| {
-            note_line(
-                "↳",
-                Role::Faint,
-                &format!(
-                    "{} → {} · {} ago · {} — {}",
-                    t.from.as_deref().unwrap_or("(new)"),
-                    t.to,
-                    dur_human(now.saturating_sub(t.at_ms)),
-                    owner_word(&t.by),
-                    first_line(&t.why)
-                ),
-                w,
-            )
-        })
-        .collect()
-}
-
-/// **What the queue is DOING, in six words** — drawn on the composer's bottom edge, and the
+/// **What the queue is DOING, in six words** - drawn on the composer's bottom edge, and the
 /// subject of [`standings_where`]'s reading of the snapshot: the four columns (what a reviewer has,
 /// what is being landed, what is stuck, what landed today) and the two things a TARGET can be that
-/// no row of either queue can say — red, and unjudged.
+/// no row of either queue can say - red, and unjudged.
 ///
-/// **The third column is `stuck`, and the word is the operator's** (2026-10-29): *"wtf parked
-/// means?"*, then *"so, label it as such - stuck?"*. `parked` was this head's word for a row the
-/// queue had stopped on, and it said nothing a reader could act on — a failed landing and a
-/// review nobody could run are not *parked*, they are stuck, and the column says what the reader
-/// has to do about them. **The store's words are untouched** — a merge row's own states are
-/// still `blocked`, `failed`, `timed_out` and `conflict` (`MergeState`), no table in this tree
-/// has a `parked` in it, and the rename is the COLUMN's: what a person reads, not what the queue
-/// records.
+/// **`stuck` is the operator's word**, and **the store's words are untouched** - the rename is the
+/// COLUMN's: what a person reads, not what the queue records.
 ///
-/// **The fourth is `landed`, and it counts a DAY** — the operator: *"i definitely want to see
-/// landed counter after parked"*. For ever would be a number that only grows, so it is the same
-/// window the pane's done list uses ([`RECENT_MS`], the last day): a queue that has worked all
-/// week reads as today's work, and the number falls back to zero on its own.
+/// **The fourth is `landed`, and it counts a DAY** - the same window the pane's done list uses
+/// ([`RECENT_MS`]): a queue that has worked all week reads as today's work, and the number falls
+/// back to zero on its own.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Standings {
     pub(crate) review: usize,
     pub(crate) merging: usize,
-    /// **Open and stopped** — the rows a person has to move (see [`standings_where`]).
+    /// **Open and stopped** - the rows a person has to move (see [`standings_where`]).
     pub(crate) stuck: usize,
-    /// **Landed inside the last day** — not for ever.
+    /// **Landed inside the last day** - not for ever.
     pub(crate) landed: usize,
-    /// Target branches that are red — the emergency.
+    /// Target branches that are red - the emergency.
     pub(crate) red: usize,
-    /// **Target branches nobody could judge** — timed out or blocked (R92 item 5). Nothing lands
-    /// on them either, so they are an alarm too, not a quiet edge.
+    /// **Target branches nobody could judge** - timed out or blocked. Nothing lands on them
+    /// either, so they are an alarm too, not a quiet edge.
     pub(crate) unjudged: usize,
-    /// **The step the target's own gate is on**, when this repository's target is `gating` —
-    /// `(step, of)`.
-    ///
-    /// The operator, 2026-11-01: *"nothing about gate — and the same for other sessions — gate is
-    /// invisible"*, then *"very nasty actually - fans just start spinning"*. The edge said
-    /// `1 being merged`, which is true of every landing at every moment; the one fact that turns
-    /// it into news is that a gate is running a step of N right now. Bounded to the two numbers
-    /// on purpose: the step's clock and its tail are the merge row's detail's, and the edge is one
-    /// line that must still fit at eighty columns.
+    /// **The step the target's own gate is on**, when this repository's target is `gating` -
+    /// `(step, of)`. The edge is one line that must still fit at eighty columns, so two numbers.
     pub(crate) gate: Option<(usize, usize)>,
 }
 
 impl Standings {
     /// **The words, and a count of nothing is not a word.**
     ///
-    /// Measured 2026-10-31, from the operator's *"main is red, tests are going — nothing shows as
-    /// in review or merged or stuck"*: every row of that repository was terminal, so all four
-    /// columns were zero, and the one live fact the queue held — a red target — came after four
-    /// zeros that read as an idle queue. A word is drawn when it has a count, so that repository
-    /// reads `1 red`.
+    /// A word is drawn when it has a count, so a repository whose only live fact is a red target
+    /// reads `1 red` and not four zeros.
     ///
     /// **The order is the pane's, and `red` leads it.** The edge is cut from its right end
     /// (`rano`'s `truncate`, through `box_edge`), so the leftmost word is the last one a narrow
-    /// terminal loses — and the emergency is the word that must survive. Then a target nobody
+    /// terminal loses - and the emergency is the word that must survive. Then a target nobody
     /// could judge, then the four columns in the order they have always had.
     ///
-    /// **The merge column is worded by what the gate is doing** (2026-11-01): `1 gating (step 3
-    /// of 4)` while this repository's target is being gated, `1 being merged` otherwise. Same
-    /// count either way — the column has always counted `queued` and `gating` together, and a
-    /// queued landing waits on exactly that gate — but the word says the machine is working,
-    /// which is the whole of the operator's *"gate is invisible"*. The step is in parentheses and
-    /// last, so a terminal too narrow for it loses the step and keeps the standing.
+    /// **The merge column is worded by what the gate is doing**: `1 gating (step 3 of 4)` while
+    /// this repository's target is being gated, `1 being merged` otherwise. Same count either
+    /// way, but the word says the machine is working. The step is in parentheses and last, so a
+    /// terminal too narrow for it loses the step and keeps the standing.
     pub(crate) fn words(&self) -> Option<String> {
         let mut words: Vec<String> = Vec::new();
         if self.red > 0 {
@@ -1185,9 +400,6 @@ impl Standings {
         if self.unjudged > 0 {
             words.push(format!("{} unjudged", self.unjudged));
         }
-        // **A landing is a standing** — the operator asked for the count, so it is drawn on its
-        // own: a queue that landed two branches today and holds nothing else still has something
-        // to say. Only a queue that has stood nothing and landed nothing for a day is silent.
         for (n, word) in [
             (self.review, "in review"),
             (self.merging, "being merged"),
@@ -1198,13 +410,6 @@ impl Standings {
                 continue;
             }
             match (word, self.gate) {
-                // **The gate's step rides with the merge queue's own word** — the operator,
-                // 2026-11-01: *"i think queue now merges reviews and gating (i.e. git merges) not
-                // that convenient - before they were separate tabs"*. Replacing `being merged`
-                // with `gating` made one sentence out of two queues, so the line read as *1 in
-                // review · 2 gating* with nothing saying which half was which. The two queues keep
-                // their two words; the step is in parentheses, where it still answers `gate is
-                // invisible`.
                 ("being merged", Some((step, of))) => {
                     words.push(format!("{n} being merged (gate step {step} of {of})"))
                 }
@@ -1214,52 +419,39 @@ impl Standings {
         (!words.is_empty()).then(|| words.join(" · "))
     }
 
-    pub(crate) fn role(&self) -> Role {
+    pub(crate) fn role(&self) -> rano::style::Role {
         if self.red > 0 {
-            Role::Failure
+            rano::style::Role::Failure
         } else if self.unjudged > 0 || self.stuck > 0 {
-            Role::Attention
+            rano::style::Role::Attention
         } else {
-            Role::Pending
+            rano::style::Role::Pending
         }
     }
 }
 
-/// **The standings of the rows `keep` admits by repository**, as of `now` — the snapshot's own
+/// **The standings of the rows `keep` admits by repository**, as of `now` - the snapshot's own
 /// clock carried forward (`App::queue_now`), because the landed column asks about a window and
 /// the snapshot's `at_ms` is a moment, not a clock.
 ///
 /// # The snapshot is the wire's whole history, and these counters are a reading of it
 ///
-/// `mergequeue::snapshot` reads `review_rows(None)` and `merge_rows(None)`: every row the store
-/// has, in every state, because nothing in this tree deletes one (the history IS the record). So
-/// the terminal rows are in the `QueueSnapshot` this head holds, and a counter that takes them at
-/// face value is a counter about the past drawn where the reader is asking about now.
+/// The snapshot carries every row the store has, in every state, because nothing in this tree
+/// deletes one. So the terminal rows are in it, and a counter that takes them at face value is a
+/// counter about the past drawn where the reader is asking about now. The counting:
 ///
-/// **That is what `parked` was doing** (measured 2026-10-29, reading): `rejected` was counted
-/// into the column, and a rejected review is terminal — the reviewer's complaints have gone back
-/// to the branch's session and nothing will retry the row — so it sat in a live column for ever,
-/// beside a `blocked` landing somebody still had to move. The words changed to `stuck` and the
-/// counting was fixed with them:
-///
-/// * **`in review`** — `waiting` and `reviewing`, the review queue's open states.
-/// * **`being merged`** — `queued` and `gating`, the merge queue's working states. Drawn as
+/// * **`in review`** - `waiting` and `reviewing`, the review queue's open states.
+/// * **`being merged`** - `queued` and `gating`, the merge queue's working states. Drawn as
 ///   **`gating (step N of M)`** when this repository's target is on a gate right now
 ///   ([`Standings::gate`]).
-/// * **`stuck`** — open and stopped: a review that could not be RUN (`blocked`) or whose reviewer
+/// * **`stuck`** - open and stopped: a review that could not be RUN (`blocked`) or whose reviewer
 ///   said `needs_human` (`cannot_decide`), and a landing whose gate was red (`failed`), ran out
 ///   of time (`timed_out`), would not rebase (`conflict`) or could not be started (`blocked`).
-///   Each is a person's to move (`restart`, `approve`, `regate`), which is the test the column
-///   applies: a row nothing will retry and nobody has to touch is not stuck.
-/// * **`landed`** — the store's own `state`, and its own `state_ms` inside [`RECENT_MS`].
+/// * **`landed`** - the store's own `state`, and its own `state_ms` inside [`RECENT_MS`].
 ///
-/// **Every other state is terminal and is counted nowhere**: `approved` (the review queue's
-/// terminal state — the row is the merge queue's business from that moment, so counting it here
-/// would count one branch twice), `rejected`, `withdrawn` and `archived` on a review; `landed`,
-/// `moved` and `withdrawn` on a landing. A terminal row never inflates a live column.
-///
-/// A target's own red-tip review is not counted once that target is green again — the alarm
-/// clears with the target, not with whoever withdraws the row.
+/// **Every other state is terminal and is counted nowhere**: a terminal row never inflates a live
+/// column. A target's own red-tip review is not counted once that target is green again - the
+/// alarm clears with the target, not with whoever withdraws the row.
 pub(crate) fn standings_where(
     q: &QueueSnapshot,
     now: u64,
@@ -1280,7 +472,7 @@ pub(crate) fn standings_where(
             "waiting" | "reviewing" => s.review += 1,
             // **`cannot_decide` is here and not in the live columns**: the store calls it
             // terminal *until a person rules*, and a row waiting on a person is what this column
-            // is for — the one state in it the store does not call open.
+            // is for.
             "blocked" | "cannot_decide" => s.stuck += 1,
             _ => {}
         }
@@ -1289,9 +481,6 @@ pub(crate) fn standings_where(
         match m.state.as_str() {
             "queued" | "gating" => s.merging += 1,
             "blocked" | "failed" | "timed_out" | "conflict" => s.stuck += 1,
-            // **The store's own state and its own stamp**: `state_ms` is when the row entered
-            // `landed` (`gating_to`), and `landed_sha` is the tree it landed. Outside the window
-            // it is a landing this edge no longer counts.
             "landed" if recent(m.state_ms) => s.landed += 1,
             _ => {}
         }
@@ -1300,8 +489,6 @@ pub(crate) fn standings_where(
         match t.state.as_str() {
             "red" => s.red += 1,
             "timed_out" | "blocked" => s.unjudged += 1,
-            // **Which step of the gate is running**, when this repository's target is on one —
-            // the fact the merge column is worded by (`Standings::gate`).
             "gating" => {
                 if let Some(g) = &t.running_gate {
                     s.gate = Some((g.step.max(1), g.of.max(1)));
@@ -1313,9 +500,8 @@ pub(crate) fn standings_where(
     s
 }
 
-/// **Whose queues the pane shows** (R92 item 5) — the operator: *"the /queue is still not
-/// project scoped"*. `/queue` is this session's repository; `/queue all` every repository's;
-/// `/queue /PATH` the one at that path.
+/// **Whose queues the pane shows** - `/queue` is this session's repository; `/queue all` every
+/// repository's; `/queue /PATH` the one at that path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum QueueScope {
     #[default]
@@ -1338,11 +524,11 @@ impl QueueScope {
 /// **A scope, resolved against what the daemon said about this session.**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Filter {
-    /// Every repository — asked for, or a daemon too old to say which is this session's.
+    /// Every repository - asked for, or a daemon too old to say which is this session's.
     Every,
     /// The queues' key of this session's repository.
     Repo(String),
-    /// **The repositories of a folder that is one project of several** — the edge shows each.
+    /// **The repositories of a folder that is one project of several** - the edge shows each.
     Repos(Vec<String>),
     /// A path the operator named: a row's repository is it, or holds it.
     Path(std::path::PathBuf),
@@ -1362,8 +548,8 @@ impl Filter {
     }
 }
 
-/// **The snapshot cut to the repositories `f` keeps** — every list, so the pane, its rows, its
-/// verbs and the overlay all read one scoped copy.
+/// **The snapshot cut to the repositories `f` keeps** - every list, so the pane's feed and the
+/// edge read one scoped copy.
 pub(crate) fn scoped(q: &QueueSnapshot, f: &Filter) -> QueueSnapshot {
     if *f == Filter::Every {
         return q.clone();
@@ -1412,50 +598,8 @@ pub(crate) fn scoped(q: &QueueSnapshot, f: &Filter) -> QueueSnapshot {
     }
 }
 
-impl App {
-    /// **`scope`, resolved** against the snapshot's word about this session's repository.
-    pub(crate) fn queue_filter(&self, scope: &QueueScope) -> Filter {
-        match scope {
-            QueueScope::All => Filter::Every,
-            QueueScope::Path(p) => Filter::Path(
-                std::fs::canonicalize(p).unwrap_or_else(|_| std::path::PathBuf::from(p)),
-            ),
-            QueueScope::Here => match &self.queues_all.here {
-                None => Filter::Every,
-                Some(h) => match (&h.repository, h.repositories.as_slice()) {
-                    (Some(r), _) => Filter::Repo(r.clone()),
-                    (None, []) => Filter::Nowhere(h.workspace.clone()),
-                    (None, many) => Filter::Repos(many.to_vec()),
-                },
-            },
-        }
-    }
-
-    /// **The pane's copy, cut again** — after a snapshot lands or the scope changes.
-    pub(crate) fn rescope_queues(&mut self) {
-        let f = self.queue_filter(&self.queue_scope);
-        self.queues = scoped(&self.queues_all, &f);
-        let n = self.queue_rows().len();
-        self.queue_sel = self.queue_sel.min(n.saturating_sub(1));
-    }
-
-    /// **`/queue all` and `/queue /PATH`** — the pane, on that scope. Opening it asks for a
-    /// fresh snapshot; switching an open pane's scope only re-cuts the one it has.
-    pub(crate) fn queue_in(&mut self, scope: QueueScope) -> Option<Action> {
-        self.queue_scope = scope;
-        self.queue_sel = 0;
-        self.rescope_queues();
-        self.redraw = true;
-        if self.is_open(Surface::Queue) {
-            None
-        } else {
-            self.open_surface(Surface::Queue)
-        }
-    }
-}
-
-/// **Which queue the pane is showing** — the operator's *"separate views for review and merge
-/// queues"*. `tab` switches.
+/// **Which queue the pane is showing** - the operator's *"separate views for review and merge
+/// queues"*. `tab` switches; the feed carries the word so the layer draws the right half first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum QueueView {
     #[default]
@@ -1479,51 +623,10 @@ impl QueueView {
     }
 }
 
-/// Where the two tabs were drawn — the record a click reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct QueueTabs {
-    pub(crate) row: usize,
-    pub(crate) review: (usize, usize),
-    pub(crate) merge: (usize, usize),
-}
-
-const TAB_AT: &str = "  ";
-const TAB_KEY: &str = " · tab switches";
-
-fn tab_row(view: QueueView, s: &Standings) -> (Line, QueueTabs) {
-    let label = |v: QueueView, n: usize| {
-        let word = format!("{} queue ({n})", v.word());
-        if v == view {
-            (format!("[{word}]"), Role::Strong)
-        } else {
-            (format!(" {word} "), Role::Faint)
-        }
-    };
-    let (review, review_role) = label(QueueView::Review, s.review);
-    let (merge, merge_role) = label(QueueView::Merge, s.merging);
-    let review_from = TAB_AT.len();
-    let merge_from = review_from + review.chars().count();
-    let merge_to = merge_from + merge.chars().count();
-    let line = Line::new(vec![
-        Span::raw(TAB_AT),
-        Span::role(review, review_role),
-        Span::role(merge, merge_role),
-        Span::role(TAB_KEY, Role::Faint),
-    ]);
-    (
-        line,
-        QueueTabs {
-            row: 0,
-            review: (review_from, merge_from),
-            merge: (merge_from, merge_to),
-        },
-    )
-}
-
 /// The row a verb would act on.
 pub(crate) enum Selected<'a> {
-    Review(&'a QueueReview),
-    Merge(&'a QueueMerge),
+    Review(&'a letibot_sessionlog::event::QueueReview),
+    Merge(&'a letibot_sessionlog::event::QueueMerge),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1532,22 +635,12 @@ pub(crate) enum Verb {
     Veto,
     Restart,
     Rm,
-    /// **The row's TARGET gated again** (R76 item 3) — `/queue regate /REPO TARGET`, about the
+    /// **The row's TARGET gated again** - `/queue regate /REPO TARGET`, about the
     /// target the row lands on rather than the row itself.
     Regate,
 }
 
 impl Verb {
-    pub(crate) fn key(self) -> char {
-        match self {
-            Verb::Approve => 'a',
-            Verb::Veto => 'v',
-            Verb::Restart => 'r',
-            Verb::Rm => 'd',
-            Verb::Regate => 'g',
-        }
-    }
-
     pub(crate) fn word(self) -> &'static str {
         match self {
             Verb::Approve => "approve",
@@ -1557,21 +650,9 @@ impl Verb {
             Verb::Regate => "regate",
         }
     }
-
-    fn does(self) -> &'static str {
-        match self {
-            Verb::Approve => {
-                "your approval over the reviewer, at the branch's head now — the gate still runs"
-            }
-            Verb::Veto => "rejected in your words, sent back to the child",
-            Verb::Restart => "back in line: reviewed, or gated, again",
-            Verb::Rm => "withdrawn — the branch and its worktree stay, the history keeps the row",
-            Verb::Regate => "the target's tip gated again, even if it was judged",
-        }
-    }
 }
 
-/// **Whether a verb moves this row — the daemon's own rule** (`mergequeue::verbs`), so a verb it
+/// **Whether a verb moves this row - the daemon's own rule** (`mergequeue::verbs`), so a verb it
 /// would refuse is said here and not sent. `Err` is why not.
 pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
     let ok = match (verb, row) {
@@ -1597,10 +678,9 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
             "waiting" | "reviewing" | "blocked" | "rejected" | "cannot_decide"
         ),
         (Verb::Regate, _) => true,
-        // **`rm` is the way out of a row that is going nowhere, `gating` included** — the operator's
-        // *"no way … to take it out of line"*. The daemon's `withdraw_merge` takes a `gating`
-        // landing too, and a landing whose row has left `gating` does not land whatever its gate
-        // said (`serve.rs::finish_land`), so the offer is not a lie.
+        // **`rm` is the way out of a row that is going nowhere, `gating` included**. The daemon's
+        // `withdraw_merge` takes a `gating` landing too, and a landing whose row has left
+        // `gating` does not land whatever its gate said, so the offer is not a lie.
         (Verb::Rm, Selected::Merge(m)) => matches!(
             m.state.as_str(),
             "queued" | "gating" | "blocked" | "failed" | "timed_out" | "conflict"
@@ -1627,139 +707,4 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
         (_, _, "approved") => "it is approved and in the merge queue".into(),
         (_, _, s) => format!("it is `{s}`"),
     })
-}
-
-fn verb_rows(row: &Selected, w: usize) -> Vec<Line> {
-    let mut said = String::new();
-    for (i, verb) in [Verb::Approve, Verb::Veto, Verb::Restart, Verb::Rm]
-        .into_iter()
-        .enumerate()
-    {
-        if i > 0 {
-            said.push_str(" · ");
-        }
-        match verb_moves(verb, row) {
-            Ok(()) => said.push_str(&format!("{} {} ({})", verb.key(), verb.word(), verb.does())),
-            Err(why) => said.push_str(&format!("{} {} (nothing: {why})", verb.key(), verb.word())),
-        }
-    }
-    let room = w.saturating_sub(STEP_AT.len() + 6);
-    wrap(&clean_line(&said), room)
-        .into_iter()
-        .enumerate()
-        .map(|(i, l)| {
-            Line::new(vec![
-                Span::raw(STEP_AT),
-                Span::role(if i == 0 { "verbs " } else { "      " }, Role::Faint),
-                Span::raw(l),
-            ])
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GateRows {
-    Pane,
-    Whole,
-}
-
-const STEP_AT: &str = "         ";
-const OUTPUT_AT: &str = "             ";
-const FAILURE_LINES: usize = 4;
-
-fn gate_lines(steps: &[MergeGateStep], running: bool, w: usize, how: GateRows) -> Vec<Line> {
-    if steps.is_empty() {
-        return vec![if running {
-            note_line("…", Role::Pending, "the gate is running", w)
-        } else {
-            note_line("·", Role::Faint, "the gate has not run on this row", w)
-        }];
-    }
-    let mut out = Vec::new();
-    if running {
-        out.push(note_line(
-            "…",
-            Role::Pending,
-            "the gate is running — the rows below are the last run's",
-            w,
-        ));
-    }
-    for step in steps {
-        out.extend(step_lines(step, w, how));
-    }
-    out
-}
-
-fn step_lines(step: &MergeGateStep, w: usize, how: GateRows) -> Vec<Line> {
-    use MergeGateOutcome as O;
-    if step.outcome == O::NoGate {
-        return vec![note_line(
-            "⚠",
-            Role::Attention,
-            &format!("no gate declared — {}", step.output),
-            w,
-        )];
-    }
-    let (mark, role) = match step.outcome {
-        O::Passed => ("✓", Role::Success),
-        O::Failed => ("✗", Role::Failure),
-        O::TimedOut => ("⧗", Role::Failure),
-        O::Killed => ("✗", Role::Attention),
-        O::NotRun | O::NoGate => ("·", Role::Faint),
-    };
-    let mut said = clean_line(&step.command);
-    match step.outcome {
-        O::Passed | O::Failed => said.push_str(&format!(" · {}", dur_human(step.elapsed_ms))),
-        O::TimedOut => said.push_str(&format!(
-            " · TIMED OUT after {}",
-            dur_human(step.elapsed_ms)
-        )),
-        O::Killed => said.push_str(" · killed"),
-        O::NotRun | O::NoGate => said.push_str(" · not run"),
-    }
-    let mut out = vec![Line::new(vec![
-        Span::raw(STEP_AT),
-        Span::role(mark, role),
-        Span::raw(" "),
-        Span::raw(trim_to(&said, w.saturating_sub(STEP_AT.len() + 2))),
-    ])];
-    if matches!(step.outcome, O::Failed | O::TimedOut) {
-        let lines: Vec<&str> = step.output.lines().collect();
-        let from = match how {
-            GateRows::Pane => lines.len().saturating_sub(FAILURE_LINES),
-            GateRows::Whole => 0,
-        };
-        let room = w.saturating_sub(OUTPUT_AT.len());
-        for l in &lines[from..] {
-            for piece in wrap(&clean_line(l), room) {
-                out.push(Line::new(vec![Span::raw(OUTPUT_AT), Span::raw(piece)]));
-                if how == GateRows::Pane {
-                    break;
-                }
-            }
-        }
-    }
-    out
-}
-
-fn note_line(mark: &str, role: Role, text: &str, w: usize) -> Line {
-    Line::new(vec![
-        Span::raw("  "),
-        Span::role(mark, role),
-        Span::raw(" "),
-        Span::raw(trim_to(&clean_line(text), w.saturating_sub(4))),
-    ])
-}
-
-/// `PaneLines` has no bulk push; this is the one the pane uses.
-trait ExtendLines {
-    fn extend_lines(&mut self, lines: Vec<Line>);
-}
-
-impl ExtendLines for PaneLines {
-    fn extend_lines(&mut self, lines: Vec<Line>) {
-        for l in lines {
-            self.push(l);
-        }
-    }
 }

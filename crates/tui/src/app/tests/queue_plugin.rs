@@ -6,7 +6,7 @@
 //! |---|---|
 //! | the built-in `queue` layer loads and draws the pane | `the_builtin_queue_layer_draws_the_pane` |
 //! | a row's act names ITS entry, not the host's cursor | `a_rows_verb_acts_on_the_entry_the_row_names` |
-//! | an act the manifest does not declare is refused | `a_layer_that_uses_an_undeclared_verb_falls_back` |
+//! | an act the manifest does not declare is refused | `a_layer_that_uses_an_undeclared_verb_is_refused_and_said` |
 //!
 //! **Nothing is faked except the answer** where it can be avoided: `RanoLoader` compiles the real
 //! module `crates/builtins` embedded, `letibot_builtins::install` is the function the head calls,
@@ -287,7 +287,7 @@ fn a_rows_verb_acts_on_the_entry_the_row_names() {
 /// **A row asking for a verb its manifest does not declare is refused, and the host pane is drawn**
 /// — the allowlist a reviewer reads is the list of words that can be sent.
 #[test]
-fn a_layer_that_uses_an_undeclared_verb_falls_back() {
+fn a_layer_that_uses_an_undeclared_verb_is_refused_and_said() {
     let seen = Seen::default();
     let view = json!({
         "title": "a queue",
@@ -318,12 +318,16 @@ fn a_layer_that_uses_an_undeclared_verb_falls_back() {
     ));
     let screen = a.screen(120, 30).join("\n");
     assert!(
-        screen.contains("review queue · merge queue"),
-        "the refused view falls back to the host's own pane:\n{screen}"
+        screen.contains("the queue layer did not draw the pane"),
+        "the refusal is the pane now:\n{screen}"
+    );
+    assert!(
+        screen.contains("`/queue plugin` asks it again"),
+        "and the way out is named:\n{screen}"
     );
     assert!(
         !screen.contains("a queue"),
-        "and the refused view is not drawn:\n{screen}"
+        "the refused view is not drawn:\n{screen}"
     );
     std::fs::remove_dir_all(&project).ok();
 }
@@ -365,10 +369,10 @@ fn a_queue_the_head_has_not_been_told_about_is_not_drawn_by_a_layer() {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// **`/queue builtin` is the way back to the head's own pane** — the escape the conversion owes, so
-/// a person whose layer is broken (or unwanted) still has a queue pane.
+/// **`/queue builtin` says there is none** - the head's own pane is gone, so the escape is a
+/// sentence rather than a second renderer, and the pane stays the layer's.
 #[test]
-fn the_builtin_escape_draws_the_hosts_own_pane() {
+fn the_builtin_escape_says_there_is_none() {
     let mut a = a_head_with_a_queue();
     *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
         "s1",
@@ -380,18 +384,17 @@ fn the_builtin_escape_draws_the_hosts_own_pane() {
     a.command("queue builtin");
     let screen = a.screen(120, 30).join("\n");
     assert!(
-        screen.contains("review queue · merge queue"),
-        "the head's own pane, by name:\n{screen}"
+        screen.contains("agent/one"),
+        "the pane is still the layer's, rows and all:\n{screen}"
     );
-    assert!(a.queue_builtin);
+    assert!(!screen.contains("review queue · merge queue"), "{screen}");
 
     a.command("queue plugin");
     let screen = a.screen(120, 30).join("\n");
     assert!(
-        screen.contains("the queue"),
-        "and the layer's again:\n{screen}"
+        screen.contains("agent/one"),
+        "and asking the layer again changes nothing about which queues:\n{screen}"
     );
-    assert!(!a.queue_builtin);
 }
 
 /// **Enter on the history row opens the fold, and the next frame draws it** — the key the row says,
@@ -580,13 +583,13 @@ fn a_finished_rows_verb_acts_on_the_row_the_fold_revealed() {
     );
 }
 
-/// **`/queue builtin` changes WHO draws the pane and nothing about WHICH queues** — the scope the
-/// person set survives the escape and the way back.
+/// **`/queue plugin` changes nothing about WHICH queues** - the scope the person set survives
+/// re-asking the layer.
 #[test]
-fn the_builtin_escape_keeps_the_scope_the_person_set() {
+fn re_asking_the_layer_keeps_the_scope_the_person_set() {
     let mut a = a_head_with_a_queue();
     // **This session is in one repository**, so the Here scope says so and `/queue all` says
-    // something else — without that difference the test could not tell the scopes apart.
+    // something else - without that difference the test could not tell the scopes apart.
     a.queues_all.here = Some(letibot_sessionlog::event::QueueHere {
         workspace: "/home/dead/Projects/letibot/letibot".into(),
         repository: Some("/home/dead/Projects/letibot/letibot".into()),
@@ -599,7 +602,7 @@ fn the_builtin_escape_keeps_the_scope_the_person_set() {
     ));
     let screen = a.screen(140, 30).join("\n");
     assert!(
-        screen.contains("this session's repository — letibot"),
+        screen.contains("this session's repository"),
         "the premise: the pane is on this session's repository:\n{screen}"
     );
 
@@ -607,27 +610,18 @@ fn the_builtin_escape_keeps_the_scope_the_person_set() {
     let screen = a.screen(140, 30).join("\n");
     assert!(screen.contains("every repository"), "{screen}");
 
-    // **The escape, and the way back** — neither touches the scope.
-    a.command("queue builtin");
+    // **Re-asking the layer** - it touches the drawing and nothing else.
+    a.command("queue plugin");
     assert_eq!(
         a.queue_scope,
         QueueScope::All,
-        "the scope was reset by the escape"
+        "the scope was reset by the re-ask"
     );
     let screen = a.screen(140, 30).join("\n");
     assert!(
-        screen.contains("every repository ·"),
-        "the head's own pane, still on every repository:\n{screen}"
+        screen.contains("every repository"),
+        "the pane, still on every repository:\n{screen}"
     );
-    assert!(
-        !screen.contains("— this session's repository"),
-        "and not quietly back on this session's:\n{screen}"
-    );
-
-    a.command("queue plugin");
-    assert_eq!(a.queue_scope, QueueScope::All);
-    let screen = a.screen(140, 30).join("\n");
-    assert!(screen.contains("every repository"), "{screen}");
 }
 
 /// **The layer is asked once a second, not once a frame** — the host's cache is keyed by the input,
@@ -666,6 +660,10 @@ fn the_layer_is_asked_once_a_second_and_not_once_a_frame() {
     ));
     a.screen(120, 30);
     assert_eq!(seen.take().len(), 1, "the first frame asks the layer");
+    // **The cursor settles into the input**: the feed carries the entry the LAST frame's row
+    // named, so the second frame is the first one whose input can repeat.
+    a.screen(120, 30);
+    seen.take();
 
     // **Half a second later**: the clock has moved, the input has not.
     a.now_ms += 500;
@@ -967,7 +965,7 @@ fn the_detail_of_a_running_gate_names_the_step_and_the_tail() {
         "which step of how many:\n{screen}"
     );
     assert!(
-        screen.contains("running 1m00s"),
+        screen.contains("running 1m"),
         "and how long that step has been going:\n{screen}"
     );
     assert!(
@@ -1011,7 +1009,7 @@ fn a_tail_that_has_not_moved_is_called_out() {
     a.key(Key::Enter);
     let screen = a.screen(120, 40).join("\n");
     assert!(
-        screen.contains("the tail has not moved in 20m00s"),
+        screen.contains("the tail has not moved in 20m"),
         "a step that has written nothing for twenty minutes:\n{screen}"
     );
     assert!(screen.contains("may be stuck"), "{screen}");
@@ -1034,7 +1032,7 @@ fn a_tail_that_has_not_moved_is_called_out() {
     a.key(Key::Enter);
     let screen = a.screen(120, 40).join("\n");
     assert!(
-        screen.contains("the tail moved 5.0s ago"),
+        screen.contains("the tail moved 5s ago"),
         "the tail that grew:\n{screen}"
     );
     assert!(!screen.contains("may be stuck"), "{screen}");
@@ -1197,7 +1195,7 @@ fn a_detail_with_no_answer_does_not_call_the_gate_stuck() {
     a.redraw = true;
     let screen = a.screen(120, 40).join("\n");
     assert!(
-        screen.contains("no snapshot for 20m00s"),
+        screen.contains("no snapshot for 20m"),
         "the silence is said:\n{screen}"
     );
     assert!(

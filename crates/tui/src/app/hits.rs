@@ -46,8 +46,6 @@ impl Rect {
 pub(crate) enum Target {
     /// A surface from the stack, holding the conversation's rectangle.
     Surface(Surface),
-    /// One label of the queue pane's view strip.
-    QueueTab(QueueView),
     /// The conversation itself; its stops are the edit and write rows (`file_rows`).
     Conversation,
     /// **One row of a job's completion notice**, over the conversation; its one stop is the
@@ -290,29 +288,6 @@ impl App {
                                 .map(|d| (top + d, key.clone()))
                         })
                         .collect();
-                }
-                // **The strip's labels, over the pane they sit in** — only while the window shows
-                // the strip's row; a strip scrolled away is not a target.
-                if s == Surface::Queue
-                    && let Some(tabs) = self.queue_tabs
-                    && let Some(d) = tabs.row.checked_sub(self.pane_scroll)
-                    && d < room
-                {
-                    for (view, (from, to)) in [
-                        (QueueView::Review, tabs.review),
-                        (QueueView::Merge, tabs.merge),
-                    ] {
-                        self.hits.push(Hit {
-                            rect: Rect {
-                                x: x + from,
-                                y: top + d,
-                                w: to.saturating_sub(from),
-                                h: 1,
-                            },
-                            target: Target::QueueTab(view),
-                            stops: Vec::new(),
-                        });
-                    }
                 }
             }
             Drawn::Conversation => {

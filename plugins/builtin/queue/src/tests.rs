@@ -189,14 +189,58 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
         !view.to_string().contains("r-done-"),
         "a finished row is behind the fold, not on the frame"
     );
-    // The panel says how many are live, so the count is not a number the reader has to derive.
+    // The panel names both queues' counts, the drawn view first, so `tab` has something to
+    // switch and the reader can tell which half they are looking at.
     let titles: Vec<&str> = view["panels"]
         .as_array()
         .unwrap()
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
-    assert!(titles.contains(&"live · 3"), "{titles:?}");
+    assert!(
+        titles.contains(&"review queue (2) · merge queue (1)"),
+        "{titles:?}"
+    );
+}
+
+/// **The strip follows the view**: `tab` puts the merge queue first, so the header and the rows
+/// agree about which half is drawn.
+#[test]
+fn the_strip_names_the_drawn_view_first() {
+    let mut feed = a_queue();
+    feed["view"] = json!("merge");
+    let view = view_of(&feed, &[]);
+    let titles: Vec<&str> = view["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["title"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        titles.contains(&"merge queue (1) · review queue (2)"),
+        "{titles:?}"
+    );
+}
+
+/// **The empty sentence belongs to the view** - the two queues arrive differently, and one
+/// sentence for both said nothing about which half was empty.
+#[test]
+fn the_empty_sentence_is_the_views_own() {
+    for (view, want) in [
+        (
+            "review",
+            "a branch is put up for review when a `task_start` child finishes",
+        ),
+        ("merge", "a branch lands here once its review approves it"),
+    ] {
+        let mut feed = a_queue();
+        feed["view"] = json!(view);
+        feed["reviews"] = json!([]);
+        feed["merges"] = json!([]);
+        feed["counts"] = json!({"review": 0, "merge": 0, "finished": 0});
+        let text = view_of(&feed, &[]).to_string();
+        assert!(text.contains(want), "{view}: {text}");
+    }
 }
 
 /// **The fold, opened**: the history rows appear, and the same line says how to close it.
@@ -438,7 +482,7 @@ fn no_lease_says_nothing_is_serving_the_queues() {
     let view = view_of(&feed, &[]);
     let text = view.to_string();
     assert!(
-        text.contains("no daemon holds a queue lease — nothing is serving the queues"),
+        text.contains("no daemon holds a queue lease - nothing is serving the queues"),
         "{text}"
     );
 }
@@ -632,4 +676,308 @@ fn a_gating_rows_verb_is_withdraw() {
         facts.iter().any(|f| f == "rm"),
         "the verb that would move it: {facts:?}"
     );
+}
+
+// -- the cases the head's own pane drew, ported into this layer --------------------------
+
+/// A target in the given state.
+fn a_target(state: &str) -> Value {
+    json!({
+        "repository": "letibot", "repository_path": "/home/dead/Projects/letibot",
+        "target": "main", "sha": "fedcba9876543210", "short_sha": "fedcba9876",
+        "state": state, "state_words": state.replace('_', " "),
+        "since_ms": 240_000u64, "evidence": format!("main is {state}"), "gate_steps": [],
+    })
+}
+
+/// **A gating target is a line of its own** - the fact every queued landing of that repository
+/// waits for, which no row of either queue carries.
+#[test]
+fn a_gating_target_says_its_gate_is_running() {
+    let mut feed = a_queue();
+    feed["targets"] = json!([a_target("gating")]);
+    let view = view_of(&feed, &[]);
+    let line = chrome_line(&view, "main letibot").expect("the gating target's line");
+    assert_eq!(line["value"], "gate running on fedcba9876 for 4m");
+    assert_eq!(line["role"], "pending");
+}
+
+/// **A green target is drawn, quietly** - where the target stands. A pane that never said it
+/// left the reader to infer health from the absence of a line.
+#[test]
+fn a_green_target_says_where_it_stands() {
+    let mut feed = a_queue();
+    feed["targets"] = json!([a_target("green")]);
+    let view = view_of(&feed, &[]);
+    let line = chrome_line(&view, "main letibot").expect("the green target's line");
+    assert_eq!(line["value"], "green at fedcba9876");
+    assert_eq!(line["role"], "faint");
+}
+
+/// **A gating landing between two steps still says the gate is on it** - the sha it was rebased
+/// to and how long the state has stood, which is all the snapshot holds between steps.
+#[test]
+fn a_gating_landing_between_steps_says_the_gate_is_on_it() {
+    let mut feed = a_queue();
+    let mut row = a_merge("m-gating", "gating", true);
+    row["waits_on"] = Value::Null;
+    row["rebased_sha"] = json!("fedcba9876543210");
+    feed["merges"] = json!([row]);
+    feed["reviews"] = json!([]);
+    let view = view_of(&feed, &[]);
+    let under = rows(&view)
+        .iter()
+        .find(|r| r["id"] == "m-gating")
+        .expect("the row")["under"]
+        .as_array()
+        .expect("an under line");
+    assert!(
+        under
+            .iter()
+            .any(|u| u.as_str().unwrap_or_default() == "gate running on fedcba9876 for 2m"),
+        "{under:?}"
+    );
+}
+
+/// One move of one entry, `ago_ms` milliseconds ago.
+fn a_move(entry: &str, from: Option<&str>, to: &str, ago_ms: u64) -> Value {
+    json!({
+        "queue": "review", "entry_id": entry, "repository": "letibot",
+        "from": from, "to": to, "ago_ms": ago_ms, "by": "mac/4242",
+        "why": format!("{entry} to {to}"),
+    })
+}
+
+/// The `detail` prose of one drawn row, owned - a test's one door on a row read whole.
+fn detail_of(feed: &Value, id: &str) -> String {
+    let view = view_of(feed, &[]);
+    rows(&view)
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap_or_else(|| panic!("{id} is not drawn"))["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The `under` lines of one drawn row, owned.
+fn under_of(feed: &Value, id: &str) -> Vec<String> {
+    let view = view_of(feed, &[]);
+    rows(&view)
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap_or_else(|| panic!("{id} is not drawn"))["under"]
+        .as_array()
+        .map(|us| {
+            us.iter()
+                .map(|u| u.as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **The picked row carries its last three moves**, newest last - the recent history a person
+/// reads to know the row has not always been where it is.
+#[test]
+fn the_picked_row_carries_its_last_three_moves() {
+    let mut feed = a_queue();
+    feed["cursor"] = json!("r-live-1");
+    feed["recent"] = json!([
+        a_move("r-live-1", None, "waiting", 300_000),
+        a_move("r-live-1", Some("waiting"), "reviewing", 240_000),
+        a_move("r-live-1", Some("reviewing"), "blocked", 180_000),
+        a_move("r-live-1", Some("blocked"), "reviewing", 120_000),
+        a_move("r-live-2", None, "waiting", 60_000),
+    ]);
+    let under = under_of(&feed, "r-live-1");
+    let moves: Vec<&String> = under.iter().filter(|u| u.contains("→")).collect();
+    assert_eq!(moves.len(), 3, "the last three, not all five: {under:?}");
+    assert!(moves[0].contains("waiting → reviewing"), "{under:?}");
+    assert!(moves[2].contains("blocked → reviewing"), "{under:?}");
+    assert!(moves[2].contains("2m ago"), "{under:?}");
+    assert!(moves.iter().all(|m| !m.contains("r-live-2")), "{under:?}");
+}
+
+/// **A review read whole**: every field, the failure with no attempt to its name, the verdict
+/// with its sha and author, and the ask the row was produced under.
+#[test]
+fn a_review_detail_carries_every_field() {
+    let mut feed = a_queue();
+    let mut row = a_review("r-live-1", "waiting", true);
+    row["failure"] =
+        json!("WAITING FOR THE REVIEWER'S TREE: the clone was refused, no attempt is spent on it");
+    row["attempts"] = json!(0);
+    row["verdict"] = json!("rejected");
+    row["verdict_by"] = json!("the operator");
+    row["reviewed_sha"] = json!("abc1234567890");
+    feed["reviews"] = json!([row]);
+    feed["merges"] = json!([]);
+    feed["recent"] = json!([a_move("r-live-1", None, "waiting", 300_000)]);
+    let detail = detail_of(&feed, "r-live-1");
+    for want in [
+        "queue      review",
+        "state      waiting · 4m in it",
+        "head       1f2a3b4c5d6e",
+        "verdict    rejected at abc1234567 by the operator",
+        "failure    WAITING FOR THE REVIEWER'S TREE: the clone was refused",
+        "ask        the ask",
+        "its moves",
+        "(new) → waiting · 5m ago · mac/4242: r-live-1 to waiting",
+    ] {
+        assert!(detail.contains(want), "missing `{want}`:\n{detail}");
+    }
+    assert!(!detail.contains("attempts"), "zero is not a fact: {detail}");
+}
+
+/// **A landing read whole**: the approval with its author and review, the gate's steps with the
+/// whole output of the one that failed, and every move.
+#[test]
+fn a_merge_detail_carries_the_gate_and_its_steps() {
+    let mut feed = a_queue();
+    let mut row = a_merge("m-live", "gating", true);
+    row["waits_on"] = Value::Null;
+    row["approved_by"] = json!("the reviewer");
+    row["review_id"] = json!("r-live-9");
+    row["gate_steps"] = json!([
+        {"command": "cargo clippy", "outcome": "passed", "failed": false,
+         "elapsed_ms": 61_000u64, "output": ""},
+        {"command": "cargo test", "outcome": "timed out", "failed": true,
+         "elapsed_ms": 1_800_000u64, "output": "still compiling\nno reply"},
+        {"command": "cargo build", "outcome": "not run", "failed": false,
+         "elapsed_ms": 0u64, "output": ""},
+    ]);
+    feed["merges"] = json!([row]);
+    feed["reviews"] = json!([]);
+    feed["recent"] = json!([a_move("m-live", None, "queued", 300_000)]);
+    let detail = detail_of(&feed, "m-live");
+    for want in [
+        "queue      merge",
+        "approved   aaaa1111bbbb by the reviewer (review r-live-9)",
+        "the gate's steps",
+        "✓ cargo clippy · 1m",
+        "⧗ cargo test · TIMED OUT after 30m",
+        "  still compiling",
+        "  no reply",
+        "· cargo build · not run",
+        "its moves",
+        "(new) → queued · 5m ago · mac/4242: m-live to queued",
+    ] {
+        assert!(detail.contains(want), "missing `{want}`:\n{detail}");
+    }
+}
+
+/// A running gate as the feed carries it, with `still_ms` since its tail last changed.
+fn a_running_gate(step: usize, of: usize, still_ms: u64, tail: &str) -> Value {
+    json!({
+        "command": "cargo test --offline --workspace",
+        "step": step, "of": of, "running_ms": 360_000u64,
+        "bytes": 12_345u64, "tail": tail, "still_ms": still_ms,
+    })
+}
+
+/// **The three verdicts about a tail**: it moved, it has not moved in ten minutes, and there is
+/// no snapshot new enough to say either. The last must not be dressed up as *stuck*.
+#[test]
+fn the_detail_of_a_running_gate_says_whether_it_moved() {
+    let mut feed = a_queue();
+    let mut row = a_merge("m-gating", "gating", true);
+    row["waits_on"] = Value::Null;
+    row["running_gate"] = a_running_gate(2, 4, 5_000, "building\nlinking");
+    feed["merges"] = json!([row]);
+    feed["reviews"] = json!([]);
+    // **The snapshot is fresh**: the tail moved five seconds ago.
+    let moved = detail_of(&feed, "m-gating");
+    assert!(
+        moved.contains("gate       step 2 of 4 · running 6m"),
+        "{moved}"
+    );
+    assert!(
+        moved.contains("step       cargo test --offline --workspace"),
+        "{moved}"
+    );
+    assert!(
+        moved.contains("moving     the tail moved 5s ago (12345 byte(s) written)"),
+        "{moved}"
+    );
+    assert!(
+        moved.contains("tail       the end of what it has written"),
+        "{moved}"
+    );
+    assert!(moved.contains("  linking"), "{moved}");
+
+    // **Ten minutes of the same bytes**: it may be stuck.
+    feed["merges"][0]["running_gate"] = a_running_gate(2, 4, 20 * 60_000, "building");
+    let stuck = detail_of(&feed, "m-gating");
+    assert!(
+        stuck.contains("the tail has not moved in 20m - it may be stuck"),
+        "{stuck}"
+    );
+
+    // **No snapshot for half a minute**: the daemon has not replied, and the head's own silence
+    // is not a fact about the gate.
+    feed["at_ms"] = json!(0u64);
+    let silent = detail_of(&feed, "m-gating");
+    assert!(silent.contains("no snapshot for 28m"), "{silent}");
+    assert!(!silent.contains("may be stuck"), "{silent}");
+
+    // **Nothing written yet** is said as itself.
+    feed["merges"][0]["running_gate"] = a_running_gate(1, 4, 0, "");
+    feed["at_ms"] = json!(1_700_000u64);
+    let empty = detail_of(&feed, "m-gating");
+    assert!(empty.contains("tail       nothing written yet"), "{empty}");
+    assert!(
+        empty.contains("moving     the tail moved just now (12345 byte(s) written)"),
+        "{empty}"
+    );
+}
+
+/// **A queued landing's detail reads the TARGET's gate**, named as whose step it is - the other
+/// way a queue sits still with nothing failing.
+#[test]
+fn a_queued_landings_detail_waits_on_the_targets_gate() {
+    let mut feed = a_queue();
+    let mut target = a_target("gating");
+    target["running_gate"] = a_running_gate(3, 5, 4_000, "test result: ok. 18 passed");
+    feed["targets"] = json!([target]);
+    let mut row = a_merge("m-queued", "queued", true);
+    row["repository_path"] = json!("/home/dead/Projects/letibot");
+    feed["merges"] = json!([row]);
+    feed["reviews"] = json!([]);
+    let detail = detail_of(&feed, "m-queued");
+    assert!(
+        detail.contains("gate       waiting on the target's gate: step 3 of 5 · running 6m"),
+        "{detail}"
+    );
+    assert!(detail.contains("  test result: ok. 18 passed"), "{detail}");
+}
+
+/// **The row whose detail is open is drawn even when it is history**, so the overlay the host
+/// holds outlives the row landing or being withdrawn under it.
+#[test]
+fn the_open_row_is_drawn_even_when_it_is_history() {
+    let mut feed = a_queue();
+    feed["open"] = json!("r-done-0");
+    let open_view = view_of(&feed, &[]);
+    let drawn = rows(&open_view);
+    assert!(
+        drawn.iter().any(|r| r["id"] == "r-done-0"),
+        "the open row is among the drawn ones: {:?}",
+        drawn.iter().map(|r| r["id"].clone()).collect::<Vec<_>>()
+    );
+    // And it carries its detail like any drawn row.
+    let open = drawn
+        .iter()
+        .find(|r| r["id"] == "r-done-0")
+        .expect("the row");
+    assert!(
+        open["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("queue      review")
+    );
+    // With no row open, history stays behind the fold.
+    feed["open"] = json!("");
+    let closed_view = view_of(&feed, &[]);
+    let drawn = rows(&closed_view);
+    assert!(!drawn.iter().any(|r| r["id"] == "r-done-0"));
 }

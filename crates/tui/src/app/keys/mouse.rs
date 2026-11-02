@@ -25,7 +25,6 @@ impl App {
     fn still_drawn(&self, t: Target) -> bool {
         match t {
             Target::Surface(s) => self.focused_surface() == Some(s),
-            Target::QueueTab(_) => self.focused_surface() == Some(Surface::Queue),
             Target::TodoWait => self.focused_surface() == Some(Surface::Todos),
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
@@ -74,8 +73,7 @@ impl App {
     /// **What a click does is select**, everywhere a row is a choice — the picker's own rule,
     /// *"select and confirm stay two acts"*: Enter still does the switching, the answering, the
     /// opening. The exceptions are the targets that are buttons: a count label opens its pane,
-    /// a queue tab switches the view, an edit row opens its change, the edge's standings open the
-    /// queue.
+    /// an edit row opens its change, the edge's standings open the queue.
     pub(crate) fn key_click(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         let Key::Click { x, y } = *k else {
             return ControlFlow::Continue(());
@@ -131,7 +129,6 @@ impl App {
                     CountLabel::Monitors => Surface::Monitors,
                 }));
             }
-            (Target::QueueTab(view), _) => self.queue_view = view,
             // **The merge queue's standings open the queue** — the operator, 2026-10-27: *"i want
             // to click '5 in review' and be taken to the merge queue"*. It is `/queue`'s act
             // through the verb's own door (`App::command`), which is how the git field opens the
@@ -315,7 +312,7 @@ impl App {
             return ControlFlow::Continue(());
         }
         match target {
-            Target::Surface(_) | Target::QueueTab(_) | Target::TodoWait | Target::PluginPanel => {
+            Target::Surface(_) | Target::TodoWait | Target::PluginPanel => {
                 self.scroll_pane(up, NOTCH)
             }
             // A window, not an open run — a run is the conversation's own rows and the

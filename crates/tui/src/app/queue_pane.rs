@@ -55,7 +55,9 @@
 //! gates.
 
 use letibot_plugin::pane::{Feed, Input, Size};
-use letibot_sessionlog::event::{MergeGateOutcome, MergeGateStep, QueueMove};
+use letibot_sessionlog::event::{
+    MergeGateOutcome, MergeGateStep, QueueMerge, QueueMove, QueueReview,
+};
 use serde_json::{Value, json};
 
 use crate::app::*;
@@ -67,6 +69,18 @@ use letibot_plugin::pane::Act;
 
 /// The hook this pane answers under: `pane_queue` (the pane's id is the layer's, `queue/queue`).
 pub(crate) const HOOK: &str = "pane_queue";
+
+/// How many finished rows the feed carries. The layer draws at most this many behind the fold,
+/// so a row beyond it is bytes the guest cannot show; the counts still say the true number.
+const FINISHED_MAX: usize = 200;
+
+/// How many characters of a finished row's long fields the feed carries. A guest's input region
+/// is one mebibyte, so an unbounded history (the store never deletes a row) would leave a busy
+/// project with no queue pane at all.
+const FINISHED_TEXT: usize = 1_000;
+
+/// How many bytes of finished rows the feed carries in all - the belt under [`FINISHED_TEXT`].
+const FINISHED_BUDGET: usize = 500_000;
 
 /// **The resolution of the feed's clock** — one second, because that is the finest thing a row can
 /// say and the whole reason it is quantised at all.
@@ -150,92 +164,141 @@ impl App {
             )
         };
         let running = gates_running(q, now);
-        let reviews: Vec<Value> = q
+        // **The entry being read whole travels whole**; a finished row's long fields are cut,
+        // because the store never deletes a row and the guest's input region is one mebibyte.
+        let open = self.queue_open.clone().unwrap_or_default();
+        let cut = |text: &str, whole: bool| -> String {
+            if whole || text.chars().count() <= FINISHED_TEXT {
+                text.to_string()
+            } else {
+                format!(
+                    "{} … (cut at {FINISHED_TEXT} characters)",
+                    text.chars().take(FINISHED_TEXT).collect::<String>()
+                )
+            }
+        };
+        let review_of = |r: &QueueReview| {
+            let whole = review_open(&r.state) || r.id == open;
+            json!({
+                "queue": "review",
+                "id": r.id,
+                // `branch`, or `target` — the target's own red tip.
+                "kind": r.kind,
+                "live": review_open(&r.state),
+                "state": r.state,
+                "state_words": r.state.replace('_', " "),
+                "mark": mark_of(&r.state).0,
+                "in_state_ms": now.saturating_sub(r.state_ms),
+                "age_ms": now.saturating_sub(r.created_ms),
+                "repository": repo_name(&r.repository),
+                "repository_path": r.repository,
+                "target": r.target,
+                "branch": r.branch,
+                "owner": owner_word(&r.owner),
+                "owner_is_serving": serving_owner(&r.owner, &r.repository),
+                "reviewer": r.reviewer,
+                "head_sha": r.head_sha,
+                "short_sha": short_sha(&r.head_sha),
+                "reviewed_sha": r.reviewed_sha,
+                "verdict": r.verdict,
+                "verdict_by": r.verdict_by,
+                "attempts": r.attempts,
+                "failure": cut(&r.failure, whole),
+                "reasons": r.reasons,
+                "evidence": cut(&r.evidence, whole),
+                "brief": cut(&r.brief, whole),
+                "fixes": r.fixes.as_deref().map(|f| cut(f, whole)),
+                "deadline_ms": r.deadline_ms,
+                "verbs": verbs_of(&Selected::Review(r)),
+            })
+        };
+        let merge_of = |m: &QueueMerge| {
+            let whole = merge_open(&m.state) || m.id == open;
+            json!({
+                "queue": "merge",
+                "id": m.id,
+                "review_id": m.review_id,
+                "live": merge_open(&m.state),
+                "state": m.state,
+                "state_words": m.state.replace('_', " "),
+                "mark": mark_of(&m.state).0,
+                "in_state_ms": now.saturating_sub(m.state_ms),
+                "age_ms": now.saturating_sub(m.created_ms),
+                "repository": repo_name(&m.repository),
+                "repository_path": m.repository,
+                "target": m.target,
+                "branch": m.branch,
+                "owner": owner_word(&m.owner),
+                "owner_is_serving": serving_owner(&m.owner, &m.repository),
+                "approved_sha": m.approved_sha,
+                "short_sha": short_sha(&m.approved_sha),
+                "approved_by": m.approved_by,
+                "rebased_sha": m.rebased_sha,
+                "landed_sha": m.landed_sha,
+                "pushed": m.pushed,
+                "evidence": cut(&m.evidence, whole),
+                "fixes": m.fixes.as_deref().map(|f| cut(f, whole)),
+                // **What a queued landing waits for** — the gate in flight in its repository,
+                // already in the pane's words (`gate running on 1f2a3b4 for 2m`).
+                "waits_on": (m.state == "queued")
+                    .then(|| running.get(m.repository.as_str()).cloned())
+                    .flatten(),
+                "gate_steps": m
+                    .gate_steps
+                    .iter()
+                    .map(|s| step_of(s, whole))
+                    .collect::<Vec<Value>>(),
+                // **The step its gate is running right now**, with the tail and how long since it
+                // last changed — the facts that tell whether a `gating` row is working or stuck
+                // without opening a file on the daemon's box.
+                "running_gate": m.running_gate.as_ref().map(|g| {
+                    let key = format!("{}#{}", m.id, g.step);
+                    gate_of(g, self.gate_tails.get(&key).map(|t| t.since_ms), now)
+                }),
+                "verbs": verbs_of(&Selected::Merge(m)),
+            })
+        };
+        let mut reviews: Vec<Value> = q
             .reviews
             .iter()
-            .map(|r| {
-                json!({
-                    "queue": "review",
-                    "id": r.id,
-                    // `branch`, or `target` — the target's own red tip.
-                    "kind": r.kind,
-                    "live": review_open(&r.state),
-                    "state": r.state,
-                    "state_words": r.state.replace('_', " "),
-                    "mark": mark_of(&r.state).0,
-                    "in_state_ms": now.saturating_sub(r.state_ms),
-                    "age_ms": now.saturating_sub(r.created_ms),
-                    "repository": repo_name(&r.repository),
-                    "repository_path": r.repository,
-                    "target": r.target,
-                    "branch": r.branch,
-                    "owner": owner_word(&r.owner),
-                    "owner_is_serving": serving_owner(&r.owner, &r.repository),
-                    "reviewer": r.reviewer,
-                    "head_sha": r.head_sha,
-                    "short_sha": short_sha(&r.head_sha),
-                    "reviewed_sha": r.reviewed_sha,
-                    "verdict": r.verdict,
-                    "verdict_by": r.verdict_by,
-                    "attempts": r.attempts,
-                    "failure": r.failure,
-                    "reasons": r.reasons,
-                    "evidence": r.evidence,
-                    "brief": r.brief,
-                    "fixes": r.fixes,
-                    "deadline_ms": r.deadline_ms,
-                    "verbs": verbs_of(&Selected::Review(r)),
-                })
-            })
+            .filter(|r| review_open(&r.state))
+            .map(review_of)
             .collect();
-        let merges: Vec<Value> = q
+        let mut merges: Vec<Value> = q
             .merges
             .iter()
-            .map(|m| {
-                json!({
-                    "queue": "merge",
-                    "id": m.id,
-                    "review_id": m.review_id,
-                    "live": merge_open(&m.state),
-                    "state": m.state,
-                    "state_words": m.state.replace('_', " "),
-                    "mark": mark_of(&m.state).0,
-                    "in_state_ms": now.saturating_sub(m.state_ms),
-                    "age_ms": now.saturating_sub(m.created_ms),
-                    "repository": repo_name(&m.repository),
-                    "repository_path": m.repository,
-                    "target": m.target,
-                    "branch": m.branch,
-                    "owner": owner_word(&m.owner),
-                    "owner_is_serving": serving_owner(&m.owner, &m.repository),
-                    "approved_sha": m.approved_sha,
-                    "short_sha": short_sha(&m.approved_sha),
-                    "approved_by": m.approved_by,
-                    "rebased_sha": m.rebased_sha,
-                    "landed_sha": m.landed_sha,
-                    "pushed": m.pushed,
-                    "evidence": m.evidence,
-                    "fixes": m.fixes,
-                    // **What a queued landing waits for** — the gate in flight in its repository,
-                    // already in the pane's words (`gate running on 1f2a3b4 for 2m`).
-                    "waits_on": (m.state == "queued")
-                        .then(|| running.get(m.repository.as_str()).cloned())
-                        .flatten(),
-                    "gate_steps": m.gate_steps.iter().map(step_of).collect::<Vec<Value>>(),
-                    // **The step its gate is running right now**, in the pane's own words — the
-                    // one fact that tells a person whether a `gating` row is working or stuck
-                    // without opening a file on the daemon's box.
-                    "running_gate": m.running_gate.as_ref().map(|g| json!({
-                        "command": g.command,
-                        "step": g.step,
-                        "of": g.of,
-                        "running_ms": now.saturating_sub(g.started_ms),
-                        "bytes": g.log_bytes,
-                    })),
-                    "verbs": verbs_of(&Selected::Merge(m)),
-                })
-            })
+            .filter(|m| merge_open(&m.state))
+            .map(merge_of)
             .collect();
+        // **The finished rows, newest first, within the budget.** The counts still say the true
+        // numbers, so the layer's folded line says `the last N` rather than pretending.
+        let mut done: Vec<&QueueReview> = q
+            .reviews
+            .iter()
+            .filter(|r| !review_open(&r.state))
+            .collect();
+        done.sort_by_key(|r| std::cmp::Reverse(r.state_ms));
+        let mut spent = 0usize;
+        for r in done.into_iter().take(FINISHED_MAX) {
+            if spent > FINISHED_BUDGET {
+                break;
+            }
+            let v = review_of(r);
+            spent += serde_json::to_string(&v).map_or(0, |s| s.len());
+            reviews.push(v);
+        }
+        let mut done: Vec<&QueueMerge> =
+            q.merges.iter().filter(|m| !merge_open(&m.state)).collect();
+        done.sort_by_key(|m| std::cmp::Reverse(m.state_ms));
+        let mut spent = 0usize;
+        for m in done.into_iter().take(FINISHED_MAX) {
+            if spent > FINISHED_BUDGET {
+                break;
+            }
+            let v = merge_of(m);
+            spent += serde_json::to_string(&v).map_or(0, |s| s.len());
+            merges.push(v);
+        }
         let targets: Vec<Value> = q
             .targets
             .iter()
@@ -250,7 +313,17 @@ impl App {
                     "state_words": t.state.replace('_', " "),
                     "since_ms": now.saturating_sub(t.checked_ms),
                     "evidence": t.evidence,
-                    "gate_steps": t.gate_steps.iter().map(step_of).collect::<Vec<Value>>(),
+                    "gate_steps": t
+                        .gate_steps
+                        .iter()
+                        .map(|s| step_of(s, true))
+                        .collect::<Vec<Value>>(),
+                    // A queued landing's detail reads the TARGET's gate, which is the gate it
+                    // waits on, so the tail travels with the target too.
+                    "running_gate": t.running_gate.as_ref().map(|g| {
+                        let key = format!("{}#{}#{}", t.repository, t.target, g.step);
+                        gate_of(g, self.gate_tails.get(&key).map(|x| x.since_ms), now)
+                    }),
                 })
             })
             .collect();
@@ -295,6 +368,9 @@ impl App {
                 }).unwrap_or_default(),
             },
             "view": self.queue_view.word(),
+            // **The entry whose detail the overlay is reading**, so the layer draws that row even
+            // when it has left the live list - an overlay must not vanish under the row it reads.
+            "open": open,
             // **Which row the cursor is on**, by the entry id it names — so a row can print its own
             // id and sha where the person is looking, and nowhere else. The pane's ruling is one
             // line per entry with the address only under the cursor (the declutter branch's), and a
@@ -337,7 +413,8 @@ impl App {
     fn queue_scope_words(&self) -> String {
         match self.queue_filter(&self.queue_scope) {
             Filter::Nowhere(ws) => format!(
-                "this session's workspace {ws} is in no repository, so it has no queue of its own"
+                "this session's workspace {ws} is in no repository, so it has no queue of its \
+                 own - `/queue all` shows every repository's queues"
             ),
             Filter::Repo(r) => format!("this session's repository — {}", repo_name(&r)),
             Filter::Repos(rs) => format!(
@@ -356,22 +433,51 @@ impl App {
         }
     }
 
-    /// **The pane, from the plugin** — `None` when there is no layer to ask, when its answer is not
-    /// a view this head can drive, or when it reached a verb the manifest does not declare. Each of
-    /// those is the host pane's cue (`ui/panes/queue.rs`).
-    pub(crate) fn queue_plugin_view(&self) -> Option<letibot_sessionlog::pane::View> {
+    /// **The pane, from the plugin** - `None` when there is no layer to ask, when its answer is
+    /// not a view this head can drive, or when it reached a verb the manifest does not declare.
+    /// Each of those lands in `queue_why`, because with one renderer the refusal is the whole
+    /// pane and a person is owed the sentence.
+    pub(crate) fn queue_plugin_view(&mut self) -> Option<letibot_sessionlog::pane::View> {
+        let (view, why) = self.queue_answered();
+        self.queue_why = why;
+        view
+    }
+
+    /// The ask itself, split out so `queue_why` can be written after the host's borrow ends: the
+    /// view when there is one, and the sentence for the person when there is not.
+    fn queue_answered(&self) -> (Option<letibot_sessionlog::pane::View>, Option<String>) {
         let slot = self.plugin_host();
-        let host = slot.as_ref()?;
-        host.reader(HOOK, FEED)?;
+        let Some(host) = slot.as_ref() else {
+            return (
+                None,
+                Some("this head has no plugin stack for this folder".to_string()),
+            );
+        };
+        if host.reader(HOOK, FEED).is_none() {
+            return (
+                None,
+                Some("no installed layer reads the queue feed".to_string()),
+            );
+        }
         let declared = host.declared(HOOK, FEED);
         let input = self.queue_input(host.state_of(HOOK));
         let answered = host.ask(HOOK, PANE, &input);
-        let view = answered.view?;
+        let Some(view) = answered.view else {
+            return (
+                None,
+                Some(
+                    host.peek_problem()
+                        .unwrap_or_else(|| "its answer was not a pane this head can read".into()),
+                ),
+            );
+        };
         host.remember(HOOK, view.state.clone());
         // The host's rules, and the acts the layer declared (C3). A view that reaches a verb the
         // manifest does not name is refused here rather than drawn and then refused per keypress.
-        view.validate_for(&declared).ok()?;
-        Some(view)
+        match view.validate_for(&declared) {
+            Ok(()) => (Some(view), None),
+            Err(why) => (None, Some(why)),
+        }
     }
 
     /// **What the queue's layer is asked with** — the one feed it declared, the fold state of the
@@ -394,15 +500,9 @@ impl App {
         }
     }
 
-    /// **The plugin's answer, drawn** — the view through the head's one plugin-pane renderer, with
+    /// **The plugin's answer, drawn** - the view through the head's one plugin-pane renderer, with
     /// the rows its stops landed on recorded so the arrows, Enter and a click read what was drawn.
-    ///
-    /// `None` when the pane should be the host's own: no layer, a view this head cannot drive, or
-    /// `/queue builtin`.
     pub(crate) fn queue_plugin_lines(&mut self, w: usize) -> Option<Vec<String>> {
-        if self.queue_builtin {
-            return None;
-        }
         let view = self.queue_plugin_view()?;
         let screen = crate::ui::panes::plugin::Screen::Overview;
         // **The stops are the view's**, so the arrows walk what the plugin drew and `queue_sel`
@@ -417,8 +517,6 @@ impl App {
         }
         let content = crate::ui::panes::plugin::content(&view, screen, self.queue_sel, w);
         self.queue_stop_rows = content.lines.stop_rows.clone();
-        // The plugin's pane has no tab strip: its own header says which queue is which.
-        self.queue_tabs = None;
         self.queue_held = Some(view);
         Some(crate::ui::render::row_strings(
             &content.lines.lines,
@@ -488,12 +586,11 @@ impl App {
         true
     }
 
-    /// **The pane, drawn again as it was** — what `/queue builtin` and `/queue plugin` do to the
-    /// drawing, and nothing to the scope.
+    /// **The pane, drawn again as it was** - what `/queue plugin` does: asks the layer again with
+    /// the scope untouched, which is also the door after a `plugin load`.
     ///
-    /// Choosing who draws the pane is not choosing WHICH queues: `/queue all` followed by
-    /// `/queue builtin` used to drop back to this session's repository, so the escape from a broken
-    /// layer quietly threw away the scope the person had just set.
+    /// Choosing who draws the pane is not choosing WHICH queues: `/queue all` followed by another
+    /// pane verb must not quietly reset the scope.
     pub(crate) fn queue_drawing_again(&mut self) -> Option<Action> {
         self.redraw = true;
         if self.is_open(Surface::Queue) {
@@ -504,14 +601,33 @@ impl App {
     }
 }
 
-/// Ten characters of a sha, or the whole thing when it is shorter — the pane's own reading.
+/// Ten characters of a sha, or the whole thing when it is shorter - the pane's own reading.
 fn short_sha(sha: &str) -> String {
     sha.chars().take(10).collect()
 }
 
-/// **One gate step, in the words a person reads** — `"timed out"`, not `timed_out`; the outcome's
-/// own word rather than the Rust enum's serde spelling.
-fn step_of(step: &MergeGateStep) -> Value {
+/// One running gate as the feed carries it: the step's facts, the tail, and `still_ms` - how
+/// long since the tail last changed, the head's own two-snapshot fact.
+fn gate_of(
+    g: &letibot_sessionlog::event::QueueRunningGate,
+    since_ms: Option<u64>,
+    now: u64,
+) -> Value {
+    json!({
+        "command": g.command,
+        "step": g.step,
+        "of": g.of,
+        "running_ms": now.saturating_sub(g.started_ms),
+        "bytes": g.log_bytes,
+        "tail": g.tail,
+        "still_ms": since_ms.map_or(0, |at| now.saturating_sub(at)),
+    })
+}
+
+/// **One gate step, in the words a person reads** - `"timed out"`, not `timed_out`; the outcome's
+/// own word rather than the Rust enum's serde spelling. `whole` is whether the row is live or
+/// being read: a finished row's output is cut, so the history cannot outgrow the guest's region.
+fn step_of(step: &MergeGateStep, whole: bool) -> Value {
     let (word, failed) = match step.outcome {
         MergeGateOutcome::Passed => ("passed", false),
         MergeGateOutcome::Failed => ("failed", true),
@@ -520,12 +636,21 @@ fn step_of(step: &MergeGateStep) -> Value {
         MergeGateOutcome::TimedOut => ("timed out", true),
         MergeGateOutcome::Killed => ("killed", true),
     };
+    // A finished row's output is cut, so the history cannot outgrow the guest's region.
+    let output = if whole || step.output.chars().count() <= FINISHED_TEXT {
+        step.output.clone()
+    } else {
+        format!(
+            "{} … (cut at {FINISHED_TEXT} characters)",
+            step.output.chars().take(FINISHED_TEXT).collect::<String>()
+        )
+    };
     json!({
         "command": step.command,
         "outcome": word,
         "failed": failed,
         "elapsed_ms": step.elapsed_ms,
-        "output": step.output,
+        "output": output,
     })
 }
 

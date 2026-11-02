@@ -33,7 +33,7 @@ use letibot_sessionlog::view::{OpenDecision, SnapshotItem};
 use letibot_ui::editor::Editor;
 use rano::agent::card;
 
-use crate::ui::panes::queue::{QueueScope, QueueTabs, QueueView};
+use crate::ui::panes::queue::{QueueScope, QueueView};
 use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 
@@ -1139,10 +1139,9 @@ pub struct App {
     /// are separate views for review and merge queues"*. The list is the same either way; what
     /// changes is the row under each entry. See [`QueueView`].
     pub(crate) queue_view: QueueView,
-    /// **Where the two tabs were drawn on the last frame**, in the pane's own columns — the
-    /// record a click reads, because only the frame knows where a label landed. See
-    /// [`App::queue_tab_at`].
-    pub(crate) queue_tabs: Option<QueueTabs>,
+    /// **Why the queue layer did not answer**, when it did not - with one renderer the refusal is
+    /// the whole pane, so the sentence is part of the drawing.
+    pub(crate) queue_why: Option<String>,
     /// **The entry whose detail overlay is open, by id**, until Esc. By ID and not by index:
     /// a re-read after a `QueueMoved` can move the queue under the overlay while it is up, and an
     /// index would then point at whichever entry slid into that slot.
@@ -1159,12 +1158,8 @@ pub struct App {
     /// entry a row's act names, which is what `a`/`v`/`r`/`d` act on.
     pub(crate) queue_held: Option<letibot_sessionlog::pane::View>,
     /// How many stops that view has, so the arrows walk what was drawn rather than the host's own
-    /// rows. Unused when the pane is the head's own (`queue_rows`).
+    /// rows.
     pub(crate) queue_plugin_stops: usize,
-    /// **`/queue builtin`** — the head's own pane, drawn from the snapshot instead of from a layer.
-    /// The way out when a layer is broken or unwanted, and the thing that keeps
-    /// `ui/panes/queue.rs` reachable now that `/queue` opens the plugin's.
-    pub(crate) queue_builtin: bool,
     /// Which job row the cursor is on. Arrows move it, Enter asks the daemon for
     /// that job's output — the pane counted the bytes and had no way to show them.
     ///
@@ -2245,12 +2240,11 @@ impl App {
             queue_sel: 0,
             queue_stop_rows: Vec::new(),
             queue_view: QueueView::default(),
-            queue_tabs: None,
+            queue_why: None,
             queue_open: None,
             queue_folds: std::collections::BTreeMap::new(),
             queue_held: None,
             queue_plugin_stops: 0,
-            queue_builtin: false,
             jobs_sel: 0,
             jobs_finished_open: false,
             jobs_stop_rows: Vec::new(),
