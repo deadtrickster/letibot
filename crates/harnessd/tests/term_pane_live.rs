@@ -152,6 +152,7 @@ fn read_until(r: &mut FrameReader<UnixStream>, needle: &str) -> Vec<u8> {
 /// The pane's program gets the console's environment, and not the daemon's own. The control
 /// is the first assertion, and it is what makes the absence mean anything
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
     let _serial = serial();
     assert!(
@@ -207,6 +208,7 @@ fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
 /// daemon kept the slot while the head had lost the rectangle, because the question it
 /// asked was `closed` (has anybody ended this pane) and nobody had
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn a_pane_whose_program_exited_frees_its_slot() {
     let _serial = serial();
     let ws = workspace("ghost");
@@ -275,6 +277,7 @@ fn until_status(r: &mut FrameReader<UnixStream>) -> Option<String> {
 /// holds the screen is the decision underneath, and it is the daemon. It is deliberately a
 /// second head, and the proof is the replay
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
     let _serial = serial();
     let ws = workspace("attach");
@@ -354,6 +357,7 @@ fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
 
 /// A session with no pane refuses the attach by name - a sentence, not an empty rectangle.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn attaching_to_a_session_with_no_pane_says_so() {
     let _serial = serial();
     let ws = workspace("attach-none");
@@ -375,6 +379,7 @@ fn attaching_to_a_session_with_no_pane_says_so() {
 /// The `\r\n` is not asserted and must not be - it is the pty's own translation, and
 /// pinning it would be pinning the line discipline rather than the pane.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn a_real_program_runs_in_the_pane_and_its_bytes_reach_the_head() {
     let _serial = serial();
     let ws = workspace("bytes");
@@ -400,6 +405,7 @@ fn a_real_program_runs_in_the_pane_and_its_bytes_reach_the_head() {
 /// reads the session's wiring out of the registry; the daemon's own cwd is this test's cwd, so a
 /// pane that ignored the wiring would print the wrong path.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn the_pane_runs_in_the_sessions_workspace_and_not_the_daemons() {
     let _serial = serial();
     let ws = workspace("cwd");
@@ -428,6 +434,7 @@ fn the_pane_runs_in_the_sessions_workspace_and_not_the_daemons() {
 /// The operator's bytes reach the program verbatim, and it is the program that answers. `tr
 /// a-z A-Z` and not `cat`, for a reason that is the whole point
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn the_operators_bytes_reach_the_program() {
     let _serial = serial();
     let ws = workspace("keys");
@@ -458,6 +465,7 @@ fn the_operators_bytes_reach_the_program() {
 /// refusal protected - a running program is not killed to make room - is kept the refusal
 /// is not.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number() {
     let _serial = serial();
     let ws = workspace("two");
@@ -528,6 +536,7 @@ fn a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number() {
 /// host's boundary on the registry at open (`Registry::bound_panes`), and `Terminals::open`
 /// puts that argv in front of the pane's shell.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn a_pane_runs_inside_the_boundary_its_session_installed() {
     use letibot_tools::exec::confine::{Bwrap, ConfinePlan, Confinement};
     let _serial = serial();
@@ -573,6 +582,7 @@ fn a_pane_runs_inside_the_boundary_its_session_installed() {
 }
 
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn closing_is_the_daemons_act_and_names_the_operator() {
     let _serial = serial();
     let ws = workspace("left");
@@ -594,6 +604,7 @@ fn closing_is_the_daemons_act_and_names_the_operator() {
 /// The daemon answers *what is this session's pane running*, and a detach is invisible to
 /// it. `None` is an answer and not a failure
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn the_status_read_answers_what_is_running_and_a_detach_is_invisible_to_it() {
     let _serial = serial();
     let ws = workspace("status");
@@ -644,6 +655,7 @@ fn the_status_read_answers_what_is_running_and_a_detach_is_invisible_to_it() {
 /// refused. The other half of the ghost: `a_pane_whose_program_exited_frees_its_slot`
 /// covers a pane the PROGRAM ended, and this is the pane the OPERATOR ended.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn a_deliberate_close_frees_the_slot_and_the_next_pane_starts() {
     let _serial = serial();
     let ws = workspace("close-slot");
@@ -677,6 +689,7 @@ fn a_deliberate_close_frees_the_slot_and_the_next_pane_starts() {
 
 /// `!term close` is refused by name, and a program merely STARTING with it is not.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and real terminals - run it with --ignored"]
 fn a_term_close_line_is_refused_by_name_and_a_name_that_begins_with_it_is_not() {
     let _serial = serial();
     let ws = workspace("close-word");

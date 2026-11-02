@@ -30,6 +30,7 @@ unsafe extern "C" {
 /// test with `--exact`, so the daemon's exec host spawns this function with the daemon's terminal
 /// on fd 0; it makes itself unreadable and then waits on that terminal.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and an operator `!` line - run it with --ignored"]
 fn the_process_the_daemon_may_not_read() {
     if std::env::var("LETIBOT_SUDO_ASK_CHILD").as_deref() != Ok("1") {
         return;
@@ -118,6 +119,7 @@ fn stop(child: &mut Child) {
 
 /// The whole capture: a live daemon, a run it may not look at, and both voices written down.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and an operator `!` line - run it with --ignored"]
 fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
@@ -149,8 +151,10 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
 
     // ---- The `!` line, and the run it makes.
     let exe = std::env::current_exe().expect("this test binary's own path");
+    // Both spawns name the child by `--exact` and must say `--ignored`: the child is `#[ignore]`d
+    // with its siblings, and a spawn without it would run no test at all.
     let line = format!(
-        "! LETIBOT_SUDO_ASK_CHILD=1 {exe} --exact the_process_the_daemon_may_not_read --nocapture",
+        "! LETIBOT_SUDO_ASK_CHILD=1 {exe} --exact the_process_the_daemon_may_not_read --ignored --nocapture",
         exe = exe.display()
     );
     head.operator_shell(0, &line)
@@ -249,6 +253,7 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
 /// the password from the run's own pty. The stand-in above proves the *detection*; this proves the
 /// *report* for a tree that is root and undumpable, and that `!send` still reaches it.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and an operator `!` line - run it with --ignored"]
 fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
@@ -346,6 +351,7 @@ fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
 /// `SUDO_ASKPASS`, the password card answered by a head. A wrong password is typed on purpose: the
 /// question is not whether the install succeeds but whether the daemon says anything at all.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and an operator `!` line - run it with --ignored"]
 fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
@@ -414,6 +420,7 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
 
 /// A run that is still WRITING while one of its processes is blocked on the terminal.
 #[test]
+#[ignore = "live: a daemon, a vocabulary and an operator `!` line - run it with --ignored"]
 fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
@@ -443,7 +450,7 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
              # probe's environment instead, and this is where it is read.\n\
              [ -n \"$LETIBOT_STUB_PROBE\" ] && exit 0\n\
              while true; do printf 'tick\\n'; sleep 0.1; done &\n\
-             LETIBOT_SUDO_ASK_CHILD=1 {exe} --exact the_process_the_daemon_may_not_read \\\n\
+             LETIBOT_SUDO_ASK_CHILD=1 {exe} --exact the_process_the_daemon_may_not_read --ignored \\\n\
                --nocapture\n",
             exe = exe.display()
         ),
@@ -496,6 +503,7 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
 /// The operator's own run has no deadline - not even the 120 s one. The 120 s default is
 /// for a command the MODEL did not ask to run longer
 #[test]
+#[ignore = "live: a daemon, a vocabulary and an operator `!` line - run it with --ignored"]
 fn the_operators_own_run_outlives_the_models_deadline() {
     if std::env::var("LETIBOT_DEADLINE_LIVE").as_deref() != Ok("1") {
         eprintln!(

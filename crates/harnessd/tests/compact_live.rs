@@ -52,6 +52,7 @@ fn glm_is_served() -> bool {
 }
 
 #[test]
+#[ignore = "live: a vocabulary GGUF and the model server - run it by name with --ignored"]
 fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     // THE APPARATUS FIRST, and this ordering is a fix rather than a style. A test's guards go
     // in the order the reasons do: what the machine must HAVE, then what must be RUNNING - a

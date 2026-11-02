@@ -11,6 +11,7 @@ use letibot_sessionlog::protocol::Caps;
 use letibot_tokencore::store::{Store, TodoStatus};
 
 #[test]
+#[ignore = "live: a daemon and a vocabulary - run it by name with --ignored"]
 fn a_live_todo_write_reaches_the_store_and_the_log() {
     let dir = TempDir::new("harnessd-todos-live");
     let path = dir.path().join("sessions.db");

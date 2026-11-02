@@ -11,6 +11,7 @@ use letibot_tools::builtins::external::web::{SearchProvider, SearchQuery};
 use letibot_websearch::Brave;
 
 #[test]
+#[ignore = "live: calls the Brave endpoint - BRAVE_LIVE=1 and --ignored"]
 fn brave_answers_with_the_fields_this_crate_reads() {
     if std::env::var("BRAVE_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: BRAVE_LIVE is not 1 — the check did not run and this is not a pass");

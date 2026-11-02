@@ -5,6 +5,7 @@ use letibot_tools::exec::{ScopeKind, SpawnRequest, Waited};
 use letibot_tools::firecode::{FirecodeBackend, FirecodeSpec};
 
 #[test]
+#[ignore = "live: boots a firecode VM - FIRECODE_LIVE=1 and --ignored"]
 fn a_vm_backend_reads_writes_lists_runs_and_lands_its_work() {
     if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: FIRECODE_LIVE is not 1 — the check did not run and this is not a pass");
@@ -137,6 +138,7 @@ fn a_vm_backend_reads_writes_lists_runs_and_lands_its_work() {
 /// The acceptance check is run by firecode, and its verdict is the answer's: what `close` says
 /// is what firecode recorded, not the child's word. Failed first, then passed.
 #[test]
+#[ignore = "live: boots a firecode VM - FIRECODE_LIVE=1 and --ignored"]
 fn a_vm_backends_acceptance_check_decides_what_close_says() {
     if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: FIRECODE_LIVE is not 1 — the check did not run and this is not a pass");
@@ -180,6 +182,7 @@ fn a_vm_backends_acceptance_check_decides_what_close_says() {
 /// it while the VM runs, and after `close` the worktree is intact.
 #[cfg(target_os = "macos")]
 #[test]
+#[ignore = "live: boots a firecode VM - FIRECODE_LIVE=1 and --ignored"]
 fn a_vm_backend_on_a_worktree_works_in_it_directly() {
     if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: FIRECODE_LIVE is not 1 — the check did not run and this is not a pass");
@@ -235,6 +238,7 @@ fn a_vm_backend_on_a_worktree_works_in_it_directly() {
 /// session joins that VM rather than booting another, and the joiner's end leaves it up.
 #[cfg(target_os = "macos")]
 #[test]
+#[ignore = "live: boots a firecode VM - FIRECODE_LIVE=1 and --ignored"]
 fn a_folder_vm_is_mounted_shared_and_joined() {
     if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: FIRECODE_LIVE is not 1 — the check did not run and this is not a pass");

@@ -4,6 +4,7 @@
 use letibot_harnessd::sudo;
 
 #[test]
+#[ignore = "live: the real sudo shim and a password - SUDO_LIVE=1 and --ignored"]
 fn the_shim_routes_sudo_to_askpass_and_a_wrong_password_is_refused_not_a_tty_error() {
     if std::env::var("SUDO_LIVE").as_deref() != Ok("1") {
         eprintln!("SUDO_LIVE=1 to run this against the box's real sudo");
