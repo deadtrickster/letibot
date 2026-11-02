@@ -865,12 +865,17 @@ should gain a config - ssh key and fleet list"*, *"for runners id prefere lubunt
    SSH key's PATH (`~/bin/fleet/headless_server`; the key is never read into a session or a log,
    only passed as `ssh -i`), the boxes **by name** (`lubuntu1`..`lubuntu3`; `known_hosts` holds
    them by name, so `ssh dead@192.168.1.76` fails host-key verification while `dead@lubuntu1`
-   works), and which are runners (`lubuntu1`, `lubuntu2`).
+   works), and which are runners (`lubuntu1`, `lubuntu2`). — ✓ fixed in 2d20ae10 (as
+   `~/.config/letibot/hosts.toml`, read by `crates/tools/src/remote.rs`), test
+   the_file_the_contract_documents_parses
 2. **The merge queue's gate runs on a free runner over `ssh -i`** — the `## Merge gate` commands,
    or `act` against `.github/workflows/ci.yml`. Tools by full path: `~/.local/bin` and
-   `~/.cargo/bin` are not on PATH for a non-interactive ssh command.
+   `~/.cargo/bin` are not on PATH for a non-interactive ssh command. — ✓ fixed in 5d3b2f05,
+   test the_tree_and_the_repository_arrive_and_the_steps_run_there
 3. **Each runner needs `~/.actrc`** pinning the `ubuntu-latest` image — `act`'s first run asks
-   which image, interactively, and a gate would hang there.
+   which image, interactively, and a gate would hang there. — OPEN: nothing to pin — the gate
+   runs the project's own steps over ssh (`crates/harnessd/src/mergequeue/gate_host.rs:1`) and
+   `act` appears nowhere in the tree.
 
 Measured 2026-10-11: lubuntu1/2/3 each 32 cores, 123 GB, docker usable. `act` v0.2.89
 (checksum-verified) installed at `~/.local/bin/act` on lubuntu1 and lubuntu2. `cargo` in
@@ -910,10 +915,14 @@ everything going in my thread"*. Then one worker served every root session's tur
 another - measured 89 s on 2026-10-11 behind another session's `sleep 30`.
 
 1. One thread per root session, on the pattern subagents already run on (`serve_child_under`,
-   `Hub::take_own_work_until`, `Hub::wake_its_own_reader`).
+   `Hub::take_own_work_until`, `Hub::wake_its_own_reader`). — ✓ fixed in f68c90b0, test
+   a_held_turn_in_one_session_does_not_delay_another
 2. Everything that happens on a session's thread is published to its hub. A wake-started turn is
-   drawn as running, with its reason. No failure lands only in the daemon log.
-3. The merge queue's work is off the session worker by R61.
+   drawn as running, with its reason. No failure lands only in the daemon log. — fixed in
+   f68c90b0 in code, untested: the thread's turns and failures reach the hub (R67 item 15), but
+   no test pins a wake-started turn's activity row
+3. The merge queue's work is off the session worker by R61. — ✓ fixed in 955a7fc2, test
+   the_service_serves_the_queues_and_stops
 
 **Done when:** two sessions on one daemon each answer a one-word prompt in under a second while
 the other is inside a 30 s tool call.
@@ -946,19 +955,31 @@ Verified on lab2x1 that the mechanism exists: the user manager delegates `cpu me
 with `Killed`, rc 137.
 
 1. **The model asks.** `bash` (and a backgrounded job) gains a memory argument — `memory: "8G"`.
+   — ✓ fixed in d755bf51, test uncapped_is_an_ask_and_a_blank_is_the_default
 2. **The model knows what is free** — said where it decides, in the tool's description or the
    turn's disclosure: the box's total, `MemAvailable` now, swap, and what this daemon's live
-   calls and jobs already hold under their caps.
+   calls and jobs already hold under their caps. — OPEN: what is free is still not said where
+   it decides — the description is rendered from the policy alone
+   (`crates/tools/src/builtins/bash.rs:51`) and `Meminfo::clause`
+   (`crates/tools/src/exec/memory.rs:205`) has no caller.
 3. **The model knows how much it can ask** — a ceiling per call, derived from what is free at
-   call time. An ask over it is refused with the numbers, not silently clipped.
+   call time. An ask over it is refused with the numbers, not silently clipped. — ✓ fixed in
+   d755bf51, test
+   the_default_is_granted_an_ask_up_to_the_ceiling_is_granted_and_anything_above_is_the_operators
 4. **The model knows the consequences, in the description and in the result:** over the cap, the
    call's process tree is killed and only it (rc 137, the result names the cap and the peak).
    **With no cap, an exhausted box kills whatever the kernel picks, and systemd then stops the
    whole window** — R64's table. Omitting the argument gets a stated default, not no cap.
+   — ✓ fixed in d755bf51, test
+   a_kill_at_the_cap_says_what_to_ask_for_next_and_where_the_default_lives
 5. **Every result reports its peak** (`memory.peak` of the call's scope), so the model learns
    what its commands cost instead of guessing again next time; a job's peak is in `job_list`.
+   — OPEN: a peak is withheld from the result unless the job was killed at or came near its cap
+   (`crates/tools/src/builtins/bash.rs:84`), so an ordinary call still cannot learn what it cost.
 6. **A box with no user systemd says so** — the call runs uncapped, and the disclosure says it
-   is uncapped. Never silently.
+   is uncapped. Never silently. — fixed in d755bf51 in code, untested: `MemoryCap::Uncapped`
+   names the ask and the reason in the result (`crates/tools/src/builtins/bash.rs:84`), and
+   nothing tests it
 
 **The default is a config option, 64 MB out of the box** — the operator: *"default memory either
 as absolute or a fraction is a config option with 64mb being a good default"*. The setting takes
@@ -1021,7 +1042,10 @@ peak, KILLED at the cap) — measured: `job_list` read `memory:  peak 97 MiB of 
 backgrounded 100 MB awk.
 
 **Still open:** the card above the ceiling is built and unit-tested only through the type system — not yet
-answered by a person in a head; the cross-session ledger above.
+answered by a person in a head; the cross-session ledger above. — OPEN: neither is done: the
+above-ceiling card is never answered by a person in a head (`crates/tools/src/adjudicate/tests/memory.rs:99`
+is the type-system test), and no ledger sums `memory.max` under `letibot*.scope/tree` — `flock`
+appears only in `crates/room/src/lease.rs:206`.
 
 ---
 
@@ -1078,7 +1102,9 @@ catalogue from disk on every `Config::settings`, i.e. on every session open.
 **Not yet tried, and the likeliest place left:** the LOCAL-model path. The killed daemon served
 qwen-3.8-flash-next on :8082, which streams token ids through `/completion` and keeps the token
 ledger itself; deepseek does neither. Reproducing it needs the local server running, which is
-the operator's to start.
+the operator's to start. — OPEN: the cause is still unreproduced; the instrument is
+`crates/harnessd/src/memwatch.rs`, and the local-model path that was killed has not been run
+under it.
 
 **MEASURED 2026-11-02 — a scratch daemon with a fake model does not grow per turn, and the four
 lines that could have carried it are each bounded:**
@@ -1151,35 +1177,43 @@ traced; each was re-checked where marked ✓.
    `Key::Char('r')` ~:736, `'a' | 'v' | 'd'` ~:770) has no empty-composer guard; the subagents
    pane's `o`/`p` do (`self.editor.text().is_empty()`). Typing "deploy" with `/queue` open sends
    `d` and `a` against the selected entry.
-   **DONE** (branch `r67-tui`, `e25a7d5`): `r`/`a`/`v`/`d` guarded on an empty composer; `a_typed_word_reaches_the_composer_and_runs_no_queue_verb`.
+   **DONE** (branch `r67-tui`, `e25a7d5`): `r`/`a`/`v`/`d` guarded on an empty composer; `a_typed_word_reaches_the_composer_and_runs_no_queue_verb`. — ✓ fixed in
+   74de81a5, test a_word_typed_over_any_surface_reaches_the_composer
 2. **A click in the session picker selects the wrong session.** `panes.rs:~294-308` maps
    `y - (header+2)` to `picker_sel`, but the picker draws two lines per session (row + id line)
    and footer lines fall inside the bound. **The test `a_click_picks_the_row_under_the_pointer…`
    (`app/tests/session.rs:1762`) asserts the wrong row** — fix it with the code. The picker also
    truncates without scrolling.
-   **DONE** (`8774e72`): clicks read `picker_hits`, built from rano's `stop_rows` (row + id line per session; footer picks nothing); the picker now scrolls its cursor into view; the test is rewritten to the right row, plus `the_picker_scrolls_its_cursor_into_view_and_clicks_follow`.
+   **DONE** (`8774e72`): clicks read `picker_hits`, built from rano's `stop_rows` (row + id line per session; footer picks nothing); the picker now scrolls its cursor into view; the test is rewritten to the right row, plus `the_picker_scrolls_its_cursor_into_view_and_clicks_follow`. — ✓ fixed in a92752ad, test
+   the_picker_scrolls_its_cursor_into_view_and_clicks_follow
 3. **Clicks on the mode/setting card are mis-mapped.** `ui/screen.rs:393-394` takes
    `mode_first_row` from the top of the chrome, above the lines pushed before the card (`:311`);
    `mode_rows_drawn` counts the MODE row's choices for every subject (`/verbosity`, `/diff`,
    `/models`); wrapped `why` text breaks one-line-per-value.
-   **DONE** (`0b42927`): `mode_hits` from `setting_picker_layout` (rano's `stop_rows`, `why` lines included), placed where the frame put the card; `mode_first_row`/`mode_rows_drawn` removed. Tests: `a_click_on_the_mode_card_lands_under_a_link_line`, `a_click_on_the_verbosity_card_picks_the_value_drawn_there`.
+   **DONE** (`0b42927`): `mode_hits` from `setting_picker_layout` (rano's `stop_rows`, `why` lines included), placed where the frame put the card; `mode_first_row`/`mode_rows_drawn` removed. Tests: `a_click_on_the_mode_card_lands_under_a_link_line`, `a_click_on_the_verbosity_card_picks_the_value_drawn_there`. — ✓ fixed in
+   9e82bdbb, test a_click_on_the_mode_card_lands_under_a_link_line
 4. **The diff popup blocks the permission card.** `key_diff_popup` (`keys/mod.rs:132`) runs before
    `key_decision` (`:196`) and returns `Break` for every key; its own comment says cards stay
    answerable. The hint bar has no diff-popup branch.
-   **DONE** (`ccde44b`): with a decision open the popup keeps only Esc/ctrl-c/ctrl-]/wheel/page keys; hint bar gains popup and popup-over-decision branches. `a_decision_under_the_diff_popup_takes_its_keys`.
+   **DONE** (`ccde44b`): with a decision open the popup keeps only Esc/ctrl-c/ctrl-]/wheel/page keys; hint bar gains popup and popup-over-decision branches. `a_decision_under_the_diff_popup_takes_its_keys`. — ✓ fixed in
+   af6faf2a, test a_decision_under_the_diff_popup_takes_its_keys
 5. **Scrolling in the queue pane moves the hidden transcript.** The wheel/PgUp pane list in
    `app/keys/chords.rs:270` omits `queue_pane` and `queue_open`; `key_queue_review`'s PageUp arm
    (`panes.rs:182`) is dead code.
-   **DONE** (`e0252df`): `queue_pane`/`queue_open` in the chords' list, the dead PageUp arm removed. `the_wheel_and_page_keys_scroll_the_queue_pane_and_its_overlay`.
+   **DONE** (`e0252df`): `queue_pane`/`queue_open` in the chords' list, the dead PageUp arm removed. `the_wheel_and_page_keys_scroll_the_queue_pane_and_its_overlay`. — ✓ fixed in f40be664, test
+   the_wheel_and_page_keys_scroll_the_queue_pane
 6. **`!term` gets the operator's raw mouse reports.** `pane_keys` (`keys/mod.rs:719`) forwards SGR
    mouse sequences verbatim, against `crates/vt/src/screen.rs:27`.
-   **DONE** (`e312b44`): SGR and X10 reports stripped before forwarding (no program has mouse mode per `vt/src/screen.rs`). `the_pane_is_never_sent_the_operators_mouse`. A report split across two reads is not recognised (documented).
+   **DONE** (`e312b44`): SGR and X10 reports stripped before forwarding (no program has mouse mode per `vt/src/screen.rs`). `the_pane_is_never_sent_the_operators_mouse`. A report split across two reads is not recognised (documented). — ✓ fixed in
+   6bf6238b, test the_pane_is_never_sent_the_operators_mouse
 7. **Any wheel or click cancels allow-all.** `key_mode_confirm` (`app/keys/cards.rs:25`) treats
    every key as "no".
-   **DONE** (`262867f`): the wheel falls through, a click is swallowed, the card stays up. `the_wheel_and_a_click_leave_the_allow_all_card_standing`.
+   **DONE** (`262867f`): the wheel falls through, a click is swallowed, the card stays up. `the_wheel_and_a_click_leave_the_allow_all_card_standing`. — ✓ fixed in
+   08bc5d55, test the_wheel_and_a_click_leave_the_allow_all_card_standing
 8. **`/sessions` and ctrl-s open the picker differently.** `commands.rs:510` neither seeds
    `picker_sel` nor clears `pick`; the chord does both.
-   **DONE** (`e274142`): both call `App::open_session_picker`. `slash_sessions_opens_the_picker_the_way_ctrl_s_does`.
+   **DONE** (`e274142`): both call `App::open_session_picker`. `slash_sessions_opens_the_picker_the_way_ctrl_s_does`. — ✓ fixed in
+   44001592, test slash_sessions_opens_the_picker_the_way_ctrl_s_does
 9. **Help and hints disagree with the bindings.** `ui/panes/help.rs:99` (a click on an edit row
    opens the diff popup, not rano); the hint bar's "ctrl-n notes" (ctrl-n retires every note,
    `chords.rs:162`); help omits ctrl-g, ctrl-q, ctrl-o, `/queue`, `/jobs`, `/todos`,
@@ -1187,30 +1221,38 @@ traced; each was re-checked where marked ✓.
    mode for `slash_out`, `sub_out`, the diff popup or the payload window**: with `sub_out` open
    over the subagents pane the bar still says "enter (or o) opens a subagent", while Enter
    re-peeks and `o` falls through to switching session.
-   **DONE except one string** (`50ec059`): help fixed (popup, wheel, click, ctrl-g/q/o, `/queue` `/jobs` `/todos` `/subagents`); hint-bar branches for `slash_out`, `sub_out`, the payload window (diff popup in `ccde44b`). ~~**NOT DONE: "ctrl-n notes"**~~ **DONE**: the head generates the conversation's half (`ctrl-n clears notes`), and rano 0.8.2 corrected its own sentence.
+   **DONE except one string** (`50ec059`): help fixed (popup, wheel, click, ctrl-g/q/o, `/queue` `/jobs` `/todos` `/subagents`); hint-bar branches for `slash_out`, `sub_out`, the payload window (diff popup in `ccde44b`). ~~**NOT DONE: "ctrl-n notes"**~~ **DONE**: the head generates the conversation's half (`ctrl-n clears notes`), and rano 0.8.2 corrected its own sentence. — ✓ fixed in 5be9113d, test
+   the_help_names_every_pane_chord_and_what_a_click_and_the_wheel_do
 
 **Daemon (crates/harnessd, crates/tools):**
 
 10. **A nag-started turn strands its calls.** `Sessions::deliver_due_nags` (`sessions.rs:2379`)
     runs a turn and arms neither `arm_sweep` nor `arm_wake`, after `sweep_at` was cleared
     (`:2367`) — the wake arm's bug (fixed 2026-10-10) on the third door.
-    **DONE** (branch `r67-daemon`, `e28cebc`): the nag door arms the sweep before its turn and the monitor wake after; `SWEEP_AFTER` moved beside the clock. `tests/nag_arms_the_sweep.rs`.
+    **DONE** (branch `r67-daemon`, `e28cebc`): the nag door arms the sweep before its turn and the monitor wake after; `SWEEP_AFTER` moved beside the clock. `tests/nag_arms_the_sweep.rs`. — ✓ fixed in 10a99ed7, test
+    a_nag_turn_arms_the_sweep_that_closes_a_call_it_stranded
 11. **`!` stops working for a session after one failed settle.** `OperatorShellResult`
     (`sessions.rs ~3525`) returns `Failed` before `clear_bang_in_flight`; every later `!` line is
     queued for ever. Error to stderr only.
-    **DONE** (`e6d3377`): the flag comes down before any return; a failed settle is `operator_shell_failed` on the hub and the next queued line still starts. `sessions::operator_run_failures`.
+    **DONE** (`e6d3377`): the flag comes down before any return; a failed settle is `operator_shell_failed` on the hub and the next queued line still starts. `sessions::operator_run_failures`. — ✓ fixed in fac036fc, test
+    a_settle_that_fails_still_ends_the_run_and_says_so_on_the_hub
 12. ✓ **One store error ends the merge queue thread for good.** `mergequeue.rs:4116/4121` — the
     loop must retry with backoff and say so on the hubs (R61 req. 4 makes it structural; this is
     the stop-gap that keeps today's queue alive).
-    **DONE** (`1651b85`): `run` never ends on a store error — 1s→60s backoff honouring `stop`, `merge_queue_store_error` once per reason, `merge_queue_recovered` after. `mergequeue::store_errors`.
+    **DONE** (`1651b85`): `run` never ends on a store error — 1s→60s backoff honouring `stop`, `merge_queue_store_error` once per reason, `merge_queue_recovered` after. `mergequeue::store_errors`. — fixed in ca7edbbc in code, untested: `work` retries a
+    store error with backoff (`crates/harnessd/src/mergequeue/serve.rs:3728`), but the only test is
+    `the_retry_wait_doubles_and_is_capped` and nothing drives a store error through the loop
 13. **The deadline watchdog never exits.** `tools/src/exec/host.rs:629/660` (`Deadlines::run`, an
     endless `loop` holding its own `Arc`): one `letibot-deadline` thread per `HostProcesses`
     forever — one of R66's two threads per finished subagent.
-    **DONE** (`d338e9c`): `Deadlines::close` from `HostProcesses`' `Drop`; the watchdog returns. `a_dropped_host_takes_its_deadline_thread_with_it` (a `Weak`, then the tid in `/proc/self/task`).
+    **DONE** (`d338e9c`): `Deadlines::close` from `HostProcesses`' `Drop`; the watchdog returns. `a_dropped_host_takes_its_deadline_thread_with_it` (a `Weak`, then the tid in `/proc/self/task`). — ✓ fixed in
+    d2c916d1, test a_dropped_host_takes_its_deadline_thread_with_it
 14. **The idle sweep is quadratic, on the worker.** `abandoned_calls` (`harness.rs:20292`):
     `answered.iter().any` per asked call over the whole transcript; with ~15k results, ~10⁸
     compares per sweep, every 2 s after a turn. A `HashSet`, and only items since the last sweep.
-    **DONE** (`2ea0e38`): one pass into a `HashSet` of borrowed ids. **NOT DONE: "only items since the last sweep"** — a late answer is still an answer, so the whole transcript is the honest input; linear is the fix. No non-timing test fails on the quadratic version.
+    **DONE** (`2ea0e38`): one pass into a `HashSet` of borrowed ids. **NOT DONE: "only items since the last sweep"** — a late answer is still an answer, so the whole transcript is the honest input; linear is the fix. No non-timing test fails on the quadratic version. — OPEN: the linear pass is in
+    (`crates/harnessd/src/harness/turns.rs:3345`), but "only items since the last sweep" is not:
+    `abandoned_calls` is still handed the whole transcript, and no non-timing test pins either
 15. **Failures that reach no hub** — `let _ = self.append_results(…)` in
     `Harness::sweep_abandoned_calls` (`harness.rs:5228`, the hub block at 5222 is dead);
     `JobRecorder::put_job` (`jobwatch.rs:776, 813`); `flush_todos` (`harness.rs:7044, 7056, 7704,
@@ -1222,10 +1264,12 @@ traced; each was re-checked where marked ✓.
     (`sessions.rs ~3460, 3497, 3538`, reaching only `on_reply` → `eprintln!` at `cli.rs:1761`); in
     `daemon.rs`, the `ensure_gatekeeper` error and the sweep and nag counts (a nag's FAILURE is
     published, by `after_turn`).
-    **DONE** (`e6d3377`, `2ea0e38`, `41f5e2d`): every site now also publishes a hub warning — `calls_abandoned`/`transcript_store` (sweep), `job_not_recorded` (recorder, via a `Weak<Hub>`), `todos_not_stored` + `todo_move_unresolved` (`flush_todos_or_say`), `merge_queue_unreadable` (`SessionSource::merge_*` now return `Result`; `Registry::merge_queue_for`), `child_door_refused` (Leave), `operator_call_failed`/`session_unavailable`/`operator_shell_on_worker`/`operator_shell_failed` (operator arms), `review_queue_not_open` (once per reason). Census 103. Sweep and nag COUNTS stay stderr-only (routine). Tests in idle_clock.rs, todos.rs, jobwatch, resume_frames, sessions.
+    **DONE** (`e6d3377`, `2ea0e38`, `41f5e2d`): every site now also publishes a hub warning — `calls_abandoned`/`transcript_store` (sweep), `job_not_recorded` (recorder, via a `Weak<Hub>`), `todos_not_stored` + `todo_move_unresolved` (`flush_todos_or_say`), `merge_queue_unreadable` (`SessionSource::merge_*` now return `Result`; `Registry::merge_queue_for`), `child_door_refused` (Leave), `operator_call_failed`/`session_unavailable`/`operator_shell_on_worker`/`operator_shell_failed` (operator arms), `review_queue_not_open` (once per reason). Census 103. Sweep and nag COUNTS stay stderr-only (routine). Tests in idle_clock.rs, todos.rs, jobwatch, resume_frames, sessions. — ✓ fixed in de66c0f5 (with
+    975c161c, fac036fc), test a_row_the_store_refuses_is_said_on_the_hub
 16. **`Catalogue::load` re-reads the 5 MiB model catalogue on every `Config::settings`** — every
     session open (found by memwatch's large-allocation log).
-    **DONE** (`660a79e`): `Catalogue::load` → `Arc<Catalogue>` through `cached_read` (path + mtime + length); snapshot parsed once. `a_file_is_parsed_once_until_it_changes`.
+    **DONE** (`660a79e`): `Catalogue::load` → `Arc<Catalogue>` through `cached_read` (path + mtime + length); snapshot parsed once. `a_file_is_parsed_once_until_it_changes`. — ✓ fixed in aaa9b69f, test
+    a_file_is_parsed_once_until_it_changes
 
 **Tests (flaky by construction):**
 
@@ -1237,38 +1281,46 @@ traced; each was re-checked where marked ✓.
     lock would have to be taken by all of them. Each function grew a seam taking the reading as a
     value (`firecode_available_at` + `TaskTool::with_firecode_bin`, `skip_unreachable`,
     `askpass_in`, `resolve_key_from`, `present_given`/`gguf_path_from`); no test sets a variable.
-    serving.rs's test also stopped panicking under a run's own `LETIBOT_REQUIRE_MODEL=1`.
+    serving.rs's test also stopped panicking under a run's own `LETIBOT_REQUIRE_MODEL=1`. — fixed in f08b7ba1 in code, untested: the readers
+    take the reading as a value, so no test can observe the variable it no longer sets
 18. **Silent skips the require-switch cannot catch**: `tools/tests/confine.rs` (13 early
     `return;`), `notscoped.rs:55`, `src/exec/scope.rs` skip with `eprintln!` + `return` instead of
     `apparatus::present`, so `LETIBOT_REQUIRE_APPARATUS=1` cannot make a missing cgroup v2 fail.
     **DONE** (`0157743`): confine.rs, notscoped.rs, and the same skip in background.rs, exec.rs,
     deadline.rs, toolchain_grant.rs go through `apparatus::absent` (refusal still asserted first).
     MEASURED with `LETIBOT_BWRAP=/nonexistent/bwrap LETIBOT_REQUIRE_APPARATUS=1`: confine was 23
-    passed on main, 5 failed after. scope.rs's tests have no skip (checked at `435bb88` too).
+    passed on main, 5 failed after. scope.rs's tests have no skip (checked at `435bb88` too). — fixed in 01577431 in code, untested: the proof is the
+    require-switch run in the line above (5 confine tests refuse), and no test fn pins the routing
+    through `apparatus::absent`
 19. **Wall-clock upper bounds**: `task.rs:1815` (`< 1s`), `answers.rs:2256` (`< 1s`),
     `answers.rs:1677`, `1723`, `1908` — trip on a loaded box or a parallel `cargo test`.
     **DONE** (`7761f7b`): task.rs asserts the cause (zero `collect` calls; and, same class at
     `a_watched_subagent_is_not_waited_on`, the longest wait asked of the child); answers.rs:2256's
     bound dropped (the `Answered` match is the claim); the three refuses-at-once tests keep a
-    clock — the fact is about time — at half the 30 s budget, reason written beside each.
+    clock — the fact is about time — at half the 30 s budget, reason written beside each. — ✓ fixed in 7761f7b8, test
+    a_watched_subagent_is_not_waited_on
 20. **Pre-existing failure:** `tui` `app::tests::detected::a_python_edit_detected_after_a_command_draws_its_diff`
     fails on main (with and without llama).
-    **DONE — a real head bug, environment-dependent** (`c9f3028`): the provenance note was the payload's second `[note]` line, hidden by the fold behind the box's `memory: ran UNCAPPED` note; a folded detected-diff panel now carries its own provenance line.
+    **DONE — a real head bug, environment-dependent** (`c9f3028`): the provenance note was the payload's second `[note]` line, hidden by the fold behind the box's `memory: ran UNCAPPED` note; a folded detected-diff panel now carries its own provenance line. — ✓ fixed in 6ba1ede1, test
+    a_python_edit_detected_after_a_command_draws_its_diff
 
 **Also found, and contained:**
 
 21. **The flowy seat's slot can outlive a failed open.** `seat_tool` inserts into `slots` before
     the open can fail; `detach_seat` clears `seated` but not `slots`. Minor.
-    **DONE** (`662f7eb`): a failed open removes its `slots`/`seated` entries. `sessions::seat_slots`. The `detach_seat` half is not a defect: it empties every slot, and the entries must stay for `attach_seat` to refill.
+    **DONE** (`662f7eb`): a failed open removes its `slots`/`seated` entries. `sessions::seat_slots`. The `detach_seat` half is not a defect: it empties every slot, and the entries must stay for `attach_seat` to refill. — ✓ fixed in 43f124ff, test
+    a_failed_open_takes_its_slot_with_it
 22. **A shared global counter makes one allocation test single-test-only.**
     `tui/tests/frame_allocations.rs:43` counts every allocation in the binary through a global
     `ALLOCS`; safe while the binary holds one test, flaky the day a second is added.
     **DONE** (`8813962`): per-thread `const` thread-local counter. MEASURED: a second allocating
-    test beside it failed it 3/3 before, passed 3/3 after.
+    test beside it failed it 3/3 before, passed 3/3 after. — ✓ fixed in 88139627, test
+    a_frame_costs_no_allocation_per_unchanged_line
 23. **A process-wide cache shared across tests**: `tools/src/builtins/pattern.rs:142` (`CACHE`).
     **DONE, documentation only** (`eb25ba8`): entries are pure functions of their key, so no test
     can observe another's through a match; identity breaks only on a 256-key cap clear, and the
-    whole lib test binary peaks at 44 keys (measured). The reason is written on `CacheKey`.
+    whole lib test binary peaks at 44 keys (measured). The reason is written on `CacheKey`. — fixed in eb25ba8c in code, untested: a documentation change, and the
+    cache is a pure function of its key
 24. **Slow polls in tests**: 70 `sleep` calls under test dirs, many 10–20 ms polls;
     `tools/tests/deadline.rs:179,235` arms a 400 ms deadline (a lower bound — safe, slow);
     `tui/tests/stop_daemon.rs` and `reconnect.rs` poll at 10 ms. Most `recv_timeout(200ms)` sit
@@ -1277,19 +1329,24 @@ traced; each was re-checked where marked ✓.
     premise ("a run nobody is waiting on") — `wait_job` would change what it tests. The 10 ms
     polls in stop_daemon.rs return the moment their condition holds, inside 10 s bounds; reconnect
     has no 10 ms poll (its 20–120 ms sleeps are retry pacing and quiet-detection). No condition to
-    wait on without new hooks in the head's link, so not cheap — left.
+    wait on without new hooks in the head's link, so not cheap — left. — OPEN: the 400 ms deadline and the 10 ms polls stay, on the reasons above;
+    `tools/tests/deadline.rs` still arms its 400 ms lower bound
 25. **No click test for queue rows** (`panes.rs:798`); `cards.rs:498` (`key_pick`) is reached only
     through settings. Existing click tests: the picker (`app/tests/session.rs:1762` — wrong, item 2),
     the count labels (`screen.rs:384-636`), todos (`todos.rs:293-332`), settings, the editor, the
     queue strip (`queue.rs:1049`). The mouse decoder itself is pinned (`keys/input.rs:264-277`).
-    **DONE** (`e25a7d5`): `a_click_on_a_queue_row_selects_the_entry_drawn_there` (the hit test was already right).
+    **DONE** (`e25a7d5`): `a_click_on_a_queue_row_selects_the_entry_drawn_there` (the hit test was already right). — ✓ fixed in 74de81a5, test
+    a_click_on_a_queue_row_opens_the_row_drawn_there
 26. **The queue's log repeats `landed <same sha>` 7 and 10 times in a row** — reset rows recognised
     as already on main, logged as landings each pass. Noise that reads like work.
-    **DONE** (`1651b85`): a tip is logged as a landing once; the same tip again says *already on main, nothing new merged*. `the_same_tip_is_logged_as_a_landing_once`.
+    **DONE** (`1651b85`): a tip is logged as a landing once; the same tip again says *already on main, nothing new merged*. `the_same_tip_is_logged_as_a_landing_once`. — fixed in ca7edbbc in code, untested: the once-per-tip
+    line went with the R61 queue rewrite (955a7fc2), which makes a tip on the target one
+    conditional move (`crates/harnessd/src/mergequeue/serve.rs:2106`), and no test asserts it
 27. **Linear lookups that grow with the daemon's age**: `Registry::get` scans every entry under
     the registry lock; `HostProcesses` finds a job by `iter()` over every job ever run
     (`host.rs:1740`).
-    **DONE** (`d338e9c`): `HostProcesses.by_id` beside `jobs`; `Registry` `Inner.index` with `push`/`entry`/`entry_mut`/`has` (nothing removes entries today; R68's remove must update it). Behaviour-neutral, so no failing-before test.
+    **DONE** (`d338e9c`): `HostProcesses.by_id` beside `jobs`; `Registry` `Inner.index` with `push`/`entry`/`entry_mut`/`has` (nothing removes entries today; R68's remove must update it). Behaviour-neutral, so no failing-before test. — fixed in d2c916d1 in code, untested: `HostProcesses.by_id` and
+    `Registry`'s `index` are behaviour-neutral by design
 
 **Still open?** Each item names its file and line; re-read it before starting — an item found
 already fixed goes to `TODO-settled.md` with the evidence. **Done when:** each has a test that
