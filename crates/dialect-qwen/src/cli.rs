@@ -1,42 +1,27 @@
-//! `letibot-render-qwen` as a FUNCTION, so more than one binary can be it.
+//! `letibot-render-qwen` as a function, so more than one binary can be it.
 //!
-//! Same move as `letibot-dialect-glm`'s `cli`: the fidelity gate execs this by PATH,
-//! so the one-binary multicall must be reachable from the name, and the code that
-//! does the work has to be callable from both the binary this crate still builds and
-//! the dispatcher. One implementation, not two — a renderer that drifted by a byte
-//! would re-prefill every conversation.
+//! The fidelity gate execs this by PATH, so the multicall must be reachable from the name, and the
+//! code that does the work has to be callable from both the binary this crate builds and the
+//! dispatcher. One implementation, not two: a renderer that drifted by a byte would re-prefill every
+//! conversation.
 //!
-//! The two mechanical changes being a function forces: the arguments arrive as a
-//! parameter, and `std::process::exit(n)` becomes `return n` so the CALLER decides
-//! whether the process ends.
-
-//! `letibot-render-qwen` — the seam between this renderer and the Python oracle.
+//! Being a function forces two mechanical changes: the arguments arrive as a parameter, and
+//! `std::process::exit(n)` becomes `return n` so the caller decides whether the process ends.
+//!
+//! The contract is `dialect-glm`'s: stdout is a JSON array of cases, one per (fixture, prefix length,
+//! generation prompt on or off), each carrying the render, its span list, and the
+//! `apply_chat_template` request that must produce the same string.
 //!
 //! ```text
 //! letibot-render-qwen FIXTURE.json [FIXTURE.json …]   > cases.json
 //! ```
 //!
-//! Same contract as `letibot-render` in `dialect-glm`: stdout is a JSON array of
-//! **cases**, one per (fixture, prefix length, generation prompt on/off), each
-//! carrying the render, its span list, and the `apply_chat_template` request that
-//! must produce the same string. `crates/dialect-qwen/fidelity.py` feeds those to
-//! `tests/fidelity/oracle_hf.py` and compares.
+//! It is a second binary rather than a `--dialect` arm because the fidelity driver hardcodes GLM's
+//! binary: an arm there would mean a sibling dialect depending on a sibling dialect, so a build of
+//! GLM pulls in a model it has nothing to do with.
 //!
-//! # Why a second binary rather than a `--dialect` arm on the first
-//!
-//! `tests/fidelity/run_gate.py` hardcodes `cargo run -p letibot-dialect-glm --bin
-//! letibot-render`, and that file may not be modified. Adding a Qwen arm to that
-//! binary would therefore mean `dialect-glm` depending on `dialect-qwen` — a
-//! sibling dialect importing a sibling dialect, so that a build of GLM pulls in a
-//! model it has nothing to do with. A second binary and a thirty-line driver keep
-//! the crates independent, and `run_gate.py --dialect qwen3.8 --fixtures …` becomes
-//! available for free the day that hardcoding is lifted.
-//!
-//! # What this is not
-//!
-//! It is not the gate. The gate is 139/139 on GLM and is untouched. This is the
-//! same measurement, run on a corpus this crate owns, and it is reported as its own
-//! number.
+//! It is not the gate. The gate is GLM's and is untouched; this is the same measurement on a corpus
+//! this crate owns, reported as its own number.
 
 use crate::{QwenRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, qwen_tool_json};
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};
@@ -55,9 +40,9 @@ struct Fixture {
     prefix: FixturePrefix,
     #[serde(default)]
     items: Vec<TranscriptItem>,
-    /// Places this renderer is **known** to differ from the shipped template. The
-    /// driver reports a declared divergence that stopped reproducing just as loudly
-    /// as an undeclared one: a divergence that quietly went away is a divergence
+    /// Places this renderer is known to differ from the shipped template. The driver reports a
+    /// declared divergence that stopped reproducing just as loudly as an undeclared one: a
+    /// divergence that quietly went away is a divergence
     /// somebody may have "fixed" by changing the wrong thing.
     #[serde(default)]
     divergences: Vec<String>,

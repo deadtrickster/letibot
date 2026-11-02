@@ -1,22 +1,17 @@
-//! Token ids → `ParsedSpan`s. The half of a dialect that a template cannot give us.
+//! Token ids to `ParsedSpan`s. The half of a dialect that a template cannot give us.
 //!
-//! A template says how a turn is *written*. There is no inverse, so this is code,
-//! and it stays code after the template-driven renderer lands.
+//! A template says how a turn is written, and there is no inverse, so this stays code after the
+//! template-driven renderer lands.
 //!
-//! # Boundaries by id, never by scanning text
+//! Every structural boundary Qwen uses is a single vocab entry, so the walk is over ids and asks the
+//! decoder for a role. Text that merely spells `</think>` is several ids and can never be mistaken
+//! for the boundary, the same guarantee `RenderSpan` gives on the way out.
 //!
-//! Every structural boundary Qwen uses is a single vocab entry, so the walk is over
-//! ids and asks the decoder for a role. Text that merely *spells* `</think>` is
-//! several ids and can never be mistaken for the boundary — the same guarantee
-//! `RenderSpan` gives on the way out, restated on the way in.
-//!
-//! What is **not** a single entry is the tool call's body: `<function=`,
-//! `<parameter=` and their closers are ordinary text. So the walk hands the decoded
-//! body of a `<tool_call>…</tool_call>` block to [`parse_call_body`], which is a
-//! small string parser, and everything it cannot read is preserved verbatim rather
-//! than replaced with `{}` — §5.7 has to be able to tell a truncated argument from
-//! an empty one, and that distinction is the difference between re-prompting the
-//! model and executing a call it never finished writing.
+//! The tool call's body is not a single entry: `<function=`, `<parameter=` and their closers are
+//! ordinary text. So the walk hands the decoded body to [`parse_call_body`], a small string parser,
+//! and everything it cannot read is preserved verbatim rather than replaced with `{}`. A truncated
+//! argument has to be tellable from an empty one: that distinction is the difference between
+//! re-prompting the model and executing a call it never finished writing.
 
 use letibot_dialect::{ControlRole, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};

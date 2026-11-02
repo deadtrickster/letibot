@@ -1,47 +1,32 @@
-//! Transcript items → `RenderSpan`s, following Qwen3.8's shipped jinja.
+//! Transcript items to `RenderSpan`s, following Qwen3.8's shipped jinja.
 //!
-//! # How this file is organised, and why it can be checked
+//! Every string this renderer emits is either literal, bytes the template wrote, or data, bytes that
+//! came out of the conversation. The distinction decides whether a control literal in the output may
+//! become a `Control` span.
 //!
-//! Every string this renderer emits is either **LITERAL** — bytes the template
-//! wrote — or **DATA** — bytes that came out of the conversation. That distinction
-//! is not commentary: it decides whether a control literal in the output may become
-//! a `Control` span.
+//! [`lit`] emits template bytes and splits out control literals, because the training runtime
+//! tokenizes them as the single vocab entry. [`data`] emits conversation bytes and never splits: a
+//! user who types `<tool_call>` gets six ordinary tokens, and no adversarial content can produce a
+//! turn boundary. That is why the two helpers exist rather than one.
 //!
-//! * [`lit`] emits template bytes and **splits out control literals**, because the
-//!   training runtime tokenizes them as the single vocab entry. The tools block
-//!   contains a literal `<tool_call>` in its worked example, and that occurrence is
-//!   one token in training.
-//! * [`data`] emits conversation bytes and **never splits**. A user who types
-//!   `<tool_call>` gets six ordinary tokens, and no amount of adversarial content
-//!   can produce a turn boundary. This is the property `run_gate.py`'s provenance
-//!   phase checks, and it is why the two helpers exist rather than one.
-//!
-//! # The one divergence from the shipped template, declared
-//!
-//! **Consecutive tool results are merged by the template into a single user turn;
-//! we emit one user turn each.**
+//! The one divergence from the shipped template is declared rather than hidden: it merges
+//! consecutive tool results into a single user turn and we emit one user turn each.
 //!
 //! ```text
 //! template : <|im_start|>user\n<tool_response>\nA\n</tool_response>\n<tool_response>\nB\n</tool_response><|im_end|>\n
 //! ours     : <|im_start|>user\n<tool_response>\nA\n</tool_response><|im_end|>\n<|im_start|>user\n<tool_response>\nB\n</tool_response><|im_end|>\n
 //! ```
 //!
-//! The reason is structural and it is worth stating plainly, because it is the
-//! sharpest place the assembled parts did not fit. `Session::append_items` renders
-//! **one item at a time** against the history before it, and writes one ledger row
-//! per item. To merge, the first result's `<|im_end|>\n` would have to be withheld
-//! until something that is not a tool result arrives — and the thing that usually
-//! arrives next is the *generation prompt*, which `PromptRenderer::generation_prompt`
-//! produces with no access to the history. So merging would require either a
-//! renderer that can retract bytes already in the ledger (it cannot: the ledger is
-//! append-only, which is the whole design) or a fourth method on the trait.
+//! The reason is structural. A session renders one item at a time against the history before it and
+//! writes one ledger row per item, so merging would need the first result's closing token withheld
+//! until something that is not a tool result arrives, and what usually arrives next is the generation
+//! prompt, produced with no access to the history. Either the renderer retracts bytes already in the
+//! ledger, which an append-only ledger cannot, or the trait grows a method.
 //!
-//! Given the choice, this renderer keeps `render_incremental ≡ render` (§18.1-I3b)
-//! and the append-only ledger (I1, I2) and pays with template fidelity on a shape
-//! the model still reads correctly — two user turns instead of one. The alternative
-//! trades a provable invariant for a formatting nicety. The fidelity gate reports
-//! this divergence as a failure rather than being taught to ignore it, which is the
-//! right way round: it should keep showing up until the trait grows the hook.
+//! So this keeps incremental rendering equal to a full render and pays with template fidelity on a
+//! shape the model still reads correctly. The fidelity gate reports the divergence as a failure
+//! rather than being taught to ignore it, which is the right way round: it should keep showing up
+//! until the trait grows the hook.
 
 use letibot_dialect::{RenderSpan, StablePrefix};
 use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
@@ -101,7 +86,7 @@ fn lit(out: &mut Vec<RenderSpan>, s: &str) {
     }
 }
 
-/// Conversation bytes. Never split — see the module header.
+/// Conversation bytes. Never split; see the module header.
 fn data(out: &mut Vec<RenderSpan>, s: &str) {
     if !s.is_empty() {
         out.push(RenderSpan::Text(s.to_string()));
@@ -119,8 +104,8 @@ fn trim(s: &str) -> &str {
 
 /// Qwen3.8's renderer.
 ///
-/// Stateless and cheap. The only configuration is [`ReasoningEffort`], which is
-/// part of the *stable prefix* rather than of a request — see the crate docs.
+/// Stateless and cheap. The only configuration is [`ReasoningEffort`], which is part of the stable
+/// prefix rather than of a request; see the crate docs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QwenRenderer {
     effort: ReasoningEffort,
@@ -718,7 +703,10 @@ mod tests {
         // And the picture sits where the reading happened: after the payload that describes it.
         let payload = text.find("shot.png").expect("the payload is there");
         let marker = text.find("<__media__>").expect("the marker is there");
-        assert!(payload < marker, "the marker is before its own payload: {text}");
+        assert!(
+            payload < marker,
+            "the marker is before its own payload: {text}"
+        );
     }
 
     #[test]

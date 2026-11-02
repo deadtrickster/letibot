@@ -1,18 +1,13 @@
 //! JSON text that is byte-identical to what the shipped template produces.
 //!
-//! Same argument as `dialect-glm`'s `json.rs`, and deliberately not shared with it:
-//! the two templates call `tojson` on **different things**, and folding them into
-//! one helper would hide that. GLM unwraps `{"type":"function","function":{…}}` and
-//! re-emits three fixed keys; Qwen writes `{{- tool | tojson }}` on the tool object
-//! **whole**, `type` wrapper included. A shared `tool_json` would have to take a
-//! flag, and a flag is where the next mistake goes.
+//! Deliberately not shared with `dialect-glm`'s `json.rs`: the two templates call `tojson` on
+//! different things. GLM unwraps `{"type":"function","function":{…}}` and re-emits three fixed
+//! keys, Qwen writes the tool object whole with its `type` wrapper, and a shared helper would need a
+//! flag, which is where the next mistake goes.
 //!
-//! What *is* shared is the formatter, and it is fifteen lines. Hugging Face's
-//! `tojson` (`transformers/utils/chat_template_utils.py`) is
-//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)`. `serde_json`'s
-//! compact writer uses `,`/`:` with no spaces, so a naive `to_string` diverges on
-//! **every** tool schema — one of the four silent failures T1 measured
-//! (`experiments/minijinja-fidelity/RESULTS.md` §3, item 3).
+//! What is shared is the formatter: Hugging Face's `tojson` is
+//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)`, and `serde_json`'s compact
+//! writer uses `,` and `:` with no spaces, so a naive `to_string` diverges on every tool schema.
 
 use serde_json::Value;
 use serde_json::ser::Formatter;
@@ -51,14 +46,12 @@ pub fn hf_tojson(value: &Value) -> String {
 
 /// One line of Qwen's `<tools>` block, from an OpenAI-shaped tool schema.
 ///
-/// `{{- tool | tojson }}` — the object as given, keys in their given order, nothing
-/// unwrapped and nothing normalised. Key order is preserved (the `preserve_order`
-/// feature) because it is prompt bytes: reordering `name` and `description`
-/// re-prefills the whole conversation.
+/// The object as given, keys in their given order, nothing unwrapped and nothing normalised. Key
+/// order is preserved because it is prompt bytes: reordering `name` and `description` re-prefills
+/// the whole conversation.
 ///
-/// This lives here rather than in the daemon because `StablePrefix.tools_json`
-/// holds finished text, and there should be exactly one implementation of "these
-/// bytes".
+/// It lives here rather than in the daemon because `StablePrefix.tools_json` holds finished text,
+/// and there should be one implementation of that text.
 pub fn qwen_tool_json(tool: &Value) -> String {
     hf_tojson(tool)
 }
