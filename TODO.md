@@ -56,6 +56,8 @@ The operator wants letibot to work like CodeRabbit on their own repositories, st
 
 Depends on R116 (a review verdict schema shared by every reviewer) and R114 for the similarity offers.
 
+A pane, `/pane github`, lists the attachers: one line per scope (org or repo) with its state (polling, rate-limited, token missing), and under it one row per open PR with its review state (queued, reviewing, posted, re-review pending, answering a mention), the last action and its age. Enter on a PR row attaches to that PR's session; a key opens the PR in the browser; another pauses or resumes a scope. It is a plugin pane like the queue's, so the seat's state lives in the daemon and the pane only draws it.
+
 ## R116 - Claude Code as a merge-queue reviewer, through headless `claude -p` - **OPEN, filed 2026-11-02, after the operator's queue trial**
 
 The queue hands a branch to a reviewer and needs a verdict back. Headless Claude Code fits without waking any live session:
