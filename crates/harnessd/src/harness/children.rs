@@ -3421,12 +3421,14 @@ impl HarnessTaskRunner {
                 // running with nobody to report to, and a VM child keeps its VM up while it runs, so orphaned
                 // grandchildren held VM slots for a day. Stopped before the backend is closed, as a stop does.
                 a_child_that_ends_stops_its_own(Some(&sub.subagents), &sub.hub);
-                // **And what THIS child was holding ends here too**, said in the failure itself: there is
-                // no answer to carry the line, and a failure is exactly when nobody thinks to go looking
-                // for the build the child had backgrounded.
+                // What this child was holding ends here, said in the failure itself: there is no
+                // answer to carry the line.
                 let mut why = e.to_string();
                 let heir = self.heir();
-                if let Some(said) = sub.settle_estate(heir.as_deref()) {
+                // Only a host child's leftovers can outlive it; a VM's die with the VM.
+                if placement == Placement::Host
+                    && let Some(said) = sub.settle_estate(heir.as_deref())
+                {
                     why.push_str(&format!("\n\n[estate] {said}"));
                 }
                 // The backend is closed on this exit too - the other two close it below - so a
@@ -3460,13 +3462,12 @@ impl HarnessTaskRunner {
         }
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
-        // **The estate, settled before the answer is given.** A subagent's answer is the last thing its
-        // parent reads from it, so what the child left is said HERE and nowhere else that anybody is
-        // certain to look: every ending below - the VM branch, the settled answer, a stop during the
-        // park loop - carries it. Settled before the answer rather than at the thread's exit because a
-        // host child parks after answering and its answer is already the record.
+        // A host child's estate, settled before its answer: that answer is the last thing the parent
+        // reads from it. A VM child's substrate dies with its turn, and `finish_a_vm_child` says so.
         let heir = self.heir();
-        if let Some(said) = sub.settle_estate(heir.as_deref()) {
+        if placement == Placement::Host
+            && let Some(said) = sub.settle_estate(heir.as_deref())
+        {
             reply.text.push_str(&format!("\n\n[estate] {said}"));
         }
         self.tasks.record(crate::tasks::TaskEntry {
