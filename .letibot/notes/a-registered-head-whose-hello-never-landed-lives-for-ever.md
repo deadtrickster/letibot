@@ -1,47 +1,24 @@
-<!-- abstract: MEASURED 2026-10-26: `serve_conn`'s Seat is now detached on Drop, and `seat_in` detaches when the Hello/backlog write fails — because a head the hub registered but never told it was here stayed in `attached_heads` for ever (3 where 2 were expected, stably, for 60 s). -->
+<!-- abstract: MEASURED 2026-10-26: a head the hub registered but never greeted stays in `attached_heads` for ever - `seat_in` attaches and THEN writes the `Hello` with a `?`, so the error builds no `Seat` to drop; the fix is `Drop for Seat` plus a hand detach on that one failing write. -->
 
 # A head the daemon registered but could not greet lived for ever
 
-MEASURED 2026-10-26, package D1, `crates/sessionlog/src/server.rs` and
-`crates/bridge/tests/end_to_end.rs` line ~1044 (*"the operator's head and the watcher"*).
+`seat_in` (`crates/sessionlog/src/server.rs`) does `hub.attach(...)` first - the head is in
+`Inner::heads`, `HeadAttached` has fired and `attached_heads` counts it - and only then writes the
+`Hello` and the backlog. That write is a `?`, so a socket already gone returns before any `Seat`
+exists and nothing ever detaches it: the count stays up for ever. Measured as an e2e expecting 2
+heads seeing 3, stably, for 60 s (67.8 s per failing run against 8.0 s per passing one).
 
-## The symptom, and it is stable rather than slow
+Both halves of the fix are load-bearing: `impl Drop for Seat` detaches on every path, the ~45
+`write(...)?` calls in the read loop included, and `seat_in`'s greeting failure detaches by hand
+because that is the one path with no `Seat` to drop. `Hub::detach` is idempotent, so a `Switch`
+that already left is safe.
 
-The e2e's `assert_eq!(hub.attached_heads(), 2, "the operator's head and the watcher")` failed
-about **one run in three** with `left: 3`, and polling for 60 s did not bring it down: the third
-head is registered FOR EVER. Every run that failed spent 67.8 s (the poll), every run that passed
-spent 8.0 s.
+What a leaked head costs: `Answers::ask` and `ask_question` read `Hub::deciding_heads()` before
+posting a card, so a head left in it makes every later ask on that session wait out its deadline
+and come back "nobody answered". And every daemon opens a gatekeeper session at startup with
+nobody attached (`letibot_sessionlog::gatekeeper_session`, per workspace, not the old
+`s-gatekeeper` constant), so that session is always attachable and always in play.
 
-## Why, and both halves are one fact about the order of two calls
-
-`seat_in` does `hub.attach(...)` first — which puts the head in `Inner::heads`, fires
-`HeadAttached`, and counts in `attached_heads` — and only THEN writes the `Hello` (and a
-resumed/attached head's backlog). The write is a `?`. A head whose socket has already gone makes
-that write fail, `seat_in` returns `Err`, and **no `Seat` was ever built**, so the only code that
-would have detached the head (the read loop's tail, and `leave`) never ran.
-
-Two things made this reachable rather than theoretical:
-
-* `crates/bridge`'s `wait` attaches a watching head, reads the snapshot, and drops the socket. It
-  used to take ten seconds to decide (the `SETTLE` window), so the daemon had long finished the
-  greeting; `PROTOCOL_VERSION` 52 deleted that window and a `wait` can now be over in
-  milliseconds — faster than a `Hello` carrying a snapshot of a whole session is written.
-* and the same class of leak sits in the read loop: ~45 `write(...)?` calls inside it, each of
-  which returns from `serve_conn` through the error arm, past the `seat.hub.detach(&seat.head_id)`
-  at the bottom.
-
-## The fix
-
-`impl Drop for Seat { fn drop(&mut self) { self.hub.detach(&self.head_id); } }` — every path,
-including the `?`s, and safe beside the explicit detaches because `Hub::detach` is idempotent (a
-`Switch` drops the old `Seat` after `leave` already detached it). Plus, in `seat_in`, the
-`Hello`/backlog write's error is answered by `hub.detach(&head_id)` before returning, because that
-is the one path with no `Seat` to drop.
-
-After the fix: **8/8 e2e runs green at 8.0 s**. Before it: 2/6 leaking, all 67.8 s.
-
-## What to reach for next time
-
-**A registration whose greeting can fail needs the registration's undo on the failure path, and
-`?` in a long match arm is where that undo goes missing.** The test that catches it is a *count*
-that must come back down — `attached_heads` — not one that must go up.
+The rule: a registration whose greeting can fail needs the registration's undo on the failure
+path, and `?` inside a long match arm is where that undo goes missing. The test that catches it is
+a COUNT that must come back down (`attached_heads`), not one that must go up.
