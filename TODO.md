@@ -5460,6 +5460,20 @@ This is the seventh instance in one day of a number whose meaning was not checke
 before use, and unlike the others it is **ours** — it is in the plan, not in something
 we inherited.
 
+### What landed (2026-11-02, `wt-t22`)
+
+The naming went in with D11: `TurnMetrics::f_keep` and `TurnMetrics::f_sim`
+(`crates/turn/src/metrics.rs:81`, `:101`), `Usage::f_sim` (`crates/sessionlog/src/event.rs:531`).
+What was still missing was that **nothing held the two thresholds apart**: C4's bar lived as a
+bare `0.99` inside `judge`, exercised by no test, so a later change could have aimed it at the
+other quantity and the suite would have stayed green.
+
+`crates/harnessd/src/m1.rs` now has `C4_KEEP`, read in a pure `c4(rows)` against `f_keep` alone
+with `f_sim` printed beside it under its own name. Three tests: the T22 turn (9,000-token entry,
+10,093-token prompt, `f_keep` 1.000 PASSES where `f_sim` is 0.892), its converse (half the entry
+back on a prompt that grew by one token, `f_keep` 0.500 FAILS where `f_sim` 0.998 would have
+passed), and a first turn, which must not pass by vacancy.
+
 ---
 
 
@@ -5978,6 +5992,29 @@ do not forget" goal, not as a schema nicety.
    test defect. No test exercises it yet because `live_e2e`'s prompt makes no calls.
    This is T12's defect, unfixed, in a third channel. The enum was not widened
    unilaterally.
+
+### Status against `main`, 2026-11-02 (`wt-t22`)
+
+Re-checked because many events were added after W8. Four of the five are closed:
+
+1. **CLOSED.** `SessionEvent::TranscriptContent { item_id, item }`
+   (`crates/sessionlog/src/event.rs:1064`) is published by `Hub::record_item`
+   (`crates/sessionlog/src/hub.rs:902`) and applied by the head
+   (`crates/sessionlog/src/view.rs:647`), so a head reconstructs a conversation from the log.
+   The event the plan named kept its shape and the body travels beside it.
+2. **HALF CLOSED.** `Usage::served` (`crates/sessionlog/src/event.rs:499`) now carries
+   `id_slot` and `n_busy_slots` lifted from `turn_metrics` (`crates/sessionlog/src/lift.rs:116`),
+   defaulted and skipped on the wire, so §18.2's scheduling-or-divergence question is
+   answerable by a head. **Left:** `prefix_check`, which needs a wire twin of
+   `letibot_turn::PrefixCheck` and is a contract decision rather than a field, and
+   `dialect_template_sha`, a model fact the head already has from its wiring.
+3. **CLOSED.** `CommandIssued` (`crates/sessionlog/src/event.rs:1155`).
+4. **CLOSED as shapes.** `ToolStarted { turn_id, call_id, name, access }` and
+   `ToolProgress { turn_id, call_id, note }`, both published
+   (`crates/harnessd/src/answers.rs:140`, `crates/harnessd/src/harness.rs:4069`).
+5. **CLOSED.** `DeltaTarget::ToolCall` (`crates/sessionlog/src/event.rs:33`), emitted by the
+   engine (`crates/turn/src/engine.rs:1734`) and drawn by the head
+   (`crates/tui/src/app/events/turn.rs:218`).
 
 ---
 
