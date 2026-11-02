@@ -1109,14 +1109,19 @@ impl Harness {
                 let mut ladder = letibot_http::retry::Ladder::new(
                     letibot_http::retry::Policy::new(self.cfg.http_retries),
                 );
-                let outcome = Self::run_summary_turn(
+                let ran = Self::run_summary_turn(
                     &self.hub,
                     &mut self.engine,
                     &mut self.session,
                     &mut sink,
                     &answerer,
                     &mut ladder,
-                )?;
+                );
+                // The summary turn appends through the engine, not through `reconcile`, so nothing
+                // walked the rows it left: a refused attempt keeps its instruction, and a census
+                // that never walked it under-reports what a session that cannot compact holds.
+                self.restate_footprint();
+                let outcome = ran?;
                 if outcome.tool_calls > 0 {
                     return Err(HarnessError::Setup(format!(
                         "the summary turn proposed {} tool call(s); a summary is a record, \
