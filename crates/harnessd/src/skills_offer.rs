@@ -90,6 +90,25 @@ impl Offers {
         }
     }
 
+    /// Skip the skills whose body this session already holds, read off the transcript: a `skill` load
+    /// the model made itself put the text in the conversation, and offering it again spends a line to
+    /// say nothing.
+    pub fn skip_loaded(&mut self, items: &[TranscriptItem]) {
+        for call in items.iter().filter_map(tool_calls_of).flatten() {
+            if let Some(name) = loaded_of(call) {
+                self.offered.insert(name);
+            }
+        }
+    }
+
+    /// Skip the skills this session was STARTED with, whose bodies are in its prompt already - the
+    /// declared list a `task {skills}` child carries, which no row records.
+    pub fn skip_names<'a>(&mut self, names: impl IntoIterator<Item = &'a String>) {
+        for name in names {
+            self.offered.insert(name.clone());
+        }
+    }
+
     /// Compose this round's offers, or decide to say nothing - `false` is the common case. A skill
     /// already offered in this session is skipped: the second time is a nag, and the first time is
     /// what the model was told to act on.
@@ -216,6 +235,14 @@ pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
         .unwrap_or(0);
     out.truncate(cut);
     out
+}
+
+/// The calls an assistant row made, for the two walks that read them.
+fn tool_calls_of(item: &TranscriptItem) -> Option<&[ToolCall]> {
+    match item {
+        TranscriptItem::Assistant { tool_calls, .. } => Some(tool_calls),
+        _ => None,
+    }
 }
 
 /// The skill a tool call would put into the conversation: a `skill` load's `name`. Deliberately

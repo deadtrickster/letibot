@@ -278,6 +278,40 @@ fn the_offer_names_at_most_two_and_says_nothing_under_the_floor() {
     assert!(!Offers::new().compose(&registry(), "  \n "));
 }
 
+/// A body the session already holds is not offered again: a load the model made itself and a skill it
+/// was STARTED with are both in the conversation, and either one offered again is noise.
+#[test]
+fn a_body_the_session_already_holds_is_not_offered() {
+    let loaded = vec![TranscriptItem::Assistant {
+        text: String::new(),
+        tool_calls: vec![a_load("latex-presentation")],
+        truncated: false,
+    }];
+    let mut offers = Offers::new();
+    offers.skip_loaded(&loaded);
+    assert!(
+        !offers.compose(
+            &registry(),
+            &subject(&prompt("a latex presentation please"), &[])
+        ),
+        "the model loaded it, so it needs no offer"
+    );
+    // The declared list is the other half: a `task {skills}` child's bodies arrive in its prompt.
+    let mut declared = Offers::new();
+    declared.skip_names(["latex-presentation".to_string()].iter());
+    assert!(!declared.compose(
+        &registry(),
+        &subject(&prompt("a latex presentation please"), &[])
+    ));
+    // And another skill is still offered, so the skip is a name and not the whole offer.
+    let mut other = Offers::new();
+    other.skip_names(["latex-presentation".to_string()].iter());
+    assert!(other.compose(
+        &registry(),
+        &subject(&prompt("cut a tagged release please"), &[])
+    ));
+}
+
 /// A `find` that named a skill is a search, not a use: the take-up is the load that put the body in
 /// the conversation.
 #[test]

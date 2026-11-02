@@ -1470,6 +1470,10 @@ impl Harness {
         // per session, settled against the round's own `skill` loads.
         let mut skill_offers = crate::skills_offer::Offers::new();
         skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
+        // And the bodies this session already holds - loaded by the model itself, or declared at its
+        // start - are not news to it.
+        skill_offers.skip_loaded(&self.session.items);
+        skill_offers.skip_names(self.cfg.skills.iter());
 
         let backstop = round_backstop(self.cfg.max_tool_rounds);
         for round in 0..backstop {
