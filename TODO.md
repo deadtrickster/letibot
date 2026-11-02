@@ -2076,11 +2076,15 @@ instead of a notice.
     how much of the conversation is reasoning"*, and smoothing is the one change that makes it less of
     the measurement it was written to be. Recommendation: **leave it per-round**; if the printed number
     is the problem, fix the printing.
+    — OPEN: the operator's ruling, not code. The tree took the recommendation — the ratio is refreshed per
+    round (`crates/harnessd/src/harness/turns.rs:1729`) and no smoothing exists anywhere — so the printed
+    denominator still moves between firings and the choice is unmade rather than made.
   · **The display is not: print the provider's figure.** `{resident} of {window}` is in ledger tokens
     and every notice a head draws is in the provider's (`shown_tokens`). Printing the provider-side
     number (or both, as the wall *notice* already does with its `(counted as the provider counts them;
     …the ledger says X of Y)` aside) makes the log line read in the same unit as the screen it
     describes.
+    — ✓ fixed in `e8343165`, test `the_wall_failure_says_the_providers_count_and_names_its_unit`
 
 **The id that makes it decidable is landed** — `bd012ed` gives the `context wall` line the session name
 its `compacting:` neighbour has had since this same morning, so the next occurrence pairs a wall with the
@@ -2088,6 +2092,8 @@ compaction beneath it **by id rather than by adjacency**. That is what answers *
 whether the 1.25M-to-633k folds and the 985k-to-8k compactions in the operator's log are one session
 behaving differently or two behaving consistently — and note the two are different paths with different
 contracts (a fold and a compaction), which the operator's own caution says not to conflate.
+— fixed in `bd012ed` in code, untested: the id is an `eprintln!`
+(`crates/harnessd/src/harness/turns.rs:1396`) and no test reads that line.
 
 **still open?** `grep -n "context wall:" crates/harnessd/src/harness.rs` finds the id;
 `grep -n "ledger_scale =" crates/harnessd/src/harness.rs` finds the one per-round refresh at 5849 and the
@@ -2098,6 +2104,9 @@ the ratio is left per-round with the printing moved to the provider's unit, or a
 with the argument for the lag written down — so that the denominator on the screen and in the log is the
 number the operator can check, and the analysis *"too much too early"* rests on attributed lines rather
 than adjacency.
+— the id half is done (`bd012ed`, untested) and the printing half is done (`e8343165`, tested); the ratio
+half is the operator's ruling and has not been given, so this entry is not settled — and the `still open?`
+paragraph above is stale on its second route, which is now landed.
 
 ### The same mismatch from the DISPLAY side — **added 2026-10-04**
 
@@ -2129,6 +2138,9 @@ display, which is the whole of the complaint.
 shows, or the header names both and says which one compaction uses. `tokens_are_converted()` exists
 precisely so a message *"can name the other number once rather than per figure"*; nothing is calling
 it on the compaction path.
+— ✓ fixed in `e8343165`, test `the_wall_failure_says_the_providers_count_and_names_its_unit` — the wall's
+sentence and the banner now print the provider's count and its unit, with the ledger pair in parentheses, and
+`tokens_are_converted()` is what chooses that aside (`crates/harnessd/src/harness/turns.rs:1363`).
 
 ## A sub-session is a SESSION a head may ATTACH to — the filter that hides it is the bug — **OPEN, corrected from leticl 2026-10-03**
 

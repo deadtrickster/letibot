@@ -4207,3 +4207,93 @@ assistant message — applies only if opencode does that. Unverified.
 
 The W1 recording proxy answers it directly. Decides whether the residual
 divergence after the `interleaved` fix is one mechanism or two.
+
+---
+
+## R57 — a child's completion is not a firing, so the wake never happens — **measured from leticl 2026-10-03; explained below, and the last hop is STILL UNTESTED** — **SETTLED 2026-11-02, audited: every item ✓ fixed and tested**
+
+The operator restarted the session that spawns `task` children so that this could be tested rather
+than assumed, and the measurement is:
+
+  · the child ran and answered — two facts off a fixture, no decisions in it;
+  · **the head's agent counter flashed 1 → 0**, so the child's `opening`/`running`/`done` events DID
+    reach a head and were folded. That half works;
+  · **no notice row appeared** — not in the head, not in the model's own conversation;
+  · `job_list` in the session that spawned it: **0 monitors, 0 fired, 0 jobs**. Nothing was armed, so
+    nothing could fire;
+  · the model learned the child had finished **only by polling** (`task_result`) — the sentence in the
+    daemon's own banner: *"a fired monitor reaches the model only when something calls job_list. That
+    is a poll, not a wake."*
+
+The mechanism is not missing. `completion_notice` (`harness.rs:664`) publishes *"[job] a job you
+backgrounded has ended"*, those notices arrive unprompted, and one arrived in leticl's transcript
+today. Its signature is `fn completion_notice(done: &[JobCompletion])` — **jobs only, no children.**
+D26 says the wake exists (*"T24's wake turns a firing into a user item and runs a turn"*), so the gap
+is narrower than *no wake*: **a child's finish is not a firing.**
+
+**done when** a `task` child's completion reaches the model unprompted — the same
+`User { speaker: Agent }` row a job's ending produces, in a session that armed no monitor of its own.
+— ✓ fixed in `fd4aaad4`, test `a_childs_answer_wakes_its_parent_with_nobody_asking`
+
+**What letibot found reading the tree, and it changes what to do about the measurement.** The chain is
+**closed on HEAD and was open in the build that was measured**:
+
+  · **The daemon under test was a binary from the day before, and that is the whole explanation.**
+    Measured on this box 2026-10-03: `target/release/harnessd` is dated **2026-10-02 20:17:36**
+    (34724024 bytes), and `fd4aaad` (*"a subagent settles the same way a backgrounded job does"*) was
+    committed **2026-10-03 21:16:24** — twenty-five hours later. The daemon serving leticl's workspace
+    (pid 3840826) had been restarted minutes before the check and was running **that same file**, so a
+    fresh PROCESS was running a stale BINARY: **a session restart does not rebuild a daemon.** The dated
+    build cannot have contained the child path at all, and `0 monitors, 0 fired, 0 jobs` is exactly what
+    it should do. leticl's reading of `completion_notice` as *"jobs only, no children"* is a reading of
+    that build rather than of the tree.
+    *(The pin is NOT the reason, and it was checked the wrong way first: leticl runs LOCALLY, so
+    `LETIBOT_REF` describes its release packaging and says nothing about the daemon on this box.)*
+  · On HEAD there is **one queue and one bell**, not two mechanisms: `JobWatchers::with_tasks` gives
+    the watcher the session's `TaskRunner`, `watch_task` (`jobwatch.rs:432`) queues through
+    `settled_here` — *"the push and the bell"* — and `Harness::wake` (`harness.rs:4442`) takes both
+    kinds off `take_completions()` and partitions them **for wording only** (`job_output` for a job,
+    `task_result` for a child), submitting one `User { speaker: Speaker::Agent }` item — the same row
+    the ruling asked for. And the monitor waiter is **not** needed for this: the watcher rings the
+    bell itself, so a session with no monitors is woken by a child.
+  · **So the first thing to do is not to build anything: it is to re-measure on a daemon that has been
+    REBUILT** (`cargo build --release`, then restart that daemon — the rebuild is the half that was
+    missed), because the measurement above cannot distinguish *the code is wrong* from *the code was
+    not in the binary* — and it is the second.
+
+**The gap that remains, and it is mine — measured precisely, since the first version of this paragraph
+overclaimed it.** The chain decomposes, and all but one piece is asserted:
+
+| piece | asserted by |
+|---|---|
+| the completion is queued, with `kind: Subagent` | `a_subagent_settles_through_the_jobs_own_channel` (`jobwatch.rs:967`) |
+| **the bell RINGS** for a child (`Work::Woken`) | the same test, `jobwatch.rs:1016` |
+| a completion is taken once, not left for the next wake | the same test |
+| a job's sentence | `a_completion_notice_names_the_job_and_says_do_not_wait` (`harness.rs:7764`) |
+| **a child's sentence** | **`8533d84`** — landed, and it did not exist before |
+| the partition: which noun for which kind, and none for nothing | **`a_settlement_is_two_nouns_out_of_one_channel`** — the partition is now `completion_notices`, a pure function, and it is asserted on a job, a child, both, two children, and an empty queue |
+| **`wake()`'s remaining body**: taking the queue and submitting one `Speaker::Agent` item | **nothing, on either kind** |
+
+**Audited 2026-11-02 against HEAD: the last hop is no longer unasserted, and every piece above is now
+pinned.** One mark per row, in the table's own order:
+
+  · the completion is queued, with `kind: Subagent` — ✓ fixed in `fd4aaad4`, test `a_subagent_settles_through_the_jobs_own_channel`
+  · **the bell RINGS** for a child (`Work::Woken`) — ✓ fixed in `fd4aaad4`, test `a_subagent_settles_through_the_jobs_own_channel`
+  · a completion is taken once, not left for the next wake — ✓ fixed in `fd4aaad4`, test `a_subagent_settles_through_the_jobs_own_channel`
+  · a job's sentence — ✓ fixed in `114e8d75`, test `a_completion_notice_names_the_job_and_says_do_not_wait`
+  · **a child's sentence** — ✓ fixed in `8533d84`, test `a_childs_completion_names_the_child_and_points_at_task_result`
+  · the partition: which noun for which kind, and none for nothing — ✓ fixed in `85f890bc`, test `a_settlement_is_two_nouns_out_of_one_channel`
+  · **`wake()`'s remaining body**: taking the queue and submitting one `Speaker::Agent` item — ✓ fixed in `fd4aaad4`, test `a_childs_answer_wakes_its_parent_with_nobody_asking` (`crates/harnessd/tests/child_completion_wakes.rs` — a real turn whose stub model emits a `task` call, a real child, `Work::Woken` with nobody calling `task_result`, then `Harness::wake` and one `User { speaker: Agent }` row naming the child and the first line of its answer)
+
+**Narrowed again 2026-10-03 (the paragraph this replaces said the whole body was unasserted).** `wake()`
+had the partition inline, where only a live `Harness` could reach it — and this crate has **no fixture
+that builds a `Harness` at all** (every harnessd test is a pure-function unit test or a registry-level
+integration test), which is *why* the decision had none. So the decision was lifted out into
+[`completion_notices`] (`harness.rs`), which is pure and now tested; `wake()` keeps only the part that
+is not a decision — take the queue, call the function, submit what it returns. What remains unexecuted
+is therefore those few lines, and the reading in the bullet above is still the evidence for them:
+reading rather than measurement, stated here rather than left to look stronger than it is. A `Harness`
+fixture is the thing to build if even that is to be asserted.
+
+---
+
