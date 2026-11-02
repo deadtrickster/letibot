@@ -4537,8 +4537,7 @@ fn stage_intents(s: &Stage) -> Vec<Intent> {
 
 /// Fold one stage into the choice of the stage that names a grant. `program` is the name as WRITTEN,
 /// not the wrapper's inner one, or a grant taken over a sudo call would cover the command without it;
-/// a stage that only sets the shell's state names nothing, the most consequential intent wins, and a
-/// tie goes to the first stage.
+/// the most consequential intent wins, and a tie goes to the first stage.
 fn name_stage(
     slot: &mut Option<String>,
     weight: &mut Option<u8>,
@@ -6310,10 +6309,9 @@ config = load('~/somewhere/seat.json')
             "the flow must be recorded: {:?}",
             b.flows.iter().map(|f| f.why.clone()).collect::<Vec<_>>()
         );
-        // The scan promotes nothing, like the redirect arm. The asymmetry with a redirect is left
-        // standing on purpose: the block is the existing rule about a secret named inside a script,
-        // which does not tell a read from a write, and narrowing it is a policy change with its own
-        // measurement.
+        // The scan promotes nothing, like the redirect arm. The asymmetry with a redirect is left on
+        // purpose: the block is the existing rule about a secret named inside a script, which cannot
+        // tell a read from a write, and narrowing it is a policy change with its own measurement.
         assert!(
             matches!(b.tier, Tier::Blocked { .. }),
             "the capability scan's own rule decides this and is deliberately untouched; \
