@@ -1,28 +1,16 @@
-//! **When the plan check is armed** — the rule the operator's scheduling question turned
-//! into, tested where it lives rather than through a daemon.
-//!
-//! The operator: *"looks like our todo nag is overkill"*, then *"maybe wait for a timeout
-//! actually. so send it when model is idling"*, then *"but certainly not after my message."*
-//! The first was the turn-boundary check firing after every exchange; the second is the
-//! timeout; the third is the boundary condition the timeout must not violate, and it is
-//! `Sessions::note_operator_prompt`'s job.
-//!
-//! **And the fourth half is the state**: *"can we handle postponed todo item properly? i.e.
-//! they persist but without nag"*. A row the operator has set aside is not work this check may
-//! speak about, and that is asserted below as a predicate over ROWS — which is the only way it
-//! can be told from a check that merely failed to arm.
+//! When the plan check is armed - the rule the operator's scheduling question turned into
+//! speak when the model is idling, never right after the operator's own message, and never about a
+//! row the operator has set aside.
 use super::nag_should_arm;
-// The snapshot the daemon hands the check (`sessions::child_sessions`), spelled in this
-// module's tests the way the arming decision takes it.
+// The snapshots the daemon hands the check (`sessions::child_sessions`, `Harness::running_jobs`)
+// spelled in this module's tests the way the arming decision takes them.
 use super::ChildSessions;
-// The jobs snapshot the daemon hands the same check (`Harness::running_jobs`), spelled here the
-// way the arming decision takes it.
 use super::RunningJobs;
 use letibot_tokencore::store::{TodoBy, TodoItem, TodoStatus};
 
-/// **Nothing is running** — the reading every test here that is not about a child passes, and
-/// the one a daemon with no subagents hands in. The child cases have their own tests below,
-/// which build a snapshot of their own (`ChildSessions::none().running(…)`).
+/// Nothing is running - the reading every test here that is not about a child passes, and
+/// the one a daemon with no subagents hands in. The child cases have their own tests below
+/// which build a snapshot of their own (`ChildSessions::none.running(…)`).
 fn no_children() -> letibot_tools::builtins::todo::ChildSessions {
     letibot_tools::builtins::todo::ChildSessions::none()
 }
@@ -39,7 +27,7 @@ fn row(content: &str, status: TodoStatus) -> TodoItem {
     }
 }
 
-/// A row that waits on the rows it names — the DAG's edge, as these tests write one.
+/// A row that waits on the rows it names - the DAG's edge, as these tests write one.
 fn row_needing(content: &str, on: &[&str]) -> TodoItem {
     TodoItem {
         needs: on
@@ -52,7 +40,7 @@ fn row_needing(content: &str, on: &[&str]) -> TodoItem {
     }
 }
 
-/// **A row that waits on a CHILD** — the dispatch case, as these tests write one.
+/// A row that waits on a CHILD - the dispatch case, as these tests write one.
 fn row_needing_a_child(content: &str, id: &str) -> TodoItem {
     TodoItem {
         needs: vec![letibot_tokencore::store::TodoNeed::Child { id: id.to_string() }],
@@ -60,7 +48,7 @@ fn row_needing_a_child(content: &str, id: &str) -> TodoItem {
     }
 }
 
-/// **A row that waits on a JOB** — the case the operator asked for one layer below a child:
+/// A row that waits on a JOB - the case the operator asked for one layer below a child
 /// work that cannot start until a background job this session is running has ended.
 fn row_needing_a_job(content: &str, handle: &str) -> TodoItem {
     TodoItem {
@@ -71,14 +59,14 @@ fn row_needing_a_job(content: &str, handle: &str) -> TodoItem {
     }
 }
 
-/// **Nothing running outside the board** — no job this session holds, which is the reading
+/// Nothing running outside the board - no job this session holds, which is the reading
 /// every test here that is not about a job passes, and the one a daemon with no process host
 /// hands in.
 fn no_jobs() -> letibot_tools::builtins::todo::RunningJobs {
     letibot_tools::builtins::todo::RunningJobs::none()
 }
 
-/// **A child this daemon is running**, as a test states one: an age, what it last showed, and
+/// A child this daemon is running, as a test states one: an age, what it last showed, and
 /// whether a turn is in flight in it.
 fn child(
     age_secs: u64,
@@ -92,20 +80,9 @@ fn child(
     }
 }
 
-/// **A row that waits on a child gets its ROOM TO BREATHE, and then a sentence that steers.**
-///
-/// The operator's directive, 2026-10-10, and the failure that was MEASURED the night it was
-/// written: a row marked in progress with a child working on it was nagged four times in twenty
-/// minutes, and none of those nags could tell *the child is working* from *the child is stuck*.
-///
-/// The two halves are asserted on the SAME plan and the SAME child forty minutes apart in age,
-/// so the only fact that changes is the age — and what changes with it is whether the check may
-/// speak at all.
-///
-/// **The silence is `nag_should_arm`'s, which is the whole schedule's one answer**: nothing
-/// armed means no clock, so no notice and no turn is spent. The other direction is the same
-/// predicate letting the row through, and the sentence it then produces is
-/// `unfinished_plan`'s — which is the half that has to say something the silence did not.
+/// A row that waits on a child gets its ROOM TO BREATHE, and then a sentence that steers.
+/// MEASURED 2026-10-10: a row in progress with a child working on it was nagged four times in
+/// twenty minutes, and no nag could tell *the child is working* from *the child is stuck*.
 #[test]
 fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
     let plan = [row_needing_a_child(
@@ -113,9 +90,8 @@ fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
         "s-1-sub-2",
     )];
 
-    // **Five minutes old**: the check may not speak about the row at all — not asked about,
-    // and not listed as blocked either, because `the_plan_as_checked` removes it before the
-    // sentence is rendered. And a plan whose ONLY row is that one arms nothing at all.
+    // Five minutes old: the check may not speak about the row at all - not asked about, and
+    // not listed as blocked either, because `the_plan_as_checked` removes it before the sentence.
     let young = ChildSessions::none().running("s-1-sub-2", child(5 * 60, Some(4), true));
     assert!(
         super::the_plan_as_checked(&plan, &young, &no_jobs()).is_empty(),
@@ -126,8 +102,8 @@ fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
         "and that plan arms NOTHING — the silence is the schedule's, not a sentence that \
              happens to be empty"
     );
-    // **AND THE SILENCE HAS AN END.** Nothing else would arm this clock: it is armed by a turn,
-    // a board write or a prompt, and a child's AGE is none of those — so the deadline is the
+    // AND THE SILENCE HAS AN END. Nothing else would arm this clock: it is armed by a turn
+    // a board write or a prompt, and a child's AGE is none of those - so the deadline is the
     // moment the child leaves its room to breathe, and the steering arrives when it can.
     let t0 = std::time::Instant::now();
     let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
@@ -138,12 +114,9 @@ fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
         "a five-minute-old child's row is due the moment the child turns thirty"
     );
 
-    // **Forty-five minutes old, and gone quiet WITH A TURN IN FLIGHT**: talkable, and what it
-    // says is *check the child* — with the child named, its age given, and the two mechanisms
-    // that act on it. **A turn in flight is what makes it the *stuck* case**: the same silence
-    // with no turn in flight is a child between turns, whose sentence sends its reader to
-    // `task_message` instead (the tools crate's
-    // `a_child_between_turns_is_told_to_be_asked_and_not_killed` is that state's own).
+    // Forty-five minutes old, and gone quiet WITH A TURN IN FLIGHT: talkable, and what it says
+    // is *check the child*. A turn in flight is what makes it the *stuck* case - the same silence
+    // with no turn in flight sends its reader to `task_message` instead.
     let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
     assert!(
         nag_should_arm(&plan, None, &old, &no_jobs()),
@@ -170,18 +143,9 @@ fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
     );
 }
 
-/// **A row that waits on a RUNNING JOB keeps the check silent, and the same row is asked about
-/// once the job has ended.**
-///
-/// The operator's ask, 2026-10-11 — *"todo can be declared to be dependent on a subsession and
-/// on a job ... and that should drastically decrease nags count"* — and the failure it answers
-/// was measured the same night: each of the operator's long jobs had a row nagging while it ran.
-///
-/// **The two halves differ from the child's in the one way that matters here.** A young child's
-/// silence has to be given a DEADLINE, because nothing else would ever end it; a running job's
-/// does not, because its settlement is delivered to the model as a turn of its own and a turn's
-/// end re-arms this very clock. So the whole of this rule is the predicate: while the job runs
-/// nothing is armed and nothing is said, and the row is asked about the moment it is over.
+/// A row that waits on a RUNNING JOB keeps the check silent, and the same row is asked about
+/// once the job has ended. No deadline is needed here - a job's settlement is a turn of its own
+/// and a turn's end re-arms this clock.
 #[test]
 fn a_running_job_keeps_the_check_silent_and_the_end_of_it_asks_again() {
     let plan = [row_needing_a_job("push the branch", "j2070")];
@@ -205,7 +169,7 @@ fn a_running_job_keeps_the_check_silent_and_the_end_of_it_asks_again() {
              silence, so there is nothing to arm"
     );
 
-    // **The job ends** — the handle is not in the snapshot any more — and the row is work.
+    // The job ends - the handle is not in the snapshot any more - and the row is work.
     let ended = RunningJobs::none();
     assert_eq!(
         super::the_plan_as_checked(&plan, &no_children(), &ended).len(),
@@ -233,7 +197,7 @@ fn a_running_job_keeps_the_check_silent_and_the_end_of_it_asks_again() {
     );
 }
 
-/// **A daemon full of jobs says nothing about a board that waits on rows** — the compatibility
+/// A daemon full of jobs says nothing about a board that waits on rows - the compatibility
 /// half of the same predicate, said the way the child one is.
 #[test]
 fn a_board_that_waits_on_nothing_is_unmoved_by_a_daemon_full_of_jobs() {
@@ -251,11 +215,9 @@ fn a_board_that_waits_on_nothing_is_unmoved_by_a_daemon_full_of_jobs() {
     );
 }
 
-/// **The ordinary row-with-no-needs path is unchanged by any of this** — the compatibility
-/// claim, at the one predicate that decides what the check may speak about.
-///
-/// A daemon that is running children is the NORMAL daemon, so a board that waits on nothing
-/// must read exactly as it did before `ChildSessions` existed, whatever that snapshot holds.
+/// The ordinary row-with-no-needs path is unchanged by any of this - a daemon running children
+/// is the NORMAL daemon, so a board that waits on nothing must read as it did before
+/// `ChildSessions` existed, whatever that snapshot holds.
 #[test]
 fn a_board_that_waits_on_nothing_is_unmoved_by_a_daemon_full_of_children() {
     let plan = [row("open", TodoStatus::Pending)];
@@ -313,18 +275,10 @@ fn an_unfinished_plan_is_armed_once() {
     ));
 }
 
-/// **A STUCK PLAN STILL ARMS THE CHECK** — the degenerate case, and the one place the ready set
-/// could have switched the check off by accident.
-///
-/// Every row left waits on another, so the ready set is EMPTY and there is no row to name. That
-/// is exactly the state the agent has to act on — something has to finish, or a need has to be
-/// corrected — so silence here would be the check failing at the moment it matters, which is
-/// why `unfinished_plan_for` answers it with a SENTENCE rather than `None`. Both halves that
-/// make this a clock question are asserted: the first arm fires, and the same stuck plan said
-/// once is not a new notice, so it repeats at the ladder's rate instead of becoming a metronome.
-///
-/// **The dependency-free half of the same question is pinned by the tests above and below this
-/// one**, unchanged: they are flat plans, so their arming is the arming `1d24fab` had.
+/// A STUCK PLAN STILL ARMS THE CHECK - every row left waits on another, so the ready set is
+/// EMPTY and there is no row to name. That is exactly the state the agent has to act on, so
+/// silence would be the check failing when it matters: `unfinished_plan_for` answers it with a
+/// sentence, and saying it once is not a new notice.
 #[test]
 fn a_stuck_plan_arms_the_check_and_is_not_a_metronome() {
     let plan = [
@@ -347,7 +301,7 @@ fn a_stuck_plan_arms_the_check_and_is_not_a_metronome() {
         !nag_should_arm(&plan, Some(&said), &no_children(), &no_jobs()),
         "the same stuck plan is the same notice, so it repeats at the ladder's rate"
     );
-    // **And it is a NOTICE and not a hole in the schedule**: the clock arms it one window out.
+    // And it is a NOTICE and not a hole in the schedule: the clock arms it one window out.
     let t0 = std::time::Instant::now();
     let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
     clock.rearm(&plan, t0, &no_children(), &no_jobs());
@@ -358,15 +312,9 @@ fn a_stuck_plan_arms_the_check_and_is_not_a_metronome() {
     );
 }
 
-/// **An unchanged plan is not a NEW notice** — the `moved` half of the schedule, which is what
-/// this predicate is. It is no longer the whole of the arming decision: an unchanged plan comes
-/// back at the clock's doubled-and-capped interval (the operator's *"hmm, yes obviously it
-/// should be a repeated nag"*), which is `TodoNagClock`'s own test below. What is pinned here is
-/// that the COMPARISON is about the notice and not about the clock's state.
-///
-/// The last-sent text is taken from the plan itself rather than written by hand, because that
-/// is what the schedule actually stores — a hand-written string would test the comparison
-/// against something this plan could never produce.
+/// An unchanged plan is not a NEW notice - the `moved` half of the schedule. The last-sent
+/// text is taken from the plan itself rather than written by hand, because that is what the
+/// schedule stores.
 #[test]
 fn an_unchanged_plan_is_not_a_new_notice() {
     let plan = [row("open", TodoStatus::Pending)];
@@ -385,10 +333,9 @@ fn an_unchanged_plan_is_not_a_new_notice() {
     ));
 }
 
-/// A change to the QUESTION is a new thing to say — the named row started, or another row named.
-/// **A row added elsewhere is not** (R93.B1): the notice used to carry *"(N more open)"*, so every
-/// row added or closed anywhere on the plan made the same question a new notice and reset the
-/// backoff.
+/// A change to the QUESTION is a new thing to say - the named row started, or another row named.
+/// A row added elsewhere is not : the notice used to carry *"(N more open)"*, so any
+/// row added or closed anywhere made the same question new and reset the backoff.
 #[test]
 fn a_plan_that_moved_is_armed_again() {
     let plan = [row("open", TodoStatus::Pending)];
@@ -425,15 +372,10 @@ fn a_plan_that_moved_is_armed_again() {
     ));
 }
 
-/// **A POSTPONED row does not arm the check, and an ordinary one beside it does.**
-///
-/// The operator's ask — a postponed item *"persists but without nag"* — and both directions
-/// are load-bearing: the first assertion is the feature, and the second is what says the first
-/// did not simply switch the check off for everything.
-///
-/// **Tested here, as a predicate over rows and no session**, which is the reason
-/// `nag_should_arm` exists at all: through a daemon, *silent because the row is postponed* and
-/// *silent because nothing armed the clock* are the same observation.
+/// A POSTPONED row does not arm the check, and an ordinary one beside it does. Both
+/// directions are load-bearing: the first is the feature, the second says the first did not
+/// simply switch the check off. A predicate over ROWS, because through a daemon *postponed* and
+/// *never armed* are the same observation.
 #[test]
 fn a_postponed_row_does_not_arm_the_check() {
     assert!(
@@ -445,9 +387,8 @@ fn a_postponed_row_does_not_arm_the_check() {
         ),
         "the one row is set aside, so there is nothing to check"
     );
-    // **Even after the check spoke about it**, which is the transition a session really makes:
-    // the model was told, the operator then set the row aside, and the next idle period must
-    // be silent rather than repeat the sentence.
+    // Even after the check spoke about it, which is the transition a session really makes
+    // the model was told, the operator set the row aside, and the next idle period is silent.
     assert!(
         !nag_should_arm(
             &[row("later", TodoStatus::Postponed)],
@@ -469,10 +410,8 @@ fn a_postponed_row_does_not_arm_the_check() {
              check that stopped working"
     );
 
-    // **A mixed plan asks about the ordinary row and says nothing about the other one.** The
-    // reading is `the_plan_as_checked`, which is the same one `Harness::nag_notice` takes — so
-    // the row is neither named nor counted as open, which are the two ways a postponed row
-    // could still reach the model.
+    // A mixed plan asks about the ordinary row and says nothing about the other one - the
+    // reading `Harness::nag_notice` takes, so the row is neither named nor counted as open.
     let mixed = [
         row("now", TodoStatus::Pending),
         row("later", TodoStatus::Postponed),
@@ -494,15 +433,10 @@ fn a_postponed_row_does_not_arm_the_check() {
     );
 }
 
-/// **A row the operator STRUCK OFF does not arm the check either — and is not the same row as
-/// one set aside.**
-///
-/// `Cancelled` arrives with the same ask as `Postponed` (*"so done items or canceled items
-/// should be kept"*): the row stays on the board as the record the operator's ruling is about,
-/// and nothing asks about it, because there is nothing owed. The two are asserted TOGETHER
-/// because they are one predicate's neighbours — the reason to write this test is that a fifth
-/// word could have been added to the store and forgotten here, and the symptom would be a check
-/// that nags about work somebody has already decided against.
+/// A row the operator STRUCK OFF does not arm the check either - and is not the same row as
+/// one set aside. `Cancelled` keeps the row on the board as the record of the operator's ruling
+/// and asks nothing, because nothing is owed. It sits here beside `Postponed` because a fifth
+/// word added to the store and forgotten here would nag about work already decided against.
 #[test]
 fn a_cancelled_row_does_not_arm_the_check() {
     assert!(
@@ -554,13 +488,9 @@ fn a_cancelled_row_does_not_arm_the_check() {
     );
 }
 
-/// **The clock itself, pinned at the boundary with the time injected** — because a test
-/// that waited a real minute would not be a test, and because the clock is the half a
-/// child now shares (`serve_child_under`), so its boundaries are worth asserting where
-/// they live rather than through a daemon or a spawned thread.
-///
-/// The instants are arbitrary fixed points; the window is injected, so the arithmetic is
-/// exact and not slept through.
+/// The clock itself, pinned at the boundary with the time injected - a test that waited a real
+/// minute would not be a test, and the clock is the half a child now shares
+/// (`serve_child_under`), so its boundaries are worth asserting where they live.
 #[test]
 fn the_clock_arms_at_the_window_and_stands_down_when_nothing_is_askable() {
     use std::time::{Duration, Instant};
@@ -572,7 +502,7 @@ fn the_clock_arms_at_the_window_and_stands_down_when_nothing_is_askable() {
         "a fresh clock is armed for nothing — the waiter's sleep stays unbounded"
     );
 
-    // An open plan arms at now + window — the boundary is exact, not "about a minute".
+    // An open plan arms at now + window - the boundary is exact, not "about a minute".
     clock.rearm(
         &[row("open", TodoStatus::Pending)],
         t0,
@@ -581,7 +511,7 @@ fn the_clock_arms_at_the_window_and_stands_down_when_nothing_is_askable() {
     );
     assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
 
-    // **And stands down for a plan with nothing to ask about** — the operator's
+    // And stands down for a plan with nothing to ask about - the operator's
     // postponed row is the case the rule exists for, so it is the case pinned here.
     clock.rearm(
         &[row("later", TodoStatus::Postponed)],
@@ -595,13 +525,9 @@ fn the_clock_arms_at_the_window_and_stands_down_when_nothing_is_askable() {
     );
 }
 
-/// **The operator's ruling, through the clock**: *"hmm, yes obviously it should be a repeated
-/// nag."* A delivered check is not silence for ever — the same notice comes back at an interval
-/// that doubles per delivery — and a plan that MOVED is a new thing to say, one base window
-/// from the re-arm.
-///
-/// **This is the test that fails on the once-per-plan rule**: there, the second `rearm` below
-/// armed nothing at all.
+/// The operator's ruling, through the clock: *"hmm, yes obviously it should be a repeated
+/// nag."* A delivered check comes back at an interval that doubles per delivery, and a plan that
+/// MOVED is a new thing to say, one base window from the re-arm.
 #[test]
 fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
     use std::time::{Duration, Instant};
@@ -621,7 +547,7 @@ fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
     clock.rearm(&plan, t0, &no_children(), &no_jobs());
     assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
 
-    // Delivered: the notice is recorded, the deadline is spent — and the REPEAT is armed, one
+    // Delivered: the notice is recorded, the deadline is spent - and the REPEAT is armed, one
     // doubled interval after the DELIVERY.
     assert!(clock.due_now(t0 + Duration::from_secs(60)));
     clock.said(Some(said.clone()), t0 + Duration::from_secs(60));
@@ -637,9 +563,9 @@ fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
         "the same notice comes back at the doubled interval, measured from its delivery"
     );
 
-    // **And a turn that changes nothing does not postpone it.** The anchor is the delivery, so
-    // a wake-driven turn in between arms the SAME moment rather than a fresh window — which is
-    // what keeps a session that keeps waking from pushing its own reminder back for ever.
+    // And a turn that changes nothing does not postpone it. The anchor is the delivery, so a
+    // wake-driven turn in between arms the SAME moment - which keeps a session that keeps waking
+    // from pushing its own reminder back for ever.
     clock.rearm(
         &plan,
         t0 + Duration::from_secs(100),
@@ -663,7 +589,7 @@ fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
     );
     assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
 
-    // **A plan that moved is a new thing to say** — one row started — and the ladder starts
+    // A plan that moved is a new thing to say - one row started - and the ladder starts
     // over at the base window, however long the old notice stood.
     let moved = [row("open", TodoStatus::InProgress)];
     clock.rearm(
@@ -678,9 +604,8 @@ fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
         "a moved plan is armed one base window from the re-arm"
     );
 
-    // **And a speaker earns the check back** — `note_operator_prompt`'s rule, which a parent
-    // steering a child exercises too (`serve_child_under`'s prompt arm) — at the base rate and
-    // not at whatever gap the ladder had grown to.
+    // And a speaker earns the check back - `note_operator_prompt`'s rule, which a parent
+    // steering a child exercises too - at the base rate, not at whatever gap the ladder had grown to.
     let moved_said = super::unfinished_plan(
         &super::the_plan_as_checked(&moved, &no_children(), &no_jobs()),
         &moved,
@@ -714,13 +639,9 @@ fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
     );
 }
 
-/// **The ladder stops growing**, and that is what keeps a nine-hour stall a working night
-/// rather than a retreat into silence: the interval doubles per delivery and holds at
-/// [`super::NAG_REPEAT_CAP`].
-///
-/// A one-second window rather than the production minute, so the ladder reaches the cap in a
-/// handful of deliveries; the SHAPE is the production one, because the interval is computed
-/// from the window the clock was built with.
+/// The ladder stops growing, which keeps a nine-hour stall a working night rather than a
+/// retreat into silence: the interval doubles per delivery and holds at [`super::NAG_REPEAT_CAP`].
+/// A one-second window, so the ladder reaches the cap in a handful of deliveries.
 #[test]
 fn the_repeat_stops_growing_at_the_cap() {
     use std::time::{Duration, Instant};
@@ -747,7 +668,7 @@ fn the_repeat_stops_growing_at_the_cap() {
         clock.rearm(&plan, at, &no_children(), &no_jobs());
     }
 
-    // Every gap is the one before it doubled, or the cap — never more than both.
+    // Every gap is the one before it doubled, or the cap - never more than both.
     for pair in gaps.windows(2) {
         assert!(
             pair[1] <= (pair[0] * 2).min(super::NAG_REPEAT_CAP),
@@ -765,7 +686,7 @@ fn the_repeat_stops_growing_at_the_cap() {
     );
 }
 
-/// **A plan with nothing to ask about never repeats**, whatever the ladder has counted — the
+/// A plan with nothing to ask about never repeats, whatever the ladder has counted - the
 /// disarm is the plan's own reading and not the clock's state.
 #[test]
 fn a_plan_with_nothing_to_ask_about_never_repeats() {
@@ -831,11 +752,9 @@ fn a_plan_with_nothing_to_ask_about_never_repeats() {
     );
 }
 
-/// **`due_now` at the boundary, and the disarm in both arms of it.** The deadline's
-/// own instant is due; a hair before is not; and a `due_now` that answered false has
-/// still SPENT nothing (the deadline stands), while one that answered true has spent
-/// it — which is the difference between a check that fires once and one that fires
-/// every idle pass after it.
+/// `due_now` at the boundary, and the disarm in both arms of it. A `due_now` that answered
+/// false has spent nothing; one that answered true has spent the deadline - the difference
+/// between a check that fires once and one that fires every idle pass after it.
 #[test]
 fn the_boundary_is_due_and_a_delivery_disarms_either_way() {
     use std::time::{Duration, Instant};
@@ -874,7 +793,7 @@ fn the_boundary_is_due_and_a_delivery_disarms_either_way() {
     assert!(clock.due_at().is_none());
 }
 
-/// **R77: an operator's ADD earns the check back and arms it at the shorter window** — a notice
+/// : an operator's ADD earns the check back and arms it at the shorter window - a notice
 /// that had climbed the ladder is not where their row waits, and neither is the full minute.
 #[test]
 fn an_operator_add_earns_the_check_back_at_the_shorter_window() {
@@ -903,13 +822,13 @@ fn an_operator_add_earns_the_check_back_at_the_shorter_window() {
         "the operator's add is due at its own window, from the add"
     );
 
-    // A clock whose window is already shorter keeps it — a test's 300ms is not lengthened.
+    // A clock whose window is already shorter keeps it - a test's 300ms is not lengthened.
     let mut quick = super::TodoNagClock::with_window(Duration::from_millis(300));
     quick.operator_added(&added, t0, &no_children(), &no_jobs());
     assert_eq!(quick.due_at(), Some(t0 + Duration::from_millis(300)));
 }
 
-/// **An add is told from a re-push by the words**: the head sends its whole half on every add,
+/// An add is told from a re-push by the words: the head sends its whole half on every add
 /// delete and HELLO, and only a new open row is the operator asking for something.
 #[test]
 fn an_operator_add_is_a_new_open_row_on_their_half_and_nothing_else() {
@@ -955,13 +874,9 @@ fn an_operator_add_is_a_new_open_row_on_their_half_and_nothing_else() {
     );
 }
 
-/// **The pg-noop case: an operator's `in_progress` CRITERION, marked waiting on the gate job with
-/// `wait_on` — silent while it runs, asked about again when it ends.**
-///
-/// The operator: *"poor pg-noop gets hammered by this … it usually replies blabla job is running,
-/// waiting … lets give it a door to mark existing todos as dependent on an agent or a job"*. The
-/// door is the board's (`TodoBoard::set_waits`); this is the arming decision reading what it
-/// wrote, with no code that knows where the edge came from.
+/// The pg-noop case: an operator's `in_progress` CRITERION, marked waiting on the gate job with
+/// `wait_on` - silent while it runs, asked about again when it ends. The door is the board's
+/// (`TodoBoard::set_waits`); this is the arming decision reading what it wrote.
 #[test]
 fn a_wait_attached_to_an_operators_row_keeps_the_check_silent_until_the_job_ends() {
     use letibot_tools::builtins::todo::{TodoBoard, Wait};
@@ -996,13 +911,9 @@ fn a_wait_attached_to_an_operators_row_keeps_the_check_silent_until_the_job_ends
     );
 }
 
-/// **The operator's `/nag pause` stands the clock down — the idle check, the repeat and the
-/// sooner check an added row earns — and a pause with an end arms only that end.**
-///
-/// The operator: *"and i need a way to stop todo nags"*, then *"or rather - pause"*. The pause is
-/// the session's fact (`Harness::nag_hold` reads it off the config); what is pinned here is the
-/// clock's reading of it, with the times injected, so *silent because paused* is told from
-/// *silent because nothing armed* by the deadline the clock holds rather than by waiting.
+/// The operator's `/nag pause` stands the clock down - the idle check, the repeat and the sooner
+/// check an added row earns - and a pause with an end arms only that end. The pause is the
+/// session's fact (`Harness::nag_hold`); what is pinned here is the clock's reading of it.
 #[test]
 fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
     use std::time::{Duration, Instant};
@@ -1017,11 +928,11 @@ fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
         "the premise: an open plan arms the check"
     );
 
-    // **Paused until resumed: nothing at all**, the waiter's unbounded sleep.
+    // Paused until resumed: nothing at all, the waiter's unbounded sleep.
     clock.hold(super::NagHold::Paused { until: None });
     clock.rearm(&plan, t0, &no_children(), &no_jobs());
     assert_eq!(clock.due_at(), None, "a pause arms no check");
-    // **And R77's sooner check does not slip past it** — the operator's own row is still a check.
+    // And 's sooner check does not slip past it - the operator's own row is still a check.
     let added = [plan[0].clone(), row("and the docs", TodoStatus::Pending)];
     clock.operator_added(&added, t0, &no_children(), &no_jobs());
     assert_eq!(
@@ -1030,7 +941,7 @@ fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
         "an operator's added row earns no check while the pause holds"
     );
 
-    // **Paused with an end: the end, and only the end** — the owner wakes to lift the pause.
+    // Paused with an end: the end, and only the end - the owner wakes to lift the pause.
     let end = t0 + Duration::from_secs(2 * 3600);
     clock.hold(super::NagHold::Paused { until: Some(end) });
     clock.operator_added(&added, t0, &no_children(), &no_jobs());
@@ -1040,7 +951,7 @@ fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
         "the pause's end is the one deadline"
     );
 
-    // **Resumed: the clock arms as it always did.**
+    // Resumed: the clock arms as it always did.
     clock.hold(super::NagHold::Running);
     let t1 = t0 + Duration::from_secs(5);
     clock.rearm(&added, t1, &no_children(), &no_jobs());
@@ -1052,21 +963,15 @@ fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
 }
 
 // ---------------------------------------------------------------------------
-// The queue's census — the clock's SECOND subject
+// The queue's census - the clock's SECOND subject
 // ---------------------------------------------------------------------------
 //
-// The operator's report (2026-11-01): eight merge-queue rows sat stuck for hours, and every one
-// of those transitions was notified once as it happened. What no sentence anywhere gave was the
-// TOTAL and the AGE. `mergequeue::stuck` counts them; these tests are about when the daemon says
-// so, and — the half that matters — when it stops.
-//
-// **One clock, two schedules.** The census is a TURN of its own (`Door::Census`,
-// `Sessions::deliver_due_censuses`), so it has a deadline of its own (`census_due`) paced by
-// `STUCK_REPEAT` rather than the plan's ladder: a stuck queue is not a stalled plan, and the rate
-// is chosen against the queue's own units rather than against a stalled plan's. `QueueNews` is what
-// the clock is handed, exactly as `NagHold` is.
+// The operator's report : eight merge-queue rows sat stuck for hours, each transition
+// notified once as it happened, and no sentence anywhere gave the TOTAL and the AGE.
+// One clock, two schedules: the census is a TURN of its own (`Door::Census`), paced by
+// `STUCK_REPEAT` rather than the plan's ladder, because a stuck queue is not a stalled plan.
 
-/// **Rows stuck long enough to be news**, as the harness hands them in.
+/// Rows stuck long enough to be news, as the harness hands them in.
 fn news() -> super::QueueNews {
     super::QueueNews {
         says: true,
@@ -1074,7 +979,7 @@ fn news() -> super::QueueNews {
     }
 }
 
-/// **One delivery of the census, as `deliver_due_censuses` performs one**: the deadline spent, the
+/// One delivery of the census, as `deliver_due_censuses` performs one: the deadline spent, the
 /// delivery recorded (which arms the repeat), the clock re-armed from the store as it now is.
 fn deliver(clock: &mut super::TodoNagClock, at: std::time::Instant) {
     assert!(clock.census_due_now(at), "the census was due at {at:?}");
@@ -1082,11 +987,9 @@ fn deliver(clock: &mut super::TodoNagClock, at: std::time::Instant) {
     clock.rearm(&[], at, &no_children(), &no_jobs());
 }
 
-/// **Two bad rows, three passes inside one interval, ONE notice** — and the second one a whole
-/// `STUCK_REPEAT` later, not at the plan-check's base window.
-///
-/// FAILS before this change: there was no census deadline at all, so `census_due_at` was `None`
-/// at every point below and a project with an empty board heard nothing about its stuck queue.
+/// Two bad rows, three passes inside one interval, ONE notice - and the second one a whole
+/// `STUCK_REPEAT` later, not at the plan-check's base window. FAILS before this change: there was
+/// no census deadline at all, so a project with an empty board heard nothing about its stuck queue.
 #[test]
 fn a_stuck_queue_is_one_notice_per_interval_and_not_one_per_pass() {
     use std::time::{Duration, Instant};
@@ -1096,18 +999,18 @@ fn a_stuck_queue_is_one_notice_per_interval_and_not_one_per_pass() {
     let none: [TodoItem; 0] = [];
     clock.queue(news());
 
-    // **Due AT ONCE** — the row has already been stuck a quarter of an hour, and making it wait a
+    // Due AT ONCE - the row has already been stuck a quarter of an hour, and making it wait a
     // window for the privilege of being counted is the silence this notice exists to end.
     clock.rearm(&none, t0, &no_children(), &no_jobs());
     assert_eq!(clock.census_due_at(), Some(t0));
 
-    // **One delivery**, and the repeat is a full `STUCK_REPEAT` away — not the 60-second window,
+    // One delivery, and the repeat is a full `STUCK_REPEAT` away - not the 60-second window
     // which is what a person would read as a heartbeat.
     deliver(&mut clock, t0);
     let repeat = t0 + super::STUCK_REPEAT;
     assert_eq!(clock.census_due_at(), Some(repeat));
 
-    // **Three passes inside the interval say nothing, and move nothing.**
+    // Three passes inside the interval say nothing, and move nothing.
     for at in [
         t0 + Duration::from_secs(1),
         t0 + super::STUCK_REPEAT / 2,
@@ -1121,16 +1024,14 @@ fn a_stuck_queue_is_one_notice_per_interval_and_not_one_per_pass() {
         );
     }
 
-    // **And the second delivery, one interval after the first.** The sentence it composes carries
-    // a bigger age; that is `mergequeue::stuck::tests`' to prove, and the cadence is this one's.
+    // And the second delivery, one interval after the first. The sentence carries a bigger age
+    // that is `mergequeue::stuck::tests`' to prove, and the cadence is this one's.
     deliver(&mut clock, repeat);
     assert_eq!(clock.census_due_at(), Some(repeat + super::STUCK_REPEAT));
 }
 
-/// **And a row that recovers stops it in both directions** — no further notice, and nothing armed
-/// for the next interval.
-///
-/// FAILS before this change: there was no census clock to stand down.
+/// And a row that recovers stops it in both directions - no further notice, and nothing armed
+/// for the next interval. FAILS before this change: there was no census clock to stand down.
 #[test]
 fn a_queue_that_goes_clean_stands_the_clock_down() {
     use std::time::{Duration, Instant};
@@ -1143,7 +1044,7 @@ fn a_queue_that_goes_clean_stands_the_clock_down() {
     deliver(&mut clock, t0);
     assert_eq!(clock.census_due_at(), Some(t0 + super::STUCK_REPEAT));
 
-    // **The rows recover**: the owner hands in a census with nothing in it, and the next arming
+    // The rows recover: the owner hands in a census with nothing in it, and the next arming
     // arms nothing at all.
     clock.queue(super::QueueNews::none());
     clock.rearm(
@@ -1158,7 +1059,7 @@ fn a_queue_that_goes_clean_stands_the_clock_down() {
         "nothing stuck, nothing to say: no deadline at all"
     );
 
-    // **And a pass much later is silent too.** A tree that goes quiet must stop nagging, or the
+    // And a pass much later is silent too. A tree that goes quiet must stop nagging, or the
     // next reader learns to ignore it.
     assert!(!clock.census_due_now(t0 + 10 * super::STUCK_REPEAT));
     clock.rearm(
@@ -1170,7 +1071,7 @@ fn a_queue_that_goes_clean_stands_the_clock_down() {
     assert_eq!(clock.census_due_at(), None);
 }
 
-/// **Nothing stuck is never a notice, from the first arming on.**
+/// Nothing stuck is never a notice, from the first arming on.
 #[test]
 fn nothing_stuck_never_arms_the_clock() {
     use std::time::Instant;
@@ -1183,8 +1084,8 @@ fn nothing_stuck_never_arms_the_clock() {
     assert_eq!(clock.census_due_at(), None);
 }
 
-/// **A row that is stuck but too YOUNG arms the moment it becomes news**, and says nothing until
-/// then — the young child's rule one subject over. Without this arm the census would wait for a
+/// A row that is stuck but too YOUNG arms the moment it becomes news, and says nothing until
+/// then - the young child's rule one subject over. Without this arm the census would wait for a
 /// turn a quiet session may never take, and the silence would have no end.
 #[test]
 fn a_young_census_is_armed_for_the_moment_it_is_news() {
@@ -1206,12 +1107,9 @@ fn a_young_census_is_armed_for_the_moment_it_is_news() {
     assert!(!clock.census_due_now(t0 + Duration::from_secs(60)));
 }
 
-/// **The census waits for the plan's ladder at neither end** — it is due at once while the plan's
-/// own notice is four windows away, and the plan's deadline is not moved by it.
-///
-/// This is the "neither starves the other" property, and the two-deadline shape is what makes it
-/// structural rather than argued: `due` and `census_due` are separate fields with separate
-/// anchors, so neither subject's arming can push the other's.
+/// The census waits for the plan's ladder at neither end - due at once while the plan's own
+/// notice is four windows away, and the plan's deadline is not moved by it. `due` and `census_due`
+/// are separate fields with separate anchors, so neither subject's arming can push the other's.
 #[test]
 fn a_census_never_waits_for_the_plan_ladder_and_never_pushes_it() {
     use std::time::{Duration, Instant};
@@ -1248,8 +1146,8 @@ fn a_census_never_waits_for_the_plan_ladder_and_never_pushes_it() {
     let plan_due = clock.due_at();
     assert_eq!(plan_due, Some(t0 + Duration::from_secs(180 + 240)));
 
-    // **A row has now been stuck long enough to be news.** The census is due NOW — the plan's rung
-    // is not consulted — and the plan's own deadline is exactly where it was.
+    // A row has now been stuck long enough to be news. The census is due NOW - the plan's rung
+    // is not consulted - and the plan's own deadline is exactly where it was.
     clock.queue(news());
     clock.rearm(
         &plan,
@@ -1261,7 +1159,7 @@ fn a_census_never_waits_for_the_plan_ladder_and_never_pushes_it() {
     assert_eq!(clock.due_at(), plan_due, "the census moved nothing");
 }
 
-/// **The operator's pause holds the census too** — `/nag pause` is *stop nagging me*, and a census
+/// The operator's pause holds the census too - `/nag pause` is *stop nagging me*, and a census
 /// is a nag. Nothing is armed while they hold it, and a resume re-arms from the store.
 #[test]
 fn a_paused_clock_says_nothing_about_the_queue_either() {
@@ -1276,7 +1174,7 @@ fn a_paused_clock_says_nothing_about_the_queue_either() {
     assert_eq!(clock.census_due_at(), None);
     assert_eq!(clock.due_at(), None);
 
-    // **And resumed, it arms again** — from the store as it is, which still has the rows.
+    // And resumed, it arms again - from the store as it is, which still has the rows.
     clock.hold(super::NagHold::Running);
     clock.rearm(
         &none,
@@ -1287,7 +1185,7 @@ fn a_paused_clock_says_nothing_about_the_queue_either() {
     assert_eq!(clock.census_due_at(), Some(t0 + Duration::from_secs(30)));
 }
 
-/// **The operator's message does NOT earn the census back**, and that is a decision rather than an
+/// The operator's message does NOT earn the census back, and that is a decision rather than an
 /// omission: the plan's ladder is reset by a prompt because a check is a TURN and the person has
 /// just changed what it should say. A census is a notice about rows the person's message did not
 /// move, so resetting it would let a chatty session produce a census per message.
@@ -1318,16 +1216,10 @@ fn an_operators_message_does_not_postpone_or_repeat_the_census() {
     assert_eq!(clock.census_due_at(), armed);
 }
 
-/// **A SECOND incident in one daemon's life gets its own clock** — the defect the review found,
-/// and the reason the young-row arm is asked first.
-///
-/// The shape: a census is said, its rows recover, and a new row goes bad while it is still young.
-/// Every arming in that window is `says: false, matures_in: Some(..)` — so an arm that reads the
-/// LAST CENSUS'S ANCHOR before it reads `matures_in` answers *nothing*, the project session goes
-/// quiet, `next_nag_at` hands the worker no deadline, and the rows sit there exactly as the
-/// operator reported. The first incident after each start worked; every later one did not.
-///
-/// FAILS before the fix: `census_due_at()` is `None` from the third assertion on, and stays `None`.
+/// A SECOND incident in one daemon's life gets its own clock - the reason the young-row arm is
+/// asked first. Every arming while a new row is still young is `says: false, matures_in: Some(..)`
+/// so an arm that read the LAST CENSUS'S ANCHOR first answered *nothing*: the first incident after
+/// each start worked and every later one went silent. FAILS before the fix.
 #[test]
 fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
     use std::time::{Duration, Instant};
@@ -1336,13 +1228,13 @@ fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
     let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
     let none: [TodoItem; 0] = [];
 
-    // **The first incident**: said once, and the repeat armed an interval out.
+    // The first incident: said once, and the repeat armed an interval out.
     clock.queue(news());
     clock.rearm(&none, t0, &no_children(), &no_jobs());
     deliver(&mut clock, t0);
     assert_eq!(clock.census_due_at(), Some(t0 + super::STUCK_REPEAT));
 
-    // **The rows recover**, and the arming that follows sees an empty queue: the anchor goes with
+    // The rows recover, and the arming that follows sees an empty queue: the anchor goes with
     // it, because that census is about rows that are gone.
     clock.queue(super::QueueNews::none());
     clock.rearm(
@@ -1353,7 +1245,7 @@ fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
     );
     assert_eq!(clock.census_due_at(), None);
 
-    // **A new row goes bad, young.** Armed for its crossing — not silenced by the old anchor.
+    // A new row goes bad, young. Armed for its crossing - not silenced by the old anchor.
     clock.queue(super::QueueNews {
         says: false,
         matures_in: Some(Duration::from_secs(15 * 60)),
@@ -1370,7 +1262,7 @@ fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
         "the second incident is armed for the moment it becomes news"
     );
 
-    // **And at the crossing it is due at once** — a first notice, not a repeat.
+    // And at the crossing it is due at once - a first notice, not a repeat.
     clock.queue(news());
     clock.rearm(
         &none,
@@ -1385,13 +1277,9 @@ fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
     );
 }
 
-/// **And the same when nothing OBSERVED the queue empty** — the arm order is what saves this one,
-/// not the clearing.
-///
-/// A row can recover and a new one go bad between two armings, so no re-arm ever sees `says: false,
-/// matures_in: None` and the anchor is never cleared. The young-row arm being asked FIRST is what
-/// keeps the crossing armed in that case; the clearing is a second, weaker half that only helps
-/// when the empty state was seen.
+/// And the same when nothing OBSERVED the queue empty - the arm order is what saves this one
+/// not the clearing: a row can recover and a new one go bad between two armings, so no re-arm ever
+/// sees the empty state. The clearing is the weaker half, and only helps when it was seen.
 #[test]
 fn a_young_row_arms_its_crossing_even_under_an_older_census_anchor() {
     use std::time::{Duration, Instant};
@@ -1403,7 +1291,7 @@ fn a_young_row_arms_its_crossing_even_under_an_older_census_anchor() {
     clock.rearm(&none, t0, &no_children(), &no_jobs());
     deliver(&mut clock, t0);
 
-    // **Straight to a young row**, with no `QueueNews::none()` in between — so `census_said_at`
+    // Straight to a young row, with no `QueueNews::none` in between - so `census_said_at`
     // still holds `t0` and only the arm order can answer.
     clock.queue(super::QueueNews {
         says: false,

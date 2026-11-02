@@ -1,10 +1,6 @@
-//! **Two daemons, one store, one session** — the guard [`crate::writer`] exists for, driven with
-//! real `Sessions` and a real store file.
-//!
-//! Everything here is a `Sessions`/`Harness` pair rather than a store call, because that is the
-//! door a daemon comes through: `Harness::open` is where the claim is taken, and a test of the
-//! store alone would not prove that an OPEN is what is refused. It lives in this module because a
-//! test that appends a row needs the harness `Sessions` holds, which is this module's field.
+//! Two daemons, one store, one session - the guard [`crate::writer`] exists for, driven with
+//! real `Sessions` and a real store file. It lives here because a test that appends a row needs the
+//! harness `Sessions` holds, which is this module's field.
 
 use std::path::PathBuf;
 
@@ -47,9 +43,8 @@ fn a_daemon_on(dir: &std::path::Path, db: &std::path::Path) -> Config {
     cfg
 }
 
-/// A registry holding the session, which is what `Sessions::open_first` requires — a daemon's
-/// own first session is registered by its startup (`Registry::create`), not by the open. Each
-/// daemon gets one of its own, which is the fact that makes two of them two daemons.
+/// A registry holding the session, which `Sessions::open_first` requires: a daemon's first session
+/// is registered by its startup, and one registry per daemon is what makes two of them two.
 fn a_daemon(cfg: &Config) -> std::sync::Arc<Registry> {
     let registry = Registry::new();
     registry
@@ -58,14 +53,9 @@ fn a_daemon(cfg: &Config) -> std::sync::Arc<Registry> {
     registry
 }
 
-/// **A second `Sessions` on one store file is REFUSED, by name, before a row is written** — the
-/// defect `crate::writer` documents, at the smallest size it can be driven.
-///
-/// MEASURED 2026-10-26, in the operator's store: two daemons on one `sessions.db` opened the
-/// review queue's session (one id for the whole box, then) and both appended to `#t0`. The store
-/// refused the second writer's rows — `seq must be the next one` — and by then the transcript had
-/// a hole in it that no restart could repair, so a resume of that session failed for ever. What
-/// this asserts is that the second open does not reach a write at all.
+/// A second `Sessions` on one store file is REFUSED, by name, before a row is written.
+/// MEASURED 2026-10-26 in the operator's store: two daemons both appended to `#t0`, the store
+/// refused the second's rows, and the transcript kept a hole no restart could repair.
 #[test]
 fn a_second_session_cannot_write_one_transcript() {
     let Some(_) = crate::vocab_gguf() else {
@@ -76,13 +66,12 @@ fn a_second_session_cannot_write_one_transcript() {
     let cfg = a_daemon_on(&dir.0, &db);
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
 
-    // **The daemon that holds the session** — a registry of its own, as every daemon has.
+    // A registry of its own, as every daemon has.
     let mut first = Sessions::open_first(&parts, cfg.clone(), a_daemon(&cfg))
         .expect("the first daemon opens its session");
 
-    // **And a second daemon's open of the SAME id against the same store file.** Two `Sessions`
-    // in one process, two registries, one `sessions.db`: the shape of two daemons, without the
-    // second process.
+    // A second daemon's open of the SAME id on the same file: two `Sessions`, two registries, one
+    // `sessions.db` - the shape of two daemons without the second process.
     let refusal = Sessions::open_first(&parts, cfg.clone(), a_daemon(&cfg))
         .err()
         .expect("two processes may not write one transcript")
@@ -100,7 +89,7 @@ fn a_second_session_cannot_write_one_transcript() {
         "and the process holding it, by pid, so a person can find it: {refusal}"
     );
 
-    // **The refused open wrote nothing**: the row is still the first daemon's, and there is one.
+    // The refused open wrote nothing: the row is still the first daemon's, and there is one.
     let store = Store::open(&db).expect("the store reopens");
     let holder = store
         .session_writer("s-contended")
@@ -108,8 +97,7 @@ fn a_second_session_cannot_write_one_transcript() {
         .expect("the first daemon still holds it");
     assert_ne!(holder.owner, "", "the claim names its owner: {holder:?}");
 
-    // **And the first daemon's rows stay consistent**: it appends one, and the transcript reads
-    // back as a chain — which is the thing that the interleaving used to break, silently.
+    // The transcript reads back as a chain - what the interleaving used to break, silently.
     first
         .open
         .get_mut("s-contended")
@@ -121,8 +109,7 @@ fn a_second_session_cannot_write_one_transcript() {
         .expect("the transcript is a chain, not a hole");
     assert_eq!(loaded.items.len(), 1, "one row, written by one writer");
 
-    // **And the claim is given back when the harness goes** — which is what makes a restart come
-    // back to the same session rather than being refused by its own predecessor.
+    // The claim goes back with the harness, so a restart is not refused by its predecessor.
     drop(first);
     assert!(
         store

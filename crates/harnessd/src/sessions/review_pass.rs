@@ -1,24 +1,6 @@
-//! **The review queue's reviewers, served on the daemon's own clock** — `Sessions::serve_reviews`
-//! through the review queue's session (`gatekeeper::SESSION`), against a temp store.
-//!
-//! The queue's thread CLAIMS a review (`waiting → reviewing`, owner = this daemon's lease
-//! identity) and rings the session; this pass starts a reviewer for every claimed row nobody is on,
-//! writes the verdict the reviewer HANDS IN (`review_verdict`, the daemon's desk) bound to the head
-//! the claim read, and counts an attempt that reached none. Asserted here, at the harness:
-//!
-//! * **A claimed review is the review queue session's own `task` child**, and the daemon's own
-//!   session is asked for nothing.
-//! * **A row another daemon claimed is left alone** — R61 defect 9: every daemon served the one
-//!   global session, and two would each spawn a reviewer for one entry.
-//! * **A verdict handed in approves the head the claim read** (decision 6) and hands the branch to
-//!   the merge queue in the same transaction; a second verdict is refused.
-//! * **A child of another session cannot submit.**
-//! * **An answer in prose is a counted attempt, and so is a child that vanished** — R61 defect 10:
-//!   a vanished child wrote nothing and was not counted, so the next pass spawned another (148
-//!   reviewer sessions for 21 rows).
-//!
-//! It needs the vocabulary GGUF (`Harness::open` renders a stable prefix) and skips without it;
-//! `LETIBOT_REQUIRE_APPARATUS=1` refuses the skip. No model, and never the live store.
+//! The review queue's reviewers, served on the daemon's own clock - `Sessions::serve_reviews`
+//! through the review queue's session (`gatekeeper::SESSION`), against a temp store. It needs the
+//! vocabulary GGUF and skips without it; `LETIBOT_REQUIRE_APPARATUS=1` refuses the skip.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,7 +55,7 @@ enum Ending {
     Running,
     /// Answered in prose, never handing a verdict in.
     Prose(String),
-    /// Gone — a handle the runner no longer knows.
+    /// Gone - a handle the runner no longer knows.
     Gone,
 }
 
@@ -114,9 +96,9 @@ impl TaskRunner for Recording {
 struct Fixture {
     _dir: TempDir,
     db: PathBuf,
-    /// **The repository the rows are about, and a real one** — a reviewer's tree is a clone of it
-    /// at the row's head (`mergequeue::review::start_reviewer`), so a fixture with no repository
-    /// would measure *a reviewer that could not start* instead of the review.
+    /// The repository the rows are about, and a real one - a reviewer's tree is a clone of it
+    /// at the row's head, so a fixture with no repository would measure a reviewer that could not
+    /// start instead of the review.
     repo: PathBuf,
     cfg: Config,
     registry: Arc<Registry>,
@@ -137,8 +119,8 @@ impl Fixture {
         cfg.store = Some(db.clone());
         cfg.session_id = "s-host".into();
         cfg.http_retries = 0;
-        // **A directory of the fixture's own** for the reviewers' clones — `sweep_clones` refuses
-        // any other name, and a fixture must never write into (or sweep) the box's own.
+        // A directory of the fixture's own for the reviewers' clones - `sweep_clones` refuses
+        // any other name, and a fixture must never sweep the box's own.
         cfg.review_clones = Some(dir.path().join(crate::mergequeue::review::CLONES_DIR));
         let registry = Registry::new();
         registry
@@ -147,8 +129,8 @@ impl Fixture {
         registry
             .create("s-elsewhere", "", Sessions::wiring(&cfg))
             .expect("another session registers");
-        // **The queue's session of THIS fixture's daemon** — derived from the workspace the config
-        // was built on, which is what `Sessions` will compute for it.
+        // The queue's session of THIS fixture's daemon - derived from the workspace, which is
+        // what `Sessions` will compute for it.
         let host = crate::sessions::gatekeeper::session(&cfg.workspace);
         Some(Self {
             _dir: dir,
@@ -170,7 +152,7 @@ impl Fixture {
         crate::mergequeue::lease::this_daemon().owner.clone()
     }
 
-    /// A review row, put up for review and CLAIMED by `owner`, the way the queue's thread does —
+    /// A review row, put up for review and CLAIMED by `owner`, the way the queue's thread does -
     /// and the HEAD it names, which is a real commit on a real branch `agent/<id>`.
     fn claimed(&self, id: &str, brief: &str, owner: &str) -> String {
         let (_wt, base, head) =
@@ -254,8 +236,8 @@ impl Fixture {
     }
 }
 
-/// **A claimed review is the review queue session's own `task` child, bound to the claimed
-/// head, and started by the pass with no wake; a second pass starts no second child.**
+/// A claimed review is the review queue session's own `task` child, bound to the claimed
+/// head, and started by the pass with no wake; a second pass starts no second child.
 #[test]
 fn a_claimed_review_is_spawned_as_the_queue_sessions_own_child() {
     let Some(f) = Fixture::new("due") else {
@@ -292,7 +274,7 @@ fn a_claimed_review_is_spawned_as_the_queue_sessions_own_child() {
     assert_eq!(row.reviewer.as_deref(), Some("sub-1"));
 }
 
-/// **A row another daemon claimed is not this daemon's to serve** (defect 9).
+/// A row another daemon claimed is not this daemon's to serve (defect 9).
 #[test]
 fn a_review_another_daemon_claimed_is_left_alone() {
     let Some(f) = Fixture::new("theirs") else {
@@ -307,8 +289,8 @@ fn a_review_another_daemon_claimed_is_left_alone() {
     assert!(row.reviewer.is_none(), "{row:?}");
 }
 
-/// **A verdict handed in approves the head the claim read, and the branch is in the merge queue
-/// in the same transaction** (decision 6); the review is judged once.
+/// A verdict handed in approves the head the claim read, and the branch is in the merge queue
+/// in the same transaction (decision 6); the review is judged once.
 #[test]
 fn a_submitted_verdict_approves_the_bound_head_and_queues_the_landing() {
     use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
@@ -366,7 +348,7 @@ fn a_submitted_verdict_approves_the_bound_head_and_queues_the_landing() {
     assert!(refused.contains("is not reviewing an entry"), "{refused}");
 }
 
-/// **A child of another session cannot submit for this queue.**
+/// A child of another session cannot submit for this queue.
 #[test]
 fn a_child_of_another_session_cannot_submit_for_this_queue() {
     use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
@@ -413,7 +395,7 @@ fn a_child_of_another_session_cannot_submit_for_this_queue() {
     );
 }
 
-/// **An answer in prose is not a verdict: the attempt is counted and the review waits again.**
+/// An answer in prose is not a verdict: the attempt is counted and the review waits again.
 /// The prose carries the words the old closing block was parsed for; a build that read them would
 /// approve this branch.
 #[test]
@@ -444,7 +426,7 @@ fn an_answer_with_no_submission_is_a_counted_attempt() {
     );
 }
 
-/// **A reviewer that vanished is a counted attempt too** (defect 10) — the v23 queue wrote
+/// A reviewer that vanished is a counted attempt too (defect 10) - the v23 queue wrote
 /// nothing for it and spawned another, for ever.
 #[test]
 fn a_child_that_vanishes_is_a_counted_attempt() {
@@ -466,7 +448,7 @@ fn a_child_that_vanishes_is_a_counted_attempt() {
     assert!(row.failure.contains("vanished"), "{}", row.failure);
 }
 
-/// **The clock is armed, so the pass is reached at all.**
+/// The clock is armed, so the pass is reached at all.
 #[test]
 fn the_daemon_has_a_clock_for_the_store_it_reads() {
     let Some(f) = Fixture::new("clock") else {
