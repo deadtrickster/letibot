@@ -79,10 +79,14 @@ impl App {
     }
 
     /// Something else holds the ask slot - a decision, a prompt, a password, a picker, the quit
-    /// card, or an open surface, whose keys are its own. The card waits behind every one of them
-    /// and is drawn as the strip meanwhile, so it is never off the screen.
+    /// card, an open surface or the ctrl-v window, whose keys are its own. The card waits behind
+    /// every one of them and is drawn as the strip meanwhile, so it is never off the screen.
     pub(crate) fn slot_taken(&self) -> bool {
         self.focused_surface().is_some()
+            // **The reading window is a surface too**: its bar names the arrows and the wheel for
+            // paging, and the card underneath took both and Enter with them, so a press meant for
+            // a long result sent `/reseat`.
+            || self.payload_sel.is_some()
             || self.secret.is_some()
             || self.term_ask.is_some()
             || (self.prompt.is_some() && !self.prompt_away)

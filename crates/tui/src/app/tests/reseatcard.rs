@@ -385,6 +385,42 @@ fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
     ));
 }
 
+/// **The ctrl-v window is a reading surface too** (R90.1): with it open the card is the strip, so
+/// the arrows page the result and Enter sends rather than reseating, which is what the bar under
+/// the window promises.
+#[test]
+fn a_payload_window_takes_the_slot_and_its_keys_never_reach_the_card() {
+    let (mut a, _hub) = stale();
+    assert!(a.reseat_card_up(), "the card is up on its own");
+    shell_row(
+        &mut a,
+        1,
+        "s.t1.0",
+        "tool_result",
+        TranscriptItem::ToolResult {
+            call_id: "c0".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: (0..40).map(|i| format!("LINE-{i}\n")).collect(),
+            edit: None,
+            origin: None,
+            media: None,
+        },
+    );
+    assert_eq!(a.key(Key::CtrlV), None);
+    assert!(a.payload_sel.is_some(), "the window opened");
+    assert!(!a.reseat_card_up(), "the window holds the slot");
+    assert!(screen(&mut a).contains("alt-r reseats now"), "the strip");
+    assert_eq!(a.key(Key::Down), None);
+    assert_eq!(
+        a.reseat.as_ref().expect("the card").sel,
+        0,
+        "the arrow paged the result, it did not move the card's mark"
+    );
+    assert_eq!(a.key(Key::Enter), None, "enter sends, it does not reseat");
+    assert!(a.reseat.is_some(), "and the card is still asking");
+}
+
 /// A digit on the reseat card moves the mark; it does not reseat. Choosing on the digit meant `1`
 /// as the first character of a line forked the conversation while the card's own line said enter
 /// chooses. A typed line pins the card and goes to the composer.
