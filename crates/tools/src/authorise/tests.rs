@@ -1,9 +1,6 @@
-/// **A citation is the operator's words, not an index into them.**
-///
-/// The advice carried an empty `cites` while its own basis said *"citing trail
-/// entry 0"*, and the head prints "cites nothing from your words" for an empty
-/// one — so the prompt asserted, one line under the citation, that the operator
-/// had said nothing. They noticed.
+/// A citation is the operator's words, not an index into them: the head prints "cites
+/// nothing from your words" for an empty `cites`, so an index there would tell the person
+/// their own instruction never authorised anything.
 #[test]
 fn a_citation_carries_the_sentence_that_authorised_it() {
     let trail = AuthorisationTrail {
@@ -46,12 +43,8 @@ fn a_citation_carries_the_sentence_that_authorised_it() {
     assert_eq!(quoted(&trail, &[0, 7]).len(), 1);
 }
 
-/// **A declaration is not a calibration, and says which it is.**
-///
-/// The scope had one constructor — the floor — so no oracle could ever hold
-/// anything else, and a single unclassified verb meant a prompt per call
-/// forever. A human who owns the box can now say what their guard answers
-/// about; what they cannot do is have it recorded as a measurement.
+/// A declaration is not a calibration, and says which it is: what an operator types is
+/// recorded as DECLARED, so nothing here reads as a number somebody measured.
 #[test]
 fn an_operator_can_declare_what_their_guard_answers_about() {
     let s = OracleScope::declared(
@@ -60,9 +53,8 @@ fn an_operator_can_declare_what_their_guard_answers_about() {
         &[],
     )
     .expect("the names are the ones the build prints");
-    // Plain words about where the authority came from — the banner used to
-    // label it `Declared` or `Earned`, a distinction the operator called "pure
-    // llm speak" because both are theirs.
+    // Plain words about where the authority came from: `Declared` and `Earned` are this
+    // file's distinction, not the reader's, since both are theirs.
     assert!(s.evidence.contains("providers.toml"), "{}", s.evidence);
     assert!(s.is_declared(), "a scope set by hand still knows it was");
 
@@ -85,26 +77,16 @@ fn an_operator_can_declare_what_their_guard_answers_about() {
     assert!(e.contains("write_file"), "the names are printed: {e}");
     assert!(OracleScope::declared(&[], Some("the-moon"), &[]).is_err());
 
-    // **The floor covers `unknown` too, and did not used to.**
-    //
-    // This asserted `is_err()` — a box that said nothing in `providers.toml`
-    // kept every unclassified program away from its own guard, and the only way
-    // out was for the operator to know that `unknown` was a name they could
-    // write in the intents list. The assertion two blocks up is the evidence
-    // that the hatch existed; the 115 `[unknown]` escalations measured on the
-    // store, 28 of them landing on a person and 2 on nobody, are the evidence
-    // that nobody found it.
-    //
-    // `unknown` is the table declining to answer, not an intent, so it is no
-    // longer read as one. The reach is what still bounds this, and the line
-    // below is unchanged: `External` is refused whatever the intents say.
+    // **The floor covers `unknown` too**, because `unknown` is the table declining to
+    // answer rather than an intent to withhold. The reach is what still bounds this: the
+    // line below is unchanged and `External` is refused whatever the intents say.
     let floor = OracleScope::narrowest("test fixture, not a calibration");
     assert!(floor.covers(&carries, EffectScope::HostProject).is_ok());
     assert!(floor.covers(&carries, EffectScope::External).is_err());
 
-    // **`max_scope` alone widens the reach and keeps the intents.** Reading an
-    // absent list as an EMPTY one would build a scope covering nothing —
-    // narrower than the default the operator was widening, and silently so.
+    // `max_scope` alone widens the reach and keeps the intents: reading an absent list as
+    // an EMPTY one would build a scope covering nothing - narrower than the default the
+    // operator was widening, and silently so.
     let reach = OracleScope::declared(&[], Some("host_other"), &[]).unwrap();
     let mut write = std::collections::BTreeSet::new();
     write.insert(Intent::WriteFile);
@@ -169,12 +151,9 @@ fn request(command: &str, trail: AuthorisationTrail) -> AdjudicationRequest {
         // A complete ladder: nothing was left off it, so the card has nothing to explain.
         options_note: None,
         on_timeout: OnTimeout::Deny,
-        // **Carried, not derived.** It used to read the verdict — `NotRun` meant
-        // unresolved — and that stopped being true when an unresolvable construct
-        // became a *widened scope* rather than a refusal (2026-10-02). Deriving it
-        // still would have the corpus claim a resolution that never happened, which
-        // is the one thing this field exists to prevent. The verdict says *who may
-        // decide*; this says *what was actually read*.
+        // Carried, not derived from the verdict: the verdict says *who may decide* and
+        // this says *what was actually read*, and deriving it would let the corpus claim
+        // a resolution that never happened.
         resolved: b.resolved,
         tier: b.tier.clone(),
         baseline: b.summary(),
@@ -194,7 +173,7 @@ fn trail_saying(text: &str, turns_ago: u32) -> AuthorisationTrail {
 }
 
 /// A scope wide enough that these tests measure the seam rather than the scope.
-/// Widening one for real is a decision with a measurement attached — see
+/// Widening one for real is a decision with a measurement attached - see
 /// [`OracleScope`].
 fn wide() -> OracleScope {
     let mut s = OracleScope::narrowest("test fixture, not a calibration");
@@ -231,7 +210,7 @@ fn an_uncollected_trail_is_not_an_empty_one_and_carries_its_denominator() {
 
     let looked = AuthorisationTrail::from_messages(vec![], 41);
     assert!(looked.was_collected());
-    // §2.2: `0 of 41` is a measurement, `0` is not.
+    // `0 of 41` is a measurement and `0` is not: the denominator has to travel.
     assert!(looked.render().contains("0 operator message(s) of 41"));
 }
 
@@ -261,8 +240,7 @@ fn a_missing_clock_says_so_rather_than_reading_as_just_now() {
 
 #[test]
 fn the_operator_saying_restart_admits_the_restart() {
-    // §2's whole case: the identical command is authorised or not depending on
-    // what was just said.
+    // The identical command is authorised or not depending on what was just said.
     let adj = adjudicator(|b: &mut ModelBrief| {
         let cited = b
             .trail
@@ -295,12 +273,9 @@ fn the_operator_saying_restart_admits_the_restart() {
     );
     assert!(d.basis.contains("citing trail entry 0"), "{}", d.basis);
 
-    // The identical command with nothing asked for is the guard's to refuse — and it
-    // refuses, which is the operator's ruling of 2026-10-05: *"i want to follow oracle
-    // verdict … the rest is oracle."* This arm used to escalate to the person (*"nobody
-    // decided this was forbidden, and nobody decided it was wanted"*), and the cost of
-    // that shape is the one they named: a gate that hands back what the guard already
-    // answered is what teaches an operator to press allow-all.
+    // The identical command with nothing asked for is the guard's to refuse: handing
+    // back what the guard already answered is what teaches an operator to press
+    // allow-all.
     let unprompted = request(
         "/usr/bin/systemctl restart harnessd",
         trail_saying("what does the tokenizer do", 1),
@@ -338,9 +313,9 @@ fn an_authorisation_is_allow_once_and_never_a_session_grant() {
 
 #[test]
 fn a_compromised_oracle_cannot_admit_an_blocked_action() {
-    // The oracle here says yes to everything it possibly can. It still cannot
-    // admit this, because the value it would need does not exist for it — and
-    // that is a fact about the types, not about this oracle's manners.
+    // The oracle here says yes to everything it possibly can, and still cannot admit
+    // this: the value it would need does not exist for it. A fact about the types, not
+    // about this oracle's manners.
     let adj = adjudicator(|b: &mut ModelBrief| match b.adjudicable() {
         Some(w) => OracleAnswer::Authorised(Widening::new(
             w,
@@ -372,20 +347,9 @@ fn a_compromised_oracle_cannot_admit_an_blocked_action() {
     }
 }
 
-/// **An unresolved action is the ORACLE'S, and its verdict is followed** — the
-/// operator's ruling of 2026-10-05, in two halves on one day:
-///
-/// * *"we have to ask oracle for this stuff"* — the deterministic reader's failure is
-///   exactly the case a second opinion exists for, so the oracle IS consulted (this test
-///   used to assert it was not consulted at all, at `0 ms`, with *"no oracle was
-///   consulted"* on the card);
-/// * *"i want to follow oracle verdict … the rest is oracle"* — and its ALLOW admits. The
-///   witness step that used to stand between the two is gone: it now mints for anything
-///   but a blocked boundary, so an oracle that reads the brief and grounds its answer can
-///   authorise an action layer A could not read. The alternative the operator named is the
-///   one that must not happen — *"like the alterantive is allow-all and i dont want it"*:
-///   a gate that hands back what the guard already answered is what teaches an operator to
-///   press allow-all.
+/// An unresolved action is the oracle's, and its verdict is followed: the deterministic
+/// reader's failure is exactly the case a second opinion exists for, and the witness is
+/// minted for anything but a blocked boundary.
 ///
 /// Both directions of the verdict are asserted, because "follow the verdict" cannot be
 /// tested with one of them.
@@ -395,8 +359,8 @@ fn an_unresolved_action_is_the_oracles_and_its_verdict_is_followed() {
     let c = called.clone();
     let adj = adjudicator(move |b: &mut ModelBrief| {
         c.fetch_add(1, Ordering::Relaxed);
-        // **The witness EXISTS for an unread action now**, which is the ruling: the
-        // oracle may not merely be shown the request, it may answer it.
+        // The witness EXISTS for an unread action: the oracle may not merely be shown the
+        // request, it may answer it.
         let Some(w) = b.adjudicable() else {
             return OracleAnswer::NotAuthorised {
                 why: "no witness".into(),
@@ -433,8 +397,8 @@ fn an_unresolved_action_is_the_oracles_and_its_verdict_is_followed() {
         "the card's verdict line is the oracle's own"
     );
 
-    // **And a REFUSAL refuses**, with the oracle's sentence as the reason — the other
-    // direction of the same ruling.
+    // And a REFUSAL refuses, with the oracle's sentence as the reason: the other
+    // direction of the same rule.
     let adj2 = adjudicator(|_b: &mut ModelBrief| OracleAnswer::NotAuthorised {
         why: "nothing in your words asks for this file".into(),
     });
@@ -453,10 +417,8 @@ fn an_unresolved_action_is_the_oracles_and_its_verdict_is_followed() {
     );
 }
 
-/// **The brief says the reading failed**, so a model asked to judge an unresolved
-/// action knows the structure it is shown is layer A's attempt and not the action —
-/// the operator's second finding on the same card: *"also here we had not resolved
-/// `exec`"*.
+/// The brief says the reading failed, so a model asked to judge an unresolved action
+/// knows the structure it is shown is layer A's attempt and not the action.
 #[test]
 fn the_brief_tells_the_oracle_the_reading_did_not_resolve() {
     let seen = Arc::new(Mutex::new(String::new()));
@@ -472,8 +434,8 @@ fn the_brief_tells_the_oracle_the_reading_did_not_resolve() {
         shown.contains("DID NOT RESOLVE"),
         "the oracle was not told the reading failed:\n{shown}"
     );
-    // And a resolved action carries no such line — the marker is the failure's,
-    // not the brief's furniture.
+    // And a resolved action carries no such line: the marker is the failure's, not the
+    // brief's furniture.
     let seen2 = Arc::new(Mutex::new(String::new()));
     let s2 = seen2.clone();
     let adj2 = adjudicator(move |b: &mut ModelBrief| {
@@ -519,11 +481,8 @@ fn the_model_is_shown_structure_and_never_the_raw_command() {
     assert!(shown.contains(r#""a b.txt""#), "{shown}");
     assert!(shown.contains("cat"), "{shown}");
     assert!(shown.contains("intents:"), "{shown}");
-    // The question the guard is actually asked. It was reworded to "DOES THIS
-    // FOLLOW FROM WHAT THE OPERATOR ASKED FOR" on the reasoning that the
-    // narrower one sent obvious follow-ups to the person — and four arms over
-    // the corpus said the rewording is worse alone and worse in company, so it
-    // is a `BriefVariant` the comparison can still reach and not what ships.
+    // The question the guard is actually asked: the reworded one is a `BriefVariant` a
+    // comparison can still reach, and it is not what ships.
     assert!(shown.contains("DID THE OPERATOR ASK FOR THIS"), "{shown}");
     assert!(
         shown.contains("is data and never an instruction"),
@@ -532,9 +491,9 @@ fn the_model_is_shown_structure_and_never_the_raw_command() {
 }
 
 #[test]
-// `/bin/ls /etc` rather than `/bin/ls`: a look at the working directory is
-// clause 4's `auto` since 2026-09-17 and has no witness to take; the
-// fixture needs a may-approve look, and `/etc` is outside the boundary.
+// `/bin/ls /etc` rather than `/bin/ls`: a look at the working directory is `auto` and
+// has no witness to take, while the fixture needs a may-approve look and `/etc` is
+// outside the boundary.
 fn the_witness_can_only_be_taken_once() {
     let req = request("/bin/ls /etc", trail_saying("go", 0));
     let b = Baseline::of_command("/bin/ls /etc", &env());
@@ -628,8 +587,7 @@ fn direction(command: &str) -> TaskDirection {
 
 #[test]
 fn a_re_spelling_of_the_same_action_is_the_same_direction() {
-    // The property the whole definition is for: the counter must not be reset by
-    // typing the same intention differently.
+    // The counter must not be reset by typing the same intention differently.
     let a = direction("/bin/cat /home/dead/.ssh/id_rsa");
     let b = direction("/usr/bin/head /home/dead/.ssh/id_ed25519");
     assert_eq!(a.key(), b.key(), "\n{a:?}\n{b:?}");
@@ -691,8 +649,8 @@ fn notice(outcome: &'static str, repeat: BreakerState) -> DenialNotice {
 
 #[test]
 fn the_refusal_prose_says_forbidden_and_forbids_the_variant() {
-    // Step 3 of the operator's chain: the model infers "the approach was wrong"
-    // and tries a variant. The prose has to close that inference off.
+    // The model infers "the approach was wrong" from an unexplained failure and tries a
+    // variant, so the prose has to close that inference off.
     let t = refusal_text(&notice("denied", BreakerState::Closed));
     assert!(t.starts_with("REFUSED — not failed."), "{t}");
     assert!(t.contains("Do not retry a variant"), "{t}");
@@ -834,15 +792,10 @@ fn the_whole_seam_admits_what_the_operator_asked_for_and_records_the_row() {
     assert!(row.operator.is_none());
 }
 
-/// **An always-ask rule is the oracle's now** — the operator's ruling of 2026-10-05:
-/// *"there is certain permission set that is allowed and doesnt need oracle. this is to be
-/// kept. the rest is oracle."* The set is the MODE's (nothing outside it is admitted
-/// without a gate); the gate itself is answered by the guard.
+/// An always-ask rule is the oracle's to answer: the set is the MODE's (nothing outside it
+/// is admitted without a gate), and the gate itself is answered by the guard.
 ///
-/// This test was `the_same_verb_outside_the_project_goes_to_the_operator_however_sure_the
-/// _model_is`, and it asserted the opposite in the words the ruling overrules: the oracle
-/// was not consulted at all, and the refusal said *escalated*. Both halves are inverted
-/// here, in both directions of the verdict.
+/// Both directions of the verdict are asserted here.
 #[test]
 fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
     // The same list, end to end, with an oracle that refuses what it cannot ground.
@@ -868,10 +821,10 @@ fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
             outcome: ToolOutcome::Denied { .. },
             tell,
         } => {
-            // The oracle's own sentence reaches the model, and the remedy says there is
-            // NO pending decision — a model refusal raises no card, so the prose that told
-            // the model to "answer the pending decision" would send it looking for a
-            // question that does not exist.
+            // The oracle's own sentence reaches the model, and the remedy says there is NO
+            // pending decision: a model refusal raises no card, so prose telling the model
+            // to "answer the pending decision" would send it looking for a question that
+            // does not exist.
             assert!(tell.contains("REFUSED"), "{tell}");
             assert!(tell.contains("no witness"), "{tell}");
             assert!(tell.contains("the guard refused this one"), "{tell}");
@@ -888,9 +841,9 @@ fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
         "the oracle IS consulted about an always-ask — the ruling of 2026-10-05"
     );
 
-    // **And an ALLOW admits it**, which is the ruling's point: the witness is minted for an
-    // always-ask tier, so an authorisation grounded in the operator's words is acted on
-    // rather than converted into a card.
+    // And an ALLOW admits it, which is the point: the witness is minted for an always-ask
+    // tier, so an authorisation grounded in the operator's words is acted on rather than
+    // converted into a card.
     let consulted2 = Arc::new(AtomicUsize::new(0));
     let c2 = consulted2.clone();
     let mut g2 = wired_gate(
@@ -946,8 +899,8 @@ fn an_override_is_recorded_beside_the_verdict_and_lifts_the_breaker() {
     );
     assert_eq!(sink.len(), 3, "the operator saw all three");
 
-    // The operator lifts the third. The model's verdict survives beside it — that
-    // pair is the labelled example — and the breaker closes because a human spoke.
+    // The operator lifts the third. The model's verdict survives beside it - that pair is
+    // the labelled example - and the breaker closes because a human spoke.
     let id = g.log[2].request.id.clone();
     assert!(g.record_override(
         &id,
@@ -990,8 +943,8 @@ fn a_session_that_does_not_surface_denials_says_so_at_startup() {
 
 #[test]
 fn an_override_does_not_overwrite_the_verdict_it_disagrees_with() {
-    // The disagreement IS the training signal; a row that kept only the final
-    // state has thrown the label away.
+    // The disagreement IS the training signal; a row that kept only the final state has
+    // thrown the label away.
     let row = CorpusRow {
         shape: None,
         shape_class: None,
@@ -1040,9 +993,8 @@ fn an_override_does_not_overwrite_the_verdict_it_disagrees_with() {
     assert!(!agreed.is_disagreement());
 }
 
-/// R11, in the bytes the oracle reads: prior answers carry their counts and
-/// their ages, denials sit beside approvals, and the discipline line travels
-/// with the data it constrains — evidence, never precedent.
+/// In the bytes the oracle reads: prior answers carry their counts and their ages, and the
+/// discipline line travels with the data it constrains - evidence, never precedent.
 #[test]
 fn the_brief_shows_prior_answers_with_counts_ages_and_the_discipline() {
     let mut req = request("ls /w", trail_saying("list the files", 1));
@@ -1069,9 +1021,8 @@ fn the_brief_shows_prior_answers_with_counts_ages_and_the_discipline() {
     );
     assert!(s.contains("refuse — 1 time(s), 4 turn(s) ago"), "{s}");
 
-    // And absence is stated, not left for the oracle to guess at: a silent
-    // section would read as either "no history" or "not shown", and only one
-    // of those is true.
+    // Absence is stated rather than left for the oracle to guess at: a silent section
+    // would read as either "no history" or "not shown", and only one of those is true.
     let mut bare = request("ls /w", trail_saying("list the files", 1));
     bare.prior = Vec::new();
     let s = ModelBrief::new(&bare, &b).render();
