@@ -1,25 +1,15 @@
 //! What holds each firecode VM slot, read off firecode's own records, and the reaper that frees one
-//! whose owner is gone.
-//!
-//! `firecode up` leaves `runs/<run>/` beside the CLI naming the project, the jail, the run's cgroup
-//! and its launcher, and a VM is live when a `firecracker` process carries `--id <run>` - the fact
-//! itself, not a run directory's age or a pid file. Nothing here starts firecode to ask, so the
-//! queue may make a listing on every long wait.
-//!
-//! [`reap`] asks firecode to bring the run down first. A jailed VM is pid 1 of its own pid namespace
-//! and ignores SIGTERM, so a VM still there after the wait is killed through its run's `cgroup.kill`
-//! and then by pid, after checking the pid is still that run's firecracker. The answer is what
-//! `/proc` says afterwards, never what was sent. Whether a VM may be reaped at all is the daemon's
-//! records' question, not this module's.
+//! whose owner is gone. A VM is live when a `firecracker` process carries `--id <run>`, so a listing
+//! is file reads and starts no firecode. Whether a VM MAY be reaped is the daemon's question.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// One live firecode VM, as its run's records describe it.
+/// **One live firecode VM, as its run's records describe it.**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldVm {
-    /// The run id, which is what `firecode down` takes.
+    /// The run id (`firecode-20261014-191759-812644`) — what `firecode down` takes.
     pub run: String,
     /// The project the VM was booted on (`runs/<run>/project`).
     pub project: PathBuf,
@@ -29,15 +19,16 @@ pub struct HeldVm {
     pub tap: Option<String>,
     /// The `firecracker` processes carrying `--id <run>`, host pids.
     pub pids: Vec<u32>,
-    /// When the run was started, as its id says it, in firecode's local time.
+    /// When the run was started, as its id says it (`2026-10-14 19:17:59`, firecode's local time).
     pub started: Option<String>,
     /// The run's delegated cgroup (`runs/<run>/cgroup`).
     pub cgroup: Option<PathBuf>,
 }
 
 impl HeldVm {
-    /// The VM half of a capacity notice's line: the tap, the pids, the run and its start. The owner
-    /// half is the daemon's.
+    /// *"fccode1: firecracker pid 861706, run firecode-20261014-191759-812644 started
+    /// 2026-10-14 19:17:59"* — the VM half of a capacity notice's line; the owner half is the
+    /// daemon's.
     pub fn line(&self) -> String {
         let pids = match self.pids.as_slice() {
             [] => "no firecracker pid".to_string(),
@@ -62,8 +53,8 @@ impl HeldVm {
     }
 }
 
-/// firecode's `runs/` directory for the CLI at `bin`: the checkout's `runs`, beside the `bin/` the
-/// CLI is in, the way [`super::FirecodeBackend`] finds a run's record.
+/// **firecode's `runs/` directory** for the CLI at `bin` — the checkout's `runs`, beside the
+/// `bin/` the CLI is in, the way [`super::FirecodeBackend`] finds a run's record.
 pub fn runs_dir(bin: &Path) -> Option<PathBuf> {
     let real = std::fs::canonicalize(bin).ok().or_else(|| {
         std::env::var_os("PATH").and_then(|p| {
@@ -77,7 +68,7 @@ pub fn runs_dir(bin: &Path) -> Option<PathBuf> {
     runs.is_dir().then_some(runs)
 }
 
-/// When a run was started, read off its id: `firecode-YYYYMMDD-HHMMSS-<pid>`.
+/// **When a run was started, read off its id** — `firecode-YYYYMMDD-HHMMSS-<pid>`.
 pub fn started_of(run: &str) -> Option<String> {
     let mut parts = run.strip_prefix("firecode-")?.split('-');
     let d = parts.next()?;
@@ -111,8 +102,8 @@ fn cmdline(proc_root: &Path, pid: u32) -> Option<Vec<String>> {
     )
 }
 
-/// The run a process is the firecracker of, if it is one: its program (or, for an interpreted
-/// stand-in, its script) is named `firecracker` and it was given `--id <run>`.
+/// **The run a process is the firecracker of**, if it is one: its program (or, for an
+/// interpreted stand-in, its script) is named `firecracker` and it was given `--id <run>`.
 pub fn firecracker_run(args: &[String]) -> Option<String> {
     let named = args
         .iter()
@@ -125,19 +116,20 @@ pub fn firecracker_run(args: &[String]) -> Option<String> {
     args.get(i + 1).filter(|r| !r.is_empty()).cloned()
 }
 
-/// Whether `pid` is a process that can still act: present in `<proc>` and not a zombie. A zombie
-/// has exited, and its entry stays only until its parent reaps it, so it is not a VM holding a tap.
+/// **Whether `pid` is a process that can still act** — present in `<proc>` and not a zombie. A
+/// zombie has exited; its entry stays until its parent reaps it, and that is not a VM holding a
+/// tap.
 pub fn alive(proc_root: &Path, pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(proc_root.join(pid.to_string()).join("stat")) else {
         return false;
     };
-    // `pid (comm) S ...`: the state is the first field after the LAST `)`, since comm may hold one.
+    // `pid (comm) S …` — the state is the first field after the LAST `)`, since comm may hold one.
     stat.rsplit_once(')')
         .and_then(|(_, rest)| rest.split_whitespace().next())
         .is_none_or(|state| state != "Z" && state != "X")
 }
 
-/// Every firecracker process on the host, by the run it serves: `(run, pid)`.
+/// **Every firecracker process on the host, by the run it serves** — `(run, pid)`.
 pub fn firecrackers(proc_root: &Path) -> Vec<(String, u32)> {
     let Ok(dir) = std::fs::read_dir(proc_root) else {
         return Vec::new();
@@ -173,8 +165,8 @@ fn read_trimmed(p: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Every live VM firecode has a record of: a run directory under `runs` whose firecracker is alive
-/// in `proc_root`, oldest run first.
+/// **Every live VM firecode has a record of** — a run directory under `runs` whose firecracker
+/// is alive in `proc_root` (`/proc`), oldest run first.
 pub fn live_vms(runs: &Path, proc_root: &Path) -> Vec<HeldVm> {
     let mut by_run: std::collections::BTreeMap<String, Vec<u32>> = Default::default();
     for (run, pid) in firecrackers(proc_root) {
@@ -198,7 +190,7 @@ pub fn live_vms(runs: &Path, proc_root: &Path) -> Vec<HeldVm> {
         .collect()
 }
 
-/// How long [`reap`] gives each step.
+/// **How long [`reap`] gives each step.**
 #[derive(Debug, Clone, Copy)]
 pub struct Patience {
     /// `firecode down` itself: it waits up to a minute for the guest, then on the copy-out.
@@ -219,14 +211,14 @@ impl Default for Patience {
     }
 }
 
-/// How a reap ended: what `/proc` said afterwards, not what was sent.
+/// **How a reap ended — what `/proc` said afterwards, not what was sent.**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reaped {
     /// `firecode down` brought it down: the guest stopped and its work was copied out.
     Down,
     /// It ignored `down` and was killed (SIGKILL): `how` names which kill took it.
     Killed { how: String },
-    /// Still alive after every step - named, so nobody reads a reap that failed as one that held.
+    /// Still alive after every step — named, so nobody reads a reap that failed as one that held.
     StillAlive { pids: Vec<u32>, tried: String },
 }
 
@@ -275,8 +267,8 @@ fn wait_gone(vm: &HeldVm, proc_root: &Path, within: Duration) -> Vec<u32> {
     }
 }
 
-/// `bin down <run>`, bounded by `within`: a `down` that does not return is not waited on for ever,
-/// because the client is ours to stop and the VM is what the steps after this are for.
+/// `bin down <run>`, bounded by `within`: a `down` that does not return is not waited on for ever
+/// (the client is ours to stop; the VM is what the steps after this are for).
 fn down(bin: &Path, run: &str, within: Duration) {
     let Ok(mut child) = std::process::Command::new(bin)
         .arg("down")
@@ -302,9 +294,9 @@ fn down(bin: &Path, run: &str, within: Duration) {
     }
 }
 
-/// Bring one VM down, and say how it went: `firecode down <run>`, then the run's `cgroup.kill`, then
-/// SIGKILL to each pid that is still the firecracker for this run, with a look at `/proc` after each.
-/// SIGTERM is not among the steps - see the module docs.
+/// **Bring one VM down, and say how it went.** `firecode down <run>`, then the run's
+/// `cgroup.kill`, then SIGKILL to each pid that is still the firecracker for this run, with a
+/// look at `/proc` after each. See the module docs for why SIGTERM is not among the steps.
 pub fn reap(bin: &Path, vm: &HeldVm, proc_root: &Path, patience: Patience) -> Reaped {
     down(bin, &vm.run, patience.down);
     if wait_gone(vm, proc_root, patience.after_down).is_empty() {

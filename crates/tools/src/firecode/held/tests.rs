@@ -43,9 +43,9 @@ fn fake_run(runs: &Path, run: &str, project: &str, tap: &str) {
     .unwrap();
 }
 
-/// A slot's holder is read off firecode's own records, and only a VM that is alive holds one: a run
-/// whose VM is gone holds no slot, a zombie has exited, and a process that merely carries the words
-/// (a `grep --id ...`) is not a firecracker.
+/// A slot's holder is read off firecode's own records, and only a VM that is alive holds one: a live
+/// firecracker named by `--id` holds a slot, a run directory whose VM is gone holds none, and a
+/// process that merely carries the words (`grep --id ...`) is not a VM.
 #[test]
 fn a_slot_is_held_by_a_live_firecracker_for_a_recorded_run() {
     let root = tmp("live");
@@ -106,16 +106,17 @@ fn a_runs_start_is_read_off_its_id() {
     assert_eq!(started_of("firecode-2026101-003911-1"), None);
 }
 
-// On the host's real `/proc`, so Linux only: firecracker is a Linux VMM and this is the half of the
-// reap that finds and signals real processes. With no `/proc` the reap sees no firecracker at all,
-// answers `Down` at once, and the stand-in it should have killed is then waited on for ever.
+// On the host's real `/proc`, so Linux only: macOS has no `/proc`, where `reap` sees no firecracker
+// at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
+// for ever.
 #[cfg(target_os = "linux")]
-/// A stand-in firecracker: a script NAMED `firecracker`, run with `--id RUN`, that ignores SIGTERM
-/// the way a jailed VM (pid 1 of its own namespace) does. Returns the child and its pid.
+/// **A stand-in firecracker**: a script NAMED `firecracker`, run with `--id RUN`, that ignores
+/// SIGTERM the way a jailed VM (pid 1 of its namespace) does. Returns the child and its pid.
 fn stubborn_firecracker(dir: &Path, run: &str) -> std::process::Child {
     let script = dir.join("firecracker");
-    // `[ $# -eq 0 ] && exit 0` is what lets the write be proved at all: this stub never exits on its
-    // own, so `write_stub`'s no-argument probe would wait for ever.
+    // `[ $# -eq 0 ] && exit 0` is what lets the write be proved at all: this stub never exits
+    // on its own, so `write_stub`'s probe would wait for ever. Probed with no arguments, the
+    // file is proved unheld; spawned with `--id RUN`, it is the stand-in the test wants.
     crate::testing::write_stub(
         &script,
         "#!/bin/sh\n[ $# -eq 0 ] && exit 0\ntrap '' TERM\nwhile :; do sleep 0.2; done\n",
@@ -161,13 +162,13 @@ fn quick() -> Patience {
     }
 }
 
-// On the host's real `/proc`, so Linux only: firecracker is a Linux VMM and this is the half of the
-// reap that finds and signals real processes. With no `/proc` the reap sees no firecracker at all,
-// answers `Down` at once, and the stand-in it should have killed is then waited on for ever.
+// On the host's real `/proc`, so Linux only: macOS has no `/proc`, where `reap` sees no firecracker
+// at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
+// for ever.
 #[cfg(target_os = "linux")]
-/// A VM that ignores `down` is killed, and the reap says so only when `/proc` agrees. The stand-in
-/// ignores SIGTERM, the stub's `down` does nothing, and the run's `cgroup.kill` is a plain file that
-/// kills nothing, so what takes it is SIGKILL to its own pid.
+/// A VM that ignores `down` is killed, and the reap says so only when `/proc` agrees: SIGTERM does
+/// not end a jailed tap holder. The stand-in ignores SIGTERM, `down` does nothing and the run's
+/// `cgroup.kill` is a plain file, so SIGKILL to its own pid takes it and the answer is `Killed`.
 #[test]
 fn a_vm_that_ignores_down_is_killed_and_seen_gone() {
     let dir = tmp("reap");
@@ -208,11 +209,11 @@ fn a_vm_that_ignores_down_is_killed_and_seen_gone() {
     );
 }
 
-// On the host's real `/proc`, so Linux only: firecracker is a Linux VMM and this is the half of the
-// reap that finds and signals real processes. With no `/proc` the reap sees no firecracker at all,
-// answers `Down` at once, and the stand-in it should have killed is then waited on for ever.
+// On the host's real `/proc`, so Linux only: macOS has no `/proc`, where `reap` sees no firecracker
+// at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
+// for ever.
 #[cfg(target_os = "linux")]
-/// A VM `down` brings down is `Down`, and nothing is killed.
+/// **A VM `down` brings down is `Down`, and nothing is killed.**
 #[test]
 fn a_vm_that_down_brings_down_is_not_killed() {
     let dir = tmp("down");
@@ -233,12 +234,12 @@ fn a_vm_that_down_brings_down_is_not_killed() {
     assert_eq!(said, Reaped::Down, "{}", said.said());
 }
 
-// On the host's real `/proc`, so Linux only: firecracker is a Linux VMM and this is the half of the
-// reap that finds and signals real processes. With no `/proc` the reap sees no firecracker at all,
-// answers `Down` at once, and the stand-in it should have killed is then waited on for ever.
+// On the host's real `/proc`, so Linux only: macOS has no `/proc`, where `reap` sees no firecracker
+// at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
+// for ever.
 #[cfg(target_os = "linux")]
-/// A pid that is no longer this run's firecracker is never signalled: a pid reused by something else
-/// between the listing and the reap is not the VM.
+/// **A pid that is no longer this run's firecracker is never signalled** — a pid reused by
+/// something else between the listing and the reap is not the VM.
 #[test]
 fn a_pid_that_is_not_the_runs_firecracker_is_left_alone() {
     let dir = tmp("reuse");
