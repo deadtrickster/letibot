@@ -692,9 +692,19 @@ fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
     d.cfg.idle_exit_after = Some(window);
     let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
         .expect("the daemon opens");
+    // The window is armed by this, the first look, and not by the open - so what is asserted is
+    // arithmetic against a clock the test took, not how fast this box opened a session.
+    let armed_at = Instant::now();
     assert!(
         !sessions.idle_exit_due(),
-        "a daemon that has just started has not been idle for its window"
+        "a daemon whose first look finds nothing to do is not due at that look"
+    );
+    let deadline = sessions
+        .idle_exit_deadline()
+        .expect("the first look armed a window");
+    assert!(
+        deadline >= armed_at + window,
+        "the first look arms a whole window: {deadline:?} came before {armed_at:?} + {window:?}"
     );
     let hub = d.registry.get(ROOT).expect("the root's hub");
     let head = hub.attach("tui", "test", Caps::default(), 0);
@@ -706,20 +716,22 @@ fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
     assert!(!sessions.idle_exit_due(), "a head attached holds it up");
     hub.detach(&head.head_id);
     assert_eq!(sessions.idle_exit_refusal(), None, "nothing holds it now");
-    // The next look, a quarter window on: the last event is older than the window, the head was
-    // seen a quarter window ago.
-    std::thread::sleep(window / 4 + Duration::from_millis(50));
+    // The look that found the head re-armed the window from itself, so the head going does not make
+    // the daemon due at once: the window is counted again from that look.
     assert!(
         !sessions.idle_exit_due(),
-        "a quarter window after the head was last seen is not a window"
+        "a look that found it busy re-armed the window from itself"
     );
-    // A whole window after that look: past the look it re-armed, and a window since the head was
-    // last seen.
-    std::thread::sleep(window);
-    assert!(
-        sessions.idle_exit_due(),
-        "a whole window with nothing to do"
-    );
+    // And a whole window with nothing to do is due. Waited for rather than slept: a sleep that
+    // overshoots on a loaded box is the box's lateness, not the daemon's.
+    let began = Instant::now();
+    while !sessions.idle_exit_due() {
+        assert!(
+            began.elapsed() < PATIENCE,
+            "a daemon with nothing to do never became due"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     d.registry.close();
 }
 

@@ -708,8 +708,8 @@ pub struct Sessions<'a> {
     /// the one its own `open` holds: one clock per owner, one writer per board.
     room_at: Option<Instant>,
     /// When to next ask whether this daemon has anything left to do - the idle exit
-    /// (`Config::idle_exit_after`). `None` when the daemon never exits on its own. See
-    /// [`Sessions::idle_exit_due`].
+    /// (`Config::idle_exit_after`). Armed by the FIRST look rather than by the open, and `None` for
+    /// ever when the daemon never exits on its own. See [`Sessions::idle_exit_due`].
     idle_exit_at: Option<Instant>,
     /// The last instant this worker saw the daemon busy - a head attached, a turn, a job. The
     /// idle window counts from the later of this and the newest event, because a head that
@@ -1033,7 +1033,10 @@ impl<'a> Sessions<'a> {
             // room item has it in the room's memory and nowhere else, so the first pass is what
             // puts the reminder on its board.
             room_at: Some(Instant::now()),
-            idle_exit_at: cfg.idle_exit_after.map(|w| Instant::now() + w),
+            // Nothing yet: `idle_exit_due` arms it on the daemon's first idle look, because the open
+            // below - the store, the harness, the layers - is work, and a window counting it is a
+            // window a loaded box has spent before that look ever comes.
+            idle_exit_at: None,
             busy_seen: Instant::now(),
             bangs: HashMap::new(),
             gatekeeper_said: None,
@@ -3094,6 +3097,12 @@ impl<'a> Sessions<'a> {
         self.base.idle_exit_after
     }
 
+    /// The idle exit's deadline as the clock is armed for it, `None` until the first look arms one.
+    /// A fixture's door: it measures a window from a moment it took itself.
+    pub fn idle_exit_deadline(&self) -> Option<Instant> {
+        self.idle_exit_at
+    }
+
     /// Whether the daemon has been idle for its whole window - and so should exit - spending
     /// the deadline as [`Sessions::reviews_due`] does. `false` before the deadline, and `false`
     /// with the clock re-armed whenever something still holds it
@@ -3103,8 +3112,16 @@ impl<'a> Sessions<'a> {
             return false;
         };
         let now = Instant::now();
-        if self.idle_exit_at.is_none_or(|at| at > now) {
-            return false;
+        match self.idle_exit_at {
+            // The first look ARMS the window and counts as finding the daemon busy, which is the
+            // truth of it: this call is the first moment anyone has said there is nothing to do.
+            None => {
+                self.busy_seen = now;
+                self.idle_exit_at = Some(now + window);
+                return false;
+            }
+            Some(at) if at > now => return false,
+            Some(_) => {}
         }
         if self.idle_exit_refusal().is_some() {
             self.busy_seen = now;
