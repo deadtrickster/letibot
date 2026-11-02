@@ -1,10 +1,7 @@
-//! The queue, hosted: the routing, the edge, and the feed the layer reads.
-//!
-//! The pane on `Surface::Queue` is the `queue` layer's answer (`plugins/builtin/queue`), drawn
-//! through the production host, so the tests here that look at a screen look at the layer's
-//! drawing. What they assert about it is what the HOST owes: the ask, the scope, the verbs, the
-//! cursor, Enter, the overlay, and the standings the composer's edge draws on every screen. The
-//! layer's own policy is `plugins/builtin/queue/src/tests.rs`.
+//! The queue, hosted: the routing, the edge, and the feed the layer reads. The pane on
+//! `Surface::Queue` is the `queue` layer's answer drawn through the production host, so a test that
+//! looks at a screen looks at the layer's drawing and asserts what the HOST owes it. The layer's own
+//! policy is `plugins/builtin/queue/src/tests.rs`.
 
 use super::*;
 
@@ -708,10 +705,7 @@ fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
 
 // -- what the line says when the news is a TARGET's --------------------------------------
 //
-// The operator, 2026-10-31, from a session in another repository: *"main is red, tests are
-// going — nothing shows as in review or merged or stuck"*. Every row of that repository was
-// terminal, so all four columns were zero — and the only live fact the queue held was the red
-// target. A zero is a count of nothing drawn where the reader is asking what there is.
+// All four columns can be zero while a red target is the only live fact, and a zero is not news.
 
 /// **A repository whose only live fact is a red `main` reads `1 red`** - the four columns have
 /// nothing to say and are not drawn.
@@ -796,10 +790,9 @@ fn an_all_green_repository_reads_the_columns_and_no_target_word() {
     );
 }
 
-/// **The longest line this head can draw fits an 80-column edge** - both target words and all
-/// four columns non-zero is 70 cells, and the composer's edge is 76 inside the gutters. A cell
-/// narrower and `rano`'s `truncate` eats the right end: `landed` first, `stuck`, `being merged`,
-/// `in review`, `unjudged` — and `red` last, which is why the emergency leads the line.
+/// The longest line this head can draw fits an 80-column edge: both target words and all four
+/// columns non-zero is 70 cells, and the composer's edge is 76 inside the gutters. A cell narrower
+/// and `rano`'s `truncate` eats the right end, which is why the emergency leads the line.
 #[test]
 fn the_longest_standings_fit_on_an_eighty_column_edge() {
     let mut a = app();
@@ -842,10 +835,7 @@ fn the_longest_standings_fit_on_an_eighty_column_edge() {
 
 // -- the gate, on the edge a person reads without opening anything ---------------------
 //
-// The operator, 2026-11-01, twice in one minute: *"nothing about gate — and the same for other
-// sessions — gate is invisible"*, then *"very nasty actually - fans just start spinning"*. The
-// edge said `1 being merged` — true of every landing at every moment — while a gate compiled a
-// step of four on another box. The step is the fact that turns the word into news.
+// `1 being merged` is true of every landing at every moment; the gate's step is what makes it news.
 
 /// A `GATING` target whose gate is on `step` of `of` - the snapshot a head is sent while it runs.
 fn gating_target(
@@ -865,11 +855,9 @@ fn gating_target(
     t
 }
 
-/// **The edge says which step of the gate is running**, at 80 columns, where the merge column
-/// used to say only `1 being merged`.
-///
-/// **And it says it without fusing the two queues** - the step rides in parentheses beside the
-/// merge queue's own word instead of standing in for it.
+/// The edge says which step of the gate is running, at 80 columns, where the merge column used to
+/// say only `1 being merged` - and it says it without fusing the two queues: the step rides in
+/// parentheses beside the merge queue's own word instead of standing in for it.
 #[test]
 fn the_edge_names_the_gates_step_at_eighty_columns() {
     let mut a = app();
@@ -937,12 +925,7 @@ fn a_target_that_is_not_gating_keeps_the_old_word() {
 
 // -- the edge's standings, as a click target -------------------------------------------
 //
-// The operator, 2026-10-27: *"i want to click '5 in review' and be taken to the merge
-// queue"*. The standings are the one piece of the composer's bottom edge that is not about
-// this head, and they are drawn on every screen — so the click is the only door to the queue
-// a reader finds without knowing `/queue`. Every test draws a frame FIRST and aims the click
-// at the rectangle that frame recorded, because the whole feature is that the target is where
-// the draw put it.
+// The standings ride every screen, so the click is the only queue door a reader finds without `/queue`.
 
 /// **The composer's bottom edge** - the row the standings are drawn on, and the row a reader
 /// who never opens the pane reads them off.
@@ -1074,12 +1057,9 @@ fn the_standings_target_covers_the_words_they_grew_into() {
     assert_eq!(a.top_surface(), Some(Surface::Queue));
 }
 
-/// **A click one cell outside the standings asks for nothing.** The edge around the words is
-/// furniture, and a click on it is a click nobody claimed.
-///
-/// **Aimed at the GLASS, not at the record**: the two columns are the drawn span's own, worked
-/// out from the frame, so a record one column too wide or one column to the left fails here
-/// rather than agreeing with itself.
+/// A click one cell outside the standings asks for nothing: the edge around the words is furniture
+/// and a click on it is a click nobody claimed. Aimed at the GLASS and not at the record, so a
+/// record one column too wide or too far left fails here rather than agreeing with itself.
 #[test]
 fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
     let mut a = app();
@@ -1382,12 +1362,9 @@ fn o_goes_into_the_reviewers_session() {
     );
 }
 
-/// **`d` is offered on a `gating` landing, and not on one that has landed** - *take it out of
-/// line* is the person's answer to a gate that is going nowhere, and the offer has to be where
-/// it means something.
-///
-/// The daemon's side of the same rule: `verbs::withdraw_merge` takes a `gating` row, and a
-/// landing whose row has left `gating` does not land whatever its gate said.
+/// `d` is offered on a `gating` landing and not on one that has landed: taking it out of line is the
+/// person's answer to a gate that is going nowhere, so the offer belongs where it means something.
+/// The daemon agrees - `verbs::withdraw_merge` takes a `gating` row and nothing else.
 #[test]
 fn withdraw_is_offered_on_a_gating_landing_and_not_on_a_landed_one() {
     use crate::ui::panes::queue::{Selected, Verb, verb_moves};

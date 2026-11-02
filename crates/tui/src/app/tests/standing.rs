@@ -1,9 +1,7 @@
-//! **The standing-notes pane** — one row per note the harness reads into the prompt, with the
-//! form the budget gave each, and Enter to open one in the editor pane.
-//!
-//! The rows come from the daemon and the disk facts are read here at draw time, so the
-//! fixtures are two halves and this file asserts both: a `StandingNotes` frame built by hand
-//! (what the daemon decides) and a real directory of real files (what the disk answers).
+//! The standing-notes pane: one row per note the harness reads into the prompt, with the form the
+//! budget gave each, and Enter to open one in the editor pane. The rows are the daemon's and the
+//! disk facts are read here at draw time, so the fixtures are two halves: a `StandingNotes` frame
+//! built by hand, and a real directory of real files.
 
 use super::*;
 use letibot_sessionlog::protocol::{NoteEntry, NoteForm};
@@ -42,11 +40,9 @@ fn frame(notes: Vec<NoteEntry>) -> ServerFrame {
     }
 }
 
-/// rano's ticks until the file it opened has arrived — the loop's job, done here by hand.
-///
-/// The editor pane reads a file **asynchronously** (`App::editor_tick` is where the rows land),
-/// so a test that looked at the pane straight after the key would be asking it about a buffer
-/// that is still coming.
+/// rano's ticks until the file it opened has arrived - the loop's job, done here by hand. The pane
+/// reads a file asynchronously, so a test looking at it straight after the key would ask about a
+/// buffer that is still coming.
 fn settle(a: &mut App) {
     for _ in 0..1000 {
         a.editor_tick(Instant::now());
@@ -81,12 +77,9 @@ fn row_naming<'a>(screen: &'a str, needle: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no row names {needle:?}: {screen}"))
 }
 
-/// **`/standing` asks the daemon and draws what comes back** — the index's abstract, the
-/// file's own size and age, and the form the budget gave it.
-///
-/// The size is asserted as the number the file really is (`bytes_human` of its own length),
-/// not as a string copied from the renderer: a row that showed a remembered size would pass a
-/// copied string and fail this.
+/// `/standing` asks the daemon and draws what comes back: the index's abstract, the file's own size
+/// and age, and the form the budget gave it. The size is asserted as the number the file really is,
+/// not as a string copied from the renderer, so a remembered size cannot pass this.
 #[test]
 fn the_pane_draws_the_indexes_abstract_and_the_files_own_size_and_age() {
     let d = corpus("rows");
@@ -139,10 +132,8 @@ fn the_pane_draws_the_indexes_abstract_and_the_files_own_size_and_age() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **A note whose file has gone says that, rather than a row that looks fine.**
-///
-/// The index still names it — the prompt is carrying its entry — and the disk does not, and
-/// the row is the only place the two can be seen disagreeing.
+/// A note whose file has gone says that, rather than drawing a row that looks fine: the index still
+/// names it and the disk does not, and the row is the only place the two can be seen disagreeing.
 #[test]
 fn a_note_whose_file_is_gone_says_so() {
     let d = corpus("gone");
@@ -184,12 +175,9 @@ fn a_note_whose_file_is_gone_says_so() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **Enter opens the selected note's FILE in the editor pane** — rano, the same pane a click on
-/// an edit row and `ctrl-]` open — and it opens the row the cursor is on, not its neighbour.
-///
-/// The path is read back from rano rather than compared with the string this test passed in, and
-/// the line is the note's own first: a note is opened to be read from the top, because there is
-/// no change to place a cursor on (see `FileRef::file`).
+/// Enter opens the selected note's FILE in the editor pane - the pane a click on an edit row and
+/// `ctrl-]` open - and on the row the cursor is on, not its neighbour. The path is read back from
+/// rano and the line is the note's first, because there is no change to place a cursor on.
 #[test]
 fn enter_opens_the_selected_note_in_the_editor_pane() {
     let d = corpus("open");
@@ -230,11 +218,9 @@ fn enter_opens_the_selected_note_in_the_editor_pane() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **Leaving rano lands back on the list**, with the cursor where it was — the list stays open
-/// under the pane, so a note is not a one-way trip out of the pane it was opened from.
-///
-/// The exit goes through the router as `ctrl-q` does, because that is rano's own key while it
-/// has the keyboard: from the composer the same byte is this head's jobs pane.
+/// Leaving rano lands back on the list, with the cursor where it was: the list stays open under the
+/// pane. The exit goes through the router as `ctrl-q` does, because that is rano's own key while it
+/// has the keyboard - from the composer the same byte is this head's jobs pane.
 #[test]
 fn leaving_rano_lands_back_on_the_notes_list() {
     let d = corpus("leave");
@@ -294,10 +280,9 @@ fn leaving_rano_lands_back_on_the_notes_list() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **The arrows move the selection and touch nothing else** — the pane owns Up and Down while
-/// it is open (the rule every list pane keeps), and the composer's half-typed line is not
-/// theirs. The mark the frame draws is asserted with the state, so a key that moved a cursor
-/// nobody could see would fail here.
+/// The arrows move the selection and touch nothing else: the pane owns Up and Down while it is open
+/// and the composer's half-typed line is not theirs. The mark the frame draws is asserted with the
+/// state, so a key that moved a cursor nobody could see would fail here.
 #[test]
 fn the_arrows_move_the_selection_without_touching_the_composer_draft() {
     let d = corpus("keys");
@@ -335,12 +320,9 @@ fn the_arrows_move_the_selection_without_touching_the_composer_draft() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **The rows are what `ListNotes` said, not a listing of the notes directory.**
-///
-/// The paths, the abstracts and the forms are the daemon's — decided where the section is
-/// assembled, with the session's token counter — so a `.md` file sitting beside the ones the
-/// daemon sent is not a row, and this head cannot invent one by reading the directory its own
-/// rows happen to come from.
+/// The rows are what `ListNotes` said, not a listing of the notes directory: paths, abstracts and
+/// forms are the daemon's, so a `.md` file beside the ones it sent is not a row and this head cannot
+/// invent one by reading the directory its own rows happen to come from.
 #[test]
 fn the_rows_are_what_list_notes_said() {
     let d = corpus("from-daemon");
@@ -387,14 +369,9 @@ fn an_empty_corpus_says_so() {
     );
 }
 
-/// **The form is as of NOW, not as of when the pane opened** — the field the whole pane
-/// exists for, and the reason it is not simply drawn from what `ListNotes` last said.
-///
-/// The form is the daemon's answer (decided with the session's token counter, which this head
-/// does not have) while the size beside it is read here at draw time — so a note edited with
-/// the pane open would otherwise draw a NEW size next to the form it had BEFORE the edit, and
-/// the row would be contradicting itself about the one thing it is for. The head cannot decide
-/// the form; what it can do is notice the corpus moved and ask again, which is what this pins.
+/// The form is as of NOW, not as of when the pane opened. The size beside it is read here at draw
+/// time while the form is the daemon's answer, so a note edited with the pane open would draw a new
+/// size next to the old form - the head cannot decide the form, only notice the corpus moved.
 #[test]
 fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     let d = corpus("watch");
@@ -457,13 +434,9 @@ fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **The path on a note's row is a link the terminal opens** (OSC 8) — the operator's own
-/// report, about this pane's fact: *"yeah you gave md name but it is not clickable"*.
-///
-/// The row names the path the prompt's section carries, and `rano::term::links::file_url` is
-/// what turns it into the URL — absolute against the session's workspace, with this machine's
-/// name in it. A terminal that does not speak links gets the row it always got, byte for byte:
-/// that half is asserted here too, because the gate is the whole reason the feature is safe.
+/// The path on a note's row is a link the terminal opens (OSC 8). The row names the path the
+/// prompt's section carries and `rano::term::links::file_url` turns it into the URL; a terminal
+/// that does not speak links gets the row it always got, byte for byte, which is asserted too.
 #[test]
 fn a_notes_path_on_the_row_is_a_link_the_terminal_can_open() {
     let d = corpus("link");

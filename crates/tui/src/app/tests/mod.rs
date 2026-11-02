@@ -113,10 +113,8 @@ fn path_fixture() -> std::path::PathBuf {
     d
 }
 
-/// Type into the composer the way a person does, one key at a time. There is
-/// no `input` field to assign any more, and that is the point: the composer
-/// is a state machine with undo batching and a paste ledger, and a test that
-/// reaches past it is not testing what runs.
+/// Type into the composer the way a person does, one key at a time: the composer is a state machine
+/// with undo batching and a paste ledger, so a test that reaches past it is not testing what runs.
 fn typed(a: &mut App, text: &str) {
     for c in text.chars() {
         a.key(Key::Char(c));
@@ -125,11 +123,9 @@ fn typed(a: &mut App, text: &str) {
 
 // ─────────────────────────── `!term`, the pane ───────────────────────────
 
-/// Open a pane the way the operator does, and feed it the bytes a program would draw.
-///
-/// The submit is a real key path — typed characters and an Enter — rather than a
-/// constructed `Action`, because the recognition at the composer is half of what these
-/// tests are about.
+/// Open a pane the way the operator does, and feed it the bytes a program would draw. The submit is
+/// a real key path - typed characters and an Enter - because the recognition at the composer is half
+/// of what these tests are about.
 fn pane(a: &mut App, bytes: &[u8]) -> Action {
     typed(a, "!term mc");
     let opened = a.key(Key::Enter).expect("the verb opens a pane");
@@ -227,10 +223,9 @@ fn finished_costing(turn: &str, micros: Option<u64>) -> SessionEvent {
     }
 }
 
-/// Feed the two rows a `!` line produces, the way the daemon's append reaches a
-/// head: the operator's own `User` row, then the `bash` result with its `origin`
-/// set. No proposing assistant row exists — that is the point — so nothing else is
-/// applied, which is what makes this the shape a switched-in head receives too.
+/// Feed the two rows a `!` line produces, the way the daemon's append reaches a head: the operator's
+/// own `User` row, then the `bash` result with its `origin` set. No proposing assistant row exists,
+/// which is what makes this the shape a switched-in head receives too.
 fn bang_rows(a: &mut App, seq: u64, id: &str, line: &str, payload: &str) {
     a.apply(ServerFrame::Event(env(
         seq,
@@ -294,17 +289,9 @@ fn model_bash_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
     )));
 }
 
-/// **Every escape sequence this head has any business emitting.**
-///
-/// The frame's own vocabulary, stated positively: the `sgr` module's constants, which is what
-/// `colour()`, `dim()` and the git field paint with, and every sequence `Palette::open` can
-/// produce for a role. §3.1's guarantee is *a foreign program's escape never reaches the
-/// terminal*; this is the other half of the same sentence — what does reach it is a sequence
-/// this head chose, and the list is short enough to write down.
-///
-/// A helper for the coloured tests, because the assertion it feeds is one line and the list
-/// would otherwise be copied into each of them: `strip these off the row and nothing a
-/// terminal would act on is left`.
+/// Every escape sequence this head has any business emitting: the `sgr` constants and every
+/// sequence `Palette::open` can produce for a role. A foreign program's escape never reaches the
+/// terminal; what does reach it is a sequence this head chose, and the list is short enough to write.
 fn head_vocabulary() -> Vec<String> {
     let mut v: Vec<String> = [
         sgr::RESET,
@@ -354,11 +341,9 @@ fn head_vocabulary() -> Vec<String> {
     v
 }
 
-/// **Take this head's own vocabulary off a row; nothing a terminal would act on may be left.**
-///
-/// A `String::replace` per sequence rather than an escape parser in the test: the question is
-/// membership, the vocabulary is a closed list, and a second parser here would be a second
-/// thing to keep in step with the first — which is the mistake this whole change is about.
+/// Take this head's own vocabulary off a row; nothing a terminal would act on may be left. A
+/// `String::replace` per sequence rather than a parser in the test: the question is membership, and
+/// a second parser here would be a second thing to keep in step with the first.
 fn only_the_heads_own_escapes(row: &str) -> bool {
     let mut rest = row.to_string();
     for own in head_vocabulary() {
@@ -370,15 +355,9 @@ fn only_the_heads_own_escapes(row: &str) -> bool {
             .any(|c| ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{7f}')
 }
 
-/// **The operator's own `ls -la`, byte for byte, as they pasted it.**
-///
-/// Not a fixture invented for a test: this is the payload from the report — the header line
-/// `total 124` and three directory rows — with every `ESC` the program wrote in it. The
-/// synthetic payloads the first cut used (`"src/\u{1b}[01;34mthe-dir\u{1b}[0m…"`) had two
-/// things the real one has and they did not: a **line with no escape on it at all**, and
-/// `ls`'s own `ESC[0m` **before** the colour rather than only after it. The paste's `ESC`
-/// bytes are invisible in a transcript, which is why the pasted text reads `[0m[01;34m.` —
-/// a `[`-sequence body with no introducer in front of it.
+/// The operator's own `ls -la`, byte for byte, as they pasted it: the header line and three
+/// directory rows with every `ESC` the program wrote, including `ls`'s own `ESC[0m` before the
+/// colour. Its paste reads `[0m[01;34m.` because a sequence's introducer is invisible in a transcript.
 const OPERATOR_LS_LA: &str = "total 124\n\
         drwxrwxr-x 22 dead dead  4096 Oct  6 09:46 \u{1b}[0m\u{1b}[01;34m.\u{1b}[0m\n\
         drwxrwxr-x  3 dead dead  4096 Oct  4 22:22 \u{1b}[01;34mcrates\u{1b}[0m\n\
@@ -397,13 +376,9 @@ fn bash_result(payload: &str) -> TranscriptItem {
     }
 }
 
-/// **What a reader actually sees on a row** — every escape this head wrote taken off it.
-///
-/// `without_control` is the transcript crate's own sequence parser, so this is the frame's
-/// bytes with the head's vocabulary removed rather than a second parser written here. A
-/// `[` left in the result is a sequence's **body** that reached the glass as text: the
-/// defect the operator pasted, `[0m[01;34m`, is exactly that — an introducer that is gone
-/// and five characters that are not.
+/// What a reader actually sees on a row - every escape this head wrote taken off it, through the
+/// transcript crate's own sequence parser. A `[` left in the result is a sequence's body that
+/// reached the glass as text, which is exactly the defect this guards.
 fn seen(row: &str) -> String {
     letibot_transcript::sanitize::without_control(row)
 }
@@ -412,23 +387,9 @@ fn seen(row: &str) -> String {
 /// carry: offering both spellings doubles the list to teach the same actions.
 const HEAD_COMMAND_ALIASES: &[&str] = &["?", "h", "q", "r", "s", "t", "v", "i"];
 
-/// **§3.1: content this head did not write must not reconfigure the terminal.**
-///
-/// The exposure is real and it is this head's specifically, not a shared habit:
-/// leticl composes styled segments into a **cell grid** and `screen-put-string`
-/// writes only cluster text, so it *cannot* emit an escape it did not author. This
-/// head composes ANSI-bearing strings and `paint_full` writes each row verbatim, so
-/// an escape in model prose went straight to whatever terminal was attached.
-///
-/// The sequence used is the one an operator can **watch happen**: `ESC ] 0 ; x BEL`
-/// is the window-title request, so a rendered one renames the window they are
-/// working in. It contains `ESC` and `BEL`, which after `without_control_lines`
-/// become two spaces — so the *literal* sequence cannot appear in any row, which is
-/// what this asserts rather than "the row looks fine".
-///
-/// Every surface §3.1 names is walked: model prose (settled and live), reasoning,
-/// the operator's own paste, the system row, a tool payload and its failure reason,
-/// the raw markup behind `ctrl-x`, and both sides of a diff read off disk.
+/// Content this head did not write must not reconfigure the terminal: `paint_full` writes each row
+/// verbatim, so an escape in model prose went straight to whatever terminal was attached. The
+/// sequence used is the window-title request, the one an operator can watch happen.
 const EVIL: &str = "\u{1b}]0;pwned\u{7}";
 
 const EVIL_HEAD: &str = "\u{1b}]0;";
@@ -437,21 +398,16 @@ fn render_one(item: letibot_transcript::TranscriptItem) -> String {
     item_rows(false, item).join("\n")
 }
 
-/// The rows one transcript item renders to, at a chosen colour setting.
-///
-/// Colour is a parameter because the falsification test below needs both: with no
-/// colour the head emits **no escapes at all**, which makes "not one ESC" a precise
-/// assertion over the text; with colour it emits its own, so the assertion narrows
-/// to the sequences it never writes.
+/// The rows one transcript item renders to, at a chosen colour setting. Colour is a parameter
+/// because the falsification test needs both: with no colour the head emits no escapes at all, so
+/// "not one ESC" is a precise assertion; with colour it emits its own and the assertion narrows.
 fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<String> {
     item_rendered(colour, item).1
 }
 
-/// **The row's class and its lines** — [`item_rows`] with the class kept.
-///
-/// The class is the thing a reader sees as the treatment rather than as the text (the operator's
-/// words are `Speech`, a session's own are `Other`), so a test that asserts only the lines cannot
-/// tell a parent's message from a prompt that happened to say the same words.
+/// The row's class and its lines - [`item_rows`] with the class kept. The class is what a reader
+/// sees as the treatment rather than as the text, so a test asserting only the lines cannot tell a
+/// parent's message from a prompt that happened to say the same words.
 fn item_rendered(
     colour: bool,
     item: letibot_transcript::TranscriptItem,
@@ -520,27 +476,16 @@ fn item_kind_is_edit(i: &letibot_transcript::TranscriptItem) -> bool {
     matches!(i, T::ToolResult { name, .. } if matches!(name.as_str(), "edit" | "write"))
 }
 
-/// **The store's own vocabulary of hostile bytes.**
-///
-/// Every family below was found in the operator's store — 44 `tool_result` rows
-/// carry an escape and 20 carry a mode string — so this is the corpus's vocabulary
-/// and not a list invented for a test. SGR and reset are in it because they are
-/// what a coloured command emits; the rest are the things a terminal *does* rather
-/// than shows.
+/// The store's own vocabulary of hostile bytes, found in the operator's store rather than invented
+/// for a test. SGR and reset are in it because they are what a coloured command emits; the rest are
+/// the things a terminal does rather than shows.
 const HOSTILE: &str = " A\u{1b}[31mred\u{1b}[0m \u{1b}[8m(hidden) \u{1b}[2J \
         \u{1b}[?1002h \u{1b}[?1006h \u{1b}[?1049h \u{1b}[?2004h \u{1b}[?2026h \
         \u{1b}]0;pwned\u{7} \u{9b}31m \u{9c} \u{7f} end";
 
-/// **Sequences a frame body never contains**, whatever the palette is doing.
-///
-/// The ambiguous ones are deliberately absent: an SGR pair in model prose is
-/// **indistinguishable in the byte stream from this head's own red** — the palette
-/// emits `ESC[31m` itself — so asserting its absence there would be either false or
-/// meaningless. It is caught by the colourless check instead, where the head emits
-/// no escapes at all and "not one ESC" is a precise statement about the text.
-///
-/// What is left is unambiguous: finding one of these is proof that somebody else's
-/// bytes reached the terminal.
+/// Sequences a frame body never contains, whatever the palette is doing. An SGR pair in model prose
+/// is indistinguishable from this head's own red, so it is caught by the colourless check instead;
+/// what is left is unambiguous, and finding one proves somebody else's bytes reached the terminal.
 const NEVER_IN_A_FRAME: &[(&str, &str)] = &[
     ("an OSC window title", "\u{1b}]"),
     ("mouse tracking", "\u{1b}[?1002"),
@@ -574,20 +519,9 @@ fn unauthored(rows: &[String]) -> Option<String> {
     None
 }
 
-/// A tool result row whose body has landed, the way the daemon delivers one: an
-/// announcement, then its content. A local helper rather than a `testing::` one
-/// because the fixture's own `result` is inside another test function.
-/// **How many markers a screen carries** — the number, which is the assertion R37
-/// AMENDED needs.
-///
-/// **Counted by the COUNTS, now that the seam is gone** — the operator: *"dont print \" dot
-/// /verbosity\" or ctrl-t opens it - we dont need that."*
-///
-/// This used to count the seam, which is what a marker had and no other row did — a reliable
-/// signature while it existed. What a marker has now is a bracket holding a digit and one of
-/// the count nouns, at any rung of the ladder (`2 tool calls` down to `2t`), so that is the
-/// test. Counting `[` alone would count a payload's own text, which is what the seam was
-/// standing in for.
+/// How many markers a screen carries, counted by the COUNTS: a marker is a bracket holding a digit
+/// and one of the count nouns, at any rung of the ladder (`2 tool calls` down to `2t`). Counting
+/// `[` alone would count a payload's own text.
 fn markers(screen: &str) -> usize {
     screen.lines().filter(|l| is_marker(l)).count()
 }
@@ -646,11 +580,9 @@ fn bash_row(cmd: &str) -> TranscriptItem {
     }
 }
 
-/// **A `Hello` carrying a snapshot of `n` body-less rows** — the R9 tests' fixture.
-///
-/// A snapshot full of rows with no bodies is a *bulk announcement*, and building one
-/// means going through a real `Hub` so the snapshot is the daemon's own shape rather
-/// than a hand-rolled one.
+/// A `Hello` carrying a snapshot of `n` body-less rows. A snapshot of rows with no bodies is a bulk
+/// announcement, so it is built through a real `Hub` and is the daemon's own shape rather than a
+/// hand-rolled one.
 fn snapshot_hello(tag: &str, n: usize) -> ServerFrame {
     let hub = Hub::new(tag);
     for i in 0..n {
@@ -727,12 +659,8 @@ fn wiring() -> SessionWiring {
     }
 }
 
-/// **The daemon's door row**, as `harnessd` publishes it — R31, R32, R34.
-///
-/// A `ServerFrame::Settings` carrying one `head-run.tools` row, because that is the only
-/// way a head learns any of this: it holds no schema, and these tests would prove nothing
-/// if they handed the app a struct it built itself from knowledge the head does not have.
-/// Empty `field` and `why_json` is the no-bare-form case.
+/// The daemon's door row, as `harnessd` publishes it: the only way a head learns any of this is the
+/// row, because it holds no schema. Empty `field` and `why_json` is the no-bare-form case.
 fn door_row(name: &str, field: &str, kind: &str) -> ServerFrame {
     ServerFrame::Settings {
         rows: vec![letibot_sessionlog::protocol::SettingRow {
@@ -765,10 +693,9 @@ fn hello(session: &str, sessions: Vec<SessionBrief>, snapshot: Snapshot) -> Serv
     )
 }
 
-/// The same, with the version the daemon claims. A separate helper rather than a
-/// parameter on `hello` because every other test wants the honest value, and a default
-/// argument that could be forgotten is how a test ends up asserting against a skew it
-/// did not mean to create.
+/// The same, with the version the daemon claims. A separate helper rather than a parameter on
+/// `hello`, because a default argument that could be forgotten is how a test ends up asserting
+/// against a skew it did not mean to create.
 fn hello_at(
     session: &str,
     sessions: Vec<SessionBrief>,
@@ -788,20 +715,9 @@ fn hello_at(
     }
 }
 
-/// **R20 — the measurement first, and then the fix.** A card whose content is taller
-/// than the screen, on the glass.
-///
-/// The operator, on a permission card carrying a giant replace or a commit message:
-/// *"I'm shown a permission prompt and I just cant see the selector."* The mechanism
-/// was the screen-fit loop's `dec_rows -= 1`, which trims **from the end** — and the
-/// end of a card is the ladder, the deadline and the hint. **Measured before the fix,
-/// 80x24 with a 42-row card: the headline, the target and nineteen lines of layer A's
-/// reading, and the three options GONE.** The composer was still there, so the
-/// operator held a screen with a question on it and no way to answer it.
-///
-/// After: the ladder in full, then the hint, and a seam saying how many lines are out
-/// of view and which key reads them. The content still starts at its head, because
-/// that is where a card is read from.
+/// A card whose content is taller than the screen, on the glass. The screen-fit loop trims from the
+/// end, and the end of a card is the ladder, the deadline and the hint - so a card that outgrows the
+/// screen must keep its options and say how many lines are out of view.
 fn tall_card(tall: bool) -> App {
     use letibot_sessionlog::event::OptionKind;
     let mut a = app();
@@ -844,14 +760,9 @@ fn tall_card(tall: bool) -> App {
     a
 }
 
-/// A `Subagent` event as the daemon publishes one — the state word, and the child's
-/// answer's first line **on a completion only**.
-///
-/// `harness.rs` is the one publisher and it says which is which: `publish("opening", …, None)`,
-/// `publish("failed", …, None)`, `publish("running", …, None)`, and
-/// `publish("done", &first_line, Some(first_line.clone()))`. So `answer.is_some()` is
-/// exactly *the completion arrived*, which is why the row can be asked whether a child has
-/// finished without consulting a clock or an instant.
+/// A `Subagent` event as the daemon publishes one: the state word, and the child's answer's first
+/// line on a completion only. `answer.is_some()` is exactly *the completion arrived*, so a row can
+/// be asked whether a child has finished without consulting a clock.
 fn child_event(id: &str, state: &str, answer: Option<&str>) -> SessionEvent {
     SessionEvent::Subagent {
         subagent_id: id.into(),
@@ -902,10 +813,9 @@ fn model_settings(value: &str, choices: &[&str]) -> ServerFrame {
     }
 }
 
-/// **`Mode::NAMED`'s names verbatim, spaces and all.** This said `writes-allowed` for a long
-/// time — a hyphen the name has never had — and that is how a defect where the CURRENT MODE's
-/// name contains a space passed a suite that looked like it covered the card: the fixture's
-/// list agreed with the code's assumption instead of with the daemon's bytes.
+/// `Mode::NAMED`'s names verbatim, spaces and all. A fixture list that agreed with the code's
+/// assumption instead of with the daemon's bytes is how a defect where the current mode's name
+/// contains a space passed a suite that looked like it covered the card.
 const MODES: &[&str] = &[
     "read-only",
     "always-ask",
@@ -1033,13 +943,9 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
     );
 }
 
-/// **A turn mid-run, as the daemon drives one** — the narration that introduces the work, one
-/// round's result row, and reasoning streaming with no row of its own yet.
-///
-/// The shape is the operator's own, and it is the one that makes a second marker legible: the
-/// run is the hidden row after the prose, and the only work in flight is thinking — so a
-/// marker drawn beside the run reads `[N thinking lines]` next to `[1 tool call]`, which is
-/// the pair they reported.
+/// A turn mid-run, as the daemon drives one: the narration that introduces the work, one round's
+/// result row, and reasoning streaming with no row of its own yet. The run is the hidden row after
+/// the prose, so a marker beside it reads `[N thinking lines]` next to `[1 tool call]`.
 fn a_turn_mid_run(a: &mut App) {
     a.visibility = Visibility::of(Profile::CONVERSATION);
     a.apply(hello(
@@ -1120,11 +1026,9 @@ fn operator_row(text: &str) -> TranscriptItem {
     }
 }
 
-/// The one ask a Tab on an unmatched `!` prefix queues, and the id it minted.
-///
-/// **Exactly one**: the whole point of the cache is that a Tab asks once, so a
-/// helper that took the first and ignored the rest would be blind to the defect it
-/// exists to catch.
+/// The one ask a Tab on an unmatched `!` prefix queues, and the id it minted. Exactly one: the whole
+/// point of the cache is that a Tab asks once, so taking the first and ignoring the rest would be
+/// blind to the defect it exists to catch.
 fn the_one_ask(a: &mut App) -> (String, String) {
     let actions = a.take_actions();
     assert_eq!(actions.len(), 1, "exactly one action: {actions:?}");
@@ -1275,9 +1179,8 @@ fn jobs_frame(session_id: &str, jobs: Vec<letibot_sessionlog::protocol::JobEntry
 // ---- the starter todos: leticl's `todo_template`, copied ----
 
 /// A head seated in `workspace`, its prefs in `dir`, and a template written to
-/// `dir/todo-template.md` — the arrangement the switch names. The workspace rides the
-/// Hello itself, because the seed's gate reads it at the attach, where the arm has just
-/// set it.
+/// `dir/todo-template.md`. The workspace rides the Hello itself, because the seed's gate reads it at
+/// the attach, where the arm has just set it.
 fn seeded_head(dir: &std::path::Path, template: &str, workspace: &str) -> App {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
@@ -1306,11 +1209,9 @@ fn seeded_head(dir: &std::path::Path, template: &str, workspace: &str) -> App {
     a
 }
 
-// ===== The queues pane (R61) =====
+// ===== The queues pane =====
 //
-// The pane is the HEAD's half of the queues, drawn from the daemon's one snapshot
-// (`ServerFrame::Queues`); a `QueueMoved` event asks for it again. These tests are about what
-// this head asks for, what it keeps and what it draws — the queues themselves are `harnessd`'s.
+// The HEAD's half of the queues, drawn from the daemon's one snapshot; a `QueueMoved` asks for it again.
 
 /// **One review row**, as the snapshot carries it.
 fn queue_review_row(id: &str, state: &str) -> letibot_sessionlog::event::QueueReview {
