@@ -1,62 +1,6 @@
-//! Plan mode as a **capability boundary**, not a flag.
-//!
-//! `docs/tool-design-brief.md` §2.4: make the mistake blocked, do not warn
-//! about it. Three of the five surveyed harnesses have a plan mode and all three
-//! implement it as a *guard*: opencode denies `plan_exit` by permission, omp's
-//! `plan-mode-guard.ts:143-153` hard-rejects filesystem mutation at call time,
-//! grok-build swaps a policy. In every one of them the model is still handed the
-//! write tools' schemas and still emits calls to them; the harness says no
-//! afterwards.
-//!
-//! Ours does it one layer earlier. [`seating`] returns the [`Role`] for the next
-//! turn, and in plan mode that role **does not contain the write tools**. They are
-//! therefore not in `Registry::tools_json`, not in the stable prefix, and not in
-//! the space of things the model can phrase. There is nothing to deny because
-//! there is nothing to call.
-//!
-//! # And a second mechanism, because one is never enough here
-//!
-//! Un-seating happens at a turn boundary — the tool list is part of the stable
-//! prefix, and rewriting it mid-turn re-prefills the conversation. So a call
-//! already in flight, or a session whose head forgot to reseat, would still reach
-//! a write tool. [`PlanGate`] closes that: it wraps whatever gate the session has
-//! and refuses every non-read call while plan mode is active.
-//!
-//! That refusal carries [`ToolOutcome::Denied`], not `NotRun`, and the `req_id` is
-//! **the call id of the `enter_plan_mode` that turned it on**. Somebody did decide;
-//! this names who and when. Compare [`crate::runtime::NoBoundary`], which is
-//! `NotRun` precisely because nobody decided there.
-//!
-//! # Plan mode is *no writes to the work*, not *no writes* (D9)
-//!
-//! The first cut of this module dropped every non-read tool, which made plan mode
-//! mean "no writes". The operator's correction, and it removes an absurdity nobody
-//! had spotted:
-//!
-//! > *"plan mode must be able to write plan markdowns and chat in flowy"*
-//!
-//! A planner that cannot record its plan has to carry the plan in the context it is
-//! about to hand over. Writing the plan and discussing it **are what a plan is**.
-//! So the boundary moved from the *verb* to the *target*, and three tools stay
-//! seated regardless of their declared access — [`PLAN_MODE_TOOLS`]:
-//!
-//! | tool | access | why it survives |
-//! |---|---|---|
-//! | `write_plan` | `Write` | a scoped write: it takes a NAME, not a path, so `src/` is unspellable — see [`super::write_plan`] |
-//! | `say` | `Network` | a plan discussed with the fleet while it is still a plan — [`super::chat`] |
-//! | `exit_plan_mode` | `Write` | a plan mode you cannot ask to leave is a trap |
-//!
-//! Each is still adjudicated on its own terms: staying seated means the *schema is
-//! in the prompt*, not that the gate stops deciding.
-//!
-//! # Leaving plan mode is a gated write
-//!
-//! Entering plan mode narrows what the session can do; leaving it *widens* that
-//! again, which is the direction that needs a decision. So `exit_plan_mode`
-//! declares [`crate::schema::Access::Write`] and goes to the adjudicator like any
-//! other write. In a session with no adjudicator it refuses with `NotRun`, and
-//! `enter_plan_mode` says so **before** you enter rather than after — clause 1
-//! applied to a door you can only walk through once.
+//! Plan mode as a capability boundary, not a flag: the seated role holds no write tools,
+//! so there is nothing to deny because there is nothing to call, and [`PlanGate`] catches
+//! a call already in flight. [`PLAN_MODE_TOOLS`] stay seated: the plan is not the work.
 
 use std::sync::Mutex;
 
@@ -69,10 +13,8 @@ use crate::schema::Access;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlanState {
     pub active: bool,
-    /// The call id of the `enter_plan_mode` that turned it on. This is the
-    /// `req_id` a refusal carries: a decision with nobody attached to it is the
-    /// thing this crate refuses to report anywhere else, and plan mode is no
-    /// exception.
+    /// The call id of the `enter_plan_mode` that turned it on, which is the `req_id` a
+    /// refusal carries: somebody did decide, and this names who and when.
     pub entered_by: Option<String>,
     pub entered_turn: Option<String>,
     /// The plan the model exited with, once it has.
@@ -126,38 +68,14 @@ impl PlanMode {
     }
 }
 
-/// The tools that stay seated in plan mode **whatever their declared access**.
-///
-/// D9: plan mode is no writes *to the work*. These three are not the work — they
-/// are the plan. Order is the order they are appended in, and it is part of the
-/// stable prefix, so it is written down once here.
+/// The tools that stay seated in plan mode whatever their declared access: the plan, not
+/// the work. The order is the order they are appended in, and it is part of the stable
+/// prefix, so it is written down once here.
 pub const PLAN_MODE_TOOLS: &[&str] = &["write_plan", "say", "exit_plan_mode"];
 
-/// The role to seat for the next turn.
-///
-/// In plan mode the returned role keeps the tools whose declared access is
-/// [`Access::Read`] or [`Access::Session`], plus [`PLAN_MODE_TOOLS`]. Everything
-/// else that can change the operator's tree, run a command or reach the network is
-/// **absent from the tool list the model is shown** — not refused, absent.
-///
-/// A plan-mode tool the registry does not have is not added, because a role naming
-/// a tool that does not exist fails to resolve and a session that merely lacks
-/// `say` should still be able to plan. One that the *base role* named is kept
-/// either way, so a mis-wired base still refuses loudly at
-/// [`Registry::resolve_role`] rather than quietly shrinking.
-///
-/// # Two costs, stated
-///
-/// The tool list is part of the stable prefix. Entering or leaving plan mode
-/// changes `tools_json`, which **re-prefills the conversation**. That is the price
-/// of the boundary being structural rather than advisory, and it is why this
-/// returns a role for the *next* turn instead of mutating a registry mid-turn.
-///
-/// And adding to a base role can push it over [`Role::max_tools`]. This does not
-/// silently trim: the over-budget role is returned and `resolve_role` refuses it
-/// by name with the overflow listed, which is the established loud path. A base
-/// role that is already at the ceiling cannot enter plan mode without losing
-/// something, and that is a fact worth a refusal rather than a quiet drop.
+/// The role to seat for the next turn: the base role's read and session tools plus
+/// [`PLAN_MODE_TOOLS`], with everything that can change the tree, run a command or reach the
+/// network absent from the tool list. Changing that list re-prefills the conversation.
 pub fn seating(registry: &Registry, base: &Role, plan_active: bool) -> Role {
     if !plan_active {
         return base.clone();
@@ -193,12 +111,9 @@ pub fn seating(registry: &Registry, base: &Role, plan_active: bool) -> Role {
     }
 }
 
-/// The second mechanism: a gate that refuses every non-read call while plan mode
-/// is on.
-///
-/// Wraps the session's real gate rather than replacing it, so leaving plan mode
-/// restores exactly the boundary that was there before — a gate that had to be
-/// rebuilt on exit is a gate that comes back subtly different.
+/// The second mechanism: a gate that refuses every non-read call while plan mode is on. It
+/// wraps the session's real gate rather than replacing it, so leaving plan mode restores
+/// exactly the boundary that was there before.
 pub struct PlanGate {
     plan: std::sync::Arc<PlanMode>,
     inner: Box<dyn Gate>,
@@ -258,32 +173,22 @@ mod tests {
     use std::sync::Arc;
 
     fn registry() -> Registry {
-        // The intent tools too, because `m2_coder` seats `todo` as of 2026-09-11 and
-        // `resolve_role` refuses a role naming a tool the registry does not hold —
-        // loudly, which is how this fixture's gap was noticed the moment the seat
-        // landed. `coder_tools` is the built-ins only; the daemon registers these
-        // separately in `Harness::open`, so this now matches what production builds.
+        // The intent tools too: `resolve_role` refuses a role naming a tool the registry does
+        // not hold, and the daemon registers these separately in `Harness::open`.
         let mut r = crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap();
         crate::builtins::intent::register_into(
             &mut r,
             &crate::builtins::intent::Wiring::standalone(),
         )
         .unwrap();
-        // And `bash`, for the same reason one turn later: `m2_coder` seats it as of
-        // 2026-09-11 (behind `--bash`), and the daemon registers the exec tools
-        // unconditionally — it is the ROLE that decides who may call them, not the
-        // registry. A fixture without it makes `seating` walk the
-        // name-not-in-the-registry branch, which keeps the name and hands
-        // `resolve_role` a refusal; that is the loud path working, and it would be
-        // measuring the gap instead of plan mode.
+        // And `bash`: the daemon registers the exec tools unconditionally, and it is the ROLE
+        // that decides who may call them. Without it the fixture would walk the
+        // name-not-in-the-registry branch and measure the gap instead of plan mode.
         r.register(Box::new(crate::builtins::bash::Bash::default()))
             .unwrap();
-        // And the delegation trio, for the same reason one seat later: `m2_coder` seats
-        // `task`, `task_result` and `task_message` as of R58 and the 2026-10-06 ruling
-        // (*"in the tree all subagents must be addressable by their parents"*), and
-        // `resolve_role` refuses a role naming a tool the registry does not hold. A
-        // fixture that left them out would be measuring the gap rather than plan mode —
-        // the identical loud path the two comments above record.
+        // And the delegation trio, for the same reason: `resolve_role` refuses a role naming a
+        // tool the registry does not hold, so a fixture that left them out would be measuring
+        // the gap rather than plan mode.
         let no_runner: Arc<dyn crate::builtins::task::TaskRunner> =
             Arc::new(crate::builtins::task::NoTaskRunner);
         r.register(Box::new(crate::builtins::task::TaskTool::new(
@@ -302,19 +207,14 @@ mod tests {
             no_runner.clone(),
         )))
         .unwrap();
-        // And `task_start`, for the same reason one seat later: `m2_coder` seats it
-        // beside `task` (the operator's ask — *"we will need a new tool - task_start
-        // or what that will arrange worktree, firecode and subagent"*), and
-        // `resolve_role` refuses a role naming a tool the registry does not hold.
+        // And `task_start`, for the same reason: `resolve_role` refuses a role naming a tool
+        // the registry does not hold, and `m2_coder` seats it beside `task`.
         r.register(Box::new(crate::builtins::task::TaskStartTool::new(
             no_runner,
         )))
         .unwrap();
-        // And `notes`, one seat later again: `m2_coder` seats it beside
-        // `write`/`edit`, and a fixture without it would keep the name through
-        // the name-not-in-the-registry branch and hand `resolve_role` a refusal
-        // — the loud path measuring the gap instead of plan mode, which is what
-        // the comments above refuse for every other seat.
+        // And `notes`, one seat later again: `m2_coder` seats it beside `write`/`edit`, and
+        // leaving it out would measure the gap instead of plan mode.
         r.register(Box::new(crate::builtins::notes::NotesTool::new(
             std::sync::Arc::new(PlanNotes),
         )))
@@ -349,21 +249,16 @@ mod tests {
         );
         assert!(!seated.tools.contains(&"edit".to_string()));
         assert!(seated.tools.contains(&"read".to_string()));
-        // **And the shell.** `bash` is `Access::Exec`, so the filter drops it on the
-        // same rule that drops `write` — which is the property worth asserting by
-        // name, because a plan mode that removed `write` and `edit` and left a shell
-        // would be a plan mode in name only: `sh -c 'echo x > src/lib.rs'` is a write
-        // to the work by another spelling, and D9 is about the work.
+        // `bash` is `Access::Exec`, so the same rule drops it - the property worth asserting by
+        // name, because a plan mode that removed `write` and `edit` and left a shell would be
+        // plan mode in name only: `sh -c 'echo x > src/lib.rs'` is a write to the work.
         assert!(
             !seated.tools.contains(&"bash".to_string()),
             "plan mode that leaves a shell has not removed the write path: {:?}",
             seated.tools
         );
-        // And `notes`, on the same rule: a standing note outlives the plan and
-        // every session after it, which makes it the last thing a planning
-        // seat should be able to plant. Its class carries it out with
-        // `write`; naming it here is what keeps that true by assertion rather
-        // than by memory.
+        // And `notes`, on the same rule: a standing note outlives the plan and every session
+        // after it, which makes it the last thing a planning seat should be able to plant.
         assert!(
             !seated.tools.contains(&"notes".to_string()),
             "plan mode that leaves the notes writer has not removed the write path: {:?}",

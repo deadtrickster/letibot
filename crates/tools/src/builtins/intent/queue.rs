@@ -1,78 +1,6 @@
-//! The **shared** board — the fleet's queue — as a seam, plus the one that
-//! refuses.
-//!
-//! # A mount, not a second list
-//!
-//! The model has one set of todo verbs. What is *underneath* them is a property of
-//! the session, exactly as a mounted filesystem is a property of a directory: the
-//! caller does not pass a flag on every read to say which one it meant. The
-//! precedent is the operator's own `flowy fuse --mount <dir>` — *"mount this
-//! principal's memory as files, so an agent writes memory where it already writes
-//! files."*
-//!
-//! | | not mounted | mounted |
-//! |---|---|---|
-//! | what backs a row | this session's [`super::ledger::IntentLedger`] | the fabric node |
-//! | who can see it | this session | every seat in the project |
-//! | survives the fabric being down | yes | no |
-//! | survives the process exiting | no | yes |
-//!
-//! **Not mounted is the default and it is a configuration, not a fault.** The
-//! local path has no flowy dependency of any kind: no node, no token, no
-//! `FLOWY_ADDR`, no network code. Someone who has never heard of the fleet gets a
-//! working todo tool. That is why this crate has no HTTP client and no `libc` —
-//! the implementation that reaches the node lives on the other side of this trait,
-//! in the daemon.
-//!
-//! # What the mount does not hide
-//!
-//! **Which backing a call landed on is in every result**, because a mount that
-//! silently changes semantics is the silent-degradation failure with better
-//! manners: `filed to the board as row 1234` against `noted in this session only —
-//! no board is mounted`. The caller never chooses; the caller is always told.
-//!
-//! And **some verbs only mean something mounted.** `claim`, handing a row back and
-//! recording who owes the next move are facts about a *shared* board; unmounted
-//! they are [`letibot_transcript::ToolOutcome::NotRun`] naming what is missing
-//! (brief §2.3), never a local no-op wearing a success.
-//!
-//! # The property the local path has and this one cannot
-//!
-//! A seat that cannot reach the node has lost its shared board. It has **not**
-//! lost its own plan for the turn. So [`QueueError::Unreachable`] is `NotRun` and
-//! says in the same sentence that nothing was filed — it never silently degrades
-//! into a local note. A tool that quietly writes locally while the operator
-//! believes a row was filed is the stalled-offline failure from
-//! `docs/closed-loop.md` §5: a process that has lost its encoder and keeps
-//! commanding.
-//!
-//! (`flowy fuse` has a `--no-drain` mount that queues writes and a `--reconcile`
-//! that applies them later. That is a *declared* operator choice, not a silent
-//! fallback, and this seam can carry such a backing later without the tool surface
-//! changing. It is not built here.)
-//!
-//! # Ownership is a query, not a judgement
-//!
-//! `flowy todo claim --id ID --expect WHO` is a compare-and-swap: the write is
-//! refused, naming whoever got there first, if the row moved between the read and
-//! the claim. The operator's rule for it is that *"the room lags the tree, and
-//! that is how seven collisions happened in one night."*
-//!
-//! So **[`Queue::claim`] does not take `expect`.** A model supplying it would be
-//! stating an opinion about who holds a row, and forming that opinion is the bug —
-//! `docs/closed-loop.md` §7: *"Is this row mine → ask the door; `--expect` is a
-//! compare-and-swap and the model forming an opinion about it is the bug."* The
-//! implementation reads the holder and swaps against what it read; the model
-//! cannot phrase the wrong claim because the argument does not exist.
-//!
-//! # What is not here
-//!
-//! **No CLI runner and no HTTP client.** This crate has no exec path
-//! (`HostBackend::run` refuses) and no network, by construction and for the
-//! reasons in `crates/tools/src/lib.rs`. The implementation that shells out to
-//! `flowy` or speaks to the node belongs to the daemon, on the other side of this
-//! trait — exactly where [`super::super::retrieval::Retrieval`] puts the oracle
-//! client. [`NoMount`] is what ships until then, and it returns `NotRun`.
+//! The shared board - the fleet's queue - as a seam, plus the one that refuses. Not mounted is
+//! the default and it is a configuration, not a fault: the local path needs no node, no token
+//! and no network. [`Queue::claim`] takes no `expect`: forming that opinion is the bug.
 
 use letibot_transcript::ToolOutcome;
 
@@ -181,27 +109,17 @@ impl std::fmt::Display for QueueError {
     }
 }
 
-/// The shared board.
-///
-/// Every method that changes a row is a **write to state other seats act on**, so
-/// the `board` tool declares [`crate::schema::Access::Network`] and goes through
-/// the gate like any other non-read call. Two independent mechanisms, as
-/// everywhere else in this crate: an adjudicator that admitted it, and a queue
-/// that is actually attached.
+/// The shared board. Every method that changes a row is a write to state other seats act on, so
+/// the `board` tool declares [`crate::schema::Access::Network`] and goes through the gate like
+/// any other non-read call, on top of a queue that is actually attached.
 pub trait Queue: Send + Sync {
-    /// The handle the **node** knows this seat by.
-    ///
-    /// Read from the seam and never from an argument: a tool that let the model
-    /// name the speaker is a tool that can speak under another seat's name.
+    /// The handle the node knows this seat by, read from the seam and never from an argument: a
+    /// tool that let the model name the speaker could speak under another seat's name.
     fn identity(&self) -> String;
 
-    /// Every row this seat can see.
-    ///
-    /// **`flowy todo` (the CLI) has no list verb** — it files, notes, claims,
-    /// records who owes the next move, and closes. A real implementation therefore
-    /// reads the node's API or its MCP surface rather than shelling out for this
-    /// one. Named here because the tool needs it and because the gap is worth
-    /// knowing before somebody writes a `flowy todo list` that does not exist.
+    /// Every row this seat can see. `flowy todo` has no list verb - it files, notes, claims and
+    /// closes - so a real implementation reads the node's API or MCP surface rather than
+    /// shelling out for this one.
     fn list(&self) -> Result<Vec<Row>, QueueError>;
 
     fn get(&self, id: &str) -> Result<Row, QueueError>;
@@ -231,13 +149,9 @@ pub trait Queue: Send + Sync {
     fn describe(&self) -> String;
 }
 
-/// **The default, and it is not an error state.**
-///
-/// No board is mounted. The verbs that only mean something on a *shared* board —
-/// `claim`, handing one back, recording who owes the next move — return `NotRun`
-/// naming what is missing. The verbs that work either way never reach here at all:
-/// [`super::board::Todo`] serves them from the session's own ledger and says so in
-/// the result.
+/// The default, and it is not an error state: no board is mounted. The verbs that only mean
+/// something on a shared board return `NotRun` naming what is missing, and the verbs that work
+/// either way never reach here - [`super::board::Todo`] serves them from the session's ledger.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoMount;
 
@@ -301,11 +215,8 @@ impl Queue for NoMount {
 #[cfg(any(test, feature = "testing"))]
 pub use fake::FakeQueue;
 
-/// An in-memory board, for tests.
-///
-/// **It exists so that no test in this repository ever files, claims or closes a
-/// row on the real fleet queue.** Other seats act on that board; a test suite that
-/// wrote to it would be a test suite that pages people.
+/// An in-memory board, for tests: it exists so that no test here files, claims or closes a row
+/// on the real fleet queue, where other seats act on what it writes.
 #[cfg(any(test, feature = "testing"))]
 mod fake {
     use super::*;
@@ -423,10 +334,9 @@ mod fake {
         }
 
         fn claim(&self, id: &str) -> Result<Row, QueueError> {
-            // The read half of the compare-and-swap. A real implementation reads
-            // the node and passes what it read as `--expect`; the fake models the
-            // same window, and `set_holder` is how a test slides another seat into
-            // it.
+            // The read half of the compare-and-swap: a real implementation reads the node and
+            // passes what it read as `--expect`. The fake models the same window, and
+            // `set_holder` is how a test slides another seat into it.
             let observed = self.get(id)?.holder;
             let me = self.me.clone();
             self.with(id, move |r| {
