@@ -1036,9 +1036,7 @@ fn later_turn(
                 answer: reply.text.clone(),
                 child: None,
             },
-            Err(e) => letibot_tools::builtins::task::TaskStatus::Failed {
-                why: e.to_string(),
-            },
+            Err(e) => letibot_tools::builtins::task::TaskStatus::Failed { why: e.to_string() },
         };
         let (state, detail) = match &status {
             letibot_tools::builtins::task::TaskStatus::Failed { why } => {
@@ -1053,7 +1051,8 @@ fn later_turn(
             ),
         };
         slot.settle(status);
-        if let (Some(watch), Some(owner)) = (sub.job_watchers(), sub.config().parent_session_id.clone())
+        if let (Some(watch), Some(owner)) =
+            (sub.job_watchers(), sub.config().parent_session_id.clone())
         {
             watch.settle_up(crate::jobwatch::JobCompletion {
                 memory: None,

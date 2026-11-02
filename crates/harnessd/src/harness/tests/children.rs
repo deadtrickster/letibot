@@ -315,14 +315,10 @@ fn a_child_with_no_model_named_runs_on_its_parents_model() {
 /// children left. The branch keeps its commits, and a tree with uncommitted work is kept.
 #[test]
 fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
-    let root = std::env::temp_dir().join(format!(
-        "letibot-reap-{}-{}",
-        std::process::id(),
-        {
-            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        }
-    ));
+    let root = std::env::temp_dir().join(format!("letibot-reap-{}-{}", std::process::id(), {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("mkdir");
     let git = |args: &[&str]| {
@@ -368,7 +364,10 @@ fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
     slot.set_deliverable(deliverable::Deliverable::of(&placement));
     finish_child_thread(&slot, Err("the provider refused the request".into()));
     assert!(
-        matches!(slot.status(), letibot_tools::builtins::task::TaskStatus::Failed { .. }),
+        matches!(
+            slot.status(),
+            letibot_tools::builtins::task::TaskStatus::Failed { .. }
+        ),
         "the child failed: {:?}",
         slot.status()
     );
