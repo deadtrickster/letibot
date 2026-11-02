@@ -1,96 +1,15 @@
 //! The grid, the cursor, the modes, and the sequences that act on them.
 //!
-//! # What this is
+//! A terminal's display half: bytes in, rows of cells out. No pty, no file descriptor, no thread, no
+//! clock, so a test is a `feed` and an assertion.
 //!
-//! A terminal's *display half*: bytes in, rows of cells out. It knows nothing about a pty, a
-//! file descriptor, a thread or a clock, so a test is a `feed` and an assertion, and a head can
-//! hold one without a terminal being anywhere near.
+//! Cursor addressing, erase, line and character edits, scrolling regions, the common modes, the pen
+//! through [`crate::attr`], and a scrollback ring on the main screen only.
 //!
-//! # What it implements, and what it deliberately does not
-//!
-//! Implemented, because a full-screen program emits them:
-//!
-//! | | |
-//! |---|---|
-//! | cursor addressing | `CUP` `HVP` `CUU` `CUD` `CUF` `CUB` `CNL` `CPL` `CHA` `HPA` `VPA` |
-//! | erase | `ED` `EL` `ECH`, and `ED 3`, which clears the scrollback as well as the screen |
-//! | scrollback | the rows the main screen scrolls off its top, kept in a ring — see [`Screen::view`] |
-//! | line and character edits | `IL` `DL` `ICH` `DCH` |
-//! | scrolling | `DECSTBM`, scrolling at the region's boundaries, `IND` `RI` `NEL` |
-//! | modes | `?7` autowrap, `?6` origin, `?25` cursor visibility, `?47`/`?1047`/`?1049` the alternate screen, `?1` application cursor keys |
-//! | mouse modes | `?9` `?1000` `?1002` `?1003` and `?1006`, **recorded** and never acted on — see [`Screen::mouse`] |
-//! | pen | `SGR` through [`crate::attr`], which is the head's own walk |
-//! | screen control | `ESC 7`/`ESC 8` and `CSI s`/`CSI u`, `RIS`, `DECSTR` |
-//! | the shape | [`Screen::resize`], which keeps the cells that still fit and the *state* — see
-//!   its doc for why a pane must not build a new screen when the operator resizes the window |
-//!
-//! **Not implemented, and each one is a thing the pane will therefore not show:**
-//!
-//! - **Mouse reporting is recorded, not performed** (`?9` `?1000` `?1002` `?1003` `?1006`). This
-//!   crate has no input path, so it cannot send a report; what it does is remember **what the
-//!   program asked for** ([`Screen::mouse`]), because that is the one fact the head needs in
-//!   order to decide whether the operator's click is the program's or the head's own. It used to
-//!   be consumed and dropped, and the cost was named here: *"`mc`'s click-to-select, and a `less`
-//!   scroll by wheel"*. The head now forwards a report, translated to the pane, only when the
-//!   program has asked (`letibot_tui`'s `term_pane`). `?1005` and `?1015` (the UTF-8 and urxvt
-//!   encodings) are still dropped: a program that asks for one of those and not `?1006` is sent
-//!   the X10 encoding, which every program that reads a mouse can parse.
-//! - **Bracketed paste** (`?2004`) and **synchronised output** (`?2026`): consumed and dropped.
-//!   The first is an input mode; the second is a promise about when a frame is presented, and
-//!   the pane's frames are the head's to time.
-//! - **Hyperlinks** (`OSC 8`). An `OSC` is consumed whole by [`crate::parser`] and its content
-//!   dropped, so a URL a program marks up is drawn as its text and is not clickable.
-//! - **Truecolour and 256-colour fidelity.** The extended forms are consumed and paint nothing —
-//!   see [`crate::attr`] — so a program that asks for a specific RGB gets the pen it already had.
-//! - **Fonts, italic, underline, blink, strike.** A cell has four attributes and none of them is
-//!   a font. A program that underlines a menu accelerator draws it plain.
-//! - **A background.** Carried, as the foreground is, because a *screen* needs it: `mc`'s panels and
-//!   `nano`'s status bar are backgrounds, and a pane that dropped the slot would leave their words
-//!   on the transcript's own background. [`crate::attr`]'s header states the rule and what it costs
-//!   on the head's payload path, where a background is still dropped.
-//! - **A reply to anything.** `CSI 6n` and `CSI c` are dropped, so a program that waits for the
-//!   terminal to answer a cursor-position report waits. **This is the one gap that can look like
-//!   a hang**, and the fix belongs to the pane rather than here: it is the one caller that has a
-//!   write path, and it is the one that should answer. It is named there as a TODO —
-//!   `letibot_tools::exec::shell`'s "What is deliberately NOT built here", which is the crate that
-//!   owns the pty — because a sentence in a library with no output path is a sentence nobody acts
-//!   on. **The other half is here**: a queued question the caller drains after a `feed` is what
-//!   the pane would need in order to know it was asked.
-//! - **Line reflow.** [`Screen::resize`] changes the shape and keeps what still fits; it does not
-//!   re-wrap a row that is now too long, because this crate has no line model — a row is a row.
-//!   A program that has been told about the new size redraws its own, which is what a full-screen
-//!   program does on `SIGWINCH` anyway. The scrollback is the same: a row kept at 120 columns and
-//!   read back at 80 is cut at 80, not re-wrapped.
-//!
-//! # The scrollback, and why it is the screen's
-//!
-//! R60's first open item, in its own words: *"No scrollback. A program that scrolls off the
-//! pane's rectangle is gone. The decision it waits on is whether the ring is the screen's (a
-//! rendering question) or the daemon's (a storage one)."* **It is the screen's**, and the reason
-//! is what a scrollback row *is*: a row the program's own line feed pushed off the top of the main
-//! screen. Only the thing that applies the line feed knows that happened — the daemon holds bytes,
-//! and a byte log does not know which of its bytes became a row that left the glass. So the ring
-//! is here, beside the grid it is fed from ([`Screen::view`] reads it), and the daemon's log is
-//! what *refills* it: an attach replays the log into a fresh screen, and the rows that log scrolls
-//! off become that screen's history exactly as they did the first time.
-//!
-//! The rules are xterm's, because they are what a person already expects of a terminal:
-//!
-//! - **Only the main screen keeps history.** The alternate screen is a program's own canvas
-//!   (`less`, `mc`, `vim`) and what scrolls off it is the program's business — it can redraw it.
-//! - **Only a scroll of a region that starts at the top row.** A program scrolling a status-line
-//!   region inside its own frame is moving its own furniture, not printing past the glass.
-//! - **`ED 3` clears it and `RIS` clears it**, which is `clear`'s own `E3` and a full reset.
-//! - **Bounded** at [`HISTORY_ROWS`], oldest first out, and a kept row is trimmed of its trailing
-//!   default blanks, so a shell's short lines cost their length and not the pane's width.
-//!
-//! # The line feed is a line feed
-//!
-//! `LF` moves the cursor down and **does not** return the carriage; `NEL` (`ESC E`) does both,
-//! and `CR` alone returns it. That is what ECMA-48 says and it is why a program's `\n` arrives
-//! as `\r\n`: a pty in its default output mode translates it (`ONLCR`). A pane that opened a pty
-//! with `ONLCR` cleared would show a staircase, and the fault would be the pty's rather than
-//! this file's — which is worth knowing before reading the next bug report about indentation.
+//! Absent, and named where it is dropped: mouse reporting is recorded and never performed, bracketed
+//! paste and synchronised output are consumed, hyperlinks and truecolour paint nothing, fonts and
+//! italic and underline do not exist here, and no sequence is ever answered. Line reflow does not
+//! exist either: a row is a row, and a program told about the new size redraws its own.
 
 use crate::attr::{Attr, apply_sgr};
 use crate::parser::{Csi, Event, Parser};

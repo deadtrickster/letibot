@@ -1,87 +1,18 @@
 //! The composer: multi-line editing, history, paste, undo, and interrupt.
 //!
-//! # What the head has today, and what breaks
+//! The model half of the input fix: text, cursor, undo, history and the paste ledger, producing lines.
+//! No file descriptor and no clock, because time arrives as a parameter: the double-tap rules below are
+//! timing rules, and a rule that samples the clock cannot be tested.
 //!
-//! `letibot-tui`'s input is a `String` and five keys (`Char`, `Enter`,
-//! `Backspace`, `Up`, `Down`, `CtrlC`). There is no cursor to move, no way to
-//! write a two-line prompt, no history, and `term::keys()` reads into a
-//! **64-byte buffer** and decodes what fits — so pasting a 3 KB stack trace
-//! arrives as a sequence of partial reads, splits a UTF-8 sequence at every
-//! boundary that lands mid-character, and drops those bytes on the floor
-//! (`std::str::from_utf8` fails and the arm is silent). A person pasting an
-//! error message into an agent is not an edge case.
+//! Adapted from grok-build's headless textarea (Apache-2.0), which is where the plan/apply split, the
+//! `WordStyle` distinction, the undo batching rule and the sticky preferred column come from, and from
+//! opencode (MIT, via the Kilo Code fork), which is where the two-counter interrupt model, the paste
+//! placeholder, the third-of-a-screen height cap and the capped history ring come from.
 //!
-//! This module is the model half of the fix. It owns text, cursor, undo,
-//! history and the paste ledger, and it produces lines. It reads no file
-//! descriptor and no clock: time arrives as a parameter, because the
-//! double-tap-to-interrupt rules below are timing rules and a timing rule that
-//! samples the clock internally cannot be tested.
-//!
-//! # Provenance
-//!
-//! **Adapted from grok-build** (xAI, Apache-2.0),
-//! `crates/codegen/xai-ratatui-textarea/src/editor.rs` — the headless half of
-//! their textarea, and the most portable thing in that tree (1,002 lines, zero
-//! internal dependencies):
-//!
-//! - The **plan/apply split**: a command is turned into an `EditPlan`
-//!   (`replaced_byte_range`, `replacement`, `removed_text`, `cursor_byte`)
-//!   before anything mutates, so a host can inspect or veto it. [`Plan`] is that
-//!   idea, kept because it is also what makes the paste-placeholder ledger
-//!   below correct — the ledger has to see the byte range that moved.
-//! - `WordStyle { Small, WhitespaceDelimited }` → [`WordStyle`], the vim `w`
-//!   versus `W` distinction.
-//! - The **undo batching rule**: consecutive inserts coalesce, but a cursor jump
-//!   or a **whitespace ↔ non-whitespace transition** breaks the batch
-//!   (`textarea.rs:618-631`), and kills are always their own entry.
-//! - **The kill buffer is not restored by undo** (`textarea.rs:2070`: "yank is
-//!   separate from undo"). Non-obvious, and right: undo restores the document,
-//!   not the clipboard.
-//! - **Redo is bound to Alt+Z as well as Ctrl+Shift+Z**, because in many
-//!   terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z
-//!   (`textarea.rs:2010-2031`).
-//! - The sticky **preferred column** for vertical motion.
-//!
-//! **Adapted from opencode** (MIT, read through the Kilo Code fork which retains
-//! opencode's copyright), `packages/tui/src/`:
-//!
-//! - `component/prompt/index.tsx:424-455` and `887-906` — the **two-counter
-//!   interrupt model**: Esc twice within **5 s** interrupts the model; Ctrl+C
-//!   twice within **1 s** quits, and only when the composer is empty, because
-//!   Ctrl+C on a non-empty composer means "clear what I typed". The hint text
-//!   changes to `esc again to interrupt` after the first press, which is what
-//!   makes a double-tap discoverable rather than folklore. Both windows and the
-//!   post-increment-then-test structure are theirs.
-//! - `component/prompt/index.tsx:1307-1355` — **a large paste becomes a
-//!   placeholder**: at **≥5 lines or >800 characters** the text collapses to
-//!   `[Pasted ~N lines]` and the real content is carried beside the buffer,
-//!   expanded on submit. Without it a pasted file fills the composer and the
-//!   conversation scrolls away.
-//! - `component/prompt/index.tsx:1494` — the composer never takes more than a
-//!   **third of the screen**, floor 6 rows. [`Editor::height`].
-//! - `prompt/history.tsx` — history is a **capped ring of 50**, consecutive
-//!   duplicates are dropped, and — the good part — **once you edit a recalled
-//!   entry, the arrow keys stop navigating**, so an edit cannot be lost to a
-//!   keystroke.
-//! - `component/prompt/index.tsx:1555-1579` — paste normalises CRLF *and* bare
-//!   CR, because Windows ConPTY sends CR-only newlines in a bracketed paste.
-//!
-//! Changed, and why:
-//!
-//! - opencode tracks placeholders with **extmarks** — ranges that survive
-//!   arbitrary editing — so a placeholder can be moved, split, or partially
-//!   deleted and still round-trip. That needs a range-tracking data structure
-//!   this crate does not have and does not want. [`Editor`] keys the ledger on
-//!   the **placeholder text itself**, which is unique by construction
-//!   (`[Pasted #3 ~120 lines]`), so a placeholder that is deleted drops its
-//!   paste and one that is edited stops matching and is submitted as the
-//!   literal text on screen. That is a real behavioural difference and the
-//!   honest description of it is: it fails visibly instead of silently.
-//! - grok-build's undo is snapshot-based over the whole buffer with elements and
-//!   selection; this snapshots text and cursor only, since there is no selection
-//!   model here yet.
-//! - Neither upstream is copied line for line: grok-build's is ratatui-typed and
-//!   opencode's is SolidJS reactive. These are the rules, in Rust, as data.
+//! opencode tracks paste placeholders with extmarks, ranges that survive arbitrary editing. This keys
+//! the ledger on the placeholder text itself, which is unique by construction, so a deleted
+//! placeholder drops its paste and an edited one submits as the literal text on screen: it fails
+//! visibly rather than silently. Undo snapshots text and cursor only, since there is no selection.
 
 use crate::painter::Sgr;
 use rano::style::{Palette, Role};
