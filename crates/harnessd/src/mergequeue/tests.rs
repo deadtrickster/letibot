@@ -177,3 +177,72 @@ fn a_row_that_is_not_gating_carries_no_running_step() {
     drop(gate::step_guard(&wt));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **A live row's own moves survive a window full of other rows' work.** The pane's history for one
+/// row is filtered out of `recent`, which carries the last [`super::RECENT_MOVES`] moves ACROSS the
+/// queue - so a row that had been waiting all day had every move of its own pushed out by other
+/// rows' work and was drawn with no history at all (TODO.md R74 item 6).
+#[test]
+fn a_live_rows_own_moves_are_in_the_snapshot_whatever_else_the_queue_has_done() {
+    let (store, dir, repo) = gating_row("per-row");
+    // Enough other rows' moves to push m-one's own out of the window many times over: each row is
+    // enqueued (one move) and blocked (a second).
+    for n in 0..super::RECENT_MOVES {
+        let id = format!("r-other-{n}");
+        store
+            .enqueue_review(
+                &NewReview {
+                    id: id.clone(),
+                    repository: repo.clone(),
+                    target: "main".into(),
+                    kind: ReviewKind::Branch,
+                    session_id: format!("s-other-{n}"),
+                    branch: format!("agent/other-{n}"),
+                    worktree: None,
+                    base_sha: "a".repeat(40),
+                    head_sha: "c".repeat(40),
+                    brief: "another branch".into(),
+                    priority: MergePriority::Subagent,
+                    fixes: None,
+                    evidence: "enqueued".into(),
+                },
+                "test",
+                gate::now_ms(),
+            )
+            .expect("the other row");
+        assert!(
+            store
+                .move_review(
+                    &id,
+                    ReviewState::Waiting,
+                    ReviewState::Blocked,
+                    &Move::new("test", "the reviewer could not start"),
+                    gate::now_ms(),
+                )
+                .expect("the move")
+        );
+    }
+
+    let snap = super::snapshot(&store);
+    let mine: Vec<&letibot_sessionlog::event::QueueMove> =
+        snap.recent.iter().filter(|m| m.entry_id == "m-one").collect();
+    assert!(
+        !mine.is_empty(),
+        "the landing's own moves are in the window: {:?}",
+        snap.recent.iter().map(|m| &m.entry_id).collect::<Vec<_>>()
+    );
+    assert!(
+        mine.iter().any(|m| m.to == "gating"),
+        "including the move that put it where it is: {mine:?}"
+    );
+    assert!(
+        mine.len() <= super::RECENT_MOVES_PER_ROW,
+        "and no more of them than a row's history needs: {mine:?}"
+    );
+    assert!(
+        snap.recent.len() >= super::RECENT_MOVES,
+        "the window itself is unchanged: {}",
+        snap.recent.len()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

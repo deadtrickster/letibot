@@ -153,6 +153,13 @@ pub(crate) fn sleep_unless_stopped(wait: std::time::Duration, stop: &AtomicBool)
 /// How many moves the snapshot carries.
 pub const RECENT_MOVES: usize = 60;
 
+/// **How many of a live row's OWN moves the snapshot guarantees**, whatever other rows have done
+/// since. The pane's history for one row is filtered out of `recent`, which holds the last
+/// [`RECENT_MOVES`] moves across the whole queue - on a busy queue a row that had been waiting all
+/// day had every move of its own pushed out of the window, and the pane drew a row with no history
+/// at all (TODO.md R74 item 6).
+pub const RECENT_MOVES_PER_ROW: usize = 4;
+
 /// Both queues as the wire carries them: every row, the leases, the targets' health and the last
 /// moves. A table that could not be read is named in `unreadable` and never becomes an empty
 /// list.
@@ -163,8 +170,16 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
         ..Default::default()
     };
     let mut unread: Vec<String> = Vec::new();
+    // The rows still in a queue, so the moves below can keep each one's own - collected where the
+    // rows are read, because that is the only place their states are known as states.
+    let mut live: Vec<(&'static str, String)> = Vec::new();
     match store.review_rows(None) {
         Ok(rows) => {
+            for r in &rows {
+                if r.state.is_open() || r.state == letibot_tokencore::store::ReviewState::Approved {
+                    live.push(("review", r.id.clone()));
+                }
+            }
             out.reviews = rows
                 .into_iter()
                 .map(|r| w::QueueReview {
@@ -197,6 +212,11 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
     }
     match store.merge_rows(None) {
         Ok(rows) => {
+            for m in &rows {
+                if m.state.is_open() {
+                    live.push(("merge", m.id.clone()));
+                }
+            }
             out.merges = rows
                 .into_iter()
                 .map(|m| w::QueueMerge {
@@ -282,7 +302,23 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
     }
     match store.recent_transitions(RECENT_MOVES) {
         Ok(ts) => {
-            out.recent = ts
+            // **Each live row's own last moves as well**, so a row's history survives a window that
+            // other rows filled: the union is by `seq`, so a move already in the window is not said
+            // twice, and the reading stays in order - which is what a from-to chain needs.
+            let mut moves = ts;
+            let mut have: std::collections::HashSet<i64> = moves.iter().map(|t| t.seq).collect();
+            for (queue, id) in &live {
+                let Ok(history) = store.transitions(queue, id) else {
+                    continue;
+                };
+                for t in history.iter().rev().take(RECENT_MOVES_PER_ROW) {
+                    if have.insert(t.seq) {
+                        moves.push(t.clone());
+                    }
+                }
+            }
+            moves.sort_by_key(|t| t.seq);
+            out.recent = moves
                 .into_iter()
                 .map(|t| w::QueueMove {
                     queue: t.queue,
