@@ -19,8 +19,6 @@ Every failure measured has a name in data systems:
 | one long stop-the-world compaction | pre-LSM compaction |
 | `finish_reason: length` parsed then discarded | swallowing an error return |
 | OOM under a `MAP_POPULATE` burst | no admission control, no backpressure |
-| accounted cache and resident bytes disagree | wrong statistics, so the planner decides wrongly |
-| three misdiagnoses in one session | no EXPLAIN, no per-stage metrics |
 
 Two are more than analogy. **Multi-head compaction with different decay rates is leveled compaction**,
 which removes the stall rather than shortening it, at the price of fidelity lost to re-summarisation.
@@ -142,10 +140,9 @@ late head catches up, how output fans out, two heads acting at once, and every h
 
 Adopt from flowy rather than invent: a cursor per named reader acked **after** the write, so a crash
 costs a duplicate and never a silence; **the mark advances over everything read, not everything
-delivered**; report what was filtered out; one waiter per name, shared by all heads; bounded scrollback
-that discloses the drop; non-blocking fan-out that drops and tells the slow head; and **discard a queued
-reply rather than hold it** - *"a reply to a question asked ten minutes ago is not an answer, it is input
-arriving from nowhere."*
+delivered**; one waiter per name, shared by all heads; non-blocking fan-out that drops and tells the slow
+head; and **discard a queued reply rather than hold it** - *"a reply to a question asked ten minutes ago
+is not an answer, it is input arriving from nowhere."*
 
 ## 9. The tool contract
 
@@ -157,7 +154,7 @@ on "not found".
 **Every tool's failure mode is a design decision, paid for in permanent context, not in one wasted
 call**, and a miss should be self-correcting within the same call.
 
-- **Abstention must be structural.** "No answer" must stay distinguishable from "here is the answer" as
+- **Abstention must be structural**: "no answer" must stay distinguishable from "here is the answer" as
   it propagates up - *"a hallucination wearing a footnote is more dangerous than a naked one."*
 - **Per-stage observability, or you will misdiagnose.**
 - **Tool count is a measured ceiling for small models**: past roughly 5-7 servers they choose worse.
@@ -243,12 +240,11 @@ nobody over-invests: not prefill compute, not bandwidth, but **an explicit, veri
 of a discovered one** - the EXPLAIN idea moved into the wire format, which is the argument for building
 it.
 
-**Routes past the position problem, to measure and not assume.** *Position shifting*: llama.cpp has the
-primitive, and the hazard is measured and model-specific - it corrupted recurrent state on GLM, fixed by
-content-based invalidation. *Stitching*: recompute a fraction of tokens, where **the recompute fraction
-is the entire economics and it is unknown for MLA + DSA** - an experiment with a stated method, noting
-that the premise may assume attention-only layers, which GLM's recurrent blocks are not. *Accepting the
-cost*: a swap costs a re-prefill from the swap point - cheap at the tail, total at the head.
+**Routes past the position problem, to measure and not assume**: *position shifting* (the primitive
+exists, and the hazard is measured and model-specific - it corrupted recurrent state on GLM, fixed by
+content-based invalidation), *stitching* (recompute a fraction of tokens, where **the recompute fraction
+is the entire economics and it is unknown for MLA + DSA**), or *accepting the cost* (a re-prefill from
+the swap point - cheap at the tail, total at the head).
 
 ### 11.6 Track discipline
 
@@ -280,8 +276,8 @@ computed by reflecting the type.
 
 Identify which tests run **without** our harness, as black-box conformance against a real llama.cpp plus
 any client, measuring `f_keep`, `n_prompt_tokens_cache`, p99 re-prefill, `finish_reason` handling and
-prefix-extension byte equality. What no existing suite covers, so we write it: warm-prefix compaction,
-reading `prompt_progress`/`timings` off the stream, adjudication over flowy, multi-head attach.
+prefix-extension byte equality. What no suite covers, so we write it: warm-prefix compaction, reading
+`prompt_progress`/`timings` off the stream, adjudication over flowy, multi-head attach.
 
 ## 13. Future directions, and what they demand of v1
 
