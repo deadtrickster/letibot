@@ -182,9 +182,9 @@ impl Host {
             user_config_dir().as_deref(),
             Arc::new(RanoLoader),
         );
-        // D17's book, and the head is where a pin is TAKEN: the daemon's stack reads the same file
-        // at its next poll, so one answer is in force in both processes. `set_trust` re-decides
-        // every placed layer, and a pin whose bytes moved is SAID once - the head has no warnings.
+        // The trust book, and the head is where a pin is TAKEN: the daemon's stack reads the same
+        // file at its next poll, so one answer is in force in both processes. `set_trust`
+        // re-decides every placed layer, and a pin whose bytes moved is SAID once.
         let mut broke: Vec<String> = stack
             .set_trust(letibot_plugins::Trust::open_default())
             .into_iter()
