@@ -179,12 +179,9 @@ pub fn turn_finished(turn_id: &str) -> SessionEvent {
             cached_tokens: 900,
             predicted_tokens: 42,
             cost_micros_usd: None,
-            // Served, because the one-of-each session is what the round-trip tests carry to a
-            // head and this is a field a head reads.
-            served: Served {
-                id_slot: Some(0),
-                n_busy_slots: Some(1),
-            },
+            // Nothing measured: a fixture is not served by a slot, and the checked-in acceptance
+            // fixture is this event byte for byte.
+            served: Served::default(),
         },
         timings: Timings {
             prompt_ms: 40.0,
