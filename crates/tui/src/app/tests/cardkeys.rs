@@ -783,3 +783,38 @@ fn a_question_cards_digit_is_typed_into_its_answer() {
         })
     );
 }
+
+/// The ctrl-v window's own seam prints `esc closes` and it owns the arrows while it is open, so a
+/// decision arriving over it must not take the arrows off the row being read.
+#[test]
+fn the_payload_window_keeps_the_arrows_from_a_decision_card() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::NORMAL);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    let payload: String = (0..40).map(|i| format!("LINE-{i}\n")).collect();
+    shell_row(
+        &mut a,
+        1,
+        "s.t1",
+        "tool_result",
+        TranscriptItem::ToolResult {
+            call_id: "c0".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload,
+            edit: None,
+            origin: None,
+            media: None,
+        },
+    );
+    a.key(Key::CtrlV);
+    assert!(a.payload_window_open(), "the window opened");
+    ask(&mut a, 3, testing::requested("r1", "rm"));
+    a.key(Key::Down);
+    assert_eq!(a.sel, 0, "the arrow did not move a ladder nobody aimed at");
+    assert_eq!(a.payload_page, 10, "it paged the window under the card");
+}

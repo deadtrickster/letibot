@@ -232,6 +232,12 @@ impl App {
         if let ControlFlow::Break(r) = self.key_chords(&k) {
             return r;
         }
+        // **An open ctrl-v window keeps the arrows and Esc** - its own seam prints `esc closes`, so a
+        // decision arriving over it must not take the row being read away (see
+        // [`App::key_payload_window`]).
+        if let ControlFlow::Break(r) = self.key_payload_window(&k) {
+            return r;
+        }
         // The cards in the chrome, in front of the surface: a decision, the quit card and a setting card are
         // questions drawn by the composer, on the screen whatever holds the rectangle above them, so their keys
         // come first.
@@ -262,9 +268,6 @@ impl App {
             self.scroll = 0;
             self.anchor = None;
             return None;
-        }
-        if let ControlFlow::Break(r) = self.key_payload_window(&k) {
-            return r;
         }
         // Up with an empty composer recalls the queued line: the echo above the composer is the person's own words,
         // and the one thing this head can do about a message it already sent is take it back before it lands. The
