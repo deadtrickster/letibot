@@ -1340,25 +1340,6 @@ pub(crate) fn told_once(
         .unwrap_or(true)
 }
 
-#[cfg(test)]
-mod vocab_differs_tests {
-    use super::vocab_differs;
-
-    #[test]
-    fn only_a_move_into_or_out_of_bytes_or_between_byte_tables_differs() {
-        let (q, g) = ("bytes:aaaaaaaaaaaa", "bytes:bbbbbbbbbbbb");
-        assert!(!vocab_differs(q, q));
-        assert!(vocab_differs(q, g), "two byte tables mean different ids");
-        assert!(vocab_differs(q, "/m/Qwen.gguf"));
-        assert!(vocab_differs("/m/Qwen.gguf", q));
-        // Two GGUFs are the operator's binding, refused at the switch, not here.
-        assert!(!vocab_differs("/m/Qwen.gguf", "/other/Qwen.gguf"));
-        // A row from before the column was filled is a GGUF row.
-        assert!(!vocab_differs("", "/m/Qwen.gguf"));
-        assert!(vocab_differs("", q));
-    }
-}
-
 /// Does `pc`'s key fail to resolve: the one failure a pasted key fixes?
 pub(crate) fn key_is_missing(pc: &crate::config::ProviderConfig) -> bool {
     let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
@@ -1414,3 +1395,22 @@ pub(crate) const NO_VOCAB_FOR_LOCAL: &str = "this daemon has no model vocabulary
 pub(crate) const NO_MODEL_CHOSEN: &str = "no model is chosen for this session: this box has no local \
      model's vocabulary (GGUF) and no cloud provider. `/models` picks one — a cloud model asks \
      for its key once, and becomes this box's default.";
+
+#[cfg(test)]
+mod vocab_differs_tests {
+    use super::vocab_differs;
+
+    #[test]
+    fn only_a_move_into_or_out_of_bytes_or_between_byte_tables_differs() {
+        let (q, g) = ("bytes:aaaaaaaaaaaa", "bytes:bbbbbbbbbbbb");
+        assert!(!vocab_differs(q, q));
+        assert!(vocab_differs(q, g), "two byte tables mean different ids");
+        assert!(vocab_differs(q, "/m/Qwen.gguf"));
+        assert!(vocab_differs("/m/Qwen.gguf", q));
+        // Two GGUFs are the operator's binding, refused at the switch, not here.
+        assert!(!vocab_differs("/m/Qwen.gguf", "/other/Qwen.gguf"));
+        // A row from before the column was filled is a GGUF row.
+        assert!(!vocab_differs("", "/m/Qwen.gguf"));
+        assert!(vocab_differs("", q));
+    }
+}

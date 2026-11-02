@@ -1367,9 +1367,9 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
 ///   fixture said the hyphenated one and agreed with itself while the wire said the other.
 /// * **A boundary, so one name is not read as a prefix of another.** `automode-edits` begins with
 ///   `automode`, so a bare prefix match would seed on the shorter row. This branch is for the
-///   QUALIFIED values the daemon writes - `allow-all (this box, consented)`, `local (qwen-3.8-27b)`
-///   - where the qualifier follows a space and the name itself has none, which is why the old
-///   first-word rule happened to survive them.
+///   QUALIFIED values the daemon writes - `allow-all (this box, consented)`,
+///   `local (qwen-3.8-27b)` - where the qualifier follows a space and the name itself has
+///   none, which is why the old first-word rule happened to survive them.
 ///
 /// A whitespace boundary and not a list of separators: the daemon writes `name (note)` and
 /// `name --flag`, and inventing a grammar for the qualifier would be a rule about a spelling this

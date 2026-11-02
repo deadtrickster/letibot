@@ -1114,9 +1114,9 @@ struct Shared {
     /// written again at the same path is a DIFFERENT store, and a caller that opens that path
     /// must not be handed the connection to the one that is gone.
     file: Option<(u64, u64)>,
-    /// **The store is written by a build newer than this one, and this build opened it anyway**
-    /// - see [`floor`]. A `Mutex` rather than the `Cell` this was: a `Shared` is reached from
-    /// every thread in the daemon, and a `Cell` is not `Sync`.
+    /// **The store is written by a build newer than this one, and this build opened it
+    /// anyway** - see [`floor`]. A `Mutex` rather than the `Cell` this was: a `Shared` is
+    /// reached from every thread in the daemon, and a `Cell` is not `Sync`.
     newer: std::sync::Mutex<Option<NewerStore>>,
 }
 

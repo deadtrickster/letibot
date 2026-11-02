@@ -1102,7 +1102,7 @@ impl Link {
 /// let _ = self.client.detach();
 /// ```
 ///
-/// - whether the frame reached the socket was a race against the head's own shutdown, and
+/// Whether the frame reached the socket was a race against the head's own shutdown, and
 /// **a request is not an outcome**. This is the state that makes the difference: while it
 /// is unresolved the head does not leave, and the three facts it observes are kept apart,
 /// because each one is a different answer for the operator:

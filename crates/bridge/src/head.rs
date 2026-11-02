@@ -728,9 +728,10 @@ impl State {
         }
     }
 
-    /// **One line about a child of this session** - the branch it was given and how it ended
-    /// - from the `Subagent` event or from the same child in a snapshot. `from_snapshot`
-    /// keeps a head from announcing, as news, a child that finished before it attached.
+    /// **One line about a child of this session** - the branch it was given and how it
+    /// ended - from the `Subagent` event or from the same child in a snapshot.
+    /// `from_snapshot` keeps a head from announcing, as news, a child that finished before
+    /// it attached.
     fn child(&mut self, child: Child<'_>, from_snapshot: bool) {
         let name = if child.slug.is_empty() {
             child.id

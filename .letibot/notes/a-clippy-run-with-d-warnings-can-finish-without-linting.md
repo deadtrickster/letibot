@@ -1,4 +1,4 @@
-<!-- abstract: `cargo clippy -- -D warnings` can print `Finished` in 0.02 s and exit 0 having linted nothing, because the arguments after `--` are not part of cargo's fingerprint, so a warm target dir can make the gate's clippy step pass vacuously. -->
+<!-- abstract: `cargo clippy -- -D warnings` can exit 0 having linted nothing, because args after `--` are not in cargo's fingerprint; and with `-D` a cold run stops at the first failing crate, so its error list is one crate deep. -->
 
 # A `cargo clippy -- -D warnings` run can say `Finished` without running the lints
 
@@ -20,3 +20,13 @@ Verify a clippy fix in a target dir that has never seen the crate built without 
 
 The rake: an exit status is a claim about a run, and a run that did no work makes the same claim as a
 run that did. `Finished` in 0.02 s is the tell.
+
+The same `-D warnings` also makes a census one crate deep: the first crate that fails emits no
+rmeta, so nothing downstream of it is linted. For a whole-tree count use
+`sh scripts/clippy-gate.sh --all-targets --keep-going -- -A <the gate's four>`, which prints every
+warning and aborts nothing.
+
+A sweep that rewrites punctuation must not leave the new character where it is syntax: a doc line
+that starts with ` - ` becomes a Markdown bullet and trips `doc_lazy_continuation`. After such a
+sweep, `git grep -n '^ *//[/!] - '` is the census; fold the clause up so no line starts with the
+hyphen.

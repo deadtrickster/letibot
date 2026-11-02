@@ -75,12 +75,12 @@ pub enum GitRole {
 /// ```
 ///
 /// Every `1 XY`/`2 XY` line is one changed path: **X is index-vs-HEAD and Y is
-/// workdir-vs-index**, so a `.` in X with an `M` in Y is unstaged work and the reverse is staged
-/// - which is how `%+` and `%!` come apart, the count letibot's first field collapsed into one
-/// `*`. `u` lines are unmerged paths and `?` lines untracked ones. `branch.ab` and
-/// `branch.upstream` are ABSENT on a branch with no upstream - which is a fact about the branch,
-/// not about the repository, so their absence is not an error either. `# stash N` is only printed
-/// under `--show-stash`, which is why the reader's argv carries it.
+/// workdir-vs-index**, so a `.` in X with an `M` in Y is unstaged work and the reverse is
+/// staged - which is how `%+` and `%!` come apart, the count letibot's first field collapsed
+/// into one `*`. `u` lines are unmerged paths and `?` lines untracked ones. `branch.ab` and
+/// `branch.upstream` are ABSENT on a branch with no upstream - which is a fact about the
+/// branch, not about the repository, so their absence is not an error either. `# stash N` is
+/// only printed under `--show-stash`, which is why the reader's argv carries it.
 ///
 /// `None` when the text names no branch at all - an empty reading, or git's own complaint, both
 /// of which are *this is not a repository I can read* rather than *a repository with nothing in
