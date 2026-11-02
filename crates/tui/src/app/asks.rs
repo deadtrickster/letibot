@@ -1,15 +1,8 @@
 //! **The asks' state**: a provider key, a secret, a prompt — what the card is waiting for.
 
-/// **A provider key the picker is collecting, for a row this box holds no key behind.**
-///
-/// `choice` is the whole `PROVIDER/MODEL`, because Enter does both things in one verb —
-/// `/models CHOICE --key K` stores the key (mode 600, the file the daemon reads) AND takes the
-/// row, which is the round trip the typed spelling already is. `provider` is the name alone, for
-/// the sentence the card asks with.
-///
-/// **Only asked when the daemon named the keyless row.** `models.keys` absent means *no
-/// greening*, never *no keys* — an older daemon — and asking on its absence would block every
-/// switch behind a prompt for a key the box may well hold.
+/// The provider key an ask collects; `provider` is the bare name for the card's words.
+/// Asked only when the daemon named the keyless row: `models.keys` absent means no greening,
+/// never no keys, so asking on its absence would block every switch behind a needless prompt.
 #[derive(Debug, Clone)]
 pub(crate) struct KeyAsk {
     pub(crate) choice: String,
@@ -25,38 +18,9 @@ pub(crate) struct SecretAsk {
     pub(crate) deadline: u64,
 }
 
-/// **A command of the operator's own is waiting for an answer**, as the head shows it.
-///
-/// # It is not [`SecretAsk`] and it must not become it
-///
-/// The two are separate types, separate fields, separate buffers, separate actions and
-/// separate frames — and the separation is the requirement rather than tidiness. A password
-/// has its own path (`SUDO_ASKPASS`, a helper that attaches as an `askpass` head,
-/// `ClientFrame::Secret`), and a prompt card is drawn **in the open**: what a person types
-/// here is a line for a program's **stdin**, visible on the screen and unremarkable there.
-/// A secret must never travel down it, and the cheapest way to keep that true is for the
-/// two channels to have nothing in common to borrow — no masked buffer, no `secret` field,
-/// no `Action::Secret`.
-///
-/// # What is on it
-///
-/// * `req_id` — what the answer is addressed to, so a stale card cannot answer a later
-///   command. The daemon holds the open request and refuses one that is not.
-/// * `command` — **the operator's own line, verbatim**. The daemon cannot know which
-///   process in a pipeline asked (`sudo apt install mc` is three programs and the question
-///   is the third one's), so the card names the one thing that is certain.
-/// * `question` — **the last line the program wrote, to SHOW and never to decide on.**
-///   `None` when it has written nothing at all, which is a real case (`! cat`, blocked
-///   before its first byte): the card then says the command is waiting rather than showing
-///   an empty line as if that were the question.
-/// * `reading` — **which of the two facts the card is raised on**: the daemon read the
-///   run blocked on the input it holds ([`PromptReading::Blocked`]), or it could not look
-///   at the run at all ([`PromptReading::Unreadable`], every `! sudo …` that reaches a
-///   program running as root). The operator's correction — *"sudo can get input from here
-///   so can others"* — is why the second one is a card at all: it used to be a sentence
-///   and no card, and a person who typed `y` at the composer had it reach the MODEL while
-///   their own command waited. The card's text says which of the two it is, and a card
-///   raised without a reading must not claim the program asked.
+/// A command of the operator's own waiting for an answer, drawn in the open on purpose.
+/// Kept apart from `SecretAsk` in type, field, buffer and frame so no secret can borrow this
+/// channel; `reading` says whether the daemon saw the run blocked or could not look at all.
 #[derive(Debug, Clone)]
 pub(crate) struct PromptAsk {
     pub(crate) req_id: String,
