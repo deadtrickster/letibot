@@ -43,6 +43,29 @@ go stale.*
 
 ---
 
+## R116 - Claude Code as a merge-queue reviewer, through headless `claude -p` - **OPEN, filed 2026-11-02, after the operator's queue trial**
+
+The queue hands a branch to a reviewer and needs a verdict back. Headless Claude Code fits without waking any live session:
+`claude -p --output-format json --json-schema <verdict schema> --permission-mode <mode> --allowedTools <read-only list>`, started with its cwd in a worktree of the branch.
+
+- The verdict arrives in `structured_output`. A run without that field is a failed review, not a pass.
+- Store the result's `session_id`, so a re-review after new commits uses `--resume <id>` and keeps the reviewer's context.
+- Time limit enforced by the queue. End a run with SIGINT, which ends the turn cleanly; SIGTERM exits 143.
+- The verdict schema is the queue's existing reviewer verdict, so a Claude reviewer and a letibot reviewer are interchangeable in a panel.
+
+Docs: https://code.claude.com/docs/en/headless.md
+
+## R117 - The leticode MCP bridge pushes package and queue events into the orchestrating Claude Code session as a channel - **OPEN, filed 2026-11-02, research preview**
+
+Today an orchestrating Claude Code session learns that a package finished through a tracked background `leticode-wait` per session. A channel replaces that: the bridge is already an MCP server, so it can declare `capabilities.experimental["claude/channel"]` and send `notifications/claude/channel` with `{content, meta}` when a session ends its turn, asks, fails, or a queue row changes state. An idle Claude Code session starts a turn on it.
+
+- Claude Code sends no acknowledgement. Expose a reply tool through which the orchestrator acknowledges each event, and re-send an unacknowledged event with backoff.
+- Permission asks can be relayed through `experimental["claude/channel/permission"]`.
+- Claude Code must be started with `--dangerously-load-development-channels server:leticode`. It works in interactive sessions only, and custom channels are not on the allowlist.
+- Keep `letibot-mcp wait` as the fallback for sessions started without the flag.
+
+Docs: https://code.claude.com/docs/en/channels-reference.md
+
 ## R115 - A host placement's commits do not come back, its shells outlive the stop, and its notes land on the Mac - **OPEN, filed 2026-11-02**
 
 Three placement bugs seen running packages on lubuntu1, lubuntu2 and lab2x1.
