@@ -1451,9 +1451,10 @@ nothing to design.
   daemon until it stops (`court_refusal`'s monitor arm). Not a defect in the close path; a policy.
 - 19 **FIXED** — `RECORD_LIMIT` and `bound_records` in `exec/host.rs`: `reaps`, `promotions` and
   `Deadlines.fired` drop the oldest instead of growing for the life of the daemon.
-- 20 **OPEN** — the single `report(session, code, detail)` sink is still not built: 84 inline
-  `SessionEvent::Warning` sites in `harnessd` against two private helpers, and `warning.rs` is a
-  table a head draws, not a sink. A refactor across `harnessd`, not a one-function change.
+- 20 **OPEN** — the single `report(session, code, detail)` sink is still not built: 130 inline
+  `SessionEvent::Warning` sites outside test modules in `harnessd` against two private helpers
+  (`Harness::warn`, `Sessions::warn`), and `warning.rs` is a table a head draws, not a sink. A
+  refactor across `harnessd`, not a one-function change.
 - 21 **DONE** — the gatekeeper retry exists and cannot storm: one attempt per 30 s pass, one warning
   per distinct reason.
 - 22 **DONE** on `r60-term` — `letibot_vt::Screen::mouse` and the pane's own translation.
