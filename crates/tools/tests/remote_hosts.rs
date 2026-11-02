@@ -1,11 +1,9 @@
-//! Remote placement against a fake ssh: the commands, the base64 channel, the `setsid`
-//! launch, the job files and the `git bundle` round trip are the production ones.
+//! Remote placement against a fake ssh: the commands, the base64 channel, the `setsid` launch, the job
+//! files and the `git bundle` round trip are the production ones, and no network is touched because the
+//! fake runs the last argument locally against a temporary home.
 //!
-//! The "remote machine" is a temporary home, and the `ssh` these tests run executes the last
-//! argument locally, so a `~` root is expanded on the far side and no network is touched.
-//!
-//! `setsid` does not exist on Darwin, so the fake remote gets a perl shim: a job there must
-//! lead its own process group, which is what `job_kill`'s group signal depends on.
+//! `setsid` does not exist on Darwin, so the fake remote gets a perl shim: a job there must lead its own
+//! process group, which is what the group signal depends on.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -61,13 +59,9 @@ impl Rig {
             );
         }
 
-        // The fake records its argv and its environment and is otherwise a passthrough: the
-        // flags under test are the ones it is HANDED, so a fake that understood them would be
-        // testing itself.
-        //
-        // It can also be told to HOLD one call, which makes a race between two placements
-        // deterministic: `<dir>/hold` names a needle and a release file, a command carrying
-        // the needle waits for the release, and `<dir>/hold.entered` says the hold was reached.
+        // The fake records its argv and its environment and is otherwise a passthrough, since the flags
+        // under test are the ones it is HANDED and a fake that understood them would be testing itself.
+        // It can also be told to HOLD one call, which makes a race between two placements deterministic.
         let ssh = bin.join("ssh");
         let log = dir.join("ssh.log");
         write_executable(
@@ -144,10 +138,9 @@ impl Rig {
         }
     }
 
-    /// One spec, with this rig's fake ssh and its own ssh material.
-    ///
-    /// The bound is short on purpose: the fake answers in milliseconds, and a fake that is
-    /// meant to hang has to be measured in a second rather than in the production bound.
+    /// One spec, with this rig's fake ssh and its own ssh material. The bound is short on purpose: the
+    /// fake answers in milliseconds, and a fake meant to hang is measured in a second, not the production
+    /// bound.
     fn spec(&self) -> SshSpec {
         SshSpec {
             host: self.host.clone(),
@@ -664,12 +657,9 @@ fn a_mirror_that_is_only_a_directory_is_made_a_repository() {
     );
 }
 
-/// Two placements at once never read each other's bundle. One name per mirror would not fail
-/// loudly: `git fetch -f <bundle> +HEAD:refs/heads/<mine>` builds my ref from whatever bundle is
-/// there, so a loser is handed somebody else's commit and says nothing.
-///
-/// Forced rather than likely: the fake holds the first placement at its hand-off while the
-/// repository's `HEAD` moves, then the second placement runs start to finish.
+/// Two placements at once never read each other's bundle. One name per mirror would not fail loudly:
+/// `git fetch -f <bundle> +HEAD:refs/heads/<mine>` builds the ref from whatever bundle is there, so a
+/// loser is handed somebody else's commit and says nothing.
 #[test]
 fn two_placements_at_once_never_read_each_others_bundle() {
     let rig = Rig::new("at-once");
@@ -780,13 +770,8 @@ fn the_hosts_file_is_the_only_place_a_host_can_come_from() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Nothing hangs, and the retry follows idempotency
-// ---------------------------------------------------------------------------
-//
-// Every test below runs against a fake ssh written to misbehave in one way: it goes silent,
-// drops the connection, or answers only the second time. None of those is reachable from a
-// fake that always answers, and each is a shape a real machine fails in.
+// Nothing hangs, and the retry follows idempotency. Every test below runs against a fake ssh written to
+// misbehave in one way: it goes silent, drops the connection, or answers only the second time.
 
 /// A fake ssh whose behaviour the test writes: it logs every invocation, sets `HOME` to the
 /// "remote", and runs `body` with the last argument (the command ssh would run) in `$last`. A
@@ -1410,11 +1395,9 @@ fn an_unreachable_host_is_reported_and_does_not_hold_the_others() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    // `u1` refuses the connection the way ssh does, 255 with nothing on stdout.
-    //
-    // `u1`, not a name another test also uses: two connection failures count towards the
-    // process-wide breaker, so a shared name would carry that streak into the other test and turn
-    // its reachable host into not reached, from a state no line of it mentions.
+    // `u1` refuses the connection the way ssh does, 255 with nothing on stdout, and it is a name of its
+    // own: two connection failures count towards the process-wide breaker, so a shared name would carry
+    // that streak into another test.
     let fake = Fake::new(
         "unreachable",
         "case \"$*\" in *u1.invalid*) echo 'ssh: connect to host u1.invalid port 22: Connection refused' >&2; exit 255 ;; esac\n\
@@ -1516,12 +1499,8 @@ fn a_host_with_no_key_is_refused_before_anything_connects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
-// The RPC practices: rules 5 to 8, and what ssh's two refusals mean
-// ---------------------------------------------------------------------------
-//
-// Rules 1 to 4 are above: deadlines, failure detection, retries by idempotency, and an unknown
-// outcome said as unknown. These are the rest, each measured against the same fake ssh.
+// The RPC practices, rules 5 to 8, and what ssh's two refusals mean. Rules 1 to 4 are above:
+// deadlines, failure detection, retries by idempotency, and an unknown outcome said as unknown.
 
 /// The spec these tests place with: this fake ssh, this host, three seconds on every call that
 /// is not a command.
@@ -1551,10 +1530,8 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
     }
 }
 
-/// Three connection failures in a row and the host is not dialled any more, because a host that
-/// has gone away otherwise costs every call its own timeout. The third failure opens the breaker,
-/// the fourth fails at once naming the reason and when the host was last reached, and the fake's
-/// log proves no ssh was spawned for it.
+/// Three connection failures in a row and the host is not dialled any more: the fourth call fails at once
+/// naming the reason and when the host was last reached, and the fake's log proves no ssh was spawned.
 #[test]
 fn three_failed_calls_open_the_breaker_and_the_next_fails_at_once() {
     // A unique host name: the breaker is process-wide, and a shared name would carry its streak,
@@ -1620,10 +1597,8 @@ fn three_failed_calls_open_the_breaker_and_the_next_fails_at_once() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// A command that has to be abandoned takes its remote process group with it. The fake ssh is the
-/// remote here, so a `sleep 300 &` under it is a process on this box in a session of its own,
-/// which is the shape a real command has on a real host: the command writes its group down, the
-/// call is killed at its bound, and the cancel reaches that group.
+/// A command that has to be abandoned takes its remote process group with it: the command writes its
+/// group down, the call is killed at its bound, and the cancel reaches that group.
 #[test]
 fn a_cancelled_command_leaves_nothing_running_on_the_far_side() {
     let host = format!("cancel-{}", std::process::id());
@@ -1690,9 +1665,8 @@ fn a_cancelled_command_leaves_nothing_running_on_the_far_side() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// A job's wait is a heartbeat, and it does not fill the record ring: a status poll is one ssh
-/// call every 120 ms, so one `job_wait` of half a minute would evict every call a reader could
-/// act on. A poll that succeeds says only that the machine is still there; a failed one is still
+/// A job's wait is a heartbeat and does not fill the record ring, since a status poll is one ssh call
+/// every 120 ms and one `job_wait` would evict every call a reader could act on. A failed poll is still
 /// recorded.
 #[test]
 fn a_jobs_polling_does_not_fill_the_record_ring() {
@@ -1753,12 +1727,8 @@ fn pidfile_is_stale(b: &letibot_tools::remote::SshBackend) -> bool {
         .unwrap_or(false)
 }
 
-/// A host whose mise refuses a `-C` that is not a directory, which is what a real mise does: a
-/// wrapper pointed at the checkout before `git worktree add` made it fails every step of a
-/// placement, and mise prints the path with `~` for `$HOME`, which reads like a quoting bug.
-///
-/// The stub is that behaviour: refuse a `-C` that is not a directory, record every `-C`, then run
-/// the command. It sits at `$HOME/.local/bin/mise` in the fake home, so the default probe finds it.
+/// A host whose mise refuses a `-C` that is not a directory, which is what a real mise does: a wrapper
+/// pointed at the checkout before `git worktree add` made it fails every step of a placement.
 #[test]
 fn a_placement_through_a_mise_that_insists_its_directory_exists() {
     let host = format!("mise-real-{}", std::process::id());
@@ -1906,10 +1876,8 @@ fn every_call_is_recorded_and_the_report_names_host_step_duration_and_outcome() 
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// A host takes a bounded number of ssh sessions, and a call beyond it queues under its own
-/// deadline: a client that opened one per call would have sshd refuse the eleventh, which reads
-/// as a fault on the host. The fake counts how many calls are inside at once, and every call must
-/// still answer inside its own deadline.
+/// A host takes a bounded number of ssh sessions and a call beyond it queues under its own deadline: a
+/// client opening one per call would have sshd refuse the eleventh, which reads as a fault on the host.
 #[test]
 fn concurrent_calls_to_one_host_queue_at_the_session_bound() {
     let host = format!("busy-{}", std::process::id());

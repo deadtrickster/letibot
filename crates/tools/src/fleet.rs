@@ -1,15 +1,10 @@
-//! Work on many hosts at once - the engine under `fanout` and `scenario`.
+//! Work on many hosts at once: the engine under `fanout` and `scenario`.
 //!
-//! A hand-rolled loop over `ssh` has one failure it cannot see: a host that never answered
-//! is a `for`-body that did not execute, and nothing counts it. So every leg is a job of a
-//! [`ProcessHost`], every planned cell ends with a [`Cell`] ([`Fate::Never`] for one that
-//! did not run), and every started process is written down ([`ProcessBook`]) so the daemon's
-//! supervisor owns its deadline and its teardown.
-//!
-//! The three fates never collapse: [`Fate::Ended`] is the command's own status,
-//! [`Fate::Stopped`] is something ended it on purpose, [`Fate::Never`] carries the reason.
-//! An unreachable host is a row, not a failure of the whole, because a fanout that answers
-//! nothing when one of five machines is off has thrown away four results.
+//! A hand-rolled loop over `ssh` has one failure it cannot see, since a host that never answered is a
+//! `for`-body that did not execute. So every leg is a job of a [`ProcessHost`], every planned cell ends
+//! with a [`Cell`], and every started process is written down so the daemon's supervisor owns its
+//! deadline and its teardown. The three fates never collapse, because a fanout that answers nothing when
+//! one of five machines is off has thrown away four results.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -47,11 +42,8 @@ pub struct Leg {
     /// When this leg must be gone. Decided by the caller before the start, so the record
     /// and the loop cannot disagree about it.
     pub deadline: Option<Instant>,
-    /// Environment the leg's command reads - the block it was given, if it was given one.
-    ///
-    /// A lease's own facts travel this way rather than through the command text, because a
-    /// command that had to spell its ports would be a command the caller had to write after
-    /// the lease was taken, and a `fanout`'s branches are all planned before any of it exists.
+    /// Environment the leg's command reads, the block it was given. A lease's own facts travel this way
+    /// rather than through the command text, because every branch is planned before any of it exists.
     pub env: Vec<(String, String)>,
 }
 
@@ -165,15 +157,9 @@ pub struct Running {
     pub log: Option<String>,
 }
 
-/// Where a started process is written down - the daemon's supervisor's own table.
-///
-/// A seam and not a `Store`: this crate is below the daemon and a tool has no store path, and
-/// everywhere else [`NoBook`] writes nothing, which is the truth for a run with no store.
-///
-/// Written here at all because a fanout branch is not a job of the session's process host - it
-/// is a job of a host the session is not placed on - so nothing else would write it down: a
-/// daemon that restarted mid-fanout would find no process to adopt, and a session close would
-/// kill nothing on that machine.
+/// Where a started process is written down: the daemon's supervisor's own table. A seam and not a
+/// `Store`, since this crate is below the daemon; it is written at all because a fanout branch is a job
+/// of a host the session is not placed on, so nothing else would write it down.
 pub trait ProcessBook: Send + Sync {
     /// A process has started, on `p.host`.
     fn started(&self, p: &ProcessNote);
@@ -327,12 +313,9 @@ impl Fleet {
         opened
     }
 
-    /// Open one host: resolve it, make its work directory, then connect the process host
-    /// there.
-    ///
-    /// The order matters: `mise exec -C` refuses a directory that does not exist, so the work
-    /// directory is made with a plain step before the connection is told to use it as its `-C`,
-    /// and the toolchain wrapper is never pointed at a path that is not there.
+    /// Open one host: resolve it, make its work directory, then connect the process host there. The order
+    /// matters, because `mise exec -C` refuses a directory that does not exist and the wrapper is never
+    /// pointed at a path that is not there.
     fn open(&self, name: &str) -> Result<Arc<dyn ProcessHost>, String> {
         let host = self
             .hosts
@@ -341,10 +324,9 @@ impl Fleet {
             .clone();
         let ssh = Ssh::connect(host.clone(), self.ssh.clone(), self.paths.clone())?
             .with_bound(self.bound);
-        // `root` is expanded on the far side, once - `~` is that machine's home, and quoting
-        // it would make a directory literally named `~`. `pwd -P` is the same answer
-        // `SshBackend::place` uses, so a fanout's directory and a placement's checkout cannot
-        // disagree about what `~/letibot-remote` means on that box.
+        // `root` is expanded on the far side, once: `~` is that machine's home and quoting it would make a
+        // directory literally named `~`. `pwd -P` gives the same answer `SshBackend::place` uses, so the
+        // two cannot disagree about what `~/letibot-remote` means on that box.
         let (said, _, code) = ssh
             .sh_once(
                 &format!("finding {name}'s root"),
@@ -422,12 +404,9 @@ impl Fleet {
         }
     }
 
-    /// Start one leg, or say why it never ran.
-    ///
-    /// The process is a job of the host's own table (`background: true`), which is what gives
-    /// it a pid, an exit file and a process group this module can end. It is then written down
-    /// ([`ProcessBook`]) so the daemon's supervisor owns it from that moment: the record's
-    /// deadline is the leg's, and a session's close kills it.
+    /// Start one leg, or say why it never ran. The process is a job of the host's own table, which gives
+    /// it a pid, an exit file and a process group this module can end, and it is written down so the
+    /// supervisor owns its deadline and a session's close kills it.
     pub fn start(&self, leg: &Leg) -> Result<Running, String> {
         let host = self.host(&leg.host)?;
         let req = SpawnRequest {
@@ -463,10 +442,9 @@ impl Fleet {
                 host: place.clone(),
                 pid: view.pid,
                 identity: match place {
-                    // The two spellings the supervisor reads. On a host, the far side answers
-                    // *is this still the process* from the job directory's pid and the command's
-                    // own words; here, the pid and `/proc`'s start time are the pair that makes a
-                    // reused pid not this process.
+                    // The two spellings the supervisor reads: a pid and the command's own words on a host,
+                    // and here the pid with `/proc`'s start time, the pair that makes a reused pid not this
+                    // process.
                     Some(_) => format!("cmd:{}", leg.command),
                     None => match crate::exec::procs::read(view.pid) {
                         Some(p) => format!("start:{}", p.start),
@@ -571,10 +549,8 @@ impl Fleet {
         }
     }
 
-    /// Poll one leg until it is ready, or the deadline passes. Each check is asked on the
-    /// host that runs the role - a port that accepts there is the fact a client on another
-    /// machine is about to depend on, and asking this box's `127.0.0.1` would be answering
-    /// about the wrong machine.
+    /// Poll one leg until it is ready or the deadline passes. Each check is asked on the host that runs
+    /// the role, because a port that accepts there is the fact a client on another machine depends on.
     pub fn await_ready(
         &self,
         run: &Running,
@@ -697,21 +673,14 @@ fn read_output(fleet: &Fleet, run: &Running, bytes: u64) -> String {
         .unwrap_or_default()
 }
 
-/// How a role says it is ready. Three spellings, because three are what a service fixture
-/// actually has: a port that accepts, a line in its own log, and a client program that exits
-/// 0.
-///
-/// [`Ready::Lease`] is the fourth, and it is not a fourth kind of check - it is a port from
-/// the session's lease rather than the caller's head. Every collision an agent causes on a
-/// shared host begins with somebody typing a port number, so the safe spelling has to be
-/// shorter than the unsafe one: `ready: {"port": "lease"}`.
+/// How a role says it is ready: a port that accepts, a line in its own log, or a client program that
+/// exits 0. [`Ready::Lease`] is the same check with a port from the session's lease, so the safe
+/// spelling is shorter than typing a number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ready {
     Port(u16),
-    /// A port from this session's lease on the role's host, assigned before any process
-    /// starts. [`crate::builtins::scenario`] replaces it with a [`Ready::Port`] once the block
-    /// is taken; a `Ready::Lease` reaching a check is a plan that was never assigned, and it
-    /// refuses rather than waiting on port 0.
+    /// A port from this session's lease on the role's host, assigned before any process starts. Reaching
+    /// a check means a plan that was never assigned, so it refuses rather than waiting on port 0.
     Lease,
     Log(String),
     Check(String),
@@ -728,12 +697,9 @@ impl Ready {
         }
     }
 
-    /// How often this check may be asked, and the three numbers are three different costs.
-    ///
-    /// A port is a TCP connect *there*, and 150 ms is already faster than a service that is
-    /// going to come up; a log line is one read of the role's own output file; and a `check`
-    /// is a job of its own - a launcher written, a `setsid` start, a pid polled - so asking it
-    /// every 150 ms would spend two hundred processes on a thirty-second wait.
+    /// How often this check may be asked, and the three numbers are three different costs: a port is a
+    /// TCP connect there, a log line is one read, and a `check` is a job of its own, so asking it every
+    /// 150 ms would spend two hundred processes on a thirty-second wait.
     pub fn pace(&self) -> Duration {
         match self {
             Ready::Port(_) | Ready::Lease => Duration::from_millis(150),
@@ -852,12 +818,9 @@ pub fn unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// A plan and its answer, the same length by construction.
-///
-/// An answer here is never a list of *results*: it is the plan, with a [`Cell`] for every leg,
-/// and a leg with no result is a row that says it never ran - so *every planned cell is
-/// accounted for* is a type rather than a habit. A duplicate label in the plan is a refusal one
-/// layer up, because two legs called `server` would be one cell answering for two commands.
+/// A plan and its answer, the same length by construction: every planned leg has a [`Cell`], and a leg
+/// with no result is a row that says it never ran. A duplicate label is refused one layer up, because two
+/// legs called `server` would be one cell answering for two commands.
 pub fn cells(plan: &[Leg], done: &[Cell]) -> Vec<Cell> {
     let mut out = Vec::with_capacity(plan.len());
     for leg in plan {
