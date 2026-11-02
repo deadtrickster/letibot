@@ -1,15 +1,6 @@
-//! The branch is the deliverable: a worktree child does not finish with its work outside it.
-//!
-//! A `task_start` child works on `agent/<slug>`, and that branch is what the merge queue lands. A
-//! child that ends with edits uncommitted, or new files untracked, has handed its parent a branch
-//! that does not hold the work. Three things cover that, each the half the others cannot do: the
-//! brief tells the child the rule before it starts, the end-of-turn check names what is
-//! uncommitted once and lets the turn go on, and the completion carries the fact with the two
-//! salvage commands, so the parent never has to discover it.
-//!
-//! A child with no worktree (a plain `task`, or `task_start` with `main_tree: true`) has no
-//! [`Deliverable`] and none of this touches it: the main checkout's status is the operator's, not
-//! the child's account of its work.
+//! The branch is the deliverable: a worktree child does not finish with its work outside it. Three things cover that:
+//! the brief tells the child the rule, the end-of-turn check names what is uncommitted once, and the completion carries
+//! the fact with the salvage commands. A child with no worktree is not touched.
 
 use letibot_tools::builtins::task::WorktreePlacement;
 
@@ -98,11 +89,9 @@ pub fn with_the_line(d: Option<&Deliverable>, text: &str) -> String {
     }
 }
 
-/// The end-of-turn check, with its budget of one.
-///
-/// Per turn, like `nudges_left`: a model that answers the nudge by explaining why a file stays out
-/// has given a legitimate answer, and a second nudge would be the harness arguing. What it did not
-/// commit is then the completion line's job, not another round's.
+/// The end-of-turn check, with its budget of one: per turn, like `nudges_left`, since a model that answers by
+/// explaining why a file stays out has given a legitimate answer and a second nudge would be the harness arguing. What
+/// it did not commit is then the completion line's job.
 #[derive(Debug, Default)]
 pub struct EndOfWork {
     nudged: bool,

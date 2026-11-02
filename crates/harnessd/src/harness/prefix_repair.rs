@@ -35,10 +35,8 @@ pub(crate) struct Repaired {
     pub note: String,
 }
 
-/// Repair `loaded` if, and only if, it is the shape described in the module header.
-///
-/// `Ok(None)` means not this shape or not provably repairable, so the caller keeps its refusal.
-/// `Err` is a store that could not be read or written, which is not a diagnosis.
+/// Repair `loaded` if, and only if, it is the shape described in the module header. `Ok(None)` is not this shape or
+/// not provably repairable, so the caller keeps its refusal; `Err` is a store that could not be read or written.
 pub(crate) fn rows_on_another_prefix(
     store: &Store,
     session_id: &str,

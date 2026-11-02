@@ -3248,10 +3248,9 @@ impl HarnessTaskRunner {
             ));
         }
 
-        // Through the seam every session has, which is the child's whole defect: a bare `submit` returns
+        // Through the seam every session has, which is the child's whole defect: a bare `submit` returned
         // `ContextWall` and nothing reacted, so the task failed with a notice promising a compaction nothing
-        // attempted. `submit_as_a_normal_session` compacts at the wall and continues, bounded. The task is the
-        // child's first turn through the shared tail, with the owner every later turn uses.
+        // attempted. The task is the child's first turn through the shared tail, with the owner later turns use.
         let mut turns = ChildTurns::new(&sub, &sub_id, crate::sessions::TodoNagClock::new())
             .with_record(slot.record.clone());
         // The branch is the deliverable, said in the brief and checked as each turn ends: one nudge if the tree

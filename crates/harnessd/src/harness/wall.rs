@@ -748,10 +748,9 @@ impl Harness {
         Ok((next, id))
     }
 
-    /// Re-seat without summarising: carry the whole conversation across, through `fork_to_summary`'s own
-    /// machinery, since a tool's schema lives in the stable prefix and a schema change needs a fork. It costs a
-    /// cold prefill of the whole history, which is the trade against a summary, and it refuses where the carry
-    /// could not be prefilled at all.
+    /// Re-seat without summarising: carry the whole conversation across through `fork_to_summary`, since a
+    /// tool's schema lives in the stable prefix and a schema change needs a fork. It costs a cold prefill of the
+    /// whole history, the trade against a summary, and refuses where the carry could not be prefilled.
     pub fn reingest(&mut self) -> Result<ReseatReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
@@ -1392,10 +1391,9 @@ impl Harness {
         } else {
             ""
         };
-        // A fork that summarised says so; one that did not must not: an empty summary is `reingest`, and telling the
-        // model that everything before is replaced by a summary it is not shown contradicts what it can see. The
-        // sentence changed when a tail arrived, for the same reason. `CompactionTail::why_line` is the one place it is
-        // worded.
+        // A fork that summarised says so; one that did not must not: an empty summary is `reingest`, and telling
+        // the model everything before is replaced by a summary it is not shown contradicts what it can see. The
+        // sentence also changed when a tail arrived, for the same reason: `CompactionTail::why_line` words it.
         let tail_why_text = (!tail.because.is_empty()).then(|| {
             letibot_sessionlog::event::CompactionTail {
                 turns: Vec::new(),
@@ -1407,10 +1405,9 @@ impl Harness {
             .unwrap_or_default()
         });
         let carried = match tail_items.len() {
-            // WHY there is no tail, said in the row itself: an absence with two causes and one appearance, since
-            // with no tail this said nothing and a reader could not tell the ruling working from the budget losing.
-            // Here and not only on the wire, because this is the durable one: the store has no events table, so after
-            // a restart the item is all a reader has.
+            // WHY there is no tail, said in the row itself, because an absence with two causes and one appearance
+            // cannot be told apart otherwise. Here and not only on the wire, since this is the durable one: the store
+            // has no events table, so after a restart the item is all a reader has.
             0 if !tail.because.is_empty() => format!(" {}", tail_why_text.unwrap_or_default()),
             0 => String::new(),
             n => format!(

@@ -73,11 +73,9 @@ impl Harness {
         Ok(())
     }
 
-    /// Append what the operator's call produced, with its `origin` set.
-    ///
-    /// Through `append_imported` and no other writer, so the row lands in the ledger, the store and
-    /// every head as a turn's rows do, carrying `origin: Some(Operator { who })`: no head has to
-    /// infer that the person, and not the model, made this call.
+    /// Append what the operator's call produced, with its `origin` set. Through `append_imported` and no other writer,
+    /// so the row lands in the ledger, the store and every head as a turn's rows do, carrying `origin: Some(Operator)`:
+    /// no head has to infer that the person, and not the model, made this call.
     pub fn finish_operator_call(
         &mut self,
         call_id: &str,
@@ -100,14 +98,9 @@ impl Harness {
         self.append_imported(&[item])
     }
 
-    /// Run an operator's admitted call, in this session, and put it in the transcript.
-    ///
-    /// The daemon runs it because the payload must be the one this program would have produced, so
-    /// the byte caps, the spill policy, the network rules and the scratch directory are a model's
-    /// call's. The gate is not consulted and must not be: the call was already admitted against the
-    /// door's allowlist and written as `human:<who>`, so re-gating would double-record the decision
-    /// or, at `/mode automode`, let a model refuse the person's own act. The size is noted between
-    /// the run and the append, the only window where it is true and the cost still avoidable.
+    /// Run an operator's admitted call, in this session, and put it in the transcript: the daemon runs it because the
+    /// payload must be the one this program would have produced, and the gate is not consulted because the call was
+    /// already admitted against the door's allowlist. The size is noted between the run and the append.
     pub fn run_operator_call(
         &mut self,
         call_id: &str,
@@ -120,10 +113,9 @@ impl Harness {
             name: name.to_string(),
             arguments: arguments.to_string(),
         };
-        // A null sink, and watched: the transcript row is the durable record and every head draws
-        // it, so a second copy as an event would be one fact in two places. It is watched because a
-        // call from this door can return `Backgrounded`, and an unwatched sink would leave that
-        // handle in nobody's table while the row promises a completion.
+        // A null sink, and watched: the transcript row is the durable record and every head draws it, so a second
+        // copy as an event would be one fact in two places. Watched because a call from this door can return
+        // `Backgrounded`, and an unwatched sink would leave that handle in nobody's table.
         let mut quiet = self.unprompted_sink();
         // `turn_id` is empty on purpose: this call belongs to no turn, and a head that saw a
         // turn id here would draw the row inside a turn that did not propose it.
@@ -158,24 +150,9 @@ impl Harness {
             .map_err(|e| e.to_string())
     }
 
-    /// Run the operator's own shell line (`!`), and append both halves as rows.
-    ///
-    /// The daemon runs it for [`Harness::run_operator_call`]'s reason, and more so for a shell
-    /// command: a head has no exec host, no confinement, no scratch directory and no standing
-    /// environment, and the standing environment is what carries `LETIBOT_SOCKET` and
-    /// `SUDO_ASKPASS`, without which `sudo` cannot ask anybody for a password.
-    ///
-    /// Nothing gates it: `invoke_operator` is the door's own ungated path, so a session that does
-    /// not seat `bash` gets the runtime's honest refusal as the result row.
-    ///
-    /// Two rows, one append: the typed line verbatim as `Speaker::Operator`, because that is who
-    /// typed it, then the result as a `ToolResult` named `bash` with `CallOrigin::Operator`. The
-    /// output is a program's bytes and not speech, so it gets no `Speaker`.
-    ///
-    /// Two callers still run the whole thing on this thread: the round boundary's pickup, whose
-    /// point is that a running turn reads the rows at its next round, and callers with no worker to
-    /// hand back to. The pieces are shared with the split path, so there is one call id, one note
-    /// and one row shape whichever thread runs them.
+    /// Run the operator's own shell line (`!`), and append both halves as rows: the daemon runs it because a head has
+    /// no exec host, no confinement and no standing environment, and that environment carries the socket `sudo` needs.
+    /// Nothing gates it, and both rows go in one append, the result as a `ToolResult` that gets no `Speaker`.
     pub fn run_operator_shell(&mut self, line: &str, who: &str) -> Result<(), String> {
         let (call_id, call) = self.prepare_operator_shell(line)?;
         // A null sink, as the door's runs have, and watched for the reason
@@ -196,11 +173,9 @@ impl Harness {
         self.settle_operator_shell(line, who, &call_id, outcome, result.render(), spill)
     }
 
-    /// Mint the operator's own call: the `bang-<n>` id and the `bash` call it names.
-    ///
-    /// The sequence counter is this session's, so the id is minted here, on the worker, before the
-    /// run is handed anywhere: what a thread that is not this one needs is a [`ToolCall`] whose
-    /// payload is the line minus its bang.
+    /// Mint the operator's own call: the `bang-<n>` id and the `bash` call it names. The counter is this session's, so
+    /// the id is minted here before the run is handed anywhere: what another thread needs is a `ToolCall` whose payload
+    /// is the line minus its bang.
     pub fn prepare_operator_shell(&mut self, line: &str) -> Result<(String, ToolCall), String> {
         // A pasted block is not a command, and the daemon checks this itself: a `!` line reaches
         // here from any head that speaks the protocol, and a row of five lines whose newlines the
@@ -221,14 +196,8 @@ impl Harness {
         Ok((call_id, call))
     }
 
-    /// Append what the operator's run produced: the note and the two rows, one append.
-    ///
-    /// The half that needs the harness after the run, which is why it runs on the worker even when
-    /// the run did not: the transcript has one writer. Same order as ever, so the size note is on
-    /// the log before the rows that carry the bytes.
-    ///
-    /// It takes the run's pieces rather than a [`letibot_tools::ToolResult`] because the split
-    /// path's result crosses a thread already rendered, so the worker never needs the type back.
+    /// Append what the operator's run produced: the note and the two rows, one append. The half that needs the harness
+    /// after the run, which is why it runs on the worker even when the run did not, since the transcript has one writer.
     pub fn settle_operator_shell(
         &mut self,
         line: &str,
@@ -286,19 +255,9 @@ impl Harness {
         self.append_imported(&rows).map_err(|e| e.to_string())
     }
 
-    /// Write down the question the model asked and the answer a person gave it.
-    ///
-    /// Called from the round loop with an [`ASK_USER_QUESTION`] result, because the transcript has
-    /// one writer and it is the session: the tool returns what the model reads, and what a person
-    /// said is written here, as a row of theirs.
-    ///
-    /// The result goes first and the person's half follows it, because a `User` row between the
-    /// proposal and its result closes the answering window and makes the model read "no result was
-    /// recorded for this call" beside the real one. The result keeps its payload and takes
-    /// `origin: Some(CallOrigin::Operator)`, which is what makes every head draw it as the person's
-    /// act; both rows are recorded where the composer's own speech is, and the answer's speaker is
-    /// `Speaker::Operator` so a yes given through a card can be cited as a yes typed into the
-    /// composer can.
+    /// Write down the question the model asked and the answer a person gave: the transcript has one writer and it is
+    /// the session. The result goes first and the person's half follows, since a `User` row in between closes the
+    /// answering window. The answer's speaker is the operator's, so a yes through a card can be cited as a typed one.
     pub(crate) fn settle_asked(&mut self, result: &mut TranscriptItem) -> Vec<TranscriptItem> {
         let Some(asked) = self.asked.lock().unwrap_or_else(|e| e.into_inner()).take() else {
             return Vec::new();
@@ -330,13 +289,9 @@ impl Harness {
         asked_rows(&asked, &said).to_vec()
     }
 
-    /// The runtime as a shareable handle, for the thread that runs the operator's command: one exec
-    /// host per session is a fact, so the run goes through this runtime rather than a second one.
-    ///
-    /// The sink is the caller's, and it decides whether a `Backgrounded` outcome is watched: a
-    /// handle used with a bare `NullToolSink` mints a handle in nobody's table, so the settlement is
-    /// queued for no session and no bell rings. Whoever invokes through this passes
-    /// [`JobWatchSink::new`] over [`Harness::job_watchers`].
+    /// The runtime as a shareable handle, for the thread that runs the operator's command: one exec host per session
+    /// is a fact, so the run goes through this runtime. The sink is the caller's and decides whether a `Backgrounded`
+    /// outcome is watched, which is what makes the settlement reach a session and a bell ring.
     pub fn runtime_handle(&self) -> std::sync::Arc<ToolRuntime> {
         self.runtime.clone()
     }
@@ -364,15 +319,9 @@ impl Harness {
         }
     }
 
-    /// The turn the operator's own `!` line starts: the sending half, so the two rows are a message
-    /// and not silent context.
-    ///
-    /// Nothing is appended here on purpose: the line and its output are already rows, so a framing
-    /// item would be a third row saying what the two above it say.
-    ///
-    /// Called only between turns. Mid-turn the line is taken at the round boundary and the running
-    /// turn reads the rows at its next round; starting one there would be a second turn about one
-    /// command.
+    /// The turn the operator's own `!` line starts: the sending half, so the two rows are a message and not silent
+    /// context. Nothing is appended here, since the line and its output are already rows. Called only between turns,
+    /// because mid-turn the line is taken at the round boundary and a second turn would be one command twice.
     pub fn run_after_operator_shell(&mut self) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
         let out = self.run_rounds();

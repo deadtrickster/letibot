@@ -1,18 +1,6 @@
-//! `/clear`: a fresh conversation for the same session.
-//!
-//! A long session's model degrades, and neither verb beside this one cures it: `/compact`
-//! summarises the history in the drifted model's own voice, which then becomes the base every
-//! later turn imitates, and `/reseat` carries every item across verbatim, which keeps the drift
-//! whole. Here the conversation starts over and the session does not.
-//!
-//! Everything the operator keeps lives in the [`Harness`] rather than in its transcript, so a fork
-//! that swaps the transcript leaves all of it standing: the id and title, the board, jobs,
-//! subagents, workspace, seat, mode and queue rows. That is why this is a fork, not a new session.
-//!
-//! The new conversation starts with a freshly composed message zero and one item: an orientation
-//! the harness writes from state, spoken as [`letibot_transcript::Speaker::Agent`] because it is
-//! not the operator's words and must never authorise anything. It carries nothing of the old
-//! conversation's prose, because that prose is the drift being cleared.
+//! `/clear`: a fresh conversation for the same session. `/compact` summarises the history in the drifted voice and
+//! `/reseat` carries it verbatim, so neither cures a degraded model. Everything the operator keeps lives in the
+//! `Harness` and not its transcript, which is why this forks: a new message zero and one orientation item, no old prose.
 
 use std::time::Duration;
 
@@ -123,11 +111,9 @@ impl Harness {
         });
     }
 
-    /// The orientation: the session's state as facts, and no prose from the old conversation.
-    ///
-    /// Each section is read at the moment of the clear from the thing that owns it. An empty
-    /// section says so in one line rather than vanishing, because an orientation that leaves out
-    /// "no jobs" is one the model cannot tell from an orientation that forgot to look.
+    /// The orientation: the session's state as facts, and no prose from the old conversation. Each section is read at
+    /// the moment of the clear from the thing that owns it, and an empty section says so in one line rather than
+    /// vanishing, because an orientation that leaves out no jobs cannot be told from one that forgot to look.
     pub(crate) fn orientation(&self, old_id: &str, next: Option<&str>) -> String {
         let me = self.cfg.session_id.clone();
         let mut out = format!(

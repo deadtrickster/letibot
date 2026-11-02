@@ -2971,11 +2971,9 @@ impl Harness {
         });
     }
 
-    /// Put the restored conversation back on the session's log: a resumed harness holds the transcript and the hub
-    /// does not, so each row is announced as a live one is and both the snapshot and attached paths get it free. Not
-    /// re-renders and not re-runs, so no turn events and no timings no clock measured. And the rows a compaction put
-    /// behind the current transcript, since a session compacted many times came back as its last rows with nothing
-    /// above them. `what` is the caller's words: the layer that owns the fact states it.
+    /// Put the restored conversation back on the session's log: a resumed harness holds the transcript and the hub does
+    /// not, so each row is announced as a live one is and both the snapshot and attached paths get it free. Not re-renders
+    /// and not re-runs, so no turn events and no timings no clock measured. `what` is the caller's words.
     fn ancestor_tail(&self) -> Vec<(String, TranscriptItem, [u8; 32])> {
         let Some(store) = self.store.as_ref() else {
             return Vec::new();
@@ -3476,9 +3474,8 @@ pub fn scratch_dir() -> std::path::PathBuf {
 }
 
 /// What a confined session's view holds beyond its project: the operator's `--grant-ro` paths and the merge queue's
-/// landing tree, READ-ONLY, since the next gate runs in it. The directory is created empty when the queue has not
-/// made it, because a `--ro-bind` of a missing path fails every command. The build cache is the main tree's `target/`
-/// for an UNCONFINED child only: pointing a confined cargo at a tree the bwrap view does not hold would fail a build.
+/// landing tree, READ-ONLY, since the next gate runs in it, and created empty so the bind has something to bind. The
+/// build cache is the main tree's `target/` for an UNCONFINED child only, since the bwrap view does not hold it.
 pub fn worktree_build_env(
     placement: &letibot_tools::builtins::task::WorktreePlacement,
 ) -> Option<(String, String)> {
@@ -3625,10 +3622,9 @@ mod prefix_fingerprint_tests {
         }
     }
 
-    /// The three inputs are all in the address, and the one that must not be is not: each assertion is a different
-    /// way the comparison could be wrong — a seat ignored calls two differently-seated sessions identical, an
-    /// instruction ignored misses `--system`, a schema ignored misses the operator's own case, and a note counted would
-    /// report every session stale the moment anybody wrote one.
+    /// The three inputs are all in the address, and the one that must not be is not. Each assertion is a different way
+    /// the comparison could be wrong: a seat ignored, an instruction ignored, a schema ignored, or a note counted that
+    /// would report every session stale the moment anybody wrote one.
     #[test]
     fn the_frozen_three_are_in_the_address_and_the_live_one_is_not() {
         let one = prefix("instructions", &["{\"name\":\"read\"}"]);

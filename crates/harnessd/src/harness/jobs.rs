@@ -218,12 +218,9 @@ impl Harness {
         Ok(out)
     }
 
-    /// What this conversation can actually call, for `/tools`.
-    ///
-    /// The REGISTRY is what this daemon seated when it opened the session; the PROMPT is what
-    /// message zero announces, and it is fixed the moment a transcript starts. So a daemon
-    /// restarted with a new tool has it seated and unannounced, and the model cannot call a tool
-    /// it was never told about however the banner reads: this names that gap where one would look.
+    /// What this conversation can actually call, for `/tools`: the REGISTRY is what this daemon seated, while the PROMPT
+    /// is what message zero announces and it is fixed the moment a transcript starts. So a restarted daemon has a new
+    /// tool seated and unannounced, and the model cannot call it however the banner reads.
     pub fn tools_lines(&self) -> Vec<String> {
         let schemas = self.runtime.registry.schemas();
         let announced = tool_names(&self.prefix.tools_json);
@@ -291,12 +288,9 @@ impl Harness {
         out
     }
 
-    /// The jobs still running in this session's VM as it is closed, which die with it. A VM
-    /// child's backend is closed right after its first turn, so a job it backgrounded and did not
-    /// wait on had its watcher stopped first and its row read `running` for ever.
-    ///
-    /// Called just before [`Harness::close_backend`]. Writes each row as `lost with its VM` and
-    /// delivered, so the store does not remind anyone of it after a restart.
+    /// The jobs still running in this session's VM as it is closed, which die with it: a VM child's backend closes right
+    /// after its first turn, so a job it backgrounded had its watcher stopped first and its row read `running` for ever.
+    /// Called just before `close_backend`, writing each row as lost and delivered so no restart reminds anyone.
     pub fn jobs_lost_with_the_vm(&self) -> Vec<letibot_tools::exec::JobView> {
         let Some(host) = self.runtime.backend.processes() else {
             return Vec::new();

@@ -3,25 +3,18 @@
 use super::*;
 
 impl Harness {
-    /// The operator's half of the board: replaces their rows and leaves the model's alone, so
-    /// anything that reads the board afterwards sees both.
-    ///
-    /// `moved` is a STATE and never a membership: `/todo postpone|resume <the row's words>` on a
-    /// row the model wrote, which the operator can silence and can never add, drop or re-word. A
-    /// name that resolves to nothing is the daemon's log, and the union published below corrects it.
+    /// The operator's half of the board: replaces their rows and leaves the model's alone, so anything reading the
+    /// board afterwards sees both. `moved` is a STATE and never a membership, since a name the operator can silence is
+    /// one they can never add, drop or re-word, and a name that resolves to nothing is the daemon's log.
     pub fn set_operator_todos(
         &mut self,
         items: Vec<letibot_tokencore::store::TodoItem>,
         moved: &[(String, letibot_tokencore::store::TodoStatus)],
     ) {
         self.todos.set_operator(items);
-        // And the state moves that are not the head's to make: the board resolves the words against
-        // the model's half and sets the status, which is the one thing the operator can change
-        // about a row they did not write.
-        //
-        // A refusal is the daemon's log rather than the operator's silence: a model that rewrote its
-        // plan in between makes a name resolve to nothing, and the union this write publishes is the
-        // correction.
+        // And the state moves that are not the head's to make: the board resolves the words against the model's half
+        // and sets the status. A refusal is the daemon's log rather than the operator's silence, since a model that
+        // rewrote its plan makes a name resolve to nothing and the union this write publishes is the correction.
         if !moved.is_empty()
             && let Err(why) = self.todos.set_states(moved)
         {
@@ -42,13 +35,9 @@ impl Harness {
         self.flush_todos_or_say("the operator's row");
     }
 
-    /// The children this daemon is running, as the plan-check reads them: the task journal says
-    /// which are still running, the session registry how long, the child's own hub what it last
-    /// showed. `crate::sessions::child_sessions` is the one builder, so the two readers of one plan
-    /// cannot come to different answers about a child.
-    ///
-    /// Taken per ask rather than held: it is the one input that moves while nothing else does, and
-    /// a cached snapshot would be a check that cannot see a child stop.
+    /// The children this daemon is running, as the plan-check reads them: the journal says which are running, the
+    /// registry how long, the child's hub what it last showed. Taken per ask rather than held, since it is the one input
+    /// that moves while nothing else does, and a cached snapshot could not see a child stop.
     pub(crate) fn child_sessions(&self) -> letibot_tools::builtins::todo::ChildSessions {
         crate::sessions::child_sessions(
             &self.session_registry,
@@ -57,16 +46,9 @@ impl Harness {
         )
     }
 
-    /// The jobs this session is running, as the plan-check reads them: a row that waits on one is
-    /// not work the check may speak about ([`letibot_tokencore::store::TodoNeed::Job`]), and the
-    /// moment it ends the row is.
-    ///
-    /// Asked per handle through [`Harness::job_fate`], the same lookup the `[todo] … is due` firing
-    /// reads, so the two readers cannot disagree and a handle never heard of answers `Unknown`. A
-    /// listing instead would be a second way to ask *is this running*, and the one that disagreed
-    /// after a restart, where the live table is empty and only the record knows what became of it.
-    ///
-    /// Taken per ask, for `child_sessions`' reason: a job ends while nothing else moves.
+    /// The jobs this session is running, as the plan-check reads them: a row waiting on one is not work the check may
+    /// speak about, and the moment it ends the row is. Asked per handle through `job_fate`, the same lookup the due
+    /// firing reads, so the two cannot disagree and a handle never heard of answers `Unknown`. Taken per ask.
     pub(crate) fn running_jobs(
         &self,
         rows: &[TodoItem],
@@ -132,27 +114,16 @@ impl Harness {
         jobs
     }
 
-    /// The `[todo check]` text, or nothing, and a row the operator has postponed is not part of it.
-    ///
-    /// The rows are read through `sessions::the_plan_as_checked`, the same reading the arming
-    /// decision takes, so the clock and the sentence cannot disagree about what the plan is, even if
-    /// the clock was armed before the row was postponed.
-    ///
-    /// Reading it does not remember the row it names: both delivery doors read this once to record
-    /// the notice as said and then [`Harness::nag_turn`] reads it again, so a choice written here
-    /// would count the first reading as asked. `nag_turn` commits it, where a check is delivered.
+    /// The `[todo check]` text, or nothing, and a row the operator postponed is not part of it. The rows are read
+    /// through `the_plan_as_checked`, the same reading the arming decision takes, so clock and sentence cannot disagree.
+    /// Reading it does not remember what it named: `nag_turn` commits it, where a check is delivered.
     pub fn nag_notice(&self) -> Option<String> {
         self.nag_notice_naming().map(|(text, _)| text)
     }
 
-    /// What the idle clock counts a delivered check AS: the plan's sentence read the way the clock's
-    /// own arming reads it, so *the same notice again* means the same plan and not the same wording.
-    ///
-    /// The wording moves on its own, and recording the wording as said would make every check after
-    /// the second come due at the base window, which is the metronome the ladder exists to prevent.
-    ///
-    /// The queue's census is not in here: it is a door of its own, recorded against its own anchor,
-    /// because its sentence names the age of the oldest row and so is new at every delivery.
+    /// What the idle clock counts a delivered check AS: the plan's sentence read the way the clock's arming reads it,
+    /// so the same notice again means the same plan and not the same wording. Recording the wording would make every
+    /// check after the second come due at the base window, the metronome the ladder exists to prevent.
     pub fn nag_said_as(&self) -> Option<String> {
         let board = self.todos.snapshot();
         let children = self.child_sessions();
@@ -185,13 +156,9 @@ impl Harness {
             Some((text, named)) => (Some(text), Some(named)),
             None => (None, None),
         };
-        // And the prompt this session is speaking, when it is not this daemon's. The sentence is
-        // composed once at open and left in the registry for the ATTACH path, and the model cannot
-        // see it either, so a session can spend an evening speaking a prompt its daemon would not
-        // compose. Nothing clears it but a re-seat, which is exactly when it stops being true.
-        //
-        // Told once and as information: the person has the choice on their screen as a card, so the
-        // model is told the fact and that the decision is not its to press.
+        // And the prompt this session is speaking, when it is not this daemon's: the sentence is composed once at open
+        // for the attach path, and the model cannot see it either, so a session can spend an evening speaking a prompt
+        // its daemon would not compose. Told once, as information, since the person has the choice on their screen.
         let stale = self
             .stale_untold()
             .map(|said| stale_notice_for_the_model(&said));
@@ -212,16 +179,9 @@ impl Harness {
             .filter(|said| self.stale_told.as_deref() != Some(said.as_str()))
     }
 
-    /// The plan's nudge as a turn of its own, when nothing else is happening.
-    ///
-    /// This delivers the check without a turn boundary. Inside the loop it was one nudge per user
-    /// turn, so a session that went idle with an unfinished plan was nudged once and never again,
-    /// while one in constant conversation was nudged after every exchange.
-    ///
-    /// The text goes in as `Speaker::Agent`, exactly as [`Harness::wake`] and
-    /// [`Harness::continue_after_wall`] do: the harness talking to itself, never readable as the
-    /// operator's words and never an authorisation. `Ok(None)` is nothing to say, which is a real
-    /// outcome and not a failure: no turn is spent on a nudge with no finding behind it.
+    /// The plan's nudge as a turn of its own, when nothing else is happening, so a session that went idle with an
+    /// unfinished plan is nudged again. The text goes in as `Speaker::Agent`, exactly as `wake` does: the harness talking
+    /// to itself, never readable as the operator's. `Ok(None)` is nothing to say, which is a real outcome.
     pub fn nag_turn(&mut self) -> Result<Option<Reply>, HarnessError> {
         let Some((mut text, named)) = self.nag_notice_naming() else {
             return Ok(None);
@@ -242,11 +202,9 @@ impl Harness {
         if let Some(said) = self.stale_untold() {
             self.stale_told = Some(said);
         }
-        // The wall is checked BEFORE the send, as `submit_as_a_normal_session`'s pre-flight does.
-        // Insurance rather than the load-bearing fix, because a refused nag is still classified as
-        // the wall and recovered by the door that answers a refusal: this only spares a round trip
-        // the daemon's own numbers can predict, since a nag is the cheapest turn and the most
-        // pointless one to spend on a prompt already known not to fit.
+        // The wall is checked BEFORE the send, as `submit_as_a_normal_session`'s pre-flight does. Insurance rather
+        // than the load-bearing fix, since a refused nag is classified as the wall and recovered by the door that
+        // answers a refusal: this only spares a round trip the daemon's own numbers can predict.
         self.compact_if_at_the_wall();
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
@@ -346,13 +304,9 @@ impl Harness {
         crate::slash::SlashReply { lines, ok: true }
     }
 
-    /// Pause this session's plan-check: the config, the row and the hub together, for
-    /// [`Self::stand_down_auto_compact`]'s reason, that a reader who finds one without the others
-    /// has been lied to. The `nags_paused` row is the loud half; the settings row is what a head
-    /// that attaches later reads.
-    ///
-    /// A row the store refused is SAID, in the hub row and in the `Err` the verb's reply carries,
-    /// and the pause still holds in memory: it is real until this daemon stops.
+    /// Pause this session's plan-check: the config, the row and the hub together, since a reader who finds one without
+    /// the others has been lied to. The `nags_paused` row is the loud half and the settings row is what a head attaching
+    /// later reads. A row the store refused is SAID, and the pause still holds in memory.
     pub fn pause_nags(&mut self, p: letibot_sessionlog::NagPause) -> Result<(), String> {
         let now = letibot_sessionlog::registry::now_ms();
         self.cfg.nags_paused = Some(p);
@@ -409,13 +363,9 @@ impl Harness {
             })
     }
 
-    /// A resume comes back with the operator's pause, from the session's own row: called at open,
-    /// for every session that opens, children included.
-    ///
-    /// The row is the answer even when it says nothing: a child's config is a clone of its parent's,
-    /// and a parent's pause must not ride into it (see [`crate::nag_pause`]), so a session with no
-    /// row, or no store, opens running. A pause whose end passed while nobody held the session is
-    /// ended here and said, rather than restored as a pause nothing would ever lift.
+    /// A resume comes back with the operator's pause, from the session's own row, for every session that opens. The
+    /// row is the answer even when it says nothing, since a child's config is a clone of its parent's and a parent's
+    /// pause must not ride into it. A pause whose end passed while nobody held the session is ended here and said.
     pub fn restore_nag_pause(&mut self) {
         let stored = self
             .store
