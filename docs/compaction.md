@@ -41,19 +41,17 @@ does this, on this box:
   tokens against about 1,400, with every truncation-by-length in the whole run occurring at
   zero depth. Compaction can cost tokens on the far side too.
 
-One correction, because it changes where the cost lands: on a strategy that re-sends the
-previous request **byte-identical** and appends only the instruction, the summarising call is
-cheap. What cannot be cheap is the moment the history is actually replaced. So **the reduction
-is what costs, and it costs the next turn.**
+One correction, because it changes where the cost lands: on a strategy that re-sends the previous
+request **byte-identical** and appends only the instruction, the summarising call is cheap. What cannot
+be cheap is the moment the history is actually replaced. **The reduction is what costs, and it costs
+the next turn.**
 
-The tree branches on the backend for exactly that reason, and the currency is what differs. A
-local llama.cpp miss costs time (200-375 tok/s, about ten minutes on a 240k prompt); a cloud
-miss costs money (a tenth of the price for cached input), and a cloud provider takes messages
-rather than tokens, so none of the prefix machinery applies to it at all. So a local server
-keeps the expensive half a true prefix of what it already holds (`summarise_overrun`), and a
-cloud provider folds and continues with no overlap and no seam (`plan_fold`). `plan_overrun`
-chooses; `Harness::compact_inner` carries out the answer. Ten minutes before a word is
-generated disqualifies a strategy; six cents does not.
+The tree branches on the backend for that reason, and the currency differs: a local llama.cpp miss
+costs time (200-375 tok/s, about ten minutes on a 240k prompt), a cloud miss costs money, and a cloud
+provider takes messages rather than tokens so no prefix machinery applies to it at all. A local server
+keeps the expensive half a true prefix of what it holds (`summarise_overrun`); a cloud provider folds
+and continues with no overlap (`plan_fold`). `plan_overrun` chooses, `Harness::compact_inner` carries
+it out.
 
 ## 3. The conflation at the heart of it
 
@@ -93,18 +91,16 @@ which is a far smaller job than summarising a conversation.
 
 ### Maintained incrementally, which is what removes the stall
 
-Build the map turn by turn, each turn contributing its nodes as it completes. Then evicting a
-span costs *rendering nodes you already have at a coarser zoom* - there is no summarisation
-call at compaction time, or a tiny one.
-
-This is the leveled-compaction argument in `docs/design-brief.md` §1, which was missing its
-data structure. The map is that structure.
+Build the map turn by turn, each turn contributing its nodes as it completes. Then evicting a span
+costs *rendering nodes you already have at a coarser zoom* - there is no summarisation call at
+compaction time, or a tiny one. This is the leveled-compaction argument in `docs/design-brief.md` §1,
+which was missing its data structure.
 
 ### The zoom levels are the ladder's rungs
 
-We already built this ladder once, for KV, in llama.cpp:
-`full → thinned → skeletal → no-draft → spill`, degrading before evicting, each rung shedding
-something that costs *time on restore* and never correctness. The same shape applies here:
+We already built this ladder once, for KV, in llama.cpp: `full → thinned → skeletal → no-draft →
+spill`, degrading before evicting, each rung shedding something that costs *time on restore* and never
+correctness. The same shape applies here:
 
 ```
 full text  →  node with children  →  node with label  →  handle only
@@ -135,27 +131,19 @@ Zoom-as-paging - place a cached block at the tail, prefix untouched, near-free -
 original shape of this section, and it was tested and settles negative.
 `experiments/kv-stitching/RESULTS.md`.
 
-The reason is stronger than a partial correction being hard. It is that there is nothing to
-correct. `llama_memory_recurrent`'s cells *are* sequence ids, so a per-sequence save writes
-**one** cell whose payload is the entire accumulator: 36 layers, **111.4 MiB, fixed and
-independent of length** (measured at 114.6 MiB after a *64-token* prompt). The attention half
-is 24 KiB/token across the other 12 layers.
+The reason is stronger than a partial correction being hard. It is that there is nothing to correct.
+`llama_memory_recurrent`'s cells *are* sequence ids, so a per-sequence save writes **one** cell whose
+payload is the entire accumulator: 36 layers, **111.4 MiB, fixed and independent of length** (114.6
+MiB after a *64-token* prompt). The attention half is 24 KiB/token across the other 12 layers, so **a
+block's contribution to three quarters of the model is not extractable** - "recompute a fraction to
+reconcile it" is not a poor approximation, it is not an operation.
 
-**A block's contribution to three quarters of the model is not extractable.** So "recompute a
-fraction of C to reconcile it" is not a poor approximation. It is not an operation.
-
-Measured, against a determinism floor established first because the metric is worthless
-without one - 36 consecutive bit-identical repeats over 200 greedy tokens:
-
-- every stitch short of the divergence diverges at token **5-172**, with no trend
-- **recomputing 98% of the prompt still breaks at token 5**
-- at or before the divergence: bit-identical, KL exactly zero
-- **the recompute fraction is 1.0 of everything after the divergence**
-
-Confirmed without any doctoring by asking a slot for an honest prefix of itself and counting
-what it re-runs: **three fixed re-entry points, not a sliding window** - `d ≤ 3` free,
-`4 ≤ d ≤ 516` rewinds to a single checkpoint, `d > 516` costs the entire prefix from token 0.
-Identical at 3.8k and 12.3k.
+Measured against a determinism floor established first (36 consecutive bit-identical repeats over 200
+greedy tokens): every stitch short of the divergence diverges at token **5-172**, recomputing 98% of
+the prompt still breaks at token 5, and at or before the divergence it is bit-identical. Asking a slot
+for an honest prefix of itself confirms it without doctoring: **three fixed re-entry points, not a
+sliding window** - `d ≤ 3` free, `4 ≤ d ≤ 516` rewinds to a checkpoint, `d > 516` costs the entire
+prefix from token 0.
 
 ### What survives, and why the design was built this way
 
@@ -174,20 +162,16 @@ to keep them.
 
 ### The fixed-section summary template
 
-Universal, on both paths: **Objective / Important Details / Work State (Completed, Active,
-Blocked) / Next Move / Relevant Files**, every section kept even when empty, and *"preserve
-exact file paths, symbols, commands, error strings, URLs and identifiers"*. The reason is §4's,
-one level down: **a section is a question, and an absent section is a question nobody was
-asked.** "Nothing is blocked" and "nobody said" are different facts, and a prose ask collapses
-them.
+Universal, on both paths: **Objective / Important Details / Work State (Completed, Active, Blocked) /
+Next Move / Relevant Files**, every section kept even when empty, and *"preserve exact file paths,
+symbols, commands, error strings, URLs and identifiers"*. The reason is §4's, one level down: **a
+section is a question, and an absent section is a question nobody was asked.** "Nothing is blocked"
+and "nobody said" are different facts, and a prose ask collapses them.
 
-`SUMMARY_SECTIONS` is that list, so a test holds the instruction's text to it. The wire carries
-seven of the eight leaves - `WIRE_SECTIONS` - and the eighth is the record itself.
-
-Also part of the template, and not a section: the model is told what it is about to lose -
-*"anything you do not carry into it is lost"* - because a summariser that is not told the prior
-record is discarded will reasonably assume it survives, and on a second compaction the prior
-record sits in the conversation like any other item.
+`SUMMARY_SECTIONS` is that list, so a test holds the instruction's text to it; the wire carries seven
+of the eight leaves (`WIRE_SECTIONS`) and the eighth is the record itself. The instruction also tells
+the model what it is about to lose - *"anything you do not carry into it is lost"* - because a
+summariser that is not told the prior record is discarded will assume it survives.
 
 ### A verbatim tail of recent turns, split by where the model runs
 
@@ -196,16 +180,15 @@ record sits in the conversation like any other item.
 | **remote model** | yes | **yes** |
 | **local model** | yes | **no** |
 
-The reason is the reason and not the policy. A local model is bounded by the **KV cache in
-VRAM**, where a tail is resident tokens competing with the very pressure that called the
-compaction. A remote model is bounded by a **context limit and a bill**, where 15k of verbatim
-recent turns is affordable and buys back exactly what a summary is worst at - the literal text
-of the last few exchanges. Same mechanism, different budget.
+The reason is the reason and not the policy. A local model is bounded by the **KV cache in VRAM**,
+where a tail is resident tokens competing with the very pressure that called the compaction; a remote
+model is bounded by a **context limit and a bill**, where 15k of verbatim recent turns buys back
+exactly what a summary is worst at. Same mechanism, different budget.
 
-**One artefact shape, not two.** The tail is carried *beside* the summary and never folded into
-it, so the local artefact is the remote one with an empty tail, and a session compacted locally
-and resumed against a remote model (or the reverse) does not meet a record its reader cannot
-read. `tail_budget` is a quarter of the window clamped to 2,000-15,000 tokens.
+**One artefact shape, not two.** The tail is carried *beside* the summary and never folded into it, so
+the local artefact is the remote one with an empty tail, and a session compacted locally and resumed
+against a remote model does not meet a record its reader cannot read. `tail_budget` is a quarter of the
+window clamped to 2,000-15,000 tokens.
 
 Two constraints follow:
 
@@ -221,44 +204,35 @@ Two constraints follow:
 
 opencode truncates every tool result to 2,000 characters in the bytes handed to the summariser.
 Refused here, and the reason is the cache: our summarising call is
-`render(stable_prefix, items[0..k]) ++ render(instruction)`, which is a true prefix of the live
-token stream - warm compaction - and clipping a payload inside it makes the prompt
-differ from the one the server holds. That trades a warm prefix for a cold one, which is the
-thirteen minutes this document is about. The goal (bound the summariser's input) is served
-better at the other end, where `max_inline_bytes` bounds the payload as it is produced, so it
-bounds *every* turn rather than only the summary.
+`render(stable_prefix, items[0..k]) ++ render(instruction)`, a true prefix of the live token stream, and
+clipping a payload inside it makes the prompt differ from the one the server holds. That trades a warm
+prefix for a cold one - the thirteen minutes this document is about. The goal (bound the summariser's
+input) is served at the other end, where `max_inline_bytes` bounds the payload as it is produced, so it
+bounds *every* turn.
 
 ### `prune`: ruled, not built
 
-`prune` walks the message list backwards, skips the last two turns, protects the most recent
-40,000 tokens of tool calls and a list of protected tools, stops at the last summary, and then
-erases the OUTPUT of older tool calls in place - leaving a marker, and keeping the call and its
-arguments. It needs no model at all, so a re-prefill is its entire cost.
+`prune` walks the message list backwards, skips the last two turns, protects the most recent 40,000
+tokens of tool calls and a list of protected tools, stops at the last summary, and then erases the
+OUTPUT of older tool calls in place, keeping the call and its arguments. It needs no model, so a
+re-prefill is its entire cost.
 
-Adopt, adapted, and it is not orthogonal to §4 - it is §4's first rung. Three adaptations:
+Adopt, adapted - it is §4's first rung, not an alternative to it:
 
-1. **A fork, not an edit.** opencode's transcript *is* its wire, so erasing in place is coherent
-   there. Here the ledger is a hash chain over rendered tokens
+1. **A fork, not an edit.** Here the ledger is a hash chain over rendered tokens
    (`crates/tokencore/src/ledger.rs`: `LedgerRow::h_k`, and a replay that disagrees is
-   `LedgerError::ChainMismatch`), so an in-place erasure is not merely expensive - it is the
-   thing the ledger refuses. The erasure therefore lands in a **new base**, exactly as a summary
-   does, and the old transcript is kept whole. That is also this repo's own rule: compaction
-   never deletes, it stops carrying.
-2. **A locator, not a tombstone.** *"[Old tool result content cleared]"* is honest and unhelpful.
-   Our marker can name where the body went, because the spill already exists
-   (`crates/tools/src/spill.rs`, and `read_spill(hash, range)` is a seated tool) - so the erased
-   payload is not destroyed, it is not carried, and the marker says how to pull it back. It must
-   not promise more than it can: the spill store defaults to **memory**, which dies with the
-   daemon and makes `read_spill` fail after a restart unless `--spill-dir` is given. A marker
-   that names a hash in a memory store is a marker that expires.
-3. **Opt-in, and where it is worth most.** Gated behind a config flag and off by default. On this
-   stack its strongest case is not routine use but the one the overrun path spends two summary
-   turns on: **a session whose prompt fills the window has no room to write a summary, and
-   pruning needs no room to write.** That is a mechanism that rescues the failing case rather
-   than a housekeeping chore.
+   `LedgerError::ChainMismatch`), so an in-place erasure is the thing the ledger refuses. The erasure
+   lands in a **new base**, exactly as a summary does, and the old transcript is kept whole. That is
+   this repo's own rule: compaction never deletes, it stops carrying.
+2. **A locator, not a tombstone.** The marker can name where the body went, because the spill exists
+   (`crates/tools/src/spill.rs`, and `read_spill(hash, range)` is a seated tool). It must not promise
+   more than it can: the spill store defaults to **memory**, which dies with the daemon and makes
+   `read_spill` fail after a restart unless `--spill-dir` is given.
+3. **Opt-in, and where it is worth most.** Off by default. Its strongest case is the one the overrun
+   path spends two summary turns on: **a session whose prompt fills the window has no room to write a
+   summary, and pruning needs no room to write.**
 
-Sized as its own verb (`/prune`) so it can run with no model behind it, and not scheduled -
-ruling and building are different acts, and this document records the ruling.
+Sized as its own verb (`/prune`) so it can run with no model behind it, and not scheduled.
 
 ## 7. Open, and honestly
 
@@ -277,40 +251,31 @@ transcript is re-sent on every prompt rebuild. opencode strips media on compacti
 recovery message for the provider refusing it. R24 and R27 are yours. Say what you conclude; do
 not silently keep images forever."* Three parts, and the middle one is the one that matters.
 
-**1. Images before the tail leave the prompt by construction - and that IS `stripMedia`.** The
-compacted base is the summary plus the verbatim tail. A row before the tail is replaced by the
-summary, so its `data_ref` is no longer in the transcript and never re-sent. No code, and the
-property is stronger than opencode's: theirs strips media out of parts that stay, this one
-replaces the parts whole.
+**1. Images before the tail leave the prompt by construction - and that IS `stripMedia`.** A row
+before the tail is replaced by the summary, so its `data_ref` is no longer in the transcript and never
+re-sent. No code, and the property is stronger than opencode's: theirs strips media out of parts that
+stay, this one replaces the parts whole.
 
-**2. Images inside the verbatim tail are kept, and must be.** The tail's entire value is that
-it is byte-identical to what the server already prefilled - the cached strategy rests on it.
-Stripping an image from the tail would buy a smaller prompt with a cold prefill, which is the
-trade this design exists to refuse. So the two harnesses want different things here, and this
-is a place where letibot should not copy: opencode strips media in the tail as well.
+**2. Images inside the verbatim tail are kept, and must be.** The tail's value is that it is
+byte-identical to what the server already prefilled. Stripping an image would buy a smaller prompt with
+a cold prefill, which is the trade this design exists to refuse - so this is a place where letibot
+should not copy opencode, which strips media in the tail too.
 
 **3. Two things are missing, and the first is a defect the moment images ship on the local
 path.**
 
-**The accounting.** `plan_tail` sums `item_tokens`, and that is the tokens the ledger rendered
-for that row - the TEXT. An image's payload is a sentence (`shot.png - image image/png 640x480 ·
-12 KiB`, about twenty tokens) while the picture costs **4151 tokens** on the wire. MEASURED: one
-vision token per 1024 pixels, capped at 4096. So a tail "planned to fit the budget" can be two
-orders of magnitude over it, and the wall check under-reports by the same amount for every image
-in the resident history. **Not fixed, filed, because it is a change to token accounting:** the
-number is already on the row - `Media { width, height }` gives the vision cost as
-`min(w*h/1024, 4096)` without asking any server, which is the same arithmetic the server
-performs.
+**The accounting.** `plan_tail` sums `item_tokens`, which is the tokens the ledger rendered for that
+row - the TEXT. An image's payload is a sentence (about twenty tokens) while the picture costs **4151
+tokens** on the wire (one vision token per 1024 pixels, capped at 4096). So a tail "planned to fit the
+budget" can be two orders of magnitude over it. **Not fixed, filed, because it is a change to token
+accounting**: the number is already on the row - `Media { width, height }` gives
+`min(w*h/1024, 4096)` without asking any server.
 
-**The record has to say what was read.** The summary instruction asks for the facts, and said
-nothing about pictures, so a model that read one would drop it - and unlike a path, a command or
-an error string, a picture cannot be re-derived from the summary. It is the one fact in the
-conversation that is gone for good once the row is replaced. The instruction now carries a rule
-for it; the test beside the other section rules holds it to that.
+**The record has to say what was read.** A picture cannot be re-derived from the summary - unlike a
+path, a command or an error string, it is gone for good once the row is replaced - so the instruction
+now carries a rule for it, and the test beside the other section rules holds it to that.
 
-**And one thing this does NOT settle, said rather than implied.** A picture in the verbatim tail
-stays for as long as the session does - it is re-sent on every rebuild, base64 and all, which is
-the cost the `Media` field's docstring names. opencode's answer to that is a recovery
-instruction for when a provider refuses oversize media. This tree has no such path yet, and
-until it does, the honest statement is the one in `crates/transcript/src/lib.rs`: an image lives
-for the life of the session.
+**And one thing this does NOT settle.** A picture in the verbatim tail stays for as long as the session
+does - re-sent on every rebuild, base64 and all. opencode's answer is a recovery instruction for when a
+provider refuses oversize media; this tree has no such path yet, and until it does the honest statement
+is the one in `crates/transcript/src/lib.rs`: an image lives for the life of the session.
