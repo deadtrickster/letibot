@@ -2144,3 +2144,51 @@ fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
     );
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
+
+/// The `notes` tool writes where the session's other tools write: a note added in a placed
+/// session lands in the remote checkout, and the daemon's own workspace gets no `.letibot/notes`
+/// at all. The note is read back with `std::fs` from the far path - the fake remote is a real
+/// local path, and a test that asked the tool whether it wrote is a test of the tool's opinion.
+#[test]
+fn a_note_written_in_a_placed_session_lands_in_the_remote_checkout() {
+    let mut rig = Rig::new("notes");
+    let backend = rig.place();
+    let worktree = rig.worktree.clone();
+    let local = std::env::temp_dir().join(format!(
+        "letibot-notes-local-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let global = local.join("global");
+    std::fs::create_dir_all(&global).expect("the box-wide notes dir");
+
+    let mut h = letibot_tools::testing::harness_over(Box::new(backend), local.clone(), global);
+    let r = h.call(
+        "notes",
+        r#"{"action":"add","name":"placed","text":"a note from the host"}"#,
+    );
+    assert!(r.is_grounded(), "{}", r.render());
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".letibot/notes/placed.md"))
+            .expect("the note is in the remote checkout"),
+        "a note from the host\n"
+    );
+    assert!(
+        !local.join(".letibot").exists(),
+        "the daemon's own workspace got no notes directory: {}",
+        local.display()
+    );
+
+    // And `read` over the same harness finds it where it was written, not where the scope is.
+    let r = h.call("notes", r#"{"action":"read","name":"placed"}"#);
+    assert!(r.is_grounded(), "{}", r.render());
+    assert!(
+        r.render().contains("a note from the host"),
+        "{}",
+        r.render()
+    );
+    let _ = std::fs::remove_dir_all(&local);
+}

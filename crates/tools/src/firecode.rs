@@ -1204,6 +1204,9 @@ impl ExecBackend for FirecodeBackend {
                 name: name.to_string(),
                 is_dir: kind == "d",
                 bytes: size.parse().unwrap_or(0),
+                // `find -printf` here carries no time, and asking for one per entry would be a
+                // second round trip for an age nobody reads.
+                modified: None,
             });
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1258,6 +1261,9 @@ impl ExecBackend for FirecodeBackend {
                 .unwrap_or_default(),
             is_dir: kind == "directory",
             bytes: size.parse().unwrap_or(0),
+            // The guest's `stat` is asked for the kind and the size only, so there is no time to
+            // report rather than a zero to mistake for one.
+            modified: None,
         })
     }
 
@@ -1405,6 +1411,9 @@ pub(crate) fn tree_in_walk_order(
                 name: path.rsplit('/').next().unwrap_or(path).to_string(),
                 is_dir: kind == "d",
                 bytes: size.parse().unwrap_or(0),
+                // The walk carries no times: `find -printf '%y\t%s\t%p'` was chosen for one round
+                // trip over a 122-directory tree, and a time per entry would not be one.
+                modified: None,
             });
     }
 
@@ -2566,6 +2575,7 @@ mod tests {
             name: name.into(),
             is_dir,
             bytes,
+            modified: None,
         };
         assert_eq!(
             got,

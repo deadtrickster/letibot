@@ -37,6 +37,20 @@ pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
     pub bytes: u64,
+    /// When the file was last written, in whole seconds since the Unix epoch, and `None` for a
+    /// substrate that cannot answer. A reader that needs an age reads it here rather than
+    /// stat'ing the file a second time, which over ssh is a round trip per note.
+    pub modified: Option<u64>,
+}
+
+/// A file's mtime in whole seconds, for [`DirEntry::modified`]. A filesystem that answers no time,
+/// or one stamped before 1970, has no answer rather than a zero.
+fn modified_secs(meta: &std::fs::Metadata) -> Option<u64> {
+    meta.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 #[derive(Debug)]
@@ -746,6 +760,7 @@ impl ExecBackend for HostBackend {
                 name: e.file_name().to_string_lossy().to_string(),
                 is_dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
                 bytes: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                modified: meta.as_ref().and_then(modified_secs),
             });
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -763,6 +778,7 @@ impl ExecBackend for HostBackend {
                 .unwrap_or_default(),
             is_dir: meta.is_dir(),
             bytes: meta.len(),
+            modified: modified_secs(&meta),
         })
     }
 
@@ -1082,6 +1098,7 @@ mod tests {
                 name: p[1..].into(),
                 is_dir: true,
                 bytes: 0,
+                modified: None,
             };
             assert!(default_skip(&e), "{p} must be skipped");
         }
@@ -1090,6 +1107,7 @@ mod tests {
             name: "dev".into(),
             is_dir: true,
             bytes: 0,
+            modified: None,
         };
         assert!(
             !default_skip(&e),
@@ -1318,6 +1336,7 @@ mod tests {
                     name: (*name).to_string(),
                     is_dir: *is_dir,
                     bytes: *bytes,
+                    modified: None,
                 });
         }
         // Firecode's `list` sorts by name, and the loop's order is what an override
@@ -1411,6 +1430,7 @@ mod tests {
                     name: "one".into(),
                     is_dir: false,
                     bytes: 1,
+                    modified: None,
                 }],
                 false,
             ))

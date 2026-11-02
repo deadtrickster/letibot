@@ -1,6 +1,7 @@
 //! `notes` - read and write the standing notes the harness injects.
 //! Writes go to the workspace's `.letibot/notes/` only, through a [`NotesScope`] the daemon
-//! supplies; the index's derivation and sort live here so both sides agree.
+//! supplies and through the session's [`ExecBackend`], so a note lands where `write` lands; the
+//! index's derivation and sort live here so both sides agree.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use letibot_transcript::text::clip_line_counted;
 use serde_json::Value;
 
+use crate::backend::{DirEntry, ExecBackend};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 use crate::similarity;
@@ -34,6 +36,120 @@ impl NotesTool {
     }
 }
 
+/// One note file, as the listing that found it saw it: the path to open it by, and what `list`
+/// reports about it - so neither verb asks the substrate for the same file twice.
+struct Note {
+    path: PathBuf,
+    bytes: u64,
+    modified: Option<u64>,
+}
+
+/// Where the tool's files are: the session's backend for anything under its workspace, so a note
+/// lands where `write` lands, and this box's own filesystem for the box-wide directory, which the
+/// harness reads here and the tool never writes.
+struct NoteFs<'a> {
+    backend: &'a dyn ExecBackend,
+    /// The backend's workspace, which is where the session's files are. Not the scope's: that is
+    /// the path the DAEMON sees, and on a placed session it names another machine's tree.
+    root: PathBuf,
+}
+
+impl<'a> NoteFs<'a> {
+    fn new(backend: &'a dyn ExecBackend, scope: &dyn NotesScope) -> Self {
+        // A substrate with no host path (a VM holding a copy) has nothing to compare a path
+        // against, so the scope's own workspace is what there is.
+        let root = backend
+            .workspace_path()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| scope.workspace());
+        NoteFs { backend, root }
+    }
+
+    /// The path in the backend's own spelling, when the backend is what holds it. That test is
+    /// the whole rule: under the workspace is the session's, and everything else - the box-wide
+    /// notes - is this box's.
+    fn on_backend(&self, path: &Path) -> Option<String> {
+        let rest = path.strip_prefix(&self.root).ok()?;
+        let rel = rest.to_string_lossy().replace('\\', "/");
+        Some(if rel.is_empty() { ".".to_string() } else { rel })
+    }
+
+    fn read(&self, path: &Path) -> Option<String> {
+        match self.on_backend(path) {
+            Some(rel) => String::from_utf8(self.backend.read(&rel).ok()?).ok(),
+            None => std::fs::read_to_string(path).ok(),
+        }
+    }
+
+    fn stat(&self, path: &Path) -> Option<DirEntry> {
+        match self.on_backend(path) {
+            Some(rel) => self.backend.stat(&rel),
+            None => {
+                let meta = std::fs::metadata(path).ok()?;
+                Some(DirEntry {
+                    path: path.display().to_string(),
+                    name: path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    is_dir: meta.is_dir(),
+                    bytes: meta.len(),
+                    modified: modified_secs(&meta),
+                })
+            }
+        }
+    }
+
+    fn list(&self, dir: &Path) -> Vec<DirEntry> {
+        match self.on_backend(dir) {
+            Some(rel) => self.backend.list(&rel).unwrap_or_default(),
+            None => local_list(dir),
+        }
+    }
+
+    /// `ExecBackend::write` is atomic by its contract and makes the parent directories; a path on
+    /// this box keeps [`write_atomic`], which is those same rules with nobody to ask.
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        match self.on_backend(path) {
+            Some(rel) => self.backend.write(&rel, bytes).map_err(|e| e.to_string()),
+            None => write_atomic(path, bytes).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// A file's mtime in whole seconds - the unit [`DirEntry::modified`] carries, so a listing's age
+/// and a stat's agree.
+fn modified_secs(meta: &std::fs::Metadata) -> Option<u64> {
+    meta.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// One directory on this box, in the shape a backend's `list` answers in and the order it
+/// answers in, so a reader cannot tell which of the two it was given.
+fn local_list(dir: &Path) -> Vec<DirEntry> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<DirEntry> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            Some(DirEntry {
+                path: e.path().display().to_string(),
+                name: e.file_name().to_string_lossy().to_string(),
+                is_dir: meta.is_dir(),
+                bytes: meta.len(),
+                modified: modified_secs(&meta),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// One source of notes, as `list` presents it and `read` resolves against it.
 struct Source {
     /// The directory (or, for `AGENTS.md`, the file's parent) this source
@@ -49,31 +165,43 @@ impl Source {
     /// The `*.md` files this source contributes, newest first, in the reader's own order
     /// ([`sort_newest_first`]). A single-file source contributes its file only when it is
     /// there, because the reader skips an absent `AGENTS.md`.
-    fn notes(&self) -> Vec<PathBuf> {
+    fn notes(&self, fs: &NoteFs<'_>) -> Vec<Note> {
         if let Some(f) = &self.file {
-            return if f.is_file() {
-                vec![f.clone()]
-            } else {
-                Vec::new()
+            return match fs.stat(f) {
+                Some(e) if !e.is_dir => vec![Note {
+                    path: f.clone(),
+                    bytes: e.bytes,
+                    modified: e.modified,
+                }],
+                _ => Vec::new(),
             };
         }
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return Vec::new();
-        };
-        let mut paths: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
+        let mut notes: Vec<Note> = fs
+            .list(&self.dir)
+            .into_iter()
+            .filter(|e| !e.is_dir && Path::new(&e.name).extension().is_some_and(|x| x == "md"))
+            .map(|e| Note {
+                path: self.dir.join(&e.name),
+                bytes: e.bytes,
+                modified: e.modified,
+            })
             .collect();
-        sort_newest_first(&mut paths);
-        paths
+        // Newest first, ties by name: the reader's order, and the one `list` claims to report.
+        // The time is the listing's, so a placed session pays no round trip per note for it.
+        notes.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        notes
     }
 }
 
 /// The three sources in the reader's order: `AGENTS.md`, then the box-wide notes, then
 /// the project's. The order decides what arrives whole and what arrives as an index,
 /// and it is what makes `list`'s "in prompt order" true.
-fn sources(scope: &dyn NotesScope) -> Vec<Source> {
-    let ws = scope.workspace();
+fn sources(fs: &NoteFs<'_>, global: &Path) -> Vec<Source> {
+    let ws = fs.root.clone();
     vec![
         Source {
             dir: ws.clone(),
@@ -81,7 +209,7 @@ fn sources(scope: &dyn NotesScope) -> Vec<Source> {
             label: "workspace instructions (the operator's)",
         },
         Source {
-            dir: scope.global_dir(),
+            dir: global.to_path_buf(),
             file: None,
             label: "box-wide (the operator's)",
         },
@@ -96,11 +224,11 @@ fn sources(scope: &dyn NotesScope) -> Vec<Source> {
 /// Every note the harness injects, as `(path, text)`: the corpus a score is computed
 /// over, in the same sources and order the injected section is assembled from, so no
 /// score is ever about a note the reader would not inject.
-fn corpus(scope: &dyn NotesScope) -> Vec<(PathBuf, String)> {
-    sources(scope)
+fn corpus(fs: &NoteFs<'_>, global: &Path) -> Vec<(PathBuf, String)> {
+    sources(fs, global)
         .iter()
-        .flat_map(|s| s.notes())
-        .filter_map(|p| std::fs::read_to_string(&p).ok().map(|text| (p, text)))
+        .flat_map(|s| s.notes(fs))
+        .filter_map(|n| fs.read(&n.path).map(|text| (n.path, text)))
         .collect()
 }
 
@@ -203,15 +331,17 @@ fn note_stem(raw: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-/// How long ago `meta` was last written, in the word `ps` uses for ages  -
+/// How long ago `modified` was last written, in the word `ps` uses for ages  -
 /// the date beside the caveat, in this tree's own idiom.
-fn age_of(meta: &std::fs::Metadata) -> String {
-    let Ok(mtime) = meta.modified() else {
+fn age_of(modified: Option<u64>) -> String {
+    let Some(secs) = modified else {
         return "at an unknown time".into();
     };
-    let d = std::time::SystemTime::now()
-        .duration_since(mtime)
-        .unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let d = std::time::Duration::from_secs(now.saturating_sub(secs));
     if d.as_secs() < 60 {
         "under a minute ago".into()
     } else {
@@ -221,11 +351,11 @@ fn age_of(meta: &std::fs::Metadata) -> String {
 
 /// The short caveat every read of a note carries: a note records what was true when it
 /// was written, and without this line a stale one reads as a current fact.
-fn caveat(meta: &std::fs::Metadata) -> String {
+fn caveat(modified: Option<u64>) -> String {
     format!(
         "[historical note — last written {}; it records what was true then and may be \
          outdated. Verify against the tree before relying on it.]",
-        age_of(meta)
+        age_of(modified)
     )
 }
 
@@ -458,14 +588,16 @@ impl Tool for NotesTool {
                  \"replace\".",
             );
         };
+        let fs = NoteFs::new(ctx.backend, self.scope.as_ref());
         match action {
-            "list" => self.list(),
+            "list" => self.list(&fs),
             "read" => self.read(
+                &fs,
                 args.get("path").and_then(|v| v.as_str()),
                 args.get("name").and_then(|v| v.as_str()),
             ),
-            "search" => self.search(args.get("query").and_then(|v| v.as_str())),
-            "add" | "append" | "replace" => self.write(ctx, action, args),
+            "search" => self.search(&fs, args.get("query").and_then(|v| v.as_str())),
+            "add" | "append" | "replace" => self.write(ctx, &fs, action, args),
             other => Invocation::failed(
                 format!("unknown notes action `{other}`"),
                 "call `notes` with `action` = \"list\", \"read\", \"search\", \"add\", \"append\" or \
@@ -479,8 +611,8 @@ impl NotesTool {
     /// The gate's question about the bytes that are about to become durable: `after` is the
     /// whole file as it would land, because half a note has no score, and `target` is left
     /// out of its own corpus so an `append` is never refused for resembling what it grows.
-    fn duplicate(&self, target: &Path, after: &str) -> Option<(PathBuf, f64)> {
-        let corpus = similarity::Corpus::new(&corpus(self.scope.as_ref()));
+    fn duplicate(&self, fs: &NoteFs<'_>, target: &Path, after: &str) -> Option<(PathBuf, f64)> {
+        let corpus = similarity::Corpus::new(&corpus(fs, &self.scope.global_dir()));
         if corpus.is_empty() {
             return None;
         }
@@ -494,11 +626,11 @@ impl NotesTool {
     /// Every note the harness reads, in the order the injected block carries
     /// them - the model's map for `read`, and the honest report of a source
     /// that is empty or missing rather than silence about it.
-    fn list(&self) -> Invocation {
+    fn list(&self, fs: &NoteFs<'_>) -> Invocation {
         let mut out = String::from("the standing notes the harness reads, in prompt order:\n");
         let mut total = 0usize;
-        for src in sources(self.scope.as_ref()) {
-            let notes = src.notes();
+        for src in sources(fs, &self.scope.global_dir()) {
+            let notes = src.notes(fs);
             if notes.is_empty() {
                 out.push_str(&format!(
                     "\n{} — none ({}).\n",
@@ -513,15 +645,12 @@ impl NotesTool {
             }
             total += notes.len();
             out.push_str(&format!("\n{}:\n", src.label));
-            for p in notes {
-                let (size, age) = std::fs::metadata(&p)
-                    .map(|m| (super::human(m.len()), age_of(&m)))
-                    .unwrap_or_else(|_| ("?".into(), "at an unknown time".into()));
+            for n in notes {
                 out.push_str(&format!(
                     "- {} — {}, last written {}\n",
-                    p.display(),
-                    size,
-                    age
+                    n.path.display(),
+                    super::human(n.bytes),
+                    age_of(n.modified)
                 ));
             }
         }
@@ -535,26 +664,25 @@ impl NotesTool {
     /// One note's text with the caveat line above it. A bare name looks in the project notes
     /// first (where `add` writes, so the two agree), then the box-wide notes, then
     /// `AGENTS.md`; a path matches exactly or by its trailing components.
-    fn read(&self, path: Option<&str>, name: Option<&str>) -> Invocation {
-        let all: Vec<PathBuf> = sources(self.scope.as_ref())
+    fn read(&self, fs: &NoteFs<'_>, path: Option<&str>, name: Option<&str>) -> Invocation {
+        let all: Vec<Note> = sources(fs, &self.scope.global_dir())
             .iter()
-            .flat_map(|s| s.notes())
+            .flat_map(|s| s.notes(fs))
             .collect();
-        let found: Vec<PathBuf> = if let Some(name) = name {
+        let found: Vec<&Note> = if let Some(name) = name {
             let stem = name.trim().trim_end_matches(".md");
             all.iter()
-                .filter(|p| {
-                    p.file_stem().is_some_and(|s| {
+                .filter(|n| {
+                    n.path.file_stem().is_some_and(|s| {
                         s == stem || s.to_string_lossy().eq_ignore_ascii_case(stem)
                     })
                 })
-                .cloned()
                 .collect()
         } else if let Some(path) = path {
             let want = path.trim().trim_start_matches("./");
             all.iter()
-                .filter(|p| {
-                    let have = p.display().to_string();
+                .filter(|n| {
+                    let have = n.path.display().to_string();
                     if want.starts_with('/') {
                         have == want
                     } else {
@@ -563,7 +691,6 @@ impl NotesTool {
                         have == want || have.ends_with(&format!("/{want}"))
                     }
                 })
-                .cloned()
                 .collect()
         } else {
             return Invocation::failed(
@@ -573,29 +700,29 @@ impl NotesTool {
             );
         };
         match found.as_slice() {
-            [one] => match std::fs::read_to_string(one) {
-                Ok(text) => match std::fs::metadata(one) {
-                    Ok(meta) => Invocation::ok(format!(
-                        "### {} — {}, last written {}\n\n{}\n\n{}\n",
-                        one.display(),
-                        super::human(meta.len()),
-                        age_of(&meta),
-                        caveat(&meta),
-                        text.trim_end()
-                    )),
-                    Err(e) => Invocation::ok(format!(
-                        "### {} (when last written is unreadable: {e})\n\n{}\n\n{}\n",
-                        one.display(),
-                        // The age is the caveat's evidence; without it the line
-                        // still says what a note is, and the header says why the
-                        // date is missing rather than pretending to one.
-                        "[historical note — it records what was true when it was written and \
-                         may be outdated. Verify against the tree before relying on it.]",
-                        text.trim_end()
-                    )),
-                },
-                Err(e) => Invocation::failed(
-                    format!("`{}` could not be read: {e}", one.display()),
+            [one] => match fs.read(&one.path) {
+                Some(text) => Invocation::ok(format!(
+                    "### {} — {}\n\n{}\n\n{}\n",
+                    one.path.display(),
+                    match one.modified {
+                        Some(_) => format!(
+                            "{}, last written {}",
+                            super::human(one.bytes),
+                            age_of(one.modified)
+                        ),
+                        // The age is the caveat's evidence; without it the line still says what
+                        // a note is, and the header says why the date is missing rather than
+                        // pretending to one.
+                        None => format!(
+                            "{} (when last written is unreadable)",
+                            super::human(one.bytes)
+                        ),
+                    },
+                    caveat(one.modified),
+                    text.trim_end()
+                )),
+                None => Invocation::failed(
+                    format!("`{}` could not be read", one.path.display()),
                     "it was listed a moment ago, so it moved or its permissions changed. \
                      `notes` action=\"list\" re-reads the directory.",
                 ),
@@ -605,8 +732,8 @@ impl NotesTool {
                     "no note matches. The notes that exist, in prompt \
                      order:\n",
                 );
-                for p in &all {
-                    tell.push_str(&format!("- {}\n", p.display()));
+                for n in &all {
+                    tell.push_str(&format!("- {}\n", n.path.display()));
                 }
                 if all.is_empty() {
                     tell.push_str("(none — no source has a note right now)\n");
@@ -616,7 +743,7 @@ impl NotesTool {
             many => {
                 let tell: String = many
                     .iter()
-                    .map(|p| format!("- {}\n", p.display()))
+                    .map(|n| format!("- {}\n", n.path.display()))
                     .collect();
                 Invocation::failed(
                     "that name matches more than one note",
@@ -629,7 +756,7 @@ impl NotesTool {
     /// Every note's own lines, by the words in them: a local substring match over the whole
     /// corpus, so a note stays findable when its index entry is a poor summary. It answers
     /// in `grep`'s register, and no match is an abstention that lists the notes there are.
-    fn search(&self, query: Option<&str>) -> Invocation {
+    fn search(&self, fs: &NoteFs<'_>, query: Option<&str>) -> Invocation {
         let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) else {
             return Invocation::failed(
                 "notes search needs a query",
@@ -639,19 +766,19 @@ impl NotesTool {
             );
         };
         let needle = query.to_lowercase();
-        let all: Vec<PathBuf> = sources(self.scope.as_ref())
+        let all: Vec<Note> = sources(fs, &self.scope.global_dir())
             .iter()
-            .flat_map(|s| s.notes())
+            .flat_map(|s| s.notes(fs))
             .collect();
         let mut out = String::new();
         let mut found = 0usize;
         let mut printed = 0usize;
         let mut notes_hit = 0usize;
-        for path in &all {
+        for note in &all {
             // A note that cannot be read is not a note that does not match: the
             // corpus this answers over is the one that could be read, and the
             // count of what was searched is what the answer is worth.
-            let Ok(text) = std::fs::read_to_string(path) else {
+            let Some(text) = fs.read(&note.path) else {
                 continue;
             };
             let hits: Vec<(usize, &str)> = text
@@ -664,7 +791,7 @@ impl NotesTool {
                 continue;
             }
             notes_hit += 1;
-            out.push_str(&format!("\n### {}\n", path.display()));
+            out.push_str(&format!("\n### {}\n", note.path.display()));
             for (n, line) in hits {
                 found += 1;
                 if printed < MAX_SEARCH_LINES {
@@ -683,15 +810,12 @@ impl NotesTool {
             if all.is_empty() {
                 tell.push_str("(none — no source has a note right now)\n");
             }
-            for p in &all {
-                let (size, age) = std::fs::metadata(p)
-                    .map(|m| (super::human(m.len()), age_of(&m)))
-                    .unwrap_or_else(|_| ("?".into(), "at an unknown time".into()));
+            for n in &all {
                 tell.push_str(&format!(
                     "- {} — {}, last written {}\n",
-                    p.display(),
-                    size,
-                    age
+                    n.path.display(),
+                    super::human(n.bytes),
+                    age_of(n.modified)
                 ));
             }
             tell.push_str(
@@ -721,7 +845,13 @@ impl NotesTool {
     /// `add`, `append`, `replace` - the three write verbs, each refusing the
     /// case it must not do silently: `add` will not overwrite, `append` and
     /// `replace` will not create, and `replace` says what it threw away.
-    fn write(&self, ctx: &mut InvokeCtx<'_>, action: &str, args: &Value) -> Invocation {
+    fn write(
+        &self,
+        ctx: &mut InvokeCtx<'_>,
+        fs: &NoteFs<'_>,
+        action: &str,
+        args: &Value,
+    ) -> Invocation {
         let Some(raw_name) = args.get("name").and_then(|v| v.as_str()) else {
             return Invocation::failed(
                 format!("notes {action} needs a name"),
@@ -763,16 +893,16 @@ impl NotesTool {
                 ),
             );
         }
-        let dir = self.scope.workspace().join(NOTES_DIR);
+        let dir = fs.root.join(NOTES_DIR);
         let target = dir.join(format!("{stem}.md"));
-        let existing = std::fs::read_to_string(&target).ok();
+        let existing = fs.read(&target);
         // The abstract is the author's to set and the one part of a note the text cannot be
         // asked for: absent, the harness derives it ([`abstract_of`]); supplied, it goes in as
         // the marker line above the text.
         let asked = args.get("abstract").and_then(|v| v.as_str()).map(one_line);
         let (before, after, said) = match (action, &existing) {
             ("add", Some(_)) => {
-                let meta = std::fs::metadata(&target).ok();
+                let meta = fs.stat(&target);
                 return Invocation::failed(
                     format!("a note named `{stem}` already exists"),
                     format!(
@@ -781,11 +911,9 @@ impl NotesTool {
                          `action` = \"replace\", which reports what it replaced.",
                         target.display(),
                         meta.as_ref()
-                            .map(|m| super::human(m.len()))
+                            .map(|m| super::human(m.bytes))
                             .unwrap_or_else(|| "?".into()),
-                        meta.as_ref()
-                            .map(age_of)
-                            .unwrap_or_else(|| "at an unknown time".into()),
+                        age_of(meta.as_ref().and_then(|m| m.modified)),
                     ),
                 );
             }
@@ -798,11 +926,12 @@ impl NotesTool {
                 // `append` and `replace` both refuse to create: a typo'd name
                 // that silently grows a new note is a note nobody meant, and
                 // the refusal is where the near-miss belongs.
-                let near = sources(self.scope.as_ref())[2]
-                    .notes()
+                let near = sources(fs, &self.scope.global_dir())[2]
+                    .notes(fs)
                     .iter()
-                    .map(|p| {
-                        p.file_stem()
+                    .map(|n| {
+                        n.path
+                            .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default()
                     })
@@ -816,6 +945,7 @@ impl NotesTool {
                             name: format!("{n}.md"),
                             is_dir: false,
                             bytes: 0,
+                            modified: None,
                         })
                         .collect::<Vec<_>>(),
                     5,
@@ -887,7 +1017,7 @@ impl NotesTool {
         // The similarity gate on both write triggers, after the bytes are computed and before
         // they are durable: a near-copy is a defect wherever it arrives from, the `add` that
         // creates it and the `append`/`replace` that grows one into it.
-        if let Some((other, score)) = self.duplicate(&target, &after) {
+        if let Some((other, score)) = self.duplicate(fs, &target, &after) {
             return Invocation::failed(
                 format!(
                     "`{stem}` would be a near-copy of `{}` (score {score:.2} of 1.00)",
@@ -912,7 +1042,7 @@ impl NotesTool {
                 ),
             );
         }
-        if let Err(e) = write_atomic(&target, after.as_bytes()) {
+        if let Err(e) = fs.write(&target, after.as_bytes()) {
             return Invocation::failed(
                 format!("could not write `{}`: {e}", target.display()),
                 "the note is unchanged — the write is a temporary file renamed over the \
@@ -949,7 +1079,7 @@ impl NotesTool {
         let changed = crate::edit::changed_span(&before, &after);
         inv.edit = Some(crate::edit::FileEdit {
             path: target
-                .strip_prefix(self.scope.workspace())
+                .strip_prefix(&fs.root)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| target.display().to_string()),
             before,

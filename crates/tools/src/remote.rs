@@ -3984,8 +3984,9 @@ impl ExecBackend for SshBackend {
                  if [ ! -d {q} ]; then exit 23; fi\n\
                  for f in {q}/* {q}/.[!.]*; do\n\
                    [ -e \"$f\" ] || [ -L \"$f\" ] || continue\n\
-                   if [ -d \"$f\" ]; then printf 'd\\t0\\t%s\\n' \"$f\"; \
-                   else printf 'f\\t%s\\t%s\\n' \"$(wc -c < \"$f\")\" \"$f\"; fi\n\
+                   m=$(stat -c %Y \"$f\" 2>/dev/null || stat -f %m \"$f\" 2>/dev/null)\n\
+                   if [ -d \"$f\" ]; then printf 'd\\t0\\t%s\\t%s\\n' \"$m\" \"$f\"; \
+                   else printf 'f\\t%s\\t%s\\t%s\\n' \"$(wc -c < \"$f\")\" \"$m\" \"$f\"; fi\n\
                  done"
             ),
         )?;
@@ -3997,8 +3998,11 @@ impl ExecBackend for SshBackend {
         }
         let mut entries = Vec::new();
         for line in out.lines() {
-            let mut parts = line.splitn(3, '\t');
-            let (Some(kind), Some(size), Some(p)) = (parts.next(), parts.next(), parts.next())
+            // The time is the third field and the path the fourth: a path may hold a tab, and
+            // nothing that follows one is a field.
+            let mut parts = line.splitn(4, '\t');
+            let (Some(kind), Some(size), Some(modified), Some(p)) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
             else {
                 continue;
             };
@@ -4007,6 +4011,7 @@ impl ExecBackend for SshBackend {
                 name: p.rsplit('/').next().unwrap_or(p).to_string(),
                 is_dir: kind == "d",
                 bytes: size.trim().parse().unwrap_or(0),
+                modified: modified.trim().parse().ok(),
             });
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -4056,8 +4061,9 @@ impl ExecBackend for SshBackend {
                 &format!("looking at {path}"),
                 &format!(
                     "if [ -e {q} ] || [ -L {q} ]; then \
-                       if [ -d {q} ]; then printf 'd\\t0\\n'; \
-                       else printf 'f\\t%s\\n' \"$(wc -c < {q})\"; fi; \
+                       m=$(stat -c %Y {q} 2>/dev/null || stat -f %m {q} 2>/dev/null); \
+                       if [ -d {q} ]; then printf 'd\\t0\\t%s\\n' \"$m\"; \
+                       else printf 'f\\t%s\\t%s\\n' \"$(wc -c < {q})\" \"$m\"; fi; \
                      else exit 1; fi"
                 ),
             )
@@ -4065,12 +4071,16 @@ impl ExecBackend for SshBackend {
         if exit != 0 {
             return None;
         }
-        let (kind, size) = out.trim().split_once('\t')?;
+        // The newline only: a `trim` would eat the empty time field and make an existing file
+        // read as absent.
+        let mut parts = out.trim_end_matches(['\n', '\r']).splitn(3, '\t');
+        let (kind, size, modified) = (parts.next()?, parts.next()?, parts.next()?);
         Some(DirEntry {
             path: abs.clone(),
             name: abs.rsplit('/').next().unwrap_or(&abs).to_string(),
             is_dir: kind == "d",
             bytes: size.trim().parse().unwrap_or(0),
+            modified: modified.trim().parse().ok(),
         })
     }
 

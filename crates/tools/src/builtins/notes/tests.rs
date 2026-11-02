@@ -866,6 +866,41 @@ fn set_mtime(path: &Path, secs: i64) {
     assert_eq!(rc, 0, "utimensat on {}", path.display());
 }
 
+/// **A note lands where the session's other tools land.** The scope's workspace is the path the
+/// DAEMON sees; a placed session's files are on the host, and a note written against the scope
+/// was the one write that did not follow the session.
+#[test]
+fn a_note_lands_in_the_backends_tree_and_not_the_scopes_workspace() {
+    let backend_dir = crate::backend::tempdir::TempDir::new();
+    let scope_ws = crate::backend::tempdir::TempDir::new();
+    let global = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::writable(backend_dir.path()).expect("fixture root");
+    let mut h = crate::testing::harness_over(
+        Box::new(backend),
+        scope_ws.path().to_path_buf(),
+        global.path().to_path_buf(),
+    );
+    let r = h.call(
+        "notes",
+        r#"{"action":"add","name":"placed","text":"the host's own note"}"#,
+    );
+    assert!(r.is_grounded(), "{}", r.render());
+    let wrote = std::fs::read_to_string(backend_dir.path().join(".letibot/notes/placed.md"))
+        .expect("the note is in the backend's tree");
+    assert_eq!(wrote, "the host's own note\n");
+    assert!(
+        !scope_ws.path().join(".letibot").exists(),
+        "the scope's workspace is the daemon's, and nothing was written there"
+    );
+    // And the read verbs read it back from where it landed rather than from the scope.
+    let r = h.call("notes", r#"{"action":"read","name":"placed"}"#);
+    assert!(r.is_grounded(), "{}", r.render());
+    assert!(r.render().contains("the host's own note"), "{}", r.render());
+    let r = h.call("notes", r#"{"action":"list"}"#);
+    assert!(r.is_grounded(), "{}", r.render());
+    assert!(r.render().contains("placed.md"), "{}", r.render());
+}
+
 struct FixtureScope {
     workspace: PathBuf,
     global: PathBuf,

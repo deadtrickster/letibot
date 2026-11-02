@@ -413,6 +413,40 @@ pub fn writable_external_harness(backends: crate::ExternalBackends) -> Harness {
     )
 }
 
+/// A session over a chosen backend, with the coder tool set and a gate that allows: the fixture
+/// for a tool whose files are somewhere the daemon's own box is not. The `notes` tool is scoped to
+/// `(workspace, global)`, which is the point - a scope that disagrees with the backend is what a
+/// placed session's daemon-side scope looks like.
+pub fn harness_over(
+    backend: Box<dyn crate::backend::ExecBackend>,
+    workspace: std::path::PathBuf,
+    global: std::path::PathBuf,
+) -> Harness {
+    let mut registry = crate::coder_tools(Arc::new(Unavailable)).expect("built-ins register");
+    let scope: Arc<dyn crate::builtins::notes::NotesScope> = Arc::new(TestNotesScope {
+        workspace: workspace.clone(),
+        global: global.clone(),
+    });
+    registry
+        .register(Box::new(crate::builtins::notes::NotesTool::new(scope)))
+        .expect("notes registers");
+    let rt = ToolRuntime::new(registry, backend).with_gate(allow_all());
+    Harness {
+        rt,
+        sink: RecordingToolSink::new(),
+        processes: None,
+        mount: Default::default(),
+        promote: None,
+        _dir: TempDir::new(),
+        _scratch: None,
+        _notes_global: TempDir::new(),
+        _notes: (workspace, global),
+        _changelog: std::path::PathBuf::new(),
+        _changelog_dir: TempDir::new(),
+        _host_config: FixturePlatform::new(),
+    }
+}
+
 fn build(
     spiller: Spiller,
     retrieval: Arc<dyn Retrieval>,
