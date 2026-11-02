@@ -34,6 +34,12 @@ const CGROUP: &str = "a cgroup v2 subtree this user may write (the process-lifet
 const BOUNDARY: &str =
     "a usable confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2 subtree)";
 
+/// The one test in this file that sets a PROCESS-WIDE variable, and libtest runs this file's tests
+/// on threads of one process: without a guard a sibling could spawn while the token is set, which
+/// is the exact shape `std::env::set_var` is `unsafe` for (TODO.md R74 item 35). The pattern is
+/// `harnessd/tests/gate_host.rs`'s.
+static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A skip the require-switch can refuse: through `apparatus::absent` the skip is loud
 /// without `LETIBOT_REQUIRE_APPARATUS` and a failure with it.
 fn absent(what: &str) {
@@ -868,6 +874,7 @@ fn a_cwd_outside_the_view_refuses_before_anything_is_started() {
 
 #[test]
 fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
+    let _only_one = ENV.lock().unwrap_or_else(|e| e.into_inner());
     // Absence beats denial, applied to the environment. An unset-list would have to
     // name every secret-bearing variable anybody will ever invent; a keep-list is
     // wrong in one direction only, and that direction is a visible failure.
@@ -884,8 +891,8 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
         let _ = std::fs::remove_dir_all(&dir);
         return absent(CGROUP);
     };
-    // SAFETY: set before the spawn, removed after; this test spawns a process, not
-    // a thread that reads the environment.
+    // SAFETY: the guard above is held for this whole body, so no other test of this binary is
+    // running, and the variable is removed before the guard is dropped.
     unsafe { std::env::set_var("LETIBOT_TEST_FAKE_TOKEN", "s3cr3t-value") };
     let id = host
         .spawn(&SpawnRequest {

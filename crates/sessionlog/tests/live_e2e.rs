@@ -96,6 +96,7 @@ impl Seen {
 }
 
 #[test]
+#[ignore = "live: a real generation against the model server - run it by name with --ignored"]
 fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     if !qwen_is_served() {
         return;

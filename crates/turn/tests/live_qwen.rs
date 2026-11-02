@@ -133,6 +133,7 @@ fn engine() -> TurnEngine {
 
 /// The whole pipeline, closed against a real model.
 #[test]
+#[ignore = "live: the llama.cpp server on this box - run it by name with --ignored"]
 fn a_turn_goes_render_tokenize_ledger_submit_stream_parse_commit() {
     if !qwen_is_served() {
         return;
@@ -215,6 +216,7 @@ fn a_turn_goes_render_tokenize_ledger_submit_stream_parse_commit() {
 /// the partial frames, and those include progress frames carrying a fabricated id 0. This
 /// asserts the vector by decoding it back and comparing against what the model said.
 #[test]
+#[ignore = "live: the llama.cpp server on this box - run it by name with --ignored"]
 fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
     if !qwen_is_served() {
         return;
@@ -287,6 +289,7 @@ fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
 /// the observable one is a statistical claim about the server, and this box trims the slot's
 /// cache around a rollback, so a shortfall is reported with its size rather than failing.
 #[test]
+#[ignore = "live: the llama.cpp server on this box - run it by name with --ignored"]
 fn the_generation_inclusive_prefix_invariant_is_checked_after_every_turn() {
     if !qwen_is_served() {
         return;

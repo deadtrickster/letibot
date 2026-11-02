@@ -9,6 +9,7 @@ use letibot_flowy::creds::{Onboarding, discover};
 use letibot_flowy::seat::{PollOutcome, Seat, SeatState};
 
 #[test]
+#[ignore = "live: the real flowy node - FLOWY_LIVE=1 and --ignored"]
 fn the_usual_path_reaches_the_node_or_is_refused_by_the_holder() {
     if std::env::var("FLOWY_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: FLOWY_LIVE is not 1 — the check did not run and this is not a pass");
@@ -52,6 +53,7 @@ fn the_usual_path_reaches_the_node_or_is_refused_by_the_holder() {
 
 /// The read-only doors, which need no reader and take nothing off the inbox.
 #[test]
+#[ignore = "live: the real flowy node - FLOWY_LIVE=1 and --ignored"]
 fn the_node_client_reads_whoami_readers_and_a_room() {
     if std::env::var("FLOWY_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: FLOWY_LIVE is not 1 — the check did not run and this is not a pass");
@@ -94,6 +96,7 @@ fn the_node_client_reads_whoami_readers_and_a_room() {
 /// The shelf, live: the same rows `flowy skills` lists, through the seat's
 /// token. Takes no reader.
 #[test]
+#[ignore = "live: the real flowy node - FLOWY_LIVE=1 and --ignored"]
 fn the_fabric_shelf_lists_and_loads_a_skill() {
     if std::env::var("FLOWY_LIVE").ok().as_deref() != Some("1") {
         eprintln!("SKIPPED: FLOWY_LIVE is not 1 — the check did not run and this is not a pass");
