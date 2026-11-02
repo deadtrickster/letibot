@@ -43,6 +43,17 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R112 - The harness reads the box's home for instructions and skills, so a test's prompt depends on the host - **OPEN, filed 2026-11-02**
+
+`compact::a_child_session_compacts_on_a_tool_result_overrun_and_finishes` fails on lab2x1 on main (`3566df43`) and passes on lubuntu1 and xmg. The child's prompt there is 8341 tokens of a 32765 window, so the compaction cannot make room and the task ends in `ContextWall`. lab2x1 has `~/.claude/CLAUDE.md` (8.5 kB) and a user skill in `~/.claude/skills`; lubuntu1 has neither. The harness asks `BoxDirs::for_this_box()` (`$HOME`) at three places in `crates/harnessd/src/harness.rs`, and `crates/tools/src/builtins/skill.rs` reads `$HOME/.config/letibot/skills` and `$HOME/.claude/skills`, so an in-process test cannot hand them a clean box.
+
+Fix after the `harness.rs` split lands: the harness `Config` carries the box directories (instructions and skills), the daemon fills them from `$HOME`, and test fixtures pass an empty box as `standing_notes.rs`'s `no_box` already does.
+
+**Done when**: the compact test passes on lab2x1 with its `CLAUDE.md` and skills in place, and no harnessd test reads `$HOME` for instructions or skills.
+**Still open?** `grep -n for_this_box crates/harnessd/src` finds a call outside the daemon's startup.
+
+---
+
 ## R111 - Revisit read-before-edit: an edit should only touch what the model was shown - **CLOSED on branch `remote/04269000`, filed 2026-11-02, operator's ask**
 
 The operator, 2026-11-02: *"add that file not read back to todo. i think we might want to revisit it"*.
