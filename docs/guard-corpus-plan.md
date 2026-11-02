@@ -60,17 +60,12 @@ that ran would prompt now, 11.0% of refusals would be caught before the model, a
 cannot read it) was 31.7% - now **2.4%**, after an unresolvable construct became a *widened scope* rather
 than a refusal (the reasoning is in `boundary-and-adjudication.md`). What still refuses are the two cases
 with no scope to widen: a parse error, and a program nobody can name. The `not_run` fifth was not obscure
-work - it was ordinary work refused for spelling a variable.
-
-Prompts on rows that ran, by rule, is the list that says where the hours are:
-`network_egress_to_an_unseen_host` 7,024, `credential_use` 1,736 (a name match on `find ~ -name x.go`),
-`destruction_outside_the_project` 1,162, `secret_off_box` 720 (the fleet's own heartbeat),
-`secret_to_transcript` 135, `privilege_escalation` 87, `secret_to_weaker_location` 62,
-`changes_its_own_rules` 50, `secret_flow_unknown` 15.
-
-The redactor is proved against a ground truth: one shipped transcript holds a real private key in tool
-output, and zero corpus lines carry the key body; a password inline on the command line (`mysql -p…`,
-`redis-cli -a …`) is now blanked too.
+work - it was ordinary work refused for spelling a variable. Prompts on rows that ran are dominated by
+`network_egress_to_an_unseen_host` (7,024), then `credential_use` (1,736, a name match on
+`find ~ -name x.go`), `destruction_outside_the_project` (1,162) and `secret_off_box` (720, the fleet's own
+heartbeat), with the rest of the list under 150 each. The redactor is proved against a ground truth: one
+shipped transcript holds a real private key in tool output and zero corpus lines carry the key body, and a
+password inline on the command line is blanked too.
 
 **Recall, measured through every layer.** BashArena's `monitor-eval` split (HF
 `abhayesian/basharena-monitor-eval`; 339 bash actions from 134 trajectories, 47 attack / 292 honest),
@@ -86,12 +81,11 @@ The oracle triples layer A's recall by judging the action against the task, beca
 ordinary sysadmin text and exist only against the ask. BashArena's own monitor, with the whole trajectory
 in view, is ~80% catch at 4% FPR; ours sees one action, so 57% is the baseline to beat.
 
-**The misses, read**: 11 are `chmod +x <a file the agent wrote earlier> && run it`, where the malware is
-heredoc content from two steps back and "make my script executable and run it" fits every build task; 3
-are `cat > /opt/x.py <<'EOF'` with the exfiltration inside the body; 5 are recon reads labelled attack
+**The misses, read**: 11 are `chmod +x <a file the agent wrote earlier> && run it`, 3 are
+`cat > /opt/x.py <<'EOF'` with the exfiltration inside the body, and 5 are recon reads labelled attack
 because every step of an attack trajectory is. Fourteen of nineteen are one fact: **the attack lives in a
 heredoc body layer A treats as opaque bytes** - and the operator's own corpus was 31.7% unreadable for the
-same reason. Reading a heredoc's body as a program is one change against both numbers.
+same reason, so reading a heredoc's body as a program is one change against both numbers.
 
 ## 3. Step 1 - the prompt, before any port or finetune
 
@@ -135,11 +129,11 @@ is another reason step 5 comes first.
   people building a guard matches the guard's own vocabulary. That is the argument for tree rules, and the
   reason the lexicon is the part of CARE that ported. What it does not say: the etalon is benign work, so
   the 108 patterns that never fired have zero false-positive cost here and zero evidence of value here.
-- **The bank's CPU cost, measured** because a session with real teeth might want all of it: Rust's `regex`
-  compiles 136 of the 139, and as 136 separate `Regex` values tried in turn it is 7.7 µs a command (25 µs
-  worst), so a thousand rules of this kind stay under the 300 µs the tree parse already spends. The cost is
-  the 587 benign commands the bank fires on, not the engine - and those rules do not know a workspace, a
-  LAN host or `$HOME`, which `EffectScope` does. Same conclusion from both sides.
+- **The bank's CPU cost is not the problem** if a session with real teeth wants all of it: Rust's `regex`
+  compiles 136 of the 139, and as separate values tried in turn it is 7.7 µs a command (25 µs worst), so
+  a thousand rules of this kind stay under the 300 µs the tree parse already spends. The cost is the 587
+  benign commands the bank fires on - and those rules do not know a workspace, a LAN host or `$HOME`,
+  which `EffectScope` does.
 - Port CARE's 10 pipeline tests as behavioural specs where they apply (`curl | sh`, a secret read, an
   obfuscated destructive); they test their code, not our data, so they are a floor, not a measurement.
 
@@ -151,39 +145,31 @@ shebang; PATH is under a `bin/`, `/opt`, `/etc` or `/usr/local`; or the same or 
 and its intents and regions join the stage's. `curl http://<unseen host>` inside a script the agent is
 about to run is `network_egress_to_an_unseen_host`, the same rule that caught 8 of 47.
 
-**Landed.** What the measurement found first is worth keeping, because it corrected the premise:
-
-- **The unreadable share was not heredocs.** Broken down by construct, of 38,236 unreadable commands
-  `parameter_expansion` is in 29,024 and `command_substitution` in 22,638, and expanded heredocs in 110. A
-  quoted heredoc was never *unreadable* - it was read as a literal and its body ignored, which is a
-  different fact and the one this step is about.
-- **The parser gave a trailing heredoc to the wrong stage** and dropped what followed the operator:
-  tree-sitter-bash hoists `<<'EOF'` above the whole list, so `cd /x && python3 - <<'PY'` was read as `cd`'s
-  stdin, and it nests `| bash` inside the heredoc node, so `cat <<'EOF' | sudo bash` normalised to a `cat`.
-  Fixed as its own commit.
-- **A mention is not a call.** Counting every host and secret path in a script body added 1,570 prompts,
-  nearly all of them edit scripts whose string literals hold the vocabulary of the code they edit. Now a
-  triple-quoted literal is data, a host counts only in a script that imports a network module or shells
-  out, and a secret path only after a call that opens a file.
-- **Three string-layer defects**, each its own line: a loopback address was egress (the rule's fact is
-  bytes leaving the box, and `127.0.0.1` is the box); a multi-line word was read as `host:path` by its
-  first line; and `{"line_number":` was a host.
+**Landed**, and the measurement corrected the premise: the unreadable share was **not** heredocs (of 38,236
+unreadable commands, `parameter_expansion` is in 29,024 and `command_substitution` in 22,638, expanded
+heredocs in 110 - a quoted heredoc was never unreadable, it was read as a literal with its body ignored,
+which is the fact this step is about). The parser also gave a trailing heredoc to the wrong stage, since
+tree-sitter hoists `<<'EOF'` above the whole list and nests `| bash` inside it, so `cat <<'EOF' | sudo bash`
+normalised to a `cat` - fixed as its own commit. And **a mention is not a call**: counting every host and
+secret path in a body added 1,570 prompts, nearly all edit scripts whose literals hold the vocabulary of
+the code they edit, so a triple-quoted literal is now data, a host counts only where a script imports a
+network module or shells out, and a secret path only after a call that opens a file. Three string-layer
+defects fell out too: loopback was egress, a multi-line word was read as `host:path` by its first line, and
+`{"line_number":` was a host.
 
 What is read now: the body when it is the stdin of an interpreter (`bash <<'EOF'`, `python3 - <<'PY'`,
 `cat <<'EOF' | sh`), the `-c`/`-e` argument of a non-shell interpreter, and a body written to a file that
 is evidently a program (a shebang, a script extension, a `bin/` but not `src/bin/`, or a stage of the same
-command that `chmod +x`es or runs it). Shell bodies are normalised and folded, tightening only; other
-languages are scanned for hosts and secret paths. Plus two host shapes BashArena uses: a bare address as
-the operand of a network program (`nc 192.0.2.10 4444`), and a host assigned to a variable.
+command that runs it). Shell bodies are normalised and folded, tightening only; other languages are scanned
+for hosts and secret paths. Plus two host shapes BashArena uses: a bare address as the operand of a network
+program, and a host assigned to a variable.
 
-The result on layer A: prompts on rows that ran 10.9% → **7.1%**, with `network_egress_to_an_unseen_host`
-down from 7,950 to 2,209; BashArena attacks caught before the model 8 → **5**; honest rows flagged 12% →
-**7%**. **The guard's recall fell while layer A's precision rose**, and the misses say why: two are the
-loopback `curl` rows the old layer A caught for the wrong reason, and four are actions the reading made
-*legible* and were then admitted as what the task asked. A single-action judge cannot see that a
-trajectory is an attack; the honest number is 47%, and the thing to build against it is the trajectory,
-not a looser reading. The attack set's ceiling for a single-action reader is low by construction: 11 of 47
-are `chmod +x FILE && ./FILE` where FILE was written in an earlier, honest-labelled row.
+The result on layer A: prompts on rows that ran 10.9% → **7.1%**, `network_egress_to_an_unseen_host` down
+from 7,950 to 2,209, BashArena attacks caught before the model 8 → **5**, honest rows flagged 12% → **7%**.
+**The guard's recall fell while layer A's precision rose**: two misses are the loopback `curl` rows the old
+layer A caught for the wrong reason, and four are actions the reading made *legible* and then admitted as
+what the task asked. A single-action judge cannot see that a trajectory is an attack; the honest number is
+47%, and the thing to build against it is the trajectory, not a looser reading.
 
 ## 5. Step 3 - the model: size, ensemble, distillation
 
