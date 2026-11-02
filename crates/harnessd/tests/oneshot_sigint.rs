@@ -1,35 +1,11 @@
-//! Ctrl-C in a one-shot: the first one interrupts the turn, and the process goes in seconds.
-//!
-//! The signal does reach the daemon - the launcher `exec`s it for a one-shot, so it is in the
-//! terminal's foreground process group - and that leaves two defects
-//!
-//! 1. Nothing said anything. The daemon's first word about a signal was its last, so a stop that
-//!    was working and a stop that was ignored looked exactly alike.
-//! 2. The turn did not end. `Registry::close` interrupts a session only when it reads as *a turn
-//!    is in flight*, and it asked `SessionStatus::running` - the ROUND-level flag, which is `false`
-//!    for the whole of a round's tool calls. So in the one window a person presses Ctrl-C in (a turn
-//!    inside a command) no interrupt was queued at all: the run enders killed the command and the
-//!    turn went straight on to ask the model again. `close` now asks `Hub::turn_in_flight`, queued
-//!    BEFORE the kill, so the round the killed command hands back to is the round that ends the turn.
-//!
-//! What is asserted: the command in flight is killed and the turn stops there, with no assistant
-//! answer after the `bash` result; the process exits far below the command's own deadline, because
-//! *it stopped when the deadline expired* is the behaviour being removed; and the log names the
-//! signal. The second test covers a turn that never comes back - a provider that accepts the request
-//! and answers nothing, where no steering poll can reach - and a second Ctrl-C, which must exit at
-//! once rather than wait out `ONE_SHOT_EXIT_GRACE`.
-//!
-//! The signal has to land on a turn whose command is RUNNING, and nothing the provider can see
-//! says that: `rounds` moves when the request has been READ, before the daemon has parsed the call
-//! run it past the gate and spawned it. So the command writes a marker as its first act and the test
-//! waits for that - a condition, not a pause. *At once* for the second Ctrl-C is read off the log
-//! too (the second-Ctrl-C line present, the grace's line absent), because which of its two sentences
-//! a run ends with is the daemon saying which one fired.
-//!
-//! It runs anywhere: the session opens on the byte vocabulary with a provider (`vocab_gguf: None`
-//! with a `provider`), the provider is a loopback fake, and `sleep` is on the test's own preapproved
-//! list so the gate admits it with nobody to ask - a one-shot has no head, and an ask would be
-//! `gate:no-head` in microseconds.
+//! Ctrl-C in a one-shot: the first one interrupts the turn, and the process goes in
+//! seconds. The signal does reach the daemon - the launcher `exec`s it for a one-shot, so
+//! it is in the terminal's foreground process group - and that leaves two defects 1.
+//! Nothing said anything. The daemon's first word about a signal was its last, so a stop
+//! that was working and a stop that was ignored looked exactly alike. 2. The turn did not
+//! end. `Registry::close` interrupts a session only when it reads as *a turn is in flight*,
+//! and it asked `SessionStatus::running` - the ROUND-level flag, which is `false` for the
+//! whole of a round's tool calls.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -44,20 +20,13 @@ use letibot_transcript::TranscriptItem;
 /// How long the daemon may take to start, open the session and reach its first round.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// How long the first Ctrl-C may take to end the daemon.
-///
-/// Well under the run's own two minutes - that is the whole point - and above everything the
-/// daemon's own stop is allowed to spend: `ONE_SHOT_EXIT_GRACE` for a turn that does not come
-/// back, and the subagent drain beside it. The stop is not slow, so this ceiling is a hang detector
-/// and nothing else.
+/// How long the first Ctrl-C may take to end the daemon. Well under the run's own two
+/// minutes - that is the whole point - and above everything the daemon's own stop is
+/// allowed to spend:
 const CTRL_C_BUDGET: Duration = Duration::from_secs(15);
 
-/// The file the in-flight command writes as its first act.
-///
-/// The signal has to land on a turn whose command is *running*, and nothing the provider can see
-/// says that: `rounds` moves when the request has been read, before the daemon has parsed the tool
-/// call, run it past the gate and spawned it. A pause after `rounds` is a bet on how fast the box
-/// does that, and a factor is not a condition. The command says it is up itself.
+/// The file the in-flight command writes as its first act. The signal has to land on a turn
+/// whose command is *running*, and nothing the provider can see says that:
 const MARKER: &str = "the-command-started";
 
 struct TempDir {
@@ -241,10 +210,9 @@ impl OneShot {
             ),
         )
         .expect("providers.toml");
-        // The preapproved list, so the long command is admitted with no head to ask: a one-shot has
-        // nobody attached, and an ask would be `gate:no-head` before the command ever ran. Two
-        // segments, because the command is two: the `touch` that says it is up, and the `sleep` that
-        // is the thing in flight.
+        // The preapproved list, so the long command is admitted with no head to ask: a one-shot
+        // has nobody attached, and an ask would be `gate:no-head` before the command ever ran. Two
+        // segments, because the command is two:
         std::fs::write(
             config.join("permission.json"),
             "{\"bash\": {\"touch*\": \"allow\", \"sleep*\": \"allow\"}}\n",
@@ -312,9 +280,8 @@ impl OneShot {
     }
 
     /// Wait until the command is RUNNING - the marker the command writes itself, so this is the
-    /// condition and not a pause. Returns how long the daemon took from the provider reading the
-    /// request to the command being up. `None` when it never got there, and the caller says what the
-    /// log had to say about it.
+    /// condition and not a pause. Returns how long the daemon took from the provider reading
+    /// the request to the command being up.
     fn wait_for_the_command(&mut self, fake: &Fake) -> Option<Duration> {
         let deadline = Instant::now() + PATIENCE;
         while Instant::now() < deadline {
@@ -499,9 +466,7 @@ fn a_turn_that_never_comes_back_is_bounded_and_a_second_ctrl_c_exits_at_once() {
         "the second Ctrl-C was not said, or did not end it ({took:?}):\n{log}"
     );
     // And the grace did not fire - which is what *exited at once* means, said by the daemon
-    // itself instead of by a stopwatch on a busy box. A second signal that did nothing would have
-    // left the turn blocked in a provider that never answers, and `ONE_SHOT_EXIT_GRACE` would have
-    // ended the process with its own sentence; the absence of that sentence is the proof.
+    // itself instead of by a stopwatch on a busy box.
     assert!(
         !log.contains("the turn did not come back within"),
         "the second Ctrl-C waited out the grace instead of exiting at once ({took:?}):\n{log}"

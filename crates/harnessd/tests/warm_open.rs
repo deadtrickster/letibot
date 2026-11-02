@@ -1,25 +1,9 @@
 //! A stored session a head asks a running daemon for, end to end - the warm half of resume.
-//!
-//! The report: the daemon restored the rows and the model answered about an hour-old conversation
-//! while the head drew an empty transcript with the right title and the echo of the prompt said
-//! `queued` - so something between the daemon's restore and the head's screen was missing.
-//!
-//! `leticode --session ID` with a daemon up runs `letibot-tui --resume ID`, and the head then takes
-//! five frames: `ResumeSession`, the `Sessions { created }` answer, `Switch`, the `Hello` with a
-//! snapshot, and - published by the worker when it reaches the `Work::Open` the creation rung - the
-//! restored rows as `TranscriptAppended` + `TranscriptContent`.
-//!
-//! This file drives the first four from a real `HeadClient` against a real daemon socket and the
-//! fifth from the real `Sessions::open`, with a real store underneath. What it asserts is the thing
-//! the operator's screen needed: every stored row reaches the head, whether it arrives in the
-//! switch's snapshot or as a live event afterwards, and the daemon knows it resumed.
-//!
-//! The head's own half - that an `App` holding those frames draws them - is `letibot-tui`'s
-//! `tests/warm_session.rs`, because this crate is above the head's and cannot build one.
-//!
-//! One test, because the turns here go to a fake provider reached through `providers.toml` under a
-//! scratch `XDG_CONFIG_HOME`: the environment is pinned once, before the daemon or any thread
-//! exists, and the phases are phases of one test.
+//! The report: the daemon restored the rows and the model answered about an hour-old
+//! conversation while the head drew an empty transcript with the right title and the echo
+//! of the prompt said `queued` - so something between the daemon's restore and the head's
+//! screen was missing. `leticode --session ID` with a daemon up runs `letibot-tui --resume
+//! ID`, and the head then takes five frames:
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -223,9 +207,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
     let mut sessions = Sessions::open_first(parts, cfg.clone(), registry.clone())
         .expect("the first session opens");
     // The rings this test does not measure are drained here: creating the daemon's first
-    // session rang its own `Open`, and `open_first` rings a wake. What is measured below is
-    // the open the HEAD's ask causes, and a queue with yesterday's work in it would make
-    // `next_work` a queue position rather than a fact.
+    // session rang its own `Open`, and `open_first` rings a wake.
     drain_work(&registry);
     assert!(
         registry.get(EARLIER).is_none(),
@@ -344,10 +326,9 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
         "the session's log is the conversation"
     );
 
-    // --- a prompt queued BEFORE the restore finishes -------------------------
-    //
-    // Typed into a session the daemon had registered and not opened. The bell has two lanes, and
-    // the open is served first.
+    // --- a prompt queued BEFORE the restore finishes ------------------------- Typed into a
+    // session the daemon had registered and not opened. The bell has two lanes, and the open
+    // is served first.
     registry
         .create_under(
             PROMPTED,

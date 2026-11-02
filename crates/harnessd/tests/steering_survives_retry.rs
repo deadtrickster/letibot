@@ -1,14 +1,10 @@
 //! A follow-up the operator typed into a round that then failed is in the retried round.
-//!
-//! The engine hands back what a failed round had taken out of the hub (`Pending::give_back`), and
-//! the harness used to build a fresh `HubSteering` on every pass of the HTTP retry loop - so what
-//! was handed back went with the value the next pass replaced, and the retried round's prompt never
-//! carried it. The operator's words were already in the authorisation trail and nowhere else.
-//!
-//! Measured here against a loopback stub, through the daemon's own socket: the first request streams
-//! a piece, waits until the follow-up is in the hub's queue, streams a second piece (the poll on
-//! which the engine takes the follow-up) and then breaks the stream - `Malformed`, which the ladder
-//! takes again. The second request must carry the follow-up.
+//! The engine hands back what a failed round had taken out of the hub
+//! (`Pending::give_back`), and the harness used to build a fresh `HubSteering` on every
+//! pass of the HTTP retry loop - so what was handed back went with the value the next pass
+//! replaced, and the retried round's prompt never carried it. The operator's words were
+//! already in the authorisation trail and nowhere else. Measured here against a loopback
+//! stub, through the daemon's own socket:
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -198,10 +194,9 @@ fn a_follow_up_taken_by_a_failed_round_is_in_the_retried_round() {
                 client
                     .prompt(0, FOLLOW_UP)
                     .expect("the follow-up is accepted");
-                // The follow-up is taken by whichever streamed piece is polled after it reaches the
-                // hub - the first, if the client had not read it yet, or the second, which goes out
-                // only after this pause. Either way it is in the round's `Pending` when the stream
-                // breaks.
+                // The follow-up is taken by whichever streamed piece is polled after it reaches the hub -
+                // the first, if the client had not read it yet, or the second, which goes out only after
+                // this pause. Either way it is in the round's `Pending` when the stream breaks.
                 std::thread::sleep(Duration::from_millis(500));
                 go_tx.send(()).expect("the stub is waiting");
                 // The turn's end: the second request answered, or the deadline.

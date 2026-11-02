@@ -1,19 +1,11 @@
-//! A session that closes gives its descriptors back - the measurement the operator's `EMFILE`
-//! is answered with.
-//!
-//! `Harness::open` used to open the store four times per session, each a `rusqlite` connection
-//! to a WAL file, and `sqlite3` keeps a descriptor per file in the inode's own record until the
-//! process's last connection to that file closes - so closing a session's four connections
-//! returned none of them. "Close it properly" was therefore never the fix; fewer connections
-//! is, and `Store::open` now hands every caller in the process the same connection per store file.
-//!
-//! `/dev/fd` on Darwin and `/proc/self/fd` on Linux: both are directories whose entries ARE the
-//! process's open descriptors, so `read_dir` is a census and not an estimate. `Store::live` is
-//! the second, independent count - how many connections the process holds - because a descriptor
-//! count is a proxy for a lifetime and `Store::live` is the lifetime itself.
-//!
-//! Nothing on this box but a temp directory. The vocabulary is the byte one and the provider is
-//! named and never called, because no turn runs here - the subject is the store.
+//! A session that closes gives its descriptors back - the measurement the operator's
+//! `EMFILE` is answered with. `Harness::open` used to open the store four times per
+//! session, each a `rusqlite` connection to a WAL file, and `sqlite3` keeps a descriptor
+//! per file in the inode's own record until the process's last connection to that file
+//! closes - so closing a session's four connections returned none of them. "Close it
+//! properly" was therefore never the fix; fewer connections is, and `Store::open` now hands
+//! every caller in the process the same connection per store file. `/dev/fd` on Darwin and
+//! `/proc/self/fd` on Linux:
 
 use std::path::Path;
 
@@ -69,10 +61,9 @@ fn wiring(cfg: &Config) -> SessionWiring {
     }
 }
 
-/// This process's open descriptors - the census, from the directory the kernel keeps them in.
-///
-/// Darwin has `/dev/fd` (`fdescfs`); Linux has `/proc/self/fd`. Both list one entry per open
-/// descriptor, so the count is exact on the two boxes this tree runs on.
+/// This process's open descriptors - the census, from the directory the kernel keeps them
+/// in. Darwin has `/dev/fd` (`fdescfs`); Linux has `/proc/self/fd`. Both list one entry per
+/// open descriptor, so the count is exact on the two boxes this tree runs on.
 pub fn open_descriptors() -> usize {
     let dir = if cfg!(target_os = "linux") {
         "/proc/self/fd"
@@ -82,12 +73,9 @@ pub fn open_descriptors() -> usize {
     std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
 }
 
-/// How many of this process's descriptors are on `path` and its WAL companions.
-///
-/// `readlink` answers on Linux; Darwin's `/dev/fd` is not a symlink tree that resolves, so this
-/// asks the kernel with `F_GETPATH`. Matched on the DIRECTORY and the file name, not on the name
-/// alone: both tests here open a `sessions.db`, and a census that counted its neighbour's would
-/// report one test's connections as the other's.
+/// How many of this process's descriptors are on `path` and its WAL companions. `readlink`
+/// answers on Linux; Darwin's `/dev/fd` is not a symlink tree that resolves, so this asks
+/// the kernel with `F_GETPATH`.
 fn descriptors_on(path: &Path) -> usize {
     let dir = if cfg!(target_os = "linux") {
         "/proc/self/fd"
@@ -161,11 +149,8 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Twenty sessions opened and closed leave the store's descriptors where they were.
-///
-/// `Harness::open` opened the store four times per session, each a WAL connection, so twenty
-/// sessions left ninety-odd descriptors on `sessions.db` after they were closed. One connection per
-/// store file per process makes the count the daemon's own three whatever the session count, and
-/// the bound below is the baseline plus nothing.
+/// `Harness::open` opened the store four times per session, each a WAL connection, so
+/// twenty sessions left ninety-odd descriptors on `sessions.db` after they were closed.
 #[test]
 fn a_closed_session_gives_its_descriptors_back() {
     let Some(_) = room::room_for("twenty sessions opened and closed", 1024) else {
@@ -255,16 +240,9 @@ fn a_closed_session_gives_its_descriptors_back() {
     drop(registry);
 }
 
-/// Two sessions at once are not blocked by each other.
-///
-/// The fix's cost is a lock: every store access in the process now serialises behind one
-/// connection, so this is the test that says the second session still gets its work done. Two
-/// threads write and read through the same store while two sessions are open; both finish, every
-/// row is there, and the connection count does not move.
-///
-/// What it would catch: a lock held across a whole turn (a second session waiting for ever), a
-/// transaction left open (the next writer blocking on `BEGIN IMMEDIATE` until its thirty-second
-/// timeout), and a second connection appearing per thread.
+/// Two sessions at once are not blocked by each other. The fix's cost is a lock: every
+/// store access in the process now serialises behind one connection, so this is the test
+/// that says the second session still gets its work done.
 #[test]
 fn two_sessions_at_once_are_not_blocked_by_each_other() {
     let Some(_) = room::room_for("two sessions at once", 1024) else {

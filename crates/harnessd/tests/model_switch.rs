@@ -1,16 +1,11 @@
 //! `/models local.glm` from a daemon started on other weights - a switch replaces the
-//! vocabulary, the dialect and the address of a live session instead of needing a daemon restarted
-//! on those weights.
-//!
-//! Three tiers, because the parts fail for different reasons: the decision
-//! (`local_switch_decision`) against a stub `/props` is pure and needs no GGUF; the session switch
-//! (`Harness::set_local_model`) needs the daemon's own vocabulary; and the full cross-weights switch
-//! needs both GGUFs, being the one run that proves a second `Vocab::load` in one process.
-//!
-//! The stub answers `/props` and nothing else - never `/completion` - so nothing in this file can
-//! put load on a model server: a switch's work is local (probe, load, render, fork). It serves the
-//! REAL template from the dialect crate, JSON-escaped the way a server escapes it, because a
-//! reader that truncates at the first escaped quote is part of what this file pins.
+//! vocabulary, the dialect and the address of a live session instead of needing a daemon
+//! restarted on those weights. Three tiers, because the parts fail for different reasons:
+//! the decision (`local_switch_decision`) against a stub `/props` is pure and needs no
+//! GGUF; the session switch (`Harness::set_local_model`) needs the daemon's own vocabulary;
+//! and the full cross-weights switch needs both GGUFs, being the one run that proves a
+//! second `Vocab::load` in one process. The stub answers `/props` and nothing else - never
+//! `/completion` - so nothing in this file can put load on a model server:
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -42,11 +37,6 @@ fn glm_gguf() -> PathBuf {
 }
 
 /// A `/props` that answers on a local socket.
-///
-/// `model_path` and `chat_template` are what a llama.cpp server answers - the path as it sees it
-/// the template JSON-escaped - plus an `n_ctx` so the window retune reads a number rather than
-/// hanging a second probe off the test's story. `None` omits the key, which is a server too old (or
-/// a proxy) not answering it: also a fact the decision must read.
 fn props_stub(model_path: Option<&str>, chat_template: Option<&str>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback socket");
     let port = listener.local_addr().unwrap().port();
@@ -530,12 +520,6 @@ fn a_same_weights_switch_moves_the_address_and_local_moves_it_back() {
 // --- the full cross-weights switch: live, gated on both GGUFs --------------
 
 /// `/models local.glm` from a qwen daemon, end to end: weights, dialect, fork, and back.
-///
-/// The measurement a box short of GPU memory cannot take is the SECOND `Vocab::load` in one
-/// process - a vocabulary load that enumerates CUDA devices aborts inside ggml, which is why this
-/// is a test and not a unit. A box without both GGUFs skips, loudly; a box with them and a working
-/// shim passes; a box where the abort still happens fails by dying, which is the honest failure for
-/// "this cannot be done here".
 #[test]
 fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     let Some(qwen) = letibot_harnessd::vocab_gguf() else {

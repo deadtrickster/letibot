@@ -1,17 +1,10 @@
-//! One turn tail for every door, as one assertion list run against each.
-//!
-//! A review found the tails had diverged: the sweep was armed by the command and wake arms of
-//! `Daemon::run` at their call sites, so a door reached any other way had none, and the `!` doors
-//! armed neither the sweep nor the wake; a subagent ran a second copy of the tail whose `Answer` arm
-//! dropped its error, so a child's failed turn published a `turn_failed` with no reason and no
-//! `TurnFailed` at all.
-//!
-//! Every door now runs `turn_tail::run_turn`. What this file asserts is what that buys, door by door
-//! with ONE list ([`the_tail_ran`]): the sweep is armed by the door itself, and a failed turn reaches
-//! the session's log as `TurnFailed` carrying the reason plus a `turn_failed` warning - the model is
-//! a stub that refuses every request with a body this file can find.
-//!
-//! Needs the vocabulary GGUF and no model.
+//! One turn tail for every door, as one assertion list run against each. A review found the
+//! tails had diverged: the sweep was armed by the command and wake arms of `Daemon::run` at
+//! their call sites, so a door reached any other way had none, and the `!` doors armed
+//! neither the sweep nor the wake; a subagent ran a second copy of the tail whose `Answer`
+//! arm dropped its error, so a child's failed turn published a `turn_failed` with no reason
+//! and no `TurnFailed` at all. Every door now runs `turn_tail::run_turn`. What this file
+//! asserts is what that buys, door by door with ONE list ([`the_tail_ran`]):
 
 use std::time::Duration;
 

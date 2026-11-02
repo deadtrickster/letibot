@@ -1,22 +1,10 @@
-//! The stuck-queue census, end to end: the model is WOKEN and handed the sentence.
-//!
-//! Every queue transition is notified once as it happens; what nothing said was the TOTAL and the
-//! AGE, so `mergequeue::stuck` counts them and `Sessions::deliver_due_censuses` says so.
-//!
-//! It is a TURN and not a notice, and that is the whole point: a notice is a mailbox the model reads
-//! at its next turn, and a session with nothing to do has none - so a census written that way
-//! reaches nobody. A bell must be able to inject a turn. This file's central assertion is
-//! therefore not "a row was written" but "the model was handed the sentence": the stub below
-//! records every request and the prompt is detokenized and searched, so a transcript row would pass
-//! the old test and fail this one.
-//!
-//! The cost is one model call per interval per project while a row is stuck, at
-//! `mergequeue::stuck::STUCK_REPEAT_MS` (two hours) - against hours of a row nobody saw. The rate is
-//! the queue's own units, not the plan's ladder; `sessions::STUCK_REPEAT` carries the argument.
-//!
-//! It needs the vocabulary GGUF and a model that ANSWERS (the canned frames, through a recording
-//! stub, which is also how the prompt can be read back). No git binary beyond `git init` - the
-//! census keys its rows by the repository git resolves - and no process tree.
+//! The stuck-queue census, end to end: the model is WOKEN and handed the sentence. Every
+//! queue transition is notified once as it happens; what nothing said was the TOTAL and the
+//! AGE, so `mergequeue::stuck` counts them and `Sessions::deliver_due_censuses` says so. It
+//! is a TURN and not a notice, and that is the whole point: a notice is a mailbox the model
+//! reads at its next turn, and a session with nothing to do has none - so a census written
+//! that way reaches nobody. A bell must be able to inject a turn. This file's central
+//! assertion is therefore not "a row was written" but "the model was handed the sentence":
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -180,10 +168,6 @@ fn opened<'a>(
 // ---------------------------------------------------------------------------
 
 /// A model that answers every turn the same way, and keeps the request it was asked.
-///
-/// One frame list, replayed for however many turns arrive - a fixture that had to predict the count
-/// would fail on the very defect this file is about (a census that fires per pass), and it would
-/// fail by hanging rather than by counting. The count is `turns`.
 struct Stub {
     endpoint: Endpoint,
     seen: Arc<Mutex<Vec<String>>>,
@@ -323,12 +307,9 @@ fn answers(hub: &Hub) -> Vec<String> {
 // THE TESTS
 // ---------------------------------------------------------------------------
 
-/// Eight stuck rows WOKE THE MODEL with the count and the age - once, then once an interval later
-/// then not at all once the queue recovered.
-///
-/// FAILS on a census written as a notice, and fails in the way that matters: the census row is there
-/// (`censuses` is non-empty) and the stub recorded no request at all - the sentence went into a
-/// transcript nobody was going to read.
+/// Eight stuck rows WOKE THE MODEL with the count and the age - once, then once an interval
+/// later then not at all once the queue recovered. FAILS on a census written as a notice,
+/// and fails in the way that matters:
 #[test]
 fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -381,11 +362,8 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     sessions.set_stuck_repeat(Duration::from_millis(200));
 
     // One delivery, and it is a TURN - the model was asked, and what it was asked is the
-    // sentence: the count, the age and the verbs.
-    //
-    // The sweep is spent first, so "this door armed it" is a measurement and not a leftover: a census
-    // turn dispatches tool calls exactly as a prompt's does, and a call it stranded must be looked at
-    // by something.
+    // sentence: the count, the age and the verbs. The sweep is spent first, so "this door
+    // armed it" is a measurement and not a leftover:
     sessions.sweep_abandoned_calls();
     assert!(sessions.sweep_due_at().is_none(), "the fixture spent it");
     assert_eq!(sessions.deliver_due_censuses(), 1, "one session is told");
@@ -513,20 +491,8 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The plan nag and the census cannot starve each other - the case that matters now that both
-/// are turns, because a turn END re-arms both clocks.
-///
-/// Two directions, and each is a real way one subject could silence the other
-///
-/// * the census runs, and the plan's check still fires. A census turn's end re-arms the plan's
-///   clock by the rule every turn's uses (`rearm`: a new notice is one base window from now), so the
-///   check is postponed by at most ONE window - not by the census's two hours, which is what a
-///   shared deadline would have cost it.
-/// * the plan's check runs, and the census still fires at once. Its deadline is an ANCHOR
-///   (`census_said_at`), which no turn moves, so a nag turn cannot push the census out.
-///
-/// FAILS on a clock with one shared deadline: `deliver_due_censuses` would answer `0` for the whole
-/// interval after a check.
+/// The plan nag and the census cannot starve each other - the case that matters now that
+/// both are turns, because a turn END re-arms both clocks.
 #[test]
 fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -611,10 +577,9 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A subagent is not told. The census is the PROJECT's - a child told *eight rows are stuck in
-/// `main`* has been handed somebody else's work, and the root-session rule is what keeps it out. It
-/// runs no turn either: a child woken by its project's queue would be a model call per interval per
-/// child.
+/// A subagent is not told. The census is the PROJECT's - a child told *eight rows are stuck
+/// in `main`* has been handed somebody else's work, and the root-session rule is what keeps
+/// it out. It runs no turn either:
 #[test]
 fn a_child_session_gets_no_census() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

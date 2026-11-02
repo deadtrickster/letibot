@@ -1,31 +1,10 @@
 //! A session's message 0 is frozen, and a daemon that would now compose a different one has
-//! something to say about it.
-//!
-//! The tool schemas live in the stable prefix and a session's prefix is fixed when it is created
-//! so a build that has since changed the system instructions, the tool schemas or the seat hands a
-//! session a prompt it will never speak - and until this existed nothing said so on any screen.
-//!
-//! This file asserts the daemon's half - the comparison, and the sentence it leaves behind - and
-//! three things the feature is worthless without
-//!
-//! 1. A session whose prefix is unchanged says NOTHING. The notice has to be silent on the
-//!    ordinary path - every daemon restart, every `--continue` - or it is a line people learn to
-//!    skip, which is worse than no line at all.
-//! 2. A session whose prefix has changed is given a sentence, in the words of the remedy: the
-//!    session, when it was seated, what moved, and `/reseat` by name.
-//! 3. The standing notes are NOT in the fingerprint. They are re-read at every base rebuild and
-//!    every provider turn, so a fingerprint covering them would report every session stale the
-//!    moment a note was written.
-//!
-//! The sentence goes into the registry ([`Registry::set_stale_prefix`]) and not onto the log
-//! because a warning a head finds in its snapshot is filed `Placed::Before` - listed by `/notes`
-//! counted by `/status`, and not drawn - and every ordinary path opens the session before any
-//! head is on it. It is published by `server::seat_in` at attach instead, asserted over a real
-//! socket in `letibot-sessionlog`'s `stale_prefix.rs`.
-//!
-//! It needs the vocabulary GGUF and not the model server: opening a session and forking it are
-//! store and ledger work, and a session is seeded here by `fork_to_summary` rather than by running a
-//! turn.
+//! something to say about it. The tool schemas live in the stable prefix and a session's
+//! prefix is fixed when it is created so a build that has since changed the system
+//! instructions, the tool schemas or the seat hands a session a prompt it will never speak
+//! - and until this existed nothing said so on any screen. This file asserts the daemon's
+//! half - the comparison, and the sentence it leaves behind - and three things the feature
+//! is worthless without 1. A session whose prefix is unchanged says NOTHING.
 
 use std::sync::Arc;
 
@@ -73,9 +52,7 @@ fn config(store: &std::path::Path, session_id: &str, workspace: &std::path::Path
     let mut cfg = Config::for_this_box(workspace);
     cfg.dialect = Dialect::Qwen;
     // These fixtures supply what they assert about, and nothing the laptop happens to be
-    // configured for. `Config::for_this_box` reads the operator's own `~/.config/letibot` -
-    // `providers.toml` for a search key, `permission.json` for the preapproved list - and a Brave key
-    // would seat `web_search` in one run and not the next.
+    // configured for.
     cfg.web_search = None;
     cfg.permission = Vec::new();
     // No model server is reached by anything here; an endpoint that does not answer is the expected
@@ -95,9 +72,8 @@ fn empty_modes(parts: Parts) -> Parts {
 }
 
 /// Open one session in a registry that holds it, which is what a daemon does and what the
-/// sentence needs: the harness leaves it in the entry, and an entry is only there for a session the
-/// registry knows. `Harness::open` builds a throwaway registry, so a test that wants to read what
-/// the harness decided has to pass its own - `open_with_registry` is public for exactly this.
+/// sentence needs: the harness leaves it in the entry, and an entry is only there for a
+/// session the registry knows.
 fn opened(cfg: &Config, parts: &Parts) -> (Harness, Arc<Registry>) {
     let hub = Hub::new(&cfg.session_id);
     let registry = Registry::of(hub.clone());
@@ -129,11 +105,8 @@ fn seed(h: &mut Harness) {
         .expect("the seed fork must land");
 }
 
-/// The unchanged case says nothing, and the changed one names the remedy.
-///
-/// Both halves in one test on purpose: the false positive and the false negative are the two ways
-/// this feature fails, and a test that asserted only one of them would pass on a daemon that
-/// reported every session stale.
+/// The unchanged case says nothing, and the changed one names the remedy. Both halves in
+/// one test on purpose:
 #[test]
 fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -164,11 +137,8 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
          the real one skipped"
     );
 
-    // (2) The instructions change - the `--system` case.
-    //
-    // The harness above goes first, and that is a rule rather than tidiness: a session has one
-    // writer (`harnessd::writer`), so two scaffolds over one store file in one process contend
-    // exactly as two daemons do - the second open is refused by name.
+    // (2) The instructions change - the `--system` case. The harness above goes first, and
+    // that is a rule rather than tidiness:
     drop(h);
     drop(registry);
     let mut changed = cfg.clone();
@@ -194,10 +164,9 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
         said.contains("`/reseat`"),
         "and the remedy BY NAME, which is the whole point of the sentence: {said}"
     );
-    // The session kept the prefix it was created with, and the notice is a fact about it rather
-    // than a claim that the daemon moved it: the resume came back on the fork the seed wrote, under
-    // the prefix that fork opened with. A daemon that quietly re-seated the conversation would land
-    // on a NEW transcript and say nothing about what that cost.
+    // The session kept the prefix it was created with, and the notice is a fact about it
+    // rather than a claim that the daemon moved it: the resume came back on the fork the seed
+    // wrote, under the prefix that fork opened with.
     assert_eq!(
         h.transcript_id(),
         format!("{session_id}#t1"),
@@ -205,10 +174,8 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
     );
 
     // (3) A re-seat takes the sentence away, because it stops being true: `/reseat` forks the
-    // conversation onto the prompt this daemon composes now, so a head attaching afterwards must not
-    // be told the session is speaking an older one. Driven through `fork_to_summary` - the half of a
-    // re-seat that needs no model - with the prefix `reseat_target` composes, which is what the real
-    // path hands it.
+    // conversation onto the prompt this daemon composes now, so a head attaching afterwards
+    // must not be told the session is speaking an older one.
     let outcome = CompactionOutcome {
         turn_id: format!("{}#reseat", h.transcript_id()),
         summary: String::new(),
@@ -235,17 +202,8 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
     );
 }
 
-/// A tool schema that changed is named as a schema, and a tool that merely ARRIVED is named as
-/// added.
-///
-/// `--bash` is the lever because seating it is a flag and nothing else: the `leticode` role names
-/// `bash` and the daemon strips it back off unless the flag is passed. So the two opens are one
-/// session, one conversation and a different tool list in the prompt it was created under - which
-/// is what a build that grew a tool's schema looks like from here.
-///
-/// The seat is `leticode` because `bash` is not in `orchestrator`'s role at all. Not `coder`
-/// which names `bash` too but is a CONFINED seat: on a Mac it refuses to open, so this test could
-/// only ever report that absence instead of the sentence it is about.
+/// A tool schema that changed is named as a schema, and a tool that merely ARRIVED is named
+/// as added. `--bash` is the lever because seating it is a flag and nothing else:
 #[test]
 fn a_tool_that_arrived_is_named_in_the_sentence() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -314,13 +272,8 @@ fn a_tool_that_arrived_is_named_in_the_sentence() {
     );
 }
 
-/// A note written between two opens is not a stale prefix.
-///
-/// The frozen/live split, asserted at the seam that makes it necessary: the standing notes are
-/// re-read at session open, at every base rebuild and on every provider turn, so a fingerprint
-/// covering them would cry stale every time a note was written. Both opens compose the notes - and
-/// the two composed prompts must really DIFFER, or this test would pass on a fixture that never
-/// wrote a note at all.
+/// A note written between two opens is not a stale prefix. The frozen/live split, asserted
+/// at the seam that makes it necessary:
 #[test]
 fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -381,16 +334,6 @@ fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
 }
 
 /// A head attached BEFORE the harness opens is told, live, after the restored rows.
-///
-/// The daemon registers its session and binds its socket before it opens the harness (`cli.rs`
-/// `create_under`, then `Daemon::serve`, then the vocabulary and `Sessions::open_first`), so a head
-/// that reconnects across a restart attaches in that window - and the sentence written a moment
-/// later waited for the NEXT attach. Every other test in this file opens the harness with no head on
-/// it, which is why none of them saw it.
-///
-/// Asserted on the head's own delivery queue, in order: the sentence arrives, and it arrives after
-/// the last restored row - a live note is filed at the seam it arrives at, so one said before the
-/// republish would be drawn above the whole conversation.
 #[test]
 fn a_head_attached_before_the_harness_opens_is_told_after_the_restored_rows() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

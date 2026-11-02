@@ -1,18 +1,9 @@
-//! A queue notice that needs somebody to act, and the chain that reaches them - one function, so
-//! the rule has one spelling in this tree: such a notice is put to a SESSION, and the hub card is
-//! what is left when there is no session to put it to. Nothing that needs action is hub-only.
-//!
-//! The rungs, in order, the first that takes it winning (so one notice is never two messages)
-//! the session the row names (the branch's own tree), its root, then the newest live top-level
-//! session of the branch's workspace. A tree whose child has finished is still its root's work
-//! and a root with nobody attached is not an answer - that is how a card reached the operator while
-//! the model that could have acted heard nothing.
-//!
-//! "Live" is [`super::serve::QueueDoor::session_live`]: held, or spawned and not yet opened. A
-//! session ROW is not enough. "The same workspace" is [`super::repositories_of_workspace_cached`]
-//! over the session's own `workspace_root`, so a project folder of several checkouts answers for
-//! each of them and a worktree for its repository. "Top-level" is an empty `parent_session_id`, and
-//! the review queue's own session is never a candidate: it already holds the row.
+//! A queue notice that needs somebody to act, and the chain that reaches them - one
+//! function, so the rule has one spelling in this tree: such a notice is put to a SESSION,
+//! and the hub card is what is left when there is no session to put it to. Nothing that
+//! needs action is hub-only. The rungs, in order, the first that takes it winning (so one
+//! notice is never two messages) the session the row names (the branch's own tree), its
+//! root, then the newest live top-level session of the branch's workspace.
 
 use std::path::Path;
 
@@ -66,13 +57,8 @@ impl Told {
     }
 }
 
-/// What the chain needs from its caller: the store the tree is walked in, the repository the notice
-/// is about, and the two doors that are not this module's to answer.
-///
-/// `deliver` puts a message on a session's queue (`QueueDoor::deliver` - the hub's own submit and
-/// wake, so a session between turns runs a turn for it and a running one hears it at its next round
-/// boundary), and answers `Err` with the reason when nothing would read it, which is how a rung that
-/// is gone is told from one that took it. `live` is whether this daemon holds a session now.
+/// What the chain needs from its caller: the store the tree is walked in, the repository
+/// the notice is about, and the two doors that are not this module's to answer.
 pub struct Reach<'a> {
     pub store: &'a Store,
     pub repository: &'a str,
@@ -80,13 +66,8 @@ pub struct Reach<'a> {
     pub live: &'a dyn Fn(&str) -> bool,
 }
 
-/// Put a notice on the chain and answer where it landed - the three rungs of this module's doc, in
-/// order, the first that takes it winning.
-///
-/// `text` builds the words for the rung being tried, given the parties already tried and why each
-/// failed (`missed`, empty on the first rung): a refusal tells its author one thing, its root
-/// another and a stranger a third, because *why am I being told this* is the first question a
-/// session handed somebody else's work asks.
+/// Put a notice on the chain and answer where it landed - the three rungs of this module's
+/// doc, in order, the first that takes it winning.
 pub fn a_session(
     reach: &Reach<'_>,
     branch_session: &str,
@@ -159,12 +140,8 @@ pub fn a_session(
     }
 }
 
-/// The live session of the branch's workspace the chain falls back to: the newest top-level session
-/// of `repository` that this daemon holds, with its workspace.
-///
-/// `skip` is the parties already tried, so a session that has already refused this message is not
-/// asked for it twice. A row with no workspace cannot be said to be in the branch's, and neither can
-/// a subagent (its root is the rung above).
+/// The live session of the branch's workspace the chain falls back to: the newest top-level
+/// session of `repository` that this daemon holds, with its workspace.
 pub fn live_session_in_workspace(
     store: &Store,
     repository: &str,

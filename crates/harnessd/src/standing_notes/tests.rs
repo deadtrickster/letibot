@@ -1,14 +1,11 @@
-//! The census: this module's rules, asserted.
-//!
-//! Its own file because the rules under test are private (`gather`'s order, `body`'s per-file
-//! budget, `index_entry`'s shape, the sentence rule behind an abstract) and a module with private
-//! rules can only be tested from inside it. The declaration is `mod tests;` at the bottom of
-//! `standing_notes.rs`; the integration half against a real harness is
-//! `crates/harnessd/tests/standing_notes.rs`.
-//!
-//! Also asserted: the seat's instruction files, which this module does not name. They reach the
-//! section through the config layer, ahead of the notes, because a rule that arrives as an index is
-//! a rule the model has to fetch before it can follow it.
+//! The census: this module's rules, asserted. Its own file because the rules under test are
+//! private (`gather`'s order, `body`'s per-file budget, `index_entry`'s shape, the sentence
+//! rule behind an abstract) and a module with private rules can only be tested from inside
+//! it. The declaration is `mod tests;` at the bottom of `standing_notes.rs`; the
+//! integration half against a real harness is `crates/harnessd/tests/standing_notes.rs`.
+//! Also asserted: the seat's instruction files, which this module does not name. They reach
+//! the section through the config layer, ahead of the notes, because a rule that arrives as
+//! an index is a rule the model has to fetch before it can follow it.
 
 use super::*;
 
@@ -171,11 +168,8 @@ fn a_small_note_is_whole_beside_a_large_one() {
     let _ = std::fs::remove_dir_all(&ws2);
 }
 
-/// A headingless note over the budget is indexed by its paragraphs rather than collapsed to one
-/// line, and its abstract is the first proper sentence.
-///
-/// One truncated line has nothing to recognise and no range to `read`, and a rule that counts every
-/// period ends a lead inside `exit 101 in 2.` (the period of `2.7 s`).
+/// A headingless note over the budget is indexed by its paragraphs rather than collapsed to
+/// one line, and its abstract is the first proper sentence.
 #[test]
 fn a_headingless_note_is_indexed_by_its_paragraphs() {
     let ws = dir("headingless");
@@ -241,12 +235,9 @@ fn the_abstract_never_ends_inside_a_path() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// The author's abstract is the index's first line when the file carries one, and it is not called
-/// derived.
-///
-/// The `notes` tool writes that marker line, so this is the reader's half of the round trip. It is
-/// an HTML comment because the same file is injected verbatim under the budget, where a marker that
-/// rendered would be a line the author did not write.
+/// The author's abstract is the index's first line when the file carries one, and it is not
+/// called derived. The `notes` tool writes that marker line, so this is the reader's half
+/// of the round trip.
 #[test]
 fn an_authors_abstract_leads_the_index() {
     let ws = dir("written");
@@ -411,14 +402,9 @@ fn carried_reads_the_section_off_a_composed_prompt() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// The envelope says whose notes these are, that they are historical, and what an indexed file is.
-///
-/// The block is the highest-traffic read of all, delivered at session open and every base rebuild
-/// whether or not a tool is called. Authorship is split by directory, which is what keeps a note the
-/// model wrote from reading as an instruction the operator gave, and the caveat says what a note is
-/// a record of what was true when written. The last sentence is there because the block is verbatim
-/// and indexed at once, and a reader who does not know what `indexed` means reads a heading as the
-/// file's whole content.
+/// The envelope says whose notes these are, that they are historical, and what an indexed
+/// file is. The block is the highest-traffic read of all, delivered at session open and
+/// every base rebuild whether or not a tool is called.
 #[test]
 fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
     let ws = dir("envelope");
@@ -455,11 +441,8 @@ fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
 }
 
 /// The pane's rows: one per note, in the section's order, carrying the index's own fields.
-///
-/// This is the one consumer a PERSON reads, so what it asserts is what the pane would draw and
-/// nothing more: the path, the abstract with the author's own line marked as theirs, and the form.
-/// Size, mtime and whether the note is still on disk are the disk's facts, read by the head where it
-/// draws.
+/// This is the one consumer a PERSON reads, so what it asserts is what the pane would draw
+/// and nothing more:
 #[test]
 fn the_panes_rows_are_the_indexes_own_fields() {
     let ws = dir("rows");
@@ -642,12 +625,9 @@ fn a_box_with_no_instruction_file_adds_nothing() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// The names are the seat's, and this crate holds no copy of either.
-///
-/// No file under `harnessd`, `tokencore` or `tools` spells either name, so a runtime that grew one
-/// back fails here rather than in a review. The names come from the config layer's constants, which
-/// is why this cannot pass by agreeing with itself, and this file is skipped because a test that
-/// greps for a string must contain it.
+/// The names are the seat's, and this crate holds no copy of either. No file under
+/// `harnessd`, `tokencore` or `tools` spells either name, so a runtime that grew one back
+/// fails here rather than in a review.
 #[test]
 fn the_runtime_names_neither_instruction_file() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -717,11 +697,9 @@ fn a_skill_handed_over_is_labelled_and_the_rest_of_the_line_follows_it() {
     );
 }
 
-/// A skill a session was STARTED with arrives whole, and the name it was started with is the one
-/// that is read.
-///
-/// `preloaded` is `task {skills}`'s and `[queue] reviewer_skills`'s landing place, so a name that
-/// resolves to nothing is said rather than dropped.
+/// A skill a session was STARTED with arrives whole, and the name it was started with is
+/// the one that is read. `preloaded` is `task {skills}`'s and `[queue] reviewer_skills`'s
+/// landing place, so a name that resolves to nothing is said rather than dropped.
 #[test]
 fn a_declared_skill_arrives_whole_and_an_unknown_one_is_said() {
     let r = letibot_tools::builtins::skill::SkillRegistry::new(vec![

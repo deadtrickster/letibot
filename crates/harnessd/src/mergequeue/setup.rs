@@ -1,16 +1,11 @@
-//! A gate that cannot judge is told apart from a target that is broken.
-//!
-//! A gate can pass every step it declares and then fail in its own wrapper - a script naming a
-//! binary this branch does not build - and nothing in the code has been judged. So a failed gate
-//! is read once more: it is the GATE's setup when the failure came after the build and the tests
-//! passed, either by step (every step before the failing one passed, one of them built or tested
-//! and the failing one is neither) or by its own words (one wrapper step whose output shows a
-//! build or a test passing, no compile error, failed test, panic or format diff, and ends naming
-//! something missing).
-//!
-//! Both are deliberately narrow: a regression the corpus catches after the build is still RED
-//! because its last words name no missing thing. Either way the tip stays UNJUDGED and the target
-//! `blocked`, so nothing lands on it; what changes is the word, the severity, and who is asked.
+//! A gate that cannot judge is told apart from a target that is broken. A gate can pass
+//! every step it declares and then fail in its own wrapper - a script naming a binary this
+//! branch does not build - and nothing in the code has been judged. So a failed gate is
+//! read once more: it is the GATE's setup when the failure came after the build and the
+//! tests passed, either by step (every step before the failing one passed, one of them
+//! built or tested and the failing one is neither) or by its own words (one wrapper step
+//! whose output shows a build or a test passing, no compile error, failed test, panic or
+//! format diff, and ends naming something missing). Both are deliberately narrow:
 
 use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
 
@@ -20,19 +15,14 @@ pub const GATE_SETUP_FAILED: &str = "the gate's own setup failed";
 
 /// Whether a target's evidence says its tip was never judged: the gate's own setup failed
 /// ([`GATE_SETUP_FAILED`]), or its step was killed before it judged the code
-/// ([`super::gate::GATE_KILLED`]). Either way nothing lands on it and the project hears *cannot
-/// judge*, never *red*.
+/// ([`super::gate::GATE_KILLED`]).
 pub fn unjudged(evidence: &str) -> bool {
     evidence.starts_with(GATE_SETUP_FAILED) || evidence.starts_with(super::gate::GATE_KILLED)
 }
 
-/// Whether this health row is a repository that never asked for a queue: its target declares no
-/// `Merge gate` section, so the row is about a branch nobody could judge and nothing else.
-///
-/// A repository is a queue target because it asked to be one, and the way it asks is the section
-/// without that rule every repository of one project folder counted as unjudged in every head's
-/// summary and was warned about. So this row is neither an alarm nor a count: it is the pane's
-/// one muted line, and the store keeps it because nothing is deleted here.
+/// Whether this health row is a repository that never asked for a queue: its target
+/// declares no `Merge gate` section, so the row is about a branch nobody could judge and
+/// nothing else.
 pub fn not_a_queue_target(h: &TargetHealth) -> bool {
     h.state == HealthState::Blocked && h.evidence.starts_with(super::WAITING_FOR_GATE)
 }
@@ -63,13 +53,8 @@ pub fn builds_or_tests(command: &str) -> bool {
     .any(|w| c.contains(w))
 }
 
-/// The step's own words, with the gate's own notes dropped.
-///
-/// A row's `output` ends with lines the GATE wrote - `[gate memory: …]`, `[step: exit code 101]`
-/// `[N process(es) the step left running were killed with its cgroup]`, `[gate on …]` - and every
-/// classifier below reads that same string. A note is a fact about the gate's harness or the
-/// machine and never about the code, so no classifier may read one: a note naming a missing
-/// `/proc/self/cgroup` once turned two failing test targets into "the gate's own setup failed".
+/// The step's own words, with the gate's own notes dropped. A row's `output` ends with
+/// lines the GATE wrote - `[gate memory: …]`, `[step:
 pub(crate) fn step_words(out: &str) -> impl Iterator<Item = &str> {
     out.lines().filter(|l| {
         let t = l.trim_start();
@@ -98,10 +83,7 @@ pub(crate) fn shows_code_failing(out: &str) -> bool {
             || t.contains("panicked at")
             || t.starts_with("Diff in ")
             || t.starts_with("failures:")
-            // Cargo's own verdict on failing test TARGETS, `error: 2 targets failed:`, is the
-            // LAST thing `cargo test --no-fail-fast` writes, so it survives the cap that keeps
-            // only the end of a long step's output - without it a step whose retained tail is
-            // nothing but `test result: ok` reads as everything passed.
+            // Cargo's own verdict on failing test TARGETS, `error:
             || (t.starts_with("error: ") && t.contains("target") && t.contains("failed"))
     })
 }
@@ -241,13 +223,8 @@ mod tests {
     }
 
     /// A RED step was reported as the gate's own setup, and nothing could land on a tip nothing
-    /// was wrong with.
-    ///
-    /// The step is the workspace's tests under the gate - two failing targets - and the gate
-    /// appends its own `[gate memory: uncapped …]` note, whose reason happens to be
-    /// `/proc/self/cgroup could not be read: No such file or directory`. The classifier read the
-    /// GATE's words as the step's, matched *no such file*, and called it setup. The output here is
-    /// the row's real tail, verbatim.
+    /// was wrong with. The step is the workspace's tests under the gate - two failing targets -
+    /// and the gate appends its own `[gate memory:
     #[test]
     fn a_red_step_is_red_even_behind_the_gates_own_memory_note() {
         let out = "running 0 tests\n\n\

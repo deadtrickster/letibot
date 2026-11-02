@@ -361,17 +361,9 @@ fn the_same_rows_said_later_name_a_bigger_age() {
     assert_ne!(first, later, "the repeat is a new fact, not the same one");
 }
 
-/// What this read costs on the door every turn ends at - the measurement to re-run rather than
-/// argue about, since `Harness::stuck_census` runs from `Sessions::rearm_todo_nag` at every turn's
-/// end. The question is not *is one query cheap* but *is one PROJECT's query cheap when the box
-/// holds twenty others*: twenty other repositories of twenty rows each, and ours, 420 rows in all.
-///
-/// The unscoped number is an UNDER-estimate: these rows carry the short `evidence` the fixture
-/// writes, while a real rejected row's is thousands of characters, and `merge_rows(None)`
-/// materialises every one of them. The scoped read is proportional to one project's rows.
-///
-/// cargo test --release --offline -p letibot-harnessd --lib \
-/// mergequeue::stuck::tests::what_the_scoped_read_costs -- --ignored --nocapture
+/// What this read costs on the door every turn ends at - the measurement to re-run rather
+/// than argue about, since `Harness::stuck_census` runs from `Sessions::rearm_todo_nag` at
+/// every turn's end.
 #[test]
 #[ignore = "a measurement, not an assertion: run it with --ignored --nocapture"]
 fn what_the_scoped_read_costs() {

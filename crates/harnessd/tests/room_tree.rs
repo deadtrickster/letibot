@@ -1,14 +1,11 @@
 //! A room is a project's, and its membership is the tree - the operator's hierarchy
-//! `<project>/<top-sessions>/<subagents>*|system/`, as the room holds it.
-//!
-//! Three facts, each false while there was one room per BOX: a session reaches its project's room
-//! without naming an id; a subagent at depth 2 is a member of that same room, though it never
-//! connects (the door refuses it); and a session in another project gets another room and never
-//! hears the first - where before, project B's `ram` was refused `Busy` by project A's claim.
-//!
-//! Nothing on the box: a `Server` on a socket in a directory of the test's own, and
-//! `SessionRoom::connect` - the same two objects a daemon uses. No store, no model, no turn, and no
-//! coordinator process, so this cannot touch the operator's room.
+//! `<project>/<top-sessions>/<subagents>*|system/`, as the room holds it. Three facts, each
+//! false while there was one room per BOX: a session reaches its project's room without
+//! naming an id; a subagent at depth 2 is a member of that same room, though it never
+//! connects (the door refuses it); and a session in another project gets another room and
+//! never hears the first - where before, project B's `ram` was refused `Busy` by project
+//! A's claim. Nothing on the box: a `Server` on a socket in a directory of the test's own,
+//! and `SessionRoom::connect` - the same two objects a daemon uses.
 
 use std::sync::Arc;
 
@@ -28,9 +25,7 @@ fn scratch(what: &str) -> std::path::PathBuf {
 
 /// The key is the tree's own - the twelve hex characters `scripts/letibot` cuts
 /// `letibot_sessionlog::workspace_key` computes and `s-gatekeeper-<key>` is spelled from.
-///
-/// This is the pin that lets the room crate keep its own copy of the rule: two spellings, one
-/// table.
+/// This is the pin that lets the room crate keep its own copy of the rule:
 #[test]
 fn the_project_key_is_the_workspace_key_the_rest_of_the_tree_uses() {
     let dir = scratch("key");
@@ -73,10 +68,9 @@ fn member(session: &str, label: &str, group: Group, parent: Option<&str>, depth:
     }
 }
 
-/// Two projects on one socket are two rooms, and neither hears the other.
-///
-/// The tag is the same word in both (`ram`), which is the whole point: one lock for the box meant
-/// B's claim was refused by A's, and B could not tell whose queue it had walked into.
+/// Two projects on one socket are two rooms, and neither hears the other. The tag is the
+/// same word in both (`ram`), which is the whole point: one lock for the box meant B's
+/// claim was refused by A's, and B could not tell whose queue it had walked into.
 #[test]
 fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     let dir = scratch("projects");
@@ -154,13 +148,9 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     server.stop();
 }
 
-/// The tree decides WHICH room an event is in; the bell decides WHO is told - and the two rules
-/// meet in one assertion: a post under project one's `ram` rings project one's session and leaves
-/// project two's bell silent.
-///
-/// `Server::route` filters the connections by the project the event came out of, and a
-/// `SessionRoom`'s wake closure rings only for what its own connection was sent, so the isolation
-/// is asserted at both ends at once.
+/// The tree decides WHICH room an event is in; the bell decides WHO is told - and the two
+/// rules meet in one assertion: a post under project one's `ram` rings project one's
+/// session and leaves project two's bell silent.
 #[test]
 fn a_bell_in_one_projects_room_does_not_ring_in_another() {
     use std::sync::atomic::{AtomicUsize, Ordering};

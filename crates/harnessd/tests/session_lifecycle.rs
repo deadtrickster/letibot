@@ -1,20 +1,11 @@
-//! One owner per session, and one lifecycle with an explicit close.
-//!
-//! A subagent's hub had two readers and no end
-//!
-//! * two readers - the child's own thread (`Hub::take_own_work_until`, from
-//!   `harness::serve_child`) and the daemon's worker (`Hub::try_command`, which popped anything).
-//!   A head prompting the subagent it was attached to could make the worker build a SECOND
-//!   `Harness` for a live child: two writers on one transcript.
-//! * no end - nothing ever removed a session from the registry, closed a finished child's hub or
-//!   dropped its harness, so a finished subagent kept its threads and its memory for ever.
-//!
-//! The real chain and nothing stubbed: a root session opened by the daemon's own `Sessions`, a child
-//! spawned through that session's tool runtime (the door a model's `task` call takes), and the
-//! daemon's worker driven exactly as `Daemon::run` drives it - `Registry::next_work_until` then
-//! `Sessions::dispatch`. The model is a stub answering canned frames.
-//!
-//! It needs the vocabulary GGUF and no model.
+//! One owner per session, and one lifecycle with an explicit close. A subagent's hub had
+//! two readers and no end * two readers - the child's own thread
+//! (`Hub::take_own_work_until`, from `harness::serve_child`) and the daemon's worker
+//! (`Hub::try_command`, which popped anything). A head prompting the subagent it was
+//! attached to could make the worker build a SECOND `Harness` for a live child: two writers
+//! on one transcript. * no end - nothing ever removed a session from the registry, closed a
+//! finished child's hub or dropped its harness, so a finished subagent kept its threads and
+//! its memory for ever. The real chain and nothing stubbed:
 
 use std::net::TcpListener;
 use std::path::Path;
@@ -51,9 +42,7 @@ fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
     // `leticode`, the unconfined seat with the delegation trio (`task`, `task_result`
-    // `task_message`) - and not `coder`, which has the trio but is a CONFINED seat: on a Mac it
-    // refuses to open, so every test in this file would measure the absence of a boundary instead of
-    // a lifecycle. Nothing here asserts a boundary.
+    // `task_message`) - and not `coder`, which has the trio but is a CONFINED seat:
     cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     cfg.http_retries = 0;
@@ -287,12 +276,8 @@ fn drive_worker(
 // One owner per session
 // ---------------------------------------------------------------------------
 
-/// A prompt to an attached, live subagent is served by its own thread only - the worker races it
-/// and never wins.
-///
-/// Five prompts are submitted at once, so while the child's thread is inside the first turn the rest
-/// sit on its queue - exactly the window in which the worker, woken by the same submit's bell, used
-/// to pop one and build a second `Harness` for the child (`Sessions::harness_as`).
+/// A prompt to an attached, live subagent is served by its own thread only - the worker
+/// races it and never wins.
 #[test]
 fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -449,10 +434,6 @@ fn answered(sessions: &Sessions<'_>, handle: &str) -> bool {
 
 /// Fifty subagents started and finished leave no thread and no registry entry behind -
 /// memwatch's thread census flat across 50 subagents.
-///
-/// The leak was the `subagent-*` thread parked in `serve_child` until a hub close that never came
-/// and `letibot-deadline` living as long as the parked harness did. With the policy off
-/// (`child_park_after = None`, the old behaviour) the census stays up after every child has answered.
 #[test]
 fn fifty_finished_subagents_leave_no_thread_and_no_registry_entry() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -521,12 +502,9 @@ fn fifty_finished_subagents_leave_no_thread_and_no_registry_entry() {
     d.registry.close();
 }
 
-/// A stopped child is gone, and a wake or a message to it is answered as gone - not `HandedOn`
-/// into a hub nobody reads.
-///
-/// Before the guard, a child that left `serve_child` on a stop kept its hub registered: the worker's
-/// `wake_route` said `ItsOwnReader`, `Sessions::wake` answered `HandedOn`, and the wake was handed to
-/// a condvar with no thread behind it.
+/// A stopped child is gone, and a wake or a message to it is answered as gone - not
+/// `HandedOn` into a hub nobody reads. Before the guard, a child that left `serve_child` on
+/// a stop kept its hub registered:
 #[test]
 fn a_wake_or_a_message_to_a_closed_child_is_answered_gone() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -668,10 +646,7 @@ impl letibot_sessionlog::registry::SessionSource for CountingSource {
     }
 }
 
-/// Opening a session costs no full scan of the store on the worker. The open asked *is this
-/// somebody's subagent?* twice through `Registry::list` (`is_root`, the parent lookup in
-/// `harness_as`) and the seat's title once more - each a `Store::list_sessions` over every session
-/// and its items, under the mutex every head's picker frame takes.
+/// Opening a session costs no full scan of the store on the worker.
 #[test]
 fn opening_a_session_lists_nothing_from_the_store() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -710,14 +685,9 @@ fn opening_a_session_lists_nothing_from_the_store() {
 // The idle exit - a daemon nothing needs leaves (`Config::idle_exit_after`)
 // ---------------------------------------------------------------------------
 
-/// A daemon with nothing to do exits after its window, and a head attached holds it up for as long
-/// as it is attached - through the daemon's own `Sessions`, a real hub and a real attach.
-///
-/// Closing a tab ends the head and not the detached daemon, and nothing ever ended the daemon: seven
-/// of them sat days old with nobody attached. The head here stays attached past the window with
-/// nothing said, and its leaving starts the window over - a quarter window on is not a window, and a
-/// whole one is. (A holder that ends WITHOUT an event is the clock's own unit test
-/// `sessions::idle_exit_clock`.)
+/// A daemon with nothing to do exits after its window, and a head attached holds it up for
+/// as long as it is attached - through the daemon's own `Sessions`, a real hub and a real
+/// attach.
 #[test]
 fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

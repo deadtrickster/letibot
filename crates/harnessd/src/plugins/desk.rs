@@ -1,16 +1,11 @@
 //! The `plugin` tool's daemon half: one session's plugin host, behind
-//! [`letibot_tools::builtins::plugin::PluginDesk`].
-//!
-//! A slot rather than the host itself, because the tool is seated when the harness opens and the
-//! host is built when the daemon opens the session - the one place a hub and a pane driver exist.
-//! A session with no host is a real state and it says so: a subagent is opened by its parent's
-//! runner, so nothing fills its slot, and its answer names that rather than reading as a
-//! capability this build lacks.
-//!
-//! `scaffold` and `build` work in any session, because they are file and cargo operations on the
-//! session's own plugin directory. `load`, `stack`, `disable`, `enable` and `test` ask the stack
-//! the head's panes are drawn from - one stack, since two would be two answers to *what is in
-//! force*.
+//! [`letibot_tools::builtins::plugin::PluginDesk`]. A slot rather than the host itself,
+//! because the tool is seated when the harness opens and the host is built when the daemon
+//! opens the session - the one place a hub and a pane driver exist. A session with no host
+//! is a real state and it says so: a subagent is opened by its parent's runner, so nothing
+//! fills its slot, and its answer names that rather than reading as a capability this build
+//! lacks. `scaffold` and `build` work in any session, because they are file and cargo
+//! operations on the session's own plugin directory.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

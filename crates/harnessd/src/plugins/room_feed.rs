@@ -1,21 +1,11 @@
-//! The `room` feed: one host's agents' queues, per tag, as a pane reads them.
-//!
-//! The room keeps no store and lives in another process (`harnessd --room`), so the daemon that
-//! draws the pane holds a [`RoomFeed`] - in production the session's own connection to the room -
-//! and this module is the one place that snapshot becomes the JSON a layer is handed.
-//!
-//! A row carries its tag, state, claimant (and whether that is this session), the age of its beat
-//! and its abandonment count: a tag is a lock, so the queue is the unit of contention, and
-//! `claimable` is the predicate rather than `state == open`, because an abandoned item is claimable
-//! and does not say open.
-//!
-//! Two things only the host can answer: the clock (a wasm guest has no `SystemTime`, so every age
-//! arrives already subtracted) and the room's own identity sentence, without which *restarted
-//! clean* and *restarted empty* read the same.
-//!
-//! The clock is quantised to the second because the host answers a pane once per distinct input: a
-//! feed carrying milliseconds would miss its cache on every frame, and a row's finest fact is a
-//! second anyway.
+//! The `room` feed: one host's agents' queues, per tag, as a pane reads them. The room
+//! keeps no store and lives in another process (`harnessd --room`), so the daemon that
+//! draws the pane holds a [`RoomFeed`] - in production the session's own connection to the
+//! room - and this module is the one place that snapshot becomes the JSON a layer is
+//! handed. A row carries its tag, state, claimant (and whether that is this session), the
+//! age of its beat and its abandonment count: a tag is a lock, so the queue is the unit of
+//! contention, and `claimable` is the predicate rather than `state == open`, because an
+//! abandoned item is claimable and does not say open. Two things only the host can answer:
 
 use std::collections::BTreeMap;
 

@@ -30,10 +30,9 @@ fn a_row_the_store_refuses_is_said_on_the_hub() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A settlement leaves a row, and a subagent does not.
-///
-/// The recorder is the piece with logic in it, and it is reachable without a cgroup host - so
-/// this is the half of the contract that runs everywhere.
+/// A settlement leaves a row, and a subagent does not. The recorder is the piece with logic
+/// in it, and it is reachable without a cgroup host - so this is the half of the contract
+/// that runs everywhere.
 #[test]
 fn a_settlement_is_written_into_the_store_and_a_subagent_is_not() {
     let dir = std::env::temp_dir().join(format!("letibot-recorder-{}", std::process::id()));
@@ -288,14 +287,9 @@ fn a_job_watched_twice_and_again_after_settlement_publishes_once() {
     assert_eq!(count, 1, "one job, one settlement");
 }
 
-/// 's question, answered by the one thing that can answer it.
-///
-/// `delivering` is what `job_wait` asks before deciding whether to block, so the two readings it
-/// must get right are true while a watcher is live for that job and false everywhere else.
-///
-/// The settled case is asserted apart from the never-watched one on purpose: both are `false`
-/// but for a settled job `job_wait`'s *had already finished* branch answers, while an unwatched
-/// job really does block - which is what a deliberate block before a dependent step depends on.
+/// 's question, answered by the one thing that can answer it. `delivering` is what
+/// `job_wait` asks before deciding whether to block, so the two readings it must get right
+/// are true while a watcher is live for that job and false everywhere else.
 #[test]
 fn delivering_is_true_only_while_a_watcher_is_live_for_that_job() {
     let Some(_) = letibot_tokencore::apparatus::present(
@@ -346,15 +340,9 @@ fn delivering_is_true_only_while_a_watcher_is_live_for_that_job() {
     );
 }
 
-/// The arming path, end to end: the sink is what makes `delivering` true.
-///
-/// A real session routes every tool result through [`JobWatchSink`], and that is the composition
-/// `harness.rs` depends on: the sink sees the `Backgrounded` outcome, arms a watcher, and from
-/// that moment `job_wait` must stop blocking.
-///
-/// Both directions are asserted, because the `false` half keeps from being larger than it is.
-/// No race: `watch` inserts into `watching` before it spawns the thread, so a test on a
-/// clock would only be testing the scheduler.
+/// The arming path, end to end: the sink is what makes `delivering` true. A real session
+/// routes every tool result through [`JobWatchSink`], and that is the composition
+/// `harness.rs` depends on:
 #[test]
 fn the_sink_arms_the_watcher_and_that_is_what_makes_a_wait_decline() {
     let Some(_) = letibot_tokencore::apparatus::present(
@@ -402,12 +390,9 @@ fn the_sink_arms_the_watcher_and_that_is_what_makes_a_wait_decline() {
     let _ = host.kill_job(&id);
 }
 
-/// : the settlement reaches the MODEL, not only the heads.
-///
-/// `JobSettled` reaches the pane, and nothing read it back into a turn - the operator's complaint.
-/// What is asserted is what the event cannot carry: a completion is queued for the harness at
-/// all, and it carries the command, which lives only in the live view and is gone by the time
-/// a settlement is delivered.
+/// : the settlement reaches the MODEL, not only the heads. `JobSettled` reaches the pane,
+/// and nothing read it back into a turn - the operator's complaint. What is asserted is
+/// what the event cannot carry:
 #[test]
 fn a_settled_job_is_queued_for_the_model_with_the_command_the_event_omits() {
     let Some(_) = letibot_tokencore::apparatus::present(
@@ -442,11 +427,9 @@ fn a_settled_job_is_queued_for_the_model_with_the_command_the_event_omits() {
     );
 }
 
-/// 's floor rule, structurally: a completion never jumps a queued human line.
-///
-/// A job ending is not urgent in the operator's sense, so it must not displace a person who
-/// pressed enter. That is not a check anywhere in this file - it is `Bell::next_any`'s order
-/// where commands drain before wakes.
+/// 's floor rule, structurally: a completion never jumps a queued human line. A job ending
+/// is not urgent in the operator's sense, so it must not displace a person who pressed
+/// enter.
 #[test]
 fn a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_that_is() {
     let Some(_) = letibot_tokencore::apparatus::present(
@@ -506,17 +489,9 @@ fn a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_th
     }
 }
 
-/// A subagent settles through the job channel, because it IS one.
-///
-/// `task` returns the same `Backgrounded` outcome `bash --background` does, so the sink arms a
-/// watcher for a subagent's handle too. Before the dispatch existed, that watcher asked
-/// `ProcessHost::wait_job` about a name the host had never heard, got `NeverStarted` - which
-/// `watch_one` reads as a boot window - and re-asked every [`WATCH_CHUNK`] until the session
-/// closed: the completion was never queued, the bell was never rung, and a thread leaked per
-/// `task` call.
-///
-/// This asserts the two things that were missing and the wake that carries them. On the code
-/// before the dispatch it does not merely fail: it times out with an empty queue.
+/// A subagent settles through the job channel, because it IS one. `task` returns the same
+/// `Backgrounded` outcome `bash --background` does, so the sink arms a watcher for a
+/// subagent's handle too.
 #[test]
 fn a_subagent_settles_through_the_jobs_own_channel() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
@@ -577,16 +552,8 @@ fn a_subagent_settles_through_the_jobs_own_channel() {
     );
 }
 
-/// A GRANDCHILD's settlement reaches its PARENT, and the ring names the PARENT.
-///
-/// The session that owns the settlement is the session whose bell is rung for it. The ring
-/// used to go to the tree's root, which woke, drained its own queue, found nothing and ran no
-/// turn while the notice sat in the parent's - so the ring and the notice named two sessions.
-/// The daemon serves a session it does not hold by handing the wake to the thread that does
-/// (`Hub::wake_its_own_reader`, `Sessions::wake`).
-///
-/// No process host anywhere: `task` needs none, and a test that required a cgroup would be
-/// testing the wrong channel.
+/// A GRANDCHILD's settlement reaches its PARENT, and the ring names the PARENT. The session
+/// that owns the settlement is the session whose bell is rung for it.
 #[test]
 fn a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
@@ -657,18 +624,7 @@ fn a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent() {
 }
 
 /// A job a subagent started is the SUBAGENT's to be told, and the parent never sees it.
-///
-/// Measured twice from the parent's own conversation: a `sleep 25; echo done` a subagent
-/// backgrounded arrived in the main session's transcript as *"a job you backgrounded has
-/// ended"*, and the main session's own `job_output` answered *no job called `j17`* - so the
-/// session woken was the one session that could not read the job.
-///
-/// Three sentences, one assert each: the child sees it; the parent never does; and the
-/// id is the child's, so no sentence can claim *you backgrounded* or send a session to
-/// `job_output` for a handle its own `job_list` does not hold.
-///
-/// The parent's `job_list` holds only its own host's jobs - which is precisely why the notice
-/// must not reach it.
+/// Measured twice from the parent's own conversation: a `sleep 25;
 #[test]
 fn a_childs_job_completion_is_the_childs_and_never_the_parents() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
@@ -754,12 +710,9 @@ fn a_childs_job_completion_is_the_childs_and_never_the_parents() {
     );
 }
 
-/// A settlement reaches the session that started it and not its sibling.
-///
-/// The *"and to nobody else"* half: two children of one root, each watching its own subagent
-/// and neither can be told the other's news. The one direction a settlement does travel is UP
-/// when the session that owns it has stopped - the only direction that keeps it inside a line
-/// that can still act on it. No host anywhere: `task` needs none.
+/// A settlement reaches the session that started it and not its sibling. The *"and to
+/// nobody else"* half: two children of one root, each watching its own subagent and neither
+/// can be told the other's news.
 #[test]
 fn a_settlement_reaches_the_session_that_started_it_and_not_its_sibling() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
@@ -833,13 +786,9 @@ fn a_settlement_reaches_the_session_that_started_it_and_not_its_sibling() {
     );
 }
 
-/// A child's turn ending does not silence its tree's watchers.
-///
-/// [`JobWatchers::shares_tree`] shared the `stop` flag along with the queue, on the reasoning
-/// that *"a tree closes together"*. It does not: `Harness::close_backend` runs at the end of a
-/// CHILD's turn, so the first subagent to finish stopped every watcher in the tree at its next
-/// chunk - and a job that settled inside one [`WATCH_CHUNK`] still reported, which is why the
-/// root kept hearing about short jobs and stopped hearing about a forty-five-second one.
+/// A child's turn ending does not silence its tree's watchers. [`JobWatchers::shares_tree`]
+/// shared the `stop` flag along with the queue, on the reasoning that *"a tree closes
+/// together"*. It does not:
 #[test]
 fn a_childs_close_does_not_stop_its_trees_watchers() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
@@ -962,12 +911,9 @@ fn wait_for(w: &JobWatchers, drain: fn(&JobWatchers) -> Vec<JobCompletion>) -> J
     }
 }
 
-/// A background job's PROCESS is written down, and its ending moves it - both halves provable
-/// without a delegated cgroup, because neither needs a process this daemon started: the record
-/// comes from the live view at the start and from the settlement at the end.
-///
-/// The identity is this process's own - `start:<n>` from `/proc` - so the assertion is the real
-/// one: a pid plus *which* process had it, which is what makes a reused number not this job.
+/// A background job's PROCESS is written down, and its ending moves it - both halves
+/// provable without a delegated cgroup, because neither needs a process this daemon
+/// started:
 #[test]
 fn a_jobs_process_record_reads_running_then_done() {
     let dir = std::env::temp_dir().join(format!("letibot-recorder-proc-{}", std::process::id()));
@@ -1079,9 +1025,7 @@ fn a_jobs_process_record_reads_running_then_done() {
     );
 
     // And a kill is NOT an exit status: `stopped`, with no code to report. This half is the
-    // HOST's, so the other arm of the same function is exercised too: a job on another machine
-    // carries its host in the row and is identified by its command line, since a pid there cannot
-    // be read from here.
+    // HOST's, so the other arm of the same function is exercised too:
     let remote =
         JobRecorder::new(path.clone(), "s-jobs".into(), Weak::new()).on(Some("lab2x1".into()));
     let mut elsewhere = view.clone();
@@ -1112,11 +1056,7 @@ use letibot_tools::exec::Aggregate as _;
 use std::sync::Condvar;
 
 /// A job of jobs the test settles by hand - an [`letibot_tools::exec::Aggregate`] with no
-/// branches behind it.
-///
-/// Deliberately not a process: what is under test is the channel its table travels (handle →
-/// `wait_job` → `JobSettled` → the completion → the notice), and a box with no cgroup v2 can
-/// prove every hop of it.
+/// branches behind it. Deliberately not a process:
 struct Table {
     state: Mutex<Option<JobState>>,
     rung: Condvar,
@@ -1248,12 +1188,9 @@ fn slice_of(
     }
 }
 
-/// A job of jobs settles through the job channel, and its table is what the model is woken with.
-///
-/// Three hops, and the third is the one this slice adds: the session says what it is waiting on
-/// while the thing runs; `JobSettled` reaches the hub and a completion is queued - the channel
-/// `bash` already uses, so the wake needs no new mechanism; and the completion carries the
-/// per-host table, the one thing a `bash` settlement deliberately does not carry.
+/// A job of jobs settles through the job channel, and its table is what the model is woken
+/// with. Three hops, and the third is the one this slice adds: the session says what it is
+/// waiting on while the thing runs;
 #[test]
 fn a_job_of_jobs_settles_through_the_jobs_channel_and_carries_its_table() {
     let root = std::env::temp_dir().join(format!("letibot-fanout-watch-{}", std::process::id()));

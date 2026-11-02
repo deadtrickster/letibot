@@ -1,21 +1,11 @@
-//! A plugin pane, end to end, through the REAL wasm - W4 of `docs/plugins-slice1.md`.
-//!
-//! Every step is the real one: a daemon serving one session, a head's `ClientFrame::PaneOpen` on a
-//! real socket, the daemon's `PaneDriver`, `Stack` resolving `pane_dashboard`, the rano `Loader`
-//! compiling the example's `plugin.wasm`, the pane's two answers, and `SessionEvent::PluginPane`
-//! back up the same socket.
-//!
-//! Nothing here is a stub but the model, and the model is never asked anything: the session opens on
-//! the byte vocabulary with a provider that is named and never called, so this runs on a box with no
-//! GGUF, no server and no key.
-//!
-//! The two frames are the proof that a look ran and its result came back: the first is titled `plan`
-//! with one unavailable panel and asks for `.letibot/status.json`, and the last is the dashboard
-//! titled `plan · v0.2.0` (the name the status file carries) and holding the plan's tiers.
-//!
-//! `plugin.toml`, `plugin.wasm` and `status.example.json` are copied from
-//! `plugins/examples/plan-dashboard/` - exactly what a person installing this dashboard copies. The
-//! module is committed, so nothing here compiles wasm.
+//! A plugin pane, end to end, through the REAL wasm - W4 of `docs/plugins-slice1.md`. Every
+//! step is the real one: a daemon serving one session, a head's `ClientFrame::PaneOpen` on
+//! a real socket, the daemon's `PaneDriver`, `Stack` resolving `pane_dashboard`, the rano
+//! `Loader` compiling the example's `plugin.wasm`, the pane's two answers, and
+//! `SessionEvent::PluginPane` back up the same socket. Nothing here is a stub but the
+//! model, and the model is never asked anything: the session opens on the byte vocabulary
+//! with a provider that is named and never called, so this runs on a box with no GGUF, no
+//! server and no key.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

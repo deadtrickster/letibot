@@ -1,13 +1,11 @@
-//! A holder of a room item gets a todo row, and the idle check carries it - `docs/room.md` § *Still
-//! owed* item 3, end to end: a real socket, a real `Harness`, the real `room` tool and the real nag.
-//!
-//! One row per item, never a second: the board's key is a row's exact `content`, so a row carrying a
-//! clock would be a new row every pass - a nag machine. The row is retired when the item is, it
-//! names the room item in `wait_on` (the whole of quiet-or-loud), and only top-level sessions get
-//! one.
-//!
-//! No model, no store, no GGUF: the byte vocabulary and a `Server` on this test's own socket.
-//! `LETIBOT_ROOM_SOCKET` is process-wide, so this file holds one test.
+//! A holder of a room item gets a todo row, and the idle check carries it - `docs/room.md`
+//! § *Still owed* item 3, end to end: a real socket, a real `Harness`, the real `room` tool
+//! and the real nag. One row per item, never a second: the board's key is a row's exact
+//! `content`, so a row carrying a clock would be a new row every pass - a nag machine. The
+//! row is retired when the item is, it names the room item in `wait_on` (the whole of
+//! quiet-or-loud), and only top-level sessions get one. No model, no store, no GGUF: the
+//! byte vocabulary and a `Server` on this test's own socket. `LETIBOT_ROOM_SOCKET` is
+//! process-wide, so this file holds one test.
 
 use std::sync::Arc;
 

@@ -543,10 +543,9 @@ impl RegistryDoor {
     }
 }
 
-/// What the daemon's log says its queues will serve, read from the SAME list the supervisor's
-/// pass reads ([`repositories_of_workspace`]), so the line and the work cannot disagree. The
-/// singular rule once said "serving nothing" while the pass walked every repository of a
-/// project's folder; a folder that merely contains unrelated checkouts is still nobody's session.
+/// What the daemon's log says its queues will serve, read from the SAME list the
+/// supervisor's pass reads ([`repositories_of_workspace`]), so the line and the work cannot
+/// disagree.
 pub fn serving_line(workspace: &Path) -> String {
     let repos = repositories_of_workspace(workspace);
     let names = |rs: &[String]| {
@@ -579,14 +578,8 @@ pub fn serving_line(workspace: &Path) -> String {
     }
 }
 
-/// Start the queues for a daemon: `None` with no `--store` (the queues live in the store) and
-/// `None` under `--no-queue`. The watcher is spawned in both cases and the supervisor only
-/// without the flag, because a daemon that serves no queue still has heads that must redraw when
-/// another daemon moves a row.
-///
-/// `desk` is a parameter because the same desk has to be on both sides of one judgement: the
-/// workers ask it whether a dead reviewer already handed its verdict in, and the review pass
-/// writes that verdict onto the row.
+/// Start the queues for a daemon: `None` with no `--store` (the queues live in the store)
+/// and `None` under `--no-queue`.
 pub fn spawn_for(
     cfg: &crate::config::Config,
     stop: Arc<AtomicBool>,
@@ -654,11 +647,9 @@ pub fn spawn_for(
     }
 }
 
-/// Why this daemon's queues still need it, if they do: the merge queue's half of the idle exit.
-/// A repository whose lease this daemon holds and that has a row in line (queued or gating
-/// waiting or under review) is work it is serving. A BLOCKED row does not hold it - that row waits
-/// on a person, and the lease's next holder re-gates it at start. `None` for an unreadable store
-/// that is not work, and the worker loop says so on its own.
+/// Why this daemon's queues still need it, if they do: the merge queue's half of the idle
+/// exit. A repository whose lease this daemon holds and that has a row in line (queued or
+/// gating waiting or under review) is work it is serving.
 pub fn busy_here(store_path: &Path) -> Option<String> {
     use letibot_tokencore::store::{MergeState, ReviewState};
     let store = Store::open(store_path).ok()?;
@@ -762,10 +753,9 @@ pub fn serves(workspace: &Path, repo: &Path) -> bool {
         .any(|mine| Path::new(mine) == key)
 }
 
-/// The hubs a repository's queue alert goes to: the sessions this registry holds whose workspace
-/// is a session of `repository`, and the review queue's own session, whose board IS the queue.
-/// Never every hub - a red `main` is news to those and noise everywhere else. The queue's session
-/// is found by shape ([`letibot_sessionlog::is_gatekeeper_session`]), since each has its own id.
+/// The hubs a repository's queue alert goes to: the sessions this registry holds whose
+/// workspace is a session of `repository`, and the review queue's own session, whose board
+/// IS the queue. Never every hub - a red `main` is news to those and noise everywhere else.
 pub fn hubs_of_repository(
     registry: &letibot_sessionlog::registry::Registry,
     store: Option<&Store>,

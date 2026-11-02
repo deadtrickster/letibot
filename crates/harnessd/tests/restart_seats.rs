@@ -1,34 +1,10 @@
-//! A restart restores a session to a WORKING state, not to a waking one.
-//!
-//! The acceptance case: a todo conditioned on a job's end, then a restart of the head and the daemon -
-//! once the server is back it should fire, because the job is gone.
-//!
-//! The DECISION is already tested elsewhere: `harness::fate_of` reads a handle this daemon never ran
-//! as `JobFate::Unknown`, and `Unknown` MEETS the condition. What was missing is the DELIVERY, and
-//! the hole is one sentence long: every door that turns a stored fact into a turn is a bell, and a
-//! bell is rung by something that was running before the restart. `Harness::wake` is the only
-//! reader of `due_todo_rows`, `queue_notices` and `handover_notices`; the worker is only ever woken
-//! by a ring; and the job watcher that would have rung for this settlement died with its daemon. So
-//! a resumed session is opened, armed and parked, and nothing rings it.
-//!
-//! What is staged is a restart, and the store is what makes it one: a session, a transcript, a
-//! board and a job row are written by hand, and the daemon that comes up against them has never seen
-//! any of it - the state `--continue` starts in. What is NOT staged is the process boundary itself
-//! no `exit` and no `exec`, because the subject is which ring reaches the worker.
-//!
-//! The control is the door a daemon that did NOT restart has: the world RINGS the session
-//! (`Bell::ring_wake`, which `jobwatch` calls the moment a job settles). It is rung here by the test
-//! rather than by a real job, because a real job's watcher cannot be summoned after the daemon it
-//! belonged to is gone - which is precisely the defect - so the control asserts the MECHANISM: a
-//! ring is what seats the firing, and it seats it at once.
-//!
-//! It needs the vocabulary GGUF ([`vocab_gguf`] announces a skip when it is not here rather than
-//! failing, and `LETIBOT_REQUIRE_APPARATUS=1` refuses that skip) and not a provider: a
-//! `ProviderConfig` is not this file's to name, because the engine takes a configured provider's own
-//! URL and a fixture that named one would send its turn to a real endpoint. The local door is the
-//! GGUF with `endpoint` on a CLOSED port and no retry ladder, so the turn fails in milliseconds
-//! without leaving the box. The row is asserted, not the answer: `Harness::wake` appends the
-//! `[todo] … is due` item BEFORE it calls the model, so this file measures the seating.
+//! A restart restores a session to a WORKING state, not to a waking one. The acceptance
+//! case: a todo conditioned on a job's end, then a restart of the head and the daemon -
+//! once the server is back it should fire, because the job is gone. The DECISION is already
+//! tested elsewhere: `harness::fate_of` reads a handle this daemon never ran as
+//! `JobFate::Unknown`, and `Unknown` MEETS the condition. What was missing is the DELIVERY,
+//! and the hole is one sentence long: every door that turns a stored fact into a turn is a
+//! bell, and a bell is rung by something that was running before the restart.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -146,12 +122,8 @@ fn write_rows(store: &Store, transcript: &str, prefix_tokens: &[u32], items: &[T
     }
 }
 
-/// The store a restart finds: a conversation, a board with one conditioned row on it, and the
-/// job row that says what became of the handle.
-///
-/// The job row is the durable half `JobRecord` exists for - a handle a pane listed a moment ago
-/// answered `no job … here` to the next daemon. It is written with the daemon that ran the job, and
-/// the daemon that comes back reads it.
+/// The store a restart finds: a conversation, a board with one conditioned row on it, and
+/// the job row that says what became of the handle.
 fn seed(path: &Path, parts: &Parts, session_id: &str) {
     let store = Store::open(path).expect("opening the store");
     store
@@ -266,12 +238,9 @@ fn the_firing(hub: &Hub) -> Option<(String, Duration)> {
     })
 }
 
-/// Wait for the firing, or give up and say so - a bounded wait, so a failure is an assertion rather
-/// than a hung test. Returns what was seated and how long after the daemon's own first pass it took.
-///
-/// The poll is finer than the thing it measures, so the number is a reading rather than the poll's
-/// own granularity: the seating is one worker pass, and a 50 ms sleep would report every answer as
-/// `50ms`.
+/// Wait for the firing, or give up and say so - a bounded wait, so a failure is an
+/// assertion rather than a hung test. Returns what was seated and how long after the
+/// daemon's own first pass it took.
 fn wait_for_the_firing(hub: &Hub) -> Option<(String, Duration)> {
     let began = Instant::now();
     while began.elapsed() < PATIENCE {
@@ -284,12 +253,8 @@ fn wait_for_the_firing(hub: &Hub) -> Option<(String, Duration)> {
 }
 
 /// The daemon after a restart seats the firing by itself - no head, no command, and nothing
-/// ringing.
-///
-/// The session is the store's: the board is on disk, the job's ending is on disk, and the daemon that
-/// comes up against them has never seen either. What it must do is put the restored session to work -
-/// the door every other between-turns fact arrives through (`Sessions::wake` → `Harness::wake`)
-/// reached by the daemon's own ring rather than by a watcher that no longer exists.
+/// ringing. The session is the store's: the board is on disk, the job's ending is on disk,
+/// and the daemon that comes up against them has never seen either.
 #[test]
 fn a_restart_fires_the_row_whose_job_is_gone() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -311,11 +276,7 @@ fn a_restart_fires_the_row_whose_job_is_gone() {
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
-    // WHERE THE MINUTE GOES, read off the daemon's own clock. The only deadline a restored
-    // session has is the idle plan-check, armed a minute out - that is the turn after a restart, and
-    // what it carries is the plan's unfinished work (`unfinished_plan`), NOT the fate of the handle
-    // the row waits on. So the firing is not on that clock: the two facts are read here together
-    // before the worker takes the thread.
+    // WHERE THE MINUTE GOES, read off the daemon's own clock.
     let clock = sessions
         .next_nag_at()
         .expect("the restored session's plan check is armed — the row is Pending");
@@ -364,14 +325,9 @@ fn a_restart_fires_the_row_whose_job_is_gone() {
     );
 }
 
-/// The control: a ring is what seats it, and it seats it at once.
-///
-/// This is the door a daemon that did NOT restart has - `jobwatch`'s watcher thread calls
-/// `Bell::ring_wake` the instant a job settles, and the merge queue's door rings the same way. It is
-/// rung here by the test rather than by a real job, because the watcher that would ring it belonged
-/// to the process that died: that is the defect, and a fixture that could summon it back would
-/// be testing something else. What this pins is the mechanism the first test turns on - a ring
-/// reaches the worker, and the worker seats the stored fact.
+/// The control: a ring is what seats it, and it seats it at once. This is the door a daemon
+/// that did NOT restart has - `jobwatch`'s watcher thread calls `Bell::ring_wake` the
+/// instant a job settles, and the merge queue's door rings the same way.
 #[test]
 fn a_ring_seats_the_firing_at_once() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

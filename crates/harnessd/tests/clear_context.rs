@@ -354,11 +354,9 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     stub.release(usize::MAX);
     std::fs::write(&go, b"").expect("the job's go file");
 
-    // (3) and (4): both settlements reach the NEW conversation. A routine result is HELD - nothing
-    // on this board waits on the job or the child - so it rides in with the next turn the model
-    // takes anyway, as one `[meanwhile]` batch: the loop wakes, and once both have SETTLED takes
-    // the one turn a person would. "Settled" is read off the settlements, not off a stopwatch, so a
-    // loaded box makes this wait longer and never makes it wrong.
+    // (3) and (4): both settlements reach the NEW conversation. A routine result is HELD -
+    // nothing on this board waits on the job or the child - so it rides in with the next turn
+    // the model takes anyway, as one `[meanwhile]` batch:
     let began = Instant::now();
     let mut prompted = false;
     loop {
@@ -496,11 +494,9 @@ fn a_childs_clear_is_answered_by_its_own_thread() {
 // The stub (`message_between_turns.rs`'s): a request held until released
 // ---------------------------------------------------------------------------
 
-/// A model that answers on a gate, and keeps every request it was asked.
-///
-/// `canned::Canned` answers too fast to stand in a mid-flight turn, so a request is read
-/// recorded and held until the test releases it: *"the child is in a turn"* becomes a state the
-/// test stands in rather than races.
+/// A model that answers on a gate, and keeps every request it was asked. `canned::Canned`
+/// answers too fast to stand in a mid-flight turn, so a request is read recorded and held
+/// until the test releases it:
 struct Stub {
     endpoint: Endpoint,
     shared: Arc<Gate>,

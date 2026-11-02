@@ -365,9 +365,8 @@ fn run(q: &RepoQueue, passes: usize) {
 #[test]
 fn a_landing_withdrawn_while_its_gate_runs_does_not_land() {
     /// A gate that waits until the test lets it go, so the row can be withdrawn WHILE it runs.
-    ///
-    /// Only the LANDING's gate is held, and the wait has a deadline, so a test that fails before it
-    /// lets go cannot wedge the whole binary.
+    /// Only the LANDING's gate is held, and the wait has a deadline, so a test that fails
+    /// before it lets go cannot wedge the whole binary.
     struct HeldGate {
         go: Arc<(Mutex<bool>, std::sync::Condvar)>,
     }
@@ -639,10 +638,9 @@ fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
     let (wt, base, head) = branch(&w.repo, "slow", "s.txt");
     w.enqueue("slow", &wt, &base, &head);
     let mut e = env(Arc::new(LocalGate), w.door.clone(), "a");
-    // The deadline has to be longer than the gate's own SETUP, or the test measures the machine
-    // the gate makes its scratch directory and resolves its cgroup before the step's first line, and
-    // on a loaded box that is over a second. Ten
-    // seconds is still six times shorter than the step's own sleep, so the test asserts the same thing.
+    // The deadline has to be longer than the gate's own SETUP, or the test measures the
+    // machine the gate makes its scratch directory and resolves its cgroup before the step's
+    // first line, and on a loaded box that is over a second.
     Arc::get_mut(&mut e).unwrap().gate_deadline = Duration::from_secs(10);
     let store = w.store();
     store
@@ -1439,10 +1437,9 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
     assert_eq!(health().state, HealthState::Green);
 }
 
-/// A red target puts its sentence on a session, not only on a bell - the operator's report of
-/// 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*. A ring wakes a
-/// project's roots and leaves what happened to the store; a session that is merely woken cannot act on
-/// what it was not told. And a door with no sessions takes today's path exactly: the card, no claim.
+/// A red target puts its sentence on a session, not only on a bell - the operator's report
+/// of 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*. A ring
+/// wakes a project's roots and leaves what happened to the store;
 #[test]
 fn a_red_target_is_told_to_a_session_not_only_rung() {
     let w = World::new("redwords");
@@ -1744,10 +1741,9 @@ fn a_green_tip_withdraws_the_red_rows_review_and_leaves_nothing_open() {
     assert!(why.starts_with(&format!("superseded by {green}")), "{why}");
 }
 
-/// A `reviewing` row whose reviewer child is not alive goes back to `waiting` - the operator's
-/// other report: after a daemon restart two rows stayed `reviewing` under children that no longer
-/// existed. Liveness is the registry's, and the attempt is counted, so a child that keeps vanishing
-/// reaches `blocked` rather than looping for ever.
+/// A `reviewing` row whose reviewer child is not alive goes back to `waiting` - the
+/// operator's other report: after a daemon restart two rows stayed `reviewing` under
+/// children that no longer existed.
 #[test]
 fn a_reviewing_row_whose_reviewer_is_not_alive_is_re_seated_on_the_next_pass() {
     let w = World::new("reviewer-gone");
@@ -1889,11 +1885,9 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
     crate::mergequeue::review::serve(&pool).expect("a pass of the reviewers' host")
 }
 
-/// A reviewer has started on `id` and handed its verdict in at the desk - the two acts that belong
-/// to the child, and the state the queue's worker then has to read correctly.
-///
-/// `tree` is load-bearing, not decoration: `review::verdict` asks whether that tree is still there
-/// before it writes a judgement, so a fixture that named `""` would wait for a tree for ever.
+/// A reviewer has started on `id` and handed its verdict in at the desk - the two acts that
+/// belong to the child, and the state the queue's worker then has to read correctly. `tree`
+/// is load-bearing, not decoration:
 fn a_reviewer_has_judged(
     store: &Store,
     desk: &ReviewDesk,
@@ -1940,14 +1934,9 @@ fn a_reviewer_has_judged(
     .expect("the reviewer's verdict is taken at the desk");
 }
 
-/// A reviewer whose verdict is waiting at the desk is not `gone` - the defect measured on the
-/// operator's daemon, 2026-10-29 evening: a reviewer's last act is handing its verdict in and its turn
-/// ending, and a session whose turn has ended is not live. The worker re-seated a row that had just
-/// judged, and the pass that then found the verdict threw it away - eighteen `reviewing` transitions
-/// nine reviewers on one branch, not one `approved`.
-///
-/// The contract is BETWEEN the two loops: the worker leaves a judged row where it is, and the
-/// reviewers' host writes the verdict.
+/// A reviewer whose verdict is waiting at the desk is not `gone` - the defect measured on
+/// the operator's daemon, 2026-10-29 evening: a reviewer's last act is handing its verdict
+/// in and its turn ending, and a session whose turn has ended is not live.
 #[test]
 fn a_verdict_waiting_at_the_desk_is_not_a_dead_reviewer() {
     let w = World::new("verdict-waiting");
@@ -2120,9 +2109,6 @@ fn a_reviewer_that_died_without_handing_a_verdict_in_is_still_re_seated() {
 // ===== The reviewer is alive while it is OPENING =====
 
 /// A model endpoint that says how big its window is, when the test says it may.
-///
-/// The one thing a spawn does before its child's session exists is ask the PARENT's endpoint for the
-/// window, so an endpoint that HOLDS that answer holds the child inside its own open - a state, not a race.
 struct HeldProps {
     url: String,
     state: Arc<(Mutex<PropsState>, std::sync::Condvar)>,
@@ -2214,13 +2200,8 @@ impl Drop for HeldProps {
 }
 
 /// A reviewer that is still OPENING is alive; one that ends without a verdict still is not.
-///
-/// The operator's report, 2026-10-26: every review was re-seated seconds after it started and BLOCKED
-/// at *attempt 3 of 3* - 2.0 s, one queue pass. The cause is the answer, not the rule: a child's HANDLE
-/// exists before its SESSION does (the open of a VM-placed reviewer is a clone and a boot), so the
-/// registry answered *nothing by that id* about a child that had just been started.
-///
-/// The child here is real, and the window is a state the test stands in rather than a race.
+/// The operator's report, 2026-10-26: every review was re-seated seconds after it started
+/// and BLOCKED at *attempt 3 of 3* - 2.0 s, one queue pass.
 #[test]
 fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
     let dir = TempDir::new("reviewer-opening");
@@ -2842,10 +2823,9 @@ impl GateRunner for CouldNotRunGate {
     }
 }
 
-/// A gate that could not run does not halt the queue - the 2026-10-30 halt, pinned: a poll slower
-/// than ten seconds on a busy machine sent the target `blocked`, which stops BOTH queues, and four
-/// branches sat behind a healthy host. A run that could not start judged nothing - not `blocked`, and
-/// not `red`, because nothing about the code was read.
+/// A gate that could not run does not halt the queue - the 2026-10-30 halt, pinned: a poll
+/// slower than ten seconds on a busy machine sent the target `blocked`, which stops BOTH
+/// queues, and four branches sat behind a healthy host.
 #[test]
 fn a_gate_that_could_not_run_leaves_the_target_gating_and_tries_again_by_itself() {
     let w = World::new("unjudgedretry");
@@ -3023,10 +3003,9 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
     );
 }
 
-/// `--no-queue`: a daemon seated in a package's worktree serves no queue - it claims no lease and
-/// gates nothing, and the flag is the whole of the difference. The defect (`docs/claude-code-bridge.md`
-/// 2026-10-26): a bridge daemon for a package in a worktree of this repository is one of its session
-/// daemons, so it took letibot's lease and put an EMERGENCY in front of the package's model.
+/// `--no-queue`: a daemon seated in a package's worktree serves no queue - it claims no
+/// lease and gates nothing, and the flag is the whole of the difference. The defect
+/// (`docs/claude-code-bridge.md` 2026-10-26):
 #[test]
 fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
     use letibot_sessionlog::registry::Registry;
@@ -3145,10 +3124,9 @@ fn a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_sessi
 
 // ===== The queue is the repositories that asked for it =====
 
-/// A repository named `name` under `under`, with `agents` as its `AGENTS.md` - and an origin on
-/// `github.com/stroppy-io/…`, so a folder holding two of them is ONE project
-/// ([`crate::mergequeue::git::repos_of_workspace`] keeps the children only when every remote names
-/// the same owner).
+/// A repository named `name` under `under`, with `agents` as its `AGENTS.md` - and an
+/// origin on `github.com/stroppy-io/…`, so a folder holding two of them is ONE project
+/// ([`crate::mergequeue::git::repos_of_workspace`] keeps the children only when every
 fn repo_with_agents(under: &Path, name: &str, agents: Option<&str>) -> PathBuf {
     let repo = under.join(name);
     std::fs::create_dir_all(&repo).unwrap();
@@ -3173,10 +3151,9 @@ fn repo_with_agents(under: &Path, name: &str, agents: Option<&str>) -> PathBuf {
     std::fs::canonicalize(repo).unwrap()
 }
 
-/// How long a supervisor fixture waits for the pass that writes the fact it is about - a hang
-/// detector, not a budget: these tests need under a second on an idle box and minutes on the merge
-/// gate's. It is ONE clock: this loop's 20 s used to sit inside `leases_seen_over`'s 120 s ceiling
-/// so the inner one could never fire and a slow box came back as a false statement about the SUBJECT.
+/// How long a supervisor fixture waits for the pass that writes the fact it is about - a
+/// hang detector, not a budget: these tests need under a second on an idle box and minutes
+/// on the merge gate's. It is ONE clock:
 pub(crate) const SERVE_BUDGET: Duration = Duration::from_secs(120);
 
 /// Run a supervisor until `until` says so of the store, and SAY SO when it never does. `what` is the
@@ -3220,12 +3197,9 @@ fn serve_until(
     s
 }
 
-/// Serve `workspace` for a few passes, and record every lease held at any observation - a lease is
-/// given up when the service stops, so *was it ever claimed* is answered by what was seen while it ran.
-///
-/// The stop condition is the caller's fact and nothing else: a 3 500 ms floor used to stop the
-/// service between the claim and the health row the worker's first pass writes - so a slow box came back
-/// as *the one that asked was gated* about a supervisor that had done the right thing.
+/// Serve `workspace` for a few passes, and record every lease held at any observation - a
+/// lease is given up when the service stops, so *was it ever claimed* is answered by what
+/// was seen while it ran. The stop condition is the caller's fact and nothing else:
 fn leases_seen_over(
     workspace: &Path,
     db: &Path,
@@ -3253,9 +3227,8 @@ fn leases_seen_over(
 }
 
 /// A repository whose target declares no `Merge gate` is not a queue target - the operator
-/// 2026-10-26: *"red most of the time everywhere … something happens somewhere and result is ignored"*.
-/// Their supervisor held a lease on fifteen repositories and fourteen were `blocked: no Merge gate`, each
-/// counted *unjudged* in every head. A repository asks by declaring a gate, and until it does it is not served.
+/// 2026-10-26: *"red most of the time everywhere … something happens somewhere and result
+/// is ignored"*.
 #[test]
 fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
     let dir = TempDir::new("opt-in");
@@ -4088,17 +4061,13 @@ fn a_queue_holds_its_daemon_up_only_while_it_has_work_in_line() {
     );
 }
 
-// ===== What the daemon's log says, in one line =====
-//
-// The daemon started in the foreground writes its log to the operator's terminal, so these lines are
-// read interleaved with the banner. MEASURED 2026-10-26: fifteen *"… is not a queue target"* lines
-// twice each, around a banner that also said *"queues: serving nothing"*. The functions below are the
-// whole of what the log says about each of those, so they can be asserted without a terminal.
+// ===== What the daemon's log says, in one line ===== The daemon started in the foreground
+// writes its log to the operator's terminal, so these lines are read interleaved with the
+// banner. MEASURED 2026-10-26:
 
 /// The not-a-target line is the folder's, not the repository's, and it is said once.
-///
-/// `not_targets_to_say` is the state machine: the first pass answers a line, the same set answers
-/// `None`, and a repository gaining its gate answers a different one.
+/// `not_targets_to_say` is the state machine: the first pass answers a line, the same set
+/// answers `None`, and a repository gaining its gate answers a different one.
 #[test]
 fn the_not_a_target_line_is_one_line_per_pass_and_only_when_the_set_changes() {
     let dir = TempDir::new("not-target-line");
@@ -4195,12 +4164,7 @@ fn the_leases_a_pass_gave_up_are_said_in_one_line() {
 }
 
 /// The startup line is the supervisor's own list - the contradiction the operator read on
-/// 2026-10-26: *"queues: serving nothing - … is a session of no repository"*, and then fifteen
-/// repositories examined under it, whose leases that same daemon had held that morning.
-///
-/// The rule kept is `serves`'s: a daemon serves a repository when its workspace is a session of that
-/// repository, and a folder that merely CONTAINS unrelated checkouts is nobody's session. The line is
-/// `repositories_of_workspace`, which is what the pass reads, so the two cannot disagree.
+/// 2026-10-26: *"queues:
 #[test]
 fn the_serving_line_names_what_the_supervisor_will_actually_examine() {
     // One project of several - the operator's `~/Projects/stroppy-io`, in miniature.
@@ -4297,11 +4261,9 @@ fn a_one_shot_takes_no_lease() {
 
 // ===== The invariant: the COMMITS decide, never the row's state =====
 
-/// A `blocked` landing whose branch is not merged keeps everything, and the sweep removes nothing
-/// - the ref, the worktree and the caches inside it all stay.
-///
-/// `blocked` is still the merge queue's business ([`MergeState::is_open`]), so the sweep does not look at
-/// the row at all - and it is the state a person's `/queue restart` resumes.
+/// A `blocked` landing whose branch is not merged keeps everything, and the sweep removes
+/// nothing `blocked` is still the merge queue's business ([`MergeState::is_open`]), so the
+/// sweep does not look at the row at all - and it is the state a person's `/queue restart`
 #[test]
 fn a_blocked_landings_branch_and_tree_are_never_released() {
     let w = World::new("invariant-blocked");
@@ -4441,10 +4403,9 @@ fn a_withdrawn_row_keeps_the_ref_of_a_branch_that_is_not_on_the_target() {
     assert!(notes[0].starts_with("resources kept"), "{}", notes[0]);
 }
 
-/// The invariant, end to end: plant a branch with one unmerged commit, put a terminal row of each
-/// kind on it, run the sweep over and over, and the ref still resolves to that commit.
-///
-/// *Nothing in the queue may delete a ref whose commits are not on the target.*
+/// The invariant, end to end: plant a branch with one unmerged commit, put a terminal row
+/// of each kind on it, run the sweep over and over, and the ref still resolves to that
+/// commit. *Nothing in the queue may delete a ref whose commits are not on the target.*
 #[test]
 fn the_sweep_never_deletes_a_ref_whose_commits_are_not_on_the_target() {
     let w = World::new("invariant-every-row");
@@ -4540,10 +4501,8 @@ fn a_tree_whose_own_head_is_not_on_the_target_is_kept_and_says_so() {
 }
 
 /// A landing the target was rewritten past keeps the branch - the second ref-deleting path
-/// `landed`, proved too.
-///
-/// `landed_sha` IS the proof - while that sha is still on the target, and the window is not zero: the
-/// install gate is a SECOND gate, so a `git reset --hard` can land between the swap and the retirement.
+/// `landed`, proved too. `landed_sha` IS the proof - while that sha is still on the target,
+/// and the window is not zero:
 #[test]
 fn a_landing_the_target_was_rewritten_past_keeps_the_branch() {
     /// Green, and it puts the target back while the landing's INSTALL step runs.
@@ -4734,10 +4693,9 @@ impl GateRunner for Counting {
     }
 }
 
-/// One gate for three branches, and the target moves once per landing.
-///
-/// The operator's decision of 2026-10-30 - *"we can batch merges at this point"* - on the numbers that
-/// made it: the gate is 683 s of an 11.8-minute landing, paid per branch, while the REVIEW does not move.
+/// One gate for three branches, and the target moves once per landing. The operator's
+/// decision of 2026-10-30 - *"we can batch merges at this point"* - on the numbers that
+/// made it:
 #[test]
 fn a_train_of_three_green_branches_lands_three_commits_with_one_gate() {
     let w = World::new("train-green");

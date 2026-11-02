@@ -1,17 +1,11 @@
-//! `--continue` opens a conversation - and a reviewer is not one.
-//!
-//! The launcher defines `--continue` as *reopen the newest session in THIS workspace*, and the
-//! merge queue spawns its reviewers as sessions - subagents of the session that enqueued the
-//! entry. Ten of them for one workspace's entries is enough to make the newest row a reviewer.
-//!
-//! The resolution is a pure rule and its unit tests are beside it (`cli.rs`); what is asserted HERE
-//! is the interface a person and a script meet: the one line on stdout, which must be the
-//! conversation's id and nothing else, and the sentence on stderr for a workspace that holds
-//! nothing but children.
-//!
-//! `--latest-session` is read by `~/bin/letibot` as `$(harnessd … --latest-session …)`, so the
-//! printed line IS the contract: a unit test on the resolution cannot see the printing, and the
-//! printing is the half a person meets.
+//! `--continue` opens a conversation - and a reviewer is not one. The launcher defines
+//! `--continue` as *reopen the newest session in THIS workspace*, and the merge queue
+//! spawns its reviewers as sessions - subagents of the session that enqueued the entry. Ten
+//! of them for one workspace's entries is enough to make the newest row a reviewer. The
+//! resolution is a pure rule and its unit tests are beside it (`cli.rs`); what is asserted
+//! HERE is the interface a person and a script meet: the one line on stdout, which must be
+//! the conversation's id and nothing else, and the sentence on stderr for a workspace that
+//! holds nothing but children.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,14 +70,8 @@ fn session_row(
 }
 
 /// Give a session rows, and make sure the store's clock has passed `after_ms` FIRST.
-///
-/// Returns the `last_activity_ms` the store then reports, which is what the resolution orders by.
-///
-/// The wait comes *before* the rows, and that is the whole of the correctness here. `created_at` is
-/// stamped once, when a row is appended, so a fixture that waits afterwards waits for a number that
-/// cannot change: two sessions written inside the same millisecond tie, and a tie is broken by the
-/// order the session rows were inserted - which is the order a fixture writes them in. A test that
-/// means *the reviewer is NEWER than the conversation* would then pass with the rule removed.
+/// Returns the `last_activity_ms` the store then reports, which is what the resolution
+/// orders by.
 fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
     wait_past(after_ms);
     let prefix = store
@@ -179,12 +167,8 @@ fn listing(store: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The rows a listing puts in one group - the ids under that group's header, in the order they
-/// were drawn.
-///
-/// The listing is grouped (`cli.rs`'s `Query::List`): a header line per group, `mine (1) - …`, then
-/// its rows, each an id at the left margin with its workspace under it. Read the header's TITLE and
-/// the ids between it and the next header.
+/// The rows a listing puts in one group - the ids under that group's header, in the order
+/// they were drawn. The listing is grouped (`cli.rs`'s `Query::List`):
 fn group_of_rows(listed: &str, group: &str) -> Vec<String> {
     const GROUPS: [&str; 5] = ["mine", "subagents", "review queue", "packages", "one-shots"];
     let header = |l: &str| {
@@ -255,12 +239,8 @@ fn the_line_on_stdout_is_the_conversation_and_not_the_reviewer() {
     );
 
     // And the listing agrees with the resolution. `--sessions` offers the conversation and no
-    // reviewer, so the row `--continue` picks is one of them: two queries, one store, one answer.
-    //
-    // The group a reviewer lands in is the point: these ten are parented straight on the
-    // conversation, seated `gatekeeper`, titled from the review brief - the layout before the queue
-    // had a session of its own. They are the REVIEW QUEUE's work, not the operator's subagents, and
-    // a listing that offered them under `subagents` would be the same defect with a header on it.
+    // reviewer, so the row `--continue` picks is one of them: two queries, one store, one
+    // answer. The group a reviewer lands in is the point:
     let listed = listing(&path);
     assert_eq!(
         group_of_rows(&listed, "mine"),

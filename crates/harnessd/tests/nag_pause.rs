@@ -1,15 +1,11 @@
-//! The operator's `/nag pause`, end to end through the daemon's own door - the verb as a head sends
-//! it (`CommandKind::Slash`), the clock it stands down, the hub rows that make it loud, the settings
-//! row a head draws it from, and the session row that carries it across a restart.
-//!
-//! The operator asked for a way to stop todo nags, and for the pause to be loud. The clock's own
-//! reading of a pause is pinned in `sessions/idle_nag.rs`; what only this crate can assert is the
-//! seam - that the verb reaches the clock, that a delivery pass runs no turn for a paused session
-//! that a pause with an end is LIFTED by the pass that finds it over, and that a resume comes back
-//! paused.
-//!
-//! It needs the vocabulary GGUF and not a model: the endpoint is a port nothing listens on, with no
-//! retries, so a turn that ran would fail at once and the assertions are that none runs.
+//! The operator's `/nag pause`, end to end through the daemon's own door - the verb as a
+//! head sends it (`CommandKind::Slash`), the clock it stands down, the hub rows that make
+//! it loud, the settings row a head draws it from, and the session row that carries it
+//! across a restart. The operator asked for a way to stop todo nags, and for the pause to
+//! be loud. The clock's own reading of a pause is pinned in `sessions/idle_nag.rs`; what
+//! only this crate can assert is the seam - that the verb reaches the clock, that a
+//! delivery pass runs no turn for a paused session that a pause with an end is LIFTED by
+//! the pass that finds it over, and that a resume comes back paused.
 
 use std::time::Duration;
 

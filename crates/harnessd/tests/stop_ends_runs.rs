@@ -35,10 +35,6 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 const PATIENCE: Duration = Duration::from_secs(90);
 
 /// How long a stop may take while the operator's run is in flight.
-///
-/// Far below the run's own deadline - which is the whole point, since *it stopped when the
-/// command's two minutes expired* is the state this exists to remove - and far above the
-/// milliseconds an orderly stop takes.
 const STOP_BUDGET: Duration = Duration::from_secs(20);
 
 fn scratch(tag: &str) -> PathBuf {
@@ -107,12 +103,9 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// The daemon this test spawned, dead whatever happens to the test.
-///
-/// Every failure here is a PANIC, and a plain `Child` left the daemon running on the box's temp
-/// space with its socket bound. A `Drop` is what makes *whatever happens* true: the panic unwinds
-/// through it. Nothing here may wait for the daemon except `Drop` and [`stop`] - the test has to
-/// see it EXIT BY ITSELF, which is what it measures.
+/// The daemon this test spawned, dead whatever happens to the test. Every failure here is a
+/// PANIC, and a plain `Child` left the daemon running on the box's temp space with its
+/// socket bound. A `Drop` is what makes *whatever happens* true:
 struct Daemon(Child);
 
 impl std::ops::Deref for Daemon {
@@ -182,18 +175,13 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
 
     // ---- The run, and it must be one that CANNOT end on its own: a process blocked reading
     // the terminal the daemon holds for it, which is `/bin/cat` on every box and inside every
-    // boundary.
-    //
-    // `su -c true` was the earlier fixture and it was the defect: `su` blocks only where it has to
-    // ask for a password, so on a box whose session is already root inside its own namespace the
-    // run was over milliseconds after it started, and the stop was sent to nothing.
+    // boundary. `su -c true` was the earlier fixture and it was the defect:
     head.operator_shell(0, "! /bin/cat")
         .expect("the line is submitted");
 
-    // The daemon's own signal that the run still holds the worker: the card it raises for a run
-    // of the operator's that is reading its terminal - `Blocked` where `/proc` can be read
-    // `Unreadable` where it cannot. `Prompts` holds that run until `ended` settles the card, so a
-    // card that is up is a statement about the moment the stop is sent.
+    // The daemon's own signal that the run still holds the worker: the card it raises for a
+    // run of the operator's that is reading its terminal - `Blocked` where `/proc` can be read
+    // `Unreadable` where it cannot.
     let deadline = Instant::now() + PATIENCE;
     let mut in_flight = false;
     let mut settled = false;
@@ -226,14 +214,9 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     let started = Instant::now();
     head.stop(0, "dead").expect("the stop goes out");
 
-    // What the daemon says about what it ended, read while the socket is still up: the sentence is
-    // published before the hubs close, which is what makes it land on the session log rather
-    // than in a file nobody tails.
-    //
-    // Read until the `Bye`, not for a fixed five seconds. A stop that has to kill a tree waits
-    // on the cgroup emptying, and that wait is in seconds; the bound here is the stop's own
-    // because the claim is *the daemon said it before it closed anything* and a clock of this
-    // test's own cannot measure that.
+    // What the daemon says about what it ended, read while the socket is still up: the
+    // sentence is published before the hubs close, which is what makes it land on the session
+    // log rather than in a file nobody tails.
     let mut sentence: Option<String> = None;
     let mut said_at: Option<Duration> = None;
     let mut bye_at: Option<Duration> = None;

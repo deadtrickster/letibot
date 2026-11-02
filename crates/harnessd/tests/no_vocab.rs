@@ -48,13 +48,9 @@ fn each_dialect_has_its_own_byte_vocabulary() {
     assert_ne!(q.vocab.source(), g.vocab.source());
 }
 
-/// No GGUF and no provider: the daemon opens, and the TURN is refused by name.
-///
-/// This was a refusal at load - the daemon's half of the launcher's model gate, so a box with no GGUF
-/// and no key could not start a session at all. Now the session opens on the byte vocabulary with no
-/// model chosen, the head's chooser is the way on, and a turn that reaches the daemon anyway (a
-/// one-shot, an older head) is refused naming `/models` - before anything is sent, because a
-/// llama-server cannot read byte ids.
+/// No GGUF and no provider: the daemon opens, and the TURN is refused by name. This was a
+/// refusal at load - the daemon's half of the launcher's model gate, so a box with no GGUF
+/// and no key could not start a session at all.
 #[test]
 fn no_vocabulary_and_no_provider_opens_and_refuses_the_turn_by_name() {
     use letibot_harnessd::Harness;

@@ -1,15 +1,11 @@
-//! The daemon's half of a plugin condition: the two things `crates/tools` cannot own are the
-//! stack (which layer answers a hook, and what it declared) and the workspace a look resolves
-//! against, so it asks through [`PluginStack`] and this is the implementation.
-//!
-//! A look runs under the answering layer's capability, confined to the workspace. An `exec` look
-//! goes through the same gate the model's calls meet - the call is a `bash` of that argv, every
-//! word quoted - but it may not ASK: a card would park the session's monitor thread and every
-//! watch on it. So it uses `admit_unasked`, and the answers are: admitted, run it; gate busy
-//! defer and ask again next tick; would have been put to somebody, refuse and say so once per
-//! (layer, program, reason). A rule that denies is a different sentence from nobody being
-//! askable. The capability is checked first: a program the layer never declared is not a call to
-//! adjudicate at all.
+//! The daemon's half of a plugin condition: the two things `crates/tools` cannot own are
+//! the stack (which layer answers a hook, and what it declared) and the workspace a look
+//! resolves against, so it asks through [`PluginStack`] and this is the implementation. A
+//! look runs under the answering layer's capability, confined to the workspace. An `exec`
+//! look goes through the same gate the model's calls meet - the call is a `bash` of that
+//! argv, every word quoted - but it may not ASK: a card would park the session's monitor
+//! thread and every watch on it. So it uses `admit_unasked`, and the answers are: admitted,
+//! run it; gate busy defer and ask again next tick;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

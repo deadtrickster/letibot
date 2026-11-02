@@ -277,8 +277,7 @@ fn an_unfinished_plan_is_armed_once() {
 
 /// A STUCK PLAN STILL ARMS THE CHECK - every row left waits on another, so the ready set is
 /// EMPTY and there is no row to name. That is exactly the state the agent has to act on, so
-/// silence would be the check failing when it matters: `unfinished_plan_for` answers it with a
-/// sentence, and saying it once is not a new notice.
+/// silence would be the check failing when it matters:
 #[test]
 fn a_stuck_plan_arms_the_check_and_is_not_a_metronome() {
     let plan = [
@@ -374,8 +373,7 @@ fn a_plan_that_moved_is_armed_again() {
 
 /// A POSTPONED row does not arm the check, and an ordinary one beside it does. Both
 /// directions are load-bearing: the first is the feature, the second says the first did not
-/// simply switch the check off. A predicate over ROWS, because through a daemon *postponed* and
-/// *never armed* are the same observation.
+/// simply switch the check off.
 #[test]
 fn a_postponed_row_does_not_arm_the_check() {
     assert!(
@@ -434,9 +432,8 @@ fn a_postponed_row_does_not_arm_the_check() {
 }
 
 /// A row the operator STRUCK OFF does not arm the check either - and is not the same row as
-/// one set aside. `Cancelled` keeps the row on the board as the record of the operator's ruling
-/// and asks nothing, because nothing is owed. It sits here beside `Postponed` because a fifth
-/// word added to the store and forgotten here would nag about work already decided against.
+/// one set aside. `Cancelled` keeps the row on the board as the record of the operator's
+/// ruling and asks nothing, because nothing is owed.
 #[test]
 fn a_cancelled_row_does_not_arm_the_check() {
     assert!(
@@ -962,14 +959,9 @@ fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The queue's census - the clock's SECOND subject
-// ---------------------------------------------------------------------------
-//
-// The operator's report : eight merge-queue rows sat stuck for hours, each transition
-// notified once as it happened, and no sentence anywhere gave the TOTAL and the AGE.
-// One clock, two schedules: the census is a TURN of its own (`Door::Census`), paced by
-// `STUCK_REPEAT` rather than the plan's ladder, because a stuck queue is not a stalled plan.
+// --------------------------------------------------------------------------- The queue's
+// census - the clock's SECOND subject
+// --------------------------------------------------------------------------- The
 
 /// Rows stuck long enough to be news, as the harness hands them in.
 fn news() -> super::QueueNews {
@@ -1185,10 +1177,9 @@ fn a_paused_clock_says_nothing_about_the_queue_either() {
     assert_eq!(clock.census_due_at(), Some(t0 + Duration::from_secs(30)));
 }
 
-/// The operator's message does NOT earn the census back, and that is a decision rather than an
-/// omission: the plan's ladder is reset by a prompt because a check is a TURN and the person has
-/// just changed what it should say. A census is a notice about rows the person's message did not
-/// move, so resetting it would let a chatty session produce a census per message.
+/// The operator's message does NOT earn the census back, and that is a decision rather than
+/// an omission: the plan's ladder is reset by a prompt because a check is a TURN and the
+/// person has just changed what it should say.
 #[test]
 fn an_operators_message_does_not_postpone_or_repeat_the_census() {
     use std::time::{Duration, Instant};
@@ -1216,10 +1207,9 @@ fn an_operators_message_does_not_postpone_or_repeat_the_census() {
     assert_eq!(clock.census_due_at(), armed);
 }
 
-/// A SECOND incident in one daemon's life gets its own clock - the reason the young-row arm is
-/// asked first. Every arming while a new row is still young is `says: false, matures_in: Some(..)`
-/// so an arm that read the LAST CENSUS'S ANCHOR first answered *nothing*: the first incident after
-/// each start worked and every later one went silent. FAILS before the fix.
+/// A SECOND incident in one daemon's life gets its own clock - the reason the young-row arm
+/// is asked first. Every arming while a new row is still young is `says: false, matures_in:
+/// Some(..)` so an arm that read the LAST CENSUS'S ANCHOR first answered *nothing*:
 #[test]
 fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
     use std::time::{Duration, Instant};

@@ -1,23 +1,10 @@
 //! What is retryable, and for how long - measured through a real daemon, a real head and a
-//! loopback stub, because the question is *how many times the provider was asked* and nothing short
-//! of counting the stub's connections can say.
-//!
-//! A DNS blip used to end a turn with `FAILED - http io: …` and no word on whether the daemon tried
-//! once or six times; a `429` was retried six times, presenting a permanent refusal as a transient
-//! one. Both are one missing decision, and it is `letibot_http::retry`'s: three classes, one bounded
-//! ladder, and a sentence for each ending. What this file measures is the part only a wire can -
-//! how many calls the provider actually got, and what the operator was told
-//!
-//! * A - a transport failure is retried, and the turn survives. The stub accepts and hangs up
-//!   on the first call: two calls, one answer, no failure.
-//! * B - a `503` is retried for the same reason, and answers on the second call.
-//! * C - a `401` is not retried. One call, and the sentence is the status and the body.
-//! * D - a `429` that names money is not retried. One call: no retry can top up an account.
-//! * E - the ladder runs out, and says so: `tried 2 times over 1s, then gave up`.
-//!
-//! One test, five sessions, and not five tests: `XDG_CONFIG_HOME` is process-global and libtest
-//! runs a binary's tests in parallel, so the scratch config dir is pointed at once by the single
-//! test that owns this process and the five scenarios run in sequence inside it.
+//! loopback stub, because the question is *how many times the provider was asked* and
+//! nothing short of counting the stub's connections can say. A DNS blip used to end a turn
+//! with `FAILED - http io: …` and no word on whether the daemon tried once or six times; a
+//! `429` was retried six times, presenting a permanent refusal as a transient one. Both are
+//! one missing decision, and it is `letibot_http::retry`'s: three classes, one bounded
+//! ladder, and a sentence for each ending.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -383,10 +370,8 @@ fn what_is_retryable_and_what_the_operator_is_told() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
     // ── A. A transport failure is retried, and the turn survives ─────────────────────────
-    //
-    // The stub hangs up on the first call and answers on the second. This is the class a DNS lookup
-    // failure lands in, and the assertion that matters is the stub's own count: the turn was tried
-    // before it was called a failure.
+    // The stub hangs up on the first call and answers on the second. This is the class a DNS
+    // lookup failure lands in, and the assertion that matters is the stub's own count:
     endpoint.refuse(1, Refusal::HangUp);
     let before = endpoint.seen();
     let cfg = config(&scratch, "transport", 1);
@@ -405,10 +390,9 @@ fn what_is_retryable_and_what_the_operator_is_told() {
         rec.failed
     );
 
-    // ── B. A 503 is retried ─────────────────────────────────────────────────────────────
-    //
-    // The status a server reloading a model answers, which is the whole reason the ladder is longer
-    // than one wait.
+    // ── B. A 503 is retried ───────────────────────────────────────────────────────────── The
+    // status a server reloading a model answers, which is the whole reason the ladder is
+    // longer than one wait.
     endpoint.refuse(1, Refusal::Unavailable);
     let before = endpoint.seen();
     let cfg = config(&scratch, "unavailable", 1);
@@ -447,9 +431,8 @@ fn what_is_retryable_and_what_the_operator_is_told() {
     );
 
     // ── D. A 429 that names money is not retried: the six-times case ─────────────────────
-    //
-    // This is the case the old build would have taken six times: the status alone says *not yet*
-    // and only the body says *not ever until somebody tops up*.
+    // This is the case the old build would have taken six times: the status alone says *not
+    // yet* and only the body says *not ever until somebody tops up*.
     endpoint.refuse(100, Refusal::NoCredit);
     let before = endpoint.seen();
     let cfg = config(&scratch, "no-credit", 5);
@@ -470,9 +453,8 @@ fn what_is_retryable_and_what_the_operator_is_told() {
     );
 
     // ── E. The ladder runs out, and the sentence names the attempts ──────────────────────
-    //
-    // One retry: two calls, one second of waiting, and the ending says both - which is the fact
-    // `FAILED - http io: …` never carried.
+    // One retry: two calls, one second of waiting, and the ending says both - which is the
+    // fact `FAILED - http io: …` never carried.
     endpoint.refuse(100, Refusal::Unavailable);
     let before = endpoint.seen();
     let cfg = config(&scratch, "gives-up", 1);

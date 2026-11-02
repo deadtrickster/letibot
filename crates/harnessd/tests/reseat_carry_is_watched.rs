@@ -1,14 +1,10 @@
 //! A `/reseat` that carries a long conversation is a wait the head can SEE, and it ends.
-//!
-//! The operator ran a bare `/reseat` on a 971-row conversation with the head attached since the
-//! daemon's boot window: for six and a half minutes the head showed the old conversation and
-//! `queued · pull` and nothing else, because the re-ingest's fork wrote the carried rows one
-//! autocommit `INSERT` at a time while a dozen daemons shared the file's single write lock.
-//!
-//! So this pins, on a long conversation, a head attached BEFORE the harness opens and a prompt
-//! queued while the re-seat runs: the carried rows go a chunk per transaction and the head is told
-//! how far the carry has got (`Filling`), ending at `total of total`; the head goes on receiving the
-//! session's events after the fork, never demoted to a resync; and the queued prompt is taken.
+//! The operator ran a bare `/reseat` on a 971-row conversation with the head attached since
+//! the daemon's boot window: for six and a half minutes the head showed the old
+//! conversation and `queued · pull` and nothing else, because the re-ingest's fork wrote
+//! the carried rows one autocommit `INSERT` at a time while a dozen daemons shared the
+//! file's single write lock. So this pins, on a long conversation, a head attached BEFORE
+//! the harness opens and a prompt queued while the re-seat runs:
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};

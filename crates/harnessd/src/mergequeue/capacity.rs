@@ -1,12 +1,10 @@
-//! A reviewer that could not be PLACED for want of a free VM slot is not an attempt - and the
-//! words a review that stops for a person says about why.
-//!
-//! Firecode has no exit code for capacity, so [`vm_capacity`] reads its words (*"needs tap …
-//! creating one needs root"*, *"the slots below this one were taken"*) and the pool sends such a row
-//! back to `waiting` without spending one of 's three attempts on a transient shortage.
-//!
-//! A missing firecode, a broken image or a copy over the ceiling says none of this and stays a real
-//! placement failure - counted, and blocked on the third, as before.
+//! A reviewer that could not be PLACED for want of a free VM slot is not an attempt - and
+//! the words a review that stops for a person says about why. Firecode has no exit code for
+//! capacity, so [`vm_capacity`] reads its words (*"needs tap … creating one needs root"*,
+//! *"the slots below this one were taken"*) and the pool sends such a row back to `waiting`
+//! without spending one of 's three attempts on a transient shortage. A missing firecode, a
+//! broken image or a copy over the ceiling says none of this and stays a real placement
+//! failure - counted, and blocked on the third, as before.
 
 use letibot_tokencore::store::QueueTransition;
 use letibot_transcript::text::clip_chars;
@@ -157,10 +155,9 @@ pub fn branch_wait(own: Streak, others: &[Streak]) -> BranchWait {
     }
 }
 
-/// Is a waiting row held back by a wait it did not spend an attempt on? - its `failure` leads
-/// with one of the two wait clauses ([`WAITING_FOR_SLOT`], or [`crate::mergequeue::review::WAITING_FOR_TREE`])
-/// and its not-before time is still ahead. One reader, because a busy slot and a tree that could not
-/// be made are different waits with the same shape.
+/// Is a waiting row held back by a wait it did not spend an attempt on? - its `failure`
+/// leads with one of the two wait clauses ([`WAITING_FOR_SLOT`], or
+/// [`crate::mergequeue::review::WAITING_FOR_TREE`]) and its not-before time is still ahead.
 pub fn held_until(failure: &str, deadline_ms: Option<u64>, now_ms: u64) -> bool {
     (failure.starts_with(WAITING_FOR_SLOT) || failure.starts_with(super::review::WAITING_FOR_TREE))
         && deadline_ms.is_some_and(|d| d > now_ms)

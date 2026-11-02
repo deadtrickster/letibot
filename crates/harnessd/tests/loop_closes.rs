@@ -1,16 +1,11 @@
-//! The loop, closed against the model server that is running on this box.
-//!
-//! These are live tests: not skipped when the server is absent, because a test that quietly
-//! passes when the thing it tests is missing reports the health of a `TcpStream::connect`. If this
-//! box is not yours, set `LETIBOT_COMPLETION_URL`, `LETIBOT_VOCAB_GGUF` and `LETIBOT_MODEL_ALIAS`.
-//!
-//! The server is in production use with five shared slots, so this file is two short generations
-//! under one process-wide lock; the long measurement lives in `letibot-m1`, a binary you run.
-//!
-//! What is asserted: a prompt that needs a file produces a tool call, the call runs, its result is
-//! appended and the model answers from it; a head can rebuild the conversation through
-//! `Hub::record_item`; a head drives the whole thing over the socket; and an inert tool is
-//! `NotRun`, structurally rather than in prose the model can paraphrase away.
+//! The loop, closed against the model server that is running on this box. These are live
+//! tests: not skipped when the server is absent, because a test that quietly passes when
+//! the thing it tests is missing reports the health of a `TcpStream::connect`. If this box
+//! is not yours, set `LETIBOT_COMPLETION_URL`, `LETIBOT_VOCAB_GGUF` and
+//! `LETIBOT_MODEL_ALIAS`. The server is in production use with five shared slots, so this
+//! file is two short generations under one process-wide lock; the long measurement lives in
+//! `letibot-m1`, a binary you run. What is asserted: a prompt that needs a file produces a
+//! tool call, the call runs, its result is appended and the model answers from it;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -30,12 +25,8 @@ fn serial() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// The models this box can be serving, by the path `/props` reports: the alias, the dialect that
-/// pairs with it, and the GGUF its vocabulary comes from.
-///
-/// A table rather than a guess: pairing a dialect with the wrong vocabulary is the `5 control
-/// token(s) could not be resolved` refusal, and it is better to know nothing about a model than to
-/// assume its dialect.
+/// The models this box can be serving, by the path `/props` reports: the alias, the dialect
+/// that pairs with it, and the GGUF its vocabulary comes from. A table rather than a guess:
 fn known_local_model(served: &str) -> Option<(&'static str, Dialect, &'static str)> {
     const KNOWN: &[(&str, &str, Dialect, &str)] = &[
         (
@@ -94,22 +85,14 @@ fn config() -> Option<Config> {
     // `Config::for_this_box` carries no vocabulary default any more, so a harness built here is
     // handed one: the same path this file's gate consults.
     cfg.vocab_gguf = support::vocab::gguf();
-    // The dialect follows the model, and that is what makes the escape hatch work. The panic
-    // tells an operator whose box serves another model to point these tests elsewhere - and doing
-    // that used to fail anyway, because the dialect stayed Qwen and GLM's vocabulary could not
-    // resolve `<|im_end|>`, so the session refused to open. An escape hatch that does not open is
-    // worse than none.
+    // The dialect follows the model, and that is what makes the escape hatch work.
     cfg.dialect = Dialect::Qwen;
     if let Ok(m) = std::env::var("LETIBOT_MODEL_ALIAS") {
         cfg.dialect = Dialect::parse(&m)
             .unwrap_or_else(|| panic!("LETIBOT_MODEL_ALIAS={m} names no dialect this build knows"));
         cfg.model = m;
     }
-    // What is actually behind the endpoint, asked before anything is tokenised for it: the model
-    // services here are singletons that evict each other, so `cfg.model` naming one is no evidence
-    // that one is up - and the failure that follows is a sentence about the tokenizer for what is
-    // really the other model's vocabulary. Follow what is served, and refuse only when it is
-    // genuinely unknown.
+    // What is actually behind the endpoint, asked before anything is tokenised for it:
     if std::env::var("LETIBOT_MODEL_ALIAS").is_err()
         && let Ok(served) = letibot_turn::serving::served_model(&cfg.endpoint)
         && !letibot_turn::serving::matches(&served, &cfg.model)
@@ -124,11 +107,8 @@ fn config() -> Option<Config> {
         cfg.dialect = dialect;
         cfg.vocab_gguf = Some(gguf.into());
     }
-    // NO SERVER, NO TEST - and the guard lives in `serving` so its wording cannot drift from the
-    // other live files. Without it these four tests spent minutes failing on a dead port, and
-    // `cargo test` aborts the remaining targets after the first failing binary, so most of the
-    // suite never ran. `LETIBOT_REQUIRE_MODEL=1` refuses the skip, which is how a run with a real
-    // server says it will not tolerate one.
+    // NO SERVER, NO TEST - and the guard lives in `serving` so its wording cannot drift from
+    // the other live files.
     if letibot_turn::serving::skip_live_test(&cfg.endpoint, "This test") {
         return None;
     }
@@ -218,10 +198,9 @@ fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
         .expect("the loop must close");
     assert!(reply.tool_calls >= 1, "nothing was asked: {:?}", reply.text);
 
-    // `NotRun`, not `Abstained`, and the difference is the whole argument for leaving retrieval
-    // inert rather than stubbing it. `Abstained` means the corpus was searched and does not cover
-    // this; `NotRun` means nothing was searched. Reporting the second as the first would be a claim
-    // about a corpus nobody queried.
+    // `NotRun`, not `Abstained`, and the difference is the whole argument for leaving
+    // retrieval inert rather than stubbing it. `Abstained` means the corpus was searched and
+    // does not cover this; `NotRun` means nothing was searched.
     let outcomes: Vec<ToolOutcome> = h
         .items()
         .iter()
@@ -278,11 +257,8 @@ fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
     }
 }
 
-/// The daemon, driven the way a person drives it: over the Unix socket.
-///
-/// `letibot-m1` calls `Harness::submit` directly, so it proves the loop and nothing about the
-/// socket. This is the other half - attach a head, submit a prompt as a command, and require that
-/// the answer comes back as events on the same connection, with the turn's boundary events too.
+/// The daemon, driven the way a person drives it: over the Unix socket. `letibot-m1` calls
+/// `Harness::submit` directly, so it proves the loop and nothing about the socket.
 #[test]
 fn a_head_prompts_over_the_socket_and_sees_the_turn() {
     use letibot_harnessd::{Daemon, Sessions};
@@ -361,13 +337,6 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
 }
 
 /// A message already waiting joins THIS round rather than costing another.
-///
-/// A message waiting when the round begins is taken before the prompt is spent, so it goes into
-/// this round's prompt and the answer comes back in the same round - one round, and the queued
-/// words ahead of the answer.
-///
-/// Word-matched loosely - the model is told to reply with one word and usually does, and demanding
-/// byte-exactness would pin the model rather than the loop.
 #[test]
 fn a_message_already_waiting_joins_this_round_rather_than_costing_another() {
     use letibot_sessionlog::hub::CommandKind;
@@ -439,17 +408,8 @@ fn a_message_already_waiting_joins_this_round_rather_than_costing_another() {
     );
 }
 
-/// A message that arrives WHILE the model is generating is answered in the next round.
-///
-/// The greedy poll takes what is waiting when the round BEGINS; a message that lands after the
-/// prompt has gone out is absorbed by the stream loop and injected at the step boundary, which
-/// `TurnOk::steering_applied` reports - and the harness must go round again rather than return
-/// with the message appended and unanswered.
-///
-/// The distinction IS the timing, so the message is submitted from another thread once
-/// generation has provably begun: `Hub::retained` showing a `Delta` means the prompt was already
-/// built and sent. The first prompt asks for a LONG answer, because a one-word reply would race
-/// the submit - a flaky test passing for the wrong reason.
+/// A message that arrives WHILE the model is generating is answered in the next round. The
+/// greedy poll takes what is waiting when the round BEGINS;
 #[test]
 fn a_message_that_arrives_mid_turn_is_answered_in_the_next_round() {
     use std::sync::Arc;

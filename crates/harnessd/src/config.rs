@@ -2656,10 +2656,9 @@ pub struct GateWiring {
     /// applied to four more things that can silently be absent.
     pub external: letibot_tools::ExternalWiring,
 
-    // ---- the seams wired on top, every one of them read rather than asserted ----
-    /// The role that was actually seated, taken from the resolved registry - not the role that
-    /// was *asked for*. One that resolved to fewer tools than its name suggests is a fact an
-    /// operator should be able to see.
+    // ---- the seams wired on top, every one of them read rather than asserted ---- The role
+    // that was actually seated, taken from the resolved registry - not the role that was
+    // *asked for*.
     pub role: String,
     /// Every seated tool name, in prompt order. The evidence behind every boolean
     /// below, so a disclosure can be checked rather than believed.

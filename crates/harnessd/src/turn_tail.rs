@@ -1,29 +1,10 @@
-//! One turn tail for every door - `TODO.md`.
-//!
-//! A turn reaches a session through eight doors: a head's prompt, a peer's or parent's message, a
-//! wake, the idle plan-check, the operator's `!` line, a subagent's task, the continuation after a
-//! wall, and the continuation after a FALLBACK. Each used to carry its own copy of what happens
-//! around a turn, and the copies had drifted: no waiter armed by a wake, a child's `turn_failed`
-//! with no reason in it, a refused-compaction latch shared with nobody.
-//!
-//! So the sequence lives here, once, and both owners call it: [`run_turn`] is what `Sessions` runs
-//! for a session the daemon's worker holds and what `harness::serve_child` runs for a subagent on
-//! its own thread. What differs is not the SEQUENCE but where its effects land, and that is the
-//! [`TurnOwner`] trait: the owner answers *how*, this module decides *when*.
-//!
-//! # The sequence, in order
-//!
-//! Before the turn: arm the sweep; compact if the next turn would not fit; earn the
-//! plan-check back when somebody spoke; start the turn's clock.
-//!
-//! After each turn - the first and every continuation: drain the title; arm the monitor
-//! wake; publish a failure with its reason; compact - the pre-emptive door after a
-//! success, the refused door after a wall; and continue past a wall while there is measured
-//! room, at most [`crate::sessions::WALL_CONTINUES`] times.
-//!
-//! After the last: stop the clock, then the owner's idle clocks. The `!` state is the one
-//! obligation that is not here: it comes down in the `OperatorShellResult` arm before any return
-//! , because a turn tail cannot run for a turn that never starts.
+//! One turn tail for every door - `TODO.md`. A turn reaches a session through eight doors:
+//! a head's prompt, a peer's or parent's message, a wake, the idle plan-check, the
+//! operator's `!` line, a subagent's task, the continuation after a wall, and the
+//! continuation after a FALLBACK. Each used to carry its own copy of what happens around a
+//! turn, and the copies had drifted: no waiter armed by a wake, a child's `turn_failed`
+//! with no reason in it, a refused-compaction latch shared with nobody. So the sequence
+//! lives here, once, and both owners call it:
 
 use std::sync::Arc;
 
@@ -49,12 +30,8 @@ pub enum Door {
     /// again every window).
     Nag(Option<String>),
     /// The queue's stuck-row census, as a turn - the clock's second subject, and it carries
-    /// nothing: its identity is the DELIVERY (`TodoNagClock::census_said`), not the words, because
-    /// the sentence names the AGE of the oldest row and so changes at every delivery.
-    ///
-    /// A door of its own rather than a [`Door::Nag`] because the owner's arm records a nag
-    /// against the PLAN's ladder, and a census written into `TodoNagClock::nagged` would tell that
-    /// ladder the plan's notice had been sent.
+    /// nothing: its identity is the DELIVERY (`TodoNagClock::census_said`), not the words,
+    /// because the sentence names the AGE of the oldest row and so changes at every delivery.
     Census,
     /// The turn after the operator's own `!` line.
     OperatorShell,
@@ -62,11 +39,7 @@ pub enum Door {
     Reseat,
     /// The turn the daemon owes after it moved the session off a model that was out - the
     /// operator's ruling, 2026-10-12: *"when it finally applied the turn didnt continue"*. The
-    /// model that refused has already been replaced; this one opens with a notice in the harness's
-    /// voice and the work goes on without the operator.
-    ///
-    /// A door of its own for one reason beyond the metrics: a turn that IS this continuation
-    /// never earns another, which keeps a fallback chain from ping-ponging between two names.
+    /// model that refused has already been replaced;
     Fallback,
 }
 
@@ -92,10 +65,9 @@ impl Door {
     }
 }
 
-/// Where the effects of the shared sequence land - the owner's half of [`run_turn`].
-///
-/// Two implementations: `Sessions` for a session the daemon's worker holds, and a subagent's own
-/// thread (`harness::ChildTurns`). The ORDER is [`run_turn`]'s and no owner can reorder it.
+/// Where the effects of the shared sequence land - the owner's half of [`run_turn`]. Two
+/// implementations: `Sessions` for a session the daemon's worker holds, and a subagent's
+/// own thread (`harness::ChildTurns`).
 pub trait TurnOwner {
     /// Before the turn: ask for an abandoned-call sweep a moment after it.
     fn arm_sweep(&mut self);
@@ -125,21 +97,8 @@ impl TurnOwner for Bare {
 }
 
 /// Run one turn through DOOR, and everything around it. `turn` is the door's own act
-/// `Ok(None)` is a door that found nothing to say, and then no turn ran and nothing is tidied.
-///
-/// And the turn a fallback owes: when the turn that just ended met a model that was out, the
-/// daemon opens the next one itself ([`Harness::continue_after_fallback`]'s notice as its user
-/// item, on the model the session has just moved to) through *this same* sequence - its own clock
-/// its own tail, its own `turn.start` row. It is bounded: a turn that IS a continuation never
-/// earns another, and nothing starts over a stop the operator pressed.
-///
-/// The prompt's clock is NOT started here, and it used to be: a door that found nothing to say
-/// runs no turn, but a clock started on the way in had already published `waiting on: turn`, and a
-/// `wait` armed on it answered `0 - the turn ended` about a session that had run nothing.
-///
-/// Two functions and not one loop, because the fallback continuation is a SECOND turn through
-/// the same sequence: a recursive `run_turn` does not monomorphise and a `loop` cannot, because
-/// `turn` is `FnOnce`. So the sequence is [`one_turn`] and this is the pair.
+/// `Ok(None)` is a door that found nothing to say, and then no turn ran and nothing is
+/// tidied. And the turn a fallback owes:
 pub fn run_turn(
     h: &mut Harness,
     owner: &mut dyn TurnOwner,
@@ -206,9 +165,8 @@ fn one_turn(
     // whose wall was actually compacted - a fork, a new transcript.
     let mut compacted = h.transcript_id() != before;
     // A wall that compacted is not the end of the prompt. Each continuation is a whole turn
-    // with this same settle. Room is MEASURED, not read off a flag (the no-progress guard turns
-    // `auto_compact` off without freeing anything); `WALL_CONTINUES` caps what the room check
-    // cannot see.
+    // with this same settle. Room is MEASURED, not read off a flag (the no-progress guard
+    // turns `auto_compact` off without freeing anything);
     let mut walls = 0;
     while is_wall(&out) {
         h.measure_resident();
@@ -292,10 +250,8 @@ fn settle(
         && !is_wall(&out)
     {
         publish_failure(h.hub(), h.last_turn_id(), e);
-        // A switch that fails says how to go back - the operator's session was switched to a
-        // model whose every request was refused, and the screen named the refusal and nothing
-        // else. `Harness::switch_back_notice` answers `None` when this turn is not the first after
-        // a switch, or the failure is not the provider refusing what was sent.
+        // A switch that fails says how to go back - the operator's session was switched to a model
+        // whose every request was refused, and the screen named the refusal and nothing else.
         if let Some(said) = h.switch_back_notice(e) {
             h.hub().publish(SessionEvent::Warning {
                 code: "model_switch_refused".into(),
@@ -305,9 +261,8 @@ fn settle(
         }
     }
     // The wall is the one failure that must still compact, and the two outcomes take two
-    // DIFFERENT doors: a success takes the pre-emptive door (would the next turn fit?), which the
-    // no-progress guard stands down; a turn stopped AT the wall takes the refused door, which does
-    // not read that flag -
+    // DIFFERENT doors: a success takes the pre-emptive door (would the next turn fit?), which
+    // the no-progress guard stands down;
     let wall = is_wall(&out);
     let attempted = if out.is_ok() {
         h.compact_if_at_the_wall()
@@ -339,12 +294,9 @@ fn settle(
     out
 }
 
-/// Announce a failed turn on the session's own log, as a terminal event.
-///
-/// It used to publish a `Warning` and nothing else, so a head's `TurnState` stayed `Running` for
-/// the rest of the session and its spinner span at a dead turn. Both frames go out: `TurnFailed`
-/// is what stops the spinner, the `Warning` is what puts it in the scrollback with a code somebody
-/// can grep for - one is state, the other history, and neither substitutes for the other.
+/// Announce a failed turn on the session's own log, as a terminal event. It used to publish
+/// a `Warning` and nothing else, so a head's `TurnState` stayed `Running` for the rest of
+/// the session and its spinner span at a dead turn. Both frames go out:
 pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     hub.publish(SessionEvent::TurnFailed {
         turn_id: turn_id.to_string(),
@@ -362,12 +314,8 @@ pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
 }
 
 /// Start this session's monitor waiter - the thread that rings the bell when a monitor the
-/// session declared fires between turns. `Ok(false)` when nothing is watching yet (T24's rule that
-/// watchers must not accumulate); `Err` when the thread could not be started.
-///
-/// One function for both owners, so a subagent's monitors wake it the same way a root's do. The
-/// waiter ends with its session, not only with the daemon: it holds the hub weakly, and
-/// a hub that was closed ends it at the next recheck.
+/// session declared fires between turns. `Ok(false)` when nothing is watching yet (T24's
+/// rule that watchers must not accumulate); `Err` when the thread could not be started.
 pub(crate) fn spawn_monitor_wake(
     registry: &Arc<Registry>,
     h: &mut Harness,
@@ -390,10 +338,9 @@ pub(crate) fn spawn_monitor_wake(
     std::thread::Builder::new()
         .name(format!("monitor-wake-{}", &id[..id.len().min(24)]))
         .spawn(move || {
-            // The waiter's own cursor, advanced by what it has already rung for. The harness
-            // has a second one, which decides what is actually delivered - a firing picked up
-            // mid-turn is not delivered again by the wake. "have I rung for this?" against "has
-            // the model seen this?"
+            // The waiter's own cursor, advanced by what it has already rung for. The harness has a
+            // second one, which decides what is actually delivered - a firing picked up mid-turn is
+            // not delivered again by the wake.
             let mut notified = monitors.settled_count();
             let alive = || !bell.is_closed() && hub.upgrade().is_some_and(|h| !h.is_closed());
             while alive() {

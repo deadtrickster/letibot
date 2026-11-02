@@ -1,14 +1,9 @@
-//! A `/reseat` reaches the model, in a turn of its own.
-//!
-//! The operator's report after re-seating a session: the nag reached the model and it started
-//! nagging them, so the re-seat's own result has to reach the model too, and start the turn. The
-//! stale-prompt notice tells the model to keep asking for `/reseat` until the person acts; when they
-//! did, the act reached only the head (the `reseated` warning) and a system row at the top of a
-//! forked transcript that no turn ran to read - so the model went on asking.
-//!
-//! Driven through the daemon's own arm - `Sessions::dispatch` taking a `Reseat` command - on a
-//! session seated under one prompt and reopened by a daemon that composes another, which is the
-//! restart that started this. It needs the vocabulary GGUF and not a model.
+//! A `/reseat` reaches the model, in a turn of its own. The operator's report after
+//! re-seating a session: the nag reached the model and it started nagging them, so the
+//! re-seat's own result has to reach the model too, and start the turn. The stale-prompt
+//! notice tells the model to keep asking for `/reseat` until the person acts; when they
+//! did, the act reached only the head (the `reseated` warning) and a system row at the top
+//! of a forked transcript that no turn ran to read - so the model went on asking.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};
@@ -88,12 +83,8 @@ fn wiring(cfg: &Config) -> SessionWiring {
     }
 }
 
-/// The model is told it was re-seated, and answers - and the stale notice is gone.
-///
-/// Asserted on the conversation itself: after the re-seat there is a row in the harness's own voice
-/// (`Speaker::Agent`, never the operator's words) that says what happened and tells the model to stop
-/// asking for `/reseat`, and the model's answer follows it - a turn that RAN, not a row left for
-/// whenever somebody next speaks.
+/// The model is told it was re-seated, and answers - and the stale notice is gone. Asserted
+/// on the conversation itself:
 #[test]
 fn a_reseat_tells_the_model_and_starts_its_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

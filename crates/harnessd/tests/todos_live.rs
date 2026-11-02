@@ -1,18 +1,11 @@
-//! The todo path, end to end, against the live server: the model writes the plan, the store holds
-//! it, the log announces it.
-//!
-//! The offline files prove every link separately - the tool's behaviour (`letibot-tools`), the
-//! store round-trip (`letibot-tokencore`), the restore at open (`todos.rs`), the event's wire shape
-//! (`letibot-sessionlog`). What none of them can prove is the chain: a real model, told to plan
-//! actually calling `todo_write` through the gated runtime, the harness flushing at the round
-//! boundary, and a head attaching afterwards finding both the store row and the event in its
-//! backlog.
-//!
-//! Never start a second model server to make a test pass: the servers on this box evict each
-//! other, and the eviction takes down whatever else is running on the endpoint. This test uses the
-//! GLM dialect and vocabulary, which the running server already holds, so it starts nothing. When
-//! nothing answers it SKIPS rather than failing (`letibot_turn::serving::skip_live_test`
-//! `LETIBOT_REQUIRE_MODEL` refuses the skip).
+//! The todo path, end to end, against the live server: the model writes the plan, the store
+//! holds it, the log announces it. The offline files prove every link separately - the
+//! tool's behaviour (`letibot-tools`), the store round-trip (`letibot-tokencore`), the
+//! restore at open (`todos.rs`), the event's wire shape (`letibot-sessionlog`). What none
+//! of them can prove is the chain: a real model, told to plan actually calling `todo_write`
+//! through the gated runtime, the harness flushing at the round boundary, and a head
+//! attaching afterwards finding both the store row and the event in its backlog. Never
+//! start a second model server to make a test pass:
 
 use std::sync::OnceLock;
 
@@ -45,20 +38,16 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
         cfg.endpoint = letibot_turn::Endpoint::new(h, p.parse().expect("port"));
     }
 
-    // NO SERVER, NO TEST - and the guard goes BEFORE the vocabulary assertion.
-    //
-    // It goes first because on a machine that is not this box the vocabulary path is absent too
-    // and a skip has to be reached before the assertions it is skipping past.
+    // NO SERVER, NO TEST - and the guard goes BEFORE the vocabulary assertion. It goes first
+    // because on a machine that is not this box the vocabulary path is absent too and a skip
+    // has to be reached before the assertions it is skipping past.
     if letibot_turn::serving::skip_live_test(&cfg.endpoint, "This test") {
         return;
     }
 
     // The vocabulary is apparatus whether or not a server answered, so it is the same skip
-    // rather than an assert - an `assert!` whose message tells the reader how to make it skip is a
-    // sentence that should have been the code.
-    //
-    // It checks the file the CONFIG resolves, not the constant. A guard that resolves a
-    // different path from the thing it guards can be true while the test still cannot run.
+    // rather than an assert - an `assert!` whose message tells the reader how to make it skip
+    // is a sentence that should have been the code.
     let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path());
@@ -125,12 +114,8 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     );
 }
 
-/// Is the box actually serving the model this test renders for?
-///
-/// A vocabulary FILE existing is a different question from a server being up: with a qwen server on
-/// the port while this test renders GLM token ids, the turn fails with a symptom that names nothing
-/// about the cause (the ids are out of range for the other vocabulary). So: refuse by name, in
-/// seconds, saying `THIS IS NOT A PASS`.
+/// Is the box actually serving the model this test renders for? A vocabulary FILE existing
+/// is a different question from a server being up:
 fn glm_is_served() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {

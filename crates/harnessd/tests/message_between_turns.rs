@@ -1,22 +1,11 @@
-//! A message to a child between turns starts a turn for it: the message goes on the
-//! child's queue, the child's own serving thread is woken, and the loop that drains that queue
-//! answers a `Message` by RUNNING THE TURN that reads it (`serve_child`'s `ChildCommand::Hear`
-//! → `Harness::submit_a_parents_message`). Without that, a submission against a parked child
-//! answered `Accepted` and sat there, so a parent believed it had corrected a child that never
-//! heard a word.
-//!
-//! The chain proved here is the real one: a parent [`Harness`] with the REAL runner, `task` and
-//! `task_message` invoked through that session's own tool runtime. What is asserted is on the
-//! CHILD - its log holds the parent's words as `Speaker::Agent`, and its turn RAN with that
-//! text in the prompt the model was handed. A child mid-turn is a state the test chooses, not a
-//! window it races: the stub model holds each request open until the test lets it go.
-//!
-//! The fixture DRAINS the tree (release the gate, close the hubs, wait for the threads) rather
-//! than only closing it: a subagent's thread is spawned detached, so a child still inside the
-//! tokenizer when the process exits takes SIGSEGV in `_dl_fini`.
-//!
-//! Needs the vocabulary GGUF (`Harness::open` renders its stable prefix) and no model; no
-//! process tree, so no apparatus gate beyond the GGUF.
+//! A message to a child between turns starts a turn for it: the message goes on the child's
+//! queue, the child's own serving thread is woken, and the loop that drains that queue
+//! answers a `Message` by RUNNING THE TURN that reads it (`serve_child`'s
+//! `ChildCommand::Hear` → `Harness::submit_a_parents_message`). Without that, a submission
+//! against a parked child answered `Accepted` and sat there, so a parent believed it had
+//! corrected a child that never heard a word. The chain proved here is the real one: a
+//! parent [`Harness`] with the REAL runner, `task` and `task_message` invoked through that
+//! session's own tool runtime.
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -113,9 +102,6 @@ fn wiring(cfg: &Config) -> SessionWiring {
 
 /// A parent session with the REAL runner - the whole production path, with the model
 /// replaced by the stub, and its own hub adopted so the tree looks the way a daemon's does.
-///
-/// It owns the gate its children are served by and the handles it started, so the
-/// teardown does not depend on a test remembering to drain the tree.
 struct Parent {
     harness: Harness,
     registry: Arc<Registry>,
@@ -220,13 +206,6 @@ impl Parent {
 }
 
 /// The tree is DRAINED at the end of a test, and that is a crash fix rather than tidiness.
-///
-/// Closing the registry closes every child's hub, so its serving thread leaves
-/// `run_to_completion` - but the thread is spawned detached, so nothing could tell a finished
-/// child from one still inside `libllama`'s tokenizer when `exit` finalizes
-/// `libggml-cuda`/`libcudart`. The three steps below are ordered and each is load-bearing: let a
-/// held turn finish (a wait that started first would sit out its patience on a child that cannot
-/// move), close the tree the way the daemon closes it, then wait for the threads to be GONE.
 impl Drop for Parent {
     fn drop(&mut self) {
         self.gate.release(usize::MAX);
@@ -360,13 +339,8 @@ fn wait_for(hub: &Hub, what: impl Fn(&Hub) -> Option<String>) -> String {
 // The stub
 // ---------------------------------------------------------------------------
 
-/// A model that answers on a gate, and keeps every request it was asked.
-///
-/// `canned::Canned` answers as fast as it can, which closes the window this file has to reach
-/// into. So each request is read, RECORDED, and held until the test releases it - *the child is
-/// in a turn* becomes a state the test stands in rather than races. The recorded body is what
-/// makes the other half provable: its token ids, detokenized with the same vocabulary the child
-/// tokenized with, are the prompt the model was handed.
+/// A model that answers on a gate, and keeps every request it was asked. `canned::Canned`
+/// answers as fast as it can, which closes the window this file has to reach into.
 struct Stub {
     endpoint: Endpoint,
     shared: Arc<Gate>,
@@ -385,9 +359,6 @@ struct Inner {
     /// How many requests may be answered. A request waits until this passes its index.
     released: usize,
     /// Which request is answered in halves and then dropped - `None` for an ordinary stub.
-    /// The second half never carries its terminating frame and the socket closes without the
-    /// chunked body's end, so the client sees a generation that started and then died - the state
-    /// a message absorbed mid-generation is lost from.
     cut_at: Option<usize>,
     /// Set by [`Stub::cut`]: the half-answered request may send its second half and go.
     cutting: bool,
@@ -537,12 +508,9 @@ impl Drop for Stub {
     }
 }
 
-/// Answer with the first frame, wait, then send the rest and drop the socket - the shape of a
-/// generation that dies mid-stream. Two details make it the state the test needs rather than
-/// merely a failure: the second half carries no `Final` frame (a script that reached one would be
-/// a round that SUCCEEDED, and the message would be appended at the step boundary like any other)
-/// and the body is written without the chunked terminator, so the reader's end is an error and not
-/// an empty success.
+/// Answer with the first frame, wait, then send the rest and drop the socket - the shape of
+/// a generation that dies mid-stream. Two details make it the state the test needs rather
+/// than merely a failure:
 fn write_frames_then_drop(
     mut stream: TcpStream,
     frames: &[Frame],
@@ -668,11 +636,8 @@ impl Drop for TempDir {
 // ---------------------------------------------------------------------------
 
 /// A message to a child that is BETWEEN TURNS is heard: the child's own turn runs with it.
-///
-/// The old refusal's reason was that nothing drains a child's queue between turns, so the state
-/// this test stands in is *the child is parked, nothing is running*. What it asserts is that the
-/// message is not merely queued but READ: the child's log holds it as its parent's words, and the
-/// child's turn ran with it.
+/// The old refusal's reason was that nothing drains a child's queue between turns, so the
+/// state this test stands in is *the child is parked, nothing is running*.
 #[test]
 fn a_message_to_a_child_between_turns_starts_its_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -801,12 +766,9 @@ fn a_message_to_a_child_between_turns_starts_its_turn() {
 // The state that already worked, which must not regress
 // ---------------------------------------------------------------------------
 
-/// A message to a child whose turn is ALREADY RUNNING still lands in that turn.
-///
-/// The child hears it at its next round boundary, as its parent's words, and keeps working - not a
-/// second prompt, and no second turn. The turn is held open by the stub, so *already running* is a
-/// fact the test stands in rather than races, and the proof it landed IN that turn is the next
-/// round's prompt.
+/// A message to a child whose turn is ALREADY RUNNING still lands in that turn. The child
+/// hears it at its next round boundary, as its parent's words, and keeps working - not a
+/// second prompt, and no second turn.
 #[test]
 fn a_message_to_a_running_child_lands_in_that_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -907,11 +869,7 @@ fn a_message_to_a_running_child_lands_in_that_turn() {
 // ---------------------------------------------------------------------------
 
 /// Two messages while the first queued turn is starting do not make two turns for one of
-/// them, and neither is lost.
-///
-/// One queue and one drainer: the child's own thread. The stub serves exactly TWO requests, so a
-/// third turn - the shape a doubled start would take - cannot be answered, and a message handed to
-/// the daemon's worker instead would publish `message_idle` and drop it.
+/// them, and neither is lost. One queue and one drainer: the child's own thread.
 #[test]
 fn a_second_message_does_not_start_a_second_turn_for_the_first() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -974,13 +932,8 @@ fn a_second_message_does_not_start_a_second_turn_for_the_first() {
 // The failures stay failures
 // ---------------------------------------------------------------------------
 
-/// A genuine failure is still refused by name, and never claims to have queued.
-///
-/// Three different facts: a handle no session in this daemon answers to; a child whose own THREAD
-/// has ended, which takes no wake (checked BEFORE the submit, so *nothing was sent* is true when it
-/// is said); and a session that goes away with the message already on its queue - the one window
-/// the new order cannot close, reached with the child's turn HELD OPEN, because a child whose hub
-/// closes between turns ends its thread on the way out and so answers as the second refusal.
+/// A genuine failure is still refused by name, and never claims to have queued. Three
+/// different facts: a handle no session in this daemon answers to;
 #[test]
 fn a_message_to_a_child_that_is_gone_is_refused_by_name() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1080,11 +1033,6 @@ fn a_message_to_a_child_that_is_gone_is_refused_by_name() {
 // ---------------------------------------------------------------------------
 
 /// The daemon's worker hands a child's message back to the child's own reader.
-///
-/// Both readers take from ONE queue (`take_own_work` for the thread that runs the session
-/// `try_command` for the worker), so the worker can win a message a parent aimed at its child - and
-/// its answer would be `message_idle`, which is false the moment a queued message starts a turn. A
-/// unit on the arm: the proof that the routing is RIGHT is the two tests above.
 #[test]
 fn the_workers_arm_gives_a_childs_message_back_to_its_reader() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1170,12 +1118,9 @@ fn the_workers_arm_gives_a_childs_message_back_to_its_reader() {
 // The DAEMON'S exit - the call `cli.rs` makes, and the bound it makes it with
 // ---------------------------------------------------------------------------
 
-/// Whatever a test here asserted, the tree is drained before the process can exit - the same
-/// rule [`Parent`]'s `Drop` keeps, and for the same crash: an assertion that fired early would
-/// leave a child thread inside libllama when `exit` runs the ELF finalizers.
-///
-/// The sessions live in a `RefCell` because the guard holds them for the whole test and one
-/// test also has to MUTATE them (`Sessions::dispatch` is `&mut self`).
+/// Whatever a test here asserted, the tree is drained before the process can exit - the
+/// same rule [`Parent`]'s `Drop` keeps, and for the same crash: an assertion that fired
+/// early would leave a child thread inside libllama when `exit` runs the ELF finalizers.
 struct DrainOnDrop<'s, 'p> {
     sessions: &'s std::cell::RefCell<Sessions<'p>>,
     registry: &'s Registry,
@@ -1202,14 +1147,9 @@ impl Drop for DrainOnDrop<'_, '_> {
     }
 }
 
-/// The daemon's exit waits for a child that is mid-turn, and gives up on a bound rather than
-/// hanging - `Sessions::drain_subagents`, which is what `cli.rs` calls before the process exits.
-///
-/// The child is inside its model call, the one state a stop cannot reach: the interrupt lands at a
-/// round boundary and there is none while the answer is being read. So the first drain is the
-/// give-up arm - the bound is spent and the session is named - and the second, after the release
-/// lets the turn end, is the clean arm. What is staged is the call and the bound, not a real
-/// `harnessd` process quitting, which no unit test can watch.
+/// The daemon's exit waits for a child that is mid-turn, and gives up on a bound rather
+/// than hanging - `Sessions::drain_subagents`, which is what `cli.rs` calls before the
+/// process exits. The child is inside its model call, the one state a stop cannot reach:
 #[test]
 fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1286,10 +1226,8 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
     );
 
     // And with the child able to move, the same call is a clean exit. The release ends its
-    // turn, and with its hub already closed its thread leaves rather than parking - so the second
-    // drain's bound is not spent. Whether `told` counts the child depends on whether the thread had
-    // already left when the drain looked; both are the clean arm and neither may read as a
-    // give-up.
+    // turn, and with its hub already closed its thread leaves rather than parking - so the
+    // second drain's bound is not spent.
     stub.release(usize::MAX);
     let began = Instant::now();
     let done = sessions.borrow().drain_subagents(GRACE);
@@ -1371,15 +1309,7 @@ fn task_message_call(to: &str, text: &str) -> String {
 }
 
 /// A child can answer the session that started it, by the reserved handle `parent`.
-///
-/// `task_message` has always taken any live session's id, so the door was there; what a child did
-/// not have was the ADDRESS - `Config::parent_session_id` is on its store row and in no disclosure.
-/// `PARENT_HANDLE` is that id's replacement, resolved by the runner that owns the tree.
-///
-/// What is proved is the whole chain: a real child on its own thread and hub, a real turn calling
-/// `task_message {"task": "parent"}`, the message on the PARENT's queue as a `CommandKind::Message`
-/// whose `from` is the child, the daemon's own dispatch arm delivering it, and one
-/// `Speaker::Agent` row on the parent naming the child.
+/// `task_message` has always taken any live session's id, so the door was there;
 #[test]
 fn a_child_answers_its_parent_by_the_reserved_handle() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1507,17 +1437,9 @@ fn a_child_answers_its_parent_by_the_reserved_handle() {
     );
 }
 
-/// A message the turn ended before reading is written into the transcript anyway - the window
-/// that made a parent's words invisible.
-///
-/// The ordinary path needs nothing: the engine appends the steering item at a step boundary. Here
-/// the message is absorbed at a TOKEN boundary inside the generation and the generation then fails
-/// so no boundary arrives and `SteeringSource::give_back` hands the words to the turn's carried set
-/// - where they used to live only in memory, and a child whose next turn never came left no row.
-///
-/// The model answers, starts a second round and drops the connection. The doomed turn is the
-/// child's SECOND: a child whose FIRST turn fails leaves its thread, and nothing after it could be
-/// observed.
+/// A message the turn ended before reading is written into the transcript anyway - the
+/// window that made a parent's words invisible. The ordinary path needs nothing: the engine
+/// appends the steering item at a step boundary.
 #[test]
 fn a_message_the_turn_never_read_is_a_row_anyway() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1532,12 +1454,9 @@ fn a_message_the_turn_never_read_is_a_row_anyway() {
     let target = format!("{}/note.txt", dir.relative());
 
     let parts = parts_for(&config(parent_id, Endpoint::new("127.0.0.1", 1), &path));
-    // Request by request, because the middle one is the one that dies
-    //
-    // 0, 1 the task's own turn: a tool call, then its answer - the child then parks.
-    // 2, 3 the turn FIRST starts: a tool call, then the round that is half-answered and dropped.
-    // 4 the turn AND_THEN starts, which is what proves the carried message is not written
-    // a second time.
+    // Request by request, because the middle one is the one that dies 0, 1 the task's own
+    // turn: a tool call, then its answer - the child then parks. 2, 3 the turn FIRST starts: a
+    // tool call, then the round that is half-answered and dropped.
     let call = a_tool_call_turn(&parts.vocab, &read_call(&target), 30);
     let done = a_plain_answer_turn(&parts.vocab, "planning", TO_THE_TASK, 30);
     let call_again = a_tool_call_turn(&parts.vocab, &read_call(&target), 30);

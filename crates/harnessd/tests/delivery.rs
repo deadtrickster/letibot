@@ -1,14 +1,11 @@
-//! between turns: nothing stays held once a turn has ended.
-//!
-//! The operator's ruling, on a result that reached an idle model only when they next spoke: jobs
-//! were run for a reason and held for a reason, so once a turn ends there is no reason to hold. A
-//! result held while a turn ran is delivered as a turn of its own the moment that turn ends, one
-//! that arrives while the session is idle is delivered at once as an ordinary completion, and a
-//! prompt that gets there before the turn-end wake still carries the batch.
-//!
-//! The settlement is put on the session's queue the way its watcher thread would
-//! ([`letibot_harnessd::jobwatch::JobWatchers::queue_for_test`]); everything after that is the
-//! daemon's own door - `Harness::wake`, `Harness::submit`. It needs the vocabulary GGUF, not a model.
+//! between turns: nothing stays held once a turn has ended. The operator's ruling, on a
+//! result that reached an idle model only when they next spoke: jobs were run for a reason
+//! and held for a reason, so once a turn ends there is no reason to hold. A result held
+//! while a turn ran is delivered as a turn of its own the moment that turn ends, one that
+//! arrives while the session is idle is delivered at once as an ordinary completion, and a
+//! prompt that gets there before the turn-end wake still carries the batch. The settlement
+//! is put on the session's queue the way its watcher thread would
+//! ([`letibot_harnessd::jobwatch::JobWatchers::queue_for_test`]);
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -271,10 +268,8 @@ fn a_completion_that_arrives_while_idle_is_delivered_at_once_without_a_heading()
     assert_eq!(rec[0]["handle"], "j31");
 }
 
-/// A prompt that gets there before the turn-end wake carries the batch, and the wake then runs
-/// nothing - one delivery, never two. Commands drain before wakes (`Bell::next_any`), so this is
-/// the order the worker takes them in when the operator types the moment a turn ends. The batch is
-/// still what arrived while the model was busy, so it keeps the heading and sits BEFORE their words.
+/// A prompt that gets there before the turn-end wake carries the batch, and the wake then
+/// runs nothing - one delivery, never two.
 #[test]
 fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

@@ -337,12 +337,7 @@ fn a_github_url_becomes_the_https_one_gh_answers_for() {
 
 // ===== A reviewer's clone: one tree per ATTEMPT =====
 
-/// Two clones of one row never share a path, and neither fails. A helper that removed whatever stood
-/// at `review-<row id>` let a second attempt delete the tree the first reviewer was reading, and both
-/// died - one on its own `.git/objects/pack/tmp_pack_*`, one on a workspace that was gone.
-///
-/// The property is not who wins: both callers succeed, the two trees are different paths, and each is
-/// complete - `rev-parse` answers the head the row names and `status` is clean.
+/// Two clones of one row never share a path, and neither fails.
 #[test]
 fn two_clones_of_one_row_never_share_a_path_and_neither_fails() {
     let dir = TempDir::new("clone-race");
@@ -454,11 +449,9 @@ fn a_clone_that_fails_leaves_no_tree_and_no_debris() {
 
 // ===== The proof a deletion needs =====
 
-/// The proof is three-valued, and `None` from `rev_parse` is two of them.
-///
-/// The resource sweep read one `Option` as permission - a `None` meant *may go*, and a worktree was
-/// removed with it. So the three facts are separated by `show-ref --verify`'s own exit status, and
-/// only the middle one - a ref git says is not there - is permission.
+/// The proof is three-valued, and `None` from `rev_parse` is two of them. The resource
+/// sweep read one `Option` as permission - a `None` meant *may go*, and a worktree was
+/// removed with it.
 #[test]
 fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
     let dir = TempDir::new("proof-three");

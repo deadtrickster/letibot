@@ -1,13 +1,10 @@
-//! `!term` end to end: the daemon's own driver, a real pty, and a real program in it.
-//!
-//! The pty is asserted without a daemon and the frame path against a driver that runs nothing, so
-//! nothing joined the two - which is exactly where a defect would live. This installs
-//! `letibot_harnessd::term::Terminals` (the driver `cli.rs` installs at startup, not a double) on a
-//! registry, attaches a head over a real socket, and drives it with the frames a head sends.
-//!
-//! What it cannot answer: whether `nano` is *usable* - the right rectangle, the right chords. That
-//! needs a person on a real terminal. Every read here is bounded, so a missing frame is a panic
-//! listing the frames that did arrive rather than a wait with no end.
+//! `!term` end to end: the daemon's own driver, a real pty, and a real program in it. The
+//! pty is asserted without a daemon and the frame path against a driver that runs nothing,
+//! so nothing joined the two - which is exactly where a defect would live. This installs
+//! `letibot_harnessd::term::Terminals` (the driver `cli.rs` installs at startup, not a
+//! double) on a registry, attaches a head over a real socket, and drives it with the frames
+//! a head sends. What it cannot answer: whether `nano` is *usable* - the right rectangle,
+//! the right chords. That needs a person on a real terminal.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,12 +22,9 @@ use std::os::unix::net::UnixStream;
 /// fork, `exec` and write - and finite, which is the whole point.
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// One pane at a time in this file.
-///
-/// Each test here starts a real program on a real pty inside a real cgroup scope, and running them
-/// concurrently measures the box's cgroup rather than the pane. `--test-threads` is the harness's
-/// business, so this is a lock and not a note in a README. Poisoning is recovered rather than
-/// propagated: a test that panicked has already reported its own failure and the next should run.
+/// One pane at a time in this file. Each test here starts a real program on a real pty
+/// inside a real cgroup scope, and running them concurrently measures the box's cgroup
+/// rather than the pane.
 static ONE_PANE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -52,10 +46,8 @@ fn workspace(tag: &str) -> PathBuf {
     p.canonicalize().expect("the workspace resolves")
 }
 
-/// The daemon's registry, with the daemon's own driver on it.
-///
-/// The line `crates/harnessd/src/cli.rs` runs at startup, with the same `Weak`: the registry owns
-/// the driver and the driver reads the registry's wiring, so an `Arc` here would be that cycle.
+/// The daemon's registry, with the daemon's own driver on it. The line
+/// `crates/harnessd/src/cli.rs` runs at startup, with the same `Weak`:
 fn daemon(session: &str, workspace: &std::path::Path) -> Arc<Registry> {
     let registry = Registry::new();
     registry
@@ -161,12 +153,8 @@ fn read_until(r: &mut FrameReader<UnixStream>, needle: &str) -> Vec<u8> {
     }
 }
 
-/// The pane's program gets the console's environment, and not the daemon's own.
-///
-/// The control is the first assertion, and it is what makes the absence mean anything: the
-/// variable asked for *is* in the daemon's own environment, so a pane that does not see it did not
-/// inherit - it was told. `mc` needs `TERM` for terminfo and `HOME` for its config, and prints one
-/// line and exits without them, which is the flash.
+/// The pane's program gets the console's environment, and not the daemon's own. The control
+/// is the first assertion, and it is what makes the absence mean anything:
 #[test]
 fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
     let _serial = serial();
@@ -219,11 +207,9 @@ fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// A pane whose program exited frees its slot, and the next `!term` is not refused.
-///
-/// The daemon kept the slot while the head had lost the rectangle, because the question it asked
-/// was `closed` (has anybody ended this pane) and nobody had: the program ended it by exiting.
-/// `TermSession::live` is the question that matters, and this is it through the real driver.
+/// A pane whose program exited frees its slot, and the next `!term` is not refused. The
+/// daemon kept the slot while the head had lost the rectangle, because the question it
+/// asked was `closed` (has anybody ended this pane) and nobody had:
 #[test]
 fn a_pane_whose_program_exited_frees_its_slot() {
     let _serial = serial();
@@ -289,13 +275,9 @@ fn until_status(r: &mut FrameReader<UnixStream>) -> Option<String> {
     }
 }
 
-/// A bare `!term` gives a head back the screen the daemon holds - and a live pane.
-///
-/// Who holds the screen is the decision underneath, and it is the daemon. It is deliberately a
-/// second head, and the proof is the replay: that head's rectangle was created empty by a line it
-/// sent itself, so everything on it came from the daemon. The *nudge* is not what this relies on -
-/// `TIOCSWINSZ` with an unchanged size raises no `SIGWINCH`. And the pane is live rather than a
-/// photograph: the attaching head types at it and the program answers *that* head.
+/// A bare `!term` gives a head back the screen the daemon holds - and a live pane. Who
+/// holds the screen is the decision underneath, and it is the daemon. It is deliberately a
+/// second head, and the proof is the replay:
 #[test]
 fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
     let _serial = serial();
@@ -394,9 +376,8 @@ fn attaching_to_a_session_with_no_pane_says_so() {
 }
 
 /// A real program, on a real pty, its bytes on the wire, and its exit status in the ending.
-///
-/// The `\r\n` is not asserted and must not be - it is the pty's own translation, and pinning it
-/// would be pinning the line discipline rather than the pane.
+/// The `\r\n` is not asserted and must not be - it is the pty's own translation, and
+/// pinning it would be pinning the line discipline rather than the pane.
 #[test]
 fn a_real_program_runs_in_the_pane_and_its_bytes_reach_the_head() {
     let _serial = serial();
@@ -448,12 +429,8 @@ fn the_pane_runs_in_the_sessions_workspace_and_not_the_daemons() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// The operator's bytes reach the program verbatim, and it is the program that answers.
-///
-/// `tr a-z A-Z` and not `cat`, for a reason that is the whole point: a pty echoes what is typed
-/// at it, so "the bytes came back" is a claim `cat` cannot make - the echo would satisfy it with
-/// the program never having run. `tr` answers in *different* bytes, so the line discipline cannot
-/// satisfy the assertion.
+/// The operator's bytes reach the program verbatim, and it is the program that answers. `tr
+/// a-z A-Z` and not `cat`, for a reason that is the whole point:
 #[test]
 fn the_operators_bytes_reach_the_program() {
     let _serial = serial();
@@ -481,11 +458,9 @@ fn the_operators_bytes_reach_the_program() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// A second `!term` runs beside the first, and the first keeps running.
-///
-/// What the one-pane refusal protected - a running program is not killed to make room - is kept
-/// the refusal is not. The second program gets pane 2, its bytes and its ending carry that number
-/// the first is still listed as running, and `!term 1` comes back to it with its screen.
+/// A second `!term` runs beside the first, and the first keeps running. What the one-pane
+/// refusal protected - a running program is not killed to make room - is kept the refusal
+/// is not.
 #[test]
 fn a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number() {
     let _serial = serial();
@@ -553,13 +528,9 @@ fn a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// A pane runs inside the boundary its session installed.
-///
-/// The harness installs its process host's boundary on the registry at open
-/// (`Registry::bound_panes`), and `Terminals::open` puts that argv in front of the pane's shell.
-/// Here the boundary is the real one - `Bwrap::project` over the workspace - so a file beside the
-/// workspace is ABSENT inside the pane while the workspace is there and `/dev/tty` still opens.
-/// Skips on a box with no usable bubblewrap.
+/// A pane runs inside the boundary its session installed. The harness installs its process
+/// host's boundary on the registry at open (`Registry::bound_panes`), and `Terminals::open`
+/// puts that argv in front of the pane's shell.
 #[test]
 fn a_pane_runs_inside_the_boundary_its_session_installed() {
     use letibot_tools::exec::confine::{Bwrap, ConfinePlan, Confinement};
@@ -624,15 +595,8 @@ fn closing_is_the_daemons_act_and_names_the_operator() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// The daemon answers *what is this session's pane running*, and a detach is invisible to it.
-///
-/// `None` is an answer and not a failure: *this session has no live pane* is what makes a
-/// head's `!term close` a sentence rather than a confirmation about nothing, and a test that read
-/// an absent frame as the answer could not tell it from a daemon that had stopped listening.
-///
-/// And the detach is the absence of a frame. `ctrl-\` sends nothing at all - that is what makes
-/// the program keep running - so the read here is taken with nothing sent in between and still
-/// answers with the same command.
+/// The daemon answers *what is this session's pane running*, and a detach is invisible to
+/// it. `None` is an answer and not a failure:
 #[test]
 fn the_status_read_answers_what_is_running_and_a_detach_is_invisible_to_it() {
     let _serial = serial();
@@ -680,12 +644,9 @@ fn the_status_read_answers_what_is_running_and_a_detach_is_invisible_to_it() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// The deliberate close frees the slot, and the next `!term` starts rather than being refused.
-///
-/// The other half of the ghost: `a_pane_whose_program_exited_frees_its_slot` covers a pane the
-/// PROGRAM ended, and this is the pane the OPERATOR ended. What makes it about the close rather
-/// than the slot is the ending itself - *"you closed the terminal"* means the daemon took the
-/// frame and ended the program, and only then is the next pane allowed to start.
+/// The deliberate close frees the slot, and the next `!term` starts rather than being
+/// refused. The other half of the ghost: `a_pane_whose_program_exited_frees_its_slot`
+/// covers a pane the PROGRAM ended, and this is the pane the OPERATOR ended.
 #[test]
 fn a_deliberate_close_frees_the_slot_and_the_next_pane_starts() {
     let _serial = serial();
@@ -719,11 +680,6 @@ fn a_deliberate_close_frees_the_slot_and_the_next_pane_starts() {
 }
 
 /// `!term close` is refused by name, and a program merely STARTING with it is not.
-///
-/// The word is the ending, so a `TermOpen` carrying it is a head that did not ask its operator
-/// first - and running something called `close` instead would be the two halves disagreeing about
-/// what the same bytes mean. The contrast is the test: `!term close-it` STARTED, which is what
-/// proves the daemon matched the whole word and not a prefix.
 #[test]
 fn a_term_close_line_is_refused_by_name_and_a_name_that_begins_with_it_is_not() {
     let _serial = serial();

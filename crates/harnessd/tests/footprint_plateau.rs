@@ -1,18 +1,11 @@
-//! Does a daemon's heap plateau at `sessions × (what one session's harness holds)`, or grow past it?
-//!
-//! The instrument is `memwatch::Counting` installed as this binary's allocator, so
+//! Does a daemon's heap plateau at `sessions × (what one session's harness holds)`, or grow
+//! past it? The instrument is `memwatch::Counting` installed as this binary's allocator, so
 //! `memwatch::heap` is this process's live heap and nothing else's, plus `RssShmem` from
-//! `/proc/self/status` - a token region is a memfd, so its pages are never heap, and each half
-//! is checked against its own instrument rather than the two being added together.
-//!
-//! What it proves: the census's gauges equal a fresh walk of the rows, including after a fork; a
-//! turn costs the same late as early (a per-turn copy of the conversation would grow); the heap is
-//! the SUM over sessions, within the tolerance stated below; and a fork gives the conversation
-//! back, which is the mechanism a long-lived session plateaus by.
-//!
-//! What it does NOT prove: a session with no wall never plateaus, because the transcript is every
-//! row it appended. So this file measures the bound's *shape*; `the_full_probe` below is the run
-//! that measures a real session against its ceiling.
+//! `/proc/self/status` - a token region is a memfd, so its pages are never heap, and each
+//! half is checked against its own instrument rather than the two being added together.
+//! What it proves: the census's gauges equal a fresh walk of the rows, including after a
+//! fork; a turn costs the same late as early (a per-turn copy of the conversation would
+//! grow); the heap is the SUM over sessions, within the tolerance stated below;
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -41,11 +34,8 @@ const TURNS: usize = 12;
 const TURN_BYTES: usize = 64 * 1024;
 
 /// The tolerance, as a number: what the heap may hold beyond the rows a session appended.
-///
-/// The rows are most of it; the rest is the trail, the hub's small log and view, the model's
-/// answers and per-session overhead. 1.75× is a BOUND and not a target, with room for a `Vec`'s
-/// doubling and the allocator's slack - a per-turn copy of the conversation would be 12× the rows
-/// by the last turn.
+/// The rows are most of it; the rest is the trail, the hub's small log and view, the
+/// model's answers and per-session overhead.
 const SLACK_PER_SESSION: f64 = 1.75;
 
 /// One test at a time: both tests here point `XDG_CONFIG_HOME` at their own providers file and
@@ -89,10 +79,6 @@ impl Drop for TempDir {
 }
 
 /// A provider that answers every request with one word, in the frames the provider parses.
-///
-/// It reads the request before answering - a stub that writes first can fail against a client
-/// still sending, and that failure looks exactly like a model error, which is the wrong thing to
-/// debug.
 fn a_model_that_says_ok() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     let port = listener.local_addr().unwrap().port();
@@ -377,12 +363,9 @@ fn the_heap_plateaus_at_what_the_sessions_hold() {
         mb(per_session_room),
         mb((TURNS * TURN_BYTES) as f64)
     );
-    // The token regions are real memory, just not heap: `RssShmem` grew with them, and by
-    // less than the mapping, because a doubling's tail is capacity nobody has written yet.
-    //
-    // On a box with no `/proc` this half says nothing rather than failing: `rss` answers
-    // zeroes on Darwin, and "this kernel cannot report it" is not "the regions took no memory".
-    // The heap half above is the portable one and the one the bound rests on.
+    // The token regions are real memory, just not heap: `RssShmem` grew with them, and by less
+    // than the mapping, because a doubling's tail is capacity nobody has written yet. On a box
+    // with no `/proc` this half says nothing rather than failing:
     let shmem_grew = shmem_end.saturating_sub(shmem0);
     let region_total = (footprint_total - held_total) as u64;
     if shmem_end == 0 {
@@ -421,10 +404,9 @@ fn the_heap_plateaus_at_what_the_sessions_hold() {
         mb((SESSIONS * TURNS * TURN_BYTES) as f64)
     );
 
-    // ---- 5. The per-turn cost does not grow with the conversation ----
-    //
-    // A per-turn copy of the conversation has a slope that grows with it; a per-turn cost that is
-    // O(one row) has the same slope at the start and at the end.
+    // ---- 5. The per-turn cost does not grow with the conversation ---- A per-turn copy of
+    // the conversation has a slope that grows with it; a per-turn cost that is O(one row) has
+    // the same slope at the start and at the end.
     let mid = per_turn[TURNS / 2].1 as f64;
     let per_turn_early = (mid - heap0 as f64) / (TURNS / 2) as f64;
     let per_turn_late = (heap_end as f64 - mid) / (TURNS / 2) as f64;
@@ -452,10 +434,9 @@ fn the_heap_plateaus_at_what_the_sessions_hold() {
         mb(per_turn_early)
     );
 
-    // ---- 6. A fork gives the conversation back ----
-    //
-    // This is the only thing that makes a long-lived session plateau: the conversation is replaced
-    // by a summary and what the session holds drops to the summary.
+    // ---- 6. A fork gives the conversation back ---- This is the only thing that makes a
+    // long-lived session plateau: the conversation is replaced by a summary and what the
+    // session holds drops to the summary.
     let before = held[0].0.footprint();
     let report = held[0]
         .0
@@ -502,19 +483,8 @@ fn the_heap_plateaus_at_what_the_sessions_hold() {
 // ---------------------------------------------------------------------------
 
 /// The full experiment, at its own scale, behind `--ignored`, with `R66_SESSIONS`
-/// `R66_TURNS`, `R66_TURN_BYTES` and `R66_WINDOW` set; the defaults are 50 sessions × 200 turns ×
-/// 1 MiB, which is 10 GiB of rows and wants a raised memory cap.
-///
-/// Four numbers are the answer: `Σ footprint` against `Σ rows` (1.0–1.5 means the daemon holds the
-/// work its sessions appended and nothing else; one that climbs is a per-turn copy of the
-/// conversation), `heap` against `Σ rows` for the same question on the heap alone, `shmem` against
-/// `Σ region` (a region is real memory, just not heap - zero while the regions are gigabytes means
-/// the mapping is never written), and the late slope against the early one.
-///
-/// It drives `Harness::system_update`, which does not consult the wall, so it measures the
-/// UNBOUNDED case on purpose: `R66_WINDOW` is what the ceiling is computed from, and VERDICT 3
-/// says whether a transcript grown past it is the session `memwatch` names. The walled half is a
-/// different instrument - a live daemon where every turn is followed by a wake.
+/// `R66_TURNS`, `R66_TURN_BYTES` and `R66_WINDOW` set; the defaults are 50 sessions × 200
+/// turns × 1 MiB, which is 10 GiB of rows and wants a raised memory cap.
 #[test]
 #[ignore = "the brief's own scale: 50 sessions × 200 turns × 1 MiB — run it by hand, see the note"]
 fn the_full_probe() {
@@ -629,10 +599,6 @@ fn the_full_probe() {
 
     // The readings as verdicts, so a probe run does not have to be interpreted from memory.
     // None of them is a CI assertion: the numbers are the answer.
-    //
-    // The first is asked of the HEAP and not of the footprint, because the two hold different
-    // things - the rows and the trail are on the heap, a token region is a memfd whose pages are
-    // `RssShmem`, and adding them would be adding two measurements of two memories.
     let heap_grew = (heap_end.saturating_sub(heap0)) as f64;
     let heap_per_row = heap_grew / appended.max(1.0);
     println!(

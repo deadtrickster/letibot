@@ -1,26 +1,10 @@
-//! The daemon's half of `!term`: the panes a session owns, and how their bytes reach a head.
-//!
-//! [`letibot_sessionlog::TerminalDriver`] is the seam and [`Terminals`] implements it; the pty
-//! itself is [`letibot_tools::exec::term`]. What lives here is what the daemon has to hold
-//!
-//! - the panes, several per session, each with a number the session never reuses
-//! - a pane's boundary, taken from its session's process host when the pane opens
-//! - `Pane::log`, the bytes the program has drawn, replayed to a head that asks
-//! - `Sink`, which turns the reader thread's bytes into [`ServerFrame::TermOutput`].
-//!
-//! The screen is the daemon's because a program on a pty belongs to the session while a head is
-//! one view of it: any head that asks can be given the screen back, and a session switch does
-//! not lose it. The log is bytes and the head rebuilds cells with `letibot_vt::Screen`, so no
-//! frame has to carry a screen. It is capped at `SCREEN_LOG`, and an attach therefore replays
-//! the tail, which starts at an `ESC` so a cut sequence cannot be painted as text.
-//!
-//! [`TermSession::live`], not `closed`, answers whether a program is running: a program that
-//! exits on its own ends its pane, and a pane kept for its scope is not one that runs. `ctrl-\`
-//! detaches and reaches nothing here; only a confirmed `!term close` ends a pane.
-//!
-//! One cgroup scope per pane, never the session's, because the session's scope holds the turn's
-//! processes and a pane that ended it would kill the turn that opened it. A box with no cgroups
-//! runs the pane unscoped and lets `TermSession::close`'s `SIGHUP` fallback end it.
+//! The daemon's half of `!term`: the panes a session owns, and how their bytes reach a
+//! head. [`letibot_sessionlog::TerminalDriver`] is the seam and [`Terminals`] implements
+//! it; the pty itself is [`letibot_tools::exec::term`]. What lives here is what the daemon
+//! has to hold The screen is the daemon's because a program on a pty belongs to the session
+//! while a head is one view of it: any head that asks can be given the screen back, and a
+//! session switch does not lose it. The log is bytes and the head rebuilds cells with
+//! `letibot_vt::Screen`, so no frame has to carry a screen.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,17 +17,14 @@ use letibot_tools::exec::{
     NoScopes, ScopeId, ScopeKind, ScopeTree, TermConfig, TermError, TermSession, TermSink,
 };
 
-/// What the operator is told when they end a pane deliberately.
-///
-/// The operator's act is the fact worth reporting: a program killed by `SIGKILL` reads as a
-/// crash, while "you closed the terminal" reads as what happened. `ctrl-\` detaches instead, so
-/// this sentence reaches a row only for the act that really ended the pane.
+/// What the operator is told when they end a pane deliberately. The operator's act is the
+/// fact worth reporting: a program killed by `SIGKILL` reads as a crash, while "you closed
+/// the terminal" reads as what happened.
 const CLOSED: &str = "you closed the terminal";
 
-/// How much of what a program drew the daemon keeps.
-///
-/// A cap makes this a screen rather than a leak, and the only reader wants the screen as it is
-/// now. Hundreds of repaints fit, so a pane that is drawing always holds its current screen.
+/// How much of what a program drew the daemon keeps. A cap makes this a screen rather than
+/// a leak, and the only reader wants the screen as it is now. Hundreds of repaints fit, so
+/// a pane that is drawing always holds its current screen.
 const SCREEN_LOG: usize = 256 * 1024;
 
 /// How many live panes one session may hold, so a stuck key cannot fill the box with ptys.
@@ -87,11 +68,8 @@ pub struct Terminals {
     panes: Mutex<HashMap<String, Session>>,
 }
 
-/// A pane: the pty session, what it is running, and what it has drawn.
-///
-/// [`TermSession`] holds both ends of the scope, so closing the pane and dropping it are one
-/// act. An ended pane is kept until the next `open` because its scope is still the cgroup that
-/// has to be ended, and something the program forked away is still in it.
+/// A pane: the pty session, what it is running, and what it has drawn. [`TermSession`]
+/// holds both ends of the scope, so closing the pane and dropping it are one act.
 struct Pane {
     session: TermSession,
     /// The line the operator typed after the verb, as the daemon was handed it. The verb is
@@ -102,10 +80,9 @@ struct Pane {
 }
 
 impl Pane {
-    /// What the program has drawn, as one block of bytes for a head that asked.
-    ///
-    /// Cloned rather than lent: the caller pushes it through the hub, which takes its own lock
-    /// and a borrow across that would hold the log lock while a head's queue is walked.
+    /// What the program has drawn, as one block of bytes for a head that asked. Cloned rather
+    /// than lent: the caller pushes it through the hub, which takes its own lock and a borrow
+    /// across that would hold the log lock while a head's queue is walked.
     fn screen(&self) -> Vec<u8> {
         self.log.lock().map(|l| l.clone()).unwrap_or_default()
     }
@@ -149,11 +126,9 @@ impl Terminals {
     }
 }
 
-/// Where a pane's bytes go: the hub, and the daemon's copy of the screen.
-///
-/// One socket needs one ordering, so a frame of its own would interleave into an event batch.
-/// The log is filled here for the same reason: a second reader would be a second place the same
-/// bytes could be lost or reordered, and the replay would disagree with what the heads saw.
+/// Where a pane's bytes go: the hub, and the daemon's copy of the screen. One socket needs
+/// one ordering, so a frame of its own would interleave into an event batch. The log is
+/// filled here for the same reason:
 struct Sink {
     hub: Arc<Hub>,
     log: Arc<Mutex<Vec<u8>>>,
@@ -183,11 +158,9 @@ impl TermSink for Sink {
     }
 }
 
-/// Keep the tail of what a program drew, and start it where a parser can read it.
-///
-/// A cut usually lands inside an escape sequence, and a head parses the tail from ground state
-/// so `[2J` would be painted as three characters. A tail with no `ESC` in it is left alone: that
-/// is a program writing text, and text is what it wrote.
+/// Keep the tail of what a program drew, and start it where a parser can read it. A cut
+/// usually lands inside an escape sequence, and a head parses the tail from ground state so
+/// `[2J` would be painted as three characters. A tail with no `ESC` in it is left alone:
 fn trim(log: &mut Vec<u8>) {
     if log.len() <= SCREEN_LOG {
         return;
@@ -312,16 +285,9 @@ impl TerminalDriver for Terminals {
         Ok(pane)
     }
 
-    /// Give this head a pane the session already has: a bare `!term`, or `!term N`.
-    ///
-    /// The rectangle first, so a program lays out for the screen it is now drawn in; a
-    /// `TIOCSWINSZ` at an unchanged size raises no `SIGWINCH`, so this is not what proves the
-    /// attach. Then what is running, before the bytes, so a head never shows a rectangle it
-    /// cannot name. Then the screen as one frame: `push_frame` drops the oldest pane frame for a
-    /// head that is behind, and a partial screen is worse than none.
-    ///
-    /// A session with no pane answers with a sentence, which the head turns into the same
-    /// `TermEnded` a refusal uses: the head opened its rectangle before it asked.
+    /// Give this head a pane the session already has: a bare `!term`, or `!term N`. The
+    /// rectangle first, so a program lays out for the screen it is now drawn in; a `TIOCSWINSZ`
+    /// at an unchanged size raises no `SIGWINCH`, so this is not what proves the attach.
     fn attach(
         &self,
         session_id: &str,
@@ -376,11 +342,6 @@ impl TerminalDriver for Terminals {
 
     /// What this session's panes are running: the read behind a head's line about programs it
     /// is not drawing.
-    ///
-    /// `live`, exactly as `open`'s sweep asks, because an ended pane is kept for its scope and
-    /// reporting it would put a "running" line on the screen for a program long gone. The
-    /// command is the string `open` was handed, so this and [`TerminalDriver::attach`] cannot
-    /// disagree.
     fn status(&self, session_id: &str) -> Vec<PaneBrief> {
         self.panes()
             .get(session_id)

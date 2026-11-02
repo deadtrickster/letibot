@@ -1,19 +1,10 @@
-//! The review queue's own SESSION - one, hardcoded, started by the daemon, whose todo board is
-//! the queue. The daemon is the administration: it fills the queue, keeps the worktrees, runs the
-//! gates and lands. The teacher is this session, and each review is a `task` child of it.
-//!
-//! The rows are a VIEW: the fourth half (`TodoBy::Queue`) is replaced from the store on every pass.
-//! The STATES stay in the store and this module writes none of them - what takes a row off the board
-//! is the child's own `review_verdict`, a person's `/queue approve|veto`, or a verdict another host
-//! wrote into the store.
-//!
-//! It is a ROOT session with no `parent_session_id`, opened through the ordinary door, so it runs on
-//! the daemon's model or whatever it was last switched to. [`PROMPT`] is appended to its system
-//! prompt at open, and frozen with the prefix like every other prompt.
-//!
-//! The one honest gap: `cli.rs`'s `is_conversation` is what `--list-sessions` and `--continue`
-//! both read, so `--continue` can land the operator here. Splitting the two questions is the
-//! operator's call.
+//! The review queue's own SESSION - one, hardcoded, started by the daemon, whose todo board
+//! is the queue. The daemon is the administration: it fills the queue, keeps the worktrees,
+//! runs the gates and lands. The teacher is this session, and each review is a `task` child
+//! of it. The rows are a VIEW: the fourth half (`TodoBy::Queue`) is replaced from the store
+//! on every pass. The STATES stay in the store and this module writes none of them - what
+//! takes a row off the board is the child's own `review_verdict`, a person's `/queue
+//! approve|veto`, or a verdict another host wrote into the store.
 
 use std::path::PathBuf;
 
@@ -22,12 +13,8 @@ use letibot_tokencore::store::{
 };
 use letibot_tools::builtins::task::Placement;
 
-/// The review-queue session id of the daemon serving `workspace` - `s-gatekeeper-<key>`. It is
-/// derived rather than minted because four things are decided by it: "started once" (a restart
-/// resumes this id), attaching by name, a board that survives a restart, and the session a review
-/// row names. The spelling lives one crate down so a HEAD can name it too.
-///
-/// [`Registry::resumable`]: letibot_sessionlog::registry::Registry::resumable
+/// The review-queue session id of the daemon serving `workspace` - `s-gatekeeper-<key>`. It
+/// is derived rather than minted because four things are decided by it:
 pub fn session(workspace: &std::path::Path) -> String {
     letibot_sessionlog::gatekeeper_session(workspace)
 }
@@ -44,24 +31,14 @@ pub(crate) fn session_for_fixture() -> String {
 /// changed on purpose (`SessionBrief::title`), so this is what a person reads in `--sessions`.
 pub const TITLE: &str = "the review queue";
 
-/// The session's SEAT, hardcoded, and it is the default one on purpose. It spawns the review
-/// children and opens with nobody attached, and `orchestrator` is the only seat carrying the whole
-/// task surface and no gated tool - so `Harness::open` has no adjudicator to reach for. It is not
-/// `self.base.seat`: `--role coder` seats the operator's conversation, not the queue.
+/// The session's SEAT, hardcoded, and it is the default one on purpose.
 pub const SEAT: crate::config::Seat = crate::config::Seat::Orchestrator;
 
 /// Where a review-queue session's reviewers run - the decision as a STATE, rather than as a
-/// placement that happens to come out `host` when something was wrong. The third arm is the point
-/// *this box cannot boot a VM* is a fact with the box's own reason attached, so a reader can tell
-/// *the session vetoed the VM* from *the box could not give one*.
+/// placement that happens to come out `host` when something was wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewerPlacement {
-    /// A firecode VM. The VM is the boundary, so a reviewer's `bash` asks nobody. The tree it is
-    /// booted on is the entry's own REPOSITORY ([`Harness::serve_reviews`] sets `TaskSpec::vm_source`
-    /// from `mergequeue::review_copy_source`), not this session's workspace - copying the level above
-    /// the repositories is 72.8 GiB of siblings that the ceiling refuses.
-    ///
-    /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
+    /// A firecode VM. The VM is the boundary, so a reviewer's `bash` asks nobody.
     Vm,
     /// This machine, because the project says so - `[queue] reviewers = "host"`, the DEFAULT
     /// and the arm a caller that must not boot one takes. The reviewer works in a checkout of the
@@ -75,9 +52,8 @@ pub enum ReviewerPlacement {
 
 impl ReviewerPlacement {
     /// The `task` placement this state means - what [`Harness::serve_reviews`] puts on the
-    /// review child's [`letibot_tools::builtins::task::TaskSpec`].
-    ///
-    /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
+    /// review child's [`letibot_tools::builtins::task::TaskSpec`]. [`Harness::serve_reviews`]:
+    /// crate::harness::Harness::serve_reviews
     pub fn placement(&self) -> Placement {
         match self {
             ReviewerPlacement::Vm => Placement::Firecode,
@@ -129,29 +105,9 @@ The operator's remedy is a `firecode` on the daemon's PATH (or `$FIRECODE_BIN`) 
     }
 }
 
-/// Where the reviewers of a review-queue session run: this machine - the DEFAULT, and what a
-/// project that says `[queue] reviewers = "host"` or nothing gets - or a firecode VM, which a
-/// project asks for by name and this box can only give where it can boot one.
-///
-/// The default is the host because a VM-placed reviewer paid a guest exec per file read: one
-/// repository-scale `grep` was hundreds of round trips and 30–60 minutes of a held queue slot. And
-/// the symmetry that settled it: the subagents that AUTHOR these branches already run here, so a VM
-/// around only the reader buys isolation the author never had.
-///
-/// A reviewer has no caller - the queue's own clock starts it - so this is the one child whose
-/// placement is decided for it, from a project's [`crate::config::Reviewers`] with the daemon's
-/// `--reviewers` as override. `may_use_vm` can only ever REMOVE the VM, never force one
-/// [`Harness::serve_reviews`] writes a reviewer that could not start as a failed attempt on the
-/// row, so a `Firecode` this box cannot honour would park the whole queue at once. `firecode_available`
-/// answers *the CLI is there and runnable*, not *a VM can boot* - nothing cheaper answers the
-/// stronger question without booting one.
-///
-/// Both arms hand the reviewer a tree of its own at the head the row names, never this session's
-/// workspace (a folder of repositories on the operator's box: 72.8 GiB against a VM's 8 GiB ceiling).
-/// `mergequeue::review::start_reviewer` makes ONE clone per ATTEMPT; a VM is booted on it
-/// (`TaskSpec::vm_source`), a host reviewer works in it (`TaskSpec::worktree`).
-///
-/// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
+/// Where the reviewers of a review-queue session run: this machine - the DEFAULT, and what
+/// a project that says `[queue] reviewers = "host"` or nothing gets - or a firecode VM,
+/// which a project asks for by name and this box can only give where it can boot one.
 pub fn reviewer_placement(
     may_use_vm: bool,
     available: Result<PathBuf, String>,
@@ -168,15 +124,9 @@ pub fn reviewer_placement(
     }
 }
 
-/// What the review queue's own session is TOLD, in its own system prompt - the operator's *"it
-/// managed via its prompt and so on"*, read as an instruction. Appended to the composed prompt at
-/// open and frozen with the prefix; `ReseatSession` is the remedy for a session that opened before
-/// the paragraph changed.
-///
-/// It names no verb that has no door (nothing here marks a queue row done or starts a review - the
-/// queue's clock does that), and it restates none of the store's vocabulary. What it states plainly
-/// is the seam: the reviewer hands its verdict in ITSELF through `review_verdict`, and a reply in
-/// prose has judged nothing.
+/// What the review queue's own session is TOLD, in its own system prompt - the operator's
+/// *"it managed via its prompt and so on"*, read as an instruction. Appended to the
+/// composed prompt at open and frozen with the prefix;
 pub const PROMPT: &str = "\
 \n\
 You are the review queue. This session is the merge queue's own: the rows on your board marked \
@@ -219,13 +169,9 @@ rows and nobody else's. The queue's rows are not yours to write, and they are ne
 come first on the board, and the idle check asks about them before it asks about your plan.\n\
 ";
 
-/// The paragraph the review queue's session opens with, for the placement its reviewers have.
-/// [`PROMPT`] is the constant half and the placement is this box's answer, appended last.
-///
-/// One function, two callers: this one at open, and [`Harness::serve_reviews`] at every spawn -
-/// so the paragraph a session was given and the placement its children get cannot drift apart.
-///
-/// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
+/// The paragraph the review queue's session opens with, for the placement its reviewers
+/// have. [`PROMPT`] is the constant half and the placement is this box's answer, appended
+/// last. One function, two callers:
 pub fn prompt(placement: &ReviewerPlacement) -> String {
     format!("{PROMPT}{}", placement.said())
 }
@@ -237,12 +183,9 @@ pub fn queue_rows(store: &Store, me: &str) -> Vec<TodoItem> {
     waiting(store, me).iter().map(|r| row(r, None)).collect()
 }
 
-/// The reviews this daemon's queues serve that are waiting for a verdict - rows `waiting` or
-/// `reviewing` in a repository whose LEASE this daemon holds. Another daemon's rows
+/// The reviews this daemon's queues serve that are waiting for a verdict - rows `waiting`
+/// or `reviewing` in a repository whose LEASE this daemon holds. Another daemon's rows
 /// would nag this session about work it must not touch.
-///
-/// The order is the queue's own claim order - the red target first, then priority, then age - so the
-/// board is stable across passes (`set_queue` compares the rows).
 pub fn waiting(store: &Store, me: &str) -> Vec<ReviewRow> {
     let held: Vec<String> = store
         .queue_leases()

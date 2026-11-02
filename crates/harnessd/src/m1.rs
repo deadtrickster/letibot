@@ -68,10 +68,9 @@ struct Row {
     after_reasoning: bool,
 }
 
-/// Run the M1 script over `args`, returning the process exit code.
-///
-/// `args` is what followed the program name. A usage error exits 2 from `die`
-/// rather than returning, which is stated in the module docs above.
+/// Run the M1 script over `args`, returning the process exit code. `args` is what followed
+/// the program name. A usage error exits 2 from `die` rather than returning, which is
+/// stated in the module docs above.
 pub fn run(args: &[String]) -> i32 {
     let mut cfg = Config::for_this_box(std::env::current_dir().expect("a working directory"));
     // A measurement of a live session on this box, so it reads this box: the instruction
@@ -251,14 +250,8 @@ impl Step {
     }
 }
 
-/// The scripted session (§18.2: *"a fixed 30-turn conversation with a fixed tool script, replayed
-/// identically against any client"*).
-///
-/// It includes a mid-session system change (C9), tool calls that hit, a tool call that must fail
-/// and a retrieval question that must abstain. Deliberately no compaction crossing or fork: neither
-/// exists in M1, and scripting a step the harness cannot take would be a test of the script.
-/// Prompts and answers are short on purpose - this runs against a box in production use with five
-/// slots.
+/// The scripted session (§18.2: *"a fixed 30-turn conversation with a fixed tool script,
+/// replayed identically against any client"*).
 fn script(turns: usize) -> Vec<Step> {
     let ask = |s: &str| Step::Ask(s.to_string());
     let mut v = vec![
@@ -309,11 +302,6 @@ fn first_line(s: &str) -> String {
 }
 
 /// The percentile convention every figure in this file uses, stated once.
-///
-/// Nearest-rank on `(n-1)·p`, rounded half away from zero, over the ascending sample - so p10
-/// of 52 values is index `round(51 × 0.10) = 5`, the 6th smallest, and no interpolation invents a
-/// value the session did not produce. It matters: with 52 samples it takes 6 low values, not 5
-/// to move p10.
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
         return f64::NAN;
@@ -360,13 +348,9 @@ fn judge(
             .to_string(),
     );
 
-    // ---- C3: the generation-inclusive prefix invariant --------------------
-    //
-    // Read off `PrefixCheck`, which the engine computed at the moment it had the evidence, rather
-    // than recomputed from `prompt + predicted`: `predicted_tokens` counts what the server
-    // streamed, which includes the trailing `<|im_end|>`, and that stop token is stripped before
-    // the row is committed. Two implementations of one invariant is how a harness ends up trusting
-    // the wrong one.
+    // ---- C3: the generation-inclusive prefix invariant -------------------- Read off
+    // `PrefixCheck`, which the engine computed at the moment it had the evidence, rather than
+    // recomputed from `prompt + predicted`:
     let mut c3_held = 0;
     let mut c3_short: Vec<String> = Vec::new();
     // Every shortfall is compared against the previous submission's generation, because one shape
@@ -441,13 +425,7 @@ fn judge(
         )
     });
 
-    // ---- C4: the f_keep distribution --------------------------------------
-    //
-    // D11: `f_keep = lcp / cached_entry`, read off `TurnMetrics::f_keep`, whose denominator is the
-    // same `PrefixCheck::Held` C3 reports its shortfall from - C3 is the inequality
-    // `cached(N+1) >= prompt(N) + generated(N)` and C4 is its margin, over the same two numbers.
-    // Recomputing the denominator here would be a second implementation of one quantity. The old C4
-    // - `cached_tokens / prompt_tokens` - is llama's `f_sim` and is printed underneath (T22).
+    // ---- C4: the f_keep distribution -------------------------------------- D11:
     let mut keeps: Vec<f64> = rows.iter().filter_map(|r| r.m.f_keep()).collect();
     keeps.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut repre: Vec<f64> = rows.iter().map(|r| r.m.reprefill() as f64).collect();
@@ -523,10 +501,8 @@ fn judge(
         ));
     }
 
-    // `f_sim` - the OLD C4 - reported beside it so the two can be told apart. Its denominator is
-    // the whole new prompt, so its ceiling on any submission is `1 - new_tokens/prompt`: a turn
-    // that appends a 1,400-token tool result to a 5,000-token prompt cannot exceed 0.72 however
-    // perfect the cache is. A p10 over it measures the SCRIPT as much as the harness.
+    // `f_sim` - the OLD C4 - reported beside it so the two can be told apart. Its denominator
+    // is the whole new prompt, so its ceiling on any submission is `1 - new_tokens/prompt`:
     let mut sims: Vec<f64> = rows.iter().filter_map(|r| r.m.f_sim()).collect();
     sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let ceilings: Vec<f64> = rows
@@ -559,12 +535,8 @@ fn judge(
         total_prompt,
     ));
 
-    // ---- C5: reasoning replay does not collapse the cache ------------------
-    //
-    // Measured on `f_keep`, which since D11 is the right metric for it. omp's #3528 is a
-    // *collapse* - reasoning that is not replayed makes the prompt diverge and `cached_tokens`
-    // falls off a cliff. A turn whose `f_sim` is 0.69 because it appended a tool result has not
-    // collapsed.
+    // ---- C5: reasoning replay does not collapse the cache ------------------ Measured on
+    // `f_keep`, which since D11 is the right metric for it.
     let after: Vec<&Row> = rows.iter().skip(1).filter(|r| r.after_reasoning).collect();
     let worst = after
         .iter()

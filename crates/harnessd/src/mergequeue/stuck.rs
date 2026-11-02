@@ -1,45 +1,23 @@
 //! How many of a project's merge-queue rows are stuck, and how long the oldest has been.
-//!
-//! The queue tells a project's session about a row ENTERING a bad state, once, as it happens
-//! (`notices::merge_failed`, `notices::merge_conflict`). Nothing told it the total or the age, so
-//! eight rows could sit stuck for hours with every one of those transitions notified.
-//!
-//! One counting rule: the landing rows `desk::status` counts as parked, minus the ones still the
-//! queue's own business (`is_open`), built by the same `desk::counts_of` over the same
-//! `desk::parked_merge` - a sub-line of `status`'s own line, and a test holds the two together.
-//!
-//! The review queue is deliberately NOT counted: `serve.rs` re-seats a `rejected` or
-//! `cannot_decide` review by itself when the branch moved past the verdict it gave, so "no pass
-//! will move them" would be false for exactly those rows - and one lingering rejection would hold
-//! the alarm open over a clean queue. A verdict a person owes is `notices::parked`'s subject.
-//!
-//! A row STAYING bad is not an event, so the census runs on a clock of its own: `is_news` makes it
-//! the idle pass's business, as a TURN (`Sessions::deliver_due_censuses`, `Door::Census`), and the
-//! two numbers below bound the model calls it costs.
+//! The queue tells a project's session about a row ENTERING a bad state, once, as it
+//! happens (`notices::merge_failed`, `notices::merge_conflict`). Nothing told it the total
+//! or the age, so eight rows could sit stuck for hours with every one of those transitions
+//! notified. One counting rule: the landing rows `desk::status` counts as parked, minus the
+//! ones still the queue's own business (`is_open`), built by the same `desk::counts_of`
+//! over the same `desk::parked_merge` - a sub-line of `status`'s own line, and a test holds
+//! the two together. The review queue is deliberately NOT counted:
 
 use letibot_tokencore::store::{MergeRow, MergeState, Store};
 
 use super::desk;
 
-/// How long a row must have been stuck before the census says so at all.
-///
-/// The transition's own notice arrives the moment the row goes bad, so a census a minute later is
-/// that news twice. Fifteen minutes is longer than anything the queue does by itself - its pass is
-/// 30 s, a reviewer's start grace is 5 min, and a landing's gate is bounded by the project's own
-/// `[queue] gate_deadline` - so a row still bad then is one no pass is going to move.
+/// How long a row must have been stuck before the census says so at all. The transition's
+/// own notice arrives the moment the row goes bad, so a census a minute later is that news
+/// twice.
 pub const STUCK_AFTER_MS: u64 = 15 * 60 * 1000;
 
-/// How often the census is said again while the rows stay stuck - the rate this notice has of its
-/// own.
-///
-/// Two hours, in the queue's own units: a review's deadline is 60 min, so two full deadlines pass
-/// between two notices and a repeat cannot arrive before the queue has had a real chance to move
-/// the rows. It also bounds the wall - eight rows stuck for a night produce at most five notices
-/// where the idle check's own ladder would have produced twenty, and since the census is a TURN
-/// this is the model-call budget too.
-///
-/// It does not decay, because the sentence carries the AGE: every repeat is a different fact, and
-/// a ladder on top of a growing number would be two mechanisms doing one job.
+/// How often the census is said again while the rows stay stuck - the rate this notice has
+/// of its own. Two hours, in the queue's own units:
 pub const STUCK_REPEAT_MS: u64 = 2 * 60 * 60 * 1000;
 
 /// A landing row that is stuck: nobody is on it and no pass will move it. The non-open half of
@@ -98,15 +76,9 @@ impl Stuck {
     }
 }
 
-/// The stuck rows of the repositories a session is the project of.
-///
-/// `repositories` is what `mergequeue::repositories_of_workspace_cached` answers for the session's
-/// workspace - one repository, or each of a one-project folder's. An empty list is a session in no
-/// repository, and it has no queue to be told about.
-///
-/// Scoped, because this runs on a door that every turn ends at: the unscoped `merge_rows(None)`
-/// materialises every row of every repository on the box - evidence blobs and gate-step output
-/// included - to throw all but one project's away.
+/// The stuck rows of the repositories a session is the project of. `repositories` is what
+/// `mergequeue::repositories_of_workspace_cached` answers for the session's workspace - one
+/// repository, or each of a one-project folder's.
 pub fn of(store: &Store, repositories: &[String]) -> Result<Stuck, String> {
     let mut rows: Vec<MergeRow> = Vec::new();
     for repo in repositories {

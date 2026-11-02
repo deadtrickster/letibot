@@ -1,17 +1,10 @@
-//! A turn with two rounds, and the whole published history of what the session was waiting on.
-//!
-//! `Turn` is the PROMPT and not a round: a round that ended with tool calls is always followed by
-//! another round of the same prompt, so a `Turn` read off `TurnStarted`/`TurnFinished` says *quiet*
-//! at every round boundary - a session reported done in the middle of its own work. That is why
-//! `Waiting::Turn` comes from `Harness::prompt_in_flight`, the span `begin_turn_clock` brackets
-//! with the hub's round-level state only as the fallback for a hub nobody runs turns on.
-//!
-//! The session opens on the byte vocabulary with a loopback fake provider scripting two rounds - a
-//! `read` call the gate admits without a card, then the answer - so no model file is needed. The
-//! provider's URL has to come from `set_var`, which is why this is a file of its own.
-//!
-//! The assertion reads `Hub::retained` rather than sampling, so no value can be missed inside a
-//! round boundary that is milliseconds wide.
+//! A turn with two rounds, and the whole published history of what the session was waiting
+//! on. `Turn` is the PROMPT and not a round: a round that ended with tool calls is always
+//! followed by another round of the same prompt, so a `Turn` read off
+//! `TurnStarted`/`TurnFinished` says *quiet* at every round boundary - a session reported
+//! done in the middle of its own work. That is why `Waiting::Turn` comes from
+//! `Harness::prompt_in_flight`, the span `begin_turn_clock` brackets with the hub's
+//! round-level state only as the fallback for a hub nobody runs turns on.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};

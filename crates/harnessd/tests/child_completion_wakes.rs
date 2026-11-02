@@ -35,10 +35,9 @@ const TOOL_CALL_CLOSE: u32 = 248059;
 /// What the parent says to start the turn. A marker, so a failure can name the turn it was in.
 const PROMPT: &str = "start the child and carry on";
 
-/// The subtask the model hands the child - the string the `task` call carries.
-///
-/// Two lines, and the second one is a MARKER: only the child is handed the subtask, so the
-/// marker is in the child's prompt and nowhere in the parent's.
+/// The subtask the model hands the child - the string the `task` call carries. Two lines,
+/// and the second one is a MARKER: only the child is handed the subtask, so the marker is
+/// in the child's prompt and nowhere in the parent's.
 const SUBTASK: &str = "count the files and report\nmarker: this child is the one";
 
 /// The line that makes a request the CHILD's - see [`SUBTASK`].
@@ -88,11 +87,9 @@ impl Drop for TempDir {
     }
 }
 
-/// A session's own config, with the operator's own `providers.toml` and `permission.json` out
-/// of the way - a key on the developer's laptop must not decide what a test seats.
-///
-/// The workspace is the test's own directory and the seeded session row names the same one: a
-/// session reopened from a row that disagrees is a note on the log, and this file opens one twice.
+/// A session's own config, with the operator's own `providers.toml` and `permission.json`
+/// out of the way - a key on the developer's laptop must not decide what a test seats. The
+/// workspace is the test's own directory and the seeded session row names the same one:
 fn config(
     session_id: &str,
     endpoint: Endpoint,
@@ -151,9 +148,6 @@ fn seed_session(store: &std::path::Path, id: &str, workspace: &std::path::Path) 
 
 /// A parent session with the REAL runner, opened the way a daemon opens one - its own hub
 /// adopted into a shared registry, so the bell the watcher rings is one this test can ask.
-///
-/// One daemon is one registry (`instance` is what a settlement row names), and the teardown waits
-/// for child threads: a thread inside `libllama` at `exit` takes SIGSEGV after every test passed.
 struct Parent {
     /// `None` once [`Parent::close`] has dropped it - which is what a daemon's close does, and
     /// what gives the store's one-writer claim back so the session can be opened again.
@@ -200,8 +194,7 @@ impl Parent {
 
     /// Close the session the way the daemon does - the backend (which stops the watcher set)
     /// then the registry entry (which closes the hub, so a ring for this session has nothing to
-    /// wake). What that leaves is exactly the hole: a session this daemon is not holding, with a
-    /// child still working whose settlement will arrive into it.
+    /// wake). What that leaves is exactly the hole:
     fn close(&mut self) {
         if let Some(h) = &self.harness {
             h.close_backend();
@@ -274,10 +267,6 @@ impl Drop for Parent {
 
 /// A model that answers its first request with a `task` call and every later one with the
 /// child's answer.
-///
-/// Written rather than taken from `canned::Canned` because the parent's and the child's requests
-/// arrive on ONE endpoint in an order the test does not control, and `Canned::serve_each` cycles
-/// its scripts by request index - which would hand the child a script meant for the parent.
 struct Stub {
     endpoint: Endpoint,
     requests: Arc<AtomicUsize>,
@@ -338,11 +327,8 @@ impl Stub {
                         return;
                     }
                     let n = seen.fetch_add(1, Ordering::SeqCst);
-                    // The child's request, told from the parent's by whose words it holds. The
-                    // marker alone is not enough: the PARENT's second round carries the assistant's
-                    // `task` call in its own history, arguments and marker included, so a gate on
-                    // the marker alone would hold the parent's turn for ever. [`PROMPT`] is the
-                    // other half - the child holds only the subtask.
+                    // The child's request, told from the parent's by whose words it holds. The marker alone is
+                    // not enough:
                     let asked = prompt_of(&vocab, &body);
                     if asked.contains(CHILD_MARKER) && !asked.contains(PROMPT) {
                         let (lock, cv) = &*gate;
@@ -484,11 +470,8 @@ fn user_rows(items: &[TranscriptItem]) -> Vec<(Speaker, String)> {
 // ---------------------------------------------------------------------------
 
 /// A parent spawns a child, the child answers, and the parent is RUNG - with nobody asking.
-///
-/// The ring (`Work::Woken`), the wake (`Harness::wake` returns a turn, not `Ok(None)`), and the
-/// sentence: one `User { speaker: Agent }` row naming the child and carrying the first line of its
-/// answer - `Agent` and not `Operator`, because the session is talking to itself. Nothing here
-/// calls `task_result` or `job_list`: *the model learned of it only by polling* is the subject.
+/// The ring (`Work::Woken`), the wake (`Harness::wake` returns a turn, not `Ok(None)`), and
+/// the sentence: one `User { speaker:
 #[test]
 fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -579,14 +562,9 @@ fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
 // And the same settlement when its session is NOT open
 // ---------------------------------------------------------------------------
 
-/// A child that answers into a session this daemon is not holding is still delivered at that
-/// session's next open.
-///
-/// `JobWatchers` is built per open, so such a settlement has nowhere to go; what survives is the
-/// `subagent_run` row, written with `delivered = 0`, and the next open's
-/// `deliver_settlements_left_undelivered` reads it. It is said once - the `delivered` column is the
-/// whole of *has the model been told* - and it is the ordinary completion sentence, not a
-/// `[restart]` one, because nothing restarted.
+/// A child that answers into a session this daemon is not holding is still delivered at
+/// that session's next open. `JobWatchers` is built per open, so such a settlement has
+/// nowhere to go;
 #[test]
 fn a_settlement_for_a_session_between_opens_is_delivered_at_its_next_open() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -640,8 +618,7 @@ fn a_settlement_for_a_session_between_opens_is_delivered_at_its_next_open() {
 
     // The tree is let go, and it MUST be - a session is claimed for writing at open, and a
     // second open of one a live harness holds is refused by name. `wait_for_children` is
-    // deliberately NOT the barrier: a child that has answered is PARKED, not finished, so waiting
-    // for its thread would outlast the whole patience. The row above is the barrier.
+    // deliberately NOT the barrier:
     parent.forget();
 
     // The next open.

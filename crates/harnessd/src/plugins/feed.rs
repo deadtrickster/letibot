@@ -1,17 +1,11 @@
-//! The feeds a pane is handed, built where the data lives.
-//!
-//! A pane never runs anything for its data: it declares which of the host's own facts it reads
-//! (`feeds = ["sessions"]`) and is handed exactly those. The head built its own feed in process
-//! from the day feeds landed; the daemon did not, so a layer on disk that declared one drew an
-//! empty pane - and a declaration the host does not honour is worse than none.
-//!
-//! Only `sessions` is fed today. A layer declaring `monitors`, `jobs`, `todos` or `git` is handed
-//! no key at all rather than an empty list: `[]` would say *there are none*, which is a different
-//! fact from *this host cannot answer that yet*.
-//!
-//! Three fields only a host can fill: `now` (a wasm guest has no clock, so asking is a panic), and
-//! per session `moved_ms` (when it last appended a row - the age answers *is that one stuck?*) and
-//! `repo` (the workspace's git common directory, which a plugin cannot work out from a path).
+//! The feeds a pane is handed, built where the data lives. A pane never runs anything for
+//! its data: it declares which of the host's own facts it reads (`feeds = ["sessions"]`)
+//! and is handed exactly those. The head built its own feed in process from the day feeds
+//! landed; the daemon did not, so a layer on disk that declared one drew an empty pane -
+//! and a declaration the host does not honour is worse than none. Only `sessions` is fed
+//! today. A layer declaring `monitors`, `jobs`, `todos` or `git` is handed no key at all
+//! rather than an empty list: `[]` would say *there are none*, which is a different fact
+//! from *this host cannot answer that yet*. Three fields only a host can fill:
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

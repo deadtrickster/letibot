@@ -1,12 +1,11 @@
 //! A daemon with no key asks for one - end to end, through the real `harnessd` binary.
-//!
-//! Before this, a provider whose key did not resolve made the daemon bind its socket and die before
-//! any head could attach; the operator wanted leticode to ask instead, the way sudo does.
-//!
-//! Here: no key anywhere (a scratch `HOME`, `$DEEPSEEK_API_KEY` removed), a providers.toml that only
-//! points `[deepseek] url` at a fake, and a head that answers the masked card. The fake refuses the
-//! first key with a 401 and accepts the second, so one run proves the ask, the re-ask on a refused
-//! key, the save (0600, `[default]` set), and that the key never appears in anything a head is sent.
+//! Before this, a provider whose key did not resolve made the daemon bind its socket and
+//! die before any head could attach; the operator wanted leticode to ask instead, the way
+//! sudo does. Here: no key anywhere (a scratch `HOME`, `$DEEPSEEK_API_KEY` removed), a
+//! providers.toml that only points `[deepseek] url` at a fake, and a head that answers the
+//! masked card. The fake refuses the first key with a 401 and accepts the second, so one
+//! run proves the ask, the re-ask on a refused key, the save (0600, `[default]` set), and
+//! that the key never appears in anything a head is sent.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

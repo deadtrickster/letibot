@@ -1,25 +1,11 @@
-//! A wake arms the clock that closes out a call nothing answered.
-//!
-//! The worker's wait is `next_work_until(deadline)`, and the deadline is the earliest of the
-//! per-session idle plan-check and the abandoned-call sweep (`Sessions::next_nag_at`). Two arms on
-//! the worker's own thread run a turn, and a turn dispatches tool calls - so both must arm the
+//! A wake arms the clock that closes out a call nothing answered. The worker's wait is
+//! `next_work_until(deadline)`, and the deadline is the earliest of the per-session idle
+//! plan-check and the abandoned-call sweep (`Sessions::next_nag_at`). Two arms on the
+//! worker's own thread run a turn, and a turn dispatches tool calls - so both must arm the
 //! sweep, the only thing that looks at a call whose executor vanished
-//! (`Sessions::sweep_abandoned_calls`, run from the idle arm). The command arm has always armed
-//! it; the wake arm did not, and a wake is a turn: a child's settlement, a background job's
-//! completion, a merge-queue ring.
-//!
-//! `Sessions::wake` does call `after_turn`, and `after_turn` does re-arm the plan-check - but it
-//! answers *no* for an unchanged plan by design (`nag_should_arm`), so what a wake-driven turn
-//! leaves is the REPEAT, minutes away, and nothing sooner. Without the sweep the worker goes back
-//! to a wait with no deadline in it at all.
-//!
-//! The whole daemon, its real worker and its real idle arm, on a fixture whose unanswered call is
-//! written into the store rather than produced by a turn - the executor that vanishes cannot be
-//! summoned, and what the sweep reads is the transcript. The wake arrives as `Ring::Woken`, the
-//! door a settlement and the queue's ring both come through. No model is asked anything: the
-//! wake here has nothing to say, so it runs no turn, and the property under test is the ARMING.
-//!
-//! No GGUF either: the byte vocabulary, so this runs on a machine with no model file.
+//! (`Sessions::sweep_abandoned_calls`, run from the idle arm). The command arm has always
+//! armed it; the wake arm did not, and a wake is a turn: a child's settlement, a background
+//! job's completion, a merge-queue ring.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -125,10 +111,9 @@ fn write_rows(store: &Store, transcript: &str, prefix_tokens: &[u32], items: &[T
     }
 }
 
-/// A session whose transcript ends in a call nothing answered - the state the sweep exists for.
-///
-/// No plan: an empty board arms no idle check, which is what makes the wake the only thing that can
-/// arm the sweep in this test.
+/// A session whose transcript ends in a call nothing answered - the state the sweep exists
+/// for. No plan: an empty board arms no idle check, which is what makes the wake the only
+/// thing that can arm the sweep in this test.
 fn seed(path: &Path, parts: &Parts, session_id: &str) {
     let store = Store::open(path).expect("opening the store");
     store

@@ -1,48 +1,10 @@
 //! The daemon's process supervisor - one record per started process, one liveness check per
-//! HOST per tick, deadlines enforced, teardown by ownership, and a restart that finds what is still
-//! running.
-//!
-//! # Why this is not the job watcher
-//!
-//! [`crate::jobwatch`] is about one job and one session: a thread blocked in `wait_job`, woken by a
-//! child the daemon itself spawned. That works only while the daemon is the process that started
-//! the job - it answers nothing for a job on another machine (a pid over there, no `Child`) and
-//! nothing at all after a restart. So the supervisor asks the record instead of a child handle: is
-//! the process with this pid still the process I recorded, on this host, and what did it say it
-//! ended with. The store row is the truth ([`ProcessRecord`]), which is what lets a restarted
-//! daemon pick the work back up.
-//!
-//! # One check per host per tick, and why the number is the HOST's
-//!
-//! A check is a round trip. Asking per job is how a machine with eight running builds spends eight
-//! ssh connections a second to learn one fact. [`Probe::check`] is handed every open record of
-//! one host at once: a pass over `/proc` locally, one script over one connection remotely.
-//!
-//! # The four things a check can answer
-//!
-//! | the answer | the state | why not the other |
-//! |---|---|---|
-//! | the same process is there | [`ProcState::Running`] | - |
-//! | it exited, and a status was recorded | [`ProcState::Done`] | an exit code is the command's own answer |
-//! | it is gone with no status | [`ProcState::Dead`] | *not* `done 0`: nothing said it succeeded |
-//! | the host did not answer | [`ProcState::Lost`] | the job may still run; `dead` would be a claim nobody checked |
-//!
-//! `lost` is retried on the next tick and is not a verdict; `dead` is, and it is the only state made
-//! by absence - which is why a job whose HOST was silent is `lost`.
-//!
-//! # Deadlines are wall clocks, and the kill is a group
-//!
-//! A deadline is stored as an absolute unix millisecond, because the thread that armed it may not be
-//! the thread that enforces it - a restart is exactly this supervisor's case. The kill is `TERM`
-//! then `KILL` a second later, against the process group when the record says the pid leads one
-//! `kill -TERM -<pid>` on a non-leader signals the caller's own group, which kills the daemon.
-//!
-//! # Teardown follows OWNERSHIP
-//!
-//! A session closing kills every open record that session owns, on every host, and the daemon
-//! stopping is every session closing. A turn ending is not a teardown - a job started to
-//! outlive its turn keeps running, which is what `background: true` means - and neither is an
-//! interrupt, which ends the round while the job stays the session's.
+//! HOST per tick, deadlines enforced, teardown by ownership, and a restart that finds what
+//! is still running. # Why this is not the job watcher [`crate::jobwatch`] is about one job
+//! and one session: a thread blocked in `wait_job`, woken by a child the daemon itself
+//! spawned. That works only while the daemon is the process that started the job - it
+//! answers nothing for a job on another machine (a pid over there, no `Child`) and nothing
+//! at all after a restart. So the supervisor asks the record instead of a child handle:
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -50,11 +12,9 @@ use std::time::{Duration, Instant};
 
 use letibot_tokencore::store::{Check, ProcState, ProcessRecord, Store};
 
-/// How often the daemon looks at every open process - one second.
-///
-/// A check is cheap on the box that runs the job and one round trip on any other, and what this
-/// trades against is *how late a deadline kill can be*: a second late on a build's own limit is
-/// nothing.
+/// How often the daemon looks at every open process - one second. A check is cheap on the
+/// box that runs the job and one round trip on any other, and what this trades against is
+/// *how late a deadline kill can be*: a second late on a build's own limit is nothing.
 pub const TICK: Duration = Duration::from_secs(1);
 
 /// One process, as a check is asked about it - the fields a probe needs and nothing else.
@@ -78,10 +38,9 @@ pub enum Answer {
     Ended { state: ProcState, exit: Option<i32> },
 }
 
-/// What one check of one host answered, with its own clock and its own failure.
-///
-/// `error` is the whole host's, not one job's: a connection that did not answer says nothing about
-/// any of the processes behind it.
+/// What one check of one host answered, with its own clock and its own failure. `error` is
+/// the whole host's, not one job's: a connection that did not answer says nothing about any
+/// of the processes behind it.
 #[derive(Debug, Clone)]
 pub struct Checked {
     /// A short word for how it was answered - `proc`, `ps`, `ssh`, `jobdir`.
@@ -110,12 +69,8 @@ impl Checked {
     }
 }
 
-/// What the supervisor can ask of the world - the seam, so a test is a state machine and not a
-/// farm of sleeping processes.
-///
-/// One implementation serves every host: [`Probe::check`] is handed the host name and decides (this
-/// box, or one script over one connection), because a caller that had to pick would be a caller
-/// that knows how a host is reached - which is `rpc`'s business.
+/// What the supervisor can ask of the world - the seam, so a test is a state machine and
+/// not a farm of sleeping processes. One implementation serves every host:
 pub trait Probe: Send + Sync {
     /// Every open process of ONE host, in one call. See the module header for why this is the
     /// unit rather than the job.
@@ -157,11 +112,9 @@ fn group(open: Vec<ProcessRecord>) -> BTreeMap<Option<String>, Vec<ProcessRecord
     out
 }
 
-/// The supervisor itself - the record, the probe, and the two verbs a tick needs.
-///
-/// Not a thread: [`Supervisor::tick`] is called by whatever loop owns the clock, which is what makes
-/// a restart, a deadline and a teardown assertable without a sleep. The daemon's own tick is
-/// `daemon.rs`.
+/// The supervisor itself - the record, the probe, and the two verbs a tick needs. Not a
+/// thread: [`Supervisor::tick`] is called by whatever loop owns the clock, which is what
+/// makes a restart, a deadline and a teardown assertable without a sleep.
 pub struct Supervisor {
     /// Behind a `Mutex`, and not a bare `Store`. A `rusqlite::Connection` is `Send` and not
     /// `Sync`, so `Arc<Store>` is not `Send` either, and a component that cannot move onto the
@@ -225,11 +178,7 @@ impl Supervisor {
     }
 
     /// May letibot signal this process at all? - the never-touch list, asked *before* anything
-    /// is signalled and never after.
-    ///
-    /// Two lists, one rule. A record with a host is checked against that host's `never_touch`
-    /// a record with no host is a process on this box and is checked against `[local]`. A file
-    /// with no `[local]` table declares nothing for this box, which is not an error.
+    /// is signalled and never after. Two lists, one rule.
     fn may_touch(&self, rec: &ProcessRecord) -> Result<(), String> {
         let hosts = match &self.hosts {
             Some(file) => letibot_tools::remote::Hosts::load_from(file),
@@ -266,11 +215,8 @@ impl Supervisor {
         }
     }
 
-    /// Check every open process, once per host, and write down what was found.
-    ///
-    /// The order inside one record is the rule's order: an answer first (is it there at all), then
-    /// the deadline. A job that vanished is `dead` even if its deadline had also passed - killing a
-    /// process that is not there is not what happened.
+    /// Check every open process, once per host, and write down what was found. The order inside
+    /// one record is the rule's order: an answer first (is it there at all), then the deadline.
     pub fn tick(&self) -> Tick {
         let mut report = Tick::default();
         let open = match self
@@ -387,10 +333,8 @@ impl Supervisor {
     }
 
     /// The leases whose owner nobody serves, after the grace. See `crate::leases::due` for the
-    /// rule and `leases::GRACE_MS` for why a restart is not an owner being gone.
-    ///
-    /// The decision is taken under the locks and the releasing is not: a release reaches the store
-    /// by path and may run an ssh round trip to tear a prefix down.
+    /// rule and `leases::GRACE_MS` for why a restart is not an owner being gone. The decision
+    /// is taken under the locks and the releasing is not:
     fn reap_leases(&self, report: &mut Tick) {
         let Some(owner) = &self.owner else {
             return;
@@ -455,14 +399,9 @@ impl Supervisor {
         }
     }
 
-    /// A session is going: end every process it owns, on every host.
-    ///
-    /// The one rule worth repeating at the call site: a turn ending does not call this - a job
-    /// started to outlive its turn is the whole of `background: true`.
-    ///
-    /// A kill that could not be delivered leaves the record `lost` - the job may still run - rather
-    /// than `stopped`, because a teardown that claims to have ended something it never reached is
-    /// the failure this module is against.
+    /// A session is going: end every process it owns, on every host. The one rule worth
+    /// repeating at the call site: a turn ending does not call this - a job started to outlive
+    /// its turn is the whole of `background: true`.
     pub fn teardown_session(&self, session: &str, by: &str) -> Vec<ProcessRecord> {
         let open: Vec<ProcessRecord> = self
             .store
@@ -499,11 +438,9 @@ impl Supervisor {
         open
     }
 
-    /// A daemon is starting: find out which of yesterday's processes are still there.
-    ///
-    /// One [`Supervisor::tick`], and the records it leaves open are the ones a session has to be
-    /// re-attached to - the caller's half, since re-arming a watcher is the harness's. The store is
-    /// the whole of the input: nothing here remembers a `Child`, a thread or a connection.
+    /// A daemon is starting: find out which of yesterday's processes are still there. One
+    /// [`Supervisor::tick`], and the records it leaves open are the ones a session has to be
+    /// re-attached to - the caller's half, since re-arming a watcher is the harness's.
     pub fn recover(&self) -> Tick {
         self.tick()
     }
@@ -534,32 +471,25 @@ fn now_ms() -> i64 {
     letibot_metrics::now_ms() as i64
 }
 
-/// Which process has this pid, and is it the one we recorded?
-///
-/// There is one implementation of this answer and it is not this file's
-/// `letibot_tools::exec::procs` reads a process from `/proc` on Linux and from `libproc` on macOS
-/// and its `start` field is the half of a pid's identity that survives reuse. The supervisor spells
-/// it `start:<n>`, and this function is the spelling.
+/// Which process has this pid, and is it the one we recorded? There is one implementation
+/// of this answer and it is not this file's `letibot_tools::exec::procs` reads a process
+/// from `/proc` on Linux and from `libproc` on macOS and its `start` field is the half of a
 pub fn identity_of(pid: u32) -> Option<String> {
     let p = letibot_tools::exec::procs::read(pid)?;
     Some(format!("start:{}", p.start))
 }
 
-/// Is `pid` still the process whose identity is `identity`?
-///
-/// `None` when the question cannot be asked of this identity at all - a remote record's
-/// `cmd:<marker>` is answered on the far side by [`SshProbe`], never here, and a pid nobody can
-/// read is not evidence either way.
+/// Is `pid` still the process whose identity is `identity`? `None` when the question cannot
+/// be asked of this identity at all - a remote record's `cmd:<marker>` is answered on the
+/// far side by [`SshProbe`], never here, and a pid nobody can read is not evidence either
 pub fn alive_with_identity(pid: u32, identity: &str) -> Option<bool> {
     let start: u64 = identity.strip_prefix("start:")?.parse().ok()?;
     Some(letibot_tools::exec::procs::alive(pid, start))
 }
 
-/// A pid is a number, and this is the box that can tell you which process has it - the local
-/// half of the probe seam.
-///
-/// One pass, no subprocess on Linux at all: eight running builds are eight reads of
-/// `/proc/<pid>/stat`, not eight forks.
+/// A pid is a number, and this is the box that can tell you which process has it - the
+/// local half of the probe seam. One pass, no subprocess on Linux at all: eight running
+/// builds are eight reads of `/proc/<pid>/stat`, not eight forks.
 #[derive(Debug, Default)]
 pub struct LocalProbe;
 
@@ -662,10 +592,8 @@ fn signal(rec: &ProcessRecord, sig: &str) -> Result<(), String> {
 }
 
 /// One script, one connection, every job of one host - the remote half of the probe seam.
-///
-/// The runner is injected rather than built here: reaching a host is `rpc`'s business, and a second
-/// spelling of ssh in this file would be a second policy. What this owns is the SCRIPT - the one
-/// place that says how a job directory answers *is it still running* and *what did it exit with*.
+/// The runner is injected rather than built here: reaching a host is `rpc`'s business, and
+/// a second spelling of ssh in this file would be a second policy.
 pub struct SshProbe {
     run: Run,
 }
@@ -679,12 +607,7 @@ impl SshProbe {
         SshProbe { run }
     }
 
-    /// The script that answers for every job of one host, in one pass.
-    ///
-    /// Per job: the exit file first (its existence IS the settlement, and a job whose pid has
-    /// been reused must not be read as still running), then the process itself, matched by the
-    /// command marker the record holds. `ps -p … -o command=` is the portable spelling on the
-    /// operator's hosts (`/proc` is Linux-only and a Mac's `ps` answers a different flag set).
+    /// The script that answers for every job of one host, in one pass. Per job:
     pub fn script(wants: &[Want]) -> String {
         let mut s = String::from("set +e\n");
         for w in wants {
@@ -818,11 +741,9 @@ fn marker_of(identity: &str) -> String {
 
 static SUPERVISOR: std::sync::OnceLock<Arc<Supervisor>> = std::sync::OnceLock::new();
 
-/// Is anyone still working in this session? - the one question the lease reaper asks, and the
-/// one answer only the daemon has.
-///
-/// A seam rather than a `Registry` field: the supervisor needs one bit per name, and a test's answer
-/// is a closure. The daemon's own is [`RegistryOwner`].
+/// Is anyone still working in this session? - the one question the lease reaper asks, and
+/// the one answer only the daemon has. A seam rather than a `Registry` field: the
+/// supervisor needs one bit per name, and a test's answer is a closure.
 pub trait Owner: Send + Sync {
     /// `true` when this daemon serves the session - its harness is open, or a court holds it.
     /// `false` is not yet *gone*: see `leases::GRACE_MS` for why the reaper waits.
@@ -830,10 +751,6 @@ pub trait Owner: Send + Sync {
 }
 
 /// The daemon's answer, over the registry: a session is alive while this process holds it.
-///
-/// `Registry::holds` is the right door and the only one - a session on a court's own thread is in
-/// the same registry as one in `Sessions::open`, so *the store is the truth* does not extend to
-/// *which process is serving it right now*.
 pub struct RegistryOwner(pub Arc<letibot_sessionlog::Registry>);
 
 impl Owner for RegistryOwner {
@@ -842,13 +759,9 @@ impl Owner for RegistryOwner {
     }
 }
 
-/// End every process a session owns, on every host - what a session's close and the daemon's
-/// own stop do, in one place, and `0` when this process has no supervisor (a one-shot run, a test).
-///
-/// A free function over a `static` rather than a field on `Sessions`: the audiences are far apart
-/// and threading an `Arc` through `Sessions`, `Harness` and `Config` would touch every constructor
-/// to carry one value a single producer sets. The `OnceLock` is the claim that matters: one
-/// supervisor per process, so a second `spawn` cannot become a second tick over the same records.
+/// End every process a session owns, on every host - what a session's close and the
+/// daemon's own stop do, in one place, and `0` when this process has no supervisor (a
+/// one-shot run, a test).
 pub fn teardown_session(session: &str, by: &str) -> usize {
     match SUPERVISOR.get() {
         Some(sup) => sup.teardown_session(session, by).len(),
@@ -877,11 +790,8 @@ fn shell_word(s: &str) -> String {
     out
 }
 
-/// The probe a daemon runs: this box's processes here, a host's over the one ssh policy the tree
-/// has.
-///
-/// The dispatcher exists because [`Probe::check`] is asked once per HOST and the answer decides
-/// which of two mechanisms is used - a pass over `/proc` here, one script over one connection there.
+/// The probe a daemon runs: this box's processes here, a host's over the one ssh policy the
+/// tree has.
 pub struct HostProbe {
     local: LocalProbe,
     /// One connection per host, opened on first use and cached: `Ssh::connect` is where the identity
@@ -953,16 +863,9 @@ impl Probe for HostProbe {
     }
 }
 
-/// Start the supervisor as the daemon's own thread - after [`crate::vm_reap::spawn`] and for its
-/// reason: its own thread, its own clock, and no session's work waiting on it.
-///
-/// The first tick IS the recovery. A daemon that starts reads every open record the previous one
-/// left, checks the hosts once and writes down what it found - so a job still running is `running`
-/// again, one that vanished while the daemon was down is `dead`, and a host that cannot be reached is
-/// `lost` and tried again a second later.
-///
-/// The thread stops when the registry does: a check that outlived it would be a check whose result
-/// nobody would read.
+/// Start the supervisor as the daemon's own thread - after [`crate::vm_reap::spawn`] and
+/// for its reason: its own thread, its own clock, and no session's work waiting on it. The
+/// first tick IS the recovery.
 pub fn spawn(store_path: Option<std::path::PathBuf>, registry: Arc<letibot_sessionlog::Registry>) {
     let Some(path) = store_path else {
         return;

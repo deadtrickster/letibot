@@ -132,12 +132,9 @@ fn a_question() -> Question {
     }
 }
 
-/// `ask_user_question` reaching a person, end to end inside the daemon: the question is posed
-/// as a card with its choices, the head answers it, and the tool thread wakes with the answer
-/// and who gave it.
-///
-/// The attribution is not a formality: a question's result is a claim about what a person said
-/// and the identity is read from the connection the answer arrived on.
+/// `ask_user_question` reaching a person, end to end inside the daemon: the question is
+/// posed as a card with its choices, the head answers it, and the tool thread wakes with
+/// the answer and who gave it. The attribution is not a formality:
 #[test]
 fn a_head_answers_a_question_and_the_answer_carries_who_gave_it() {
     let hub = Hub::new("s");
@@ -518,10 +515,6 @@ fn child_ask() -> SubagentAsk {
 }
 
 /// A child's ask is the root's card, named, and the answer comes back to the child.
-///
-/// A child has no head attached and cannot be driven, so its gate's ask is posted to the
-/// session that does have one - and the operator has to be able to tell it from that session's
-/// own call, or the card is answered for the wrong thing.
 #[test]
 fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
     let root = Hub::new("root");
@@ -602,10 +595,9 @@ fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
     assert!(open_of(&child).is_empty());
 }
 
-/// Nobody at the root to answer: the refusal is a fact, by name.
-///
-/// It names the child, the session its card belongs to, that no head is attached there, and
-/// that the child should stop and report rather than retry.
+/// Nobody at the root to answer: the refusal is a fact, by name. It names the child, the
+/// session its card belongs to, that no head is attached there, and that the child should
+/// stop and report rather than retry.
 #[test]
 fn a_subagents_ask_with_nobody_at_the_root_refuses_by_name() {
     let root = Hub::new("root");
@@ -927,11 +919,8 @@ fn an_oracle_that_selected_is_not_reported_as_a_human() {
     }
 }
 
-/// An answer that arrives before the wait starts is not lost.
-///
-/// `ask` creates the slot, publishes the question, and only then calls `wait`. A head answering
-/// inside that window sets `Slot::Answered`, and a `wait` that inserted `Waiting` over it would
-/// lose the answer and sit out the whole budget.
+/// An answer that arrives before the wait starts is not lost. `ask` creates the slot,
+/// publishes the question, and only then calls `wait`.
 #[test]
 fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
     let answers = Answers::new();
@@ -947,11 +936,9 @@ fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
             note: None
         },
     ));
-    // And now the wait begins. It must find the answer, not overwrite it.
-    //
-    // No clock: nobody else can answer `adj-race`, so `Answered` here can only be the answer
-    // placed above, read without waiting; a wait that overwrote it would find nothing to wake
-    // it and return `TimedOut`. The match is the whole claim.
+    // And now the wait begins. It must find the answer, not overwrite it. No clock: nobody
+    // else can answer `adj-race`, so `Answered` here can only be the answer placed above, read
+    // without waiting;
     match answers.wait("adj-race", Duration::from_secs(10)) {
         Waited::Answered { reply, by } => {
             assert_eq!(by, "deadtrickster");
@@ -994,12 +981,9 @@ fn git_in(d: &std::path::Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
-/// Make `d` a directory no enclosing repository can claim.
-///
-/// `auto_decision` finds its repository with `git rev-parse --show-toplevel`, which walks up, so
-/// a scratch dir under a checkout would have the log written at that checkout's root. A `.git`
-/// file naming a gitdir that does not exist stops discovery here, and the assertion is the fact
-/// this rests on.
+/// Make `d` a directory no enclosing repository can claim. `auto_decision` finds its
+/// repository with `git rev-parse --show-toplevel`, which walks up, so a scratch dir under
+/// a checkout would have the log written at that checkout's root.
 fn not_in_any_repository(d: &std::path::Path) {
     std::fs::write(
         d.join(".git"),

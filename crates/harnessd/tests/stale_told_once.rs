@@ -1,12 +1,10 @@
-//! The model is told its prompt is stale ONCE, and as information.
-//!
-//! The operator asked for the reseat card to stay in front of them - the person owns the decision
-//! and can continue at their own risk. So the plan-check no longer appends the stale sentence to
-//! every check with "keep saying it until they act": it says it once, says whose decision it is, and
-//! the next check is silent about it.
-//!
-//! Driven through `Harness` directly: a session seated under one prompt, reopened under another, and
-//! two plan-checks. It needs the vocabulary GGUF and not a model.
+//! The model is told its prompt is stale ONCE, and as information. The operator asked for
+//! the reseat card to stay in front of them - the person owns the decision and can continue
+//! at their own risk. So the plan-check no longer appends the stale sentence to every check
+//! with "keep saying it until they act": it says it once, says whose decision it is, and
+//! the next check is silent about it. Driven through `Harness` directly: a session seated
+//! under one prompt, reopened under another, and two plan-checks. It needs the vocabulary
+//! GGUF and not a model.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};

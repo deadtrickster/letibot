@@ -1,36 +1,10 @@
 //! One channel between sessions, with three callers - a lateral one: one session sends
-//! another session a message, which is what `CommandKind::Message { from, text }` already is. Nothing
-//! "up" is built.
-//!
-//! What was missing was two things, and only one of them was behaviour: the sender's sentence
-//! described the door as a parent's list of its children (the lookup was always the daemon's
-//! registry, so a peer was never refused for being one - the wording and the tool's description were
-//! child-shaped), and the delivery arm knew only how to hand a message to a session with its OWN
-//! reader. The main session is `open` - the worker owns it - so a message addressed to it fell
-//! through to `message_idle` and was dropped, in precisely the case the design needs.
-//!
-//! # What is proved here, and through what
-//!
-//! The real chain: two REAL sessions in one daemon's registry, the sender's own `task_message`
-//! through that session's own tool runtime, and the delivery through `Sessions::dispatch` - the
-//! worker's own door - with the model replaced by a stub. What is asserted is on the RECIPIENT: its
-//! log holds the sender's words as `Speaker::Agent` (never the operator's, which is the whole reason
-//! a message is not a prompt), its turn RAN, and the prompt that turn was handed carries the message.
-//!
-//! # The three callers this channel has
-//!
-//! 1. the tutor raising to the father - a peer sending the session that hosts the work a message
-//!    the door takes any live session id (`a_session_may_send_a_peer_it_names`). What is not yet
-//!    reachable is the *address*: a gatekeeper child is told nothing about the session it reviews
-//!    for, so no model can name it yet.
-//! 2. the gatekeeper sending a kid back to work - a refusing verdict, delivered by
-//!    `Harness::serve_reviews`: to the child that did the work when it is still there, and to the
-//!    session that enqueued the entry when it is not.
-//! 3. a notes keeper reporting what it could not settle - not wired; it is the same two acts.
-//!
-//! Needs the vocabulary GGUF (`Harness::open` renders its stable prefix) and not a model: the
-//! turns are answered by a stub built on the shared `canned` frames. No process tree, so no apparatus
-//! gate beyond the GGUF.
+//! another session a message, which is what `CommandKind::Message { from, text }` already
+//! is. Nothing "up" is built. What was missing was two things, and only one of them was
+//! behaviour: the sender's sentence described the door as a parent's list of its children
+//! (the lookup was always the daemon's registry, so a peer was never refused for being one
+//! - the wording and the tool's description were child-shaped), and the delivery arm knew
+//! only how to hand a message to a session with its OWN reader.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -71,13 +45,9 @@ const TO_THE_TASK: &str = "the work is done, waiting";
 const TO_THE_PEER: &str = "understood, I am on it";
 const REFUSAL: &str = "the change never touches the file the brief names";
 
-/// A review row, claimed by this daemon's queue - an entry `waiting` put up for review, moved to
-/// `reviewing` with this process's lease identity as its owner, the way the queue's own thread claims
-/// one.
-///
-/// The row names a REAL repository and a REAL head (`a_repository`): a reviewer is given a
-/// checkout of the head it judges, so a row naming a made-up path would measure *a reviewer that
-/// could not start* rather than the channel this file is about.
+/// A review row, claimed by this daemon's queue - an entry `waiting` put up for review,
+/// moved to `reviewing` with this process's lease identity as its owner, the way the
+/// queue's own thread claims one.
 #[allow(clippy::too_many_arguments)]
 fn a_claimed_review(
     store: &Store,
@@ -126,9 +96,8 @@ fn a_claimed_review(
 }
 
 /// A repository with `branch` on it, at a real commit - what a review row's `repository`
-/// `base_sha` and `head_sha` must name, because `start_reviewer` clones the row's repository at
-/// `head_sha` and a made-up head never starts a reviewer. Returns the repository, the base (where
-/// `main` stays) and the branch's head.
+/// `base_sha` and `head_sha` must name, because `start_reviewer` clones the row's
+/// repository at `head_sha` and a made-up head never starts a reviewer.
 fn a_repository(under: &Path, branch: &str) -> (PathBuf, String, String) {
     let repo = under.join("the-repository");
     std::fs::create_dir_all(&repo).expect("the repository");
@@ -429,16 +398,8 @@ fn wait_for(hub: &Hub, mut what: impl FnMut(&Hub) -> Option<String>) -> String {
 // The stub
 // ---------------------------------------------------------------------------
 
-/// A model that answers on a gate, and keeps every request it was asked.
-///
-/// `canned::Canned` answers as fast as it can, which closes the window one test here has to reach
-/// into. So each request is read, RECORDED, and held until the test releases it - *the recipient is
-/// in a turn* becomes a state the test stands in rather than races. The recorded body is what makes
-/// the other half provable: its token ids, detokenized with the same vocabulary the session
-/// tokenized with, are the prompt the model was handed.
-///
-/// `/props` is answered and does not consume a script: a spawn asks the endpoint for its window
-/// and counting that as a turn would shift every script by one.
+/// A model that answers on a gate, and keeps every request it was asked. `canned::Canned`
+/// answers as fast as it can, which closes the window one test here has to reach into.
 struct Stub {
     endpoint: Endpoint,
     shared: Arc<Gate>,
@@ -464,13 +425,9 @@ impl Stub {
         stub
     }
 
-    /// The same, and the answers are chosen by WHO is asking - a `(marker, script)` pair matched
-    /// against the detokenized prompt before the positional script is consulted.
-    ///
-    /// Three sessions talk to this one listener from three threads and two of them RACE: after the
-    /// reviewer hands its verdict in, the reviewer's second round and the CHILD's turn on the
-    /// complaints both start, and which request arrives first is the scheduler's answer - so a
-    /// positional script answers the wrong session whenever one overtakes the other.
+    /// The same, and the answers are chosen by WHO is asking - a `(marker, script)` pair
+    /// matched against the detokenized prompt before the positional script is consulted. Three
+    /// sessions talk to this one listener from three threads and two of them RACE:
     fn answering_by(
         scripts: Vec<Vec<Frame>>,
         requests: usize,
@@ -506,10 +463,8 @@ impl Stub {
         });
         let mine = shared.clone();
         let handle = std::thread::spawn(move || {
-            // Two counters, deliberately: `answered` is the request's own index (the gate and
-            // the `requests` bound), `script` is which POSITIONAL answer is next. They part company
-            // the moment a rule answers one, which is the whole point - a rule must not eat the
-            // place of the script a later request is owed.
+            // Two counters, deliberately: `answered` is the request's own index (the gate and the
+            // `requests` bound), `script` is which POSITIONAL answer is next.
             let mut answered = 0usize;
             let mut script = 0usize;
             while answered < requests {
@@ -615,10 +570,8 @@ impl Drop for Stub {
 }
 
 /// Whether this request's prompt holds `marker` - the body's token ids detokenized with the
-/// vocabulary the session tokenized with.
-///
-/// `false` for a body that will not decode, deliberately: a rule is a nicety, and a listener thread
-/// that panicked on one would turn a fixture's mistake into a hang.
+/// vocabulary the session tokenized with. `false` for a body that will not decode,
+/// deliberately:
 fn prompt_holds(body: &str, vocab: &Vocab, marker: &str) -> bool {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
@@ -696,16 +649,9 @@ fn a_refusing_verdict_afterword() -> String {
 // 1. The arm: an IDLE session the worker owns
 // ---------------------------------------------------------------------------
 
-/// A peer's message to the session the WORKER owns is a row the agent reads, and the turn it
-/// makes.
-///
-/// A message is the pair of acts an operator's `!` line is: the deposit is a row on the session's own
-/// log, and the turn is what makes it an utterance somebody answered. Before this, a message to the
-/// main session skipped the hand-back (the main session is `open`, so it has no reader of its own)
-/// fell through to `message_idle`, and was dropped - in exactly the case the design needs.
-///
-/// The sender is a peer: a session of its own, seated in the same daemon, with no tree edge to the
-/// recipient.
+/// A peer's message to the session the WORKER owns is a row the agent reads, and the turn
+/// it makes. A message is the pair of acts an operator's `!` line is: the deposit is a row
+/// on the session's own log, and the turn is what makes it an utterance somebody answered.
 #[test]
 fn a_peers_message_to_an_idle_worker_owned_session_is_a_row_and_a_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -814,12 +760,9 @@ fn a_peers_message_to_an_idle_worker_owned_session_is_a_row_and_a_turn() {
 // 2. The arm: a session that is BUSY
 // ---------------------------------------------------------------------------
 
-/// A peer's message to a session whose turn is ALREADY RUNNING lands in that turn.
-///
-/// The half that must not regress into a second turn: a running turn takes a message at its next round
-/// boundary through its own steering poll, as the sender's words, and keeps working. The turn is held
-/// open by the stub, so *already running* is a fact the test stands in, and the proof it landed IN
-/// that turn is the next round's prompt.
+/// A peer's message to a session whose turn is ALREADY RUNNING lands in that turn. The half
+/// that must not regress into a second turn: a running turn takes a message at its next
+/// round boundary through its own steering poll, as the sender's words, and keeps working.
 #[test]
 fn a_peers_message_to_a_busy_worker_owned_session_lands_at_the_round_boundary() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -879,11 +822,8 @@ fn a_peers_message_to_a_busy_worker_owned_session_lands_at_the_round_boundary() 
             "the answer must say this was the RUNNING delivery: {said}"
         );
 
-        // Let round zero's tool call through: the recipient reads the file, and the boundary after it
-        // is where the message can be heard. Then let round ONE through too, because the scope
-        // below JOINS the thread running the turn - a round nothing answers holds the join for the
-        // client's read timeout. Releasing it changes nothing about what is proved: the second round's
-        // request has already ARRIVED, which is what carries the message.
+        // Let round zero's tool call through: the recipient reads the file, and the boundary after
+        // it is where the message can be heard.
         stub.release(2);
         assert!(
             stub.wait_for_requests(2),
@@ -926,11 +866,9 @@ fn a_peers_message_to_a_busy_worker_owned_session_lands_at_the_round_boundary() 
 // 3. The sender: a session that does not exist
 // ---------------------------------------------------------------------------
 
-/// A message to a session that does not exist is refused by name, and nothing is sent.
-///
-/// The refusal narrowed to the one case that is a refusal. A live session - a subagent this
-/// session started, or a peer - is delivered to; a handle no session answers to is not, and
-/// the sentence says so rather than naming the caller's children as the only addressees.
+/// A message to a session that does not exist is refused by name, and nothing is sent. The
+/// refusal narrowed to the one case that is a refusal. A live session - a subagent this
+/// session started, or a peer - is delivered to;
 #[test]
 fn a_message_to_a_session_that_does_not_exist_is_refused_by_name() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -972,16 +910,9 @@ fn a_message_to_a_session_that_does_not_exist_is_refused_by_name() {
 // 4. The sender: a peer, which is nobody's child here
 // ---------------------------------------------------------------------------
 
-/// A session may send a peer it names - the child-only refusal does not fire for a session that is
-/// not the caller's child.
-///
-/// The recipient is a ROOT session, in the same daemon, that this session did not start and has no
-/// tree edge to. The message is on its queue, carrying the sender's own id as `from`, which is what
-/// the recipient judges provenance by.
-///
-/// This pins a claim rather than fixing one: `send` resolves through `Registry::get`, which was
-/// never child-scoped, so the test passes against the old sentence too - what the change fixes at this
-/// door is the wording and the tool's own description, so that a session can tell it may name a peer.
+/// A session may send a peer it names - the child-only refusal does not fire for a session
+/// that is not the caller's child. The recipient is a ROOT session, in the same daemon,
+/// that this session did not start and has no tree edge to.
 #[test]
 fn a_session_may_send_a_peer_it_names() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1032,15 +963,7 @@ fn a_session_may_send_a_peer_it_names() {
 // ---------------------------------------------------------------------------
 
 /// A refusing verdict goes back to the child that did the work, through the same channel.
-///
-/// The refusing half, end to end and with no socket: a REAL child (spawned through `task`, its own
-/// thread and its own hub), a real gatekeeper child that hands its own verdict in (a real
-/// `review_verdict` call through its own runtime), `Harness::serve_reviews` writing what it handed in
-/// and the complaints arriving on the CHILD's log as another session's words - with the child's turn
-/// running on them.
-///
-/// The recipient is `entry.id`, not the review row's `session_id`: that one is the session that
-/// HOSTED the review, so delivery through it would send the reviewer its own verdict.
+/// The refusing half, end to end and with no socket:
 #[test]
 fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1076,10 +999,8 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
         parts.vocab.clone(),
     );
 
-    // The reviewer stays on this machine: a config built the ordinary way (`Config::for_this_box`)
-    // says `host`, so a reviewer spawned here is a HOST child. A VM over this fixture's `/tmp`
-    // workspace would copy it and boot firecracker, and what this test is about is the channel a
-    // refusing verdict comes back on.
+    // The reviewer stays on this machine: a config built the ordinary way
+    // (`Config::for_this_box`) says `host`, so a reviewer spawned here is a HOST child.
     let cfg = config(&main_id, stub.endpoint.clone(), &path);
     let registry = Registry::new();
     let mut father = a_session(&main_id, &parts, &cfg, registry.clone());
@@ -1154,19 +1075,9 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     registry.close();
 }
 
-/// A refusal whose CHILD is gone reaches the session that ENQUEUED the entry - the production half
-/// of the rule `mergequeue::refusal_addressees` states, through `serve_reviews` and the real
-/// `TaskRunner::send`.
-///
-/// A subagent that finished is a session whose turn has ended, so the party the complaints are FOR is
-/// the party most likely to be missing - while the session that ran the `task_start` is the one whose
-/// model holds the verbs that move the entry. The three sessions are three different parties here on
-/// purpose: the entry's child (a row and no hub - gone), the peer that enqueued the branch (live)
-/// and the session hosting the review. A door that stopped at the child would publish
-/// `refusal_undelivered` and the peer would hear nothing at all.
-///
-/// The reviewer is a real `task` child of the hosting session, so the verdict on the row is a
-/// `review_verdict` call the child itself made, not markup this test wrote into a reply.
+/// A refusal whose CHILD is gone reaches the session that ENQUEUED the entry - the
+/// production half of the rule `mergequeue::refusal_addressees` states, through
+/// `serve_reviews` and the real `TaskRunner::send`.
 #[test]
 fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1179,12 +1090,9 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     let lost = "s-the-child-that-left";
 
     let parts = parts_for(&config(&main_id, Endpoint::new("127.0.0.1", 1), &path));
-    // The reviewer's own turn, and no other - the branch's child is gone, which is the state this
-    // test is about, so the only child in this fixture is the one `serve_reviews` starts.
-    //
-    // It takes TWO rounds, and the first one is a CALL. A verdict is HANDED IN by the reviewer
-    // itself (`review_verdict`, the one tool the `gatekeeper` seat seats for a decision), and the
-    // prose the prompt asks for afterwards is the second round of the same turn.
+    // The reviewer's own turn, and no other - the branch's child is gone, which is the state
+    // this test is about, so the only child in this fixture is the one `serve_reviews` starts.
+    // It takes TWO rounds, and the first one is a CALL.
     let verdict = a_tool_call_turn(&parts.vocab, &a_refusing_verdict_call(), 30);
     let after = a_plain_answer_turn(
         &parts.vocab,
@@ -1211,9 +1119,8 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     let (repo, base_sha, head_sha) = a_repository(dir.path(), &branch);
     let store = Store::open(&path).expect("the store");
     // The child's ROW, and no hub for it. A session that finished and closed leaves the row -
-    // the store's own column doc says a session that is deleted does not un-merge a branch - while
-    // `Registry::get` answers for nothing. That pair is exactly what the walk needs to find the
-    // root, and exactly what makes the child the party that cannot be reached.
+    // the store's own column doc says a session that is deleted does not un-merge a branch -
+    // while `Registry::get` answers for nothing.
     store
         .put_session(&SessionRecord {
             id: lost.to_string(),

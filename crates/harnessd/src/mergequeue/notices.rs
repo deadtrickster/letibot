@@ -133,13 +133,9 @@ pub fn target_timed_out(h: &TargetHealth, key: &str) -> String {
     )
 }
 
-/// `target_unjudged`: the gate could not be read, the landing tree could not be made ready, or a step
-/// could not run - nothing about the code was judged.
-///
-/// Two causes, and the sentence has to say which. A gate whose *setup* is broken waits for somebody to
-/// fix it, so the verb is `/queue regate`. A gate that could not run on a declared host
-/// (`UNJUDGED_RETRY`) is the queue's own retry: it is gated again by itself once the window is out, and
-/// telling a model to regate a slow machine would be asking it to do the queue's work.
+/// `target_unjudged`: the gate could not be read, the landing tree could not be made ready,
+/// or a step could not run - nothing about the code was judged. Two causes, and the
+/// sentence has to say which.
 pub fn target_unjudged(h: &TargetHealth, key: &str) -> String {
     if h.evidence.starts_with(super::serve::UNJUDGED_RETRY) {
         return format!(
@@ -319,15 +315,8 @@ pub fn parked(r: &ReviewRow) -> String {
 }
 
 /// `stuck_census` - the count and the age, on the daemon's idle pass (`mergequeue::stuck`
-/// `Harness::stuck_census`, `Sessions::deliver_due_censuses`).
-///
-/// Every other sentence here is about ONE row and says so when that row MOVES. This is the only place a
-/// project is told how many rows are bad at once, and the only place any of them is given an age - which
-/// is what was missing while eight rows sat for hours with every transition already said. The verbs are
-/// the same two the transitions name, because a count with no verb is a statistic.
-///
-/// It is a TURN and not a notice (`Door::Census`, `Harness::census_turn`), so the rate that paces it is
-/// its own, and it reaches a session that is doing nothing - which a transcript row does not.
+/// `Harness::stuck_census`, `Sessions::deliver_due_censuses`). Every other sentence here is
+/// about ONE row and says so when that row MOVES.
 pub fn stuck_census(c: &super::stuck::Stuck, now_ms: u64) -> String {
     format!(
         "[queue stuck] {} row(s) of this project's merge queue are stuck and no pass will move \
@@ -339,10 +328,9 @@ pub fn stuck_census(c: &super::stuck::Stuck, now_ms: u64) -> String {
     )
 }
 
-// The rest of what the review queue says about a verdict, moved here from where each was built inline
-// (`review`, `serve`, `verbs`, `Harness::handover_notices`) so that one test can write the TUI's
-// review-card fixtures from the daemon's own words. The TUI draws each as one line; the model reads
-// every word.
+// The rest of what the review queue says about a verdict, moved here from where each was
+// built inline (`review`, `serve`, `verbs`, `Harness::handover_notices`) so that one test
+// can write the TUI's review-card fixtures from the daemon's own words.
 
 /// The reviewer's reasons, one bullet each, as a refusal lists them.
 fn reason_list(reasons: &[String]) -> String {
@@ -385,11 +373,8 @@ pub fn refused_to_root(r: &ReviewRow, reasons: &[String], child: &str, missed: &
     )
 }
 
-/// A refusal, to a live session of the branch's workspace when the branch's own tree is dead
-/// (`review::deliver_refusal`); `missed` is why the author and its root were not told.
-///
-/// The sentence says WHY this session is the recipient, because a session handed another tree's refusal
-/// with no reason for it is a session asked to answer for somebody else's work on a stranger's word.
+/// A refusal, to a live session of the branch's workspace when the branch's own tree is
+/// dead (`review::deliver_refusal`); `missed` is why the author and its root were not told.
 pub fn refused_to_workspace(
     r: &ReviewRow,
     reasons: &[String],
@@ -415,13 +400,8 @@ pub fn refused_to_workspace(
 }
 
 /// `refusal_undelivered`: a refusal nobody could be told of (`review::deliver_refusal`).
-///
-/// `tried` is every recipient the door attempted, in order, each in the failed party's own words
-/// because *told nobody* is a claim that has to carry its evidence.
-///
-/// The parenthesised list stays where it is: the head's review card reads this detail by its opening
-/// (`review_card::warning_review`), and moving the evidence out of the brackets would make every
-/// undelivered refusal fall back to a generic warning line.
+/// `tried` is every recipient the door attempted, in order, each in the failed party's own
+/// words because *told nobody* is a claim that has to carry its evidence.
 pub fn refusal_undelivered(r: &ReviewRow, tried: &str) -> String {
     format!(
         "the review of `{}` (`{}`) refused it, and the complaints reached nobody (every session \
@@ -431,11 +411,8 @@ pub fn refusal_undelivered(r: &ReviewRow, tried: &str) -> String {
     )
 }
 
-/// `queue_needs_human`: the reviewer could not decide (`review::verdict`). The sentence names the head
-/// the sentence the verdict turned on (`decisive`: the reviewer's own words, chosen by
-/// `capacity::decisive_reason`, not paraphrased), how many times reviewers could not decide on this
-/// branch and at which heads, and the operator's verbs. A failure to place or run a reviewer is not
-/// mentioned: it is not why this row stopped.
+/// `queue_needs_human`: the reviewer could not decide (`review::verdict`). The sentence
+/// names the head the sentence the verdict turned on (`decisive`:
 pub fn needs_human(r: &ReviewRow, by: &str, decisive: &str, heads: &[String]) -> String {
     let short = |s: &str| s.chars().take(7).collect::<String>();
     let decisive = if decisive.is_empty() {
@@ -481,10 +458,9 @@ pub fn needs_human(r: &ReviewRow, by: &str, decisive: &str, heads: &[String]) ->
     }
 }
 
-/// Why a review's attempts ran out, in one sentence a person can act on - the row's `failure` and the
-/// heart of [`blocked_after`]: every counted attempt at this head by its gist (`capacity::gist`
-/// firecode's `error:` sentence, not its banner), oldest first; and, when every one was a reviewer whose
-/// VM did not start (`placement`), that it was placement and not a judgement of the branch.
+/// Why a review's attempts ran out, in one sentence a person can act on - the row's
+/// `failure` and the heart of [`blocked_after`]: every counted attempt at this head by its
+/// gist (`capacity::gist` firecode's `error:` sentence, not its banner), oldest first;
 pub fn attempts_spent(attempts: u32, head: &str, gists: &[String], placement: bool) -> String {
     let listed = gists
         .iter()
@@ -553,12 +529,9 @@ pub fn waiting_for_vm(r: &ReviewRow, busy: &str) -> String {
     )
 }
 
-/// `queue_vm_slots_exhausted` (once, past `capacity::LONG_WAIT_MS`): slots are not freeing on their own
-/// `ceiling` is firecode's own `sudo` lines, verbatim, when its refusal had them.
-///
-/// `holders` is what holds each busy slot (`crate::vm_reap::slot_holders`), one line per tap, named
-/// after the notice's own sentence so a person reads what to free rather than only that every slot is
-/// busy - four taps and four orphans can otherwise hold every slot for hours.
+/// `queue_vm_slots_exhausted` (once, past `capacity::LONG_WAIT_MS`): slots are not freeing
+/// on their own `ceiling` is firecode's own `sudo` lines, verbatim, when its refusal had
+/// them.
 pub fn vm_slots_exhausted(
     r: &ReviewRow,
     waited_min: u64,
@@ -724,11 +697,9 @@ mod tests {
         }
     }
 
-    /// The TUI's red-card fixtures are what the daemon writes - the session notice [`health`] says, and
-    /// the `target_red` warning `RepoQueue::target_went_red` raises (its sentence spelled here as
-    /// `serve.rs` spells it). `red_card` in the TUI parses these to draw each as one line; a reworded
-    /// notice fails here before it falls back on a screen. Re-bless with `LETIBOT_BLESS_RED_CARD=1`, and
-    /// teach `red_card` the new shape if it moved a part it keys on.
+    /// The TUI's red-card fixtures are what the daemon writes - the session notice [`health`]
+    /// says, and the `target_red` warning `RepoQueue::target_went_red` raises (its sentence
+    /// spelled here as `serve.rs` spells it).
     #[test]
     fn the_tuis_red_card_fixtures_are_what_the_queue_writes() {
         let h = firecode_red();
@@ -760,10 +731,9 @@ mod tests {
         }
     }
 
-    /// The review the operator pasted - `agent/panic-groupingsets-join`, whose reviewer could not
-    /// decide, parked for a person. The reasons are the reviewer's as the paste shows them, completed.
-    /// Landing a handed-over branch yourself is a named exception to the queue rule, and the choice the
-    /// operator makes is asked through `ask_user_question`.
+    /// The review the operator pasted - `agent/panic-groupingsets-join`, whose reviewer could
+    /// not decide, parked for a person. The reasons are the reviewer's as the paste shows them,
+    /// completed.
     #[test]
     fn a_handover_names_its_exception_to_the_queue_rule() {
         let said = handed_over(&groupingsets());
@@ -821,20 +791,14 @@ mod tests {
         }
     }
 
-    /// The TUI's review-card fixtures are what the queue writes - one per shape a review's outcome reaches
-    /// a session or a hub in: the row parked for a person ([`parked`], four shapes), the refusal and the
-    /// veto said to the branch's session as a parent's message ([`crate::harness::message_from_a_session`])
-    /// the review handed to the project, and the hub warnings the review queue raises. `review_card` in the
-    /// TUI parses these to draw each as one line, so a reworded notice fails here before it falls back on a
-    /// screen. Re-bless with `LETIBOT_BLESS_REVIEW_CARD=1`, and teach `review_card` the new shape if it
-    /// moved a part it keys on.
+    /// The TUI's review-card fixtures are what the queue writes - one per shape a review's
+    /// outcome reaches a session or a hub in:
     #[test]
     fn the_tuis_review_card_fixtures_are_what_the_queue_writes() {
         use crate::sessions::gatekeeper;
-        // The review queue's session, as one daemon spells it. A fixture rather than a derived id: the
-        // id is per workspace now (`s-gatekeeper-<key>`), and a fixture that hashed a temp path would
-        // embed a number no reader can check. What the card parses is the SHAPE, and one key is enough
-        // to pin it.
+        // The review queue's session, as one daemon spells it. A fixture rather than a derived id:
+        // the id is per workspace now (`s-gatekeeper-<key>`), and a fixture that hashed a temp
+        // path would embed a number no reader can check.
         let host = gatekeeper::session_for_fixture();
         let r = groupingsets();
         let as_message = |text: String| crate::harness::message_from_a_session(&host, &text, None);

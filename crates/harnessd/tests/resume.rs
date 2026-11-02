@@ -1,32 +1,11 @@
 //! Opening a session that is already in the store: the daemon's half of resume.
-//!
-//! `letibot-turn`'s `restore.rs` asserts the chain reproduces. This asserts the four things the
-//! *daemon* has to get right around it, none of which the ledger knows about
-//!
-//! 1. A head sees the conversation. The harness holds the restored transcript and the hub does
-//!    not, so without a republish a head attaching to a resumed session is told it has joined an
-//!    empty one. A perfect ledger restore would not save it.
-//! 2. The tools are confined to the session's own tree. A conversation resumed by a daemon
-//!    started somewhere else must not be seated there: every path would resolve, nothing would
-//!    error, and the only symptom would be answers about the wrong tree.
-//! 3. Nothing is written twice. `persist` picks up at the row after the last stored one; a
-//!    resume that reset the counter would replay inserts into an append-only table and fail on the
-//!    first.
-//! 4. A dialect that does not match is re-rendered, not refused. This is the case the hash
-//!    chain *cannot* catch - every stored row is correctly hashed by whoever wrote it - so it is
-//!    the one that has to be read from the prefix record.
-//!
-//! The store is built here, in a temp dir, with a shape this file states: a session whose
-//! conversation a compaction split across two transcripts, [`ANCESTOR_ROWS`] and [`CURRENT_ROWS`]
-//! of them. The ancestor tail is staged on purpose rather than borrowed from a real store, so the
-//! numbers are the same on a laptop and on a runner and the assertion still fails if a resume stops
-//! putting rows on the log. A resume republishes the CONVERSATION, which a compaction splits across
-//! transcripts, so the snapshot is the current transcript plus the tail of the ones before it.
-//!
-//! No vocabulary and no model server: the tokens are written here, and a resume is a store read and
-//! a re-hash. The config names a provider that is never called, which is what gives it the byte
-//! vocabulary; the second test's re-render needs a RENDERER rather than a model, and the byte
-//! vocabulary is one.
+//! `letibot-turn`'s `restore.rs` asserts the chain reproduces. This asserts the four things
+//! the *daemon* has to get right around it, none of which the ledger knows about 1. A head
+//! sees the conversation. The harness holds the restored transcript and the hub does not,
+//! so without a republish a head attaching to a resumed session is told it has joined an
+//! empty one. A perfect ledger restore would not save it. 2. The tools are confined to the
+//! session's own tree. A conversation resumed by a daemon started somewhere else must not
+//! be seated there:
 
 use std::path::{Path, PathBuf};
 
@@ -75,13 +54,6 @@ fn renders_template(parts: &Parts) -> String {
 }
 
 /// The operator's project modes are not this test's business.
-///
-/// A resumed session takes its workspace from the STORE, so on a developer's box that can be a
-/// directory with a row in `~/.config/letibot/modes.tsv`, and `Harness::open` applies it - the test
-/// would then measure resume against whatever this laptop is configured for. An empty store lets
-/// the mode be the daemon's: state the condition as a value rather than inherit it. Not by pinning
-/// `$XDG_CONFIG_HOME` - `set_var` beside a running thread is undefined behaviour this edition
-/// aborts for.
 fn empty_modes(parts: Parts) -> Parts {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     parts
@@ -106,11 +78,6 @@ fn config(store: &Path, session_id: &str, workspace: &str) -> Config {
 }
 
 /// Write `items` onto `transcript` as the ledger's own rows.
-///
-/// The offsets, lengths and chain this writes are the ones `TokenLedger::restore` recomputes
-/// because they are built from the same two functions the ledger uses (`hash_tokens` over the
-/// prefix, then `chain` per row). There is no model here to render a turn, and a resume does not
-/// need one: it replays the numbers it is given.
 fn write_rows(store: &Store, transcript: &str, prefix_tokens: &[u32], items: &[TranscriptItem]) {
     let mut h = hash_tokens(prefix_tokens);
     let mut offset = prefix_tokens.len() as u32;
@@ -143,11 +110,7 @@ struct Fixture {
 }
 
 /// A session whose conversation a compaction split across two transcripts, written into a
-/// store this test owns.
-///
-/// `recorded_under` is the dialect sha written on the prefix row. The build's own
-/// ([`renders_template`]) is the ordinary case - a resume that replays the stored tokens; anything
-/// else is the mismatch the second test stages.
+/// store this test owns. `recorded_under` is the dialect sha written on the prefix row.
 fn fixture(tag: &str, parts: &Parts, recorded_under: &str) -> Fixture {
     let dir = TempDir::new(tag);
     let store_path = dir.path().join("sessions.db");
@@ -252,13 +215,8 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
     );
 
     // (1) The head's view. A snapshot is what a head attaching now would be handed, and `item`
-    // being `None` on a row is not a loading state - it is the final state, which is how a prompt
-    // can render as `[user … - content not loaded]` for ever.
-    //
-    // The count is the conversation, not the transcript. A compaction splits the conversation
-    // across transcripts, so the snapshot carries the tail of the ones before the current one as
-    // well ([`Harness::ancestor_tail`]) - which is why the assertion below is the fixture's two
-    // constants rather than [`CURRENT_ROWS`] alone.
+    // being `None` on a row is not a loading state - it is the final state, which is how a
+    // prompt can render as `[user … - content not loaded]` for ever.
     let snap = hub.snapshot();
     assert_eq!(
         snap.items.len() as u32,
@@ -272,12 +230,9 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
         "{} row(s) announced with no body",
         snap.items.iter().filter(|r| r.item.is_none()).count()
     );
-    // Ids come off the ledger rows, which is what pairs an announcement with its body. A second
-    // minting rule here would go stale against `append_items`.
-    //
-    // And the session's own rows are the TAIL of the snapshot: the ancestor tail is published
-    // first, oldest first, and the current transcript last. This is what fails if a resume stops
-    // putting rows on the log - a count alone would still be satisfied by the ancestor tail.
+    // Ids come off the ledger rows, which is what pairs an announcement with its body. A
+    // second minting rule here would go stale against `append_items`. And the session's own
+    // rows are the TAIL of the snapshot:
     let ids = h.row_ids();
     for (row, ledger) in snap.items[snap.items.len() - ids.len()..].iter().zip(&ids) {
         assert_eq!(
@@ -301,10 +256,7 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
 
 #[test]
 fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
-    // The failure the chain cannot catch. Every row in that transcript is correctly hashed by
-    // whoever wrote it, so `verify_chain` passes and the tokens are still another renderer's -
-    // appending this one's bytes to them builds a prompt no model was trained on, and nothing
-    // downstream can see it.
+    // The failure the chain cannot catch.
     let probe =
         Parts::load(&config(Path::new("unused"), "", "/tmp")).expect("the wiring must load");
     let this_build = renders_template(&probe);
@@ -322,11 +274,6 @@ fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
     let hub = Hub::new(&f.session_id);
 
     // It is no longer refused, and that is the change this asserts.
-    //
-    // A resume replays the stored TOKENS, and two renderers' bytes in one prompt is a prompt no
-    // model was trained on - but `item_json` sits beside `tokens` in every row and is
-    // dialect-neutral, so the conversation is rebuilt for this renderer instead of being turned
-    // away. The old assertion is kept in the negative below: what must NOT happen is a refusal.
     let h = Harness::open(&parts, cfg, hub.clone())
         .expect("a dialect mismatch re-renders rather than refusing");
 
@@ -340,10 +287,9 @@ fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
         notes.contains("fork"),
         "and told the old transcript is kept: {notes}"
     );
-    // The fork is a NEW transcript; the old one is untouched, which is what makes this safe to do
-    // without asking. Asserted in the store rather than by comparing two ids that could never be
-    // equal: the fork's parent is the transcript that was there, and that transcript still holds
-    // every row it had.
+    // The fork is a NEW transcript; the old one is untouched, which is what makes this safe to
+    // do without asking. Asserted in the store rather than by comparing two ids that could
+    // never be equal:
     assert_ne!(
         report.transcript_id, f.current,
         "the re-render lands in a fork, not on top of the recorded tokens"

@@ -1,27 +1,11 @@
-//! A background job's end, published the moment it is true.
-//!
-//! The start needs no watcher: `bash --background` finishes as
-//! `ToolOutcome::Backgrounded` and every head sees it. The end does - a session-scoped
-//! job outlives its turn, and between turns nobody asks the runtime about it.
-//!
-//! Blocked, not polling (§18.1-I12): one thread per watched job, blocked in
-//! [`ProcessHost::wait_job`] and woken by the job's own settlement. No background jobs
-//! and no threads when there is nothing to watch.
-//!
-//! The handles are `Weak`: a watcher holding the host alive would keep a closed
-//! session's cgroup alive with it, so it re-checks every [`WATCH_CHUNK`] and dies.
-//!
-//! The model is told, not only the head. [`SessionEvent::JobSettled`] reaches the pane
-//! a [`JobCompletion`] reaches the model on the queue of the session that STARTED the
-//! work, through [`crate::harness::Harness::wake`] between turns or
-//! [`JobWatchers::take_mid_turn_completions`] at a child's round boundary. Both drains
-//! go through [`crate::delivery::sort`] - a drain is not a delivery - and the bell
-//! is rung because a settlement lands between turns, when nothing else would wake the
-//! worker. A queued prompt is always served before a completion.
-//!
-//! The ring names the session that owns the settlement, never the tree's root; only a
-//! settlement whose owner has stopped is handed up a level ([`JobWatchers::stop`])
-//! and then the ring names the level above.
+//! A background job's end, published the moment it is true. The start needs no watcher:
+//! `bash --background` finishes as `ToolOutcome::Backgrounded` and every head sees it. The
+//! end does - a session-scoped job outlives its turn, and between turns nobody asks the
+//! runtime about it. Blocked, not polling (§18.1-I12): one thread per watched job, blocked
+//! in [`ProcessHost::wait_job`] and woken by the job's own settlement. No background jobs
+//! and no threads when there is nothing to watch. The handles are `Weak`: a watcher holding
+//! the host alive would keep a closed session's cgroup alive with it, so it re-checks every
+//! [`WATCH_CHUNK`] and dies. The model is told, not only the head.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -43,10 +27,9 @@ use letibot_transcript::ToolOutcome;
 /// closing session's watcher lingers, never how late a settlement is.
 const WATCH_CHUNK: Duration = Duration::from_secs(5);
 
-/// Which kind of backgrounded thing this is.
-///
-/// A subagent *is* a background job (the operator's ruling), so the two share one queue
-/// one bell and one wake; they differ only in how you wait and what a settlement is called.
+/// Which kind of backgrounded thing this is. A subagent *is* a background job (the
+/// operator's ruling), so the two share one queue one bell and one wake; they differ only
+/// in how you wait and what a settlement is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundKind {
     /// A host process from `bash --background`, waited on by `wait_job`.
@@ -75,10 +58,9 @@ pub struct JobCompletion {
     /// subagent, whose [`JobCompletion::detail`] is a separate field rather than a reused
     /// one - a command field that sometimes holds an answer is one a reader stops trusting.
     pub command: String,
-    /// The name the caller gave this job, read off the view at the last moment it
-    /// exists - a settlement is delivered between turns, by which time the job is usually
-    /// reaped. It is what lets the notice say `release-build · j65` instead of a bare
-    /// counter. For a subagent, the child's name.
+    /// The name the caller gave this job, read off the view at the last moment it exists - a
+    /// settlement is delivered between turns, by which time the job is usually reaped. It is
+    /// what lets the notice say `release-build · j65` instead of a bare counter.
     pub slug: Option<String>,
     /// What happened to the process: `exited 0`, `signalled 15`, `killed by job_kill`.
     /// For a subagent: `done` or `failed`, the words [`SessionEvent::Subagent`] publishes too.
@@ -137,12 +119,6 @@ pub struct ActivityFacts {
 }
 
 /// The two maps the activity's snapshot is built from, and the snapshot itself.
-///
-/// The activity is re-derived from inside [`Hub::publish`], and a publish can be made from a
-/// place that holds a session's own state (the merge queue publishes from inside its pass)
-/// so nothing reachable from a publish may block on a lock a non-queue thread can hold.
-/// `snapshot` is the leaf a publisher takes - cloned, never held across a call - and the
-/// writers keep the order `mine` → `wanted` → `snapshot`.
 struct WatchedNow {
     mine: Mine,
     wanted: Arc<Mutex<HashMap<String, WantedNow>>>,
@@ -158,10 +134,9 @@ impl WatchedNow {
         })
     }
 
-    /// Rebuild the snapshot from the two maps, once the caller has let go of them.
-    ///
-    /// Sorted by handle: the activity is compared for equality to decide whether to publish
-    /// it, and an order that wandered would republish an unchanged line.
+    /// Rebuild the snapshot from the two maps, once the caller has let go of them. Sorted by
+    /// handle: the activity is compared for equality to decide whether to publish it, and an
+    /// order that wandered would republish an unchanged line.
     fn rebuild(&self) {
         let mine = self.mine.lock().expect("job watchers");
         let wanted = self.wanted.lock().expect("wanted results");
@@ -187,7 +162,6 @@ impl WatchedNow {
 }
 
 /// One session's settlement queue, and the flag the activity reads instead of its lock.
-///
 /// `any` moves inside the lock on every push and drain, so a reader that loads `false` has
 /// missed nothing. The queue itself is never taken on a publish path; see [`WatchedNow`].
 struct Settlements {
@@ -231,20 +205,14 @@ pub struct JobWatchers {
     /// storeless run.
     recorder: Arc<Mutex<Option<JobRecorder>>>,
     hub: Weak<Hub>,
-    /// The other thing that backgrounds. `task` finishes as [`ToolOutcome::Backgrounded`]
-    /// too, but `wait_job` has never heard of a subagent's handle - it would spin on
-    /// [`Waited::NeverStarted`] until the session closed - so the handle is asked about here
-    /// first. `Weak` for the host's reason: a watcher must not keep the runner alive.
+    /// The other thing that backgrounds.
     tasks: Option<Weak<dyn TaskRunner>>,
     /// THIS session's settlements, in the order they happened - its own, plus whatever a
     /// session below handed up because it can no longer be told ([`JobWatchers::stop`]). Per
-    /// session, not per tree : a shared queue delivered a child's job as the main
-    /// session's.
+    /// session, not per tree : a shared queue delivered a child's job as the main session's.
     completions: Arc<Settlements>,
-    /// The queue of the set this one was built from, and whose session owns it - the
-    /// parent's, for a child. What a stopped session cannot drain is handed up rather than
-    /// left where nobody reads it, and the id is the level above's because that is who the
-    /// ring for a handed-up settlement must name.
+    /// The queue of the set this one was built from, and whose session owns it - the parent's,
+    /// for a child.
     parent: Option<(Arc<Settlements>, String)>,
     /// A settlement left this queue to be said, and the turn that says it has not begun -
     /// between the two the activity would read quiet and a `wait` would answer the turn that
@@ -280,13 +248,9 @@ pub struct JobWatchers {
     /// foreground call promoted out from under it, or `wake: "now"` at its start. See
     /// [`WantedNow`]. Per session: a want is the asking session's, never its tree's.
     wanted: Arc<Mutex<HashMap<String, WantedNow>>>,
-    /// What THIS session is watching, and which kind each handle is - the work whose
-    /// settlement reaches this model, plus the caller's NAME (`bash(slug: …)`), since a plan row
-    /// may name a job by its slug and a map holding only the handle read such a session as quiet.
-    /// Not the tree's [`JobWatchers::watching`]: what this model owes a turn to is per session.
-    /// The kind is recorded at [`JobWatchers::watch`], never by calling the runner, because a
-    /// slot's lock taken on the publish path is how a session wedges. Read through
-    /// [`WatchedNow`]'s snapshot.
+    /// What THIS session is watching, and which kind each handle is - the work whose settlement
+    /// reaches this model, plus the caller's NAME (`bash(slug: …)`), since a plan row may name
+    /// a job by its slug and a map holding only the handle read such a session as quiet.
     watched: Arc<WatchedNow>,
     /// The tree's ROOT - the one session a head can be attached to, and therefore the one a
     /// permission card can be drawn by. Not the ring target: a card needs a head, an exit needs
@@ -346,8 +310,6 @@ impl JobWatchers {
 
     /// Tell this set where to leave a record of what it settles. A setter rather than a
     /// constructor parameter: `new` is called in twelve places and all but a couple are tests.
-    /// Safe after construction because the value is read when a queue is BUILT - per watch
-    /// well after this, and no tool has run in between.
     pub fn record_jobs_into(
         &self,
         path: std::path::PathBuf,
@@ -364,12 +326,7 @@ impl JobWatchers {
 
     /// A job is a row from the moment it exists, not from the moment it ends - a job running
     /// when the daemon dies is never settled by anything, so without this write it leaves no
-    /// trace at all. Called where the daemon first learns a job exists, beside the arming of its
-    /// watcher.
-    ///
-    /// The command is not known here (the event carries the outcome and no arguments), so the row
-    /// is written with `how` and a running state and the settlement fills in the rest - an empty
-    /// field never erases a recorded one. `ran_for_ms` is therefore a floor for a running job.
+    /// trace at all.
     pub fn record_start(&self, handle: &str, how: &str, ran_for_ms: u64) {
         let Ok(g) = self.recorder.lock() else {
             return;
@@ -450,18 +407,9 @@ impl JobWatchers {
         })
     }
 
-    /// Join this session's watcher to its tree's.
-    ///
-    /// A child keeps what is genuinely its own - its hub, its host and runner, and its
-    /// completions queue, since a settlement belongs to the session that started it. It takes
-    /// the tree's watching/settled sets (so a settlement is queued once), the level above, and
-    /// the root, which belongs to the ask route.
-    ///
-    /// `stop` is deliberately NOT shared: `Harness::close_backend` runs at the end of a CHILD's
-    /// turn, so a shared flag stopped every watcher in the tree the moment the first subagent
-    /// finished - and the root stopped hearing about its own background jobs.
-    ///
-    /// `tree` is the parent's own set, so the level above is `tree.me` with no chain walk.
+    /// Join this session's watcher to its tree's. A child keeps what is genuinely its own - its
+    /// hub, its host and runner, and its completions queue, since a settlement belongs to the
+    /// session that started it.
     pub fn shares_tree(self: Arc<Self>, tree: &Arc<JobWatchers>) -> Arc<Self> {
         Arc::new(JobWatchers {
             host: self.host.clone(),
@@ -497,27 +445,15 @@ impl JobWatchers {
     }
 
     /// Take every settlement this session has not been told yet - one drain per turn, and
-    /// taking it is what stops a settlement being delivered twice.
-    ///
-    /// What comes back is this session's own, plus what a stopped session below handed up
-    /// ([`JobWatchers::stop`]); the owner is still named in [`JobCompletion::owner`].
-    ///
-    /// A root is driven by `Sessions::wake`; a child's wake is relayed to the thread
-    /// that runs its turns, so a between-turns door exists for both. What the relay cannot reach
-    /// is a turn already RUNNING - that is [`JobWatchers::take_mid_turn_completions`].
+    /// taking it is what stops a settlement being delivered twice. What comes back is this
+    /// session's own, plus what a stopped session below handed up ([`JobWatchers::stop`]);
     pub fn take_completions(&self) -> Vec<JobCompletion> {
         self.completions.drain()
     }
 
-    /// Take them at a round boundary, for the session the daemon does not hold.
-    ///
-    /// Empty at the top of a tree, and that is the guard: a root's between-turn turn is the
-    /// daemon's, so taking here would be a second delivery path for the one built. Both
-    /// doors read one queue, so taking here is what stops a double delivery - the relayed wake
-    /// that follows finds nothing and runs no turn.
-    ///
-    /// : the daemon's round boundary drains through [`crate::delivery::sort`] instead. This
-    /// stays as the raw routing door the tests assert *whose* queue a settlement lands on.
+    /// Take them at a round boundary, for the session the daemon does not hold. Empty at the
+    /// top of a tree, and that is the guard: a root's between-turn turn is the daemon's, so
+    /// taking here would be a second delivery path for the one built.
     pub fn take_mid_turn_completions(&self) -> Vec<JobCompletion> {
         if self.parent.is_none() {
             return Vec::new();
@@ -525,10 +461,9 @@ impl JobWatchers {
         self.take_completions()
     }
 
-    /// Queue a settlement as a watcher would, without the ring - the door a settlement
-    /// that outlived its session comes back through, and the one the delivery tests stand in a
-    /// watcher's place with. No ring: the set this lands in is about to be rung for its own
-    /// reasons, and a ring here would be a wake with nothing behind it.
+    /// Queue a settlement as a watcher would, without the ring - the door a settlement that
+    /// outlived its session comes back through, and the one the delivery tests stand in a
+    /// watcher's place with. No ring:
     pub fn queue(&self, c: JobCompletion) {
         self.completions.push(c);
     }
@@ -541,10 +476,8 @@ impl JobWatchers {
         self.queue(c);
     }
 
-    /// Hold this session's settlement queue while `during` runs - the position a publisher
-    /// must not be parked in, stood in on purpose. Nothing in the daemon holds the queue across
-    /// a publish and the activity does not ask for it (see [`WatchedNow`]), so a publish must
-    /// still return - which is what `tests/activity.rs` asserts with it held.
+    /// Hold this session's settlement queue while `during` runs - the position a publisher must
+    /// not be parked in, stood in on purpose.
     #[doc(hidden)]
     pub fn hold_settlements_for_test<R>(&self, during: impl FnOnce() -> R) -> R {
         let _held = self.completions.queue.lock().expect("job completions");
@@ -554,9 +487,6 @@ impl JobWatchers {
     /// Say this handle's result is wanted the moment it ends - the daemon's half of
     /// [`letibot_tools::runtime::CompletionWanted`]. A want already recorded is not replaced
     /// `wake: "now"` and a later wait are both *now*, and the first is the one recorded.
-    ///
-    /// A want for a result already delivered is not recorded : nothing would ever
-    /// deliver it again to take it off, so it would sit in the map for the session's life.
     pub fn want_now(&self, handle: &str, why: WantedNow) {
         if self
             .read
@@ -594,10 +524,8 @@ impl JobWatchers {
     }
 
     /// These completions have just been put into the model's transcript - recorded with the
-    /// turns ended so far, so [`JobWatchers::grace_left`] can tell *delivered in the turn ending
-    /// now* from *delivered a turn ago*. Called by the two places a completion is worded for the
-    /// model, which is where *delivered* is true rather than inferred. Keyed by handle and by
-    /// slug, because a row's `TodoNeed::Job` may name either.
+    /// turns ended so far, so [`JobWatchers::grace_left`] can tell *delivered in the turn
+    /// ending now* from *delivered a turn ago*.
     pub fn read_now(&self, done: &[JobCompletion]) {
         {
             let mut r = self.read.lock().expect("read record");
@@ -633,13 +561,9 @@ impl JobWatchers {
         }
     }
 
-    /// A turn of this session has ended - counted after its rounds have run, whatever they
-    /// came to, by the harness's two doors into `run_rounds`.
-    ///
-    /// And a turn that ends with results held rings this session's own wake : holding
-    /// exists only so a RUNNING turn is not interrupted, so once the turn is over the held batch
-    /// is delivered at once as its own turn. The bell keeps one ring per session, so a second
-    /// ring is harmless; a set with no bell rings nothing.
+    /// A turn of this session has ended - counted after its rounds have run, whatever they came
+    /// to, by the harness's two doors into `run_rounds`. And a turn that ends with results held
+    /// rings this session's own wake :
     pub fn turn_ended(&self) {
         {
             let mut r = self.read.lock().expect("read record");
@@ -661,17 +585,7 @@ impl JobWatchers {
 
     /// How much of an ended job's or child's grace is left, or `None` when it has none - the
     /// fact the end-of-turn plan check stays quiet on (`waits_on_an_undigested_ending`).
-    ///
-    /// Graced: a completion still queued or held, and one delivered during the turn whose end is
-    /// being checked. Not graced: delivered before that (the model has had a whole turn with it)
-    /// or never seen here (a handle from before a restart, or another session's).
-    ///
-    /// And a backstop, `cap` after the ending, so a completion that
-    /// never arrives cannot silence a row for ever. What is returned is what is left of it, for
-    /// the idle clock's deadline.
-    ///
-    /// Not covered: the instant between a job's process ending and its watcher queuing the
-    /// settlement reads as *never seen here*.
+    /// Graced:
     pub fn grace_left(&self, handle: &str, cap: Duration, now: SystemTime) -> Option<Duration> {
         let left = |ended: SystemTime| {
             cap.checked_sub(now.duration_since(ended).unwrap_or(Duration::ZERO))
@@ -699,10 +613,6 @@ impl JobWatchers {
     }
 
     /// Hold these until the next break. See [`JobWatchers::held`].
-    ///
-    /// Says the held set on the hub afterwards ([`JobWatchers::say_held`]) - also when `more` is
-    /// empty, because the re-sort that calls this may have taken results out
-    /// ([`JobWatchers::take_held_to_resort`]) and promoted every one of them.
     pub fn hold(&self, more: Vec<JobCompletion>) {
         if !more.is_empty() {
             let mut h = self.held.lock().expect("held results");
@@ -777,11 +687,8 @@ impl JobWatchers {
     }
 
     /// Has a settlement arrived that this session has not been told yet? - the queue behind
-    /// [`JobWatchers::wake`]'s next drain, read by the activity because it is the window between
-    /// a job ending and the turn its ending starts.
-    ///
-    /// Distinct from [`JobWatchers::held_count`], which is a result taken out of this queue so a
-    /// RUNNING turn is not interrupted: both are *the model is owed a turn*.
+    /// [`JobWatchers::wake`]'s next drain, read by the activity because it is the window
+    /// between a job ending and the turn its ending starts.
     pub fn pending(&self) -> bool {
         // The flag, not the queue: a publish reaches this, and a publish that waited on the
         // queue is the deadlock [`WatchedNow`] describes.
@@ -810,12 +717,7 @@ impl JobWatchers {
     }
 
     /// The jobs and children THIS session is waiting on, by handle and kind - the things whose
-    /// settlement will reach its model. Read from `mine`, not from the tree-wide `watching` set
-    /// a parent's job sits in that set too, and work the child is not waiting on is not a turn the
-    /// child's model is owed.
-    ///
-    /// A snapshot of one instant; a watcher that ends just after leaves its entry here, and the
-    /// settlement's own activity refresh corrects that.
+    /// settlement will reach its model.
     pub fn watching_now(&self) -> Vec<(String, BackgroundKind, Option<String>)> {
         let mut out: Vec<(String, BackgroundKind, Option<String>)> = self
             .watched
@@ -832,13 +734,8 @@ impl JobWatchers {
     }
 
     /// The facts the activity line is made of, taken without waiting on a lock a watcher holds
-    /// - the invariant [`Hub::publish`] rests on. `pending`, `held` and `in_flight` are atomics
-    ///   and the watchers are one leaf lock over an `Arc` that is cloned and released, so nothing
-    ///   here can wait on a thread that is itself waiting.
-    ///
-    /// The four are separate instants, so the value is a moment and not a guarantee - safe only
-    /// because every move of these facts publishes afterwards: the settlement rings the worker
-    /// `hold`/`take_held` say the counts, and both watcher threads refresh the activity.
+    /// and the watchers are one leaf lock over an `Arc` that is cloned and released, so nothing
+    /// here can wait on a thread that is itself waiting.
     pub fn activity_facts(&self) -> ActivityFacts {
         ActivityFacts {
             pending: self.pending(),
@@ -849,45 +746,21 @@ impl JobWatchers {
     }
 
     /// The session at the top of this tree - the ROOT, which is where a subagent's ask belongs
-    /// a child has no head, and the one session in the tree that has one is the daemon's, inherited
-    /// through [`JobWatchers::shares_tree`].
-    ///
-    /// An exit is not a card, and this is not the ring: a settlement goes to the session that
-    /// started the work ([`JobWatchers::me`]), an ask goes to the session that can answer it.
+    /// a child has no head, and the one session in the tree that has one is the daemon's,
+    /// inherited through [`JobWatchers::shares_tree`].
     pub fn tree_root(&self) -> &str {
         &self.root
     }
 
-    /// Is this job's completion already on its way to the model? True while a watcher thread
-    /// is blocked on the job: that thread publishes the settlement and queues a [`JobCompletion`]
-    /// so from the moment the watcher exists the model is going to be told whether it asks or not
-    /// - which is why makes `job_wait` return instead of blocking.
-    ///
-    /// A settled job is deliberately `false`: the watcher has published and moved the job from
-    /// `watching` to `settled`, and `job_wait` then answers *had already finished* - nothing was
-    /// waited for, rather than *you are about to be told*. False too for a job this session was
-    /// never watching, and those waits keep blocking as they were asked to.
+    /// Is this job's completion already on its way to the model? True while a watcher thread is
+    /// blocked on the job:
     pub fn delivering(&self, job: &str) -> bool {
         self.watching.lock().expect("job watchers").contains(job)
     }
 
-    /// Stop every watcher this set has spawned, and hand up what this session will never
-    /// drain. Per set, and the set is per session - see [`JobWatchers::shares_tree`] for the
-    /// defect that came of sharing this across a tree.
-    ///
-    /// # Why this is not only a flag
-    ///
-    /// Setting the flag says *this session will not drain again*, and anything still in the queue
-    /// at that moment is a settlement no reader will ever reach: a job that settled between the
-    /// child's last round boundary and its turn ending, or a grandchild still working when its
-    /// parent finished.
-    ///
-    /// So the queue is emptied into the level above - one level at a time, never the root. The
-    /// completion keeps its `owner`, so the notice at the other end says whose it was.
-    ///
-    /// The hand-over and the push are ordered by one lock: a watcher pushes holding the
-    /// queue's lock and reads the flag there, and this drains holding the same lock after setting
-    /// the flag, so a settlement can neither be lost between the two nor be pushed past it.
+    /// Stop every watcher this set has spawned, and hand up what this session will never drain.
+    /// Per set, and the set is per session - see [`JobWatchers::shares_tree`] for the defect
+    /// that came of sharing this across a tree.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         let pending: Vec<JobCompletion> = {
@@ -930,13 +803,8 @@ impl JobWatchers {
         self.stop.load(Ordering::Relaxed)
     }
 
-    /// Watch one backgrounded thing. Idempotent: one already watched, or already settled, is left
-    /// alone.
-    ///
-    /// Which kind it is, is asked rather than inferred. The sink sees a `Backgrounded` outcome
-    /// and a handle and does not know which tool produced it, so the runner is asked once, with a
-    /// zero timeout, and `Unknown` sends the handle down the job path - no sniffing the handle's
-    /// shape, which would be a naming convention mistaken for a fact.
+    /// Watch one backgrounded thing. Idempotent: one already watched, or already settled, is
+    /// left alone. Which kind it is, is asked rather than inferred.
     pub fn watch(self: &Arc<Self>, job: String) {
         {
             let mut watching = self.watching.lock().expect("job watchers");
@@ -1020,11 +888,9 @@ impl JobWatchers {
     }
 }
 
-/// Where a watcher's settlement goes, and the one place that decides it.
-///
-/// Carried by the watcher thread rather than passed as six arguments, because the decision is
-/// not the watcher's: [`SettlementQueue::push`] queues on the session that started the thing
-/// or one level up when that session has already stopped.
+/// Where a watcher's settlement goes, and the one place that decides it. Carried by the
+/// watcher thread rather than passed as six arguments, because the decision is not the
+/// watcher's:
 struct SettlementQueue {
     /// The queue of the session that started it.
     own: Arc<Settlements>,
@@ -1046,11 +912,8 @@ struct SettlementQueue {
 }
 
 impl SettlementQueue {
-    /// Queue one settlement where its session can still be told, and ring.
-    ///
-    /// The `stopped` read is inside the `own` lock on purpose: otherwise a settlement can be
-    /// pushed into an owner's queue in the instant between its last drain and the flag being
-    /// set - the settlement-nobody-reads this mechanism exists to avoid.
+    /// Queue one settlement where its session can still be told, and ring. The `stopped` read
+    /// is inside the `own` lock on purpose:
     fn push(&self, c: JobCompletion) {
         // The record goes down where the settlement is first known, not where it is read
         // a job's fate does not depend on which session's queue it lands in, and writing after
@@ -1084,14 +947,7 @@ impl SettlementQueue {
 }
 
 /// The one thing a settlement needs to leave a record of itself - a path and a session id.
-///
-/// Not a `Store`: the harness's handle lives on another thread, so the watcher opens the store
-/// by path on first write and keeps it - and `Store::open` answers the process's one connection
-/// so this costs the store's lock and not a descriptor.
-///
-/// A failure here kills nothing, and it is SAID. The notice is what a run depends on, the
-/// row is only the history - but the row is what a restart's `due_todo_rows` reads to decide
-/// whether a `when: job` row is due, so a silent miss is a condition that silently never fires.
+/// Not a `Store`:
 #[derive(Clone)]
 pub struct JobRecorder {
     path: std::path::PathBuf,
@@ -1233,9 +1089,8 @@ impl JobRecorder {
     }
 
     /// And this job's PROCESS, which outlives the record above - the supervisor's row. Written
-    /// here because this is where the live view still exists: command, name, directory, pid, scope.
-    /// The identity is what a restarted daemon compares against - `start:<n>` on this box
-    /// `cmd:<the command>` on a host, which is the marker [`crate::supervise::SshProbe`] greps for.
+    /// here because this is where the live view still exists: command, name, directory, pid,
+    /// scope.
     pub(crate) fn process(&self, view: &letibot_tools::exec::JobView) {
         // A job of jobs has no process to write down. Its `pid` is 0 and its branches are
         // records of their own, so a `process` row would name a pid nothing can be. The `job` row
@@ -1304,14 +1159,9 @@ impl JobRecorder {
         });
     }
 
-    /// Write one settlement's row.
-    ///
-    /// `running` is never written here - the row it updates is [`JobRecorder::start`]'s. `how` is
-    /// empty on purpose: it is a property of the start, and an empty field is *not recorded
-    /// here*, so the row keeps what the start said.
-    ///
-    /// `redirect` IS computed here, out of the command this side is the last to see - the path
-    /// a reader needs precisely when the window is empty by construction.
+    /// Write one settlement's row. `running` is never written here - the row it updates is
+    /// [`JobRecorder::start`]'s. `how` is empty on purpose: it is a property of the start, and
+    /// an empty field is *not recorded here*, so the row keeps what the start said.
     pub(crate) fn record(&self, c: &JobCompletion) {
         // A subagent settles through this same queue and is not a job. `task`'s handle is a
         // session id, and a row here would put a child in the jobs pane.
@@ -1355,12 +1205,8 @@ impl JobRecorder {
 }
 
 /// A settlement's word back into the process states - one place, because the settlement's
-/// vocabulary and the record's are two, and two spellings of the translation would make a `done`
-/// in one reader and a `stopped` in the other.
-///
-/// `exited N` is `done` with N. A signal, a kill and its deadline are all `stopped`: something
-/// ended it on purpose. `dead` is for a word that says nothing ended it - a job that was gone
-/// when it was looked for.
+/// vocabulary and the record's are two, and two spellings of the translation would make a
+/// `done` in one reader and a `stopped` in the other. `exited N` is `done` with N.
 fn fate_of(word: &str) -> (letibot_tokencore::store::ProcState, Option<i32>) {
     use letibot_tokencore::store::ProcState;
     if let Some(code) = word.strip_prefix("exited ") {
@@ -1439,11 +1285,8 @@ fn watch_one(
                     arrived: SystemTime::now(),
                 });
                 settled.lock().expect("job watchers").insert(job.clone());
-                // And what the session is waiting on has moved: the job is still in
-                // `watching` but its ending is on the queue now, which is `Delivery`. Refreshed
-                // here rather than by the `JobSettled` above, which was published BEFORE the
-                // completion was queued - a reader between the two would draw a session with
-                // work left in it as done.
+                // And what the session is waiting on has moved: the job is still in `watching` but its
+                // ending is on the queue now, which is `Delivery`.
                 hub.refresh_activity();
                 break;
             }
@@ -1473,18 +1316,8 @@ fn watch_one(
 }
 
 /// The same settlement, waited on the way a subagent settles. `watch_one`'s shape is kept
-/// exactly - a chunked wait whose chunk is the shutdown re-check, a queue push, a bell - and only
-/// what is being waited on changes: `TaskRunner::collect` is a condvar wait inside the child's
-/// own slot, so an answer unblocks it at once.
-///
-/// No `JobSettled` is published here, deliberately: the thread that ran the child already
-/// published [`SessionEvent::Subagent`] with the same state word, and a second event for one
-/// settlement would be duplication that drifts.
-///
-/// No `stop` here as a BREAK, and that is still the point: a subagent is not a process, so
-/// there is no cgroup to release. Its liveness test is the `hub` upgrade below, so a grandchild
-/// that outlives its parent's turn is still waited on - while the owner's `stop` flag reaches the
-/// queue this thread pushes to, where it decides where the settlement goes.
+/// exactly - a chunked wait whose chunk is the shutdown re-check, a queue push, a bell -
+/// and only what is being waited on changes:
 fn watch_task(
     runner: Arc<dyn TaskRunner>,
     hub: Weak<Hub>,
@@ -1520,13 +1353,8 @@ fn watch_task(
                 }
                 break;
             }
-            // Still working, or a handle this runner never minted.
-            //
-            // `Unknown` ends the wait and `Running` does not end on `stop`: a subagent needs
-            // no host and holds no cgroup, so `stop` here killed a CHILD's watcher for its own
-            // grandchild - `close_backend` runs at the end of the child's turn, while the
-            // grandchild is still working. `Unknown` is a name nobody owns, and nothing will ever
-            // settle it.
+            // Still working, or a handle this runner never minted. `Unknown` ends the wait and
+            // `Running` does not end on `stop`:
             TaskStatus::Running { .. } => {}
             TaskStatus::Unknown => break,
         }
@@ -1581,9 +1409,6 @@ fn settled_here(
 
 /// The first line of what a subagent said, for a one-line notice. The whole of it is in
 /// `task_result`, which the notice names.
-///
-/// `pub(crate)` because [`crate::harness::Harness::deliver_settlements_left_undelivered`] writes
-/// a child's notice too: two spellings of "the first line" would be two notices for one fact.
 pub(crate) fn first_line(text: &str) -> String {
     let l = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     if l.chars().count() <= 160 {
@@ -1592,11 +1417,9 @@ pub(crate) fn first_line(text: &str) -> String {
     format!("{}…", l.trim().chars().take(160).collect::<String>())
 }
 
-/// A [`ToolEventSink`] that starts a watcher for every job a call leaves behind.
-///
-/// A decorator for the same reason the intent encoder's sink is one: wiring it is one line at the
-/// call site, and forgetting it is visible rather than silent. It adds nothing to what heads see
-/// - the start is already on the wire - it only tells the watcher the job now exists.
+/// A [`ToolEventSink`] that starts a watcher for every job a call leaves behind. A
+/// decorator for the same reason the intent encoder's sink is one: wiring it is one line at
+/// the call site, and forgetting it is visible rather than silent.
 pub struct JobWatchSink<S> {
     inner: S,
     watch: Option<Arc<JobWatchers>>,

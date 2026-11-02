@@ -1,20 +1,10 @@
 //! A nag turn arms the clock that closes out a call nothing answered - the third door.
-//!
-//! `idle_clock.rs` is this file's sibling and carries the argument: a turn dispatches tool calls, a
-//! call whose executor vanished is closed out only by `Sessions::sweep_abandoned_calls`, and the
-//! sweep runs only when the worker's wait has a deadline - so every door that runs a turn on the
-//! worker must arm it. The command arm always did, and the wake arm was fixed after a nine-hour
-//! silence. The third door is the idle plan-check, `Sessions::deliver_due_nags`, and it is the worst
-//! placed of the three: it runs on the idle arm immediately AFTER the sweep spent `sweep_at`, so a
-//! call a nag turn stranded had no clock looking at it at all.
-//!
-//! `after_turn` re-arms the plan-check on every door, so `next_nag_at` answers `Some` after a nag
-//! turn whether or not the sweep was armed - asserting that would pass on the defect. The question
-//! is about ONE clock, so the test reads that one: `Sessions::sweep_due_at`.
-//!
-//! It needs the vocabulary GGUF and not a model: the endpoint is a stub answering HTTP 400, which
-//! fails the nag's turn at once (a refused port is classed `Io` and retried with doubling waits). The
-//! property is the ARMING, which happens whether or not the turn succeeds.
+//! `idle_clock.rs` is this file's sibling and carries the argument: a turn dispatches tool
+//! calls, a call whose executor vanished is closed out only by
+//! `Sessions::sweep_abandoned_calls`, and the sweep runs only when the worker's wait has a
+//! deadline - so every door that runs a turn on the worker must arm it. The command arm
+//! always did, and the wake arm was fixed after a nine-hour silence. The third door is the
+//! idle plan-check, `Sessions::deliver_due_nags`, and it is the worst placed of the three:
 
 use std::time::Duration;
 

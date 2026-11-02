@@ -1,17 +1,11 @@
-//! Compaction against the live server: the numbers the claim rests on, measured on the box with the
-//! model it actually serves.
-//!
-//! 1. The summary turn is carried, not re-prefilled. `cached_tokens` against `reusable` on the
-//!    summary turn is the measured cache hit - the whole point of the cached strategy.
-//! 2. The summary carries the facts. Numbers given before the compaction are asked for after
-//!    it; a summary that lost them would be a base that looks small and answers wrong.
-//! 3. The first turn on the fork pays the cold prefill `docs/compaction.md` §3 says is
-//!    unavoidable - disclosed as a number, not denied.
-//!
-//! Never start a second model server to make a test pass: the servers on this box evict each
-//! other. This test uses the GLM dialect and vocabulary, which the running server already holds.
-//! The serving preflight (`letibot-turn`'s `serving.rs`) is the gate: against any other model it
-//! refuses by name before a token is sent.
+//! Compaction against the live server: the numbers the claim rests on, measured on the box
+//! with the model it actually serves. 1. The summary turn is carried, not re-prefilled.
+//! `cached_tokens` against `reusable` on the summary turn is the measured cache hit - the
+//! whole point of the cached strategy. 2. The summary carries the facts. Numbers given
+//! before the compaction are asked for after it; a summary that lost them would be a base
+//! that looks small and answers wrong. 3. The first turn on the fork pays the cold prefill
+//! `docs/compaction.md` §3 says is unavoidable - disclosed as a number, not denied. Never
+//! start a second model server to make a test pass:
 
 use std::sync::OnceLock;
 
@@ -33,12 +27,8 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg
 }
 
-/// Is the box actually serving the model this test renders for?
-///
-/// A vocabulary on disk is not a model on the endpoint: with a qwen server on the port while this
-/// test renders GLM token ids, the failure names the other server's window and nothing about
-/// compaction - a parked mystery instead of a skip. So the claim is enforced rather than asserted
-/// refuse by name, in seconds, and say `THIS IS NOT A PASS` so a skip is never read as a green.
+/// Is the box actually serving the model this test renders for? A vocabulary on disk is not
+/// a model on the endpoint:
 fn glm_is_served() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {
@@ -72,10 +62,6 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     // THE APPARATUS FIRST, and this ordering is a fix rather than a style. A test's guards go
     // in the order the reasons do: what the machine must HAVE, then what must be RUNNING - a
     // vocabulary assert that fires first reports absent apparatus as a failed assertion.
-    //
-    // And it checks the file the CONFIG will actually use - `LETIBOT_VOCAB_GGUF`, else `GLM_GGUF` -
-    // rather than the constant alone, because a guard that resolves a different path from the thing
-    // it guards can be true while the test still cannot run.
     let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path());
@@ -116,10 +102,8 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
 
     let before = h.ledger_len();
     let report = h.compact().expect("the compaction");
-    // EVERY ROW THE SUMMARY TURN ANNOUNCED CARRIES ITS BODY. The instruction and the answer are
-    // appended to this session through a capturing sink, which announces them; `reconcile` is what
-    // hands the hub their bodies, and nothing called it - so the two rows sat in the daemon's own
-    // view as `item: None` and every snapshot served them that way, `/resync` included.
+    // EVERY ROW THE SUMMARY TURN ANNOUNCED CARRIES ITS BODY. The instruction and the answer
+    // are appended to this session through a capturing sink, which announces them;
     let snap = hub.snapshot();
     let unfilled: Vec<&str> = snap
         .items
@@ -145,10 +129,9 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
         sum.generated_tokens,
         sum.summary.len()
     );
-    // The structural claim: there WAS a previous request to carry, and the server
-    // said it carried it. `reusable` is ours (the prefix invariant proves the
-    // prompts identical over the span); `cached_tokens` is the server's word, and
-    // a zero here is the flatten failure this design exists to prevent.
+    // The structural claim: there WAS a previous request to carry, and the server said it
+    // carried it. `reusable` is ours (the prefix invariant proves the prompts identical over
+    // the span);
     assert!(sum.reusable > 0, "nothing to carry after two turns");
     assert!(
         sum.cached_tokens > 0,

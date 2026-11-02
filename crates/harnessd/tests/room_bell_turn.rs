@@ -1,13 +1,11 @@
 //! Rule 4 - a bell must be able to inject a turn, proved on a live session rather than
-//! assumed from the wiring.
-//!
-//! `crates/room/tests/bell.rs` proves what a CLIENT hears on the socket; what is asserted here is
-//! the hop after it: a frame that arrived on a socket, in a session nobody typed into, becomes a
-//! TURN. The second test is the other half of *verified per client* - the two clients with no room
-//! connection say so in their manifest and in `docs/room.md`'s table.
-//!
-//! A `Harness` renders its stable prefix at open, so the vocabulary GGUF is needed and the run is
-//! gated on it; no model and no key are, because the turn is answered by the canned server.
+//! assumed from the wiring. `crates/room/tests/bell.rs` proves what a CLIENT hears on the
+//! socket; what is asserted here is the hop after it: a frame that arrived on a socket, in
+//! a session nobody typed into, becomes a TURN. The second test is the other half of
+//! *verified per client* - the two clients with no room connection say so in their manifest
+//! and in `docs/room.md`'s table. A `Harness` renders its stable prefix at open, so the
+//! vocabulary GGUF is needed and the run is gated on it; no model and no key are, because
+//! the turn is answered by the canned server.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -101,11 +99,9 @@ fn answers(hub: &Hub) -> Vec<String> {
         .collect()
 }
 
-/// Take every wake already queued, so the next one is the one the test made.
-///
-/// Bounded by a count rather than by the clock: the link rings for events this session caused, and
-/// a wait for a quiet bell would measure the box's speed. It runs BEFORE the event under test, so
-/// it cannot swallow the wake the assertion is about.
+/// Take every wake already queued, so the next one is the one the test made. Bounded by a
+/// count rather than by the clock: the link rings for events this session caused, and a
+/// wait for a quiet bell would measure the box's speed.
 fn drain_the_bell(registry: &Registry) {
     for _ in 0..64 {
         match registry.next_work_until(Some(Instant::now())) {
@@ -159,13 +155,9 @@ fn wait_for_sentences(session: &str, at_least: usize) {
 // Rule 4, on a live session
 // ---------------------------------------------------------------------------
 
-/// A room event starts a turn in a session nobody typed into.
-///
-/// A real `Harness` opened the way a daemon opens one, with a canned model behind it; another
-/// session's `post` is the bell. Asserted in the order the chain runs: the sentence reached the
-/// session's queue, the session was RUNG (`Work::Woken`), `Harness::wake` - the door the worker
-/// calls - returned a `Reply`, the sentence is in the transcript as `Speaker::Agent` so a head does
-/// not draw it as the operator's words, and the assistant answered.
+/// A room event starts a turn in a session nobody typed into. A real `Harness` opened the
+/// way a daemon opens one, with a canned model behind it; another session's `post` is the
+/// bell. Asserted in the order the chain runs:
 #[test]
 fn a_room_event_starts_a_turn_in_a_session_nobody_typed_into() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -329,13 +321,9 @@ fn a_room_event_starts_a_turn_in_a_session_nobody_typed_into() {
 // Rule 4, for the clients that cannot hear one
 // ---------------------------------------------------------------------------
 
-/// The two clients with no room connection say so in their manifest, and the table says so in
-/// words.
-///
-/// The head (`letibot-tui`) and the bridge (`letibot-bridge`) are clients of the DAEMON, not of the
-/// room: a room event reaches them only by having started a turn in the session they watch. That
-/// absence is a design decision, asserted so a dependency quietly added fails here and names the
-/// table that has to be rewritten with it.
+/// The two clients with no room connection say so in their manifest, and the table says so
+/// in words. The head (`letibot-tui`) and the bridge (`letibot-bridge`) are clients of the
+/// DAEMON, not of the room:
 #[test]
 fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

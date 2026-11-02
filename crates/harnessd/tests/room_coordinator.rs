@@ -1,20 +1,11 @@
 //! The arbiter can rule - a `--room` coordinator's own session, opened for real, with the
-//! `room` tool on its seat and a raised item reaching a ruling through it.
-//!
-//! The defect this file exists for: `configure` seats `Seat::Orchestrator`, `base_role_for_seat`
-//! resolves that to `roles::m1_orchestrator`, and `Registry::resolve_role` keeps only the
-//! tools a role names. The `room` tool was named by `roles::orchestrator` - §8.4's table, which
-//! nothing seats - so the coordinator's own registry had no `room` in it. The tie-breaker was
-//! woken, told to *"answer with the `room` tool: verb `rule`"*, and had no such tool: a raised item
-//! stayed frozen for ever. `coordinator.rs`'s own test used raw clients, so it proved the
-//! lease, the socket, the server and the ruling, and never asked what tools the session that does
-//! the ruling actually has.
-//!
-//! Nothing on the box: the byte vocabulary and no provider, so no GGUF, no model server and no key.
-//! No turn is ever run - the question is raised by two raw clients and answered by one tool call.
-//!
-//! `LETIBOT_ROOM_SOCKET` is process-wide, so this file holds one test: the socket, the lease
-//! and the coordinator's workspace all live in a directory the test owns.
+//! `room` tool on its seat and a raised item reaching a ruling through it. The defect this
+//! file exists for: `configure` seats `Seat::Orchestrator`, `base_role_for_seat` resolves
+//! that to `roles::m1_orchestrator`, and `Registry::resolve_role` keeps only the tools a
+//! role names. The `room` tool was named by `roles::orchestrator` - §8.4's table, which
+//! nothing seats - so the coordinator's own registry had no `room` in it. The tie-breaker
+//! was woken, told to *"answer with the `room` tool: verb `rule`"*, and had no such tool: a
+//! raised item stayed frozen for ever.
 
 use std::sync::Arc;
 
@@ -68,10 +59,9 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
         cfg.room_link,
         "and that session must be able to join the room: it is the arbiter"
     );
-    // And it may NOT restart the room it serves. The pane's restart asks a supervisor, and this
-    // daemon IS the process a restart would kill: a control that stops its own feed mid-act could
-    // not say what happened. Set here rather than inherited, so a fixture that calls `configure` on
-    // a `for_this_box` config measures the coordinator and not the constructor.
+    // And it may NOT restart the room it serves. The pane's restart asks a supervisor, and
+    // this daemon IS the process a restart would kill: a control that stops its own feed
+    // mid-act could not say what happened.
     assert!(
         !cfg.restart_room,
         "the room's own daemon is never given a restart supervisor"
@@ -144,9 +134,7 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
 
     // The arbiter is WOKEN before it is asked to rule. Two things put a line in front of it
     // the link's reader thread, which turns the `Raised` event into a sentence, and the
-    // tie-breaker's own thread, which pushes the prompt naming the verb and rings. The queue is
-    // process-wide and `take` empties it, so this drains it until the PROMPT is in hand rather than
-    // assuming which arrived first. A question nobody is woken for is a question nobody answers.
+    // tie-breaker's own thread, which pushes the prompt naming the verb and rings.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut prompted: Vec<String> = Vec::new();
     while std::time::Instant::now() < deadline {

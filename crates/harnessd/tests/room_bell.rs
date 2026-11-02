@@ -1,17 +1,10 @@
-//! The bell, per client - the two halves that are the client's own act: a note read at the round
-//! boundary a running turn actually reaches (*listen before you work*), and a claim that says what it
-//! is doing before it does it (*acknowledge before you act*).
-//!
-//! The first test would fail without the room among `HubSteering::try_next`'s arms: a room event
-//! became a sentence read by `Harness::wake`, a door that only opens BETWEEN turns, so a message
-//! posted while a session was mid-turn reached it after the work it would have changed. The second
-//! would fail on a `claim` that sent one frame and returned: a claim with no word on it is
-//! indistinguishable, from the queue, from a session that took the item and died. That word lands in
-//! `Claim::said` and NOT in `Claim::waits_on` - the field a reminder reads to decide the holder still
-//! has to act - so an acknowledgement written there makes every claim quiet.
-//!
-//! Both are claims about the DAEMON's client (`SessionRoom`) rather than about the wire, which only
-//! carries the frames: `crates/room/tests/bell.rs` is the socket's own half of the rules.
+//! The bell, per client - the two halves that are the client's own act: a note read at the
+//! round boundary a running turn actually reaches (*listen before you work*), and a claim
+//! that says what it is doing before it does it (*acknowledge before you act*). The first
+//! test would fail without the room among `HubSteering::try_next`'s arms: a room event
+//! became a sentence read by `Harness::wake`, a door that only opens BETWEEN turns, so a
+//! message posted while a session was mid-turn reached it after the work it would have
+//! changed. The second would fail on a `claim` that sent one frame and returned:
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,12 +18,9 @@ use letibot_room::{Request, Response, Room, Speaker, State};
 use letibot_sessionlog::hub::Hub;
 use letibot_turn::steering::SteeringSource;
 
-/// Rule 1 - listen before working. A sentence pushed while a turn is running comes out of the
-/// steering source at the next round boundary, and it comes out ONCE.
-///
-/// The push is what the room's reader thread does, so this is the same queue the real path fills. The
-/// engine is the poller (it asks its `SteeringSource` before every round); what this test owns is the
-/// one thing that was missing - that a room note is among the answers at all.
+/// Rule 1 - listen before working. A sentence pushed while a turn is running comes out of
+/// the steering source at the next round boundary, and it comes out ONCE. The push is what
+/// the room's reader thread does, so this is the same queue the real path fills.
 #[test]
 fn a_room_note_posted_mid_turn_is_read_at_the_next_round_boundary() {
     let me = "s-mid-turn";
@@ -102,13 +92,9 @@ impl Drop for Scratch {
     }
 }
 
-/// Rule 3 - acknowledge before acting. The claim and the word *seen, doing X* are on the room by
-/// the time `claim` returns, so nothing a model does next can be the first thing the queue hears.
-///
-/// What the test measures is the ORDER the rule is about: the observer reads the room immediately
-/// after the claimant's call returns and before the claimant has done anything else, and finds both
-/// the claim and the sentence. A client that had to remember a second call would leave the window
-/// this rule exists to close.
+/// Rule 3 - acknowledge before acting. The claim and the word *seen, doing X* are on the
+/// room by the time `claim` returns, so nothing a model does next can be the first thing
+/// the queue hears. What the test measures is the ORDER the rule is about:
 #[test]
 fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
     let scratch = Scratch::new("ack");
@@ -181,9 +167,7 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
     };
     assert_eq!(claim.by, "s-worker", "and by the session that claimed it");
     // `said`, not `waits_on` - the two are opposite facts and the room keeps them apart. The
-    // acknowledgement is what the holder is DOING; `waits_on` is what it waits on, and it is the field
-    // a reminder reads to decide the holder still has to act, so an acknowledgement recorded there
-    // silences every reminder there is.
+    // acknowledgement is what the holder is DOING;
     let said = claim
         .said
         .as_ref()
@@ -237,13 +221,8 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
 }
 
 /// Rule 2 at the daemon's door - a reconnect is told what it missed, in words, once.
-///
-/// `crates/room/tests/bell.rs` proves the room COUNTS a gap and hands the count over with the
-/// `Welcome`. The count is not the rule; the rule is that the client does something with it, and the
-/// something is `SessionRoom::note_gap`: one sentence pushed into the session's queue, one ring of
-/// its bell, and the sentence names the reads that cannot be wrong. Without this test the daemon half
-/// was a claim about a private method - a `take_missed` nobody called, or a sentence composed and
-/// never rung, would both have passed everything else in the tree.
+/// `crates/room/tests/bell.rs` proves the room COUNTS a gap and hands the count over with
+/// the `Welcome`. The count is not the rule;
 #[test]
 fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
     let scratch = Scratch::new("gap-line");
@@ -274,9 +253,7 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
         )
         .expect("a post");
     // Its own post is news to it, and the queue is process-wide: take it now, or the gap's
-    // sentence below is asserted against a list that already had something in it. Waited for rather
-    // than taken at once - the reply to a `post` returns when the SERVER has answered, and the
-    // sentence is composed on this side's reader thread a moment later.
+    // sentence below is asserted against a list that already had something in it.
     wait_until("the poster to be told what it made", || {
         wake::waiting(session) >= 1
     });
@@ -349,16 +326,8 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
     drop(back);
 }
 
-/// A turn ending rings nothing; a message under the tag does.
-///
-/// A child's completion is not a firing. On this side of the room a subagent finishing IS a turn
-/// ending - the child's session was never a room member, and `SessionRoom::turn_ended` stops the beat
-/// and nothing else. So nothing is rung, the claim it held is still held, and a client queued behind
-/// it is not woken to say so. What IS a bell is a message arriving under the tag.
-///
-/// The natural wrong implementation - an `abandon` on the turn's end, *"the work stopped, so give the
-/// item back"* - is plausible, is what a session that crashed gets, and would make every completion
-/// an event.
+/// A turn ending rings nothing; a message under the tag does. A child's completion is not a
+/// firing.
 #[test]
 fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
     let scratch = Scratch::new("r57");

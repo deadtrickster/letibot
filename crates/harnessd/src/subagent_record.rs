@@ -1,31 +1,11 @@
-//! Subagents survive a daemon restart: recorded when started, brought back when the parent is
-//! opened again - the operator: *"we should record them (session persist anyway) and restart
-//! automatically"*. Before this a child was a thread of the daemon that started it, so a restart
-//! to pick up a new build lost every running one.
-//!
-//! # What is recorded, and where
-//!
-//! One `subagent_run` row per child (`letibot_tokencore::store::subagents`, schema 26), written by
-//! `HarnessTaskRunner::start` before the child's thread exists: the child's id, the parent's, the
-//! subtask verbatim, the spawn's own description ([`RecordedSpec`]) and the instance that owns it.
-//! The row moves when the child's FIRST turn settles ([`SubagentRecord::settled`]).
-//!
-//! # Which endings leave a child to be resumed
-//!
-//! * A crash or a kill -9 writes nothing: resumed.
-//! * An orderly shutdown stops every child, and that is the daemon's ending, not the child's
-//!   the row stays `running` and its crash count resets ([`SubagentRecord::settled`]) - resumed.
-//! * An operator's or a parent's stop writes `killed`: never resumed.
-//! * A real answer or a real failure writes `done`/`failed`; if the parent was never handed it
-//!   (`delivered`), it is handed over on the next open and nothing is respawned.
-//!
-//! # How a child comes back
-//!
-//! When a parent session is opened, `Harness::resume_subagents` asks its runner for the records
-//! ([`decide`] is the rule) and spawns the same thread `task_start` would have, with the same spec
-//! under the SAME id: the session and transcript resume and the turn continues with
-//! [`child_notice`]. Slot, watcher, journal and the parent's `SessionEvent::Subagent` rows are a
-//! fresh child's, so `task_result`, the pane and the delivery track it as before.
+//! Subagents survive a daemon restart: recorded when started, brought back when the parent
+//! is opened again - the operator: *"we should record them (session persist anyway) and
+//! restart automatically"*. Before this a child was a thread of the daemon that started it,
+//! so a restart to pick up a new build lost every running one. # What is recorded, and
+//! where One `subagent_run` row per child (`letibot_tokencore::store::subagents`, schema
+//! 26), written by `HarnessTaskRunner::start` before the child's thread exists: the child's
+//! id, the parent's, the subtask verbatim, the spawn's own description ([`RecordedSpec`])
+//! and the instance that owns it.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -44,9 +24,8 @@ use serde::{Deserialize, Serialize};
 pub const RESUME_LIMIT: u32 = 3;
 
 /// The spawn's own description, as it is written down - every field of [`TaskSpec`], so a
-/// resumed child is spawned with exactly the configuration it started with. A struct of its own
-/// rather than a `Serialize` on `TaskSpec`: the record is a file format, and a field added to the
-/// spec must be added here on purpose rather than appear in the store under the struct's own name.
+/// resumed child is spawned with exactly the configuration it started with. A struct of its
+/// own rather than a `Serialize` on `TaskSpec`:
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordedSpec {
     pub role: String,
@@ -88,10 +67,8 @@ pub fn is_helper(run: &SubagentRun) -> bool {
 }
 
 /// Every recorded child's name, unique among its parent's children, in the store's order. A
-/// name the record CARRIES is kept - it was made unique when the child was spawned. A name DERIVED
-/// for an older record is made unique the way a fresh spawn's is (`-2`, `-3`, …): pg-noop's twelve
-/// part readers all derived `you-are-reading-part`, and a name twelve children answer to names
-/// none.
+/// name the record CARRIES is kept - it was made unique when the child was spawned. A name
+/// DERIVED for an older record is made unique the way a fresh spawn's is (`-2`, `-3`, …):
 pub fn recorded_slugs(runs: &[SubagentRun]) -> Vec<String> {
     let carried: Vec<Option<String>> = runs
         .iter()
@@ -230,10 +207,6 @@ pub struct SubagentRecord {
     /// person's.
     pub registry: Arc<Registry>,
     /// The row its spawn could not write, kept so that the child's own acts can write it later.
-    ///
-    /// A spawn is not refused over a busy store, so a `put_subagent_run` that came back `database
-    /// is locked` used to be printed and dropped - leaving a child nothing could list, answer for
-    /// or resume. It is written at the child's first act that touches it.
     pub pending: Option<SubagentRun>,
 }
 
@@ -260,9 +233,8 @@ impl SubagentRecord {
         }
     }
 
-    /// The child's first turn settled - or was stopped. `killed` is the slot's own flag.
-    ///
-    /// The one judgement here is the shutdown: once the daemon has begun to stop, whatever ends the
+    /// The child's first turn settled - or was stopped. `killed` is the slot's own flag. The
+    /// one judgement here is the shutdown: once the daemon has begun to stop, whatever ends the
     /// child's turn is the daemon's ending and not the child's.
     pub fn settled(&self, status: &TaskStatus, killed: bool) {
         self.ensure_written();
@@ -300,11 +272,8 @@ impl SubagentRecord {
     }
 
     /// A later turn of this child begins - a parent's `task_message`, a later prompt, a wake.
-    /// The row goes back to `running` for the length of the turn, so a daemon that stops mid-turn
-    /// leaves a child the next one resumes; the answer is the state to put back when it ends.
-    ///
-    /// pg-noop, 2026-10-14: `slt-current-number` was woken at 02:01 and mid-turn when the daemon
-    /// restarted at 02:06 - its row still said `done`, so the next daemon left it.
+    /// The row goes back to `running` for the length of the turn, so a daemon that stops
+    /// mid-turn leaves a child the next one resumes;
     pub fn later_turn_began(&self) -> Option<String> {
         self.ensure_written();
         match self.store.with(|s| {
@@ -474,9 +443,8 @@ pub fn decide(
 }
 
 /// Whether a VM child's work outlives its VM - it worked in its worktree MOUNTED, not on a
-/// copy (`letibot_tools::firecode::mounts`: a git worktree, on a Mac), so its edits are on the host
-/// and a fresh VM on the same worktree is the tree its conversation is about. A child whose caller
-/// named a tree to copy (`vm_source`) worked on a copy, as does every VM child off a Mac.
+/// copy (`letibot_tools::firecode::mounts`: a git worktree, on a Mac), so its edits are on
+/// the host and a fresh VM on the same worktree is the tree its conversation is about.
 fn vm_work_survives(spec: &TaskSpec) -> bool {
     spec.vm_source.is_none()
         && spec
@@ -536,13 +504,9 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
     }
 }
 
-/// Why the store holds no row for a child, in the words a model is given - and the two classes
-/// are the point of the window: one is a write that went missing, the other a store that was not
-/// writing yet, and only one of them went wrong.
-///
-/// MEASURED 2026-11-01: one session had 517 children older than its first `subagent_run` row, and
-/// every one of them was told *"the store refused the row its spawn writes"* - a cause nobody
-/// measured.
+/// Why the store holds no row for a child, in the words a model is given - and the two
+/// classes are the point of the window: one is a write that went missing, the other a store
+/// that was not writing yet, and only one of them went wrong. MEASURED 2026-11-01:
 pub fn no_record_cause(why: letibot_tokencore::store::NoRecord) -> &'static str {
     use letibot_tokencore::store::NoRecord;
     match why {
@@ -551,14 +515,8 @@ pub fn no_record_cause(why: letibot_tokencore::store::NoRecord) -> &'static str 
     }
 }
 
-/// What a child with NO record reads as - the second witness, and the answer that used to be
-/// *nothing at all*. Its `subagent_run` row was never written (a store that refused it), so its
-/// session row - a different write, made by the child when it opens - is all a reader has.
-///
-/// Two readings, and the difference is the child's last row: an `Assistant` with no call after
-/// it is a finished turn, so its text IS the answer (`Done`, exactly as a recorded child's)
-/// anything else is a turn that was still going when the rows stopped, and the sentence says so
-/// rather than inventing an answer.
+/// What a child with NO record reads as - the second witness, and the answer that used to
+/// be *nothing at all*.
 pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild) -> TaskStatus {
     let id = &child.id;
     if let Some(text) = its_answer(child.last_item.as_ref()) {
@@ -603,10 +561,8 @@ fn its_answer(last: Option<&TranscriptItem>) -> Option<&str> {
 }
 
 /// How a child with no record got on, as a value - one judgement with two renderings: the
-/// single-handle door writes a paragraph and can afford to be exact ([`Self::said`]), a list row
-/// gets a few words ([`Self::brief`]). MEASURED 2026-11-01: the list said *gone with no answer*
-/// about every child that did not end on an answer, so a parent could not tell a child that died
-/// mid-`bash` from one that never opened a session.
+/// single-handle door writes a paragraph and can afford to be exact ([`Self::said`]), a
+/// list row gets a few words ([`Self::brief`]). MEASURED 2026-11-01:
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndedIn {
     /// It wrote no row of its own at all.
@@ -681,9 +637,8 @@ impl EndedIn {
 }
 
 /// How far a child with no record got, as the two doors carry it - one function rather than
-/// two matches, because *did it answer?* is the whole difference between the two readings and two
-/// copies of it would drift: the child the single-handle door returns as an answer must be the
-/// child the list calls *answered*.
+/// two matches, because *did it answer?* is the whole difference between the two readings
+/// and two copies of it would drift:
 pub fn how_far(
     child: &letibot_tokencore::store::UnrecordedChild,
 ) -> letibot_tools::builtins::task::LostChild {
@@ -695,11 +650,9 @@ pub fn how_far(
     }
 }
 
-/// Whether `task_resume` may bring this child back - the explicit, one-call door (the operator
-/// *"this is what you wre running and how to restart that"*). `Ok` is its spec.
-///
-/// Refused by name: a child that finished, one a person or a parent stopped, one that is live in
-/// this daemon, one whose worktree is gone, and a VM child that worked on a copy.
+/// Whether `task_resume` may bring this child back - the explicit, one-call door (the
+/// operator *"this is what you wre running and how to restart that"*). `Ok` is its spec.
+/// Refused by name:
 pub fn resumable(
     run: &SubagentRun,
     instance: &str,
@@ -868,10 +821,9 @@ mod tests {
 
     const NEW: &str = "new";
 
-    /// A spawn whose row the store refused still leaves a record when the child settles.
-    ///
-    /// A `database is locked` at the spawn used to print and be dropped, leaving the child with no
-    /// record at all; the row is kept on the record ([`SubagentRecord::pending`]) and written here.
+    /// A spawn whose row the store refused still leaves a record when the child settles. A
+    /// `database is locked` at the spawn used to print and be dropped, leaving the child with
+    /// no record at all;
     #[test]
     fn a_row_the_spawn_could_not_write_is_written_when_the_child_settles() {
         let path = std::env::temp_dir().join(format!(
@@ -1164,10 +1116,9 @@ mod tests {
         ));
     }
 
-    /// A VM child that worked in its worktree MOUNTED comes back; one that worked on a copy does
-    /// not - a Mac VM child given a worktree works in it directly (`firecode::mounts`), so its
-    /// edits survive the restart. Through both doors. A caller-named tree (`vm_source`) is a copy
-    /// even with a worktree, and off a Mac nothing mounts.
+    /// A VM child that worked in its worktree MOUNTED comes back; one that worked on a copy
+    /// does not - a Mac VM child given a worktree works in it directly (`firecode::mounts`), so
+    /// its edits survive the restart. Through both doors.
     #[test]
     fn a_vm_child_in_its_mounted_worktree_is_resumed_and_one_on_a_copy_is_not() {
         let base = std::env::temp_dir().join(format!("letibot-vm-resume-{}", std::process::id()));
@@ -1261,11 +1212,8 @@ mod tests {
     }
 
     /// A child with no record reads two ways, and the difference is its last row - an answer is
-    /// returned as an answer, and anything else is said to be gone rather than dressed up as one.
-    ///
-    /// The state is not hypothetical: a `put_subagent_run` that comes back `database is locked`
-    /// prints and carries on, and the child it was for then has no record at all (MEASURED
-    /// 2026-11-01 - `s-…-sub-1793488007308855461`, four commits, and no row).
+    /// returned as an answer, and anything else is said to be gone rather than dressed up as
+    /// one. The state is not hypothetical:
     #[test]
     fn a_child_with_no_record_reads_its_own_last_row() {
         let child = |why, last: Option<TranscriptItem>| letibot_tokencore::store::UnrecordedChild {
@@ -1329,12 +1277,8 @@ mod tests {
     }
 
     /// How far a child with no record got, in the two sizes the two doors need - both from ONE
-    /// judgement, because a child whose text [`a_child_with_no_record`] returns as an ANSWER must
-    /// be the child [`how_far`] calls `Answered`.
-    ///
-    /// The defect this closes: every lost child that did not end on an assistant row printed the
-    /// same fixed sentence, so a parent could not tell a child that died mid-`bash` from one that
-    /// never opened.
+    /// judgement, because a child whose text [`a_child_with_no_record`] returns as an ANSWER
+    /// must be the child [`how_far`] calls `Answered`. The defect this closes:
     #[test]
     fn how_far_says_where_a_child_with_no_record_stopped() {
         use letibot_tools::builtins::task::{LostChild, TaskStatus};
@@ -1454,10 +1398,7 @@ mod tests {
     }
 
     /// A child older than the store's first record is not told a write was refused - the class
-    /// the window exists for, and the sentence a model reads about it.
-    ///
-    /// MEASURED 2026-11-01: 517 of one session's 573 children predate the store's first
-    /// `subagent_run` row, and every one of them was told a cause nobody measured.
+    /// the window exists for, and the sentence a model reads about it. MEASURED 2026-11-01:
     #[test]
     fn a_child_from_before_the_record_is_told_that_and_not_a_refused_write() {
         let old = letibot_tokencore::store::UnrecordedChild {

@@ -1,12 +1,11 @@
-//! The operator's own shell line (`!`), run by the daemon - the run half of the feature whose
-//! wire half is `letibot-sessionlog`'s `operator_shell.rs`.
-//!
-//! Three properties: no permission decision is made anywhere (the adjudicator here counts its calls
-//! and would answer *nobody decided*); the output lands as a `User` row in the operator's own voice
-//! and then a `ToolResult` named `bash` with `origin: Operator`; and `sudo` can ask, because the
-//! command inherits the standing environment that lets `letibot-askpass` raise a card.
-//!
-//! Needs a real exec host and the vocabulary GGUF, not a model: nothing here generates.
+//! The operator's own shell line (`!`), run by the daemon - the run half of the feature
+//! whose wire half is `letibot-sessionlog`'s `operator_shell.rs`. Three properties: no
+//! permission decision is made anywhere (the adjudicator here counts its calls and would
+//! answer *nobody decided*); the output lands as a `User` row in the operator's own voice
+//! and then a `ToolResult` named `bash` with `origin: Operator`; and `sudo` can ask,
+//! because the command inherits the standing environment that lets `letibot-askpass` raise
+//! a card. Needs a real exec host and the vocabulary GGUF, not a model: nothing here
+//! generates.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -59,11 +58,9 @@ fn parts(cfg: &Config) -> Parts {
     p
 }
 
-/// An adjudicator that counts its calls and would answer *nobody decided*.
-///
-/// It exists so that "the gate was not consulted" is a measurement rather than an inference from
-/// the call having succeeded: if the `!` path ever reached an adjudicator, the counter would move
-/// and `unavailable` would stop the command, so both assertions fail together.
+/// An adjudicator that counts its calls and would answer *nobody decided*. It exists so
+/// that "the gate was not consulted" is a measurement rather than an inference from the
+/// call having succeeded:
 struct NeverAsked(Arc<AtomicUsize>);
 
 impl Adjudicator for NeverAsked {
@@ -201,13 +198,8 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
     );
 }
 
-/// The turn that starts reads the payload - the half the two rows do not prove by themselves.
-///
-/// A `Harness` cannot run a real turn here (that needs a model), so this takes the rows the deposit
-/// left and hands them to `letibot_provider::messages::convert` - the layer the drop happened in
-/// (`pair_tool_calls` discarded a `tool` message with no proposing assistant row). What it does not
-/// cover is a live round trip to a provider. The local dialects were never wrong: `dialect-qwen`
-/// renders the row as a `<tool_response>` user turn with no proposal above it.
+/// The turn that starts reads the payload - the half the two rows do not prove by
+/// themselves.
 #[test]
 fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -307,10 +299,7 @@ fn a_command_that_cannot_start_lands_as_a_failed_row() {
             return;
         }
     };
-    // A command that cannot start: the shell is asked to `exec` a binary that does
-    // not exist. bash reports it and exits non-zero - which is the COMMAND's answer
-    // (`ok` with the exit stated), so the honest assertion is on the payload naming
-    // what happened, not on the outcome variant.
+    // A command that cannot start: the shell is asked to `exec` a binary that does not exist.
     h.run_operator_shell("! this-binary-does-not-exist-anywhere", "dead")
         .expect("the run itself records a row");
     let snap = hub.snapshot();
@@ -337,13 +326,9 @@ fn a_command_that_cannot_start_lands_as_a_failed_row() {
 // sudo: the password ask
 // ---------------------------------------------------------------------------
 
-/// The `!` path's command can ask the head for a password.
-///
-/// The link this test adds: the command runs with the standing environment (`LETIBOT_SOCKET`
-/// `LETIBOT_SESSION`, `SUDO_ASKPASS`) and the `sudo` shim first on `PATH`, wired at open.
-/// The double is a python3 script that speaks the wire's own NDJSON (attach as an `askpass`
-/// head, send `Askpass`, read the `Secret` answer), run as the `!` command itself - so a real sudo
-/// is not used and the assertion does not depend on this box's sudo policy.
+/// The `!` path's command can ask the head for a password. The link this test adds: the
+/// command runs with the standing environment (`LETIBOT_SOCKET` `LETIBOT_SESSION`,
+/// `SUDO_ASKPASS`) and the `sudo` shim first on `PATH`, wired at open.
 #[test]
 fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -517,16 +502,9 @@ fn item_payloads(snap: &letibot_sessionlog::Snapshot) -> Vec<String> {
 // The prompt card: the operator's own run can be ANSWERED
 // ---------------------------------------------------------------------------
 
-/// The whole thing, end to end, through the real path.
-///
-/// The daemon holds a pipe on the run's stdin; the run is blocked reading it, which `exec::ask`
-/// reads out of `/proc` - the process, not its words - and which is what raises the card; the card
-/// reaches a head as `PromptRequested` naming the command the operator typed; the answer is
-/// delivered on the socket reader's thread, because the run's own thread is blocked inside the
-/// command that is asking; and the command reads it and finishes with the answer in its own output.
-///
-/// `read` and `printf` are builtins, so the assertion does not depend on anything outside the
-/// pinned `PATH`.
+/// The whole thing, end to end, through the real path. The daemon holds a pipe on the run's
+/// stdin; the run is blocked reading it, which `exec::ask` reads out of `/proc` - the
+/// process, not its words - and which is what raises the card;
 #[test]
 fn a_bang_line_that_asks_is_answered_and_finishes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -664,12 +642,9 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
     server.shutdown();
 }
 
-/// The manual way in reaches a running command's stdin - and it needs no card at all.
-///
-/// The floor under the heuristic: the card is raised by a reading of `/proc` that has misses it
-/// names, and a person watching the stream can always answer. So this never looks at a card -
-/// it sends `SendLine` while the run is blocked. The program prints nothing at all before it
-/// blocks, which pins the other half: `!send` is a verb, not a reply to a question.
+/// The manual way in reaches a running command's stdin - and it needs no card at all. The
+/// floor under the heuristic: the card is raised by a reading of `/proc` that has misses it
+/// names, and a person watching the stream can always answer.
 #[test]
 fn the_manual_send_reaches_a_running_commands_stdin() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -707,11 +682,8 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
         move || h.run_operator_shell(&line, "dead")
     });
     // No card is waited for. The verb is the way in whether or not anything looked like a
-    // question, which is the whole point of it being a verb.
-    //
-    // Sent until it is read, not once after a fixed sleep: a single send can land before the
-    // command is running, be dropped, and leave `read x` waiting forever. So the line is resent
-    // until the run ends, and a run that never ends fails the test instead of hanging the suite.
+    // question, which is the whole point of it being a verb. Sent until it is read, not once
+    // after a fixed sleep:
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while !runner.is_finished() {
         assert!(
@@ -735,16 +707,8 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
     server.shutdown();
 }
 
-/// A program that prints a question and EXITS raises no card.
-///
-/// The control, and the one that would have failed before the detection was corrected: a text
-/// matcher (`ends with ?`, `ends with [Y/n]`) fires on the output of a program that has already
-/// finished, which is a card nobody can answer, raised for a command that is over. The state
-/// reading cannot.
-///
-/// And the third case is the strongest form of the correction: a program that prints no
-/// question at all and then blocks on its stdin does raise a card, because what is read is the
-/// process and not the words.
+/// A program that prints a question and EXITS raises no card. The control, and the one that
+/// would have failed before the detection was corrected:
 #[test]
 fn a_program_that_prints_a_question_and_exits_raises_no_card() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

@@ -1,44 +1,10 @@
-//! The gate on a declared host - the operator's instruction of 2026-10-29: *"i told you about
-//! other hosts so you actually use that capability for running gates and subagents fanouts"*.
-//!
-//! `[queue] gate_host = "<name>"` in `leticode.toml`, or `--gate-host <name>` on the daemon, moves
-//! the merge gate's steps to a machine the operator declared in `hosts.toml`. Empty - the
-//! default - is [`super::gate::run_with_memory`] and nothing else: this machine, byte for byte.
-//!
-//! # What crosses the wire
-//!
-//! The landing tree goes over, and the merge stays here: the host runs `sh -c <step>` in a copy of
-//! the landing worktree under its own `root`, never sees a ref of the repository's, and the target
-//! branch moves by a compare-and-swap on this box ([`super::git::update_ref_cas`]).
-//!
-//! `rsync` carries the tree, because a landing worktree is not only its commit - `[queue] gate_carry`
-//! copies gitignored inputs that are in no commit. A `git` bundle carries the repository's own
-//! metadata, which `rsync` cannot: a worktree's `.git` is a file naming a path on this box, and the
-//! gate's FIRST step runs `git diff main HEAD`. So the tip and the target branch go over as a bundle
-//! then a worktree at the tip, and the rsync'd tree lands on top - the index and `HEAD` are the
-//! commit, the working tree is the landing tree, exactly as the local gate runs. The bundle is
-//! incremental: the host's own refs say what it already has.
-//!
-//! `CARGO_TARGET_DIR` is `<dir>/target`, outside the rsync'd tree and outside `--delete`, so it
-//! survives every gate of that repository on that host: a cold gate there would be worse than a local
-//! one. Measured on lab2x1, see `docs/remote-hosts.md` § *The merge gate on a declared host*.
-//!
-//! # A host that cannot be reached is a verdict, not a hang
-//!
-//! Every call is bounded ([`letibot_tools::rpc::run_bounded`]) and goes through the fleet's breaker
-//! so a host that is down is a [`GateVerdict::Infra`] in the first second - the tip UNJUDGED and
-//! unblocked, not red. Each step starts detached under `setsid` with a pid file, so its group can be
-//! killed on the deadline, the stop or a lost lease.
-//!
-//! # Two clocks, and which one is which
-//!
-//! The step's is [`GateControl::deadline`], `[queue]`'s `gate_deadline`, thirty minutes, and it
-//! is the only thing that may end a step. One poll's is [`POLL_BOUND`], seconds: it asks *can this
-//! machine fork a shell and answer*, and on a box whose own build holds every core that can take
-//! many seconds. So a poll that is not answered is retried, not a verdict - the question is
-//! idempotent and a miss says nothing about the code. Three misses in a row trip the breaker
-//! ([`letibot_tools::rpc::BREAKER_THRESHOLD`]), and the step is then UNJUDGED: a retry, never a red
-//! branch.
+//! The gate on a declared host - the operator's instruction of 2026-10-29: *"i told you
+//! about other hosts so you actually use that capability for running gates and subagents
+//! fanouts"*. `[queue] gate_host = "<name>"` in `leticode.toml`, or `--gate-host <name>` on
+//! the daemon, moves the merge gate's steps to a machine the operator declared in
+//! `hosts.toml`. Empty - the default - is [`super::gate::run_with_memory`] and nothing
+//! else: this machine, byte for byte. # What crosses the wire The landing tree goes over,
+//! and the merge stays here:
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,13 +20,7 @@ use super::gate::{
 };
 use super::git;
 
-/// How long one poll may take - and this is the HEALTH question, not the step's deadline: *can this
-/// machine fork a shell and answer?* Over the connection's `ControlMaster` that is milliseconds on an
-/// idle box and seconds on a busy one (measured on lab2x1 while its own build held 25 of 32 cores).
-///
-/// Thirty, because a machine that cannot answer in thirty seconds is not answering, and because a
-/// missed poll costs nothing ([`Remote::run_step_into`] asks again): the bound decides when a poll
-/// stops waiting, never when a step stops running.
+/// How long one poll may take - and this is the HEALTH question, not the step's deadline:
 pub const POLL_BOUND: Duration = Duration::from_secs(30);
 
 /// How often a running step is asked how it is - one ssh round trip, a few milliseconds over the
@@ -89,12 +49,8 @@ pub const CGROUP_APPARATUS: &str =
 pub const BWRAP_APPARATUS: &str =
     "a usable confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2 subtree)";
 
-/// What a machine can do about the apparatus a step DEMANDS - asked once per gate, and only when a
-/// step carries the prefix.
-///
-/// The demand is a fact about the machine that WROTE it (the operator's Mac, where the vocabulary and
-/// a delegated scope are) and the machine that RUNS the step is somebody else's: twenty-one targets
-/// going red with one sentence is a fact about a machine, never a verdict about a branch.
+/// What a machine can do about the apparatus a step DEMANDS - asked once per gate, and only
+/// when a step carries the prefix.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Apparatus {
     /// The machine has no cgroup of its own to give a step, but a transient DELEGATED scope does -
@@ -143,11 +99,9 @@ impl Apparatus {
     }
 }
 
-/// The command with the project's apparatus demand taken off, or `None` when the step makes none.
-///
-/// A gate step is one shell line, and the demand is the leading `LETIBOT_REQUIRE_APPARATUS=<value>`
-/// assignment. Everything after it is left byte for byte: the gate's business is which MACHINE runs a
-/// step, never how the step is spelled.
+/// The command with the project's apparatus demand taken off, or `None` when the step makes
+/// none. A gate step is one shell line, and the demand is the leading
+/// `LETIBOT_REQUIRE_APPARATUS=<value>` assignment.
 pub fn apparatus_prefix(step: &str) -> Option<&str> {
     let rest = step.strip_prefix(APPARATUS_ENV)?.strip_prefix('=')?;
     let end = rest.find(char::is_whitespace)?;
@@ -194,16 +148,8 @@ pub fn plan_step<'a>(step: &'a str, apparatus: &Apparatus) -> Planned<'a> {
     }
 }
 
-/// The apparatus question, as one shell script - the whole of what a host is asked before its steps
-/// run.
-///
-/// It is an EXPERIMENT and not an inspection, which is the point: `Cgroup2::probe` succeeds when it can
-/// `mkdir` in the cgroup the process is already in, so the question is *can I make a directory here?*
-/// - asked by making one and removing it. A shell copy of the Rust predicate would be a second
-///   spelling of one rule, and the two would drift.
-///
-/// `cgroup=here` is the machine as it stands; `own-scope` is a machine where a transient delegated
-/// scope works and the plain session's cgroup is not writable; `no` is neither.
+/// The apparatus question, as one shell script - the whole of what a host is asked before
+/// its steps run. It is an EXPERIMENT and not an inspection, which is the point:
 pub fn apparatus_probe() -> String {
     // A marker a fixture can recognise: `crates/harnessd/tests/gate_host.rs`'s fake ssh answers on
     // it instead of running a probe about the box the test happens to run on.
@@ -255,11 +201,6 @@ pub fn apparatus_from(said: &str) -> Apparatus {
 }
 
 /// The gate, on `name`'s machine - the whole of [`super::gate::run_gate`]'s host arm.
-///
-/// Everything that can go wrong before the first step (a name that is not declared, a key that is
-/// missing, a host that does not answer, a tree that will not arrive) is one [`GateVerdict::Infra`]
-/// with every step `not_run`: the branch was not judged, and saying so is the difference between a
-/// queue that parks a good branch and a queue that lands a bad one.
 pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
     let remote = match Remote::open(name, worktree) {
         Ok(r) => r,
@@ -269,10 +210,8 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     if let Err(why) = remote.prepare(ctl, &mut cost) {
         return infra(steps, format!("{why}{}", cost.said(&remote, ctl.budget)));
     }
-    // The demand the step makes of the MACHINE is asked of the machine, once, before it runs: where it
-    // can be met the gate meets it (a delegated scope of its own); where it cannot, the demand is
-    // taken off that step and the row says so - never carried over to fail as though the branch were
-    // bad.
+    // The demand the step makes of the MACHINE is asked of the machine, once, before it runs:
+    // where it can be met the gate meets it (a delegated scope of its own);
     let apparatus = remote.apparatus(steps);
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
     let mut dropped: Vec<String> = Vec::new();
@@ -683,12 +622,9 @@ impl Remote {
 
     // -- one step ---------------------------------------------------------------------------
 
-    /// What this machine can do about the apparatus a step demands - one call, and only when a step
-    /// carries the prefix, so a project whose gate demands nothing pays nothing.
-    ///
-    /// A probe that cannot answer changes NOTHING: the steps run exactly as the project wrote them, and
-    /// the net under this module ([`super::gate::APPARATUS_ABSENT`]) keeps a refusal from being read as
-    /// red. Guessing *absent* from a failed probe would take a demand off a machine that has everything.
+    /// What this machine can do about the apparatus a step demands - one call, and only when a
+    /// step carries the prefix, so a project whose gate demands nothing pays nothing. A probe
+    /// that cannot answer changes NOTHING:
     fn apparatus(&self, steps: &[String]) -> Apparatus {
         if !steps.iter().any(|s| apparatus_prefix(s).is_some()) {
             return Apparatus::default();
@@ -837,12 +773,9 @@ impl Remote {
         }
     }
 
-    /// How the step is, and whatever it has written since `offset` - one round trip, so a step's
-    /// progress and its state cannot disagree about which moment they describe.
-    ///
-    /// `within` is [`POLL_BOUND`] or what is left of the gate, whichever is less; a miss comes back as
-    /// [`Missed`], which says whether the machine was reached at all, because *busy* and *gone* are two
-    /// different verdicts and only one of them ends the step.
+    /// How the step is, and whatever it has written since `offset` - one round trip, so a
+    /// step's progress and its state cannot disagree about which moment they describe. `within`
+    /// is [`POLL_BOUND`] or what is left of the gate, whichever is less;
     fn poll(&self, n: usize, offset: u64, within: Duration) -> Result<Poll, Missed> {
         let tag = self.tag(n);
         let script = poll_script(
@@ -884,8 +817,7 @@ impl Remote {
 
     /// `SIGTERM` to the far side's group, five seconds, then `SIGKILL` - the local gate's own
     /// discipline, one machine over. `kill -TERM -<pid>` is the group because the launcher is
-    /// `setsid`'d; where a host has no `setsid` the pid is only the launcher and the plain kill is the
-    /// fallback.
+    /// `setsid`'d;
     fn kill(&self, n: usize) {
         let script = kill_script(&self.pid_path(n));
         let _ = self.call(
@@ -941,11 +873,8 @@ struct Cost {
 }
 
 impl Cost {
-    /// One line for the gate's log: what arrived, how long it took, and what the host had room for.
-    ///
-    /// `budget` is the gate's own `[queue]` `gate_deadline`, said beside the transport so a reader can
-    /// tell *the tree took two seconds of a half hour* from *the tree took most of it* - a first gate on
-    /// a host pays the transport out of the same clock its steps run on.
+    /// One line for the gate's log: what arrived, how long it took, and what the host had room
+    /// for.
     fn line(&self, r: &Remote, budget: Duration) -> String {
         let at = |v: Option<u64>| match v {
             Some(ms) => format!("{:.2} s", ms as f64 / 1000.0),
@@ -993,12 +922,9 @@ fn free_words(kb: Option<u64>) -> String {
     }
 }
 
-/// The step's tail, and what the gate was doing when its deadline came - a verdict has to say that the
-/// last minutes of it were spent asking a question nobody answered.
-///
-/// `bound` is the bound the LAST poll was given: the sentence names the clock that actually ran out
-/// because *not answered within 30 s* and *not answered within the last 4 s of the gate* are different
-/// facts about a machine.
+/// The step's tail, and what the gate was doing when its deadline came - a verdict has to
+/// say that the last minutes of it were spent asking a question nobody answered. `bound` is
+/// the bound the LAST poll was given:
 fn said_with_misses(tail: String, missed: u32, last: &str, bound: Duration) -> String {
     if missed == 0 {
         return tail;
@@ -1010,13 +936,8 @@ fn said_with_misses(tail: String, missed: u32, last: &str, bound: Duration) -> S
     )
 }
 
-/// A far-side step's exit status as [`StepExit`] - and the difference matters, which is why this is a
-/// function with a test rather than a `Code(n)`.
-///
-/// A shell reports *my child was killed by signal n* as `128 + n`, and the local gate waits on its own
-/// child so it sees the signal itself. Read as an exit code, a step killed by `SIGKILL` would be
-/// `RedCause::Code` and the branch called RED for a death that judged nothing. The range is signals
-/// 1–64, the whole of what Linux defines.
+/// A far-side step's exit status as [`StepExit`] - and the difference matters, which is why
+/// this is a function with a test rather than a `Code(n)`.
 pub fn exit_of(code: i32) -> StepExit {
     if (129..=192).contains(&code) {
         StepExit::Signal(code - 128)
@@ -1036,12 +957,9 @@ fn ended(code: i32, tail: String) -> StepEnd {
 // The far side's scripts, as values
 // ---------------------------------------------------------------------------------------------
 
-/// The launcher - one file per step, so the step's own text needs no quoting: it is written into a
-/// file this box sends over the connection's stdin, never spliced into an argv.
-///
-/// `( … )` is a subshell and not `{ … }`, which is 's measured trap: a brace group runs in the
-/// launcher's own shell, so a step containing `exit` would end the launcher before it could write the
-/// status. `CARGO_TARGET_DIR` is the host's warm cache, outside both the worktree and the rsync'd tree.
+/// The launcher - one file per step, so the step's own text needs no quoting: it is written
+/// into a file this box sends over the connection's stdin, never spliced into an argv. `( …
+/// )` is a subshell and not `{ … }`, which is 's measured trap:
 pub fn launcher_script(
     step: &str,
     tree: &str,
@@ -1051,10 +969,9 @@ pub fn launcher_script(
     exit: &str,
     own_scope: bool,
 ) -> String {
-    // A step that needs a cgroup of its own gets one from systemd, not from this daemon: a transient
-    // delegated scope is the one shape that is the step's alone. The subshell stays a subshell and the
-    // step stays the project's own text, quoted once: `systemd-run --scope` execs in place and answers
-    // with its exit status, so the pid file, the group kill and `$?` all mean what they meant.
+    // A step that needs a cgroup of its own gets one from systemd, not from this daemon: a
+    // transient delegated scope is the one shape that is the step's alone. The subshell stays
+    // a subshell and the step stays the project's own text, quoted once:
     let run = if own_scope {
         format!(
             "exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c {}",
@@ -1084,12 +1001,8 @@ pub fn launch_script(script: &str, exit: &str) -> String {
     )
 }
 
-/// How the step is, and what it has written since `offset` - the marker first, so a login shell's own
-/// chatter is skipped, and the bytes after it are the step's, untouched.
-///
-/// The two reads are ordered the way `a-finishing-job-and-a-killed-job-answer-the-same-poll` says: the
-/// status file FIRST, then the pid. A step that finished between the two reads answers *exit 0, pid
-/// gone*, which is a step that finished - the other order answers what a kill looks like.
+/// How the step is, and what it has written since `offset` - the marker first, so a login
+/// shell's own chatter is skipped, and the bytes after it are the step's, untouched.
 pub fn poll_script(tag: &str, pid: &str, exit: &str, out: &str, offset: u64) -> String {
     format!(
         "e=; if [ -f '{exit}' ]; then e=$(cat '{exit}' 2>/dev/null); fi; \
@@ -1116,13 +1029,9 @@ pub fn kill_script(pid: &str) -> String {
     )
 }
 
-/// Put the host's worktree at `head` - the same three commands the local landing worktree gets
-/// (`checkout --detach --force`, `reset --hard`, `clean -fd`), so a gate never judges a file the
-/// previous one left behind.
-///
-/// `-e`, not `-d`: a git worktree's `.git` is a FILE, so `[ -d tree/.git ]` is false for every worktree
-/// that exists - measured as a second gate of the same repository dying on `fatal: '<tree>' already
-/// exists`, which is a host gate that could only ever run once.
+/// Put the host's worktree at `head` - the same three commands the local landing worktree
+/// gets (`checkout --detach --force`, `reset --hard`, `clean -fd`), so a gate never judges
+/// a file the previous one left behind. `-e`, not `-d`:
 pub fn worktree_script(src: &str, tree: &str, head: &str) -> String {
     format!(
         "if [ -e '{tree}/.git' ]; then \
@@ -1132,16 +1041,9 @@ pub fn worktree_script(src: &str, tree: &str, head: &str) -> String {
     )
 }
 
-/// The `rsync` invocation, as a value - the brief's transport, and the one thing about it a test can
-/// assert without a second machine.
-///
-/// `-a` keeps modes and mtimes (a script's `+x` matters). `--delete` so a file the branch REMOVED is
-/// gone there too. `/.git` is excluded because in a landing worktree it is a FILE naming a path on this
-/// box, and `/target` because the host has its own cache. `-e` carries the host's declared key.
-///
-/// The destination path is NOT quoted here: `rsync` hands its own remote command to the shell with the
-/// arguments protected (`protect_args`, on since 3.0), and quoting it as well measured as a literal
-/// `\'…\'` on the far side.
+/// The `rsync` invocation, as a value - the brief's transport, and the one thing about it a
+/// test can assert without a second machine. `-a` keeps modes and mtimes (a script's `+x`
+/// matters). `--delete` so a file the branch REMOVED is gone there too.
 pub fn rsync_argv(ssh: &Ssh, src: &Path, dest: &str) -> Vec<String> {
     let mut rsh = sq(&ssh.program().display().to_string());
     for flag in ssh.flags() {
@@ -1169,12 +1071,9 @@ pub fn dir_name(worktree: &Path) -> String {
         .unwrap_or_else(|| "repo".to_string())
 }
 
-/// The refspecs a bundle can actually be fetched by - its own heads, with `HEAD` renamed to the ref the
-/// host's worktree is put at.
-///
-/// `git bundle list-heads <file>` is one line per ref the bundle carries. A branch whose tip is already
-/// on the host (a prerequisite) is not in that list, and asking for it is the fetch that fails with
-/// *couldn't find remote ref*.
+/// The refspecs a bundle can actually be fetched by - its own heads, with `HEAD` renamed to
+/// the ref the host's worktree is put at. `git bundle list-heads <file>` is one line per
+/// ref the bundle carries.
 fn bundle_refspecs(bundle: &Path, head: &str) -> Result<Vec<String>, String> {
     let out = std::process::Command::new("git")
         .args(["bundle", "list-heads"])
@@ -1264,14 +1163,8 @@ impl Answer {
     }
 }
 
-/// One bounded call through the breaker - the discipline `docs/remote-hosts.md` states for every call
-/// this box makes to a declared host: refuse at once when the host is known down, take a slot in the
-/// per-host queue, kill the local process group at the deadline, and tell the breaker whether the far
-/// side said anything.
-///
-/// `report` is [`rpc::record`]'s switch, and a poll is the one caller that says no: [`rpc::RECORD_RING`]
-/// is 256 entries, so a 30-minute step's 1800 successful polls would evict every call a reader could act
-/// on.
+/// One bounded call through the breaker - the discipline `docs/remote-hosts.md` states for
+/// every call this box makes to a declared host:
 fn run(
     what: &str,
     host: &str,

@@ -1,15 +1,11 @@
-//! A todo row that waits on the OPERATOR, end to end through the daemon's own door - the loud state
-//! on the hub, the settings row and the picker's brief; the answer as a head sends it
-//! (`CommandKind::AnswerTodo`) in every shape the card offers; the row unblocked with the reply on
-//! it; the model told at once; and the question surviving a restart.
-//!
-//! The operator asked for three things: the heads show loud notification that they are waited on, a
-//! question comes with a choice list and room for free text, and submitting it unblocks the todo with
-//! the reply attached.
-//!
-//! It needs the vocabulary GGUF and not a model: the endpoint is a port nothing listens on. The turn
-//! an answer starts fails at the send - what is asserted is that it was STARTED with the answer as
-//! its prompt, which is the row on the hub.
+//! A todo row that waits on the OPERATOR, end to end through the daemon's own door - the
+//! loud state on the hub, the settings row and the picker's brief; the answer as a head
+//! sends it (`CommandKind::AnswerTodo`) in every shape the card offers; the row unblocked
+//! with the reply on it; the model told at once; and the question surviving a restart. The
+//! operator asked for three things: the heads show loud notification that they are waited
+//! on, a question comes with a choice list and room for free text, and submitting it
+//! unblocks the todo with the reply attached. It needs the vocabulary GGUF and not a model:
+//! the endpoint is a port nothing listens on.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::sessions::StoreSessions;
@@ -184,10 +180,8 @@ fn needs_of(path: &std::path::Path, id: &str, content: &str) -> Vec<TodoNeed> {
         .needs
 }
 
-/// The heads are told loudly, and the four answers each unblock their row. The settings row and the
-/// picker's brief say how many questions wait; an option, an option with a note, typed words and an
-/// abstention each replace the question with the reply on the row (the title untouched), start a
-/// turn whose prompt is the `[answer]` line, and the loud state clears with the last one.
+/// The heads are told loudly, and the four answers each unblock their row. The settings row
+/// and the picker's brief say how many questions wait;
 #[test]
 fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -303,11 +297,9 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
     assert_eq!(brief.waits_on_operator, 0, "the picker's mark clears");
 }
 
-/// A question asked from here on is announced; a refused answer is said; a restart keeps the waiting
-/// row. The operator's own row gets a question through the head's push (the same door the pane
-/// echoes edges through), which publishes `waiting_on_operator`; an option the row never offered is
-/// refused by name and leaves the question open; and a daemon opened again on the same store reads
-/// the row back still waiting.
+/// A question asked from here on is announced; a refused answer is said; a restart keeps
+/// the waiting row. The operator's own row gets a question through the head's push (the
+/// same door the pane echoes edges through), which publishes `waiting_on_operator`;
 #[test]
 fn a_waiting_row_is_announced_survives_a_refusal_and_a_restart() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

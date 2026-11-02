@@ -1,14 +1,11 @@
-//! The `queue` tool's daemon half - what a session's model can do about its project's queues: read
-//! them, re-gate the target, restart or withdraw a row, and PROPOSE the branch the project lands on.
-//!
-//! Every verb here is one the operator already had (`mergequeue::verbs`), moved under the session's own
-//! name (`agent:<session>`) so the history says a model did it. One is not: setting `[queue] target` is
-//! the operator's decision, so `propose_target` raises it on every hub, names the exact `leticode.toml`
-//! line, records the proposal in the target's history, and writes no file.
-//!
-//! `status` is scoped and bounded: the session's own repository and a screenful of it by default, one
-//! line per repository for `all`, and one repository in full for `repository`. Every answer's first
-//! line says which of the three it printed.
+//! The `queue` tool's daemon half - what a session's model can do about its project's
+//! queues: read them, re-gate the target, restart or withdraw a row, and PROPOSE the branch
+//! the project lands on. Every verb here is one the operator already had
+//! (`mergequeue::verbs`), moved under the session's own name (`agent:<session>`) so the
+//! history says a model did it. One is not: setting `[queue] target` is the operator's
+//! decision, so `propose_target` raises it on every hub, names the exact `leticode.toml`
+//! line, records the proposal in the target's history, and writes no file. `status` is
+//! scoped and bounded:
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -188,12 +185,9 @@ pub fn propose_target(
     ))
 }
 
-// ===== `status`: three shapes, one scope line =====
-//
-// The cost is the model's attention, so the default answer is ONE repository and a screenful of it
-// `all` is one line per repository, and `repository: "<name>"` is the full shape. Every answer opens
-// with the scope it printed: a bounded answer that does not say it is bounded is the same lie in a
-// smaller font.
+// ===== `status`: three shapes, one scope line ===== The cost is the model's attention, so
+// the default answer is ONE repository and a screenful of it `all` is one line per
+// repository, and `repository: "<name>"` is the full shape.
 
 /// How many rows a bounded answer prints in full before it counts the rest.
 const SHOWN_ROWS: usize = 10;
@@ -204,10 +198,9 @@ const SHOWN_TAIL: usize = 3;
 /// The characters a row's own words may run to in a bounded answer.
 const SHOWN_EVIDENCE: usize = 200;
 
-/// How recently a step's log must have grown for the line to say `tail moving` - a build prints between
-/// crates and a test run prints between binaries, so a minute of silence is not a stall; a minute is
-/// long enough that a moving tail is news and short enough that a reader sees it in the same breath as
-/// the step.
+/// How recently a step's log must have grown for the line to say `tail moving` - a build
+/// prints between crates and a test run prints between binaries, so a minute of silence is
+/// not a stall;
 const TAIL_MOVING_MS: u64 = 60_000;
 
 /// How long a step's log may stand still before the line says it may be stuck - the same ten minutes
@@ -281,25 +274,17 @@ fn scope(
     })
 }
 
-/// The repository this session is in - the workspace itself when git says it is in one, the same-named
-/// child (`~/Projects/letibot` → `letibot`), or its only repository child; then mapped through the
-/// WORKTREE to its main checkout, which is how the queues key a repository, so a session in a worktree
-/// reads the queue its branch lands in.
-///
-/// A folder that is one project of several answers `None`, and that is not a hole to fill with the
-/// whole box: which of several children a session seated above them is "in" is a fact nothing in this
-/// tree knows.
+/// The repository this session is in - the workspace itself when git says it is in one, the
+/// same-named child (`~/Projects/letibot` → `letibot`), or its only repository child;
 fn current(workspace: &Path) -> Option<String> {
     git::repo_of_workspace(workspace)
         .and_then(|r| git::repo_of_worktree(&r))
         .map(|p| p.display().to_string())
 }
 
-/// The one repository `asked` names - a path git resolves, else a name matched against the repositories
-/// the queue holds: a full path, a path's tail or a directory name.
-///
-/// Two matches is a refusal that names both. Picking one is how a model comes to read another project's
-/// queue and believe it is its own.
+/// The one repository `asked` names - a path git resolves, else a name matched against the
+/// repositories the queue holds: a full path, a path's tail or a directory name. Two
+/// matches is a refusal that names both.
 fn one(asked: &str, served: &[String], workspace: &Path) -> Result<String, String> {
     let asked = asked.trim().trim_end_matches('/');
     let as_path = if Path::new(asked).is_absolute() {
@@ -378,12 +363,9 @@ fn served(store: &Store) -> Result<Vec<String>, String> {
     Ok(all)
 }
 
-/// `all` - one line per repository, so the whole box fits in a screenful: which target is in what
-/// state, what is open, and whether anybody serves it. Detail is what the other two forms are for.
-///
-/// A repository whose gate is running says so here too, because the session that needs this most is the
-/// one in ANOTHER repository: it has no row for this gate and no reason to open one, and the fans it
-/// hears are this. The step and the clock only - the tail is the detail's.
+/// `all` - one line per repository, so the whole box fits in a screenful: which target is
+/// in what state, what is open, and whether anybody serves it. Detail is what the other two
+/// forms are for.
 fn every(store: &Store) -> Result<String, String> {
     let now = now_ms();
     let repos = served(store)?;
@@ -600,13 +582,9 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
     Ok(out)
 }
 
-/// A repository's target, and the gate that failed on it - the whole tail in the full shape (`None`)
-/// the last [`SHOWN_TAIL`] lines of it in a bounded one, with the count of what was cut.
-///
-/// A target whose gate is running says what it is doing, on its own line: which step, how long, and
-/// whether its output is moving. All of that was already in the snapshot and in a merge row's detail
-/// and a detail is a click away - so a session in this repository, and a person reading its `status`
-/// had no way to learn that the machine was working rather than stuck. The tail stays the detail's.
+/// A repository's target, and the gate that failed on it - the whole tail in the full shape
+/// (`None`) the last [`SHOWN_TAIL`] lines of it in a bounded one, with the count of what
+/// was cut. A target whose gate is running says what it is doing, on its own line:
 fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
     let now = now_ms();
     let mut out = String::new();
@@ -657,10 +635,8 @@ fn running_now(h: &TargetHealth) -> Option<gate::RunningGate> {
         .flatten()
 }
 
-/// The gate a target is running, in one clause - which step of how many, how long it has been on it, and
-/// whether its output is still moving. The same three facts a merge row's detail gives at length, on the
-/// target's own line, because that line is where a person looks first. The tail itself is not here: a
-/// headline is not the whole story.
+/// The gate a target is running, in one clause - which step of how many, how long it has
+/// been on it, and whether its output is still moving.
 fn gate_words(g: &gate::RunningGate, now: u64) -> String {
     format!(
         "step {} of {} · {} · {}",
@@ -1356,11 +1332,9 @@ mod tests {
         assert!(!full.contains("+2 more"), "nothing is counted away: {full}");
     }
 
-    // ===== The gate is visible where a person looks first =====
-    //
-    // The queue said `gating`, and nothing a session could read said WHICH STEP or for how long - the
-    // merge row's detail said it, and a detail is a click away, in a pane, on a row nobody had a reason
-    // to open.
+    // ===== The gate is visible where a person looks first ===== The queue said `gating`, and
+    // nothing a session could read said WHICH STEP or for how long - the merge row's detail
+    // said it, and a detail is a click away, in a pane, on a row nobody had a reason to open.
 
     /// A `RunningGate` as the gate's own read hands one back, with its clock and its log placed
     /// where the test wants them.

@@ -1,31 +1,11 @@
-//! An answered question leaves the operator's answer in the conversation as THEIRS.
-//!
-//! A question rides the permission-card machinery - `Answers::ask_question` publishes a
-//! `DecisionRequested { kind: "question", … }` and the answer closes it - so the selector is a
-//! live overlay, and the answer's only durable trace was the `ask_user_question` tool result.
-//! Under a profile that does not draw tool rows that is nothing at all; and because the answer was
-//! not a `User` row it was not in the authorisation trail either, so a *yes* given through that card
-//! could not be cited as authorisation while a *yes* typed in the composer could.
-//!
-//! The whole chain and nothing stubbed between the call and the row: a canned model emitting an
-//! `ask_user_question` call in the Qwen dialect's own shape, the session's own tool runtime running
-//! it through its own gate, a head attached to the session's own hub answering the way `letibot-tui`
-//! does, and the assertions on the session's transcript and on the authorisation trail.
-//!
-//! Three claims: the answer row is theirs, byte for byte - the option's own text and their note
-//! with nothing of the harness's prepended; the question row is NOT - it is `Speaker::Agent`
-//! because the trail reads every operator row as words an action may cite, and a question put in
-//! their mouth could be quoted back as authorisation for the answer to it; and the trail can cite
-//! the answer, through the same door the composer's own speech is recorded by.
-//!
-//! The order is the result, then the person's row - not the `!` line's recipe. Something above
-//! the result proposed the call, and `letibot_provider::messages::pair_tool_calls` closes its
-//! answering window on any non-`tool` row, so a `User` row between the proposal and its result makes
-//! the model read *"no result was recorded for this call"* beside the real one.
-//!
-//! It needs the vocabulary GGUF (`Harness::open` renders its stable prefix) and not the model
-//! server. No exec host - nothing here runs a command - so the gate is the harness's own `Head` arm
-//! which is also where the question path is installed.
+//! An answered question leaves the operator's answer in the conversation as THEIRS. A
+//! question rides the permission-card machinery - `Answers::ask_question` publishes a
+//! `DecisionRequested { kind: "question", … }` and the answer closes it - so the selector
+//! is a live overlay, and the answer's only durable trace was the `ask_user_question` tool
+//! result. Under a profile that does not draw tool rows that is nothing at all; and because
+//! the answer was not a `User` row it was not in the authorisation trail either, so a *yes*
+//! given through that card could not be cited as authorisation while a *yes* typed in the
+//! composer could. The whole chain and nothing stubbed between the call and the row:
 
 use std::sync::Arc;
 
@@ -175,7 +155,6 @@ impl Drop for TempDir {
 // ---------------------------------------------------------------------------
 
 /// One whole exchange, from the model's call to the rows the session wrote afterwards.
-///
 /// Returns the session's transcript and its authorisation trail, which are the two places a
 /// person's words have to end up.
 fn one_exchange(tag: &str, reply: Reply) -> (Vec<TranscriptItem>, AuthorisationTrail) {
@@ -195,10 +174,7 @@ fn one_exchange(tag: &str, reply: Reply) -> (Vec<TranscriptItem>, AuthorisationT
     cfg.endpoint = serv.endpoint.clone();
 
     let hub = Hub::new(tag);
-    // `None` for the adjudicator, and that is the point of the fixture. The question path is
-    // installed in the arm that builds the head adjudicator from `cfg.adjudicator` - one `Answers`
-    // one sink, one slot, as one act - so a test that handed in its own adjudicator would be testing
-    // a session where no question can reach anybody.
+    // `None` for the adjudicator, and that is the point of the fixture.
     let mut h = Harness::open_with(&parts, cfg, hub.clone(), None, None)
         .expect("a leticode session opens with the head adjudicator");
 
@@ -263,11 +239,8 @@ fn user_row(item: &TranscriptItem) -> Option<(RowSpeaker, String)> {
 }
 
 /// A choice, and the person's own note on it, land as their words - and the trail can cite
-/// them.
-///
-/// The row keeps the `!` line's own rule: their words, verbatim, with nothing of the harness's
-/// prepended. So the option's text is read off the QUESTION they were shown - the label, not an
-/// index, because an index is not something anybody said - and the note follows it on its own line.
+/// them. The row keeps the `!` line's own rule: their words, verbatim, with nothing of the
+/// harness's prepended.
 #[test]
 fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -361,11 +334,8 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
     );
 }
 
-/// A typed answer is a first-class answer, and it lands as the person's row.
-///
-/// The fourth shape the tool takes (`QuestionAnswer::free`): no option, no note, just what they
-/// typed - the case where the composer's own words are the whole of it, and the row has to carry
-/// them without a label, an index or a quotation around them.
+/// A typed answer is a first-class answer, and it lands as the person's row. The fourth
+/// shape the tool takes (`QuestionAnswer::free`):
 #[test]
 fn a_typed_answer_lands_as_the_operators_own_words() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -396,12 +366,9 @@ fn a_typed_answer_lands_as_the_operators_own_words() {
     assert_eq!(cited.speaker, Speaker::Operator);
 }
 
-/// An abstention is an ANSWER, and it lands as one.
-///
-/// The tool reports it as `Abstained` rather than as `not_run` - *"I am not answering this one"* is
-/// a decision the person made - so the row exists and the trail can cite it. It is also the one
-/// outcome where the answer row is neither a choice nor a sentence, so the word the wire carries for
-/// the act is the word the row carries.
+/// An abstention is an ANSWER, and it lands as one. The tool reports it as `Abstained`
+/// rather than as `not_run` - *"I am not answering this one"* is a decision the person made
+/// - so the row exists and the trail can cite it.
 #[test]
 fn an_abstention_lands_as_the_operators_own_row() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

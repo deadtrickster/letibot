@@ -1,13 +1,10 @@
-//! A verbatim `/reseat` keeps the provider's measurement, so a restart can still read the ledger in
-//! the provider's units.
-//!
-//! A `/reseat` forks the conversation onto the new prompt with every row carried, and it used to
-//! clear the stored measurement: if the daemon restarted before a round measured again, the session
-//! was folded on its raw ledger bytes instead of the count the provider had reported - "after 2m
-//! tokens, how can scale not be measured?". It had been measured on every round; the fork threw it
-//! away.
-//!
-//! On the byte vocabulary a cloud session uses, so it runs on a box with no model file.
+//! A verbatim `/reseat` keeps the provider's measurement, so a restart can still read the
+//! ledger in the provider's units. A `/reseat` forks the conversation onto the new prompt
+//! with every row carried, and it used to clear the stored measurement: if the daemon
+//! restarted before a round measured again, the session was folded on its raw ledger bytes
+//! instead of the count the provider had reported - "after 2m tokens, how can scale not be
+//! measured?". It had been measured on every round; the fork threw it away. On the byte
+//! vocabulary a cloud session uses, so it runs on a box with no model file.
 
 use letibot_harnessd::config::{Config, ProviderConfig};
 use letibot_harnessd::{Dialect, Harness, Parts};

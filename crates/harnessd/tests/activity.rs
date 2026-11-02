@@ -1,19 +1,10 @@
 //! What the daemon publishes as a session moves - `PROTOCOL_VERSION` 52, end to end through
-//! the machinery that publishes it.
-//!
-//! `crates/sessionlog/src/activity.rs` carries the argument and `crates/harnessd/src/activity.rs`
-//! the composition; what is asserted here is that the two are wired to the things that move: a
-//! round, the calls a round leaves, a card, a settlement queued for the model, a child the plan
-//! waits on - and that a value that has not moved is not published again.
-//!
-//! The tests drive the hub directly, the way the daemon's own threads do: `TurnStarted`
-//! `ToolCallProposed`, `TurnFinished` and the rest are published by the engine and the gate, and
-//! this publishes the same shapes at the same points. Nothing is faked past that - the watcher set
-//! is a real [`JobWatchers`], with a real watcher thread blocked on a real `TaskRunner`.
-//!
-//! The real-turn half lives in `activity_turn.rs`, and it has to be a binary of its own: it
-//! writes a `providers.toml` under a scratch `XDG_CONFIG_HOME`, which means `set_var`, which is
-//! only sound in a process whose other tests are not reading the environment.
+//! the machinery that publishes it. `crates/sessionlog/src/activity.rs` carries the
+//! argument and `crates/harnessd/src/activity.rs` the composition; what is asserted here is
+//! that the two are wired to the things that move: a round, the calls a round leaves, a
+//! card, a settlement queued for the model, a child the plan waits on - and that a value
+//! that has not moved is not published again. The tests drive the hub directly, the way the
+//! daemon's own threads do:
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -285,11 +276,9 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     );
 }
 
-/// A running child is an entry, and the one the model PARKED is not, through the real watcher
-/// set, whose thread really is blocked on the runner.
-///
-/// The plan does not decide this: a child's settlement reaches the model as a turn of its own, so a
-/// session holding one is not done.
+/// A running child is an entry, and the one the model PARKED is not, through the real
+/// watcher set, whose thread really is blocked on the runner. The plan does not decide
+/// this:
 #[test]
 fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
     let hub = Hub::new("s-activity-child");
@@ -352,12 +341,9 @@ fn a_warning(code: &str) -> SessionEvent {
     }
 }
 
-/// A publish returns while a session's settlement queue is held.
-///
-/// The merge queue publishes from inside its own state machine, so anything the activity reads is a
-/// lock the queue's thread holds while it holds the queue: one thread holding the settlement queue
-/// was enough to wedge it. The wait is bounded on purpose - a test for a deadlock that hangs says
-/// nothing.
+/// A publish returns while a session's settlement queue is held. The merge queue publishes
+/// from inside its own state machine, so anything the activity reads is a lock the queue's
+/// thread holds while it holds the queue:
 #[test]
 fn a_publish_returns_while_the_settlement_queue_is_held() {
     let hub = Hub::new("s-held-queue");
@@ -419,11 +405,6 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
 }
 
 /// A session closing itself does not wedge a publisher.
-///
-/// `JobWatchers::stop` publishes the held counts as it hands them up, and it used to do that while
-/// holding the settlement queue - one non-reentrant mutex taken twice on one thread, so every
-/// publisher on the box queued behind it. A held result is the state that makes `stop` speak, so
-/// the test holds one first.
 #[test]
 fn a_session_closing_itself_does_not_wedge_a_publisher() {
     let hub = Hub::new("s-stopping");
@@ -466,12 +447,8 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
     );
 }
 
-/// A runner that answers only when the test says so, so a watcher is really live for a while
-/// and then really ends - the two states the line has to tell apart.
-///
-/// `Running` at the `watch` probe is what makes the handle a subagent (`Unknown` is what means *a
-/// job*), and the short sleep stands in for the chunk `collect` blocks for - a fake that returned
-/// at once would spin this thread and leave no window to observe.
+/// A runner that answers only when the test says so, so a watcher is really live for a
+/// while and then really ends - the two states the line has to tell apart.
 struct AnswersWhenTold {
     handle: String,
     done: AtomicBool,
@@ -501,11 +478,7 @@ impl TaskRunner for AnswersWhenTold {
 }
 
 /// The line is right while a watcher lives and after it has gone - the two states a `wait`
-/// reads differently.
-///
-/// A live child the plan waits on is `Child`; once it answers, the handle leaves the set and what
-/// is left is `Delivery` - the settlement the model is owed - with no child in the list. Nothing
-/// in this test asks for the second reading: the watcher publishes it as it ends.
+/// reads differently. A live child the plan waits on is `Child`;
 #[test]
 fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
     let hub = Hub::new("s-child-gone");

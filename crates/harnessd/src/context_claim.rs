@@ -78,9 +78,7 @@ pub const ANCHORS: &[&str] = &["context", "room"];
 pub const SELF: &str = "myself";
 
 /// The words that make a window a claim about the speaker's OWN context: first person, what
-/// *remains* of it, or wanting a *fresh* one. Measured: `left` let in *"the context window is left
-/// unknown"*, and `turn` and `session` let in the daemon's own *"This session is over its context
-/// budget"*.
+/// *remains* of it, or wanting a *fresh* one. Measured:
 pub const OWNERS: &[&str] = &[SELF, "remaining", "fresh"];
 
 /// The file each claim is appended to, under the workspace.
@@ -121,8 +119,7 @@ pub const EXEMPLARS: &[&str] = &[
     "It is too big for my context, so I'm dispatching it with the sites named.",
     // The capacity claim used to RATION work, in reasoning - pg-noop's reasoning, where it
     // appeared 295 times in one transcript generation: *"Hmm - my context 49% → one call"*.
-    // Nothing stops, so none of the families above match; the work is cut to fit a budget the
-    // harness owns.
+    // Nothing stops, so none of the families above match;
     "My context is at 49%, so one call.",
     "My context is long, so keep the reply tight.",
     "My context is at 90%, so one call and a tight reply.",
@@ -134,13 +131,9 @@ pub const EXEMPLARS: &[&str] = &[
     "The nag, and my context is at 73%, plenty.",
 ];
 
-/// The other claim about the speaker's own context: that it HOLDS something - the nearest sense
-/// to an excuse and its opposite. *"I have it in context."* is first person, about the context and
-/// short, so it scored 0.530. A window is a claim only when it is nearer an [`EXEMPLARS`] sentence
-/// than all of these; worded apart from the tests' sentences so the tests measure the contrast.
-///
-/// MEASURED 2026-10-12 against this box's store: 14 sentences over the floor before, 6 after, and
-/// the 8 it stopped are all *"I have it in context."* and *"Let me do it - I have it in context."*.
+/// The other claim about the speaker's own context: that it HOLDS something - the nearest
+/// sense to an excuse and its opposite. *"I have it in context."* is first person, about
+/// the context and short, so it scored 0.530.
 pub const HOLDING: &[&str] = &[
     "I have that in my context already.",
     "I have the file in context, no need to read it again.",
@@ -180,10 +173,9 @@ pub const BACKGROUND: &[&str] = &[
     "The layout leaves room for the marker at the end of the row.",
 ];
 
-/// The words of a text, as this check counts them. `similarity::terms`'s rule - lowercased runs
-/// of letters and digits, at least [`MIN_TERM`] long - with one difference: `I`, `my`, `me`
-/// `mine` and `myself` become [`SELF`], and `let me` becomes `letme`. `I'm` and `I've` come out as
-/// `I` plus a fragment the length rule drops, so they are first person too.
+/// The words of a text, as this check counts them. `similarity::terms`'s rule - lowercased
+/// runs of letters and digits, at least [`MIN_TERM`] long - with one difference: `I`, `my`,
+/// `me` `mine` and `myself` become [`SELF`], and `let me` becomes `letme`.
 pub fn words(text: &str) -> Vec<String> {
     let raw: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
@@ -289,10 +281,7 @@ pub fn score(sentence: &str) -> f64 {
     best
 }
 
-/// The sentences of a turn's prose, fenced code skipped. A paragraph is joined across its lines
-/// (a model wraps a sentence wherever it likes), a list item or heading starts a new one, and a
-/// sentence ends at `.`, `!`, `?`, `;` or `:` followed by whitespace or the end - never at the
-/// period inside `2.7` or `config.rs`.
+/// The sentences of a turn's prose, fenced code skipped.
 pub fn sentences(text: &str) -> Vec<String> {
     let mut paragraphs: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -394,12 +383,9 @@ impl Fill {
     }
 }
 
-/// The line the model is given, in the harness's voice.
-///
-/// No numbers, because a fill quoted back is one more thing to reason about, and on a false hit
-/// the numbers were the only part of the line that pushed it anywhere. And no quote
-/// quoting the model's sentence back planted the *"my context N%"* tic it was there to stop. The
-/// measurement still decides whether the line is sent and still goes to the log and the operator.
+/// The line the model is given, in the harness's voice. No numbers, because a fill quoted
+/// back is one more thing to reason about, and on a false hit the numbers were the only
+/// part of the line that pushed it anywhere.
 pub fn notice(_claim: &Claim, _fill: &Fill) -> String {
     "[context check] Don't size the work by context; the harness handles it. If context was the \
      only reason you stopped, continue the task."
@@ -482,8 +468,7 @@ pub struct Finding {
 impl Finding {
     /// One line to [`LOG`]: the sentence, its score, the fill and window, and whether the model
     /// was told. Best-effort, like the offers' log - a check that fails to write a line about
-    /// itself is still a check. `logs` is the session's logs directory (`Config::daemon_logs`)
-    /// never the workspace.
+    /// itself is still a check.
     pub fn log(&self, logs: &Path, session: &str) {
         let line = serde_json::json!({
             "at": std::time::SystemTime::now()
@@ -686,9 +671,8 @@ mod tests {
     }
 
     /// Having something in context is not a claim about running out of it - *"I have it in
-    /// context."* scored 0.313 and was slapped at 888,887 of 1,000,000. Both it and *"the task is
-    /// intricate and I have the context"* are short, first person and about the context; neither
-    /// says anything is short.
+    /// context."* scored 0.313 and was slapped at 888,887 of 1,000,000. Both it and *"the task
+    /// is intricate and I have the context"* are short, first person and about the context;
     #[test]
     fn having_it_in_context_is_not_a_claim() {
         for s in [

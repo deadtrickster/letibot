@@ -1,15 +1,10 @@
-//! A reviewer's refusal reaches a LIVE session - the child that wrote the branch, or the session that
-//! enqueued it.
-//!
-//! The queue puts a refusal where the work is (the row is `rejected` with the verdict on it), while
-//! the child that did the work may be dead by then and the session that ran `task_start` only sees a
-//! `!` line on the head's screen, which is not something a model can act on.
-//!
-//! The door is [`deliver_refusal`], reached the one way a refusal is reached: a reviewer hands `reject`
-//! in at the desk and [`serve`] moves the row. So every test here goes through [`serve`] with a real
-//! store, a real desk and a `deliver` seam that answers BY NAME - the sessions in `live` take the
-//! message, the rest refuse with the sentence the real door gives. A stub that answered by a flag
-//! would let a door that asked the wrong session pass.
+//! A reviewer's refusal reaches a LIVE session - the child that wrote the branch, or the
+//! session that enqueued it. The queue puts a refusal where the work is (the row is
+//! `rejected` with the verdict on it), while the child that did the work may be dead by
+//! then and the session that ran `task_start` only sees a `!` line on the head's screen,
+//! which is not something a model can act on. The door is [`deliver_refusal`], reached the
+//! one way a refusal is reached: a reviewer hands `reject` in at the desk and [`serve`]
+//! moves the row.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -74,10 +69,9 @@ fn seated(store: &Store, id: &str, parent: Option<&str>, workspace: &str) {
         .expect("the session row");
 }
 
-/// The queue as the daemon leaves it when a branch is put up for review: a child under the root that
-/// ran the `task_start`, a review row whose `session_id` is the CHILD, and a stranger that shares the
-/// store. The child's row names its parent on purpose: the root is only reachable by walking, so a
-/// fixture written as its own root would pass whether the walk worked or not.
+/// The queue as the daemon leaves it when a branch is put up for review: a child under the
+/// root that ran the `task_start`, a review row whose `session_id` is the CHILD, and a
+/// stranger that shares the store. The child's row names its parent on purpose:
 fn the_queue(tag: &str) -> (TempDir, Store) {
     the_queue_with(tag, true)
 }
@@ -172,24 +166,17 @@ fn a_daemon(live: &[&str], heard: Arc<Heard>) -> impl Fn(&str, &str) -> Result<S
     }
 }
 
-/// A directory that looks like a reviewer's tree - it exists and holds something, which is what
-/// [`verdict`] asks of the path a child was given. A bare `TempDir` is EMPTY, and an empty directory
-/// is one of the two shapes a verdict must not be taken about, so a fixture that wants a verdict
-/// written has to say its tree has content.
+/// A directory that looks like a reviewer's tree - it exists and holds something, which is
+/// what [`verdict`] asks of the path a child was given.
 fn a_tree(tag: &str) -> TempDir {
     let dir = TempDir::new(tag);
     std::fs::write(dir.0.join("a.txt"), "one\n").expect("a file in the tree");
     dir
 }
 
-/// One reviewer's verdict, handed in and served - the row claimed by this daemon with the reviewer on
-/// it, the desk opened for that reviewer, the submission at the desk, and then `passes` passes of
-/// [`serve`]: the first writes the verdict, the rest are the passes after it.
-///
-/// `live` is what the daemon's liveness door ([`Pool::live`]) answers for a session. It is passed
-/// apart from the `deliver` seam on purpose: they are two different questions (who the daemon holds
-/// and whether a message to it goes), and a fixture answering both from one list could not tell a door
-/// that asked the wrong session from a door that asked a dead one.
+/// One reviewer's verdict, handed in and served - the row claimed by this daemon with the
+/// reviewer on it, the desk opened for that reviewer, the submission at the desk, and then
+/// `passes` passes of [`serve`]:
 #[allow(clippy::too_many_arguments)]
 fn judge(
     store: &Store,
@@ -320,11 +307,9 @@ fn the_queue_in_a_repository(tag: &str) -> (TempDir, Store, String) {
     (dir, store, key)
 }
 
-/// The child that wrote the branch is told, and nobody else is - as a message to that live session
-/// carrying the reviewer's reasons WHOLE, the branch, the head it judged and the worktree.
-///
-/// The negative half is asserted in the same test on purpose: a door that told every session on the
-/// store about every refusal would pass a test of the positive half alone.
+/// The child that wrote the branch is told, and nobody else is - as a message to that live
+/// session carrying the reviewer's reasons WHOLE, the branch, the head it judged and the
+/// worktree. The negative half is asserted in the same test on purpose:
 #[test]
 fn the_child_that_wrote_the_branch_is_told_the_reviewers_own_words() {
     let (_dir, store) = the_queue("the-child");
@@ -435,11 +420,9 @@ fn the_session_that_enqueued_it_is_told_when_the_child_is_gone() {
     );
 }
 
-/// A refusal NOBODY can take is raised, and the sentence is TRUE about why - it quotes both attempts
-/// in their own words rather than asserting that a session is gone.
-///
-/// The two failures are deliberately different kinds: a session that is not live, and a daemon whose
-/// bell has closed. *That session is gone* is false of the second.
+/// A refusal NOBODY can take is raised, and the sentence is TRUE about why - it quotes both
+/// attempts in their own words rather than asserting that a session is gone. The two
+/// failures are deliberately different kinds:
 #[test]
 fn a_refusal_nobody_can_take_is_raised_with_both_attempts() {
     let (_dir, store) = the_queue("nobody");
@@ -548,15 +531,9 @@ fn a_child_nobody_can_walk_from_is_tried_alone_and_then_raised() {
     );
 }
 
-/// The refusal reaches a live session of the branch's workspace when the branch's own tree is dead - a
-/// child that finished hours earlier, a root that exists in the store with nobody attached, and
-/// reasons that ended in a card saying `refused, told nobody`.
-///
-/// The three negatives are asserted with the positive one because each is a way to be wrong about the
-/// same thing: a live session of ANOTHER workspace, a live child of this one (a subagent is its
-/// root's business), and a session ROW of this workspace that no daemon holds -
-/// [`a_refusal_nobody_anywhere_can_take_names_every_party_it_tried`] - are all sessions the chain must
-/// not hand this refusal to.
+/// The refusal reaches a live session of the branch's workspace when the branch's own tree
+/// is dead - a child that finished hours earlier, a root that exists in the store with
+/// nobody attached, and reasons that ended in a card saying `refused, told nobody`.
 #[test]
 fn a_refusal_reaches_the_live_session_of_the_workspace_when_the_branchs_tree_is_dead() {
     let (dir, store, key) = the_queue_in_a_repository("workspace");
@@ -633,12 +610,9 @@ fn a_refusal_reaches_the_live_session_of_the_workspace_when_the_branchs_tree_is_
     );
 }
 
-/// One refusal is one message: the first party that takes it is the only one told - with the root and
-/// a live session of the workspace both able to take it, the root is told and the workspace's session
-/// is not asked at all.
-///
-/// The negative half is the point: a chain that walked on past its first success would tell two
-/// sessions about one refusal, and the second would be answering for work it never saw.
+/// One refusal is one message: the first party that takes it is the only one told - with
+/// the root and a live session of the workspace both able to take it, the root is told and
+/// the workspace's session is not asked at all. The negative half is the point:
 #[test]
 fn the_first_party_that_takes_it_is_the_only_one_told() {
     let (_dir, store, key) = the_queue_in_a_repository("first-wins");
@@ -665,11 +639,9 @@ fn the_first_party_that_takes_it_is_the_only_one_told() {
     assert!(heard.raised("refusal_undelivered").is_empty());
 }
 
-/// A refusal nothing can take names every party it tried - the child, the root, and the fact that no
-/// live session of the branch's workspace was left.
-///
-/// The session row of this workspace that no daemon holds is never even messaged: a row in the store is
-/// not a session, and a message into it is a message into a hole.
+/// A refusal nothing can take names every party it tried - the child, the root, and the
+/// fact that no live session of the branch's workspace was left. The session row of this
+/// workspace that no daemon holds is never even messaged:
 #[test]
 fn a_refusal_nobody_anywhere_can_take_names_every_party_it_tried() {
     let (_dir, store, key) = the_queue_in_a_repository("nobody-at-all");
@@ -757,11 +729,9 @@ fn a_refusal_is_delivered_once_not_on_every_pass() {
     assert!(heard.raised("refusal_undelivered").is_empty());
 }
 
-/// A SECOND refusal of the same row is a second message, with the SECOND verdict's words.
-///
-/// A branch that moves after a refusal goes back to review, so one row can be refused twice - the
-/// second time about a branch somebody has since repaired. A door that keyed *told* on the row id alone
-/// would swallow the second verdict as a repeat of the first. Between the two verdicts nothing is said.
+/// A SECOND refusal of the same row is a second message, with the SECOND verdict's words. A
+/// branch that moves after a refusal goes back to review, so one row can be refused twice -
+/// the second time about a branch somebody has since repaired.
 #[test]
 fn a_second_refusal_of_the_same_row_is_a_second_message() {
     let (_dir, store) = the_queue("twice");
@@ -882,11 +852,9 @@ fn needs_human_raises_for_the_operator_once_and_tells_no_session() {
 
 // ===== A fix is for the tip that is red NOW =====
 
-/// A red tip's reject opens no fix branch once the target has moved past that tip: the reviewer judged
-/// a tree the target no longer has, so a branch cut from it could never land.
-///
-/// The refusal is written on the row, because a refusal nobody records is a review that looks like it
-/// did nothing - and it is NOT raised: the tip at the new sha is gated, and reviewed if it is red too.
+/// A red tip's reject opens no fix branch once the target has moved past that tip: the
+/// reviewer judged a tree the target no longer has, so a branch cut from it could never
+/// land.
 #[test]
 fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
     let dir = TempDir::new("fix-superseded");
@@ -1061,23 +1029,8 @@ impl TaskRunner for Recorder {
     }
 }
 
-/// A reviewer on this machine works in a checkout of the head it judges, and NOT at `main`'s tip: a
-/// reviewer that judges the wrong tree is worse than a slow one.
-///
-/// The host arm used to hand the reviewer `r.repository` - the operator's own checkout, on whatever
-/// branch they happened to have out - while the child's workspace was the DAEMON's, so a review read a
-/// tree nobody had asked it about. Three things make it read the branch and nothing else, and each one
-/// fails if the arm goes back to `r.repository.clone`
-///
-/// * the spec the spawn is handed carries a `worktree` - the field that makes a child's workspace
-///   something other than its parent's - and its path is not the repository
-/// * `git rev-parse HEAD` in that tree is the ROW's `head_sha`, with `main` moved on past it so that
-///   *the head it judges* and *the tip* are two different commits
-/// * the file `main` moved still holds the BRANCH's bytes, and the branch's own file is there.
-///
-/// The prompt's `cwd` is asserted with them: that is the path the reviewer's `bash` is told to run in
-/// and a reviewer whose workspace was right while its `cwd` was the operator's tree would read the
-/// branch with `read` and the operator's tree with `grep`.
+/// A reviewer on this machine works in a checkout of the head it judges, and NOT at
+/// `main`'s tip: a reviewer that judges the wrong tree is worse than a slow one.
 #[test]
 fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
     use crate::mergequeue::serve::tests::{branch, commit, repo, sh};
@@ -1203,12 +1156,8 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
     );
 }
 
-/// A project that asks for VMs still gets one: the isolated arm, which no test of its own was left
-/// guarding when the host became the default.
-///
-/// Nothing is booted. What is asserted is the placement the daemon DERIVES from the project's file and
-/// the spec the spawn is handed, and both are decided before any child exists, so the arm cannot rot
-/// for want of a hypervisor to exercise it on.
+/// A project that asks for VMs still gets one: the isolated arm, which no test of its own
+/// was left guarding when the host became the default. Nothing is booted.
 #[test]
 fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
     use crate::mergequeue::serve::tests::{branch, repo, sh};
@@ -1344,16 +1293,9 @@ fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
     );
 }
 
-/// A clone nobody is on any more is removed by the next pass, and a live row's is kept - the assertion
-/// that would have caught hundreds of megabytes of never-removed clones (see [`sweep_clones`]).
-///
-/// The row that matters most is the WITHDRAWN one: a verdict and a failed attempt both pass through
-/// this file, but a person's `/queue veto` and a deadline move the row in `mergequeue::serve` - which
-/// is why the rule is *its row is not waiting or reviewing* rather than a teardown at each ending. No
-/// clone is really made here: what is under test is which DIRECTORIES go.
-///
-/// The grace is named as ZERO, on purpose - [`sweep_clones`]'s own grace is what keeps a tree that is
-/// still being written, and the next test is about it. This one asks only the row rule.
+/// A clone nobody is on any more is removed by the next pass, and a live row's is kept -
+/// the assertion that would have caught hundreds of megabytes of never-removed clones (see
+/// [`sweep_clones`]). The row that matters most is the WITHDRAWN one:
 #[test]
 fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
     let dir = TempDir::new("review-sweep");
@@ -1485,14 +1427,9 @@ fn age(path: &Path, secs: u64) {
         .expect("its mtime");
 }
 
-/// A live row's trees are NEVER swept, however old; a dead row's go once they are old - the rule that
-/// makes the sweep safe ([`sweep_clones`]), asserted apart from the store's own words about a row.
-///
-/// A row can leave `waiting`/`reviewing` while its clone is still being made - a person's veto, a
-/// block, a target that moved - and the store's answer at that instant is not evidence that the tree is
-/// nobody's. So a YOUNG tree of a withdrawn row is kept, and so is an ANCIENT tree of a live row (it
-/// may have been re-seated a second ago, with its previous reviewer still standing in it). The three
-/// spellings a tree has are named here exactly as [`git::clone_branch`] writes them.
+/// A live row's trees are NEVER swept, however old; a dead row's go once they are old - the
+/// rule that makes the sweep safe ([`sweep_clones`]), asserted apart from the store's own
+/// words about a row.
 #[test]
 fn a_live_rows_trees_are_never_swept_and_a_dead_rows_go_once_they_are_old() {
     let dir = TempDir::new("review-grace");
@@ -1655,15 +1592,9 @@ fn a_trees_name_names_its_row() {
     }
 }
 
-/// A real clone with the sweep running against it, and the row NOT live, is not disturbed - the
-/// interleaving that matters: `git clone` writing a tree while the review pass sweeps the directory it
-/// is writing into.
-///
-/// The row is withdrawn BEFORE the clone starts, which is the worst case the sweep can meet: the row
-/// rule says *nobody is on this tree*. What saves it is the two rules of [`sweep_clones`] - the clone is
-/// written under a `.tmp` name, and a tree younger than the grace is left alone. The assertion is the
-/// outcome a reviewer needs: the clone SUCCEEDS, and the tree at the row's name is a complete clone at
-/// the head the row named.
+/// A real clone with the sweep running against it, and the row NOT live, is not disturbed -
+/// the interleaving that matters: `git clone` writing a tree while the review pass sweeps
+/// the directory it is writing into.
 #[test]
 fn the_sweep_does_not_disturb_a_clone_it_meets() {
     use crate::mergequeue::serve::tests::{branch, repo, sh};
@@ -1783,13 +1714,9 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
 
 // ===== A tree that could not be made =====
 
-/// A clone that fails is a WAIT, not an attempt, and the next pass tries again - the three attempts
-/// are for a review that cannot RUN, and a tree that could not be made says nothing about the branch
-/// (see [`Pool::wait_for_tree`]).
-///
-/// The first attempt's clone really fails here (the branch is not in the repository yet), and the
-/// second - after the branch exists - starts a reviewer, with `attempts` still 0 and nothing raised in
-/// between.
+/// A clone that fails is a WAIT, not an attempt, and the next pass tries again - the three
+/// attempts are for a review that cannot RUN, and a tree that could not be made says
+/// nothing about the branch (see [`Pool::wait_for_tree`]).
 #[test]
 fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
     use crate::mergequeue::serve::tests::{repo, sh};
@@ -1931,13 +1858,9 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
     assert!(row.reviewer.is_some(), "{row:?}");
 }
 
-/// A reviewer whose tree went away mid-review does not get to answer `cannot_decide` about the branch
-/// - the row says the review ENVIRONMENT went away, and the review waits for a fresh tree.
-///
-/// A reviewer that has read two files and run two `git` commands, then finds every later call failing at
-/// spawn (a workspace with 0 entries), hands in `needs_human` - which the queue would write as *the
-/// branch cannot be decided*, a claim about somebody's code from a reviewer that saw a fraction of it.
-/// So the tree the child was GIVEN is asked for before any verdict is taken.
+/// A reviewer whose tree went away mid-review does not get to answer `cannot_decide` about
+/// the branch A reviewer that has read two files and run two `git` commands, then finds
+/// every later call failing at spawn (a workspace with 0 entries), hands in `needs_human` -
 #[test]
 fn a_verdict_about_a_tree_that_went_away_is_a_wait_and_says_so() {
     use crate::mergequeue::serve::tests::{branch, repo};

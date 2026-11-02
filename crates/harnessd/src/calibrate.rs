@@ -1,34 +1,11 @@
-//! Replaying the corpus against the guard, which is how an oracle's scope stops being a grant
-//! and becomes a measurement - [`letibot_tools::authorise::OracleScope`] has always said that
-//! widening it is *"a configuration change with a measurement attached"*, and this is it.
-//!
-//! # What is replayed, and against what
-//!
-//! The gate has been writing the rows for this all along: `asked = 1` is a call a person was put in
-//! front of and answered - the ground truth. Each call is rebuilt from the row's INPUT (the tool
-//! its arguments, the mode, the trail) and run back through the live gate, not from `action` or
-//! `baseline`, which are layer A's *reading*: keeping only the reading would make the corpus
-//! unusable the day layer A changes, and changing layer A is what it is collected for.
-//!
-//! # The four outcomes, and why only one of them is a fault
-//!
-//! | guard | operator | |
-//! |---|---|---|
-//! | allow | admitted | agreed - a prompt this scope would have saved |
-//! | allow | refused | FALSE ALLOW - the guard would have let through what the operator stopped |
-//! | not allow | admitted | a needless prompt: safe, and the cost of a narrow scope |
-//! | not allow | refused | agreed |
-//!
-//! Only the second is a fault, and it is not traded off against the others: an intent is
-//! recommended when it has enough rows AND none of them is a false allow. A percentage would let a
-//! guard that is right 95% of the time authorise the thing an operator stopped.
-//!
-//! # What it does not do
-//!
-//! It does not widen anything by itself: it prints what the evidence supports and writes it, on
-//! `--write`, to a file the daemon reads and the operator can delete. The banner then says where
-//! the guard's authority came from in one sentence - these numbers, the `[gatekeeper]` lines, or
-//! both.
+//! Replaying the corpus against the guard, which is how an oracle's scope stops being a
+//! grant and becomes a measurement - [`letibot_tools::authorise::OracleScope`] has always
+//! said that widening it is *"a configuration change with a measurement attached"*, and
+//! this is it. # What is replayed, and against what The gate has been writing the rows for
+//! this all along: `asked = 1` is a call a person was put in front of and answered - the
+//! ground truth. Each call is rebuilt from the row's INPUT (the tool its arguments, the
+//! mode, the trail) and run back through the live gate, not from `action` or `baseline`,
+//! which are layer A's *reading*:
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -61,13 +38,9 @@ pub struct Replayed {
     /// than read from the corpus: the store's `shown` column holds whatever adjudicator ANSWERED
     /// and for a row the operator answered that is the head's brief.
     pub brief: Option<String>,
-    /// Why an `Unsure` was unsure, when it was one - and `None` for a verdict and for a
-    /// row where no model spoke.
-    ///
-    /// Carried so a replay can answer *how often does the guard run out of room* by counting
-    /// rather than by reading prose: `UnsureKind::OutOfRoom` is the token the store keeps in
-    /// `oracle_reading`, and the ceiling's justification (`--oracle-max-tokens`) has to be
-    /// measurable from the same instrument that measures recall.
+    /// Why an `Unsure` was unsure, when it was one - and `None` for a verdict and for a row
+    /// where no model spoke. Carried so a replay can answer *how often does the guard run out
+    /// of room* by counting rather than by reading prose:
     pub unsure: Option<letibot_tools::authorise::UnsureKind>,
 }
 
@@ -103,11 +76,9 @@ pub struct Report {
     pub store: String,
 }
 
-/// How many rows carrying an intent before it may be recommended at all.
-///
-/// Deliberately not a statistical threshold: it is a floor under "somebody looked", and the real
-/// safety property is the zero false allows beside it. A number large enough to be a confidence
-/// interval would mean no box could ever calibrate anything.
+/// How many rows carrying an intent before it may be recommended at all. Deliberately not a
+/// statistical threshold: it is a floor under "somebody looked", and the real safety
+/// property is the zero false allows beside it.
 pub const MIN_ROWS: usize = 3;
 
 impl Report {
@@ -126,13 +97,7 @@ impl Report {
     }
 
     /// The furthest scope the evidence earns, floored at the project and capped at
-    /// `host_other`.
-    ///
-    /// Two rules. The cap: `external` is off the box, where a decision cannot be taken back, so no
-    /// number of agreed rows makes a mistake there recoverable - it stays an explicit
-    /// `[gatekeeper] max_scope` declaration or nothing. The floor with a count: a scope is only
-    /// reached if `MIN_ROWS` AGREED rows landed at it or beyond, and none beyond it was a false
-    /// allow - without the count, one agreed row at `host_other` would earn the whole reach.
+    /// `host_other`. Two rules. The cap:
     fn earned_reach(&self) -> EffectScope {
         use EffectScope::*;
         // Nearest-first; `external` is not a candidate a replay can choose.
@@ -243,22 +208,17 @@ pub const ARMS: &[Arm] = &[
     },
 ];
 
-/// Replay up to `limit` operator-answered rows from `store` against `cfg`'s guard.
-///
-/// The guard is asked with an UNRESTRICTED scope, which is the only way to measure what it should
-/// be trusted with: an oracle is never asked about an action outside its scope, so replaying under
-/// the current one would measure only what it is already allowed to answer. Nothing admits during
-/// a replay - no gate runs, no tool is called, and the answers go into a table.
+/// Replay up to `limit` operator-answered rows from `store` against `cfg`'s guard. The
+/// guard is asked with an UNRESTRICTED scope, which is the only way to measure what it
+/// should be trusted with:
 pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String> {
     // The arm that SHIPS, so a calibration measures the guard as it runs.
     replay_arm(cfg, store, limit, ARMS[3])
 }
 
-/// The rows to replay, taken once.
-///
-/// `--compare` runs several arms over "the same" calls, and the store is being written by a live
-/// daemon while it does: reading per arm gave each one a different row set (measured: 26, 28, 34
-/// 37), which is not a comparison of anything. Snapshot first, then vary one thing.
+/// The rows to replay, taken once. `--compare` runs several arms over "the same" calls, and
+/// the store is being written by a live daemon while it does: reading per arm gave each one
+/// a different row set (measured: 26, 28, 34 37), which is not a comparison of anything.
 pub fn rows_to_replay(store: &Path, limit: usize) -> Result<Vec<StoredAdjudication>, String> {
     let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
     let rows = db
@@ -356,15 +316,7 @@ pub fn replay_rows(
 
         // The surroundings a real session declares. Without them the shell is
         // `ShellTrust::Unknown`, under which a bare command name does not resolve - and an
-        // unresolved reading is a worse measurement: the guard is judging layer A's attempt rather
-        // than the action. Measured before the consult was added: 26 of 28 rows came back "the
-        // action did not resolve … No oracle was consulted", so no change to the prompt moved a
-        // single verdict.
-        //
-        // Pinned outright, rather than derived from THIS invocation's seat: the `--calibrate`
-        // process has no exec backend of its own, so `surroundings_for` would call the shell
-        // `Unknown` and every command would fail to resolve again. The claim is about the session
-        // the row came FROM, which did spawn through `HostProcesses`.
+        // unresolved reading is a worse measurement:
         let sur = letibot_tools::Surroundings::from_env(workspace.clone()).with_pinned_shell(
             "replaying a command that already ran in a session whose exec backend spawns /bin/sh -c with the environment cleared and PATH fixed at seat time",
         );
@@ -389,9 +341,8 @@ pub fn replay_rows(
             target_exists: None,
         });
         // The examples the guard would have had AT THIS POINT, and not one answer later. A live
-        // gate builds these from its own audit log; a replay opens a fresh gate per row, so without
-        // this the brief carries none. Feeding it every answer in the corpus would be worse than
-        // blind - it would show the guard answers the operator had not given yet.
+        // gate builds these from its own audit log; a replay opens a fresh gate per row, so
+        // without this the brief carries none.
         req.examples = answered_before.clone();
         answered_before.insert(
             0,
@@ -467,10 +418,9 @@ pub fn replay_rows(
     Ok(report)
 }
 
-/// The agent's own prose for the round a decision came from.
-///
-/// The corpus does not store it, so it is read back out of the transcript: the newest assistant
-/// item written before the decision. Bounded like an utterance, for the same reason.
+/// The agent's own prose for the round a decision came from. The corpus does not store it,
+/// so it is read back out of the transcript: the newest assistant item written before the
+/// decision. Bounded like an utterance, for the same reason.
 fn claim_before(db: &Store, session_id: &str, before_ms: i64) -> Option<String> {
     let text: Option<String> = db
         .connection()
@@ -532,12 +482,9 @@ fn req_intents(
     b.intents.into_iter().collect()
 }
 
-/// `tool name -> access class`, for the tools the gate has ever been asked about.
-///
-/// A table rather than the registry, because the registry is built inside `Harness::open` with a
-/// backend and a session behind every tool, and a replay has neither. Short because the gate only
-/// ever sees gated tools - reads never reach it - and a tool missing from it is SKIPPED with its
-/// name in the report, never guessed.
+/// `tool name -> access class`, for the tools the gate has ever been asked about. A table
+/// rather than the registry, because the registry is built inside `Harness::open` with a
+/// backend and a session behind every tool, and a replay has neither.
 fn access_by_tool() -> BTreeMap<&'static str, Access> {
     [
         ("bash", Access::Exec),

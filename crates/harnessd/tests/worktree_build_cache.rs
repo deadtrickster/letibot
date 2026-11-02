@@ -1,16 +1,11 @@
-//! A `task_start` worktree is handed over exactly as its branch is, and the build cache is shared
-//! through the child's environment.
-//!
-//! The bug this pins: `start_worktree` wrote `<worktree>/.cargo/config.toml` and "hid" it by
-//! appending to `$(git rev-parse --git-dir)/info/exclude` - which in a worktree is
-//! `.git/worktrees/<name>/info/exclude`, a file git does not read. So every worktree showed
-//! `??.cargo/`, a child's `git add -A` committed it, and a repository that TRACKS its own
-//! `.cargo/config.toml` had that file overwritten in the child's tree.
-//!
-//! What is required now: the worktree has an empty `git status --porcelain` and no `.cargo/` is
-//! written into it; a repository that tracks `.cargo/config.toml` keeps it byte for byte; and the
-//! child's commands carry `CARGO_TARGET_DIR` = the main tree's `target/`, through `Config::build_env`
-//! into the exec host's standing environment, which is what survives the host's `env_clear`.
+//! A `task_start` worktree is handed over exactly as its branch is, and the build cache is
+//! shared through the child's environment. The bug this pins: `start_worktree` wrote
+//! `<worktree>/.cargo/config.toml` and "hid" it by appending to `$(git rev-parse
+//! --git-dir)/info/exclude` - which in a worktree is `.git/worktrees/<name>/info/exclude`,
+//! a file git does not read. So every worktree showed `??.cargo/`, a child's `git add -A`
+//! committed it, and a repository that TRACKS its own `.cargo/config.toml` had that file
+//! overwritten in the child's tree. What is required now: the worktree has an empty `git
+//! status --porcelain` and no `.cargo/` is written into it;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

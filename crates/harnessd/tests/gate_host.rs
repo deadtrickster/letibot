@@ -1,14 +1,9 @@
-//! The gate on a declared host, end to end, against a fake ssh - the second implementation of
-//! `GateRunner` run through the real transport: a real `rsync`, a real `git bundle`, real
-//! `git worktree`, real `ssh` argv and the real bounded runner.
-//!
-//! The "host" is a directory on this box: `$LETIBOT_SSH` skips ssh's own flags and runs what is
-//! left with `HOME` pointing at the rig, so `root = "~/letibot-remote"` lands under the fixture and
+//! The gate on a declared host, end to end, against a fake ssh - the second implementation
+//! of `GateRunner` run through the real transport: a real `rsync`, a real `git bundle`,
+//! real `git worktree`, real `ssh` argv and the real bounded runner. The "host" is a
+//! directory on this box: `$LETIBOT_SSH` skips ssh's own flags and runs what is left with
+//! `HOME` pointing at the rig, so `root = "~/letibot-remote"` lands under the fixture and
 //! nothing here reaches a network or the operator's own directory.
-//!
-//! It pins that the tree AND the repository's metadata arrive, that steps run in order and stop at
-//! the first red one, that `CARGO_TARGET_DIR` is the host's cache outside the tree, that a second
-//! run of one repository is warm, and that an unreachable host is `Infra` with a sentence.
 
 use std::path::{Path, PathBuf};
 
@@ -213,9 +208,6 @@ impl Rig {
 
     /// The n-th launcher the host was asked to run - the step, as the machine received it. The
     /// "host" is a directory here, so a test can read what a real gate could only see in a row.
-    ///
-    /// Indexed by ORDER and not by the gate's own counter, because that counter is shared with the
-    /// bundle's temporary name: a first gate starts its steps at 1 and a warm one starts at 0.
     fn launcher(&self, n: usize) -> String {
         let run = self
             .dir
@@ -266,9 +258,8 @@ impl Drop for Rig {
 }
 
 /// The tree and the repository's metadata both arrive - the two transports, measured by one
-/// step that could not pass without either: a file from the working tree, `main` from the bundle
-/// and `git diff main HEAD` naming the branch's own file. And the build cache is the host's
-/// outside the tree, so a `git clean` or an `rsync --delete` cannot take it.
+/// step that could not pass without either: a file from the working tree, `main` from the
+/// bundle and `git diff main HEAD` naming the branch's own file.
 #[test]
 fn the_tree_and_the_repository_arrive_and_the_steps_run_there() {
     let _only = only_rig();
@@ -360,13 +351,9 @@ fn a_step_that_fails_on_the_host_is_red_and_the_next_one_never_runs() {
     );
 }
 
-/// A step still running at the deadline is killed on the host and the row is `timed_out` - and
-/// nothing is left running there.
-///
-/// "At the deadline, not at the far side's end" is a fact about the STEP, not a stopwatch over
-/// the box: the step lives two minutes and writes one line per second, so a gate that waited for
-/// it could only come back after those two minutes - past [`CEILING`] - while the step's own count
-/// says how much of it ran before the gate ended it.
+/// A step still running at the deadline is killed on the host and the row is `timed_out` -
+/// and nothing is left running there. "At the deadline, not at the far side's end" is a
+/// fact about the STEP, not a stopwatch over the box:
 #[test]
 fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let _only = only_rig();
@@ -453,12 +440,9 @@ const SLOW_POLL_SSH: &str = "#!/bin/bash\n\
      esac\n\
      exec bash -lc \"$1\"\n";
 
-/// A host busy enough to be slow to answer is not a host that failed the gate, twice over
-///
-/// * a poll that takes twelve seconds is an answer, not a failure - the bound is a question
-///   about the machine, and a busy machine takes seconds to fork a shell
-/// * a poll that misses is asked again - the answer is `tail -c +<offset>`, so nothing is
-///   lost, and only the step's own deadline (or a machine that is not there) may end it.
+/// A host busy enough to be slow to answer is not a host that failed the gate, twice over *
+/// a poll that takes twelve seconds is an answer, not a failure - the bound is a question
+/// about the machine, and a busy machine takes seconds to fork a shell * a poll that misses
 #[test]
 fn a_slow_poll_is_asked_again_and_does_not_kill_the_step() {
     let _only = only_rig();
@@ -574,9 +558,7 @@ fn an_unreachable_host_is_unjudged_with_a_sentence() {
 
 /// The second gate of one repository on one host reuses everything the first one made - the
 /// same directory, the same worktree and the same build cache - and sends only what is new.
-///
-/// The first run's bundle carries the whole history; the second one's is a handful of commits
-/// which is what makes a warm gate on a host worth having at all.
+/// The first run's bundle carries the whole history;
 #[test]
 fn the_second_run_of_one_repository_is_warm() {
     let _only = only_rig();
@@ -610,19 +592,12 @@ fn the_second_run_of_one_repository_is_warm() {
 }
 
 // -------------------------------------------------------------------------------------------
-// The demand a step makes of the MACHINE
-//
-// `LETIBOT_REQUIRE_APPARATUS=1` is the project's, and it is right: a test that skips must not read
-// as a pass. But it is a demand on the machine that runs the step, and the gate chooses that
-// machine - so a host with no writable cgroup v2 subtree reds every apparatus target with one
-// sentence. These three tests are the three answers a machine can give.
-// -------------------------------------------------------------------------------------------
+// The demand a step makes of the MACHINE `LETIBOT_REQUIRE_APPARATUS=1` is the project's,
+// and it is right: a test that skips must not read as a pass.
 
-/// A machine that cannot meet the demand runs the step without it, and the row says so.
-///
-/// The prefix comes off that ONE step and nothing else about it moves, and the evidence a person
-/// reads leads with the fact: a skipped apparatus test nobody is told about is a pass nobody can
-/// see through.
+/// A machine that cannot meet the demand runs the step without it, and the row says so. The
+/// prefix comes off that ONE step and nothing else about it moves, and the evidence a
+/// person reads leads with the fact:
 #[test]
 fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() {
     let _only = only_rig();
@@ -691,10 +666,9 @@ fn a_machine_with_the_apparatus_runs_the_demand_as_the_project_wrote_it() {
     assert!(!out.contains("delegated scope"), "{out}");
 }
 
-/// A machine that has no cgroup of its own to give, but can make a delegated scope, gets the
-/// demand MET - the step is started inside `systemd-run --user --scope -p Delegate=yes` and the
-/// prefix stays where the project put it: the apparatus is established where the step runs rather
-/// than the demand dropped.
+/// A machine that has no cgroup of its own to give, but can make a delegated scope, gets
+/// the demand MET - the step is started inside `systemd-run --user --scope -p Delegate=yes`
+/// and the prefix stays where the project put it:
 #[test]
 fn a_machine_that_can_make_a_delegated_scope_keeps_the_demand_and_gets_one() {
     let _only = only_rig();

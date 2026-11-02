@@ -1,17 +1,9 @@
-//! One thread per session, and the turn that used to hold the daemon.
-//!
-//! Every session the daemon held used to be served by ONE worker, one command at a time across all
-//! of them, so a prompt to one session sat behind an unrelated session's turn. The three properties
-//! asked of the replacement: a held turn in one session does not delay another; a session's own
-//! commands stay ordered; and a stop with both sessions busy ends inside its bound, naming what it
-//! could not wait for.
-//!
-//! One test function, on purpose: this file sets `XDG_CONFIG_HOME`/`XDG_DATA_HOME` (the only door a
-//! session has to a non-preset provider address), and `set_var` is only sound in a process where
-//! nothing else reads the environment. The phases are numbered below, each with its own assertions.
-//!
-//! Both sessions open on the byte vocabulary with a provider pointed at a loopback fake, so no
-//! model file is needed and nothing leaves 127.0.0.1.
+//! One thread per session, and the turn that used to hold the daemon. Every session the
+//! daemon held used to be served by ONE worker, one command at a time across all of them,
+//! so a prompt to one session sat behind an unrelated session's turn. The three properties
+//! asked of the replacement: a held turn in one session does not delay another; a session's
+//! own commands stay ordered; and a stop with both sessions busy ends inside its bound,
+//! naming what it could not wait for. One test function, on purpose:
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -152,9 +144,7 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
 
     // ---- 4. a session's own commands stay ordered ----------------------------------------
     // The second prompt is submitted while the first is inside the model call, so it is queued
-    // behind it - the order a thread of its own must keep. The evidence is the order the model was
-    // asked in: whichever turn the second prompt ends up in (its own, or a follow-up item of the
-    // first), it may not reach the model before the first one did.
+    // behind it - the order a thread of its own must keep.
     let before = fake.arrived();
     fake.hold(Hold::Next);
     prompt(&slow, &slow_head, "req-one", MARK_ONE);
@@ -319,11 +309,7 @@ enum Hold {
 }
 
 /// A fake provider on a loopback port that answers every request except the ones this test
-/// holds.
-///
-/// One thread per connection, and that is load-bearing rather than tidy: a fake that served its
-/// connections from one thread would make the SECOND session wait behind the held first - the very
-/// defect this test exists to catch, reproduced in the fixture.
+/// holds. One thread per connection, and that is load-bearing rather than tidy:
 struct Fake {
     url: String,
     state: Arc<State>,

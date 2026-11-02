@@ -1,12 +1,11 @@
-//! A re-seat writes nothing it has not earned, and a fork is the session's only once its rows are
-//! stored.
-//!
-//! `reseat_target` used to write a `stable_prefix` row (and move `cfg.system`) before `reingest`'s
-//! fit check, so a carry refused as over the window left an orphan prompt row on every attempt. And
-//! `fork_onto` registered the new transcript (the newest, so what a resume opens) before writing a
-//! row of it: a store that failed mid-carry left a resume onto a partial conversation, and an error
-//! after the swap returned through `reingest`'s refusal path before `self.prefix = next` - so the
-//! operator was told "Nothing was changed".
+//! A re-seat writes nothing it has not earned, and a fork is the session's only once its
+//! rows are stored. `reseat_target` used to write a `stable_prefix` row (and move
+//! `cfg.system`) before `reingest`'s fit check, so a carry refused as over the window left
+//! an orphan prompt row on every attempt. And `fork_onto` registered the new transcript
+//! (the newest, so what a resume opens) before writing a row of it: a store that failed
+//! mid-carry left a resume onto a partial conversation, and an error after the swap
+//! returned through `reingest`'s refusal path before `self.prefix = next` - so the operator
+//! was told "Nothing was changed".
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};
@@ -173,10 +172,9 @@ fn a_reseat_refused_over_the_window_writes_no_prompt_row() {
     assert_eq!(h.config().system, system_before);
 }
 
-/// A fork whose rows the store refused is not what a restart opens, and the re-seat is not reported
-/// as "Nothing was changed". The store refuses by having `transcript_item` moved away through a
-/// second connection while the carry is written; once it is back, the next store write takes the
-/// rows up and seals the fork.
+/// A fork whose rows the store refused is not what a restart opens, and the re-seat is not
+/// reported as "Nothing was changed". The store refuses by having `transcript_item` moved
+/// away through a second connection while the carry is written;
 #[test]
 fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -229,10 +227,9 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
         Some(old.as_str()),
         "a fork with none of its rows stored is what a restart would open"
     );
-    // A restart now resumes the parent, whole - and the restart is READ FROM THE STORE here rather
-    // than run: a second harness for one session is refused by name (the writer claim), because the
-    // first one still holds the fork this test is about. `current_transcript_id` IS the restart's
-    // answer - the row a resume opens - and the reopen itself is exercised in `restart_restore`.
+    // A restart now resumes the parent, whole - and the restart is READ FROM THE STORE here
+    // rather than run: a second harness for one session is refused by name (the writer claim),
+    // because the first one still holds the fork this test is about.
     let refusal = {
         let hub = Hub::new(&seated.session_id);
         let registry = Registry::of(hub.clone());

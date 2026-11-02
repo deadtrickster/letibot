@@ -1,14 +1,9 @@
-//! The layers this binary carries - `docs/plugins-plan.md` §7 step 10: the `builtin` scope is a
-//! table of modules compiled into the executable, not a directory beside it.
-//!
-//! Four things are asserted, each a way the mechanism can be silently wrong: the table is not empty
-//! (a build whose script found no layer would ship a binary whose bottom layer is nothing); a
-//! built-in loads through the real engine and answers; a project layer of the same name masks it
-//! and a layer that asks below reaches it.
-//!
-//! The modules are real: the built-in is what `crates/builtins` compiled at build time, and the
-//! masking layer is a committed `tests/data/below-layer/plugin.wasm`, because a test that shells out
-//! to a compiler fails on a box without a wasm target.
+//! The layers this binary carries - `docs/plugins-plan.md` §7 step 10: the `builtin` scope
+//! is a table of modules compiled into the executable, not a directory beside it. Four
+//! things are asserted, each a way the mechanism can be silently wrong: the table is not
+//! empty (a build whose script found no layer would ship a binary whose bottom layer is
+//! nothing); a built-in loads through the real engine and answers; a project layer of the
+//! same name masks it and a layer that asks below reaches it. The modules are real:
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -98,11 +93,9 @@ fn the_table_is_not_empty_and_a_builtin_loads_through_the_real_engine() {
     let tmp = tempdir("table");
     let stack = builtin_stack(&tmp);
     let layers: Vec<&str> = stack.layers().iter().map(|l| l.id.as_str()).collect();
-    // The expectation is READ OFF THE TABLE, not written down here: a second list of the binary's
-    // own layers drifts the moment a built-in is added, and it did, twice in one day.
-    // REVERSED is the behaviour and not the intent: `register_builtin_bytes` stacks newest-first, so
-    // the last entry of the sorted table is the BOTTOM layer - the reverse of the precedence
-    // `crates/builtins/build.rs` documents. Harmless while no two built-ins answer the same hook.
+    // The expectation is READ OFF THE TABLE, not written down here: a second list of the
+    // binary's own layers drifts the moment a built-in is added, and it did, twice in one day.
+    // REVERSED is the behaviour and not the intent:
     let mut built_in: Vec<String> = letibot_builtins::table()
         .iter()
         .map(|b| format!("b-{}", b.name))

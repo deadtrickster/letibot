@@ -1,23 +1,11 @@
-//! The review queue's reviewers - the half that runs on the queue's own SESSION: a reviewer is a
-//! `task` child of the gatekeeper session.
-//!
-//! The queue's thread claims a review (`waiting → reviewing`, owner = this daemon, with a deadline)
-//! and rings the session; [`serve`] starts a reviewer for every claimed row this daemon owns, reads
-//! the verdict the reviewer HANDS IN (`review_verdict`, the daemon's desk), and moves the row
-//! conditionally on its state and owner, so a deadline or a person that moved the row first wins and
-//! the reviewer is killed rather than heard.
-//!
-//! The verdict is bound to the head it judged: the reviewer is shown `base...<head_sha>`, and an
-//! accept writes that sha as the merge row's `approved_sha` in the same transaction
-//! (`Store::approve_review`). A commit made while the review ran is not what was judged, and the
-//! merge queue sees the difference and sends the branch back.
-//!
-//! A reviewer runs in a firecode VM booted on a fresh clone of the branch when the box can boot one -
-//! never on the workspace - and otherwise on the host in the read-only `gatekeeper` seat, told the
-//! repository to run its commands in. One that cannot start is RAISED (`blocked`, high severity), and
-//! never handed to a model to merge without the gate. A tree that could not be MADE is the exception
-//! that is a disk's answer, not a judgement of the branch, so the row goes back to `waiting` with the
-//! clone's own words and spends no attempt ([`Pool::wait_for_tree`]).
+//! The review queue's reviewers - the half that runs on the queue's own SESSION: a reviewer
+//! is a `task` child of the gatekeeper session. The queue's thread claims a review
+//! (`waiting → reviewing`, owner = this daemon, with a deadline) and rings the session;
+//! [`serve`] starts a reviewer for every claimed row this daemon owns, reads the verdict
+//! the reviewer HANDS IN (`review_verdict`, the daemon's desk), and moves the row
+//! conditionally on its state and owner, so a deadline or a person that moved the row first
+//! wins and the reviewer is killed rather than heard. The verdict is bound to the head it
+//! judged:
 
 use std::path::{Path, PathBuf};
 
@@ -110,13 +98,6 @@ impl Pool<'_> {
     }
 
     /// An attempt that reached no verdict: back to `waiting`, counted; the third is a raise.
-    ///
-    /// An attempt is a try at RUNNING a review of one head that ended without a verdict - a reviewer
-    /// that died, vanished, answered without handing one in, ran past its deadline, or could not be
-    /// placed for a real reason. It bounds infrastructure retries so that a review that cannot run is
-    /// raised instead of retried in silence. It is NOT a limit on verdicts: a `needs_human` stops the
-    /// row for a person by itself, a new head starts the count again, and a reviewer firecode had no
-    /// free slot for is not an attempt at all ([`Pool::wait_for_slot`]).
     fn attempt_failed(&self, r: &ReviewRow, why: String) -> Result<bool, StoreError> {
         let attempts = r.attempts + 1;
         let base = Move::new(self.me, why.clone())
@@ -142,10 +123,8 @@ impl Pool<'_> {
         }
     }
 
-    /// Why a review is blocked, in one sentence a person can act on - every counted attempt at this
-    /// head, by its own gist (firecode's `error:` line, not its banner), oldest first; and, when every
-    /// one was the reviewer's VM failing to start, that it was placement and not a judgement of the
-    /// branch.
+    /// Why a review is blocked, in one sentence a person can act on - every counted attempt at
+    /// this head, by its own gist (firecode's `error:` line, not its banner), oldest first;
     fn blocked_sentence(&self, r: &ReviewRow, attempts: u32, last: &str) -> String {
         let history = self.store.transitions("review", &r.id).unwrap_or_default();
         // The counted failures are the moves from `reviewing` back to `waiting` that were not a
@@ -183,9 +162,8 @@ impl Pool<'_> {
         let history = self.store.transitions("review", &r.id)?;
         let streak = capacity::streak(&history);
         // The wait is the branch's, not the row's. A red branch gets a new row per red tip
-        // (`red-<branch>-<sha>`), and each row's own streak raised its own two notices for one wait
-        // that never ended. So the other rows of the same branch in a capacity wait are read too
-        // ([`capacity::branch_wait`]), and the wait is said once while any of them is.
+        // (`red-<branch>-<sha>`), and each row's own streak raised its own two notices for one
+        // wait that never ended.
         let others = self.branch_streaks(r)?;
         let wait = capacity::branch_wait(streak, &others);
         let nth = streak.refusals + 1;
@@ -237,17 +215,8 @@ impl Pool<'_> {
         Ok(true)
     }
 
-    /// The reviewer's tree could not be MADE - the clone failed, or the finished clone could not be
-    /// put at its name. Not an attempt, and not a block: the row goes back to `waiting` with the
-    /// clone's own words on it and a not-before time (the same ladder a VM slot wait climbs), so the
-    /// queue claims it again and the pass clones again.
-    ///
-    /// The three attempts are for a review that cannot RUN, and this is not one: a busy disk, a
-    /// filesystem and another daemon cloning the same row all answer a second time, so spending an
-    /// attempt on them blocks a branch a person then has to look at. It is unbounded, and that is the
-    /// trade - a tree that can never be made waits visibly rather than being called *a review that
-    /// could not run*, which would be a claim about the branch, and this is a claim about a disk. The
-    /// ladder is what keeps it from being a spin: a minute, then two, then five.
+    /// The reviewer's tree could not be MADE - the clone failed, or the finished clone could
+    /// not be put at its name. Not an attempt, and not a block:
     fn wait_for_tree(&self, r: &ReviewRow, why: String) -> Result<bool, StoreError> {
         let nth = self.tree_waits(r) + 1;
         // The clause leads, because that is what the queue's claim reads (`capacity::held_until`)
@@ -379,9 +348,8 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     }
 
     // ---- Stop a fixer whose red tip the target has moved past (`RepoQueue` withdraws the fix
-    // branch it opened): the same rule a reviewer follows - a child working for a row nobody will act
-    // on is stopped, not waited out. `Running` is the whole test, so a fixer that has finished is not
-    // asked about again on the next pass.
+    // branch it opened): the same rule a reviewer follows - a child working for a row nobody
+    // will act on is stopped, not waited out.
     for r in rows
         .iter()
         .filter(|r| r.kind == ReviewKind::Target && !r.state.is_open())
@@ -467,11 +435,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
 }
 
 /// The directory a review's clone lives in, under the temp dir - one per review, named
-/// `review-<row id>` ([`start_reviewer`]).
-///
-/// A `const` because two places spell it: the daemon builds [`Pool::clones`] from it, and
-/// [`sweep_clones`] refuses to touch any directory not called this - which is what keeps a fixture
-/// from pointing a sweep at a real directory.
+/// `review-<row id>` ([`start_reviewer`]). A `const` because two places spell it:
 pub const CLONES_DIR: &str = "letibot-review-clones";
 
 /// The clause a review waiting for its TREE leads its move (and `failure`) with - what the queue's
@@ -479,25 +443,13 @@ pub const CLONES_DIR: &str = "letibot-review-clones";
 /// a wait of its own and never [`capacity::WAITING_FOR_SLOT`]: a busy disk is not a busy VM.
 pub const WAITING_FOR_TREE: &str = "waiting for the reviewer's tree";
 
-/// How long a tree in the clone directory is left alone once its row is dead - see [`sweep_clones`].
-///
-/// The question it answers is *how long can a tree be being written while the row it belongs to does
-/// not read as live?* A warm clone of this repository is about a second and a cold one on a busy box
-/// is tens of seconds, so ten minutes is far past any of them, and twice the queue's own
-/// reviewer-start grace - anything still being written after it is a tree no reviewer will be started
-/// on. The pass runs every 30 s, so an orphan is reclaimed within twenty passes of being certain.
+/// How long a tree in the clone directory is left alone once its row is dead - see
+/// [`sweep_clones`].
 pub const CLONE_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// The row a tree in the clone directory belongs to, or `None` for a name that is not a review's at
-/// all - the three spellings [`git::clone_branch`] and its history write
-///
-/// * `review-<id>-<pid>-<n>` - the tree ONE ATTEMPT works in (this build)
-/// * `.review-<id>-<pid>-<n>.tmp` - that tree while it is being made, or what a killed daemon left
-/// * `review-<id>` - a tree made before trees were per-attempt, which the sweep still reclaims.
-///
-/// The token is the last two dash-separated fields and both are numbers, so the id is whatever stands
-/// before them - and a row id may itself end in numbers, which is why the token is stripped from the
-/// END rather than searched for.
+/// The row a tree in the clone directory belongs to, or `None` for a name that is not a
+/// review's at all - the three spellings [`git::clone_branch`] and its history write *
+/// `review-<id>-<pid>-<n>` - the tree ONE ATTEMPT works in (this build) *
 fn review_id(name: &str) -> Option<&str> {
     let name = name.strip_suffix(".tmp").unwrap_or(name);
     let name = name.strip_prefix('.').unwrap_or(name);
@@ -512,18 +464,7 @@ fn review_id(name: &str) -> Option<&str> {
     }
 }
 
-/// The trees no reviewer can be in. [`start_reviewer`] makes one clone per ATTEMPT for both
-/// placements and nothing used to remove one, and a review also ends by a WITHDRAWAL or a deadline in
-/// `mergequeue::serve` - so a sweep, over every row on the store and not this daemon's, because
-/// `clones` is one global directory.
-///
-/// `waiting` or `reviewing` means KEEP whatever the tree's age or token: a live row is the only state
-/// in which a reviewer can be standing in a tree, and the bounded leak that follows (a re-seated row
-/// keeps both trees until it stops being live) is the right way round - the trees are disk.
-///
-/// Three refusals stand under it: a directory not named [`CLONES_DIR`] is never swept; only a DIRECTORY
-/// whose name parses as a review's is removed; and a store that will not answer is not evidence. The
-/// grace is the belt: a dead row's tree goes only once it is older than [`CLONE_GRACE`].
+/// The trees no reviewer can be in.
 fn sweep_clones(p: &Pool) {
     sweep_clones_with(p, CLONE_GRACE)
 }
@@ -573,29 +514,16 @@ fn age_of(path: &Path) -> Option<std::time::Duration> {
     std::time::SystemTime::now().duration_since(at).ok()
 }
 
-/// Start one reviewer: where it runs, on what tree, with which prompt.
-///
-/// Both placements get a tree of their own, made here once - a detached clone of the entry's
-/// repository at the head the row names. What differs is what is done with it: a VM is booted ON the
-/// clone (`TaskSpec::vm_source`), and a host reviewer WORKS IN it (`TaskSpec::worktree`, the field
-/// that makes a child's workspace something other than its parent's). The `cwd` the prompt names is
-/// that same path, so the reviewer's `read`, `grep`, `glob` and `bash` all look at `head_sha` and
-/// never at the operator's checkout.
-///
-/// Two consequences of `spec.worktree` are deliberate: a child with a worktree gets
-/// `CARGO_TARGET_DIR` from `worktree_build_env`, which for a clone is the clone's OWN `target/`, so a
-/// reviewer that builds builds hermetically; and it gets a [`deliverable`](crate::harness::deliverable)
-/// so a reviewer that leaves files in its tree is told. Nothing can be lost that way - the clone is
-/// thrown away.
+/// Start one reviewer: where it runs, on what tree, with which prompt. Both placements get
+/// a tree of their own, made here once - a detached clone of the entry's repository at the
+/// head the row names. What differs is what is done with it:
 fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), CouldNotStart> {
     let repo = PathBuf::from(&r.repository);
     let mut spec = TaskSpec {
         role: "gatekeeper".into(),
         placement: p.placement.placement(),
-        // The reviewer's declared skills, from `[queue] reviewer_skills` - the one seat nobody types
-        // a brief for, so its instructions are configured rather than asked for. A name nothing
-        // answers to is refused by the tool that would spawn it, and this pass writes a FAILED
-        // ATTEMPT on the row rather than a reviewer without its instructions.
+        // The reviewer's declared skills, from `[queue] reviewer_skills` - the one seat nobody
+        // types a brief for, so its instructions are configured rather than asked for.
         skills: p.reviewer_skills.to_vec(),
         ..Default::default()
     };
@@ -608,10 +536,7 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
     };
     let stem = p.clones.join(format!("review-{}", r.id));
     let dir = git::clone_branch(&repo, &what, &r.head_sha, &stem).map_err(CouldNotStart::Tree)?;
-    // The tree is proved before a child is given it. The clone checks out `head` and the install is a
-    // rename, so this can only fail on something this daemon did not do - and a reviewer started on a
-    // path that is not there, or is not the head the row names, reads nothing and says
-    // `cannot_decide` about a branch nobody looked at. That is a WAIT, not a verdict.
+    // The tree is proved before a child is given it.
     let at = match git::rev_parse(&dir, "HEAD") {
         Some(sha) if sha == r.head_sha => sha,
         other => {
@@ -664,10 +589,9 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
     Ok((handle, req))
 }
 
-/// Why a reviewer could not be started - and the two arms are different KINDS of fact, which is the
-/// whole of it: one is a machine that answered, the other a judgement about the branch. A
-/// [`CouldNotStart::Tree`] waits ([`Pool::wait_for_tree`]); a [`CouldNotStart::Runner`] either waits
-/// for a free VM slot ([`capacity`]) or is raised.
+/// Why a reviewer could not be started - and the two arms are different KINDS of fact,
+/// which is the whole of it: one is a machine that answered, the other a judgement about
+/// the branch. A [`CouldNotStart::Tree`] waits ([`Pool::wait_for_tree`]);
 enum CouldNotStart {
     /// The tree could not be MADE - a clone that failed, or a finished clone that could not be put
     /// at its name: a busy disk, a filesystem, another daemon cloning the same row.
@@ -676,10 +600,9 @@ enum CouldNotStart {
     Runner(String),
 }
 
-/// The red target's reviewer is told what its verdict MEANS - the tip is broken, so `reject` is *the
-/// code is broken*, which opens a fix branch through the queue when the project's policy is `fix`
-/// `accept` is *the red is not in the code* (a flake, the machine), which gates the tip again; and
-/// `needs_human` asks the operator.
+/// The red target's reviewer is told what its verdict MEANS - the tip is broken, so
+/// `reject` is *the code is broken*, which opens a fix branch through the queue when the
+/// project's policy is `fix` `accept` is *the red is not in the code* (a flake, the
 pub fn red_target_prompt(req: &ReviewRequest, target: &str) -> String {
     format!(
         "{}\n\nTHIS REVIEW IS DIFFERENT: it is not a branch asking to land. `{target}` itself is RED \
@@ -697,10 +620,9 @@ pub fn red_target_prompt(req: &ReviewRequest, target: &str) -> String {
     )
 }
 
-/// A verdict handed in - moved onto the row conditionally, and acted on.
-///
-/// `req_cwd` is the tree the child was GIVEN (the desk's own record of what it was asked with), and it
-/// is read before the verdict is: see the check below.
+/// A verdict handed in - moved onto the row conditionally, and acted on. `req_cwd` is the
+/// tree the child was GIVEN (the desk's own record of what it was asked with), and it is
+/// read before the verdict is: see the check below.
 fn verdict(
     p: &Pool,
     r: &ReviewRow,
@@ -708,15 +630,9 @@ fn verdict(
     req_cwd: &str,
     said: letibot_tools::gatekeeper::Submission,
 ) -> Result<(), StoreError> {
-    // A verdict about a tree that is not there is not a verdict about the branch. A reviewer whose
-    // clone was removed under it reads a fraction of the artifact, knows it, and answers
-    // `cannot_decide`; the row then says *the branch could not be decided*, which is a claim about
-    // somebody's code. So the tree the child was GIVEN is asked for here, before anything is written
-    // and both shapes are caught: the directory gone, and the directory there with 0 entries.
-    //
-    // The head is not compared, and does not need to be: a tree is named per ATTEMPT, so the only tree
-    // that can appear at this path is the one this child was given, and [`start_reviewer`] proved what
-    // it was at before the child was started.
+    // A verdict about a tree that is not there is not a verdict about the branch. A reviewer
+    // whose clone was removed under it reads a fraction of the artifact, knows it, and answers
+    // `cannot_decide`;
     let tree = Path::new(&req_cwd);
     let there = tree.is_dir()
         && std::fs::read_dir(tree)
@@ -842,11 +758,9 @@ fn verdict(
     Ok(())
 }
 
-/// A review that stops because its reviewer could not decide says THAT - the head, the sentence the
-/// verdict turned on (the reviewer's own words, chosen, not paraphrased), how many times reviewers
-/// could not decide on this branch and at which heads, and what the operator can do. A failure to
-/// place or run a reviewer is not mentioned: it is not why this row stopped. The words are
-/// [`notices::needs_human`]'s.
+/// A review that stops because its reviewer could not decide says THAT - the head, the
+/// sentence the verdict turned on (the reviewer's own words, chosen, not paraphrased), how
+/// many times reviewers could not decide on this branch and at which heads, and what the
 fn undecided_sentence(p: &Pool, r: &ReviewRow, by: &str, reasons: &[String]) -> String {
     let heads = p
         .store
@@ -948,15 +862,9 @@ fn open_fix_branch(
     Ok(())
 }
 
-/// The refusal goes back to the child that wrote the branch, or its root when the child is gone; then
-/// to a live session of the branch's workspace when the whole tree is dead; and when nobody can be
-/// told, the operator is (it stays on the row either way).
-///
-/// One recipient, and the first that takes it wins: the chain stops at the first delivery that answers
-/// `Ok`, so no pass ever tells two sessions about one refusal, and the fallbacks run in the order of
-/// how much each can be expected to act on it. The last rung exists because a refusal can end at
-/// nobody - the child finished hours ago and the root is a dead row in the store - while the reasons
-/// sit in a row and in a warning, and the model that could have answered never hears.
+/// The refusal goes back to the child that wrote the branch, or its root when the child is
+/// gone; then to a live session of the branch's workspace when the whole tree is dead; and
+/// when nobody can be told, the operator is (it stays on the row either way).
 fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     let to_child = notices::refused(r, reasons);
     let child = r.session_id.clone();
@@ -997,21 +905,9 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     );
 }
 
-/// The live session of the branch's workspace a refusal falls back to - the newest top-level session
-/// of the repository `r` names, that this daemon holds, with its workspace.
-///
-/// Live is [`super::serve::QueueDoor::session_live`]'s answer, asked through [`Pool::live`], so a
-/// session counts while this daemon holds it *or* has spawned it and not yet opened it: a row in the
-/// store is not enough, and a message to a session nobody is attached to is a message into a hole.
-///
-/// The same workspace is [`super::repositories_of_workspace_cached`] over the session's own
-/// `workspace_root`, so a project folder of several checkouts answers for each of them and a worktree
-/// answers for its repository. Top-level is `parent_session_id` empty: a child is somebody's subagent
-/// and its root is the rung above. The queue's own session is no candidate either - it already holds
-/// the row, and a refusal told to the queue is a refusal told to nobody.
-///
-/// `child` and `root` are the parties the chain has already attempted, so a session that has already
-/// refused this message is not asked for it twice.
+/// The live session of the branch's workspace a refusal falls back to - the newest
+/// top-level session of the repository `r` names, that this daemon holds, with its
+/// workspace.
 fn live_session_in_workspace(
     p: &Pool,
     r: &ReviewRow,
@@ -1048,16 +944,8 @@ fn live_session_in_workspace(
     best.map(|(id, workspace, _)| (id, workspace))
 }
 
-/// A finished `task_start` child's branch, put up for review - the enqueue. The repository is the
-/// worktree's own, the target is the project's, and the head is read now. A child opened to fix a red
-/// target carries `fixes`, and only such a branch lands while the target is red.
-///
-/// A branch with nothing on it is refused, not enqueued. A head that is missing - or still at the base
-/// the branch was cut from - gives a row nothing can act on: the reviewer is handed a tree it cannot
-/// check out, so the row waits for ever, and the parent is told about a branch with no change. The
-/// shapes are real: a child placed in a VM commits inside the VM's copy, a child whose work is
-/// uncommitted leaves the same branch, and a swept worktree loses the ref. Each is a fact the parent's
-/// model has to hear, which is what `Err` is - the caller turns it into `merge_not_queued`.
+/// A finished `task_start` child's branch, put up for review - the enqueue. The repository
+/// is the worktree's own, the target is the project's, and the head is read now.
 pub fn enqueue_finished(
     store: &Store,
     handle: &str,

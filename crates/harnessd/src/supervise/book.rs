@@ -1,22 +1,10 @@
 //! Where a fanout's and a scenario's processes are written down - the daemon's half of
-//! `letibot_tools::fleet::ProcessBook`.
-//!
-//! A branch of `fanout`, a role of `scenario` and their readiness checks are jobs of the *host's*
-//! table, not of the session's own process host - the session is placed on one machine and a fanout
-//! deliberately reaches the others. [`crate::jobwatch::JobRecorder`] writes the record for a job of
-//! *this* host, and nothing wrote one for a job of another: a daemon that restarted mid-fanout would
-//! find no process to adopt, and a session's close would kill nothing on the machines it reached.
-//!
-//! So the tool reports its own starts and endings through this, and the supervisor does the rest.
-//! The store is the truth here as it is there: nothing in this file remembers a pid or a
-//! connection, so a daemon that starts an hour later has the same list.
-//!
-//! # Two rules borrowed from `JobRecorder`, because they are the same rules
-//!
-//! * A process that cannot be identified is not written down at all - an empty identity cannot
-//!   be told from a stranger's pid, and the supervisor would signal the wrong process with it.
-//! * A write that fails is said, and kills nothing. The processes are running either way; what
-//!   is missing is the row, and a missing row with no sentence is a mystery.
+//! `letibot_tools::fleet::ProcessBook`. A branch of `fanout`, a role of `scenario` and
+//! their readiness checks are jobs of the *host's* table, not of the session's own process
+//! host - the session is placed on one machine and a fanout deliberately reaches the
+//! others. [`crate::jobwatch::JobRecorder`] writes the record for a job of *this* host, and
+//! nothing wrote one for a job of another: a daemon that restarted mid-fanout would find no
+//! process to adopt, and a session's close would kill nothing on the machines it reached.
 
 use std::path::PathBuf;
 use std::sync::Mutex;

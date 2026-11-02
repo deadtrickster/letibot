@@ -74,11 +74,7 @@ pub const BEAT: Duration = Duration::from_secs(30);
 pub const RESTORE_WITHIN: Duration = Duration::from_secs(3600);
 
 /// This daemon's life, written down - the start, a heartbeat every [`BEAT`], and the stop.
-///
-/// The stop goes through a connection opened at the START, never a fresh one: the store is
-/// shared, a newer build may migrate it while this one runs, and `Store::open` refuses a schema
-/// newer than its own - which is how a stop came to be read as a crash. `daemon_life`'s shape is
-/// one no migration changes.
+/// The stop goes through a connection opened at the START, never a fresh one:
 pub struct Lifeline {
     store: Option<Store>,
     registry: Arc<Registry>,
@@ -123,11 +119,8 @@ impl Lifeline {
     }
 }
 
-/// A beat every [`BEAT`] while the daemon serves - and the stop, the moment it stops serving.
-///
-/// Every stop asked for closes the registry first and drains afterwards (the queue, the VMs, the
-/// children), and a forced stop is a SIGKILL during that drain - so a stop written only at the end
-/// is lost and the next daemon reads a crash. [`Lifeline::stopped`] writes the exact time over it.
+/// A beat every [`BEAT`] while the daemon serves - and the stop, the moment it stops
+/// serving.
 fn heartbeat(store: Store, registry: Arc<Registry>) {
     let mut last = std::time::Instant::now();
     while !registry.is_closed() {
@@ -180,9 +173,8 @@ impl Stopped {
     }
 
     /// Whether what it was running is restored - under `threshold` from the stop to
-    /// `opened_ms`, the moment the session is being opened and not the daemon's return
-    /// the harm the threshold prevents is a stale tree, and that is measured from the stop to the
-    /// resume. Never when the down time is unknown.
+    /// `opened_ms`, the moment the session is being opened and not the daemon's return the harm
+    /// the threshold prevents is a stale tree, and that is measured from the stop to the
     pub fn restores(&self, opened_ms: u64, threshold: Duration) -> bool {
         self.at_ms()
             .is_some_and(|at| Duration::from_millis(opened_ms.saturating_sub(at)) < threshold)
@@ -284,9 +276,7 @@ pub fn span(d: Duration) -> String {
 pub const OPENED_LATE_MS: u64 = 60_000;
 
 /// The first line of every restart notice: how long the daemon was down (or that nobody
-/// knows), against which threshold, and what that meant. `opened_ms` is what the threshold is
-/// applied to, so a session opened hours later is told both intervals - the clause
-/// *"under the … restore threshold"* must never read as a claim about a session away for hours.
+/// knows), against which threshold, and what that meant.
 pub fn header(
     stop: &Stopped,
     back_ms: u64,
@@ -360,11 +350,9 @@ pub fn header(
     }
 }
 
-/// A restart that had nothing to restore, said anyway - the operator: *"mb always tell agent
-/// about restart? with the current time lol"*.
-///
-/// The return time leads it because the time IS this case: how long the model was away is the one
-/// fact only the daemon has. A stop no record dates is said to be unknown ([`Stopped`]).
+/// A restart that had nothing to restore, said anyway - the operator: *"mb always tell
+/// agent about restart? with the current time lol"*. The return time leads it because the
+/// time IS this case: how long the model was away is the one fact only the daemon has.
 pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
     let down = match stop {
         Stopped::At {
@@ -394,13 +382,8 @@ pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
 }
 
 /// Whether a session's last row is a turn that was still going when its rows stopped - an
-/// `Assistant` with no call after it is a finished turn, and every other row is a turn that never
-/// got its answer.
-///
-/// A row the harness filed itself is NOT counted (`User` with `Speaker::Agent`): the harness
-/// writes those both to start a turn and to file a sentence for later, and a row is all the store
-/// has - so counting them would spend a call on every restart that follows a filed sentence. What
-/// it misses is a wake whose turn died before it answered.
+/// `Assistant` with no call after it is a finished turn, and every other row is a turn that
+/// never got its answer.
 pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
     match last {
         None => false,
@@ -414,10 +397,8 @@ pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
 }
 
 /// What a session still owes when its daemon comes back - the reason an empty restart is a
-/// TURN and not a row. Every arm is a fact in the store or on the board.
-///
-/// None of them is prose: a model that promised to continue leaves nothing a reader can trust, so
-/// what a session owes has to be something it WROTE DOWN.
+/// TURN and not a row. Every arm is a fact in the store or on the board. None of them is
+/// prose:
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Owed {
     /// A turn was in flight when the rows stopped - [`mid_turn`].
@@ -640,9 +621,8 @@ pub mod said {
 pub const STOPPED_WITH_THE_DAEMON: &str = "killed by the daemon stopping";
 
 /// One background job that was running at the stop, as the model is reminded of it.
-///
-/// `ran_ms` is how long it had run when the daemon stopped. `waiting` is the open rows that waited
-/// on it - named, with what happened to their wait.
+/// `ran_ms` is how long it had run when the daemon stopped. `waiting` is the open rows that
+/// waited on it - named, with what happened to their wait.
 pub fn job_line(
     job: &JobRecord,
     slug: Option<&str>,
@@ -1260,13 +1240,8 @@ mod tests {
     }
 
     /// The orderly stop is recorded although a newer build migrated the store meanwhile - the
-    /// shared store moved past this build while it ran, and the stop goes through the connection
-    /// the start opened, which still writes.
-    ///
-    /// What refuses a fresh open is the store's READER FLOOR, which the fixture raises on purpose
-    /// a bare version bump is the additive case and an older daemon goes on serving
-    /// (`letibot_tokencore`'s `store::floor`), so the migration stood for here is one that took
-    /// away something an older reader reads.
+    /// shared store moved past this build while it ran, and the stop goes through the
+    /// connection the start opened, which still writes.
     #[test]
     fn the_stop_is_recorded_after_a_newer_build_migrated_the_store() {
         let dir = Scratch::new("lifeline-newer-schema");

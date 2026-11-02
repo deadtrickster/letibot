@@ -1,19 +1,7 @@
 //! The operator's `!` run does not hold the daemon's worker - the proof, plus the two
-//! behaviours the handoff has to keep.
-//!
-//! `CommandKind::OperatorShell` runs off the worker: the wait inside it would otherwise hold the
-//! daemon for as long as the command does, so nothing else runs while a run is in flight and a
-//! second `!` line only queues. The first test is written to fail on the old shape - it starts a
-//! `! sleep`, submits a second command from the same head while that sleep is still running, and
-//! requires the daemon to have SERVED it, with the snapshot taken at that moment carrying no bang
-//! row yet - and it references no symbol the base branch lacks, so it fails on behaviour rather
-//! than on a missing name.
-//!
-//! It needs a real exec host (a delegated cgroup v2 subtree) and the vocabulary GGUF, because a
-//! `Harness` renders its stable prefix at open. Not a model: the endpoint is a local stub that
-//! answers every request with HTTP 400, because a refused connection is classed `Io` and RETRIED
-//! with doubling waits while a 4xx is *the request, not the weather* and fails the turn at once.
-//! The rows and the note must land whether or not the turn they are for can run.
+//! behaviours the handoff has to keep. `CommandKind::OperatorShell` runs off the worker:
+//! the wait inside it would otherwise hold the daemon for as long as the command does, so
+//! nothing else runs while a run is in flight and a second `!` line only queues.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
@@ -48,17 +36,13 @@ fn repo() -> std::path::PathBuf {
 
 fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     let mut cfg = Config::for_this_box(repo());
-    // Not this box's configuration, and not this box's model: the settle arm starts a turn for
-    // every run, and this file measures the rows and the worker, not the generation - so the endpoint
-    // is the local stub that refuses in the one way the retry rule respects (see
-    // `refusing_model_stub`).
+    // Not this box's configuration, and not this box's model:
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
-    // The `vocab_gguf` gate at each test says this box HAS a vocabulary; this is the one it was
-    // talking about. `Config::for_this_box` carries no default - a daemon on the byte vocabulary
-    // needs none - so a harness built here must be handed one. `LETIBOT_VOCAB_GGUF` wins, as
-    // everywhere else.
+    // The `vocab_gguf` gate at each test says this box HAS a vocabulary; this is the one it
+    // was talking about. `Config::for_this_box` carries no default - a daemon on the byte
+    // vocabulary needs none - so a harness built here must be handed one.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg.session_id = session.into();
     cfg.socket = socket.to_path_buf();
@@ -92,14 +76,6 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
 }
 
 /// A model server that refuses in the one way the retry rule respects.
-///
-/// Every settle starts a turn, and this file does not want that turn to work - but a
-/// port that merely REFUSES is classed `HttpError::Io`, and the ladder takes
-/// an `Io` round again with the waits doubling, which holds the worker for the whole
-/// retry budget: the very defect this file exists to disprove. A 400 is different -
-/// *the request, not the weather* - and fails the turn on the first attempt. So: a
-/// listener that drains each request (headers plus the body its `Content-Length`
-/// names, so the client's write completes) and answers 400, forever.
 fn refusing_model_stub() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -144,14 +120,8 @@ fn refusing_model_stub() -> u16 {
     port
 }
 
-/// A daemon, a seated head, and the handles a driver needs.
-///
-/// The threads are in their real places: the worker loop runs on the test's own thread
-/// (`daemon.run`, exactly what `harnessd` does), the head submits and watches from another, and
-/// closing the registry is what ends the loop - which is what a SIGINT does in the real daemon. The
-/// head attaches BEFORE the session opens and before the worker loop starts, so the driver is
-/// watching before the first command can possibly be dispatched: it gets an empty snapshot and every
-/// row after it as a live event, which is the path a head that joins a starting daemon takes.
+/// A daemon, a seated head, and the handles a driver needs. The threads are in their real
+/// places:
 struct Setup {
     daemon: Daemon,
     client: HeadClient,
@@ -290,19 +260,9 @@ fn watch(
     }
 }
 
-/// While a `!` run is in flight, the worker serves everything else.
-///
-/// A `! sleep` is submitted; a second later - while that sleep MUST still be running - the same head
-/// submits its todo board, and the test requires
-///
-/// 1. the probe's `TodosUpdated` to arrive before the run's size note and its result row (on the
-///    old shape the worker was inside the run, so the probe waited for it - this ordering is exactly
-///    what was impossible)
-/// 2. the snapshot taken when the probe was served to hold no bang row yet - the run had not
-///    settled, which is the whole claim
-/// 3. the run itself to have happened anyway, once: the marker written, the typed line and its result
-///    landed as the feature spells them, and the note's byte count naming the payload it went out
-///    with.
+/// While a `!` run is in flight, the worker serves everything else. A `! sleep` is
+/// submitted; a second later - while that sleep MUST still be running - the same head
+/// submits its todo board, and the test requires 1.
 #[test]
 fn a_bang_run_in_flight_leaves_the_worker_free() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -460,14 +420,9 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
     );
 }
 
-/// A second `!` line typed while one is in flight waits, then runs once.
-///
-/// The serialization the one-input-handle rule needs (`Prompts` holds ONE input handle per session
-/// so two concurrent runs would steal each other's card and `!send`). The second line here reads the
-/// first's marker: if it ran ON TOP of the in-flight run the file would not exist yet and it would
-/// write *overlapped*; if it waited for the run to settle it writes *after-first*. It passes on the
-/// old shape too, where the worker serialized by holding it - it is here because the new path must
-/// keep the ordering while dropping the hold.
+/// A second `!` line typed while one is in flight waits, then runs once. The serialization
+/// the one-input-handle rule needs (`Prompts` holds ONE input handle per session so two
+/// concurrent runs would steal each other's card and `!send`).
 #[test]
 fn a_second_bang_line_waits_for_the_run_in_flight_and_runs_once() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

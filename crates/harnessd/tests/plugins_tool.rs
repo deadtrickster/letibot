@@ -1,13 +1,10 @@
 //! The `plugin` tool, from the model's side - every action, through the real desk, the real
-//! plugin host and the real stack.
-//!
-//! The `Loader`/`Builder` seams (`docs/plugins-slice1.md` C2) are what most of this file
-//! replaces: a layer answers from files beside it and a build writes its own module, so a refusal
-//! - a view the host will not draw, a module that traps - is asserted without compiling anything.
-//!   One test runs the whole loop for real (`the_whole_loop_writes_a_pane_that_a_head_can_draw`)
-//!   skipping through `apparatus::present` when the wasm target or the SDK is not on this machine.
-//!
-//! Nothing here talks to a model or a daemon: the hub, the stack and the runtime are real, and the
+//! plugin host and the real stack. The `Loader`/`Builder` seams (`docs/plugins-slice1.md`
+//! C2) are what most of this file replaces: a layer answers from files beside it and a
+//! build writes its own module, so a refusal One test runs the whole loop for real
+//! (`the_whole_loop_writes_a_pane_that_a_head_can_draw`) skipping through
+//! `apparatus::present` when the wasm target or the SDK is not on this machine. Nothing
+//! here talks to a model or a daemon: the hub, the stack and the runtime are real, and the
 //! gate admits - so a refusal here is the plugin tooling's own and never the boundary's.
 
 use std::path::{Path, PathBuf};
@@ -37,11 +34,8 @@ struct Tmp {
 }
 
 /// The trust book this binary records into - a scratch one, never the operator's. `plugin
-/// scaffold` records the sha256 of the bytes it wrote, and the book is the box's own by default
-/// (`~/.config/letibot/plugin-trust.json`), so the path is named once here.
-///
-/// `Once` and not a plain call, because `set_var` is process-global: exactly one thread writes it
-/// the value never changes, and every test reaches it through [`Tmp::new`] before reading the env.
+/// scaffold` records the sha256 of the bytes it wrote, and the book is the box's own by
+/// default (`~/.config/letibot/plugin-trust.json`), so the path is named once here.
 fn the_books_path() -> &'static Path {
     static BOOK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BOOK.get_or_init(|| {
@@ -95,9 +89,8 @@ impl Drop for Tmp {
 // ---------------------------------------------------------------------------------------------
 
 /// A module that answers from files beside it. `answer.json` is what the layer says
-/// `second.json`, when it exists, is what it says once a look's result is in the input (the shape
-/// the example dashboard has: one frame that asks for the file, one that draws it). A `TRAP` file
-/// makes every call a trap, which is how `load`'s refusal of a trapping module is asserted.
+/// `second.json`, when it exists, is what it says once a look's result is in the input (the
+/// shape the example dashboard has: one frame that asks for the file, one that draws it).
 struct FileModule {
     hooks: Vec<String>,
     dir: PathBuf,
@@ -559,9 +552,6 @@ fn test_names_the_view_the_layer_and_the_fuel() {
 
 /// A view the host would refuse is REPORTED as refused, not hidden: `test` is where a model
 /// finds that out, and silence there would send it to `load` for the same answer.
-///
-/// The layer answers a good first frame and a bad one once a look's result is in the input - the
-/// one case `load` cannot catch, because it asked the synthetic frame and not this one.
 #[test]
 fn test_says_when_the_host_would_refuse_the_view() {
     let rig = Rig::new("test-refuse");
@@ -763,12 +753,6 @@ fn wasm_target() -> bool {
 }
 
 /// The whole loop, for real: `scaffold` → `build` → `load` → the pane on the hub.
-///
-/// The production pieces at every step - `CargoBuilder` runs cargo for `wasm32-unknown-unknown`
-/// offline, `RanoLoader` is wasmtime compiling the guest, and the pane is published to a real
-/// `Hub`. Both apparatuses are provisionable and both are named
-/// `LETIBOT_REQUIRE_APPARATUS=1` turns either absence into a failure, so a box that has them cannot
-/// pass by skipping.
 #[test]
 fn the_whole_loop_writes_a_pane_that_a_head_can_draw() {
     let sdk = scaffold::sdk();
@@ -994,11 +978,6 @@ impl letibot_harnessd::plugins::feed::SessionFeed for Nicks {
 }
 
 /// `plugins/builtin/irc`, copied into a session's plugin directory as a layer of its own.
-///
-/// The built-in is compiled by `crates/builtins` at build time, so its own `Cargo.toml` points at
-/// its neighbours by relative path (`../abi`, `../../../crates/plugin-sdk`) - which resolve inside
-/// this repository and nowhere else. A copy is rewritten to absolute paths, which is exactly what a
-/// person iterating on a built-in outside the binary does.
 fn copy_the_nick_list(dir: &Path) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1029,11 +1008,8 @@ fn copy_the_nick_list(dir: &Path) {
     .expect("a manifest the session's directory can build");
 }
 
-/// The live loop, for the nick list: `plugin build` → `plugin load` → the pane redrawn, with
-/// nothing of the host rebuilt in between.
-///
-/// The production pieces at every step, and what the pane is asked with is the session feed, so the
-/// rows are the daemon's sessions and not a fixture inside the guest.
+/// The live loop, for the nick list: `plugin build` → `plugin load` → the pane redrawn,
+/// with nothing of the host rebuilt in between.
 #[test]
 fn the_nick_list_builds_loads_and_is_drawn_without_rebuilding_the_host() {
     let here = wasm_target();

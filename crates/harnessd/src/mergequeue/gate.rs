@@ -1,18 +1,11 @@
 //! The gate: the target's own `## Merge gate`, run with a deadline, in a process group, and
-//! killable - each step `sh -c <step>` in a new process group
-//! writing to a file, killed on the deadline, the daemon's stop, or a lost lease.
-//!
-//! Each step runs in a cgroup of its own, a sibling of the daemon's leaf under the
-//! delegated scope, capped by `[memory] gate`, so a heavy build cannot throttle the sessions the
-//! daemon serves; with no delegated scope it runs uncapped and the row says so. The step is also
-//! told what it may use - `TMPDIR` on the box's real disk, `CARGO_BUILD_JOBS` from its own cap.
-//!
-//! [`GateRunner`] has two implementations: [`LocalGate`], which runs the steps here, and
-//! [`HostGate`] (`mergequeue::gate_host`), which runs them on a machine `hosts.toml` declares -
-//! 's *"the gate runs on the fleet"*, so a box already running the daemon, VMs and a dozen
-//! worktrees is not also the box the gate's `cargo test` runs on. `[queue] gate_host` chooses
-//! once at daemon start ([`set_gate_host`]) because the queue builds one runner per daemon
-//! unset is [`run_with_memory`] and nothing else.
+//! killable - each step `sh -c <step>` in a new process group writing to a file, killed on
+//! the deadline, the daemon's stop, or a lost lease. Each step runs in a cgroup of its own,
+//! a sibling of the daemon's leaf under the delegated scope, capped by `[memory] gate`, so
+//! a heavy build cannot throttle the sessions the daemon serves; with no delegated scope it
+//! runs uncapped and the row says so. The step is also told what it may use - `TMPDIR` on
+//! the box's real disk, `CARGO_BUILD_JOBS` from its own cap. [`GateRunner`] has two
+//! implementations:
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -85,12 +78,9 @@ pub const GATE_MEMORY_DEFAULT: Amount = Amount::Fraction(0.5);
 /// [`super::setup::GATE_SETUP_FAILED`]: the tip is UNJUDGED, not red.
 pub const GATE_KILLED: &str = "the gate's step was killed before it could judge the code";
 
-/// What the evidence leads with when the step could not judge the code because the apparatus it
-/// DEMANDS is not on the machine it ran on - twenty-one targets failing with one sentence is a fact
-/// about the MACHINE, and a gate that reds for that is a gate whose red is ignored.
-///
-/// So it is a [`RedCause`] of its own and the tip is UNJUDGED, not red. [`super::gate_host`] stops
-/// it happening at all by dropping the demand a machine cannot meet; this is the net under that.
+/// What the evidence leads with when the step could not judge the code because the
+/// apparatus it DEMANDS is not on the machine it ran on - twenty-one targets failing with
+/// one sentence is a fact about the MACHINE, and a gate that reds for that is a gate whose
 pub const APPARATUS_ABSENT: &str = "the gate could not run here";
 
 /// The two halves of the sentence `letibot_tokencore::apparatus::present_given` refuses with. Two
@@ -364,11 +354,9 @@ fn intended_cap(ask: Ask) -> Option<u64> {
     }
 }
 
-/// How many rustc jobs the cap pays for: one per [`GATE_JOB_MEMORY`], never fewer than one and never
-/// more than the cores this process may use; `None` (uncapped) leaves cargo's own default standing.
-///
-/// Nothing else tells cargo so - a `cargo test --workspace` would take its parallelism from the cores
-/// and its memory from the gate, two numbers that know nothing about each other.
+/// How many rustc jobs the cap pays for: one per [`GATE_JOB_MEMORY`], never fewer than one
+/// and never more than the cores this process may use; `None` (uncapped) leaves cargo's own
+/// default standing.
 pub fn build_jobs(cap: Option<u64>) -> Option<usize> {
     let cap = cap?;
     let cores = std::thread::available_parallelism()
@@ -721,12 +709,9 @@ pub trait GateRunner: Send + Sync {
     }
 }
 
-/// The daemon's gate - decision 8: *"the gate runs here for now"*, and, since the operator's
-/// 2026-10-29 ruling, on a declared host when `[queue] gate_host` / `--gate-host` names one.
-///
-/// The queue builds this runner in exactly one place (`QueueEnv::production`), so the choice between
-/// the two machines is made here, at the seam the queue already has, rather than by a second
-/// constructor every fixture would have to grow. Nothing set is [`run_with_memory`] and nothing else.
+/// The daemon's gate - decision 8: *"the gate runs here for now"*, and, since the
+/// operator's 2026-10-29 ruling, on a declared host when `[queue] gate_host` /
+/// `--gate-host` names one.
 #[derive(Debug, Default, Clone)]
 pub struct LocalGate;
 
@@ -741,11 +726,8 @@ impl GateRunner for LocalGate {
     }
 }
 
-/// The gate on one declared host - `hosts.toml`'s machine, reached over its own key and root
-/// (`mergequeue::gate_host`).
-///
-/// A type rather than only the setting, because a test (or an operator with `--gate-host` on the
-/// command line) can name a host without going through the process-wide value.
+/// The gate on one declared host - `hosts.toml`'s machine, reached over its own key and
+/// root (`mergequeue::gate_host`).
 #[derive(Debug, Clone)]
 pub struct HostGate {
     pub host: String,
@@ -1408,11 +1390,8 @@ fn running_descriptor(s: &str) -> Option<String> {
     })
 }
 
-/// Where one target's output begins - cargo's own ` Running …` or ` Doc-tests …` line, the only
-/// thing in the stream that says where one target's output ends and the next begins.
-///
-/// Indented and shaped like cargo's, because a test's own words reach the stream too (`-- --nocapture`)
-/// and a line that merely begins `Running ` is not a boundary.
+/// Where one target's output begins - cargo's own ` Running …` or ` Doc-tests …` line, the
+/// only thing in the stream that says where one target's output ends and the next begins.
 fn target_start(raw: &str) -> Option<String> {
     if !raw.starts_with(char::is_whitespace) {
         return None;
@@ -1504,11 +1483,9 @@ fn same_test(a: &str, b: &str) -> bool {
         || b.strip_prefix(a).is_some_and(|r| r.starts_with(" - "))
 }
 
-/// `thread 'worker::a_test' (472254183) panicked at crates/…:12:5:` → `worker::a_test`. libtest runs a
-/// test on a thread named after it, which is what ties a panic printed in the run to its test.
-///
-/// The name ends at the closing quote, not at the end of the head: this box's cargo puts the thread's
-/// id after the name, so a parse expecting the quote to be last finds no thread at all.
+/// `thread 'worker::a_test' (472254183) panicked at crates/…:12:5:` → `worker::a_test`.
+/// libtest runs a test on a thread named after it, which is what ties a panic printed in
+/// the run to its test. The name ends at the closing quote, not at the end of the head:
 fn panic_thread(s: &str) -> Option<&str> {
     let at = s.find("panicked at")?;
     let rest = s[..at].trim().strip_prefix("thread '")?;
@@ -1571,12 +1548,9 @@ fn evidence(seg: &[&str], test: &str) -> Vec<String> {
     vec![clip(&format!("test {test} ... FAILED"), QUOTED_WIDTH)]
 }
 
-/// One failing target, read out of its OWN segment of the output - the first test that segment
-/// reported FAILED and the panic it printed. `clause` is cargo's name for the target, empty when
-/// nothing named it; `descriptor` is the line cargo printed before the target ran.
-///
-/// `None` when the segment says nothing failed: a target's segment is asked about because it may have
-/// failed, and most of them did not.
+/// One failing target, read out of its OWN segment of the output - the first test that
+/// segment reported FAILED and the panic it printed. `clause` is cargo's name for the
+/// target, empty when nothing named it;
 fn failing_target(seg: &[&str], clause: &str, descriptor: &str) -> Option<FailingTarget> {
     let names = failed_names(seg);
     let cargo_said = !clause.is_empty();
@@ -1615,12 +1589,9 @@ fn failing_target(seg: &[&str], clause: &str, descriptor: &str) -> Option<Failin
     })
 }
 
-/// Read a step's whole output once, for what it says about the code.
-///
-/// The stream is cut into ONE SEGMENT PER TARGET at the line cargo prints before running it, because
-/// a cut per `error: test failed, to rerun pass` line leaves the first segment holding every target
-/// that ran before the failing one - and the first `panicked at` in it may belong to a test that
-/// passes.
+/// Read a step's whole output once, for what it says about the code. The stream is cut into
+/// ONE SEGMENT PER TARGET at the line cargo prints before running it, because a cut per
+/// `error:
 fn failures(text: &str) -> Failures {
     let lines: Vec<&str> = text.lines().collect();
     let mut f = Failures::default();
@@ -1758,13 +1729,9 @@ impl Failures {
     }
 }
 
-/// What a failed step leaves on its row - the failure first, then as much of the end as the cap
-/// allows, because a failing test's name and panic sit hundreds of lines above the last 4 KiB: behind
-/// the workspace's other targets printing `running 0 tests`. The failure is extracted from the WHOLE
-/// stream ([`failures`]), so the tail is what gets cut.
-///
-/// The cap is spent in this order: the failure section and the footer first (they are what the excerpt
-/// is FOR), then the end of the step's output, and the section only when the cap cannot hold even it.
+/// What a failed step leaves on its row - the failure first, then as much of the end as the
+/// cap allows, because a failing test's name and panic sit hundreds of lines above the last
+/// 4 KiB: behind the workspace's other targets printing `running 0 tests`.
 pub fn excerpt(text: &str, cap: usize) -> String {
     if text.len() <= cap {
         return text.to_string();
@@ -1816,11 +1783,8 @@ pub fn gate_target_dir(worktree: &Path) -> PathBuf {
 }
 
 /// This run's scratch directory, absolute - [`GATE_TMP_ROOT`]`/<the tree's name, at most
-/// [`GATE_TMP_NAME_CHARS`]>-<this process's run number>`.
-///
-/// The name is per RUN, not per tree: the tree's name is what a leftover is matched by, and the number
-/// keeps two runs from sharing one directory. The entry id would name a run better and is not reachable
-/// here - [`GateRunner::run`] is handed a worktree and steps and no entry.
+/// [`GATE_TMP_NAME_CHARS`]>-<this process's run number>`. The name is per RUN, not per
+/// tree:
 pub fn gate_tmp_dir(worktree: &Path) -> PathBuf {
     gate_tmp_dir_in(Path::new(GATE_TMP_ROOT), worktree)
 }
@@ -1969,12 +1933,9 @@ mod tests {
             .to_string()
     }
 
-    /// The tail of a running step GROWS between two reads - the measurement behind *is it stuck?*: a
-    /// step that is writing is not stuck, and a pane can only say so if the daemon reads the file the
-    /// step is writing while it writes it.
-    ///
-    /// A real `sh` step, a real log, the real registry: `echo one`, a pause, `echo two`, a pause
-    /// `echo three`; the first read is taken while it is between the first two.
+    /// The tail of a running step GROWS between two reads - the measurement behind *is it
+    /// stuck?*: a step that is writing is not stuck, and a pane can only say so if the daemon
+    /// reads the file the step is writing while it writes it.
     #[test]
     fn a_running_steps_tail_grows_between_two_reads() {
         let dir = std::env::temp_dir().join(format!("letibot-gate-tail-{}", std::process::id()));
@@ -2263,9 +2224,6 @@ mod tests {
     /// A step that refused to skip is the MACHINE's, not the branch's - the measured case from
     /// `lab2x1` on 2026-10-30: `LETIBOT_REQUIRE_APPARATUS=1 cargo test --no-fail-fast -p
     /// letibot-harnessd --lib`, sixteen refusals and one genuine failure.
-    ///
-    /// Before this, `shows_code_failing` read the refusal's `panicked at` as the code failing and the
-    /// whole workspace went RED on both queues for one sentence about a missing cgroup.
     #[test]
     fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
         let refusal = |test: &str, what: &str| {
@@ -2508,12 +2466,9 @@ mod tests {
         );
     }
 
-    /// A step's scratch is a short directory on a real disk, outside the tree, and it is gone when the
-    /// run ends ([`GATE_TMPDIR`], [`GATE_TMP_ROOT`]): a `TMPDIR` inside the landing tree is too long
-    /// for the AF_UNIX sockets this workspace's own tests bind.
-    ///
-    /// The disk is NOT asserted to be this box's `/var/tmp` - whether that mount is a tmpfs is a fact
-    /// about the machine - so the filesystem half is measured on a root this test chooses.
+    /// A step's scratch is a short directory on a real disk, outside the tree, and it is gone
+    /// when the run ends ([`GATE_TMPDIR`], [`GATE_TMP_ROOT`]): a `TMPDIR` inside the landing
+    /// tree is too long for the AF_UNIX sockets this workspace's own tests bind.
     #[test]
     fn a_steps_scratch_is_short_on_a_real_disk_and_gone_when_the_run_ends() {
         // A fixture name, so this test cannot collide with the live landing tree: a test that reuses the
@@ -2632,12 +2587,9 @@ mod tests {
         );
     }
 
-    /// And the step is actually told - the value reaches the step's environment, overriding whatever the
-    /// box had: one job under a 64 MiB cap, the cores under a cap no box has, and under `uncapped`
-    /// nothing at all (so a cargo step falls back to its own default).
-    ///
-    /// The step wraps its answer in `jobs=<…>` because a row's output is the step's own output and THEN
-    /// the memory evidence line, so a step that prints nothing leaves the evidence first.
+    /// And the step is actually told - the value reaches the step's environment, overriding
+    /// whatever the box had: one job under a 64 MiB cap, the cores under a cap no box has, and
+    /// under `uncapped` nothing at all (so a cargo step falls back to its own default).
     #[test]
     fn a_step_is_told_how_many_jobs_its_cap_pays_for() {
         let wt = std::env::temp_dir().join(format!("letibot-gate-jobs-{}", std::process::id()));
@@ -2920,15 +2872,8 @@ exit 101
         let _ = std::fs::remove_dir_all(&wt);
     }
 
-    /// The row's cap covers the note the gate writes after the excerpt - the red `main` of 2026-10-30 in
-    /// one fixture, and it is the test that would have caught it.
-    ///
-    /// `lab2x1`'s gate came out 4 397 bytes against a 4 096-byte cap and this Mac's came out under it
-    /// on one commit and one fixture, because [`StepMemory::evidence`] appends a sentence that NAMES
-    /// the cgroup the daemon shares: long on Linux, a bare `No such file or directory` on a Mac.
-    ///
-    /// Nothing here is a number that happened to work: the tail is the cap's own length of one line -
-    /// the boundary the marker's arithmetic is tightest at - and the note is the longest one.
+    /// The row's cap covers the note the gate writes after the excerpt - the red `main` of
+    /// 2026-10-30 in one fixture, and it is the test that would have caught it.
     #[test]
     fn a_row_whose_end_is_as_big_as_the_cap_allows_still_fits_beside_the_gate_note() {
         let why = format!(
@@ -2970,13 +2915,9 @@ exit 101
         );
     }
 
-    /// A panic in a test that PASSED is not evidence about the one that failed - the reviewer's case
-    /// 2026-10-30: the row led with `crates/harnessd/src/httphead.rs:405:13: the turn blew up`, which is
-    /// a lib unit test that panics on purpose and passes.
-    ///
-    /// The shape is what `cargo test -- --nocapture` writes, which is what the gate runs: the passing
-    /// test's panic is printed in the RUN, the thread carries its id after the name, and cargo glues the
-    /// next `Running` line onto the `to rerun pass` clause.
+    /// A panic in a test that PASSED is not evidence about the one that failed - the reviewer's
+    /// case 2026-10-30: the row led with `crates/harnessd/src/httphead.rs:405:13: the turn blew
+    /// up`, which is a lib unit test that panics on purpose and passes.
     #[test]
     fn a_panic_in_a_test_that_passed_is_never_quoted_for_the_one_that_failed() {
         let mut text = String::from(
@@ -3065,16 +3006,7 @@ exit 101
         );
     }
 
-    /// The arithmetic, on a real cargo stream - MEASURED 2026-10-30 on this box: a two-crate workspace
-    /// whose `a` has a lib unit test that panics on purpose and passes, an integration test target with
-    /// one passing test, one `#[should_panic]` that does not panic and one real failure, and two
-    /// doc-test targets, pasted here as `cargo test --workspace --no-fail-fast -- --nocapture` printed
-    /// it.
-    ///
-    /// It pins four things the fixtures above cannot: cargo's `Running` lines are the only target
-    /// boundaries; the `to rerun pass` clause is GLUED to the next `Running` line; `Doc-tests` is a
-    /// target and a segment; and the failing target's own segment holds the panic of a test that
-    /// passed - which is the whole defect.
+    /// The arithmetic, on a real cargo stream - MEASURED 2026-10-30 on this box:
     #[test]
     fn a_real_workspace_stream_is_cut_into_targets_and_only_the_failing_one_is_quoted() {
         let text = r#"   Compiling probe-a v0.1.0 (/w/a)

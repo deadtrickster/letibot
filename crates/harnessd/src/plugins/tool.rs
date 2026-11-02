@@ -1,25 +1,10 @@
-//! A tool a layer declares, seated where the model can call it: the `tool_` seam the manifest's
-//! `[[tools]]` is the declaration half of.
-//!
-//! A layer's `plugin.toml` says `[[tools]] name = "claude_transcript"`, so the host seats a tool of
-//! that name with that description and schema, and a call asks the stack for
-//! `tool_claude_transcript` with the arguments and feeds. Which layers count is
-//! [`crate::plugins::declared_tools`]'s answer - the three disk scopes - so a built-in's block is
-//! the text a person installs, not a tool every session is handed.
-//!
-//! A hook does no I/O, so a tool asks for it: an answer may be `{"looks":[…],"state":…}` instead
-//! of a result, and the host runs every look, hands the results back in order and asks again, up to
-//! [`MAX_ROUNDS`] times. Every look is bounded and every truncation is in the answer, because a tool
-//! whose reason for existing is *do not put 100 MB into a context* cannot answer a big file with
-//! silence about what it left out.
-//!
-//! The capability is checked here, and it is the manifest's line: a path resolves against the
-//! workspace (a layer that declared `read`) or one of the trees it named, both sides canonicalised
-//! so a symlink pointing out of a declared tree is refused for what it resolves to.
-//!
-//! A broken layer costs a tool call, never a session: it produces a `failed` result naming what
-//! happened and what fixes it, and the stack's own rule - a trap falls to the layer below - holds
-//! underneath.
+//! A tool a layer declares, seated where the model can call it: the `tool_` seam the
+//! manifest's `[[tools]]` is the declaration half of. A layer's `plugin.toml` says
+//! `[[tools]] name = "claude_transcript"`, so the host seats a tool of that name with that
+//! description and schema, and a call asks the stack for `tool_claude_transcript` with the
+//! arguments and feeds. Which layers count is [`crate::plugins::declared_tools`]'s answer -
+//! the three disk scopes - so a built-in's block is the text a person installs, not a tool
+//! every session is handed. A hook does no I/O, so a tool asks for it:
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};

@@ -1,27 +1,10 @@
-//! A `task` the OPERATOR runs arms a watcher, so its child's settlement rings the session that ran
-//! it.
-//!
-//! A `task` call made by a model inside a turn settles like this, and every hop is asserted
-//! `run_rounds` invokes the tool with a `JobWatchSink` → `emit` sees the `Backgrounded` outcome and
-//! calls `JobWatchers::watch` → `watch_task` → `settled_here` → the session's bell → `Work::Woken` →
-//! `Sessions::wake` → `Harness::wake` → `completion_notices` → one `User { speaker: Agent }` row.
-//!
-//! The sink is what arms the watcher, and the sink is per call site. Three of the daemon's doors
-//! invoked their tool with a bare `NullToolSink` - the operator's own call, their `!` line on the
-//! harness, and `bangrun`'s thread for the between-turns run - so a call from any of them that
-//! returned `Backgrounded` minted a handle in nobody's table, while the row it left says in words
-//! *its completion will be delivered to you on its own*. Nothing could deliver it.
-//!
-//! One shape, three doors, each with its own test: the console's call (a real child, and nobody
-//! calls `task_result`); a `!` line moved to the background mid-flight, which is the half an
-//! operator hits with their own hands; and `bangrun::spawn_run` called directly, which mints nothing
-//! itself and so has to be handed the watcher. On the tree before the fix each times out on the ring
-//! rather than failing an assertion, because nothing in that path could put anything on the queue.
-//!
-//! It needs the vocabulary GGUF and, for the `!` lines, a process-lifetime tree - a run has to be
-//! a real process to be moved between scopes - which its own gate says and skips. `task` needs no
-//! process host at all, which is why `JobWatchers` is built whether or not a session can start one.
-//! No model: every turn here is answered by the shared `canned` frames.
+//! A `task` the OPERATOR runs arms a watcher, so its child's settlement rings the session
+//! that ran it. A `task` call made by a model inside a turn settles like this, and every
+//! hop is asserted `run_rounds` invokes the tool with a `JobWatchSink` → `emit` sees the
+//! `Backgrounded` outcome and calls `JobWatchers::watch` → `watch_task` → `settled_here` →
+//! the session's bell → `Work::Woken` → `Sessions::wake` → `Harness::wake` →
+//! `completion_notices` → one `User { speaker: Agent }` row. The sink is what arms the
+//! watcher, and the sink is per call site.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -99,9 +82,7 @@ fn session(tag: &str) -> (TempDir, Config, Parts) {
     let mut cfg = Config::for_this_box(&dir.path);
     cfg.dialect = letibot_harnessd::Dialect::Qwen;
     // `leticode` because it is the UNCONFINED seat that has the delegation trio - `task`
-    // `task_result`, `task_message`. `coder` and `runner` are the confined seats, and a Mac cannot
-    // build the boundary they need, so a fixture that seats one measures the absent boundary instead
-    // of its subject.
+    // `task_result`, `task_message`.
     cfg.seat = Seat::Leticode;
     cfg.http_retries = 0;
     // A window, because a child is planned against one - a spawn with no window is refused by
@@ -330,15 +311,7 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
 }
 
 /// The other door, and the reachable half: a `!` line moved to the background mid-flight.
-///
-/// The operator types a line, the command is still running, and they press Ctrl+O. The `bash` wait
-/// loop takes the flag, moves the run into a job of its own, and the run settles as `Backgrounded`
-/// with the operator named - the row it leaves says *its completion will be delivered to you on its
-/// own when it ends*, which is a promise about a watcher nobody armed.
-///
-/// The harness is moved onto a thread to run the line - `run_operator_shell` takes `&mut self` and
-/// blocks in the wait loop, exactly as it blocks on the daemon's worker - and handed back so the wake
-/// can be driven from here.
+/// The operator types a line, the command is still running, and they press Ctrl+O.
 #[test]
 fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -425,16 +398,6 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
 }
 
 /// The BETWEEN-TURNS door is a third function, and it is the one a daemon actually uses.
-///
-/// A `!` line typed while the worker is not holding it goes through `bangrun`'s own thread, which
-/// mints nothing itself - it is handed the minted call and the runtime - so the watcher has to
-/// travel as an argument or not at all. That is the half a fix at the harness cannot reach, and this
-/// is the test that says so.
-///
-/// The rows of that run do not land here: the thread hands them back as a
-/// `CommandKind::OperatorShellResult` and this fixture has no worker to drain it. The question is
-/// whether the handle the promotion minted is in the session's watcher set, and the answer is the
-/// ring.
 #[test]
 fn a_bang_run_on_its_own_thread_watches_what_it_promotes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

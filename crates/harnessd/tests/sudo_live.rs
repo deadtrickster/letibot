@@ -1,13 +1,11 @@
-//! The shim plus `SUDO_ASKPASS`, against the real `sudo` on this box - the one link that is genuinely
-//! ours and needs a live sudo to prove: that the shim's `-A` makes sudo run the askpass program
-//! instead of reaching for a tty, that the program's stdout is fed to sudo as the password, and that
-//! a wrong one comes back as sudo's own refusal rather than a tty error or a hang.
-//!
-//! No model, no daemon: `letibot-askpass` talking to a daemon is covered by `letibot-sessionlog`'s
-//! `askpass` socket test. Here the askpass program is a one-line script printing a deliberately wrong
-//! password, so the assertion is sudo's refusal, which is nobody's secret.
-//!
-//! `SUDO_LIVE=1 cargo test -p letibot-harnessd --test sudo_live`.
+//! The shim plus `SUDO_ASKPASS`, against the real `sudo` on this box - the one link that is
+//! genuinely ours and needs a live sudo to prove: that the shim's `-A` makes sudo run the
+//! askpass program instead of reaching for a tty, that the program's stdout is fed to sudo
+//! as the password, and that a wrong one comes back as sudo's own refusal rather than a tty
+//! error or a hang. No model, no daemon: `letibot-askpass` talking to a daemon is covered
+//! by `letibot-sessionlog`'s `askpass` socket test. Here the askpass program is a one-line
+//! script printing a deliberately wrong password, so the assertion is sudo's refusal, which
+//! is nobody's secret. `SUDO_LIVE=1 cargo test -p letibot-harnessd --test sudo_live`.
 
 use letibot_harnessd::sudo;
 

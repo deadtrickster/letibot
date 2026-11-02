@@ -1,28 +1,10 @@
-//! `todo_write`'s `target`: the daemon-side half of a PARENT writing a CHILD's board.
-//!
-//! # Why a module and not a method on `Harness`
-//!
-//! The parent's tool and the child's board are in the SAME daemon but never in the same
-//! [`crate::harness::Harness`]: a child spawned by `task` is run by the thread that spawned it, and
-//! the daemon holds no `Harness` for it. So a session-id → board map, registered by every `Harness`
-//! at open, is the one place a parent's write can find its child - a live `Arc` that rides
-//! [`crate::harness::Parts`] because it belongs to the daemon and not to any one session's config.
-//!
-//! # What the resolver refuses, and why by name
-//!
-//! The operator's ask is narrow - *"i want parent agents to be able to create todos for
-//! subagents"* - and the whole of its safety is one predicate: the target must be a session
-//! whose `parent_session_id` is the caller. A session that could write a sibling's board is a
-//! session that can overwrite another agent's plan, so every other shape is refused naming what
-//! was asked for and what this session actually holds. The caller's id is BOUND at construction
-//! so the author stamp `Parent <caller>` is the daemon's fact and never the call's claim.
-//!
-//! # The flush, and why it is here rather than at the child's next turn
-//!
-//! `Harness::flush_todos` runs at the CHILD's turn boundaries, and a parked child runs no turn -
-//! rows left to that path would sit in memory only and a daemon restart would take them. So the
-//! resolver persists and publishes at the moment of the write, through its own handle onto the
-//! store; the child's own `flush_todos` re-publishing the same list later is a harmless duplicate.
+//! `todo_write`'s `target`: the daemon-side half of a PARENT writing a CHILD's board. # Why
+//! a module and not a method on `Harness` The parent's tool and the child's board are in
+//! the SAME daemon but never in the same [`crate::harness::Harness`]: a child spawned by
+//! `task` is run by the thread that spawned it, and the daemon holds no `Harness` for it.
+//! So a session-id → board map, registered by every `Harness` at open, is the one place a
+//! parent's write can find its child - a live `Arc` that rides [`crate::harness::Parts`]
+//! because it belongs to the daemon and not to any one session's config.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -207,10 +189,9 @@ impl ParentTodos {
         }
     }
 
-    /// Resolve the target to one brief: an exact id, a child's name, else the short `…tail` form
-    /// [`short_id`] spells - the one the subagent pane and `task_result` show. Ambiguity is refused
-    /// with the candidates named: the guess it refuses to make is one child's board changing under
-    /// a parent that quoted another.
+    /// Resolve the target to one brief: an exact id, a child's name, else the short `…tail`
+    /// form [`short_id`] spells - the one the subagent pane and `task_result` show. Ambiguity
+    /// is refused with the candidates named:
     fn resolve(&self, target: &str) -> Result<letibot_sessionlog::registry::SessionBrief, String> {
         let all = self.registry.list();
         if let Some(exact) = all.iter().find(|b| b.session_id == target) {
@@ -315,14 +296,9 @@ impl ChildTodos for ParentTodos {
                         .map(crate::harness::Harness::todo_entry)
                         .collect(),
                 });
-                // AND THE CHILD'S OWN READER IS WOKEN, because a session's board move arms its
-                // idle plan-check - *"childs being just a session should get nags"*. A parked child
-                // is blocked in `Hub::take_own_work_until` and a publish alone does not open that
-                // door: the condvar wakes, the predicate finds no command and no wake, and the
-                // reader sleeps on with a new row and no clock armed.
-                //
-                // The wake carries no reason, and needs none: the child's loop looks, then sees the
-                // board's version move and re-arms from THIS write.
+                // AND THE CHILD'S OWN READER IS WOKEN, because a session's board move arms its idle
+                // plan-check - *"childs being just a session should get nags"*. A parked child is blocked
+                // in `Hub::take_own_work_until` and a publish alone does not open that door:
                 hub.wake_its_own_reader();
             }
         }
@@ -552,10 +528,6 @@ mod tests {
 
     /// A write is PUBLISHED on the child's hub and PERSISTED in the store - the two halves of
     /// the flush that keep the child's pane current and the rows alive past a restart.
-    ///
-    /// The publish is asserted on the hub's own seq (`head_seq`), which advances once per published
-    /// event; the persistence by opening the store again and reading the row back - the restart's
-    /// own path.
     #[test]
     fn a_write_is_published_and_persisted() {
         let dir = std::env::temp_dir().join(format!("child-todos-{}", std::process::id()));
@@ -733,11 +705,7 @@ mod tests {
         );
     }
 
-    /// A child still booting its VM is a child - the operator's stroppy session, 2026-10-14: a
-    /// `firecode` child is recorded the moment it is spawned and registered only once its VM is up
-    /// so for the whole boot `wait_on` refused it and listed the children whose VMs had finished
-    /// booting. The model took the first run for dead and dispatched a second VM doing the same
-    /// work.
+    /// A child still booting its VM is a child - the operator's stroppy session, 2026-10-14:
     #[test]
     fn a_child_still_booting_its_vm_can_be_waited_on_by_id_or_name() {
         let dir = letibot_sessionlog::testing::scratch_root().join(format!(

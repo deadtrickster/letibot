@@ -1,21 +1,11 @@
-//! What a session can actually reach, and what it says about it.
-//!
-//! Everything under test here was built, tested and unreachable before this file existed: the exec
-//! tools, the write tools, the intent group, the namespace boundary, the authorisation trail, the
-//! denial sink and the monitor wake all had passing unit tests and no constructor. This proves an
-//! invocation can get to them - and, more importantly, that one which passes no flag still cannot.
-//!
-//! # What it needs, and what it does not
-//!
-//! The vocabulary GGUF, because `Harness::open` renders the stable prefix. Not the model server
-//! nothing here generates - seating, confining, refusing and disclosing are all decided before a token
-//! is produced. `LETIBOT_VOCAB_GGUF` overrides the path.
-//!
-//! # Why several of these assert on prose
-//!
-//! Because the prose is the deliverable: a refusal that does not say what to attach costs the reader a
-//! source dive, and *"errors carry the fix"* is a rule about the sentence, not about the `Err`. What
-//! is asserted is that the fix is in the sentence, never a particular wording.
+//! What a session can actually reach, and what it says about it. Everything under test here
+//! was built, tested and unreachable before this file existed: the exec tools, the write
+//! tools, the intent group, the namespace boundary, the authorisation trail, the denial
+//! sink and the monitor wake all had passing unit tests and no constructor. This proves an
+//! invocation can get to them - and, more importantly, that one which passes no flag still
+//! cannot. # What it needs, and what it does not The vocabulary GGUF, because
+//! `Harness::open` renders the stable prefix. Not the model server nothing here generates -
+//! seating, confining, refusing and disclosing are all decided before a token is produced.
 
 use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::harness::ForkTail;
@@ -35,13 +25,8 @@ fn config(seat: Seat) -> Config {
         .expect("the workspace root is two levels above this crate")
         .to_path_buf();
     let mut cfg = Config::for_this_box(repo);
-    // These tests assert what an UNCONFIGURED session seats, so the fixture supplies nothing to
-    // configure: `Config::for_this_box` reads the operator's own `~/.config/letibot` -
-    // `providers.toml` for a search key, `permission.json` for the preapproved list - and without this
-    // the answer depends on whose machine is running them.
-    //
-    // Set as FIELDS rather than by pinning `$XDG_CONFIG_HOME`: these tests run in parallel threads
-    // and `set_var` beside a running thread is undefined behaviour this edition aborts the process for.
+    // These tests assert what an UNCONFIGURED session seats, so the fixture supplies nothing
+    // to configure:
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
@@ -58,32 +43,22 @@ fn parts(cfg: &Config) -> Parts {
         "the vocabulary must load; set LETIBOT_VOCAB_GGUF if this box is not the one \
          this repository is developed on",
     );
-    // The operator's per-project mode is not this test's business. `Harness::open` applies the
-    // project store's row over `cfg.mode`, and the row for this repository is whatever the
-    // operator last set with `/mode` - so a mode the test never asked for would decide the answer.
-    // `wired`'s job is to assert what a session seats, so it supplies the conditions it asserts about.
+    // The operator's per-project mode is not this test's business.
     *p.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     p
 }
 
-/// The coder seat for a test about the SEAT and not about its boundary.
-///
-/// `coder` is one of the two confined seats, so `Harness::open` refuses it where no boundary can be
-/// built - macOS, where there are no namespaces to enter. The three tests that take this one are about
-/// the seat's WIRING: its tools, its adjudicator, its trail, its denials. `cfg.unconfined` keeps every
-/// one of those and drops only the jail, and it is not an invention: it is the field a subagent of a
-/// `leticode` session inherits (`harness.rs`'s `sub_cfg`), so this is a session shape the daemon makes.
+/// The coder seat for a test about the SEAT and not about its boundary. `coder` is one of
+/// the two confined seats, so `Harness::open` refuses it where no boundary can be built -
+/// macOS, where there are no namespaces to enter.
 fn seat_config(seat: Seat) -> Config {
     let mut cfg = config(seat);
     cfg.unconfined = cfg!(target_os = "macos");
     cfg
 }
 
-/// An adjudicator that would admit anything, and never gets the chance to.
-///
-/// It exists so a *seating* test does not need a human at a terminal: nothing here runs a turn, so
-/// nothing reaches it, and `Adjudicator::describe` is what the refusal check reads - this one names
-/// itself, which is the whole difference between it and `NoAdjudicator`.
+/// An adjudicator that would admit anything, and never gets the chance to. It exists so a
+/// *seating* test does not need a human at a terminal:
 struct Attached;
 
 impl Adjudicator for Attached {
@@ -114,11 +89,9 @@ fn open(cfg: Config, adj: Option<Box<dyn Adjudicator>>) -> Result<(), String> {
 // 1. Nothing widens by default
 // ---------------------------------------------------------------------------
 
-/// The invocation that passes no flag gets what it got before.
-///
-/// This is the rule the whole strand is under, and the way it regresses is not a
-/// decision - it is somebody adding a tool to the default role because the role now
-/// has somewhere to put it. Six tools, all `Read`, over a backend that cannot write.
+/// The invocation that passes no flag gets what it got before. This is the rule the whole
+/// strand is under, and the way it regresses is not a decision - it is somebody adding a
+/// tool to the default role because the role now has somewhere to put it.
 #[test]
 fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -131,13 +104,9 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     let w = h.wiring();
 
     assert_eq!(w.role, "orchestrator");
-    // `todo_write` is the session's own list and `flowy` the door to the room - a door with nothing
-    // behind it in a session opened without a seat, which says so and names `/flowy login`. `room` is
-    // the coordinator's own session's tool, and the role's order is the prompt's order.
-    //
-    // And no LAYER's tool is here, not even the binary's own. A layer's tool is seated when a
-    // layer IN FORCE for this session declares it, and `plugins.rs`'s `declared_tools` is the one place
-    // that decides it; the test below this one is the other half.
+    // `todo_write` is the session's own list and `flowy` the door to the room - a door with
+    // nothing behind it in a session opened without a seat, which says so and names `/flowy
+    // login`.
     assert_eq!(
         w.seated,
         vec![
@@ -168,10 +137,8 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
         w.adjudicator
     );
 
-    // The one thing that IS new for a default session, and it is instrumentation
-    // rather than capability: the encoder measures what turns did. It changes no
-    // behaviour on this seat - the prose half is off, and the tool-declared half
-    // cannot fire because `todo` and `goal` are not seated.
+    // The one thing that IS new for a default session, and it is instrumentation rather than
+    // capability: the encoder measures what turns did.
     assert!(
         w.intent_encoder,
         "the intent encoder is attached for every session; without it every \
@@ -179,13 +146,9 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     );
 }
 
-/// A layer's tool is seated when a layer IN FORCE declares it, and not otherwise.
-///
-/// The other half of the test above: the same seat, the same flags, one `plugin.toml` in the project
-/// and the tool is in the prompt; take the file away and it is not. The layer is the binary's own
-/// `claude-transcript` manifest, copied into `<project>/.letibot/plugins/claude-transcript/` with
-/// no `plugin.wasm` - the manifest is the ask and what the model is offered, and the module that
-/// answers it is one the binary already carries.
+/// A layer's tool is seated when a layer IN FORCE declares it, and not otherwise. The other
+/// half of the test above: the same seat, the same flags, one `plugin.toml` in the project
+/// and the tool is in the prompt; take the file away and it is not.
 #[test]
 fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -241,9 +204,8 @@ fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
         with.seated
     );
     // And it is the only difference - a layer's tool adds a tool and changes nothing else
-    // about what the seat can reach. It reads a tree outside the workspace, which is `Read` and
-    // not a write or a shell: the layer's manifest line is the approval (§4.8.1), not a grant of
-    // the gate's classes.
+    // about what the seat can reach. It reads a tree outside the workspace, which is `Read`
+    // and not a write or a shell:
     assert_eq!(
         with.seated.len(),
         none.seated.len() + 1,
@@ -257,11 +219,9 @@ fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// The registry is a superset and the role decides what the prompt carries.
-///
-/// The failure this rules out is the one §8.4 names: a build that registers ten
-/// tools and quietly seats eight. `write` is registered for every session now, so
-/// the thing that keeps it out of a default prompt is the role and nothing else.
+/// The registry is a superset and the role decides what the prompt carries. The failure
+/// this rules out is the one §8.4 names: a build that registers ten tools and quietly seats
+/// eight.
 #[test]
 fn a_registered_tool_the_role_does_not_name_is_not_in_the_prompt() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -291,12 +251,8 @@ fn a_registered_tool_the_role_does_not_name_is_not_in_the_prompt() {
 // 2. The gate refuses to start rather than starting and failing every call
 // ---------------------------------------------------------------------------
 
-/// A write seat with nobody to decide does not open.
-///
-/// The inverse of a gate that says allowed because nothing is wired, and it costs the same way: the
-/// session starts, the banner prints, the operator types, and every call comes back `not_run` - while
-/// the model has been told in its stable prefix that it has `write` and `edit`, which cannot be
-/// corrected without a full re-prefill.
+/// A write seat with nobody to decide does not open. The inverse of a gate that says
+/// allowed because nothing is wired, and it costs the same way:
 #[test]
 fn a_write_seat_with_no_adjudicator_refuses_to_start_and_says_what_to_attach() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -376,12 +332,8 @@ fn a_write_seat_with_an_adjudicator_opens_fully_wired() {
 // 3. `bash` is off even behind the role that owns it
 // ---------------------------------------------------------------------------
 
-/// The runner seats eight of its nine tools, and the ninth needs its own flag.
-///
-/// If this box cannot build a confined backend the test says so and stops rather
-/// than passing: `HostBackend::confined` fails rather than degrading, and a seating
-/// test that silently skipped when the boundary was unavailable would be reporting
-/// the health of `bwrap`.
+/// The runner seats eight of its nine tools, and the ninth needs its own flag. If this box
+/// cannot build a confined backend the test says so and stops rather than passing:
 #[test]
 fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -459,15 +411,9 @@ fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
     );
 }
 
-/// The same for `coder`, which is the seat an operator actually sits in.
-///
-/// The daemon strips `bash` back off unless `--bash` is passed, exactly as it does for the runner. Two
-/// seats, one rule, asserted twice because the strip is written per-seat: a `Seat::Coder` arm that
-/// forgot the `retain` would still pass the runner's test.
-///
-/// The grants are checked here too: `$HOME` inside the view is a fresh tmpfs, so `~/.cargo` is ABSENT
-/// without one, and a grant that does not reach the boundary is a session that looks equipped and
-/// cannot compile.
+/// The same for `coder`, which is the seat an operator actually sits in. The daemon strips
+/// `bash` back off unless `--bash` is passed, exactly as it does for the runner. Two seats,
+/// one rule, asserted twice because the strip is written per-seat:
 #[test]
 fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_view() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -523,10 +469,8 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
         .map(|d| d.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    // A grant is a rule of a boundary, so there is nothing for the view to name when there is no
-    // view. Where the boundary could not be built the session opens UNCONFINED, the grant table is
-    // never built, and the disclosure names no grant - so this arm says what cannot be measured
-    // without a boundary, while the seating half above still measures in both places.
+    // A grant is a rule of a boundary, so there is nothing for the view to name when there is
+    // no view.
     if w.backend.contains("NOT CONFINED") {
         eprintln!(
             "SKIPPING THE GRANT HALF: no boundary was built for this checkout — {} — so there is \
@@ -549,11 +493,8 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
 // 4. The seats that were built and had no constructor
 // ---------------------------------------------------------------------------
 
-/// D9's plan mode, and the two tools that make a plan a plan.
-///
-/// The interesting assertion is the negative one: plan mode is *"no writes to the
-/// work"*, not "no writes", and a planner that could not record its plan would
-/// have to carry it in the context it is about to hand over.
+/// D9's plan mode, and the two tools that make a plan a plan. The interesting assertion is
+/// the negative one:
 #[test]
 fn the_planner_seat_can_write_its_plan_and_not_the_work() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -610,14 +551,8 @@ fn the_researcher_seat_carries_seams_that_refuse_by_name() {
 // 5. A denial the operator can see
 // ---------------------------------------------------------------------------
 
-/// §4b, end to end through the parts that will actually carry it.
-///
-/// The chain the requirement exists for: the gate denies, the operator is not told, the model infers
-/// *the approach was wrong* rather than *the action was forbidden*, tries a variant, and the task dies
-/// with the operator seeing only a dead task.
-///
-/// The gate, the sink and the hub are the real ones. Only the adjudicator is a stub, and it is
-/// `NoAdjudicator` - the honest worst case, where nobody decided at all.
+/// §4b, end to end through the parts that will actually carry it. The chain the requirement
+/// exists for:
 #[test]
 fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -681,13 +616,9 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         !by.is_empty(),
         "a refusal that does not say who decided is the one that costs an hour"
     );
-    // §4b's requirement: the way OUT arrives with the denial, not after the task has died - a refusal
-    // that can only be routed around teaches people to route around refusals. What the way out IS
-    // depends on who refused.
-    //
-    // This call is refused by `boundary:normaliser`, and there a grant is not the remedy: the refusal
-    // happens before any adjudicator, so granting it changes nothing on a retry - and offering
-    // `grant adj-N` there is offering a button that does nothing.
+    // §4b's requirement: the way OUT arrives with the denial, not after the task has died - a
+    // refusal that can only be routed around teaches people to route around refusals. What the
+    // way out IS depends on who refused.
     assert_eq!(by, "boundary:normaliser");
     assert!(
         grant.contains("re-issuing the command"),
@@ -816,16 +747,9 @@ fn consenting_to_allow_all_admits_a_shell_command_unasked() {
 // ---------------------------------------------------------------------------
 // `ask_user_question`: the seat can ask, the head answers, the model is told.
 
-/// A leticode session can ask the person a question, and the answer reaches the model.
-///
-/// End to end and not a seating assertion. The tool is invoked through the session's own runtime
-/// with the session's own registry and its own gate; the question is posed on the session's own hub
-/// a head attached to that hub answers it through `CommandKind::Answer`; and the assertion is on what
-/// the MODEL gets back.
-///
-/// `None` for the adjudicator, and that is the point of the fixture: the question path is
-/// installed in the arm that builds the head adjudicator from `cfg.adjudicator`, so a test that handed
-/// in its own would be testing a session where no question can reach anybody.
+/// A leticode session can ask the person a question, and the answer reaches the model. End
+/// to end and not a seating assertion. The tool is invoked through the session's own
+/// runtime with the session's own registry and its own gate;
 #[test]
 fn a_leticode_session_asks_the_person_and_the_answer_reaches_the_model() {
     use letibot_sessionlog::protocol::Caps;
@@ -950,10 +874,9 @@ fn a_custom_system_prompt_is_what_the_session_opens_under() {
     );
 }
 
-/// A compaction forks onto the prefix, so the base prompt comes back in front of the summary.
-///
-/// `fork_to_summary` opens the new transcript under this session's own `StablePrefix`, and this pins
-/// that without needing a model: the fork is given a summary and asked to build the new base from it.
+/// A compaction forks onto the prefix, so the base prompt comes back in front of the
+/// summary. `fork_to_summary` opens the new transcript under this session's own
+/// `StablePrefix`, and this pins that without needing a model:
 #[test]
 fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1010,13 +933,8 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Re-seating without summarising runs no summary turn and keeps the history.
-///
-/// A tool's schema lives in the stable prefix, so a schema change needs a fork; paying for that fork
-/// with a summary turn is right when the point is to shrink and pure loss when the point is only to
-/// change message zero.
-///
-/// No model runs here, and that IS the assertion: `reseat` has to ask one for a summary.
+/// Re-seating without summarising runs no summary turn and keeps the history. A tool's
+/// schema lives in the stable prefix, so a schema change needs a fork;
 #[test]
 fn reingest_writes_no_summary_and_says_so_in_the_note() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

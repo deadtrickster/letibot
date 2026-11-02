@@ -54,10 +54,9 @@ const REFUSAL: &str = "the endpoint is having a bad minute";
 // The stub endpoint
 // ---------------------------------------------------------------------------
 
-/// One loopback model that refuses while it is told to and answers after that.
-///
-/// `left` is the count of refusals still owed, so one stub serves every scenario in this file
-/// `seen` is the evidence of how many attempts the ladder really took.
+/// One loopback model that refuses while it is told to and answers after that. `left` is
+/// the count of refusals still owed, so one stub serves every scenario in this file `seen`
+/// is the evidence of how many attempts the ladder really took.
 #[derive(Clone)]
 struct Endpoint {
     port: u16,
@@ -396,9 +395,8 @@ fn one_outage_is_one_row_with_a_counter() {
         rec.answered
     );
 
-    // ── B. A fourth attempt that answers ────────────────────────────────────────────────
-    //
-    // The recovery is said once, with the count - a silent one leaves a person believing the
+    // ── B. A fourth attempt that answers ──────────────────────────────────────────────── The
+    // recovery is said once, with the count - a silent one leaves a person believing the
     // endpoint is still down - and no retry row is written at all.
     endpoint.refuse(3);
     let before = endpoint.seen();

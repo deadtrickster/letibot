@@ -97,10 +97,9 @@ const ABOUT: &str = "the offer must live at the tail of the request, out of the 
 const UNRELATED: &str = "the sourdough starter wants equal weights of flour and water and a \
                          warm place for a day";
 
-/// The corpus a fixture workspace has: the note under test, and enough others that `idf` has
-/// something to be computed over.
-///
-/// A corpus of one note makes every term equally rare, and no floor discriminates there.
+/// The corpus a fixture workspace has: the note under test, and enough others that `idf`
+/// has something to be computed over. A corpus of one note makes every term equally rare,
+/// and no floor discriminates there.
 fn corpus(f: &Fixture) -> PathBuf {
     f.note(
         "the-store-write-lock",
@@ -130,10 +129,9 @@ fn offer_note(f: &Fixture) -> PathBuf {
     )
 }
 
-/// The offer is composed at the tail, and it is not in the transcript.
-///
-/// An assembly can be recomposed and nothing has to be un-said, so the item the request carries is
-/// returned by `Offers::tail` and appears in none of the items it was composed from.
+/// The offer is composed at the tail, and it is not in the transcript. An assembly can be
+/// recomposed and nothing has to be un-said, so the item the request carries is returned by
+/// `Offers::tail` and appears in none of the items it was composed from.
 #[test]
 fn the_offer_is_at_the_tail_and_never_in_the_transcript() {
     let f = Fixture::new("tail");
@@ -191,10 +189,9 @@ fn the_offer_is_at_the_tail_and_never_in_the_transcript() {
     );
 }
 
-/// An offer nobody takes leaves no trace, and the next round says nothing.
-///
-/// A discarded offer is dropped from the context entirely, and the same note is not offered twice
-/// in one turn.
+/// An offer nobody takes leaves no trace, and the next round says nothing. A discarded
+/// offer is dropped from the context entirely, and the same note is not offered twice in
+/// one turn.
 #[test]
 fn an_untaken_offer_is_dropped_and_not_repeated() {
     let f = Fixture::new("untaken");
@@ -425,11 +422,8 @@ fn the_subject_is_the_prompt_and_this_turns_tool_results() {
     );
 }
 
-/// A cut through a multi-byte character must not panic.
-///
-/// `String::truncate` asserts that the length is a character boundary, and a subject is full of
-/// multi-byte characters. Every fixture here is ASCII, which is why the suite stayed green while a
-/// panic in this path killed the daemon.
+/// A cut through a multi-byte character must not panic. `String::truncate` asserts that the
+/// length is a character boundary, and a subject is full of multi-byte characters.
 #[test]
 fn a_cut_inside_a_character_does_not_panic() {
     // 7_999 bytes of ASCII, then a 3-byte character placed so that byte `SUBJECT_CHARS` falls in
@@ -456,11 +450,8 @@ fn a_cut_inside_a_character_does_not_panic() {
     );
 }
 
-/// A note this session was already offered is not offered again: the memory is the session's, not
-/// the turn's.
-///
-/// The turn's half is the sibling test above. On its own it would make "once per note" mean once
-/// per turn, so one note reaches a single session's turns again and again.
+/// A note this session was already offered is not offered again: the memory is the
+/// session's, not the turn's. The turn's half is the sibling test above.
 #[test]
 fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
     let f = Fixture::new("recall");
@@ -505,11 +496,9 @@ fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
     );
 }
 
-/// A note this session wrote is not offered back to it.
-///
-/// Its author composed every word, so the offer is a fetch of the model's own output, and it wins
-/// its round for a structural reason: a note about what you are doing scores highest against the
-/// subject you are writing about.
+/// A note this session wrote is not offered back to it. Its author composed every word, so
+/// the offer is a fetch of the model's own output, and it wins its round for a structural
+/// reason:
 #[test]
 fn a_note_this_session_wrote_is_not_offered_back() {
     let f = Fixture::new("written");

@@ -1,22 +1,11 @@
 //! The turn an operator's `!` line starts - the end-to-end test of
-//! `Harness::run_after_operator_shell`, one of the two call sites that run a turn.
-//!
-//! The two call sites differ in what they put in front of the model, and that difference is this
+//! `Harness::run_after_operator_shell`, one of the two call sites that run a turn. The two
+//! call sites differ in what they put in front of the model, and that difference is this
 //! file's assertion: `Harness::submit_item` appends the row its turn is about, and
-//! `Harness::run_after_operator_shell` appends nothing - the rows are already on the log, so all
-//! it adds is the turn, and it opens the turn itself. So the `!` line is on the log exactly once
-//! and the second prompt carries a head the first never had.
-//!
-//! It drives the daemon's own arm rather than a unit on the harness: a real `Sessions`, a
-//! `CommandKind::OperatorShellResult` submitted to the session's hub exactly as the worker submits
-//! it, and `Sessions::dispatch`. The run's half is fabricated (a `ToolOutcome` and a payload)
-//! because what arrives at this arm is the run's pieces off the wire, already rendered and capped
-//! the turn's half is real - the real round loop, a real transcript, a real provider request - and
-//! the model is a recording stub, because *did the turn hand the model the line and the output*
-//! is a question about the request and not about the transcript.
-//!
-//! It needs the vocabulary GGUF and not a process tree: the seat has no `bash`, so no delegated
-//! cgroup is needed and the test runs everywhere rather than in a skip branch.
+//! `Harness::run_after_operator_shell` appends nothing - the rows are already on the log,
+//! so all it adds is the turn, and it opens the turn itself. So the `!` line is on the log
+//! exactly once and the second prompt carries a head the first never had. It drives the
+//! daemon's own arm rather than a unit on the harness:
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -51,13 +40,9 @@ const TO_THE_BANG: &str = "answering the command";
 fn config(session_id: &str, endpoint: Endpoint, store: &std::path::Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // `leticode`, and no `bash`. This file's turn is answered, not run: the seat is one with no
-    // shell so the fixture needs no exec host, and the run's half arrives as the pieces the worker
-    // dispatches.
-    //
-    // `leticode` and not `coder` - the same tools-minus-bash, and the one of the two that needs no
-    // boundary: `coder` is a confined seat, so on a Mac it refuses to open and this file would
-    // measure that refusal instead of the turn after an operator shell.
+    // `leticode`, and no `bash`. This file's turn is answered, not run: the seat is one with
+    // no shell so the fixture needs no exec host, and the run's half arrives as the pieces the
+    // worker dispatches.
     cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     // No retry ladder: nothing here should fail, and a failure that retried would spend the
@@ -93,10 +78,9 @@ fn wiring(cfg: &Config) -> SessionWiring {
 // The stub
 // ---------------------------------------------------------------------------
 
-/// A model that answers the turn, and keeps the request it was asked.
-///
-/// One frame list per turn, answered as soon as the request has been read - and the body recorded
-/// first, because the prompt is what this file has to read.
+/// A model that answers the turn, and keeps the request it was asked. One frame list per
+/// turn, answered as soon as the request has been read - and the body recorded first,
+/// because the prompt is what this file has to read.
 struct Stub {
     endpoint: Endpoint,
     seen: Arc<Mutex<Vec<String>>>,
@@ -256,14 +240,9 @@ impl Drop for TempDir {
 // THE TEST
 // ---------------------------------------------------------------------------
 
-/// The `!` line's turn reaches the model with the operator's line and their command's output in
-/// it, and the answer lands - and the two call sites differ in exactly one way, which this
-/// asserts.
-///
-/// The daemon arm is the real one: `Sessions::dispatch` taking an `OperatorShellResult` off the
-/// session's queue, which is the shape the run's own thread sends back. What is fabricated is the
-/// run's *pieces* (an outcome and a payload), because the run itself is `operator_shell.rs`'s test
-/// and this is the turn its rows are for.
+/// The `!` line's turn reaches the model with the operator's line and their command's
+/// output in it, and the answer lands - and the two call sites differ in exactly one way,
+/// which this asserts. The daemon arm is the real one:
 #[test]
 fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -288,18 +267,14 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     let mut sessions =
         Sessions::open_first(&parts, cfg, registry.clone()).expect("the daemon opens");
 
-    // ---- The other call site, for the contrast ---------------------------------
-    //
-    // A prompt goes through `submit_item`: the row is appended, and the turn that follows reads it
-    // as its head.
+    // ---- The other call site, for the contrast --------------------------------- A prompt
+    // goes through `submit_item`: the row is appended, and the turn that follows reads it as
+    // its head.
     sessions.submit(id, THE_PROMPT).expect("the prompt answers");
 
-    // ---- The call site this file exists for ------------------------------------
-    //
-    // The operator's run comes back as the command the worker dispatches - the same frame
-    // `start_operator_run`'s settle path sends, through the same door (`Hub::submit_daemon`, which
-    // is how a thread that is not a head hands the worker a command), carrying the run's rendered
-    // pieces rather than the run.
+    // ---- The call site this file exists for ------------------------------------ The
+    // operator's run comes back as the command the worker dispatches - the same frame
+    // `start_operator_run`'s settle path sends, through the same door (`Hub::submit_daemon`,
     let hub = registry.get(id).expect("the session's hub");
     let queued = hub.submit_daemon(
         "dead",
@@ -328,11 +303,8 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
         "the arm answered with the turn's own outcome, not a failure"
     );
 
-    // ---- What the model was handed ---------------------------------------------
-    //
-    // The prompt is the assertion, and it is why the stub records requests: "the model reads
-    // the operator's line and the output" is a claim about the bytes on the wire, and a test that
-    // only read the transcript would pass on a build that opened an empty turn.
+    // ---- What the model was handed --------------------------------------------- The prompt
+    // is the assertion, and it is why the stub records requests:
     assert_eq!(
         stub.turns(),
         2,

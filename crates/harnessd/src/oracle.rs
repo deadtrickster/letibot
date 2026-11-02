@@ -1,18 +1,11 @@
-//! Layer B over HTTP: the real [`AuthorisationOracle`], for a box with a guard model.
-//!
-//! It lives here and not in `letibot-tools` because that crate has no HTTP client and no
-//! backend, and a seam that could only be exercised by standing up inference is a seam nobody
-//! tests. `ScriptedOracle` is the fake it ships for the tests.
-//!
-//! The budget is the design constraint: [`AuthorisationOracle::budget`] defaults to 400ms and
-//! `ModelAdjudicator` enforces it, abandoning an oracle that overruns as `Timeout`, which fails
-//! closed. That rules out an oracle that explains itself - so the answer is a verdict: a word
-//! and, when it authorises, the trail indices it relies on. The prose a person reads is
-//! generated later, off the tool path, from the corpus row.
-//!
-//! Prompt caching is the other half of the budget: the brief's prefix is stable by construction
-//! (`ModelBrief::render` opens with the same instruction every time), so `cache_prompt` keeps
-//! the common prefix resident and a warm call is a fraction of a cold one.
+//! Layer B over HTTP: the real [`AuthorisationOracle`], for a box with a guard model. It
+//! lives here and not in `letibot-tools` because that crate has no HTTP client and no
+//! backend, and a seam that could only be exercised by standing up inference is a seam
+//! nobody tests. `ScriptedOracle` is the fake it ships for the tests. The budget is the
+//! design constraint: [`AuthorisationOracle::budget`] defaults to 400ms and
+//! `ModelAdjudicator` enforces it, abandoning an oracle that overruns as `Timeout`, which
+//! fails closed. That rules out an oracle that explains itself - so the answer is a
+//! verdict: a word and, when it authorises, the trail indices it relies on.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -22,11 +15,8 @@ use letibot_tools::{
 };
 use letibot_turn::http::{self, Endpoint};
 
-/// What came back, and whether it was cut off.
-///
-/// Two facts in one struct, because the second cannot be recovered from the first: a generation
-/// stopped at `max_tokens` and one that ended on its own are the same bytes, and the difference
-/// decides whether the operator should raise a ceiling or answer a question.
+/// What came back, and whether it was cut off. Two facts in one struct, because the second
+/// cannot be recovered from the first:
 struct Said {
     text: String,
     /// The server said `finish_reason: length`. See [`HttpOracle::ask`].
@@ -56,23 +46,13 @@ pub struct HttpOracle {
     max_tokens: usize,
     scope: OracleScope,
     question: Question,
-    /// The bytes that came back on the last call, verbatim, for the corpus row.
-    ///
-    /// The exchange exists for one HTTP call and is otherwise gone: `basis` is a *rendering* of
-    /// the reply, and a row whose label was read out of a reply nobody kept is training data
-    /// with its input missing. Cleared at the top of every call, so a reply is never filed
-    /// against the next decision.
+    /// The bytes that came back on the last call, verbatim, for the corpus row. The exchange
+    /// exists for one HTTP call and is otherwise gone:
     last_reply: Mutex<Option<String>>,
 }
 
-/// What the guard is asked, and therefore what it answers.
-///
-/// `Verdict` is the one in production: a sentence, then `ALLOW <cites>` / `DENY` / `UNSURE`.
-/// `TwoScores` asks the two questions the brief actually contains - *does this fit what the
-/// operator asked* and *does this fit what the agent says it is doing* - as 0–10 scores, and
-/// this code derives the verdict from thresholds. A score is a number the corpus keeps, so the
-/// thresholds can be calibrated against the operator's own answers, and the two dimensions are
-/// logged apart so "fits the ask but not the claim" is a row and not a lost `UNSURE`.
+/// What the guard is asked, and therefore what it answers. `Verdict` is the one in
+/// production: a sentence, then `ALLOW <cites>` / `DENY` / `UNSURE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Question {
     #[default]
@@ -135,11 +115,9 @@ impl HttpOracle {
         self
     }
 
-    /// Where the ceiling is raised, from `--oracle-max-tokens`.
-    ///
-    /// The ceiling is needed for one thing only: naming the number to raise in
-    /// [`Self::out_of_room_why`]. A setter rather than a config field because the profile's own
-    /// value has to reach the sentence.
+    /// Where the ceiling is raised, from `--oracle-max-tokens`. The ceiling is needed for one
+    /// thing only: naming the number to raise in [`Self::out_of_room_why`]. A setter rather
+    /// than a config field because the profile's own value has to reach the sentence.
     pub fn with_max_tokens(mut self, n: usize) -> Self {
         self.max_tokens = n;
         self
@@ -149,10 +127,9 @@ impl HttpOracle {
     /// caller treats as an unsure answer, because a transport failure must never read as
     /// authorisation.
     fn ask(&self, prompt: &str) -> Option<Said> {
-        // The chat endpoint, and `enable_thinking: false`. `/completion` applies no chat
-        // template, so the flag is inert there and the model spends tens of seconds in a
-        // `<think>` block on exactly the calls worth judging; and a `stop` of `"\n"` fires on
-        // the model's own leading newline, leaving `content` empty and every call unparseable.
+        // The chat endpoint, and `enable_thinking: false`. `/completion` applies no chat template,
+        // so the flag is inert there and the model spends tens of seconds in a `<think>` block on
+        // exactly the calls worth judging;
         let body = serde_json::json!({
             "model": "guard",
             "messages": [{ "role": "user", "content": prompt }],
@@ -167,8 +144,7 @@ impl HttpOracle {
 
         // The budget, made real: a budget the caller merely promises to respect is not one, and
         // this used to reach only `describe` while the endpoint's own 180-second read timeout
-        // bounded the request. The read timeout is the bound this transport has, so the banner's
-        // sentence is true.
+        // bounded the request.
         let mut endpoint = self.endpoint.clone();
         endpoint.read_timeout = self.budget;
         let res = http::post_json(&endpoint, "/v1/chat/completions", &body).ok()?;
@@ -187,8 +163,7 @@ impl HttpOracle {
             .to_string();
         // `finish_reason` is the third outcome's whole evidence: a reply cut at the ceiling and
         // one that stopped are the same bytes, and the servers say `length` for the first and
-        // `stop` for the second. Absent is not `length` - a missing field must not be read as
-        // the loudest case.
+        // `stop` for the second.
         let out_of_room = v
             .get("choices")
             .and_then(|c| c.get(0))
@@ -244,12 +219,8 @@ fn verb(line: &str) -> Option<&'static str> {
     }
 }
 
-/// The line a verdict is on, first-or-last - the single place that decides, so the reader and
-/// the `UNSURE` check cannot disagree about which line that is.
-///
-/// A line *begins* with a verdict verb or it is not a verdict line at all, so this asks the verb
-/// and not the whole parse: `UNSURE` on its own parses to `Verdict::Unsure`, which is
-/// indistinguishable from an unparseable line if the parse is what decides.
+/// The line a verdict is on, first-or-last - the single place that decides, so the reader
+/// and the `UNSURE` check cannot disagree about which line that is.
 fn verdict_line(answer: &str) -> &str {
     let (first, last) = verdict_lines(answer);
     match first {
@@ -312,13 +283,9 @@ struct Scores {
     claim: Option<u8>,
 }
 
-/// Read `FIT <0-10> <cites>` and `CLAIM <0-10|NA>`, in either order. Anything the parser cannot
-/// read is `None`, which the caller reports as "no scores this seam could read" - kept apart
-/// from a low score, the way UNSURE is kept apart from an unparseable verdict.
-///
-/// The first four non-empty lines and then the last four, for the reason [`parse`] reads either
-/// end: both shapes are in the world, and a caller that saw only one end would call half of them
-/// unreadable.
+/// Read `FIT <0-10> <cites>` and `CLAIM <0-10|NA>`, in either order. Anything the parser
+/// cannot read is `None`, which the caller reports as "no scores this seam could read" -
+/// kept apart from a low score, the way UNSURE is kept apart from an unparseable verdict.
 fn parse_scores(answer: &str) -> Option<Scores> {
     let mut fit: Option<(u8, Vec<usize>)> = None;
     let mut claim: Option<Option<u8>> = None;
@@ -382,11 +349,9 @@ fn verdict_of(s: &Scores) -> Verdict {
 }
 
 impl AuthorisationOracle for HttpOracle {
-    /// What this oracle answered last, for the corpus row.
-    ///
-    /// The reply is the input the verdict was read out of, and it exists nowhere else: `basis`
-    /// is a rendering, so a row whose label cannot be traced back to the bytes it came from is a
-    /// row nobody can check. `None` means nothing came back, which is not an empty reply.
+    /// What this oracle answered last, for the corpus row. The reply is the input the verdict
+    /// was read out of, and it exists nowhere else: `basis` is a rendering, so a row whose
+    /// label cannot be traced back to the bytes it came from is a row nobody can check.
     fn last_reply(&self) -> Option<String> {
         self.last_reply.lock().ok().and_then(|g| g.clone())
     }
@@ -397,17 +362,9 @@ impl AuthorisationOracle for HttpOracle {
         if let Ok(mut g) = self.last_reply.lock() {
             *g = None;
         }
-        // A sentence of room before the verdict: asked for one line and nothing else, the
-        // guard answered UNSURE to anything it had to think about, because six tokens left no
-        // space to connect two facts. The verdict is read off the last line, so the reasoning
-        // cannot be mistaken for it - and the cost is latency, which is why the disclosure
-        // prints the budget beside the model.
-        //
-        // Reasoning first and the verdict last. Asking for the verdict first, so a reply cut at
-        // its ceiling still carries it, made the oracle materially more permissive; the
-        // truncation is paid for with the ceiling instead ([`DEFAULT_MAX_TOKENS`]), which costs
-        // latency rather than recall. A model that commits early still parses: [`verdict_line`]
-        // reads either end and a line not beginning with a verb is not a verdict.
+        // A sentence of room before the verdict: asked for one line and nothing else, the guard
+        // answered UNSURE to anything it had to think about, because six tokens left no space to
+        // connect two facts.
         let prompt = match self.question {
             Question::Verdict => format!(
                 "{}\n\nIn at most 25 words, say whether this call is a step toward what the \
@@ -441,10 +398,9 @@ impl AuthorisationOracle for HttpOracle {
         // Whatever came back is kept before anything reads it: the reply is the input a corpus
         // row's label was read out of, and this is the only place it exists at all.
         let Some(said) = self.ask(&prompt) else {
-            // Nothing came back, so the cell keeps the `None` the clear above set, which is what
-            // the corpus records - "asked and silent" and "replied with nothing" are different
-            // facts. It is not `OutOfRoom` either: a transport that failed did not spend a
-            // ceiling, and the reply is absent rather than cut.
+            // Nothing came back, so the cell keeps the `None` the clear above set, which is what the
+            // corpus records - "asked and silent" and "replied with nothing" are different facts. It
+            // is not `OutOfRoom` either:
             return OracleAnswer::Unsure {
                 why: format!("{} did not answer", self.id),
                 kind: UnsureKind::Unreadable,
@@ -482,11 +438,9 @@ impl AuthorisationOracle for HttpOracle {
 }
 
 impl HttpOracle {
-    /// What those bytes amount to, with no transport in it at all.
-    ///
-    /// Split out because the parsing is where the defects are (`ALLOW [0]` yielding no
-    /// citations, `UNSURE` read as a parse failure) and it is the half that can be exercised
-    /// without standing up inference.
+    /// What those bytes amount to, with no transport in it at all. Split out because the
+    /// parsing is where the defects are (`ALLOW [0]` yielding no citations, `UNSURE` read as a
+    /// parse failure) and it is the half that can be exercised without standing up inference.
     fn read(&self, brief: &mut ModelBrief, raw: &str, out_of_room: bool) -> OracleAnswer {
         let request_id = brief.request_id.clone();
         let (verdict, scored) = match self.question {
@@ -543,10 +497,9 @@ impl HttpOracle {
                     };
                 };
 
-                // An authorisation that cites nothing is not one. Checking only that the list
-                // was non-empty accepted any number at all - turn counts against a 12-entry
-                // trail - so this asks the trail whether the numbers name operator words that
-                // were actually on the page.
+                // An authorisation that cites nothing is not one. Checking only that the list was
+                // non-empty accepted any number at all - turn counts against a 12-entry trail - so this
+                // asks the trail whether the numbers name operator words that were actually on the page.
                 let good = brief.trail.cited_operator_words(&cites);
                 if good.is_empty() {
                     return OracleAnswer::Unsure {
@@ -634,13 +587,8 @@ impl HttpOracle {
         OracleAnswer::Unsure { why, kind }
     }
 
-    /// The sentence for a reply that was cut off by its own ceiling.
-    ///
-    /// It names the budget, because that is the fact the operator acts on: `max_tokens` is a
-    /// number in this harness's own process, the reply stopped at it, and the answer is to raise
-    /// it or take the call again. It must not read like the other three - a person who reads "it
-    /// could not decide" for a reply that was never allowed to finish will go and read the trail
-    /// themselves. And it says what was not lost: the bytes are kept in `oracle_reply`.
+    /// The sentence for a reply that was cut off by its own ceiling. It names the budget,
+    /// because that is the fact the operator acts on:
     fn out_of_room_why(&self) -> String {
         format!(
             "{} ran out of room: the reply stopped at its {} output-token ceiling before \
@@ -779,11 +727,8 @@ mod tests {
         assert_eq!(parse("DENY\nreasoning\nALLOW 0"), Verdict::Deny);
     }
 
-    /// A reply cut at the ceiling that did carry a verdict is an answer.
-    ///
-    /// The ceiling explains a *failure* to parse and nothing else: a reply whose first line is
-    /// `ALLOW 0` and whose sentence was cut is an authorisation, and reporting it as `out_of_room`
-    /// would be the same defect mirrored - a budget standing in for a verdict.
+    /// A reply cut at the ceiling that did carry a verdict is an answer. The ceiling explains a
+    /// *failure* to parse and nothing else:
     #[test]
     fn the_ceiling_explains_a_failure_and_never_overrides_a_verdict() {
         let o = HttpOracle::new(
@@ -851,11 +796,6 @@ mod tests {
     }
 
     /// A reply of the shape the prompt asks for is an answer, not a parse failure.
-    ///
-    /// The guard used to test `raw.trim` against `UNSURE` - the whole multi-line reply - while
-    /// `parse` reads one line, so a sentence-then-`UNSURE` reply parsed and was then reported as
-    /// "gave no verdict this seam could read". The three `Unsure`s are asserted apart, because
-    /// collapsing them is what went wrong.
     #[test]
     fn unsure_is_read_from_the_last_line_and_is_not_a_parse_failure() {
         let o = HttpOracle::new(

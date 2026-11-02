@@ -582,13 +582,8 @@ fn an_unreachable_host_is_a_sentence_about_the_machine() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A call that ran out of this box's clock is asked again; a call that never started is not - the
-/// distinction the whole host gate rests on, as a value.
-///
-/// A poll that is not answered in time says *the machine was busy forking a shell*, and the answer it will
-/// give is still true when it comes, so it is [`Missed::slow`] and the step goes on. A call that could not
-/// be started says nothing will ever answer, so it is [`Missed::gone`] and the step is UNJUDGED. Reading
-/// the first as the second is what killed a four-minute step on lab2x1.
+/// A call that ran out of this box's clock is asked again; a call that never started is not
+/// - the distinction the whole host gate rests on, as a value.
 #[test]
 fn a_call_that_ran_out_of_the_clock_is_slow_and_one_that_never_started_is_gone() {
     let slow = run(

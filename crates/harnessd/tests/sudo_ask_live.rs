@@ -60,11 +60,8 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// The daemon, its stderr going to `log`.
-///
-/// `HOME` is a temp directory and the endpoint is a dead port, on purpose: the operator's own
-/// `providers.toml` would spend their money on the turn a `!` line starts, and with no config
-/// there is no provider, so the turn fails as an unreachable server fails and nothing leaves.
+/// The daemon, its stderr going to `log`. `HOME` is a temp directory and the endpoint is a
+/// dead port, on purpose:
 fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &str) -> Child {
     let out = std::fs::File::create(log).expect("the log file");
     let err = out.try_clone().expect("a second handle on the log");
@@ -421,10 +418,6 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
 }
 
 /// A run that is still WRITING while one of its processes is blocked on the terminal.
-///
-/// `Unreadable` is the *absence* of a reading - a fact about permissions, as true at a 100 ms
-/// write interval as at a 2 s one - so it must be said without the quiet beat the card needs
-/// and the sentence must not claim a beat this run never earned.
 #[test]
 fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -505,10 +498,8 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     );
 }
 
-/// The operator's own run has no deadline - not even the 120 s one. The 120 s default is for a
-/// command the MODEL did not ask to run longer; a person's `!` line is watched by the person who
-/// typed it and their own acts are its stop, so past that point the run is still going and the
-/// daemon is not silent about it. Opt-in (`LETIBOT_DEADLINE_LIVE=1`): it spends two minutes idle.
+/// The operator's own run has no deadline - not even the 120 s one. The 120 s default is
+/// for a command the MODEL did not ask to run longer;
 #[test]
 fn the_operators_own_run_outlives_the_models_deadline() {
     if std::env::var("LETIBOT_DEADLINE_LIVE").as_deref() != Ok("1") {

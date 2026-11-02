@@ -78,10 +78,9 @@ pub fn scope_repository(workspace: &Path, scope: &QueueScope) -> Result<Option<S
     }
 }
 
-/// Every repository a `/queue` verb may act in - [`scope_repository`] for several: `[None]` is
-/// every repository, a session of one repository is `[Some(it)]`, and a session of a folder that is
-/// one project of several (`git::repos_of_workspace`) is each of them. The dispatch runs a sweep
-/// once per entry, and a row verb in the one entry that holds the row ([`row_repository`]).
+/// Every repository a `/queue` verb may act in - [`scope_repository`] for several: `[None]`
+/// is every repository, a session of one repository is `[Some(it)]`, and a session of a
+/// folder that is one project of several (`git::repos_of_workspace`) is each of them.
 pub fn scope_repositories(
     workspace: &Path,
     scope: &QueueScope,
@@ -352,10 +351,8 @@ pub fn veto(
             })
         }
         Found::Merge(m) => {
-            // A running gate is taken out by `rm`, not by `veto` - `veto` is *rejected in your
-            // words, sent back to the child*, and a landing has no child left to send it to. The
-            // pane offers `d` on a `gating` row and nothing on `v`, so this is the sentence a
-            // person who typed the other letter gets.
+            // A running gate is taken out by `rm`, not by `veto` - `veto` is *rejected in your words,
+            // sent back to the child*, and a landing has no child left to send it to.
             if m.state == MergeState::Gating {
                 return Err(format!(
                     "`{}` is `gating`; `/queue rm {}` takes it out of line while its gate runs",
@@ -380,10 +377,9 @@ fn withdraw_merge(
     who: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
-    // `gating` is withdrawable too: *take it out of line* is the person's answer to a gate that is
-    // going nowhere, and refusing it left the pane no way out of the one state a queue gets stuck
-    // in. What makes it safe is `finish_land`'s check, not this one - a landing whose row has left
-    // `gating` does not land, whatever its gate said.
+    // `gating` is withdrawable too: *take it out of line* is the person's answer to a gate
+    // that is going nowhere, and refusing it left the pane no way out of the one state a queue
+    // gets stuck in.
     if !matches!(
         m.state,
         MergeState::Queued
@@ -551,12 +547,6 @@ pub fn clean(
 }
 
 /// Gate the target's tip again, even when that tip was already judged.
-///
-/// A target used to be gated only when its tip CHANGED, so a red that was the machine's, a
-/// timed-out gate, or a gate whose setup was fixed outside the target held every landing until
-/// somebody committed to the target. The verb writes the health back to `gating` at the tip as it
-/// is NOW; the repository's queue worker sees `gating` and runs the gate on its next pass. `who` is
-/// recorded on the move.
 pub fn regate(
     store: &Store,
     repository: &str,
@@ -624,10 +614,8 @@ pub fn killed_backoff_ms(kills: u32) -> u64 {
         .min(CAP)
 }
 
-/// What a daemon re-gates when it takes a repository's lease: every target whose last verdict was
-/// `red`, `blocked` or `timed_out`. A restart was the one way out of a timed-out or blocked target
-/// before `/queue regate`, and it did not even do that - the health row said the tip was judged, so
-/// the new daemon left it alone. A green tip is not gated again, and a `gating` one already will be.
+/// What a daemon re-gates when it takes a repository's lease: every target whose last
+/// verdict was `red`, `blocked` or `timed_out`.
 pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for h in store.target_healths().map_err(|e| e.to_string())? {
@@ -640,9 +628,7 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
             continue;
         }
         // A gate killed at its memory cap is retried less often each time: with the same cap it
-        // dies the same way, and every lease take re-ran it at once. The wait doubles per kill of
-        // this tip - 15 min, 30, 60, … up to 8 h - counted in the store, so a restart loop is not a
-        // retry loop. `/queue regate` is the operator's way past it.
+        // dies the same way, and every lease take re-ran it at once.
         if h.state == HealthState::Blocked
             && h.evidence.starts_with(super::gate::GATE_KILLED)
             && let Ok(Some(t)) =

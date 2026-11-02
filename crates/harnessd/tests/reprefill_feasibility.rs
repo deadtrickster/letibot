@@ -1,32 +1,10 @@
-//! Can a session recorded under one dialect be re-rendered under another?
-//!
-//! The resume path refuses a dialect change because it replays stored TOKENS, and two renderers'
-//! bytes in one prompt is a prompt no model saw. But `transcript_item` stores `item_json` beside
-//! `tokens`, and `item_json` is dialect-neutral - a tool call is `{name, arguments}`, not markup -
-//! so the tokens are a cache of one rendering and the items are the record. The conversation can be
-//! rebuilt rather than refused; the refusal is a property of the fast path, not of the data.
-//!
-//! This measures that on the operator's own store: load a real transcript recorded under the other
-//! dialect, render every item through this one, and report what it costs.
-//!
-//! # It reads the operator's store, so it is opt in
-//!
-//! This is a measurement against the box's data, not proof about the code under review, so
-//! `LETIBOT_CHECK_REAL_STORE=1` is what asks for it
-//!
-//! LETIBOT_CHECK_REAL_STORE=1 cargo test -p letibot-harnessd --test reprefill_feasibility -- --nocapture
-//!
-//! Without it the test prints one line saying it was skipped and why. `LETIBOT_REQUIRE_APPARATUS`
-//! deliberately does not reach it: the store is somebody's history, not the apparatus the code needs.
-//!
-//! # The store is read through a read-only view, never opened and never copied
-//!
-//! `Store::open` is not a read: it migrates, so a build whose `SCHEMA_VERSION` is newer than the
-//! file's rewrites the operator's live store underneath the daemon serving it. Copying the file
-//! instead left gigabytes of a RAM-backed `/tmp` per run, and was no consistent snapshot of a file
-//! a daemon is checkpointing - so the live file is attached `mode=ro` by `LiveView`, which SQLite
-//! itself refuses to write through, and the one transcript measured is copied into memory in a
-//! single read transaction. `crates/turn/tests/restore.rs` reads the store the same way.
+//! Can a session recorded under one dialect be re-rendered under another? The resume path
+//! refuses a dialect change because it replays stored TOKENS, and two renderers' bytes in
+//! one prompt is a prompt no model saw. But `transcript_item` stores `item_json` beside
+//! `tokens`, and `item_json` is dialect-neutral - a tool call is `{name, arguments}`, not
+//! markup - so the tokens are a cache of one rendering and the items are the record. The
+//! conversation can be rebuilt rather than refused; the refusal is a property of the fast
+//! path, not of the data. This measures that on the operator's own store:
 
 use letibot_tokencore::control::{resolve, tokenize_spans};
 use letibot_tokencore::store::live_view::LiveView;
