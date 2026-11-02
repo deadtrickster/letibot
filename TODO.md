@@ -6163,19 +6163,32 @@ From the tool runtime, in descending order of consequence.
    anywhere under any relaxation ⇒ `Abstained`; a nonexistent path ⇒ `Failed`. That
    choice determines how often `propagate()` blocks a caller and should be recorded
    rather than inherited.
+   — ✓ fixed in 66077505, test `a_term_that_is_nowhere_abstains_and_says_what_it_searched`;
+   the nonexistent-path case is recorded as the listing rather than `Failed`
+   (`a_scope_that_does_not_exist_returns_the_listing`, `crates/tools/src/builtins/grep.rs:915`).
 2. **D6 answered means M1 ships with clause 5 switched off.** `NoBudget` is correct per
    D6 — unset is a genuine no-op — so **nothing spills until a budget is configured**.
    A session-config gap, not a code one, and invisible unless said.
+   — ✓ fixed in d81863e8, test `every_thing_that_is_off_is_disclosed`: `Config::disclosures`
+   says `UNSET` and that nothing will spill (`crates/harnessd/src/config.rs:2139`).
 3. **`Gate` will collide with W11.** W9 defined the smallest adjudication seam the
    runtime needs (`admit(name, access, args)`). W11 should absorb it rather than build
    a parallel one.
+   — fixed in 229555bf in code, untested: there is one `Gate` trait
+   (`crates/tools/src/runtime.rs:621`) and its only implementation is `AdjudicatedGate`
+   (`crates/tools/src/adjudicate.rs`), so no parallel seam exists to collide with.
 4. **§8.1 clause 1 and §9.4 pull against each other.** Relaxing a pattern *is*
    rewriting the query, which §9.4 forbids. The reconciling word is **visible**: every
    relaxation appears in the result. Worth stating in §9.4 so nobody deletes one of
    the two.
+   — ✓ fixed in 66077505, test `a_too_strict_anchor_is_relaxed_to_the_bare_identifier_and_says_so`;
+   §9.4 now carries the rule ("and if it ever does, the rewrite must be visible",
+   `docs/implementation-plan.md:213`, 7bdfd6c9).
 5. **§8.4's `orchestrator` role has no `read_spill`** though its `read`/`grep` can
    spill — so for that role the omission notice is advisory, which §8.3 says it must
    not be. W9 shipped `read_spill` in its place.
+   — ✓ fixed in 66077505, test `the_default_session_is_read_only_and_seats_exactly_what_it_did`
+   (the orchestrator's seated set includes `read_spill`, `crates/harnessd/tests/wired.rs:112`).
 6. **Retrieval is inert — no MCP server is running anywhere.** Confirmed by lubuntu3
    on 2026-09-09, checked rather than recalled.
    - `192.168.1.55:9755` is the **flowy node**, not oracle. Never was the address.
@@ -6199,8 +6212,13 @@ From the tool runtime, in descending order of consequence.
      documented. Asked; awaiting an answer.
    - Note from lubuntu3: `.82:11434` enforces **one request per backend and will hold
      a call rather than refuse it**. Do not point volume at it unannounced.
+   — ✓ fixed in c44d41e7, test `a_session_with_nothing_attached_discloses_only_retrieval`:
+   retrieval is disclosed as `INERT` under its own name (T16.6) and an answer with no
+   citations comes back `NO_RESULT` (`crates/tools/src/builtins/external/mod.rs:173-200`).
 7. **Call ids are positional per turn** (`call_0`; GLM carries none), so an id-derived
    mark repeats across turns. Fine now, wrong once a head correlates across a session.
+   — OPEN: still positional — `crates/turn/src/items.rs:175` mints `call_{n}` per round and
+   `crates/provider/src/openai.rs:624` mints `call_{i}`, so an id still repeats across turns.
 
 ---
 
@@ -6215,6 +6233,9 @@ Full writeup and both engines' output in `docs/chat-templates.md` §2.
 Affects any llama.cpp user serving GLM with `messages` — the model is conditioned on
 reasoning it never produced. We are insulated because we submit token ids.
 
+— OPEN: ready and unfiled — nothing in `docs/` records a link or an issue number, and the
+writeup at `docs/chat-templates.md:55-65` cites no upstream report.
+
 ---
 
 ---
@@ -6227,6 +6248,11 @@ runtime · W10 firecode substrate · W11 adjudication · W12 flowy connector · 
 segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
 
 `pytest` is still not installed; `docs/workstreams.md` calls that blocking for W1/W2.
+
+— OPEN: the list is stale — `docs/workstreams.md:20-27` now maps W6 to `crates/turn`, W9 to
+`crates/tools`, W11 to `tools/src/adjudicate`, W13 to `turn/src/compaction`, so only W1/W2 and
+the docs' own status still wait; `pytest` is genuinely absent (`python3 -m pytest` → `No module
+named pytest`).
 
 ---
 
@@ -6260,32 +6286,52 @@ earned the `faithful` profile the right to declare divergences. Running the real
 template through a correct engine is stronger evidence than reproducing a wrong one,
 and the INTEROP phase against `/apply-template` still reports how the server differs.
 
+— fixed in 8ca0d4b3 in code, untested: the profile is refused by name
+(`crates/dialect-glm/src/cli.rs:90`) and `faithful` is the only one left; the CLI refusal has no
+test.
+
 1. **`render_incremental(prev_end, new_items)` cannot be a pure function.** GLM needs
    boundary state — turn open, `<think>` open, previous item a tool result — none of
    it derivable from a `usize`. Worked around with `GlmDialect::for_conversation`;
    `new()` panics rather than guessing. The signature must carry history or a state
    token.
+   — ✓ fixed in 8ca0d4b3, test `render_incremental_agrees_with_render`; the seam now takes
+   the history (`crates/turn/src/renderer.rs:24`) and `for_conversation` is gone.
 2. **`parse(&[u32])` is unimplementable as specified** — no vocab, yet it must return
    `Content(String)`. Currently takes a caller-supplied `TokenDecoder`.
+   — ✓ fixed in 8ca0d4b3, test `parse_round_trips_reasoning_and_two_tool_calls`
+   (`crates/dialect/src/lib.rs:201`).
 3. **No home for the generation prompt.** Folding `<|assistant|><think>` into
    `render` breaks the stated invariant for any conversation whose next item is a
    user message. Currently an inherent `generation_prompt()`.
+   — ✓ fixed in 8ca0d4b3, test `generation_prompt_is_the_head_of_the_next_assistant_turn`.
 4. **`ControlRole` is closed and too small** — no `<arg_key>`, `<arg_value>`,
    `<sop>`, or the image triplet, all single vocab entries, so all must be `Control`.
    They currently sit under `TurnEnd` as a "no role" bucket.
+   — ✓ fixed in 8ca0d4b3, test `argument_key_order_is_preserved_through_the_round_trip`;
+   the roles are `ArgKeyOpen`/`ArgKeyClose`/`ArgValueOpen`/`ArgValueClose`, `SequenceStart`
+   and the image triplet (`crates/dialect/src/lib.rs:69-99`).
 5. **Resolution must key on literal, not role.** One role with many literals is the
    case that bites, and `ControlTokens::get(role)` silently returns whichever comes
    first. `GLM_TOKENS` is ordered so the canonical entry wins — a convention, not a
    guarantee.
+   — ✓ fixed in 8ca0d4b3, test `lookup_is_by_literal_and_a_role_may_own_several`
+   (`ControlTokens::by_literal`, `crates/dialect/src/lib.rs:136`).
 6. **`stop_tokens()` returns bare `&'static str`** with no role, so a failure cannot
    be reported honestly. Correctness argument: a stop token that is silently a
    *sequence* never fires, and the turn runs to `n_ctx`.
+   — ✓ fixed in 8ca0d4b3, test
+   `a_stop_token_that_is_really_a_sequence_fails_at_startup_and_names_the_boundary`.
 7. **`ControlTokens` as `&'static [ControlToken]`** forces `&'static str` through
    every error type. Fine while dialects are compile-time constants; impossible for
    a dialect loaded from a config file or a downloaded template. `Cow<'static, str>`
    costs nothing today.
+   — ✓ fixed in 8ca0d4b3, test `a_spec_can_be_built_entirely_at_runtime`
+   (`ControlTokens(pub Cow<'static, [ControlToken]>)`, `crates/dialect/src/lib.rs:105`).
 8. **`ControlRole` has no `Ord`**, so deterministic error listings must preserve
    declaration order rather than sort. Trivial; a derive would do.
+   — ✓ fixed in 8ca0d4b3, test `roles_sort_so_a_listing_can_be_deterministic`
+   (`ControlRole` derives `PartialOrd, Ord`, `crates/dialect/src/lib.rs:68`).
 
 ---
 
@@ -6307,6 +6353,11 @@ rather than rewritten in place.
 
 Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
 
+— OPEN: the design is written (`docs/compaction.md`) and nothing was scheduled or built: §10 of
+the plan still reads *Compaction, as leveled compaction* (`docs/implementation-plan.md:215-223`),
+`crates/turn/src/compaction.rs` is still the summarise-as-one-more-turn module, and there is no
+eviction map and no `recall` tool.
+
 ---
 
 ---
@@ -6327,16 +6378,25 @@ do not forget" goal, not as a schema nicety.
    explicit rather than widening it unilaterally. This is the structural one and it
    needs a decision: either the event carries content, or the log is formally not a
    sufficient record of a session.
+   — ✓ fixed in 4b7a99af, test `a_head_that_was_already_attached_is_sent_the_body_it_was_promised`:
+   the body travels as its own event (`SessionEvent::TranscriptContent`, `crates/sessionlog/src/event.rs:1033`).
 2. **`TurnFinished{usage, timings}` is lossy against `turn_metrics`.** Not carried:
    `prefix_check`, `id_slot`, `n_busy_slots`, `cost`, `dialect_template_sha` — and
    §18.2 says **`id_slot` is exactly what distinguishes a scheduling fact from a
    prefix divergence**, so a head cannot today tell those apart. W8 widened `usage`
    to carry `cached_tokens` on the argument that a harness whose point is cache reuse
    must be able to display it.
+   — OPEN: still lossy — `TurnFinished` carries `{usage, timings}` and nothing else
+   (`crates/sessionlog/src/event.rs:1003`), and `prefix_check`, `id_slot`, `n_busy_slots`,
+   `cost`, `dialect_template_sha` never cross the seam (`crates/sessionlog/src/lift.rs:8-10`).
 3. **No event announces who issued a command**, which §13.2 requires twice. Added as
    `CommandIssued`, labelled as an addition rather than smuggled into `Warning`.
+   — ✓ fixed in e3354641, test `a_second_heads_prompt_is_queued_not_rejected_and_says_who`
+   (it asserts the issuer and the verb, `crates/sessionlog/src/hub.rs:2358`).
 4. `ToolStarted` / `ToolProgress` are given by name only in §4.5; their shapes are
    W8's invention and **W9 will find out whether they are right**.
+   — ✓ fixed in 66077505, test `a_real_call_reaches_a_head_with_everything_the_runtime_knew`
+   (`ToolStarted` carries `turn_id` and `access`, `crates/sessionlog/src/event.rs:965-971`).
 5. **`DeltaTarget` is `Text | Reasoning` — there is no channel for a tool call.**
    Found while fixing T12. A tool call's argument text streams as `Text` while
    `items::produce` puts it in `ToolCall{arguments}` and excludes it from the
@@ -6345,6 +6405,9 @@ do not forget" goal, not as a schema nicety.
    test defect. No test exercises it yet because `live_e2e`'s prompt makes no calls.
    This is T12's defect, unfixed, in a third channel. The enum was not widened
    unilaterally.
+   — ✓ fixed in 0a77c5fb, test `the_raw_markup_of_a_tool_call_is_never_on_the_screen_by_default`:
+   `DeltaTarget::ToolCall` exists on both sides (`crates/turn/src/events.rs:19-26`,
+   `crates/sessionlog/src/event.rs:32-36`).
 
 ### Status against `main`, 2026-11-02 (`wt-t22`)
 
@@ -6382,20 +6445,39 @@ things. Listed in the order I would fix them.
    require one. Currently tracked on the turn record instead, which is why **one
    piece of steering is unbuilt**. Needs a `transcript` crate change — the only item
    here that blocks a feature rather than costing elegance.
+   — ✓ fixed in e5a11374, test `truncated_survives_a_round_trip` (and
+   `a_row_written_before_the_field_existed_reads_as_not_truncated`): `Assistant { truncated }`
+   is on the row, `crates/transcript/src/lib.rs:102`.
 2. **`ParsedSpan` carries no token offsets**, so a `Parser` cannot say which ids an
    item owns. Cost an entire module (`crates/turn/src/items.rs`) to work around
    without reimplementing the parser. Adding a span to `ParsedSpan` would delete it.
+   — ✓ fixed in 5a01de3b, test `parse_round_trips_reasoning_and_two_tool_calls`: every variant
+   carries its `Range<usize>` of ids (`crates/dialect/src/lib.rs:177`) and the test asserts the
+   spans tile the stream from zero (`crates/dialect-glm/tests/invariants.rs:279-289`).
 3. **`DialectSpec` has no `ReasoningField`** — a per-model fact of exactly the kind
    that crate exists to model as data. The engine takes it as config rather than
    guessing, which works but puts a model fact in the wrong place.
+   — fixed in 5a01de3b in code, untested: `DialectSpec.reasoning_field` is data
+   (`crates/dialect/src/lib.rs:266`) and the engine reads it there
+   (`crates/turn/src/engine.rs:665`), but no test asserts the spec's field rather than the
+   transcript's copy.
 4. **`render_incremental(history, new)` replays the whole history** for boundary
    state, so building one ledger row per item is O(n²) replays. Microseconds today
    at our sizes; a resumable state token fixes it. Note T1 may delete this entirely
    when the template-driven renderer lands.
+   — OPEN: still O(n²) by design — `render_incremental` takes the whole history
+   (`crates/turn/src/renderer.rs:24-30`, whose comment says boundary state is not derivable
+   from a `usize`) and there is no resumable state token; `append_items` renders one item at a
+   time (`crates/turn/src/engine.rs:434`).
 5. **`cargo:rustc-link-arg` does not propagate across crates**, so every crate that
    links `libllama` needs its own `build.rs` to bake the rpath. Without it, test
    binaries link fine and fail at exec looking like a missing library. Fixed in
    `crates/turn`; worth a note so the third crate does not rediscover it.
+   — fixed in e51847ed in code, untested: that commit was the last crate to get its own
+   `build.rs`, and every crate that links `libllama` now bakes the rpath through the shared
+   `crates/llama/build-support.rs` (`crates/bridge/build.rs`, `crates/sessionlog/build.rs`,
+   `crates/turn/build.rs`, `crates/harnessd/build.rs`, `crates/letibot/build.rs`), each header
+   saying why. A build script is not testable.
 
 ---
 
@@ -6413,6 +6495,9 @@ fixed per sequence, independent of length. A sweep over many short distinct prom
 therefore far more expensive than its token count suggests. `server-context.cpp:4549`
 records four previous occurrences; this was the fifth.
 
+— OPEN: a fact about the server, not this tree — nothing here sizes or caps the per-sequence
+accumulator; the only guard is the sweep's own floor (`experiments/kv-stitching/srv.py:29`).
+
 **A second cost, measured on a DENSE model, 2026-09-14 by `lubuntu1-lab` on .76
 (Qwen3.8-27B Q6, llama.cpp, stock).** Different mechanism from the recurrent
 accumulator above and it compounds with it:
@@ -6422,11 +6507,15 @@ accumulator above and it compounds with it:
   `cache-ram / per-saved-state`, and the 8 GiB default holds about five
   conversations. At 40 GiB: 16 of 16. Two levers, and only two: raise
   `--cache-ram`, or lower `-c`.
+  — OPEN: operational and the operator's — no code or config in this tree sets `--cache-ram` or
+  `-c`; the server is `~/bin/glm-flash-server`, outside the tree.
 - Eviction is **capacity, not conflict**: interleaving A,B,A,B,A,B hits 94–95 %
   once each has been seen. So the number to size against is *how many distinct
   briefs are live*, not how they are ordered.
+  — OPEN: a measurement with no consumer — nothing in the tree sizes a pool by live briefs.
 - Warm 644 ms median against cold 1986 ms; the first touch of a new conversation
   is always cold.
+  — OPEN: a measurement with no consumer — nothing in the tree records or asserts it.
 - **`--cache-reuse` is silently disabled on that model** — `cache_reuse is not
   supported by this context, it will be disabled`, logged with `--kv-unified`
   both true and false, so unified KV is not the gate. The 94 % hits are the
@@ -6434,10 +6523,17 @@ accumulator above and it compounds with it:
   that flag is therefore **model-dependent**, and a measurement taken on one
   model does not port. Nobody has yet established what makes a context
   unsupported; the suspicion is an attention property rather than a flag.
+  — OPEN: answered for a hybrid and not for the model it was measured on —
+  `experiments/kv-stitching/RESULTS.md:99` gives the gate as `ctx_tgt_has_recurrent_state`
+  (`server-context.cpp:5763`), which cannot be what disabled it on the DENSE 27B this bullet is
+  about; no doc explains that case.
 
 Mitigation used, and worth generalising: the sweep harness refuses to start a condition
 below 40 GiB `MemAvailable`. Any future experiment that prefills many distinct prompts
 needs the same guard.
+
+— fixed in b82b906b in code, untested: `experiments/kv-stitching/srv.py:29` refuses to start a
+condition below `guard(floor_gib=40.0)` of `MemAvailable`, with this OOM named in its docstring.
 
 ---
 
@@ -6492,25 +6588,46 @@ NVMe bandwidth that is measurably spare). Not a letibot change either way — it
 1. **Double envelope.** `ToolRuntime::transcript_item` renders §8.2's `NO_RESULT`
    envelope into `payload`, and **both** dialect renderers wrapped it again — the model
    received two. Fixed: renderers emit `payload` verbatim.
+   — fixed in d81863e8 in code, untested: both renderers write `payload` verbatim
+   (`crates/dialect-glm/src/render.rs:284-288`, `crates/dialect-qwen/src/render.rs:308`) and
+   `outcome_envelope` is off the render path; no test asserts one envelope reaches the model.
 2. **`Registry::tools_json()` is not prompt-ready** and this one was nearly invisible.
    It emits `,`/`:`; both templates use HF `tojson`'s `, `/`: `. Using it directly for
    `StablePrefix::tools_json` differs in **the first bytes of the stable prefix** — a
    cold prefill every single turn, with nothing in the tree to catch it. Now routed
    through the dialect's own tool-JSON function, with a test asserting the two differ.
+   — ✓ fixed in e2c00056, test `separators_match_the_shipped_template`
+   (`crates/dialect-glm/src/json.rs:87` pins HF's `, ` / `: `, which `serde_json` does not emit).
 3. **C10 was unmeasurable as specified** — `prompt_tokens − cached_tokens` from
    `TurnMetrics` alone is a tautology. Needed the server's own frame numbers.
+   — fixed in d81863e8 in code, untested: `TurnMetrics::prompt_tokens_server` carries the
+   server's count (`crates/turn/src/metrics.rs:35`) and C10 compares it against
+   cached+processed (`crates/harnessd/src/m1.rs:650-673`); no test drives the check.
 4. ~~**`ToolRuntime` is not `Send`** — `Gate` lacks `Send + Sync`~~ — **FIXED, verified
    2026-09-10:** `crates/tools/src/runtime.rs:275` reads `pub trait Gate: Send + Sync`.
+   — fixed in 229555bf in code, untested: the bound is at `crates/tools/src/runtime.rs:621`
+   now; it is checked by the compiler and no test names it.
 5. **`Session::append_items` renders one item at a time**, so Qwen's consecutive tool
    results cannot merge into one user turn without a fourth trait method. Declared as a
    gate divergence.
+   — OPEN: the divergence is declared in the renderer's own header
+   (`crates/dialect-qwen/src/render.rs:5-14`), not in the fidelity gate's declarations (only
+   `tests/fidelity/fixtures/reasoning-leak.json` declares one), and merging still needs a fourth
+   trait method (`crates/turn/src/renderer.rs:14-40`).
 6. **Qwen's `SystemUpdateMode` is `Envelope`, not `InHistory`** — its template *raises*
    on a mid-history system message, so §5.3's conservative default is the only
    renderable form. The model can and did argue with it.
+   — ✓ fixed in d81863e8, test `a_mid_history_system_change_is_not_a_system_message_here`
+   (it asserts `system_update_mode == Envelope`, `crates/dialect-qwen/src/lib.rs:242`).
 7. **`ask_code`/`ask_corpus` return `NotRun`, not `Abstained`** — nothing ran, which is
    a different fact. The daemon's startup disclosure says so.
+   — ✓ fixed in 66077505, test `with_an_adjudicator_and_nothing_attached_the_tool_names_what_is_missing`
+   (the refusal is `ToolOutcome::NotRun`, `crates/tools/tests/external.rs:117-160`).
 8. The `/apply-template` oracle caught a renderer bug **no unit test would have**: an
    `Assistant` following a `Reasoning` opened a second message.
+   — fixed in e2c00056 in code, untested: the Assistant arm closes the think block in place
+   rather than opening a second message (`crates/dialect-glm/src/render.rs:246-256`); the oracle
+   that caught it is `tests/fidelity/run_gate.py --interop`, which needs a server.
 
 ---
 
@@ -6526,9 +6643,16 @@ Kev scored on the Blackwell in bf16 (5/47 attacks caught at t=0.5), the incumben
 `--etalon-oracle` (14/47, then 12/47 on a rerun), the four gate words, the per-side-task split, and
 the zero-false-allow threshold (**t > 0.8498 catch-all, 274 of 292 honest calls**).
 
+— OPEN: not code — the record is in the tree (`docs/evidence/basharena-2026-09-22.md`, d1a5a22,
+4b10c0a) and the operator ruled the comparison off; nothing is pending.
+
 **What is unresolved, and it is the one that decides whether the comparison means anything:**
 `docs/guard-corpus-plan.md` §4b records the SAME guard on the SAME 339 rows at **27 of 47 (57%)**
 on 2026-09-17; today's runs give **14 and 12**.
+
+— OPEN: settled in the tree — the record's 57% is ruled not reproducible and the deficit is
+attributed (`docs/evidence/basharena-2026-09-22.md` §5b, 15ab1838); the operator ruled the
+comparison off, so nothing is pending.
 
 **BISECTED 2026-09-23 — the commit is `3d8754d` (R12), and the mechanism is the prompt's ORDER.
 FIXED THE SAME DAY on the operator's ruling: see `docs/evidence/basharena-2026-09-22.md` §5d.**
@@ -6539,21 +6663,35 @@ costs latency instead of recall. Four runs of `--etalon-oracle` on the same 47 a
     truncated replies  0 of 47, every run
     median latency     706, 761, 902, 2316 ms;  p90 2282-5728 ms   (mean ms ~1234 -> ~1838)
 
+— OPEN: not code — the revert landed as 1eae071e and the four runs are recorded in
+`docs/evidence/basharena-2026-09-22.md` §5d; no guard change is pending.
+
 **The declared threshold (>= 24) was met by the mean and the median and MISSED BY TWO OF THE FOUR
 RUNS, both at 23.** The honest range is 23-26, the low edge of the parent's band, not comfortably
 inside it. The recovery is ~6.3 rows against the bisect's attribution of ~6.5 — they agree, so the
 reordering was the mechanism and a second bisect is not owed. **The honest column is still
 unmeasured** for this configuration, which is what a recall-versus-needless-prompts ruling needs.
 
+— OPEN: measured since — `docs/evidence/honest-column-threshold-2026-09-23.md` records both
+models on the full 339 rows (00d1eca7) and recommends running NEITHER; the ruling it wanted is
+the operator's, and the comparison was ruled off.
+
 See `docs/evidence/basharena-2026-09-22.md` §5c for the instrument, the walk and the isolation.
 Every commit was BUILT AND MEASURED, not reasoned about: `--etalon-oracle` on the 47 attacks
 alone, local endpoint, threshold declared first (**≥24 caught GOOD, ≤23 BAD**, from poles of
 29–30 at af96837 against 17–18 at HEAD). 307 commits, 9 steps.
 
+— OPEN: not code — the instrument and the walk stay in `docs/evidence/basharena-2026-09-22.md`
+§5c and `docs/evidence/basharena-bisect-test.sh`; nothing in `crates/` carries it, and nothing is
+pending.
+
 The answer, and **all five of my earlier candidates were refuted**: `c3ee6b7`, `a16453f`,
 `bf4137e`, `452d7dd`, `76e1b31` are every one of them ancestors of `06ec17b`, which measures
 **26, 24** — they cannot be the cause. What settles it beyond the branched-lineage doubt is the
 direct parent→child pair: **`3d8754d^` = 26, 24 against `3d8754d` = 17.**
+
+— OPEN: not code — the refutation of the five candidates stands in §5c; no code change follows
+from it and none is pending.
 
 **The mechanism, isolated to two edits in one file.** R12's own message names the change it
 considers load-bearing — *"the prompt asked for a sentence and then the verdict on the LAST line,
@@ -6569,9 +6707,16 @@ the other 738 lines):
 the prompt's ORDER changing what the model decides — commit before reasoning makes the oracle
 materially more permissive.
 
+— OPEN: not code — the isolation is recorded in §5c and the ordering half it identifies was
+never ruled on in its own right; the operator then ruled the comparison off.
+
 **NOT REVERTED, deliberately, and the halves are separable for the operator to rule on.** The
 ceiling/classification half is unambiguously right and worth ~1 row; the ordering half is worth
 ~6 and was never ruled on in its own right. Reverting would restore an artifact — replies cut
 before their verdict, scored as catches the guard never made. Every number in §5c is attacks-only
 (examples effect held constant); **the honest column is unmeasured for both variants**, which is
 what a recall-versus-needless-prompts decision would need.
+
+— OPEN: the ordering half was never ruled on, and the revert §5d landed on 2026-09-23 supersedes
+"NOT REVERTED" here (`docs/evidence/basharena-2026-09-22.md:476`, 1eae071e); with the comparison
+ruled off nothing waits in this tree, and nothing was built.
