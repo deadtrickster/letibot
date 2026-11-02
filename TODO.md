@@ -43,6 +43,19 @@ go stale.*
 
 ---
 
+## R118 - A GitHub reviewer seat: `letibot attach github <org|repo>` reviews every PR and answers as @letibot - **OPEN, filed 2026-11-03, the operator's ask**
+
+The operator wants letibot to work like CodeRabbit on their own repositories, starting with stroppy-io: "it just attaches to whatever pr is on the repo given to it and does reviews ... responding as @letibot".
+
+- `letibot attach github <org or owner/repo>` starts a long-lived reviewer seat for that scope. It polls with `gh api` for new PRs and new pushes to open PRs. Polling is used rather than webhooks, so no endpoint is exposed.
+- Each PR is a letibot session with its own worktree of the PR head. A new PR gets a review panel (reviewers plus the gatekeeper, the same machinery as the merge queue's review) and one GitHub review: inline comments on lines and a summary. A push gets a re-review of the new commits only.
+- A comment that mentions `@letibot` in the PR's thread is answered by that PR's session. The operator can attach to the session like any other.
+- Identity: the seat posts as its own GitHub account or App named `letibot`, with a token scoped to the configured repositories. It never posts as the operator. The operator creates the account or App; the token lives in letibot's config, mode 0600.
+- Limits: one review per push, a per-repo rate cap, and no review of a PR from a fork without the operator's opt-in (an untrusted diff runs nothing; review is read-only).
+- R114 callers: a new PR or issue similar to an open todo or a running session's brief is offered as "watch this"; a session whose brief matches an open PR attaches to its thread; similar past reviews are offered as context.
+
+Depends on R116 (a review verdict schema shared by every reviewer) and R114 for the similarity offers.
+
 ## R116 - Claude Code as a merge-queue reviewer, through headless `claude -p` - **OPEN, filed 2026-11-02, after the operator's queue trial**
 
 The queue hands a branch to a reviewer and needs a verdict back. Headless Claude Code fits without waking any live session:
