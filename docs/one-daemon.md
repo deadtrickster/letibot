@@ -35,6 +35,15 @@ Three things follow from the key being the worktree:
   default (`crates/harnessd/src/config.rs`, `daemon.rs`). The ten daemons of a busy night are ten
   busy daemons; the ones with nothing to do are meant to be gone.
 
+The runtime directory holds **three kinds** of record, and only one is named by a workspace key:
+`<12 hex>.json` is a folder's daemon, `room-<host key>.json` is the box's room, and
+`migrated-<session>.json` is a forward. A record says which it is by its fields - `role: "room"` for
+the room, a non-empty `session` for a forward - so `Kind::{Daemon, Room, Forward}` is derived rather
+than stored as a field a second writer could spell differently. Two things follow: a test asserting
+that every record's filename is a workspace key asserts what it cannot know, and a retarget that
+re-derives a socket from a workspace addresses a path nothing binds, so it must take the record's own
+`socket` and path.
+
 ### Sessions, one thread each
 
 `Daemon::serve` binds the socket and serves one in-process `Registry`. `Sessions` holds the open
