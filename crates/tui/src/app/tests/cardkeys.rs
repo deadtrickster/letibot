@@ -541,6 +541,58 @@ fn a_resync_puts_the_todo_card_away_with_its_draft() {
     assert_eq!(a.input(), "sqli", "alt-a brings it back with the draft");
 }
 
+/// A model's question dropped by a resync while its answer is being typed: the words were an
+/// answer, not a prompt, so they go with the card rather than being sent to the model by the next
+/// Enter. A permission's words are the operator's own and stay.
+#[test]
+fn a_question_a_resync_drops_takes_its_draft_with_it() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    ask(
+        &mut a,
+        1,
+        testing::asked("q1", "which branch?", &["main"], ""),
+    );
+    typed(&mut a, "the release one");
+    a.apply(ServerFrame::Resync {
+        reason: "test".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert!(
+        a.open.is_empty(),
+        "the snapshot no longer holds the question"
+    );
+    assert_eq!(a.input(), "", "the words were an answer, not a prompt");
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("was cleared (ctrl-z brings it back)"),
+        "{:?}",
+        a.notice
+    );
+    assert_eq!(a.key(Key::Enter), None, "nothing is sent");
+
+    // A permission has no field: what is typed under it is the operator's own line.
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut b = app();
+    b.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    ask(&mut b, 1, testing::requested("r1", "rm"));
+    typed(&mut b, "half a line");
+    b.apply(ServerFrame::Resync {
+        reason: "test".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert_eq!(b.input(), "half a line", "not the card's to take");
+}
+
 /// A model's question notifies as a question, a todo card as a todo row asking.
 #[test]
 fn a_notification_names_the_kind_of_card() {

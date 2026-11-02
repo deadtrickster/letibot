@@ -6,6 +6,31 @@ use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::view::{OpenDecision, SettledDecision, Warned};
 
 impl App {
+    /// **A question the operator answered as the daemon stopped holding it.** A snapshot is the
+    /// truth about what is still open, and the words typed on a card that went are an answer, not
+    /// a prompt: left in the composer, the next Enter sent them to the model. Said, not silent,
+    /// and undoable - a permission's words are the operator's own and are never touched.
+    pub(crate) fn drop_a_gone_questions_draft(&mut self, was_asking: Option<OpenDecision>) {
+        let Some(d) = was_asking else {
+            return;
+        };
+        if d.kind != "question" || d.req_id.starts_with(crate::app::todos::TODO_ASK) {
+            return;
+        }
+        if self.open.iter().any(|o| o.req_id == d.req_id)
+            || self.away.iter().any(|a| a.decision.req_id == d.req_id)
+            || self.editor.text().is_empty()
+        {
+            return;
+        }
+        self.clear_composer();
+        self.say(
+            "that question is no longer open — its card closed, and what you typed on it was \
+             cleared (ctrl-z brings it back)",
+        );
+        self.redraw = true;
+    }
+
     /// **Asks and their answers**: decisions, secrets, prompts, explanations, denials. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_ask_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
