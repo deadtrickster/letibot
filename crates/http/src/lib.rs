@@ -1,33 +1,21 @@
-//! A blocking HTTP/1.1 client, just large enough for `POST /completion` — and,
-//! since the flowy connector, for a bearer-authenticated `GET`/`POST`/`DELETE`
-//! against the node.
+//! A blocking HTTP/1.1 client, large enough for `POST /completion` and, since the flowy
+//! connector, for a bearer-authenticated `GET`/`POST`/`DELETE` against the node.
 //!
-//! # Why this is hand-written rather than `reqwest`
+//! Hand-written rather than `reqwest` because the turn engine talks to one endpoint over loopback
+//! with no TLS, redirects, proxies or compression, and what it does need is byte-level control of
+//! a `text/event-stream` response so a partial chunk reaches the accumulator the instant it
+//! lands: a long prefill has to produce progress events while it is happening.
 //!
-//! The turn engine talks to exactly one endpoint, over loopback, with no TLS, no
-//! redirects, no proxies and no compression. What it *does* need is
-//! byte-level control of a `text/event-stream` response so that a partial chunk is
-//! delivered to the accumulator the instant it lands — a long prefill must produce
-//! `PromptProgress` events while it is happening, which is §8.5's server-warming
-//! rule, and omp's cautionary tale is a harness that could not see one.
+//! Against that, an async stack would put a runtime under a crate that is otherwise a pure state
+//! machine over token ids, and that state machine is testable today with no executor.
 //!
-//! Against that, an async HTTP stack would put a runtime under a crate that is
-//! otherwise a pure state machine over token ids. The whole engine is testable
-//! today with no executor. That is worth more than the ~120 lines below.
+//! It deliberately implements no TLS, redirects, `Content-Encoding`, connection reuse, HTTP/2 or
+//! trailers: it speaks `Connection: close`, chunked or content-length framing, and nothing else.
 //!
-//! What this deliberately does **not** implement, so nobody mistakes it for a
-//! general client: TLS, redirects, `Content-Encoding`, connection reuse,
-//! HTTP/2, and trailers. It speaks `Connection: close`, chunked or
-//! content-length framing, and nothing else. The flowy node is plain HTTP on the
-//! LAN, so it needs nothing this list refuses.
-//!
-//! # One crate, two callers
-//!
-//! It is its own crate rather than a module of the turn engine because the flowy
-//! connector needs the same client with two more things — an `Authorization`
-//! header and a `DELETE` verb — and *a second hand-rolled HTTP client is a second
-//! place for a framing bug to live*. [`send`] is the general entry; [`post_json`]
-//! and [`get`] are the two spellings the engine already used.
+//! It is its own crate rather than a module of the turn engine because the flowy connector needs
+//! the same client with an `Authorization` header and a `DELETE` verb, and a second hand-rolled
+//! HTTP client is a second place for a framing bug to live. [`send`] is the general entry;
+//! [`post_json`] and [`get`] are the two spellings the engine already used.
 
 pub mod retry;
 
@@ -71,12 +59,10 @@ impl From<std::io::Error> for HttpError {
 pub struct Endpoint {
     pub host: String,
     pub port: u16,
-    /// How long to wait for the *next* byte.
+    /// How long to wait for the next byte.
     ///
-    /// Not a total-request timeout, and that distinction is §8.5's whole point: a
-    /// cold model reload costs 29–31 s and a long prefill costs minutes, both of
-    /// which are progress, not a hang. A read timeout resets on every progress
-    /// chunk; a total timeout would kill a healthy turn.
+    /// Not a total-request timeout: a cold model reload and a long prefill are progress, not a
+    /// hang, so the clock resets on every chunk while a total timeout would kill a healthy turn.
     pub read_timeout: Duration,
     pub connect_timeout: Duration,
 }
@@ -86,8 +72,8 @@ impl Endpoint {
         Endpoint {
             host: host.into(),
             port,
-            // Comfortably above the measured 29–31 s cold reload, which is the
-            // longest gap between bytes this endpoint can legitimately produce.
+            // Comfortably above the longest gap between bytes a cold reload can
+            // legitimately produce.
             read_timeout: Duration::from_secs(180),
             connect_timeout: Duration::from_secs(10),
         }
@@ -122,9 +108,8 @@ pub struct Body {
     reader: BufReader<TcpStream>,
     framing: Framing,
     done: bool,
-    /// **The chunk-size line, kept between chunks.** `read_line` appends to a `String`, so a fresh
-    /// one per chunk was an allocation per chunk for a line of four hex digits. Cleared, not
-    /// replaced: the capacity survives, and a chunked body is one chunk per TCP read.
+    /// The chunk-size line, kept between chunks: `read_line` appends to a `String`, so reusing
+    /// one keeps its capacity instead of allocating a line of four hex digits per chunk.
     size_line: String,
 }
 
@@ -135,15 +120,10 @@ enum Framing {
 }
 
 impl Body {
-    /// Read the next chunk of decoded body bytes **into `buf`**, or `false` at end of body.
+    /// Read the next chunk of decoded body bytes into `buf`, or `false` at end of body.
     ///
-    /// # Why the caller brings the buffer
-    ///
-    /// This returned a fresh `Vec<u8>` per chunk, and BOTH callers immediately copied it into a
-    /// buffer of their own and dropped it — `read_to_string` extends into its output, and
-    /// `for_each_frame` extends into its pending frame. So every chunk of every response was
-    /// allocated, filled, copied and freed. The caller's buffer is the one that is actually
-    /// wanted, and `resize` into it reuses its capacity when the next chunk is no larger.
+    /// The caller brings the buffer because both callers copy the chunk into one of their own
+    /// anyway, and resizing into a live buffer reuses its capacity.
     fn next_bytes(&mut self, buf: &mut Vec<u8>) -> Result<bool, HttpError> {
         buf.clear();
         if self.done {
@@ -171,7 +151,7 @@ impl Body {
                     return Ok(false);
                 }
                 // `resize` and not `vec![0u8; size]`: the buffer keeps its capacity across chunks,
-                // so this is an allocation only when a chunk is larger than any before it.
+                // so this allocates only when a chunk is larger than any before it.
                 buf.resize(size, 0);
                 self.reader.read_exact(buf)?;
                 let mut crlf = [0u8; 2];
@@ -235,22 +215,12 @@ impl Body {
         let mut chunk = Vec::new();
         while self.next_bytes(&mut chunk)? {
             pending.extend_from_slice(&chunk);
-            // SSE frames are terminated by a blank line. A chunk boundary is not a
-            // frame boundary — assuming it is works right up until a long tool-call
-            // argument spans two TCP segments.
+            // SSE frames are terminated by a blank line, and a chunk boundary is not a frame
+            // boundary: assuming it is works until a long tool-call argument spans two segments.
             while let Some(pos) = find(&pending, b"\n\n") {
-                // **Parsed from a slice of `pending`, not from a copy of it.** This was
-                // `drain(..pos + 2).collect::<Vec<u8>>()` — a `Vec` allocated and freed per SSE
-                // frame, and a frame is a token — purely so the bytes could be borrowed as a whole
-                // string. Borrowing the slice directly is the same reading without the copy; the
-                // drain still happens, just after the parse rather than as part of it.
-                //
-                // **What is deliberately NOT avoided: the `data:` line's `String` below.** A frame
-                // outlives this borrow — `on_frame` is called after the drain and may keep it — so
-                // the line has to be owned. Making `SseFrame` borrow would remove that allocation
-                // too, at the cost of a lifetime parameter on a public type with two consumers, and
-                // it would then need a `Vec<&str>` for the lines, which allocates as well. So the
-                // trade is a wash and the API stays.
+                // Parsed from a slice of `pending` rather than a drained copy, because a frame
+                // is one token and copying it out is an allocation per token. The `data:` line's
+                // `String` stays owned: a frame outlives this borrow.
                 let mut frame = SseFrame::default();
                 let raw = String::from_utf8_lossy(&pending[..pos]);
                 for line in raw.lines() {
@@ -261,13 +231,11 @@ impl Body {
                     } else if let Some(v) = line.strip_prefix("id:") {
                         frame.id = Some(v.trim().to_string());
                     }
-                    // A `:` comment line — the heartbeat — is a frame with nothing
-                    // in it, and it is still handed over: a reader that wants to
-                    // know the connection is alive reads the empty frame.
+                    // A `:` comment line, the heartbeat, is a frame with nothing in it and is
+                    // still handed over: a reader that wants to know the connection is alive
+                    // reads the empty frame.
                 }
-                // The borrow of `pending` ends with `raw` and the frame's own strings, so the
-                // drain is free to take it mutably — and it must come after the parse, which is
-                // the whole point of borrowing rather than copying.
+                // The borrow ends with `raw`, so the drain can take `pending` mutably.
                 drop(raw);
                 pending.drain(..pos + 2);
                 if on_frame(frame)? == Flow::Stop {
@@ -306,8 +274,8 @@ pub struct Request<'a> {
     pub method: &'a str,
     pub path: &'a str,
     pub headers: &'a [(&'a str, &'a str)],
-    /// Sent with `Content-Length` when present. `None` sends no body and no
-    /// length — a `GET` or a `DELETE`.
+    /// Sent with `Content-Length` when present. `None` sends no body and no length, which is
+    /// a `GET` or a `DELETE`.
     pub body: Option<&'a str>,
 }
 
@@ -397,10 +365,9 @@ pub fn post_json(endpoint: &Endpoint, path: &str, body: &str) -> Result<Body, Ht
     )
 }
 
-/// A plain GET, for the endpoints that describe the server rather than drive it —
-/// `/props` above all. Same connection discipline as [`post_json`], same response
-/// reader, because a second hand-rolled HTTP client is a second place for a framing
-/// bug to live.
+/// A plain GET, for the endpoints that describe the server rather than drive it, `/props`
+/// above all. Same connection discipline and response reader as [`post_json`], because a second
+/// hand-rolled client is a second place for a framing bug to live.
 pub fn get(endpoint: &Endpoint, path: &str) -> Result<Body, HttpError> {
     send(
         endpoint,
