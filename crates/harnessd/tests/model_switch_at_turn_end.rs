@@ -79,10 +79,9 @@ const NEXT: &str = "now carry on";
 /// history. Its contents do not matter; that the round EXISTS is the point.
 const TOOL_FILE: &str = "notes.txt";
 
-/// How long the old model holds a request before answering `429`.
-///
-/// This is the operator's window, made reachable: the driver waits on the stub's own request
-/// count, but without the wait a round in flight would close before a line could be queued.
+/// How long the old model holds a request before answering `429`: the operator's window,
+/// made reachable. The driver waits on the stub's request count; without it a round in flight
+/// would close before a line could be queued.
 const REFUSAL_HOLD_MS: u64 = 900;
 
 /// The provider's own words, as they arrived. The retry policy reads this: a 429 whose body names
@@ -94,10 +93,9 @@ const REFUSAL_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhau
 // The two stubs
 // ---------------------------------------------------------------------------
 
-/// One loopback model, plus every request body it was sent.
-///
-/// The bodies are the evidence: `model` says which model the harness believed it was talking to,
-/// and `messages` says what it was asked to continue. `Clone` shares the recorder.
+/// One loopback model, plus every request body it was sent: `model` says which model the
+/// harness believed it was talking to, `messages` what it was asked to continue. `Clone`
+/// shares the recorder.
 #[derive(Clone)]
 struct Model {
     port: u16,
@@ -559,10 +557,9 @@ fn config(
     cfg
 }
 
-/// One session, one daemon, one head, with the driver on a thread of its own.
-///
-/// When `body` returns this asks the session `/models`, which is the turn's own end, and only
-/// then closes the registry, which is what ends `daemon.run`.
+/// One session, one daemon, one head, with the driver on a thread of its own. When `body`
+/// returns this asks `/models`, which is the turn's own end, and then closes the registry,
+/// which is what ends `daemon.run`.
 fn drive<F>(parts: &Parts, cfg: Config, body: F) -> (Rec, Arc<Hub>, Config)
 where
     F: FnOnce(&mut HeadClient, &Receiver<Inbound>, &Arc<Hub>, &mut Rec) + Send + 'static,

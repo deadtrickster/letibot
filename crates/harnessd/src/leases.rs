@@ -12,10 +12,9 @@ use std::sync::Mutex;
 use letibot_tokencore::store::{Ask, Lease, Store};
 use letibot_tools::lease::{Blocks, Leases};
 
-/// How long the owner must be gone before its blocks go back: sixty seconds.
-///
-/// Long enough for a daemon that has just started to reopen its sessions, short enough that a
-/// block left by a hard-killed daemon is available to the next session within a turn.
+/// How long the owner must be gone before its blocks go back: sixty seconds. Long enough for a
+/// daemon that has just started to reopen its sessions, short enough that a block left by a
+/// hard-killed daemon is available to the next session within a turn.
 pub const GRACE_MS: i64 = 60_000;
 
 /// A session's leases, over the store - the implementation of

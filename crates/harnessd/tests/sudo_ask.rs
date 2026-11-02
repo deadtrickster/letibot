@@ -164,10 +164,9 @@ fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
     path
 }
 
-/// The run's own process, when this test binary is re-executed as it.
-///
-/// It sets `PR_SET_DUMPABLE 0`, the flag a setuid exec sets, which makes `/proc/<pid>/fd/0`
-/// unreadable without `CAP_SYS_PTRACE`; then it asks a question and blocks on the terminal.
+/// The run's own process, when this test binary is re-executed as it: it sets
+/// `PR_SET_DUMPABLE 0`, the flag a setuid exec sets, then asks a question and blocks on the
+/// terminal, which is `apt` at `Continue? [Y/n]`.
 #[test]
 fn the_run_this_daemon_may_not_read() {
     if std::env::var("LETIBOT_SUDO_ASK_CHILD").as_deref() != Ok("1") {

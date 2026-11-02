@@ -13,10 +13,9 @@ use letibot_sessionlog::suggest::{self, RECENT_ROWS};
 use letibot_transcript::TranscriptItem;
 use letibot_turn::http::{self, Endpoint};
 
-/// How long a suggestion may take the local model: three seconds.
-///
-/// The gatekeeper's budget is tight because a verdict is on the tool path; a suggestion fills a
-/// composer and runs nothing, and past this the answer a waiting person wants is nothing.
+/// How long a suggestion may take the local model: three seconds. The gatekeeper's budget is
+/// tight because a verdict is on the tool path; a suggestion fills a composer and runs nothing,
+/// and past this the answer a waiting person wants is nothing.
 pub const SUGGEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How many output tokens a suggestion may spend. Five shell lines, one per line, is a

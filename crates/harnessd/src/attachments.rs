@@ -9,10 +9,9 @@ use letibot_sessionlog::protocol::Attachment;
 use letibot_transcript::UserPart;
 use sha2::{Digest, Sha256};
 
-/// A picture bigger than this is refused, as `read` refuses one.
-///
-/// One number for both, or a picture `read` would refuse and a chip would attach are two answers
-/// to how big is too big, and the second is discovered by the store.
+/// A picture bigger than this is refused, as `read` refuses one: one number for both, or a
+/// picture `read` would refuse and a chip would attach are two answers to how big is too big,
+/// and the second is discovered by the store.
 pub const MAX_IMAGE_BYTES: u64 = letibot_tools::builtins::grep::FILE_CEILING * 16;
 
 /// How much of a text file is inlined - 256 KiB, which is a long log, a whole source
