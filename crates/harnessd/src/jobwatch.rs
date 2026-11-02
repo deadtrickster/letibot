@@ -200,6 +200,60 @@ impl Settlements {
     }
 }
 
+/// How many settled handles the duplicate guard keeps. A second `watch` for one handle can only
+/// arrive while the call that produced it is still being finished, so the recent past is the whole
+/// of what the set has to answer for - and a session that has backgrounded a hundred thousand jobs
+/// must not keep a name for each of them for its life.
+const SETTLED_KEPT: usize = 1024;
+
+/// The handles already settled, so a late duplicate finish cannot publish one settlement twice.
+/// Bounded by [`SETTLED_KEPT`], oldest name evicted first, because the set is a guard against a
+/// repeat and not a history.
+#[derive(Debug, Default)]
+struct Settled {
+    names: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl Settled {
+    fn insert(&mut self, job: &str) {
+        if !self.names.insert(job.to_string()) {
+            return;
+        }
+        self.order.push_back(job.to_string());
+        while self.order.len() > SETTLED_KEPT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.names.remove(&oldest);
+            }
+        }
+    }
+
+    fn contains(&self, job: &str) -> bool {
+        self.names.contains(job)
+    }
+
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+}
+
+/// What one set is holding, in entries - the census a reader needs to tell a set that is waiting on
+/// work from one that is keeping history. Every field is something a settlement empties, except
+/// [`Retained::settled`], which [`SETTLED_KEPT`] bounds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retained {
+    /// Handles a watcher thread is still blocked on.
+    pub watching: usize,
+    /// Handles settled, within [`SETTLED_KEPT`].
+    pub settled: usize,
+    /// Results asked for and not yet delivered.
+    pub wanted: usize,
+    /// Results held for the next break.
+    pub held: usize,
+    /// Delivered results still inside their grace - at most the last two turns'.
+    pub read: usize,
+}
+
 /// The per-session set of watched background jobs and subagents: fed by [`JobWatchSink`] as
 /// backgrounded results pass through it, stopped when the session's backend closes.
 pub struct JobWatchers {
@@ -237,8 +291,8 @@ pub struct JobWatchers {
     /// a second watcher for one job.
     watching: Arc<Mutex<HashSet<String>>>,
     /// Jobs already published, so a late duplicate finish cannot publish a
-    /// settlement twice.
-    settled: Arc<Mutex<HashSet<String>>>,
+    /// settlement twice. See [`Settled`].
+    settled: Arc<Mutex<Settled>>,
     /// Settlements taken off the queue and HELD : nothing in this session's plan waits
     /// on them, so they are handed over in one batch at the next break. Per session, and handed
     /// up with `completions` by [`JobWatchers::stop`].
@@ -303,7 +357,7 @@ impl JobWatchers {
             bell,
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
-            settled: Arc::new(Mutex::new(HashSet::new())),
+            settled: Arc::new(Mutex::new(Settled::default())),
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
             held_said: Arc::new(Mutex::new((0, 0, 0))),
@@ -373,7 +427,7 @@ impl JobWatchers {
             bell,
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
-            settled: Arc::new(Mutex::new(HashSet::new())),
+            settled: Arc::new(Mutex::new(Settled::default())),
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
             held_said: Arc::new(Mutex::new((0, 0, 0))),
@@ -550,6 +604,10 @@ impl JobWatchers {
         {
             let mut r = self.read.lock().expect("read record");
             let at = r.turns_ended;
+            // The record holds only what may still be graced, and `grace_left` is one reader of
+            // it - a session that never asks about a handle must not grow this map for its life.
+            r.seen
+                .retain(|_, (_, delivered)| at <= delivered.saturating_add(1));
             for c in done {
                 r.seen.insert(c.job.clone(), (c.arrived, at));
                 if let Some(slug) = &c.slug {
@@ -762,6 +820,19 @@ impl JobWatchers {
             held: self.held_count(),
             in_flight: self.settlement_in_flight(),
             at_work: self.watched.now(),
+        }
+    }
+
+    /// What this set is holding, in entries. Every field but `settled` is emptied by the settlement
+    /// or the delivery that owns it, so a reading that climbs with the number of jobs a session has
+    /// ever run is the reading of a retention - see [`Settled`].
+    pub fn retained(&self) -> Retained {
+        Retained {
+            watching: self.watching.lock().expect("job watchers").len(),
+            settled: self.settled.lock().expect("job watchers").len(),
+            wanted: self.wanted.lock().expect("wanted results").len(),
+            held: self.held.lock().expect("held results").len(),
+            read: self.read.lock().expect("read record").seen.len(),
         }
     }
 
@@ -1243,7 +1314,7 @@ fn watch_one(
     hub: Weak<Hub>,
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
-    settled: Arc<Mutex<HashSet<String>>>,
+    settled: Arc<Mutex<Settled>>,
     watched: Arc<WatchedNow>,
     job: String,
 ) {
@@ -1304,7 +1375,7 @@ fn watch_one(
                     detail,
                     arrived: SystemTime::now(),
                 });
-                settled.lock().expect("job watchers").insert(job.clone());
+                settled.lock().expect("job watchers").insert(&job);
                 // And what the session is waiting on has moved: the job is still in `watching` but its
                 // ending is on the queue now, which is `Delivery`.
                 hub.refresh_activity();
@@ -1343,7 +1414,7 @@ fn watch_task(
     hub: Weak<Hub>,
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
-    settled: Arc<Mutex<HashSet<String>>>,
+    settled: Arc<Mutex<Settled>>,
     watched: Arc<WatchedNow>,
     job: String,
 ) {
@@ -1400,7 +1471,7 @@ fn settled_here(
     job: &str,
     slug: Option<String>,
     queue: &Arc<SettlementQueue>,
-    settled: &Arc<Mutex<HashSet<String>>>,
+    settled: &Arc<Mutex<Settled>>,
 ) {
     queue.push(JobCompletion {
         kind: BackgroundKind::Subagent,
@@ -1421,10 +1492,7 @@ fn settled_here(
         memory: None,
         arrived: SystemTime::now(),
     });
-    settled
-        .lock()
-        .expect("job watchers")
-        .insert(job.to_string());
+    settled.lock().expect("job watchers").insert(job);
 }
 
 /// The first line of what a subagent said, for a one-line notice. The whole of it is in
