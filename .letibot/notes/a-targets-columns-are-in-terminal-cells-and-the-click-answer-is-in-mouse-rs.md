@@ -1,4 +1,4 @@
-<!-- abstract: A new click `Target` costs three arms in `app/keys/mouse.rs` and only two of them fail to compile, hit records are made before the gutter pad so a target's `x` must add it, and a rectangle must be read off the drawn row rather than computed from the words. -->
+<!-- abstract: A new click `Target` costs three arms in `app/keys/mouse.rs` and only two of them fail to compile, and hit records are made before the gutter pad so a target's `x` must add it. -->
 
 # A click target's columns, and where the click is actually answered — MEASURED 2026-10-27 (branch `queue-standings-click`, making the merge queue's standings on the composer's bottom edge clickable)
 
@@ -16,7 +16,6 @@ target's `rect.x` must be `col + gutter` (`record_main_hits` in `crates/tui/src/
 `gutter` for this reason). The header's git field does not, and sits two columns left of what it
 drew.
 
-A rectangle read off words must be read off the finished row (`screen::drawn_span`,
-`crates/tui/src/ui/screen.rs`), not computed from their length: `box_edge` truncates the right-hand
-line to `inner - (left_cols + 3)`, so arithmetic gives a target for words the frame dropped. The
-safe failure is no target, and it is worth a test in both directions.
+A rectangle read off words must be read off the finished row (`screen::drawn_span`), not computed
+from their length: `box_edge` truncates the right-hand line, so arithmetic gives a target for words
+the frame dropped. The safe failure is no target.

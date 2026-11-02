@@ -17,6 +17,5 @@ a row lands (`crates/sessionlog/src/view.rs`), so nothing later takes the pane's
 rung that shows the working draws, calls and thinking that already have rows above them. `App::load`
 (`crates/tui/src/app/events/mod.rs`) seeds all three.
 
-A buffer the transcript takes over is only taken over at the door you closed it at: every
-`*_upto`/`settled_*` mark is advanced by an EVENT, and a snapshot has no events behind it. Ask it of
-the text (`TurnPane::a_row_holds`, equality after trim, only within `appended`), never by prefix.
+A buffer the transcript takes over is only taken over at the door you closed it at: ask it of the text
+(`TurnPane::a_row_holds`, equality after trim, only within `appended`), never by prefix.

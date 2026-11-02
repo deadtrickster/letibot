@@ -14,8 +14,7 @@ and - because `transcript_exists("#t0")` was true - rewrote neither `transcript.
 the fingerprint.
 
 Three parts to the fix. An empty transcript on another prompt has its prefix re-seated
-(`Store::set_transcript_prefix`, which refuses when a row exists). `Store::assert_anchored`, from
-`append_item` and `append_items`, refuses a first row whose `tok_offset` is not prefix length plus
-rows so far - in Rust, not in the trigger, because `CREATE TRIGGER IF NOT EXISTS` only reaches a fresh
-database. `crates/harnessd/src/harness/prefix_repair.rs` then finds a stored prefix whose `h_init`
-re-chains every row and forks the session onto it, items and tokens verbatim.
+(`Store::set_transcript_prefix`). `Store::assert_anchored` refuses a first row whose `tok_offset` is
+not prefix length plus rows so far - in Rust, not in the trigger, because `CREATE TRIGGER IF NOT
+EXISTS` only reaches a fresh database. `crates/harnessd/src/harness/prefix_repair.rs` then finds a
+stored prefix whose `h_init` re-chains every row and forks the session onto it.

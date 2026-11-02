@@ -1,4 +1,4 @@
-<!-- abstract: One writer per session, claimed at `Harness::open` and recorded in `session_writer`; on this host the holder's pid is the whole liveness fact, and `merge_review.session_id` names the child that did the work, not the review host. -->
+<!-- abstract: One writer per session, claimed at `Harness::open` and recorded in `session_writer`; on this host the holder's pid is the whole liveness fact, and `u64::MAX as i64` is why the cutoff is clamped. -->
 
 # One writer per session, and the review queue is per workspace — MEASURED 2026-10-26, branch `gatekeeper-per-daemon`
 
@@ -18,6 +18,4 @@ The owner is `host/pid/<now_ns>`, not the pid, so two `Sessions` over one store 
 two daemons do: `sessions::writer_tests::a_second_session_cannot_write_one_transcript`.
 
 `merge_review.session_id` is the `task_start` child whose branch is up for review
-(`mergequeue::review::enqueue_finished`), not the session that reviewed it. And `Sessions::open` is
-a private field, so a test that needs `&mut Harness` lives in a child module of `sessions`
-(`crates/harnessd/src/sessions/writer_tests.rs`).
+(`mergequeue::review::enqueue_finished`), not the session that reviewed it.

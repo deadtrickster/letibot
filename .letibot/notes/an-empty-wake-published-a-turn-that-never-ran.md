@@ -5,9 +5,7 @@
 `turn_tail::run_turn` started the prompt clock before the door's own act, so a wake with nothing to
 say - the daemon's startup ring, drained on a session with nothing restored - published
 `waiting on: turn` and then `quiet`. `Head::wait` arms on `Turn`/`Calls` and answers `TurnEnded` on
-the next quiet, so it exited 0 with an empty message for a session that had never turned. Nothing
-leaked between sessions: `Harness::open` builds its own `prompt_in_flight`, monitors, watchers and
-board, and two sessions' `Arc::as_ptr` differ.
+the next quiet, so it exited 0 with an empty message for a session that had never turned.
 
 The clock starts where a turn SPEAKS: `Harness::submit_items_then` (before the rows it appends, so
 the append's own publish already carries `turn`) and `Harness::run_rounds` (the operator's `!` line,
@@ -21,5 +19,4 @@ decoration: `system_update` -> `submit_item` -> `run_rounds` runs outside any tu
 for ever.
 
 A measurement trap: libtest eats the daemon's stderr on a green run, so `eprintln!` probes from
-harnessd appear only with `--nocapture`, and a failing run shows them under the panic banner - which
-reads as "only failures print".
+harnessd appear only with `--nocapture`.

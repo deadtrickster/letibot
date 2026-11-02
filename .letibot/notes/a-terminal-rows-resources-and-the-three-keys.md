@@ -1,9 +1,9 @@
-<!-- abstract: Sweeping a terminal queue row's worktree: a same-state `move_review` rewrites `state_ms` that two readers key on (use `Store::record_transition`), a pruned `worktrees/<name>` makes the tree unreadable rather than removable, and one tree is one piece of news. -->
+<!-- abstract: Sweeping a terminal queue row's worktree: a same-state `move_review` rewrites `state_ms` that two readers key on (use `Store::record_transition`), and a pruned `worktrees/<name>` makes the tree unreadable rather than removable. -->
 
 # A terminal row's resources, and the three keys that keep a sweep quiet
 
 Sweeping a terminal queue row's worktree and branch is safe only after `merge-base --is-ancestor
-<branch> main`, and the dirty check is `git status` in the tree. Three things make the sweep lie.
+<branch> main`, and the dirty check is `git status` in the tree. Two things make the sweep lie.
 
 A same-state `move_review` rewrites `state_ms`, and `state_ms` is load-bearing: `Store::cas` writes
 it unconditionally and it is not in `REVIEW_SETTABLE`, so a `Move` cannot put it back. Two readers
@@ -17,7 +17,6 @@ repository`, so the dirty check cannot run and `git worktree remove` refuses. Th
 fallback honest is the tree's own `.git` FILE (`gitdir: .../worktrees/<name>`), which the main
 checkout can never pass because its `.git` is a directory. Keep and say, do not guess.
 
-One tree is one piece of news. `landed` and `supersede_fix_branches` both raise
-`queue_branch_kept`, and the sweep meets the same tree again in the same or the next pass; the
-shared key is `kept:<repository>:<worktree>` through `RepoQueue::first_time`, so it survives a
-restart.
+And one tree is one piece of news: `landed` and `supersede_fix_branches` both raise
+`queue_branch_kept`, so the shared key is `kept:<repository>:<worktree>` through
+`RepoQueue::first_time`, which survives a restart.

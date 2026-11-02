@@ -1,4 +1,4 @@
-<!-- abstract: A zero in a counter is a claim of absence, and the composer edge truncates from its RIGHT end - so severity leads the standings line, and the words must stay one contiguous span for the click target and the tests. -->
+<!-- abstract: A zero in a counter is a claim of absence, and the composer edge truncates from its RIGHT end - so severity leads the standings line and the words must stay one contiguous span. -->
 
 # A zero in a counter is a claim, and the edge cuts from its RIGHT end
 
@@ -17,8 +17,6 @@ attention on nothing: a word needs a count.
 is why `red` leads the line and `landed` may go: put severity at the end of a right-truncated edge
 and a narrow window eats the alarm first.
 
-The standings' click target is read off the drawn row (`screen::drawn_span`, searching the plain
-words), so the words must stay ONE contiguous span. Splitting them into a span per word, to give
-`1 red` its own colour, breaks every `screen.contains("... · ...")` assertion in
-`app/tests/queue.rs`, because the ANSI bytes then sit between the words. The line keeps one
-register: `Standings::role()`, the max of its parts.
+The standings' click target is read off the drawn row (`screen::drawn_span`), so the words must stay
+ONE contiguous span - a span per word breaks every `screen.contains("... · ...")` assertion in
+`app/tests/queue.rs`.

@@ -1,4 +1,4 @@
-<!-- abstract: A stack whose commits are already in main under rewritten shas conflicts as add/add on files both sides added, because git compares trees and not provenance; `git rebase --onto main <stack tip>` replays only the commits that are actually new. -->
+<!-- abstract: A stack whose commits are already in main under rewritten shas conflicts as add/add on files both sides added, because git compares trees and not provenance; `git rebase --onto main <stack tip>` replays only the commits that are new. -->
 
 # A stack that is already in main conflicts as add/add, and `--onto <stack tip>` is the fix
 
@@ -21,7 +21,6 @@ The operation is `git rebase --onto main <the stack's tip, exclusive>`, which re
 commits that are actually new. Resolving the add/add hunks by hand would have produced a worse tree,
 because main's copies carry the later work.
 
-A rebase that goes through cleanly is not a measurement: compile, run the suites, and grep main's
-own copy for the mechanism you added. If main has none of it and still speaks the same protocol
-version, the bump is uncontested. And `git status` before writing anything on a resumed branch - a
-half-written file over a successor's committed one shows only as ` M`.
+A rebase that goes through cleanly is not a measurement: compile, run the suites, and `git status`
+before writing anything on a resumed branch - a half-written file over a successor's committed one
+shows only as ` M`.
