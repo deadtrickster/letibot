@@ -1,15 +1,12 @@
 //! What a head needs to offer a tool to the operator without holding a schema.
 //!
-//! Three facts per tool, all derived from its own declared `parameters`, so a schema
-//! change moves the head's behaviour with no head rebuilt: which field a bare line goes
-//! into (the single required one), what kind that field is, and which other fields carry
-//! defaults.
+//! Three facts per tool, all derived from its own declared `parameters`, so a schema change moves the
+//! head's behaviour with no head rebuilt: which field a bare line goes into, what kind that field is,
+//! and which other fields carry defaults.
 //!
-//! The kind cannot come from `type` - every door tool declares `{"type": "string"}` and
-//! nothing more - so a declared `format` answers first and the field's name second. One
-//! heuristic on the side that owns the schemas is what cannot drift. A tool needing two
-//! or more fields, or none, gets no bare form: [`BareForm::None`] carries the sentence a
-//! head says instead of guessing.
+//! The kind cannot come from `type`, since every door tool declares a bare string, so a declared
+//! `format` answers first and the field's name second. A tool needing two fields or none gets no bare
+//! form: [`BareForm::None`] carries the sentence a head says instead of guessing.
 
 use serde_json::Value;
 
