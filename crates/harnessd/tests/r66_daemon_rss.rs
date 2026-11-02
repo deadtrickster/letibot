@@ -226,13 +226,13 @@ fn rss(pid: u32) -> u64 {
         .unwrap_or(0)
 }
 
-/// The last `memwatch:` line the daemon printed - its own count of the heap, the threads and the
-/// per-session footprint. `None` until the first tick.
+/// The last summary line the daemon printed - its own count of the heap, the threads and the
+/// per-session footprint. Not the `grew` line beside it, which carries no census. `None` until the
+/// first tick.
 fn last_memwatch(scratch: &Scratch) -> Option<String> {
     let log = std::fs::read_to_string(scratch.home.join("daemon.log")).ok()?;
     log.lines()
-        .filter(|l| l.starts_with("memwatch:"))
-        .next_back()
+        .rfind(|l| l.starts_with("memwatch: rss "))
         .map(str::to_string)
 }
 
@@ -322,6 +322,51 @@ fn authority(url: &str) -> String {
         .to_string()
 }
 
+/// What the daemon's own `memwatch` line says ONE session holds, in the units the census uses. This
+/// is the retained-item count the test asserts on: resident memory is the kernel's opinion and moves
+/// with the allocator, while these four numbers are the rows, the region, the hub's log and the view.
+#[derive(Clone, Copy, Default, Debug)]
+struct Held {
+    harness: u64,
+    log: u64,
+    view: usize,
+    heap: u64,
+}
+
+impl Held {
+    /// Read off a line of the watch; zeroes on a line that has not got the parts yet, which is every
+    /// reading before the daemon's first tick.
+    fn of(watch: &str) -> Self {
+        Held {
+            harness: after(watch, "harness ").map(bytes).unwrap_or(0),
+            log: after(watch, "logs ").map(bytes).unwrap_or(0),
+            view: after(watch, "view ")
+                .and_then(|n| n.split_whitespace().next()?.parse().ok())
+                .unwrap_or(0),
+            heap: after(watch, "heap live ").map(bytes).unwrap_or(0),
+        }
+    }
+}
+
+/// The text after `marker`, or `None` when the line does not carry it.
+fn after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    line.split_once(marker).map(|(_, rest)| rest)
+}
+
+/// `<n> KiB` / `<n> MiB` / `<n> B`, as `human_bytes` writes it, in bytes.
+fn bytes(rest: &str) -> u64 {
+    let mut it = rest.split_whitespace();
+    let n: f64 = it.next().and_then(|n| n.parse().ok()).unwrap_or(0.0);
+    let unit = it.next().unwrap_or("B");
+    let k = match unit {
+        "GiB" => 1u64 << 30,
+        "MiB" => 1 << 20,
+        "KiB" => 1 << 10,
+        _ => 1,
+    };
+    (n * k as f64) as u64
+}
+
 /// One turn's reading.
 #[derive(Clone)]
 struct Row {
@@ -329,6 +374,8 @@ struct Row {
     /// Whether the turn reached the model. A session with no room refuses the turn and stays alive.
     ran: bool,
     rss: u64,
+    /// What the daemon's own census says this session holds.
+    held: Held,
     /// The daemon's own `memwatch` line, which carries heap live and the whole census.
     watch: String,
 }
@@ -380,11 +427,13 @@ fn drive(tag: &str, turns: usize, prompt_bytes: usize, window: Option<u64>, cap:
         });
         // The failure path publishes its warning after the refusal, and that row is part of the turn.
         std::thread::sleep(Duration::from_millis(200));
+        let watch = last_memwatch(&scratch).unwrap_or_default();
         rows.push(Row {
             turn,
             ran,
             rss: rss(pid),
-            watch: last_memwatch(&scratch).unwrap_or_default(),
+            held: Held::of(&watch),
+            watch,
         });
     }
     Run {
@@ -439,7 +488,7 @@ fn the_daemon_probe() {
     }
 
     let first = run.rows.iter().find(|r| r.rss > 0);
-    let last = run.rows.iter().filter(|r| r.rss > 0).next_back();
+    let last = run.rows.iter().rfind(|r| r.rss > 0);
     if let (Some(a), Some(b)) = (first, last) {
         let per_turn = (b.rss as f64 - a.rss as f64) / (b.turn - a.turn).max(1) as f64;
         println!(
@@ -458,42 +507,100 @@ fn the_daemon_probe() {
     println!("\nthe daemon's log tail:\n{}", log_tail(&run.scratch));
 }
 
-/// The assertion: many turns with a refused compaction after each, and the growth stays within what
-/// the rows themselves cost. A term that grows with the TURN COUNT and not with the rows is what R66
-/// is, and it fails here.
+/// The assertion: many turns with a refused compaction after each, and what the daemon HOLDS stays
+/// within what the rows themselves cost. The numbers are the daemon's own census - rows, region, log
+/// and view - because resident memory is the allocator's opinion and drifts by megabytes either way
+/// between two runs of the same binary. A term that grows with the TURN COUNT and not with the rows
+/// is what R66 is, and it fails here.
+///
+/// The region is 4 bytes a token and a byte vocabulary spends a token a byte, so the footprint of a
+/// session is about five times the text it holds.
 #[test]
 fn forty_turns_with_a_failed_compaction_each_keep_the_daemon_bounded() {
     let turns = 40usize;
     let prompt_bytes = 8 << 10;
+    // What one refused attempt adds besides the prompt: the instruction, and a boundary or two.
+    let instruction = 1_500usize;
     let run = drive("r66-daemon-bounded", turns, prompt_bytes, None, "6G");
-    // The first turn is the baseline: a session's first turn pays the hub's bounds filling and the
-    // store's first write, and a slope measured across those is the warm-up's slope.
-    let before = run.rows.first().expect("a turn").rss;
-    assert!(before > 0, "no VmRSS for the daemon: this box has no /proc");
-    let after = run.rows.last().expect("a turn").rss;
-    let refused = run.rows.iter().filter(|r| !r.ran).count();
-    let early = run.rows[run.rows.len() / 4].rss;
-    println!(
-        "\n{turns} turns of {prompt_bytes} bytes with a failed compaction each: rss {} → {} (+{}) · \
-         early quarter {} · {refused} turn(s) refused for room",
-        mb(before as f64),
-        mb(after as f64),
-        mb(after.saturating_sub(before) as f64),
-        mb(early as f64),
-    );
-    println!(
-        "last memory line: {}",
-        run.rows.last().map(|r| r.watch.clone()).unwrap_or_default()
-    );
-    // The rows cost the prompts and the answers; the slack is the trail, the hub's bounds and the
-    // per-session overhead. Twice is generous and still refuses a term that grows per turn.
-    let appended = ((turns - 1) * prompt_bytes) as f64;
-    let grew = after.saturating_sub(before) as f64;
+    // The watch ticks once a second, so the first turn or two read a line that is not there yet. The
+    // baseline is the first reading that carries a census, and the slope is measured from it - a
+    // session's first turns pay the hub's bounds filling and the store's first write, which are
+    // constants and would be read as a slope.
+    let readings: Vec<&Row> = run.rows.iter().filter(|r| r.held.harness > 0).collect();
     assert!(
-        grew <= appended * 2.0,
-        "{turns} turns appending {} grew the daemon by {} — more than twice the rows, which is a \
-         term nobody has accounted for",
-        mb(appended),
-        mb(grew)
+        readings.len() >= turns - 4,
+        "the daemon must say what it holds on almost every reading, not {} of {turns}",
+        readings.len()
     );
+    let first = readings.first().expect("a reading with a census");
+    let last = readings.last().expect("a reading with a census");
+    assert!(
+        first.rss > 0,
+        "no VmRSS for the daemon: this box has no /proc"
+    );
+    let spanned = last.turn - first.turn;
+    let refused = run.rows.iter().filter(|r| !r.ran).count();
+    println!(
+        "\n{} turns of {prompt_bytes} bytes with a failed compaction each · {refused} turn(s) refused \
+         for room\n  rss {} → {} (the instrument, not the assertion)\n  harness {} → {} · view {} → \
+         {} rows · log {} → {} · heap {} → {}",
+        spanned,
+        mb(first.rss as f64),
+        mb(last.rss as f64),
+        kb(first.held.harness),
+        kb(last.held.harness),
+        first.held.view,
+        last.held.view,
+        kb(first.held.log),
+        kb(last.held.log),
+        kb(first.held.heap),
+        kb(last.held.heap),
+    );
+
+    // The arithmetic of a row, in the census's own units: the text, plus the token region's 4 bytes a
+    // token where a byte vocabulary spends a token a byte, and the region's capacity doubles - so a
+    // row can cost eight times its text in the turn the region doubles, and ten is the allowance.
+    let rows_added = (spanned * (prompt_bytes + instruction)) as u64;
+    let allowed = rows_added * 10 + (512 << 10);
+    let grew = last.held.harness.saturating_sub(first.held.harness);
+    assert!(
+        grew <= allowed,
+        "{spanned} turns appending {} left the session holding {} more — past the {} its own rows \
+         and region cost, which is a term nobody has accounted for",
+        mb(rows_added as f64),
+        mb(grew as f64),
+        mb(allowed as f64)
+    );
+
+    // Printed and not asserted: a per-turn slope over the census is a sawtooth while the region is
+    // doubling, so a turn that lands on a doubling looks ten times a turn that does not. What a
+    // per-turn copy of the conversation would do is quadratic, and that fails the total above by two
+    // orders of magnitude; this line is here so a person reading a failing run sees which it was.
+    let mid = readings[readings.len() / 2];
+    let early = (mid.held.harness.saturating_sub(first.held.harness)) as f64
+        / (mid.turn - first.turn).max(1) as f64;
+    let late = (last.held.harness.saturating_sub(mid.held.harness)) as f64
+        / (last.turn - mid.turn).max(1) as f64;
+    println!(
+        "  per turn: {} early · {} late (a doubling of the region lands in one of them)",
+        kb(early as u64),
+        kb(late as u64)
+    );
+
+    // And the view keeps rows, not turns: a refused attempt pairs its instruction with a warning, and
+    // nothing in it may outlive the bound.
+    let view_grew = last.held.view.saturating_sub(first.held.view);
+    assert!(
+        view_grew <= 3 * spanned,
+        "the view took {view_grew} row(s) from {spanned} turns, which is more than the rows they made"
+    );
+    assert!(
+        last.held.log < 16 << 20,
+        "the hub's log is past its own bound: {}",
+        kb(last.held.log)
+    );
+}
+
+fn kb(n: u64) -> String {
+    format!("{} KiB", n / 1024)
 }
