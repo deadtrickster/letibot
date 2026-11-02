@@ -1676,7 +1676,8 @@ fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row()
             prompt_tokens: 44_700,
             cached_tokens: 40_000,
             predicted_tokens: 0,
-            cost_micros_usd: None
+            cost_micros_usd: None,
+            ..Default::default()
         })
     );
     let header = a.header_line(200);
@@ -1695,6 +1696,7 @@ fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row()
             cached_tokens: 44_700,
             predicted_tokens: 300,
             cost_micros_usd: None,
+            ..Default::default()
         },
         timings: Default::default(),
         ends_turn: true,
@@ -1710,7 +1712,8 @@ fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row()
             prompt_tokens: 51_000,
             cached_tokens: 44_700,
             predicted_tokens: 300,
-            cost_micros_usd: None
+            cost_micros_usd: None,
+            ..Default::default()
         }),
         "the snapshot's turn state is newer than the row"
     );
@@ -1728,7 +1731,8 @@ fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row()
             prompt_tokens: 44_700,
             cached_tokens: 0,
             predicted_tokens: 0,
-            cost_micros_usd: None
+            cost_micros_usd: None,
+            ..Default::default()
         })
     );
     let header = a.header_line(200);
@@ -2472,6 +2476,7 @@ fn switching_replaces_the_previous_sessions_facts_and_does_not_carry_them_over()
             cached_tokens: 1_500,
             predicted_tokens: 10,
             cost_micros_usd: None,
+            ..Default::default()
         },
         timings: Default::default(),
         ends_turn: true,

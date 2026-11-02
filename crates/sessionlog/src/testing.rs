@@ -10,7 +10,7 @@ use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 
 use crate::event::{
     Decider, DecisionOption, DecisionOutcome, DeltaTarget, FinishReason, OnTimeout, OptionKind,
-    PromptProgress, SessionEvent, Timings, TodoBy, TodoEntry, TodoStatus, Usage,
+    PromptProgress, Served, SessionEvent, Timings, TodoBy, TodoEntry, TodoStatus, Usage,
 };
 
 pub fn warn(detail: &str) -> SessionEvent {
@@ -179,6 +179,12 @@ pub fn turn_finished(turn_id: &str) -> SessionEvent {
             cached_tokens: 900,
             predicted_tokens: 42,
             cost_micros_usd: None,
+            // Served, because the one-of-each session is what the round-trip tests carry to a
+            // head and this is a field a head reads.
+            served: Served {
+                id_slot: Some(0),
+                n_busy_slots: Some(1),
+            },
         },
         timings: Timings {
             prompt_ms: 40.0,

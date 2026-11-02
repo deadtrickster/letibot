@@ -481,8 +481,8 @@ impl FinishReason {
     }
 }
 
-/// What one turn cost in tokens. `cached_tokens` is prompt tokens reused, not slot occupancy,
-/// which is a different number the KV cache would report.
+/// What one turn cost in tokens, and which slot served it. `cached_tokens` is prompt tokens
+/// reused, not slot occupancy, which is a different number the KV cache would report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u64,
@@ -492,6 +492,34 @@ pub struct Usage {
     /// metered model nothing prices, because unpriced is not free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_micros_usd: Option<u64>,
+    /// The slot the turn ran on and the load it ran under. Defaulted and skipped when absent, so a
+    /// frame written before the field still decodes, and absence says nothing was measured rather
+    /// than slot 0.
+    #[serde(default, skip_serializing_if = "Served::is_absent")]
+    pub served: Served,
+}
+
+/// Which slot served a turn and how many were busy. A turn on a slot that does not hold its history
+/// reports zero reuse, and a head that cannot see the slot reads that as a prompt that diverged:
+/// two defects, two fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Served {
+    /// The slot, from `timings.id_slot`. `None` when the server did not say, which the engine
+    /// records as -1 and which is not a slot number a head should draw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_slot: Option<i64>,
+    /// How many slots were busy when the turn ran. `None` when the harness did not look, which is
+    /// not 1: a rate without its concurrency is not a rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_busy_slots: Option<u32>,
+}
+
+impl Served {
+    /// Nothing measured. A serde predicate as well as a constructor, so the wire skips the field
+    /// in exactly the case the default stands for.
+    pub fn is_absent(&self) -> bool {
+        self.id_slot.is_none() && self.n_busy_slots.is_none()
+    }
 }
 
 impl Usage {
@@ -1891,8 +1919,40 @@ mod tests {
             prompt_tokens: 100,
             cached_tokens: 90,
             predicted_tokens: 5,
-            cost_micros_usd: None,
+            ..Default::default()
         };
         assert_eq!(u.f_sim(), Some(0.9));
+    }
+
+    /// A frame written before `served` existed decodes with the field absent, which says nothing was
+    /// measured rather than slot 0, and a frame that measured nothing does not spend bytes on it.
+    #[test]
+    fn a_usage_without_a_slot_decodes_and_is_not_written_back() {
+        let old = r#"{"prompt_tokens":100,"cached_tokens":90,"predicted_tokens":5}"#;
+        let u: Usage = serde_json::from_str(old).expect("an older peer's frame must still decode");
+        assert_eq!(u.served, Served::default());
+        assert!(u.served.is_absent());
+        let back = serde_json::to_string(&u).unwrap();
+        assert!(!back.contains("served"), "{back}");
+    }
+
+    /// What a head is told when the server did say: the slot, the load beside it, both across a
+    /// round trip.
+    #[test]
+    fn a_measured_slot_travels_and_survives_a_round_trip() {
+        let u = Usage {
+            prompt_tokens: 100,
+            served: Served {
+                id_slot: Some(2),
+                n_busy_slots: Some(4),
+            },
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&u).unwrap();
+        assert!(
+            s.contains("\"id_slot\":2") && s.contains("\"n_busy_slots\":4"),
+            "{s}"
+        );
+        assert_eq!(serde_json::from_str::<Usage>(&s).unwrap(), u);
     }
 }

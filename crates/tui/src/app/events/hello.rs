@@ -174,8 +174,10 @@ impl App {
                         predicted_tokens: 0,
                         // A backfilled row carries the prompt size, never the
                         // cost: nothing recorded it per turn before now, and a
-                        // zero here would report a metered session as free.
+                        // zero here would report a metered session as free. Nor a slot: a row
+                        // that predates the column cannot say which slot served those turns.
                         cost_micros_usd: None,
+                        ..Default::default()
                     });
                 }
                 // And what the store says this session holds, while the head holds nothing - the

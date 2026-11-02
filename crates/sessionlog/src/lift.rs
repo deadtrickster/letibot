@@ -5,14 +5,16 @@
 //! without linking `libllama`.
 //!
 //! The seam is lossy in two places, both reported rather than papered over. `TurnFinished` carries
-//! `{usage, timings}` and not the rest of the engine's metrics (`prefix_check`, `id_slot`,
-//! `n_busy_slots`, `cost`, `dialect_template_sha`), which a head cannot show but which tells a
-//! scheduling fact from a prefix divergence. And `TranscriptAppended` has no content, with no
-//! `EventSink` channel for it: see [`crate::view::SessionView::record_item`].
+//! `{usage, timings}` and not all of the engine's metrics: `prefix_check` has no wire twin yet, and
+//! `dialect_template_sha` is a model fact a head already has from its wiring. The slot and the load
+//! do reach a head, through `Usage::served`, because zero reuse means two different things without
+//! them. And `TranscriptAppended` has no content: see [`crate::view::SessionView::record_item`].
 
 use letibot_turn::{DeltaTarget as TurnDelta, EventSink, TurnEvent};
 
-use crate::event::{DeltaTarget, FinishReason, PromptProgress, SessionEvent, Timings, Usage};
+use crate::event::{
+    DeltaTarget, FinishReason, PromptProgress, Served, SessionEvent, Timings, Usage,
+};
 use crate::hub::Hub;
 
 /// Lift one engine event into [`SessionEvent`].
@@ -115,6 +117,12 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
                 predicted_tokens: metrics.predicted_tokens,
                 // Carried so a turn's spend reaches the daemon and not only the one-shot printer.
                 cost_micros_usd: metrics.cost.micros_usd,
+                // Which slot served the turn and under what load. The engine's -1 means the server
+                // did not say, and a head is told nothing rather than a number that is an absence.
+                served: Served {
+                    id_slot: (metrics.id_slot >= 0).then_some(metrics.id_slot),
+                    n_busy_slots: metrics.n_busy_slots,
+                },
             },
             timings: Timings {
                 prompt_ms: metrics.prompt_ms,
@@ -248,5 +256,75 @@ mod tests {
             matches!(s, SessionEvent::TokensGenerated { tokens: 42, .. }),
             "the counter is the server's number, lifted verbatim: {s:?}"
         );
+    }
+
+    /// A turn's slot and load reach a head, and the engine's -1 for an absent slot reaches it as
+    /// nothing. Without them, zero reuse is one number for a slot that did not hold the history and
+    /// for a prompt that diverged.
+    #[test]
+    fn a_turns_slot_and_load_reach_a_head_and_an_absent_slot_as_nothing() {
+        let served = |id_slot: i64, n_busy_slots: Option<u32>| {
+            let e = from_turn_event(TurnEvent::TurnFinished {
+                turn_id: "t1".into(),
+                finish_reason: letibot_turn::FinishReason::Eos,
+                metrics: Box::new(metrics(id_slot, n_busy_slots)),
+            });
+            match e {
+                SessionEvent::TurnFinished { usage, .. } => usage.served,
+                other => panic!("a finished turn lifts to TurnFinished, not {other:?}"),
+            }
+        };
+        assert_eq!(
+            served(3, Some(2)),
+            Served {
+                id_slot: Some(3),
+                n_busy_slots: Some(2),
+            }
+        );
+        assert_eq!(served(-1, None), Served::default(), "-1 is an absence");
+        // One half measured and the other not is a real case: the slot came back from the server
+        // and the harness never looked at the load.
+        assert_eq!(
+            served(0, None),
+            Served {
+                id_slot: Some(0),
+                n_busy_slots: None,
+            }
+        );
+    }
+
+    /// One finished submission's metrics, with every field a head is not being told set to
+    /// something obviously not the field under test.
+    fn metrics(id_slot: i64, n_busy_slots: Option<u32>) -> letibot_turn::TurnMetrics {
+        use letibot_backend::{Meter, TurnCost};
+        letibot_turn::TurnMetrics {
+            turn_id: "t1".into(),
+            model: "m".into(),
+            dialect_template_sha: "00".into(),
+            ledger_head_sent: "ab".into(),
+            prompt_tokens: 100,
+            cached_tokens: 90,
+            predicted_tokens: 5,
+            prompt_tokens_server: 100,
+            prompt_processed: 10,
+            finish_reason: letibot_turn::FinishReason::Eos,
+            prompt_ms: 40.0,
+            predicted_ms: 900.0,
+            draft_n: 0,
+            draft_n_accepted: 0,
+            id_slot,
+            n_busy_slots,
+            prefix_check: letibot_turn::PrefixCheck::FirstTurn,
+            cost: TurnCost {
+                meter: Meter::WallClock,
+                prompt_tokens: 100,
+                cached_tokens: 90,
+                generated_tokens: 5,
+                wall_ms: 950,
+                micros_usd: None,
+            },
+            wall_ms: 950,
+            first_byte_ms: Some(120),
+        }
     }
 }

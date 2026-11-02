@@ -659,6 +659,7 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
             cached_tokens: 38_100,
             predicted_tokens: 200,
             cost_micros_usd: None,
+            ..Default::default()
         },
         timings: Default::default(),
         ends_turn: true,
@@ -706,6 +707,7 @@ fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
                 cached_tokens: 38_100,
                 predicted_tokens: 1_200,
                 cost_micros_usd: None,
+                ..Default::default()
             },
             timings: letibot_sessionlog::event::Timings {
                 prompt_ms: 900.0,
@@ -752,6 +754,7 @@ fn while_a_turn_runs_the_header_shows_no_clock() {
                 cached_tokens: 38_100,
                 predicted_tokens: 900,
                 cost_micros_usd: None,
+                ..Default::default()
             },
             timings: letibot_sessionlog::event::Timings {
                 prompt_ms: 900.0,

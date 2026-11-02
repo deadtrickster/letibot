@@ -214,6 +214,7 @@ fn finished_costing(turn: &str, micros: Option<u64>) -> SessionEvent {
             cached_tokens: 0,
             predicted_tokens: 10,
             cost_micros_usd: micros,
+            ..Default::default()
         },
         timings: letibot_sessionlog::event::Timings {
             prompt_ms: 1.0,
