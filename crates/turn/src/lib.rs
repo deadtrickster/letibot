@@ -33,6 +33,7 @@ pub mod items;
 pub mod length;
 pub mod metrics;
 pub mod prefix;
+pub mod prompt_cache;
 pub mod renderer;
 pub mod resume;
 pub mod serving;
