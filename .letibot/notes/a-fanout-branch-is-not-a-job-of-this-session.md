@@ -1,17 +1,13 @@
-<!-- abstract: A fanout branch is a job of ANOTHER host's table, so `jobwatch` has nothing to wait on and `fanout` blocks; the seam that settles it is `Aggregate` held in this session's table, not a composite process host. -->
+<!-- abstract: Two traps in a fixture that fakes several hosts: `case "$*" in *gone*)` matches the word anywhere in argv, so a work directory named `fanout-gone` reports a healthy host unreachable; and a `BTreeMap` re-orders a scenario's roles while `serde_json` does not. -->
 
-# A fanout branch is a job of another host's table, and that is why `fanout` blocks
+# Two traps in a fake ssh that fakes several hosts
 
-`ToolOutcome::Backgrounded { handle }` is delivered by `harnessd::jobwatch`, whose watcher thread blocks
-in `ProcessHost::wait_job(handle)` on THIS session's process host. A `fanout` branch is spawned through
-a per-host `RemoteProcesses`, so its handle lives in that machine's job table and `wait_job` here
-answers `NeverStarted` for ever. Hence `fanout` blocks for its answer, capped by `deadline_s`.
+The design fact - a branch is a job of another host's table, and `exec::host::Aggregate` is the seam
+that lets this session's `wait_job` see it - is in `docs/remote-hosts.md`, under *Jobs and processes*.
 
-The seam that fixed it is not a composite process host - that was predicted and was too expensive.
-`exec::host::Aggregate` is one handle in this session's table; `HostProcesses` keeps a second map beside
-`jobs` and every read path asks it first; `ProcessHost::hold(&JobId, Arc<dyn Aggregate>)` is the whole
-new seam. `jobwatch`, `job_output`, `job_kill` and `job_wait` are unchanged code.
-
-Rakes: `case "$*" in *gone*)` in a fake ssh matches the word anywhere in argv, so a test whose work
-directory is named `fanout-gone` reports a healthy host unreachable - match the destination. And `serde_json` keeps a call's key order while `BTreeMap` does not, so a scenario's
-`roles` collected into a `BTreeMap` starts them alphabetically.
+- **`case "$*" in *gone*)` is not a host test.** It matches the word anywhere in the fake's argv, so
+  a test whose work directory is named `fanout-gone` reports a healthy host unreachable for a reason
+  nobody reads twice. Match the destination, not the line.
+- **`serde_json` keeps a call's key order and `BTreeMap` does not**, so a scenario's `roles`
+  collected into a `BTreeMap` starts them alphabetically - which is how a test asserts an order it
+  never asked for.

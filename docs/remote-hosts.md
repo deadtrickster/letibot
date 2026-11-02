@@ -138,6 +138,14 @@ the one cost of this shape.
 session is refused too - it makes worktrees with the local `git` against a local path; the way to a remote
 child is `task`. A command's stderr arrives merged into its stdout, because ssh carries one channel.
 
+A **`fanout` branch is a job of another host's table**, so it cannot be waited on from here: `jobwatch`'s
+watcher thread blocks in `ProcessHost::wait_job` on this session's host, which answers `NeverStarted` for a
+handle that lives in `RemoteProcesses` on that machine. The seam that settles it is `exec::host::Aggregate`
+- one handle in this session's table, held in a second map beside `jobs` that every read path asks first
+(`ProcessHost::hold`) - so `jobwatch`, `job_output`, `job_kill` and `job_wait` are unchanged code, and
+`fanout` blocks for its answer, capped by `deadline_s`. A composite process host was the obvious design and
+is not needed.
+
 ## Permissions
 
 The remote host is not a boundary the way a VM is: it is the operator's machine with the operator's files. A

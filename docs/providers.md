@@ -89,6 +89,17 @@ the provider's coarse ones (`prompt_cache_hit_tokens` on DeepSeek,
 with the backend's own reason, never counted as a pass; and there is no `f_keep`, so the footer
 gives tokens and cost instead.
 
+**The overcount is bytes, and the remedy is a carried ratio.** On the byte vocabulary the ledger's
+"tokens" are the bytes of the dialect rendering, markup and control tokens included: one real session
+read `context_ledger` 2,704,409 against the provider's `context_tokens` 792,991, a ratio of 3.41 at
+about 2.5 characters per token. Images are not the cause - fourteen `ToolResult.media` rows carrying
+1,995,136 base64 characters cost 228-243 ledger ids each, because the renderer emits
+`VISION_START`/`IMAGE_PAD`/`VISION_END` where the part sat and never the `data:` URI. The ledger
+cannot be re-counted in place either: its ids are the hash chain and a store trigger pins `tok_len`
+to the blob. So `Config::carried_scale` keeps the last measured pair, named after the model that
+measured it, until a round on the current model measures again - and a provider switch keeps it
+rather than clearing it.
+
 ## Under a meter
 
 Compaction is an operator's act (`/compact`); there is no automatic threshold, and a per-provider
