@@ -1,29 +1,11 @@
-//! **The branch is the deliverable: a worktree child does not finish with its work outside it.**
+//! The branch is the deliverable: a worktree child does not finish with its work outside it.
 //!
-//! The report that asked for this, from pg-noop's model on 2026-10-12, relayed by the operator:
-//!
-//! > *"So the child's death cost the work nothing except its own account of it — and that is
-//! > only true because the worktree was checked before I spawned a replacement. Seven times
-//! > tonight a child has ended with its work outside its branch, and each time the recovery was
-//! > the same two commands; the pattern is now so routine that it belongs in the brief rather
-//! > than in the salvage."*
-//!
-//! A `task_start` child works in `<workspace>/.claude/worktrees/agent-<slug>` on branch
-//! `agent/<slug>`, and the branch is what the merge queue lands. A child that ends with edits
-//! uncommitted, or new files untracked, has handed its parent a branch that does not hold the
-//! work — and the parent found out by looking, seven times in one night. Three things here, each
-//! one the half the others cannot do:
-//!
-//! * **The brief** ([`letibot_tools::builtins::task::worktree_brief`]) tells the child the rule
-//!   before it starts: commit as you go, finish clean, name the commits.
-//! * **The end-of-turn check** ([`EndOfWork`]) reads `git status --porcelain` in the worktree when
-//!   the child's turn is about to end, and if it is dirty, tells the child ONCE, in the harness's
-//!   voice, what is uncommitted, and lets the turn go on — the same one-nudge budget as the
-//!   intent check (`close_the_turn`) beside it in the round loop.
-//! * **The completion** ([`with_the_line`]) — what the parent receives, as an answer or as a
-//!   failure (a child that crashed, errored or was killed) — carries at its top the plain fact
-//!   when the tree is still dirty, with the two salvage commands, so the parent never has to
-//!   discover it.
+//! A `task_start` child works on `agent/<slug>`, and that branch is what the merge queue lands. A
+//! child that ends with edits uncommitted, or new files untracked, has handed its parent a branch
+//! that does not hold the work. Three things cover that, each the half the others cannot do: the
+//! brief tells the child the rule before it starts, the end-of-turn check names what is
+//! uncommitted once and lets the turn go on, and the completion carries the fact with the two
+//! salvage commands, so the parent never has to discover it.
 //!
 //! A child with no worktree (a plain `task`, or `task_start` with `main_tree: true`) has no
 //! [`Deliverable`] and none of this touches it: the main checkout's status is the operator's, not
@@ -34,8 +16,8 @@ use letibot_tools::builtins::task::WorktreePlacement;
 /// How many porcelain entries a nudge or a completion line names before it counts the rest.
 const LISTED: usize = 8;
 
-/// **Where a worktree child's work has to end up**: the tree it works in and the branch that
-/// tree is on.
+/// Where a worktree child's work has to end up: the tree it works in and the branch that tree is
+/// on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deliverable {
     pub path: String,
@@ -52,15 +34,12 @@ impl Deliverable {
         })
     }
 
-    /// **What the worktree holds that the branch does not** — `git status --porcelain`'s lines,
-    /// or `None` when the tree is clean.
-    ///
-    /// Also `None` when git cannot answer (the tree was removed, git is missing): the claim this
-    /// feeds is *"the branch does not contain them"*, and a status that could not be read is not
-    /// evidence of uncommitted work. Guard the fact, not the proxy.
+    /// What the worktree holds that the branch does not: `git status --porcelain`'s lines, or
+    /// `None` when the tree is clean. Also `None` when git cannot answer, because a status that
+    /// could not be read is not evidence of uncommitted work.
     pub fn uncommitted(&self) -> Option<Vec<String>> {
         // The daemon's own leftover logs (`.letibot/*.jsonl`, written there by older builds) are
-        // not the child's work, and the child is not told to commit them (R92.4).
+        // not the child's work, and the child is not told to commit them.
         let lines =
             crate::mergequeue::git::uncommitted_work(std::path::Path::new(&self.path)).ok()?;
         (!lines.is_empty()).then_some(lines)
@@ -81,8 +60,8 @@ fn listed(files: &[String]) -> String {
     out
 }
 
-/// **The nudge, in the harness's voice** — said once, when the child's turn is about to end with
-/// the worktree dirty, and the turn continues.
+/// The nudge, in the harness's voice: said once, when the child's turn is about to end with the
+/// worktree dirty, and the turn continues.
 pub fn nudge_text(d: &Deliverable, files: &[String]) -> String {
     format!(
         "[the deliverable] Your worktree `{path}` has uncommitted changes, so the branch \
@@ -96,8 +75,8 @@ pub fn nudge_text(d: &Deliverable, files: &[String]) -> String {
     )
 }
 
-/// **The line a parent reads first** when the child ended — answered, failed, crashed or killed —
-/// with its work outside its branch, and the two commands that put it on the branch.
+/// The line a parent reads first when the child ended (answered, failed, crashed or killed) with
+/// its work outside its branch, and the two commands that put it on the branch.
 pub fn completion_line(d: &Deliverable, files: &[String]) -> String {
     format!(
         "the worktree {path} has uncommitted changes: {list} — the branch {branch} does not \
@@ -109,9 +88,9 @@ pub fn completion_line(d: &Deliverable, files: &[String]) -> String {
     )
 }
 
-/// **What the parent is handed, with the dirty-tree line on top when there is one.** `text` is
-/// the child's answer or the failure's sentence; a child with no deliverable, or a clean tree,
-/// gets it back unchanged.
+/// What the parent is handed, with the dirty-tree line on top when there is one. `text` is the
+/// child's answer or the failure's sentence; a child with no deliverable, or a clean tree, gets it
+/// back unchanged.
 pub fn with_the_line(d: Option<&Deliverable>, text: &str) -> String {
     match d.and_then(|d| d.uncommitted().map(|f| completion_line(d, &f))) {
         Some(line) => format!("{line}\n\n{text}"),
@@ -119,11 +98,11 @@ pub fn with_the_line(d: Option<&Deliverable>, text: &str) -> String {
     }
 }
 
-/// **The end-of-turn check, with its budget of one.**
+/// The end-of-turn check, with its budget of one.
 ///
-/// Per turn, like `nudges_left`: a model that answers the nudge by explaining why a file stays
-/// out has given a legitimate answer, and a second nudge would be the harness arguing. What it
-/// did not commit is then the completion line's job, not another round's.
+/// Per turn, like `nudges_left`: a model that answers the nudge by explaining why a file stays out
+/// has given a legitimate answer, and a second nudge would be the harness arguing. What it did not
+/// commit is then the completion line's job, not another round's.
 #[derive(Debug, Default)]
 pub struct EndOfWork {
     nudged: bool,
@@ -209,8 +188,8 @@ mod tests {
             &main,
             &["worktree", "add", "-q", &path, "-b", &branch, "main"],
         );
-        // **Exactly the tree a real child is handed**: the runner writes nothing into it (the
-        // build cache is shared through the child's environment, `worktree_build_env`).
+        // Exactly the tree a real child is handed: the runner writes nothing into it, because the
+        // build cache is shared through the child's environment (`worktree_build_env`).
         Repo {
             root,
             wt: Deliverable { path, branch },
@@ -293,8 +272,8 @@ mod tests {
             "{first}"
         );
 
-        // **And the two commands do what the line says**: run as printed, the branch holds the
-        // work, the tree is clean, and the commit holds the child's file and nothing else.
+        // And the two commands do what the line says: run as printed, the branch holds the work,
+        // the tree is clean, and the commit holds the child's file and nothing else.
         let wt = Path::new(&r.wt.path);
         let sh = |cmd: &str| {
             let out = Command::new("sh")
@@ -340,9 +319,9 @@ mod tests {
         assert!(why.ends_with("the provider refused the request"), "{why}");
     }
 
-    /// **The settlement the parent reads**, through the guard every ending of a child goes
-    /// through (`AnswerOnce`): a failure, a kill and a turn that ended with nothing to say all
-    /// carry the line, and the kill rule still replaces the truncated answer.
+    /// The settlement the parent reads, through the guard every ending of a child goes through
+    /// (`AnswerOnce`): a failure, a kill and a turn that ended with nothing to say all carry the
+    /// line, and the kill rule still replaces the truncated answer.
     #[test]
     fn every_ending_of_a_dirty_child_reaches_the_parent_with_the_line() {
         use super::super::{AnswerOnce, TaskSlot};

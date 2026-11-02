@@ -1,49 +1,21 @@
-//! **A transcript whose rows do not rebuild under the prefix it names — repaired by a fork,
-//! not refused for ever.**
+//! Repair a transcript whose rows were written under a different prefix than the one it names,
+//! by forking it onto the prefix that re-chains it instead of refusing the session for ever.
 //!
-//! # The shape this exists for, measured
+//! The rows are not damaged: each is correctly hashed from some prefix, and the repair copies
+//! them rather than re-rendering them, because no renderer is guaranteed to reproduce an
+//! assistant row. Nothing stored is rewritten, so a wrong diagnosis cannot destroy the only
+//! copy of a conversation, and the fork hangs off the same session row, so the board, the jobs
+//! and the title all stand.
 //!
-//! MEASURED 2026-10-26 in the operator's own store: `s-gatekeeper#t0` was seated 2026-10-11
-//! under a 24,407-token stable prefix and had **no rows**. A daemon running newer binaries
-//! opened it on 2026-10-25, composed its own 32,162-token prompt, and appended fourteen rows
-//! starting at 32162. Nothing refused them: the store's append-only trigger checks that a row
-//! continues the one before it and that `seq` is the next, and row 0 has nothing before it, so
-//! row 0 could start anywhere. The transcript has been unreadable by a resume ever since:
+//! Only one shape is repaired: row 0 starts past the end of the named prefix, and a stored
+//! prefix of exactly that length re-chains every row. Anything else keeps the honest refusal.
 //!
 //! ```text
 //! s-gatekeeper#t0 did not restore: row 0 (s-gatekeeper#t0.0) starts at 32162, should start at 24407
 //! ```
 //!
-//! `Store::assert_anchored` is what stops the writing now, and `Harness::open` re-seats an
-//! empty transcript so this is never created again. That leaves the stores already in this
-//! state — and a refusal there is a conversation the operator can never open again, which is a
-//! worse answer than the repair this module makes.
-//!
-//! # What the repair is, and what it is not
-//!
-//! The rows are not damaged. Each one is correctly hashed from *some* prefix, and this module
-//! finds that prefix — a stored `stable_prefix` of exactly the length row 0 starts at whose
-//! `h_init` re-chains every row — and then **forks the transcript onto it**: a new
-//! `<session>#tN` carrying the same items and the same tokens, exactly as a re-seat carries a
-//! conversation.
-//!
-//! * **Nothing is re-rendered.** The stored tokens are what the model was actually shown, and
-//!   the chain proves they belong to the prefix we found, so they are copied rather than
-//!   rendered (`resume.rs`'s rule: no renderer is guaranteed to reproduce an assistant row).
-//! * **Nothing stored is rewritten.** The old transcript keeps its prefix, its rows and its
-//!   chain — it is append-only — so the repair is auditable and a wrong diagnosis cannot
-//!   destroy the only copy of a conversation. A transcript that cannot be repaired keeps the
-//!   honest refusal it had.
-//! * **It is the same session.** The new transcript hangs off the same session row with the old
-//!   one as its parent, so the board, the jobs, the children and the title all stand.
-//!
-//! # Only the exact shape is repaired
-//!
-//! A row 0 that starts **past** the end of the prefix the transcript names, with a stored
-//! prefix of exactly that length that re-chains it. Anything else — a broken link mid-chain, a
-//! row that starts *inside* the prefix, a length no stored prefix has — keeps the older,
-//! honest refusal: those are shapes nothing in this tree is known to produce, and guessing at
-//! a conversation's history is not a repair.
+//! A broken link mid-chain, a row inside the prefix, a length no prefix has: those are shapes
+//! nothing produces, and guessing at a conversation's history is not a repair.
 
 use letibot_tokencore::TokenId;
 use letibot_tokencore::ledger::{LedgerError, LedgerRow};
@@ -63,10 +35,10 @@ pub(crate) struct Repaired {
     pub note: String,
 }
 
-/// **Repair `loaded` if, and only if, it is the shape described in the module header.**
+/// Repair `loaded` if, and only if, it is the shape described in the module header.
 ///
-/// `Ok(None)` means "not this shape, or not provably repairable" and the caller keeps its
-/// refusal. `Err` is a store that could not be read or written, which is not a diagnosis.
+/// `Ok(None)` means not this shape or not provably repairable, so the caller keeps its refusal.
+/// `Err` is a store that could not be read or written, which is not a diagnosis.
 pub(crate) fn rows_on_another_prefix(
     store: &Store,
     session_id: &str,
@@ -83,9 +55,8 @@ pub(crate) fn rows_on_another_prefix(
         return Ok(None);
     };
     let (found, expected) = (*found_offset, *expected_offset);
-    // **The prefix the transcript names must be the SHORTER one.** Equal is the trigger's
-    // ordinary refusal, and a row starting inside the prefix is a shape with no explanation
-    // here; both stay refused.
+    // A row that starts at or inside the named prefix is a shape this module does not explain,
+    // so both stay refused rather than guessed at.
     if found <= expected {
         return Ok(None);
     }
@@ -104,9 +75,8 @@ pub(crate) fn rows_on_another_prefix(
     )?;
     let new_id = format!("{session_id}#t{n}");
 
-    // **The only test that can tell two prefixes of one length apart**: rebuild the chain.
-    // Newest first (the store's order), because the prompt a mis-seated transcript was written
-    // under is the one a build was composing then.
+    // Rebuilding the chain is the only test that tells two prefixes of one length apart; newest
+    // first, because a mis-seated transcript was written under a then-recent build's prompt.
     let mut chosen = None;
     for id in store.stable_prefix_ids_of_len(found)? {
         let rec = store.stable_prefix_record(&id)?;
@@ -120,8 +90,8 @@ pub(crate) fn rows_on_another_prefix(
     };
     let carried_rows = session.items.len();
 
-    // **Unsealed until every row is in (R91.2)**, then sealed: a daemon that dies during the
-    // carry reopens on the old transcript rather than on part of this one.
+    // Unsealed until every row is in, then sealed: a daemon that dies mid-carry reopens on the
+    // old transcript rather than on part of this one.
     store.put_fork_unsealed(
         &new_id,
         session_id,
