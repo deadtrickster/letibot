@@ -1,19 +1,17 @@
-//! **`Gate::admit_unasked`** — the ladder without the card, which is how a look a plugin layer
-//! declared meets the gate (`docs/plugins-plan.md` §1 principle 2, §4.4).
+//! `Gate::admit_unasked`: the ladder without the card, which is how a look a plugin layer
+//! declared meets the gate. A look runs on the session's monitor thread, where a card would park
+//! the watch until somebody answered.
 //!
-//! The three things these tests hold apart are the three a caller must not confuse: a call the
-//! ladder settles (it runs, and nobody was consulted), a call that would have been put to a person
-//! (`NotRun`, and the reason says so), and a call a rule of the operator's refuses (`Denied`). The
-//! adjudicator counts its own consultations in every one of them, because *did a card go up* is the
-//! one fact the whole entry exists for — and a look runs on the session's monitor thread, where a
-//! card would park the watch until somebody answered.
+//! The three classes are held apart because a caller must not confuse them: a call the ladder
+//! settles, one that would have been put to a person (`NotRun`), and one a rule refuses.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
-/// A gate whose adjudicator counts how often it is consulted, and answers `ask` when it is.
+/// A gate whose adjudicator counts its consultations and answers nothing, which the gate reads as
+/// nobody having answered.
 fn counting(mode: crate::mode::Mode) -> (AdjudicatedGate, Arc<AtomicUsize>) {
     let asked = Arc::new(AtomicUsize::new(0));
     let a = asked.clone();
@@ -27,9 +25,8 @@ fn counting(mode: crate::mode::Mode) -> (AdjudicatedGate, Arc<AtomicUsize>) {
     (g, asked)
 }
 
-/// **A call the ladder settles runs, and the adjudicator is never reached.** A shell that only
-/// reads is clause 4 — admitted at every point, including `always-ask` — and that is the answer
-/// the plugin's own `gh pr view` look gets too.
+/// A read-only shell is admitted at every point, including `always-ask`, so the look a plugin
+/// makes reaches the ladder and never the adjudicator.
 #[test]
 fn an_unasked_call_the_ladder_admits_consults_nobody() {
     let (mut g, asked) = counting(crate::mode::Mode::ALWAYS_ASK);
@@ -43,9 +40,8 @@ fn an_unasked_call_the_ladder_admits_consults_nobody() {
     assert_eq!(g.log.len(), 1, "and the decision is still a row");
 }
 
-/// **A call that would have been put to a person is `NotRun` — not `Denied` — and the sentence
-/// says which.** The distinction is the whole of what a plugin can do with the answer: `NotRun`
-/// means *a person could grant this*, and `Denied` means *a rule says no*.
+/// `NotRun` rather than `Denied` is the whole of what a plugin can do with the answer: `NotRun`
+/// means a person could grant this, `Denied` means a rule says no.
 #[test]
 fn an_unasked_call_that_would_ask_is_refused_with_the_reason() {
     let (mut g, asked) = counting(crate::mode::Mode::ALWAYS_ASK);
@@ -78,8 +74,6 @@ fn an_unasked_call_that_would_ask_is_refused_with_the_reason() {
     );
 }
 
-/// **A rule of the operator's that refuses is `Denied`**, the other class — and still nobody is
-/// asked.
 #[test]
 fn an_unasked_call_a_rule_denies_is_denied() {
     let config = crate::permission::config_to_ruleset(
@@ -105,10 +99,8 @@ fn an_unasked_call_a_rule_denies_is_denied() {
     assert_eq!(asked.load(Ordering::Relaxed), 0, "nobody was asked");
 }
 
-/// **An unasked refusal does not count towards the circuit breaker.** Three consecutive refusals
-/// in one direction open it and *only the operator lifts that* — so a watch polling a program the
-/// gate refuses would otherwise close the session's own gate, and a look would be changing what
-/// the model may do. This is the test that says the look cannot.
+/// Three consecutive refusals open the breaker and only the operator lifts it, so a watch
+/// polling a refused program must not close the session's own gate.
 #[test]
 fn three_unasked_refusals_do_not_open_the_breaker() {
     let (mut g, asked) = counting(crate::mode::Mode::ALWAYS_ASK);
@@ -124,7 +116,7 @@ fn three_unasked_refusals_do_not_open_the_breaker() {
         "a polling watch opened the session's breaker: {:?}",
         g.breaker.open_directions()
     );
-    // And the session's own call is still decided by the gate rather than short-circuited.
+    // The session's own call is still decided by the gate, not short-circuited.
     assert!(matches!(g.admit(&bash(&args)), GateDecision::Refuse { .. }));
     assert_eq!(
         asked.load(Ordering::Relaxed),

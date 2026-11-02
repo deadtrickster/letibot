@@ -2,18 +2,9 @@
 
 use super::*;
 
-/// **R18: a call that names no path is not described by a path it does not have.**
-///
-/// The facts are what the head prints as `because: …` and what the oracle is shown,
-/// and one of them asserted *"the path is inside the session's workspace"* for a
-/// call with **no `path` argument at all** — because `path_is_inside` answers `true`
-/// when the key is absent. Measured on the operator's screen 2026-09-22: a
-/// `job_kill` with no arguments, described by a path nobody had named.
-///
-/// The requirement's own words: *"a tool call with no path argument is judged on
-/// what it DOES, not on a path it does not have — resolving no-target to `/` makes
-/// every targetless call a call on the whole filesystem, which is the least true
-/// reading available."*
+/// A call with no `path` argument is judged on what it does, not on a path it does not have:
+/// `path_is_inside` answers `true` for an absent key, so the brief would claim a containment
+/// nobody named.
 #[test]
 fn a_call_with_no_path_is_not_described_by_a_path_it_does_not_have() {
     let mut g = AdjudicatedGate::closed();
@@ -30,8 +21,8 @@ fn a_call_with_no_path_is_not_described_by_a_path_it_does_not_have() {
         "the brief must say the call has no path:\n{brief}"
     );
 
-    // **A call that does name one keeps the fact, both ways round.** Without this
-    // half the test would pass on a gate that had simply stopped saying it.
+    // The other half: a call that does name a path keeps the fact, or this would pass on a gate
+    // that had stopped saying it.
     let inside = g.request_for(&call("write", &json!({"path": "a/b.txt", "content": "x"})));
     assert!(
         inside
@@ -52,11 +43,7 @@ fn a_call_with_no_path_is_not_described_by_a_path_it_does_not_have() {
         outside.brief()
     );
 
-    // **And the workspace fact prints the workspace it was handed.** This is the
-    // fact the operator saw on four cards as `workspace: /`; the gate's half of
-    // that fix is that it prints what it is given rather than substituting a root,
-    // and `a_seat_rooted_at_the_host_still_reports_its_own_workspace` in
-    // `backend.rs` is the other half.
+    // The workspace fact prints the workspace it was handed rather than substituting a root.
     assert!(
         inside.brief().contains("workspace: /w"),
         "the brief must print the workspace it was handed:\n{}",
@@ -64,17 +51,9 @@ fn a_call_with_no_path_is_not_described_by_a_path_it_does_not_have() {
     );
 }
 
-/// **At the widest point on the operator's box, the secret stores are still
-/// shut.** The operator, adding `automode-edits` (2026-09-17): *"that being
-/// said - .ssh and friends must stay protected"*.
-///
-/// This is the claim the sixth point rests on, so it is checked where it
-/// actually holds — at the gate, through the real admit path, with a mode
-/// whose `write` disposition is `Admit` and whose decider is a model that
-/// would say yes to anything. An ordinary edit goes through with nobody
-/// consulted, which is the point of the mode; a write into `.ssh` is refused
-/// by `NEVER_WRITE` at step 1, before any point or adjudicator is reached,
-/// and a read of a key is refused as a disclosure at step 0.
+/// The never-write list outranks the widest mode: an ordinary edit is admitted with nobody
+/// consulted, while a write into a secret store is refused before any point or adjudicator, and a
+/// read of a key is refused as a disclosure.
 #[test]
 fn the_never_write_list_outranks_the_widest_point_on_this_box() {
     let yes = |req: &AdjudicationRequest| {
@@ -89,8 +68,7 @@ fn the_never_write_list_outranks_the_widest_point_on_this_box() {
         .with_surroundings(pinned())
         .with_mode(crate::mode::Mode::AUTO_EDITS);
 
-    // The point of the point: an ordinary edit inside the workspace, admitted
-    // with nobody asked at all.
+    // An ordinary edit inside the workspace is admitted with nobody asked.
     let ordinary = json!({"path": "/w/src/lib.rs", "content": "fn main() {}"});
     assert!(matches!(
         g.admit(&call("write", &ordinary)),
@@ -111,8 +89,7 @@ fn the_never_write_list_outranks_the_widest_point_on_this_box() {
             "{path} was admitted at automode-edits: {d:?}"
         );
     }
-    // A read that would put a key in the transcript is a disclosure, and no
-    // point moves it either.
+    // A read that would put a key in the transcript is a disclosure, and no point moves it.
     let read = json!({"command": "cat /home/op/.ssh/id_ed25519"});
     assert!(!matches!(g.admit(&bash(&read)), GateDecision::Admit));
 }
@@ -160,11 +137,8 @@ fn a_permission_config_denies_allows_and_asks() {
     }
 }
 
-/// **A gate with no guard model refuses to say it is supervising.**
-///
-/// Answering "ok" and supervising nothing would leave the operator believing
-/// every later call was measured while none were — the same lie `Mode::check`
-/// refuses to tell by downgrading silently.
+/// Answering "ok" and supervising nothing would leave the operator believing every later call was
+/// measured while none were.
 #[test]
 fn supervision_without_an_advisor_refuses_by_name() {
     let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
@@ -194,17 +168,8 @@ fn with_no_adjudicator_a_write_refuses_and_does_not_claim_a_decision() {
     assert_eq!(g.log[0].effect, "refuse");
 }
 
-/// An `allow_session` is not asked twice — **at a point whose grant scope is a
-/// session**.
-///
-/// The mode is named rather than left to the default, and that is the point of the
-/// test rather than noise in it: the default is `always-ask`, whose scope is
-/// `Once`, where an answer settles that call and nothing else. A test that relied
-/// on the default here would have been asserting the old behaviour of a gate that
-/// had no notion of where it was sitting.
-///
-/// The coordinate is one nobody named — write asks, and the answer is remembered —
-/// which is also the demonstration that the space is reachable beyond the four.
+/// The mode is named rather than left to the default, because `always-ask` grants `Once`: an
+/// answer there settles that call and nothing else, so a session grant would never be exercised.
 #[test]
 fn an_allow_admits_and_a_session_grant_is_not_asked_twice() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -236,19 +201,9 @@ fn an_allow_admits_and_a_session_grant_is_not_asked_twice() {
     assert_eq!(g.grants().len(), 1, "and the grant is listable");
 }
 
-/// **A `Once` point offers the session grant its *Always allow* implies, and
-/// the gate honours it.**
-///
-/// This test once asserted the opposite: the option was withheld at a point
-/// whose grants are `Once`, because the mode's contract and the gate had to
-/// agree. What unbalanced it was *Always allow* — the one option that
-/// reaches past the session was on the ladder at a point that was not
-/// supposed to grant past the call. The operator, 2026-09-18: *"if I'm
-/// offered to permanently enable — it is stronger than allow_session — so
-/// allow_session should always be offered too."* It is offered, and the
-/// answer records a grant that settles the next call: a button whose effect
-/// the gate would decline is the defect this ladder once shipped, in the
-/// other direction.
+/// A point whose grants are `Once` still offers the session grant, because `allow_always` on the
+/// same ladder is stronger: withholding it is a button whose effect the gate would decline, the
+/// same defect in the other direction.
 #[test]
 fn a_once_scoped_point_offers_the_session_grant_and_the_gate_honours_it() {
     use std::sync::{Arc, Mutex};
@@ -295,21 +250,9 @@ fn a_once_scoped_point_offers_the_session_grant_and_the_gate_honours_it() {
     assert_eq!(g.grants().len(), 1, "the answer stands for the session");
 }
 
-/// **An `allow_session` answer at `always-ask` stands for the session.**
-///
-/// This test once asserted the opposite, in two stages: first that the grant
-/// was silently dropped, then — after the option was withdrawn from the
-/// ladder — that naming it was a non-conforming answer and the gate failed
-/// closed. Both stages served the mode's contract, *an answer settles that
-/// call and nothing else*. The operator retired the contract on 2026-09-18:
-/// *"if I'm offered to permanently enable — it is stronger than
-/// allow_session — so allow_session should always be offered too."* The
-/// durable rule was already on the ladder here; the weaker grant follows it,
-/// and an explicit answer is the operator overriding the point's default.
-///
-/// What the mode still means: the SECOND call is not asked about, because the
-/// grant covers it — not because the mode stopped asking. A call outside the
-/// grant's class asks again, as the sibling test pins.
+/// The durable rule is already on the ladder here, so the weaker grant follows it: an explicit
+/// answer overrides the point's default. The mode still means the second call is not asked,
+/// because the grant covers it and not because the mode stopped asking.
 #[test]
 fn at_always_ask_an_allow_session_answer_stands_for_the_session() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -335,12 +278,8 @@ fn at_always_ask_an_allow_session_answer_stands_for_the_session() {
     assert_eq!(g.grants().len(), 1, "and the grant is recorded");
 }
 
-/// **At `writes allowed` a write is not asked at all**, and the row still exists.
-///
-/// The second half is the one worth a test: an admission nobody was consulted
-/// about is exactly the kind that stops appearing in an audit, and §4c's corpus
-/// wants it — *what the operator decided* includes the mode they put this project
-/// at.
+/// An admission nobody was consulted about is the kind that stops appearing in an audit, so the
+/// row has to survive a mode that admits on its own.
 #[test]
 fn at_writes_allowed_a_write_goes_through_and_is_still_a_row() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -515,9 +454,8 @@ fn a_long_argument_is_summarised_in_the_brief_rather_than_pasted() {
 
 #[test]
 fn the_startup_disclosure_names_whichever_gate_is_shut() {
-    // Three states, and only one of them is "on". A daemon that printed the
-    // same line in all three would be asserting a property it does not have
-    // in two of them.
+    // Three states, only one of them "on": one line for all three would claim a property the
+    // daemon has in one of them.
     let (state, detail, active) = startup_disclosure("none attached", true, true);
     assert_eq!(state, "NONE");
     assert!(!active);
@@ -535,23 +473,16 @@ fn the_startup_disclosure_names_whichever_gate_is_shut() {
     assert!(active);
     assert!(detail.contains("takes effect"), "{detail}");
 
-    // And the M1 sentence stays true for an M1 session.
+    // And a session with no gated classes at all keeps the "nothing can reach the gate"
+    // sentence.
     let (state, _, active) = startup_disclosure("none attached", false, false);
     assert_eq!(state, "N/A");
     assert!(!active);
 }
 
-/// **The sentence names the classes the session actually seated.**
-///
-/// The defect this replaced: a caller whose gated tools were `Access::Exec` —
-/// the runner role's five job verbs and `monitor`, no `write` anywhere — had to
-/// pass `has_write_tools: true` to get the on/off logic right, and the banner
-/// then said *"Write tools are callable"* about a session with no write tools.
-/// Correct about the boundary and wrong about the session, which is the same
-/// shape as the four instances `harnessd`'s `GateWiring` already paid for.
-///
-/// Nothing here pins a wording. What it pins is that the wording **moves** with
-/// the classes, and that a class the session does not have never appears.
+/// The sentence names the classes the session actually seated, so a session with no write tools
+/// is not told its write tools are callable. Nothing here pins a wording: what it pins is that the
+/// wording moves with the classes, and that a class the session does not have never appears.
 #[test]
 fn the_disclosure_names_the_classes_seated_and_not_write_by_default() {
     let exec = startup_disclosure_for("console ask", true, &["exec"], true).1;
@@ -566,9 +497,8 @@ fn the_disclosure_names_the_classes_seated_and_not_write_by_default() {
     assert!(both.contains("NETWORK"), "{both}");
     assert_ne!(both, exec);
 
-    // A read-only backend stops a *write* and says so in those terms; for an
-    // exec or network seat it is a different mismatch and must not be described
-    // as a blocked write.
+    // A read-only backend stops a write and says so; for an exec seat it is a different mismatch
+    // and must not be described as a blocked write.
     let shut_write = startup_disclosure_for("console ask", false, &["write"], true).1;
     assert!(shut_write.contains("cannot reach the disk"), "{shut_write}");
     let shut_exec = startup_disclosure_for("console ask", false, &["exec"], true).1;
@@ -577,22 +507,16 @@ fn the_disclosure_names_the_classes_seated_and_not_write_by_default() {
         "an exec seat over a read-only backend is not a blocked write"
     );
 
-    // Empty classes is still the M1 sentence, and it is the only state that
-    // may claim nothing can reach the gate.
+    // Empty classes is the only state that may claim nothing can reach the gate.
     assert_eq!(
         startup_disclosure_for("none attached", false, &[], true).0,
         "N/A"
     );
 }
 
-/// **The never-write list is about paths, not prose — and about the path a call names, not the
-/// way it spells it.**
-///
-/// Both halves are measured here because both were wrong on 2026-10-26. The list was applied to
-/// every string in a call, so a `write` whose *body* quoted a path under the operator's ssh
-/// directory was refused as if it were writing there, and a `grep` for the pattern was refused as
-/// if it were reading the directory. And it was applied to the spelling only, so a symlink in the
-/// workspace that pointed at that directory passed every test and landed in it.
+/// The never-write list is about path arguments, not prose, and about the path a call names
+/// rather than the way it spells it: a body quoting the directory is not a write into it, while a
+/// symlink in the workspace that lands there is.
 #[test]
 fn the_never_write_list_is_about_paths_and_not_prose() {
     let yes = |req: &AdjudicationRequest| {
@@ -609,8 +533,7 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
             .with_mode(mode)
     };
 
-    // **Content is not a path.** The body mentions the directory and the call is admitted at a
-    // mode whose write disposition is admit, with nobody asked.
+    // Content is not a path: the body mentions the directory and the call is admitted.
     let mut g = gate(pinned(), crate::mode::Mode::AUTO_EDITS);
     let notes = json!({"path": "/w/notes.txt", "content": "a note about ~/.ssh is not a path"});
     assert!(
@@ -618,16 +541,15 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
         "a write whose BODY names the directory is not a write into it"
     );
 
-    // **A pattern is not a path either**, which is the same rule with the same evidence: a
-    // `grep` looking for the literal is a search, not a read of the directory.
+    // A pattern is not a path either: a `grep` for the literal is a search, not a read.
     let found = json!({"pattern": "~/.ssh", "path": "/w"});
     assert!(
         matches!(g.admit(&call("grep", &found)), GateDecision::Admit),
         "a search for the string is not a read of the directory"
     );
 
-    // **The path is.** The same store, as the path argument, is refused at the same mode, and
-    // the row says which rule refused it.
+    // The path argument is: the same store is refused at the same mode, and the row names the
+    // rule that refused it.
     let into = json!({"path": "/home/dead/.ssh/authorized_keys", "content": "x"});
     match g.admit(&call("write", &into)) {
         GateDecision::Refuse {
@@ -639,8 +561,8 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
     let said = g.log.last().expect("a row").decision.basis.clone();
     assert!(said.contains("never-write list"), "{said}");
 
-    // **A symlink into the store is the store**, for every file tool, and for a path that does
-    // not exist yet. Nothing about the arguments says `.ssh`.
+    // A symlink into the store is the store, for every file tool, and nothing in the arguments
+    // says so.
     let dir = std::env::temp_dir().join(format!(
         "letibot-gate-ssh-{}-{}",
         std::process::id(),
@@ -661,10 +583,8 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
     surroundings.workspace = Some(ws.display().to_string());
     let ws_s = ws.display().to_string();
     let mut g = gate(surroundings, crate::mode::Mode::ALLOW_ALL);
-    // **A file name that is not itself a key name.** `id_ed25519` is in the read-side secret
-    // table, so a `read` of it is refused one step earlier as a disclosure — which is a different
-    // rule and would make this loop test the wrong one. What is under test here is the PATH: a
-    // link named `keys` that lands in the store, with nothing in the arguments saying so.
+    // The name is not itself a key name: `id_ed25519` would be refused one step earlier as a
+    // disclosure, which is a different rule. What is under test is the path a link lands in.
     for (name, args) in [
         ("read", json!({"path": "keys/some-file"})),
         ("write", json!({"path": "keys/new-file", "content": "x"})),
@@ -701,9 +621,8 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
         );
     }
 
-    // **A shell command is best effort, and it says so**: an ABSOLUTE path in the words is
-    // refused, and a relative one is not — the gate cannot know what `keys/…` is from inside a
-    // shell the model is about to run.
+    // A shell command is best effort: an absolute path in the words is refused, a relative one
+    // is not, because the gate cannot know what it resolves to from inside that shell.
     let command = format!("cat {}", ws.join("keys/some-file").display());
     let args = json!({ "command": command });
     let called = GateCall {

@@ -1,26 +1,14 @@
-//! **The three things the card was wrong about** — one file, because they are one
-//! question asked at three seams.
+//! The card's three failures, which are one rule: an operator is never shown a button whose
+//! effect the gate would then decline to honour, and a rung that disappears says so.
 //!
-//! MEASURED 2026-10-26, on one package session's 178 gate decisions: 15 of its 22 asks
-//! carried a baseline reading *"the meaning was never resolved"*, offered *"Allow … for
-//! the rest of the session"* over them, recorded a grant that could never cover anything
-//! (`Grant::covers` refuses an unresolved action before it looks at coverage), and named
-//! the last program in the line — `Allow \`head\`` on a cargo build. Each of those is a
-//! different failure of the same rule: *an operator is never shown a button whose effect
-//! the gate would then decline to honour* — and a rung that disappears without a word is
-//! the second half of it.
-//!
-//! So the tests here are: the rung is gone, the card says why, and what names it is the
-//! program doing the work.
+//! The tests: the rung is gone, the card says why, and what names it is the program doing the
+//! work.
 
 use super::*;
 
-/// **A command nobody could read is not offered a session grant — and the card says why.**
-///
-/// `Grant::covers` refuses an unresolved action *first*, before it looks at coverage, so
-/// the grant an `allow_session` answer recorded over such a call could never cover
-/// anything: the operator took it, was asked again, and the audit row showed a standing
-/// permission that was never going to fire.
+/// `Grant::covers` refuses an unresolved action before it looks at coverage, so a session grant
+/// over such a call could never cover anything: the operator would take it, be asked again, and
+/// the audit row would show a standing permission that never fires.
 #[test]
 fn an_unreadable_command_is_never_offered_a_session_grant() {
     let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
@@ -35,12 +23,10 @@ fn an_unreadable_command_is_never_offered_a_session_grant() {
         "the ladder offered a grant that could never cover anything: {:?}",
         req.options
     );
-    // `allow_once` stays: refusing to admit the call would be a different decision than
-    // the one this rung is about.
+    // `allow_once` stays: this rung is about the standing grant, not about the call.
     assert!(req.options.iter().any(|o| o.id == "allow_once"));
 
-    // The card says which rung is missing and why, in one line, naming the word a person
-    // would have to rewrite.
+    // The note says which rung is missing, why, and the word a person would have to rewrite.
     let note = req
         .options_note
         .as_deref()
@@ -57,13 +43,9 @@ fn an_unreadable_command_is_never_offered_a_session_grant() {
     assert_eq!(note.lines().count(), 1, "the card has one line: {note}");
 }
 
-/// **And an `allow_session` that arrives anyway is refused, not honoured.**
-///
-/// The rung is not the only place the answer is checked: `admit` looks the selected option
-/// up in the ladder it built, and an id that is not there is a refusal — *"the adjudicator
-/// selected `allow_session`, which this request did not offer"*. So an older head, a
-/// replayed answer or a test that named the rung anyway gets no admission AND leaves no
-/// dead grant on the books.
+/// `admit` looks the selected option up in the ladder it built, so an id that is not there is a
+/// refusal rather than an admission: an older head or a replayed answer leaves no dead grant on
+/// the books.
 #[test]
 fn an_allow_session_over_an_unreadable_command_is_not_honoured() {
     struct Session;
@@ -89,9 +71,8 @@ fn an_allow_session_over_an_unreadable_command_is_not_honoured() {
     );
 }
 
-/// **A command whose meaning IS read is offered the rung, and the card says nothing.**
-/// The other side of the same condition, so a fix that dropped the rung everywhere would
-/// fail here rather than pass quietly.
+/// The other side of the same condition, so dropping the rung everywhere fails here rather than
+/// passing quietly.
 #[test]
 fn a_readable_command_is_offered_the_session_grant_and_the_card_is_silent() {
     let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
@@ -111,16 +92,12 @@ fn a_readable_command_is_offered_the_session_grant_and_the_card_is_silent() {
     );
 }
 
-/// **The session rung names the program doing the work, not the last one in the line.**
-///
-/// `grant_program` read the last stage, so the operator's own measured command offered
-/// *"Allow `export` (this class) for the rest of the session"* — `export` is the one token
-/// in that line carrying no authority at all — and `… | head` offered `head`.
+/// A grant keyed on the last stage would be keyed on a word carrying no authority (`export`), so
+/// the rung names the stage that does the work.
 #[test]
 fn the_session_rung_names_the_program_that_does_the_work() {
-    // **A measured boundary**, because R98 takes both standing rungs off the ladder for a runner
-    // on a host with none — and `cargo test` is a runner. The operator's own command is the
-    // subject here, so the fixture moves rather than the command.
+    // A measured boundary, because `cargo test` is a runner and a host with no boundary offers
+    // neither standing rung.
     let mut g = AdjudicatedGate::closed()
         .with_surroundings(pinned())
         .with_boundary(Some(measured_boundary()), None)
@@ -145,12 +122,9 @@ fn the_session_rung_names_the_program_that_does_the_work() {
         session.label
     );
 
-    // And the grant recorded under it is keyed the same way — the label and the key are one
-    // choice, so a later `cargo …` of the same shape is covered and a later `export …` is not.
-    //
-    // **`cargo fmt` and not `cargo test`** (R98): a grant over a runner is deliberately never
-    // honoured on a host with no boundary, so the only command that can demonstrate a grant
-    // here is one that runs nothing the project wrote.
+    // The label and the key are one choice, so a later `cargo ...` of the same shape is covered
+    // and a later `export ...` is not. `cargo fmt` and not `cargo test`, because a grant over a
+    // runner is never honoured on a host with no boundary.
     use std::sync::atomic::{AtomicUsize, Ordering};
     let asked = std::sync::Arc::new(AtomicUsize::new(0));
     let a = asked.clone();
@@ -177,7 +151,7 @@ fn the_session_rung_names_the_program_that_does_the_work() {
     let taken = g.grants().first().expect("a grant was taken").clone();
     assert_eq!(taken.coverage[0].program, "cargo");
 
-    // The same command again runs unasked — the fixture is not consulted at all.
+    // The same command again runs unasked, so the fixture is not consulted.
     let again =
         json!({"command": "cd /w && export CARGO_TARGET_DIR=$PWD/target && cargo fmt --check"});
     assert!(matches!(
@@ -201,10 +175,8 @@ fn the_session_rung_names_the_program_that_does_the_work() {
     );
 }
 
-/// **A shape holds across a different NUMBER of operands.**
-///
-/// The brief's finding 3, at the seam a person feels it: approving `sed -n 1p a.rs` and
-/// then running it over two files asked again, because each operand was its own hole.
+/// Each operand is otherwise its own hole, so approving one file would not cover the same run
+/// over two.
 #[test]
 fn a_shape_holds_across_a_different_number_of_operands() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -231,8 +203,7 @@ fn a_shape_holds_across_a_different_number_of_operands() {
     ));
     assert_eq!(asked.load(Ordering::Relaxed), 1);
 
-    // Two more operands: one more file and a second expression. Both are the same run of
-    // operands, so this is the shape that was approved.
+    // One more file and a second expression: the same run of operands, so the same shape.
     let more = json!({"command": "sed -n 2p /w/b.rs /w/c.rs"});
     assert!(matches!(
         g.admit(&bash_at(&more, "s#2")),
@@ -244,7 +215,7 @@ fn a_shape_holds_across_a_different_number_of_operands() {
         "a longer operand list asked the operator again"
     );
 
-    // And the flag is still the flag: `sed -i` rewrites, so it is not that shape.
+    // The flag is still the flag: `sed -i` rewrites, so it is not that shape.
     let write = json!({"command": "sed -i 1p /w/a.rs"});
     let _ = g.admit(&bash_at(&write, "s#3"));
     assert_eq!(
@@ -254,16 +225,13 @@ fn a_shape_holds_across_a_different_number_of_operands() {
     );
 }
 
-/// **No durable rule is offered over a command that sets shell state for a later
-/// stage**, and the same command still offers the session rung — which is the offer that
-/// can actually help it.
-///
-/// The derivation behind it, and what `export*` would have admitted, is
-/// `crate::permission`'s own test: `a_rule_over_export_would_admit_every_variable`.
+/// A rule over `export*` would admit every variable a later stage trusts, so the durable rung is
+/// not offered; the session rung, which can settle this command, still is. The derivation is
+/// `crate::permission`'s own test.
 #[test]
 fn no_durable_rule_is_offered_over_a_command_that_sets_state() {
-    // A measured boundary for the reason the test above has one: `cargo test` is a runner, and
-    // R98's narrowing would take BOTH rungs away, which is not what this test is about.
+    // A measured boundary for the reason above: without one both standing rungs go, and this
+    // test is about which of them is offered.
     let mut g = AdjudicatedGate::closed()
         .with_surroundings(pinned())
         .with_boundary(Some(measured_boundary()), None)

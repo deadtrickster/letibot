@@ -11,10 +11,8 @@ fn supervised_gate(model_allows: bool, human_allows: bool) -> AdjudicatedGate {
         .start_supervised(true)
 }
 
-/// **The person sees the model's verdict before answering.**
-///
-/// Without this the point's name is a lie: "ask me if i agree" requires that
-/// there is something in front of me to agree with.
+/// Without this the point's name is a lie: "ask me if I agree" requires something in front of me
+/// to agree with.
 #[test]
 fn the_human_is_shown_what_the_model_said() {
     let seen: std::sync::Arc<std::sync::Mutex<Option<Option<ModelAdvice>>>> =
@@ -40,11 +38,10 @@ fn the_human_is_shown_what_the_model_said() {
     assert_eq!(advice.by, "model:test");
 }
 
-/// **The model advises and never decides.** The human's answer is the outcome,
-/// whichever way the model went.
+/// The model advises and never decides: the human's answer is the outcome, whichever way the model
+/// went.
 #[test]
 fn the_person_overrules_the_model_in_both_directions() {
-    // Model would allow, person refuses.
     let mut g = supervised_gate(true, false);
     assert!(matches!(
         g.admit(&call("edit", &json!({"path": "src/lib.rs"}))),
@@ -52,7 +49,6 @@ fn the_person_overrules_the_model_in_both_directions() {
     ));
     assert_eq!(g.log[0].effect, "refuse");
 
-    // Model would not allow, person admits.
     let mut g = supervised_gate(false, true);
     assert!(matches!(
         g.admit(&call("edit", &json!({"path": "src/lib.rs"}))),
@@ -61,11 +57,8 @@ fn the_person_overrules_the_model_in_both_directions() {
     assert_eq!(g.log[0].effect, "admit");
 }
 
-/// **One call, one labelled row** — the reason to sit through this point.
-///
-/// The model's verdict and the operator's ruling are both on the row, they are
-/// different values, and the ruling did not overwrite the verdict. Nothing has
-/// to be reconstructed afterwards from a list.
+/// The model's verdict and the operator's ruling are both on the row and are different values, so
+/// nothing has to be reconstructed afterwards from a list.
 #[test]
 fn a_supervised_call_produces_a_labelled_corpus_row_by_itself() {
     let mut g = supervised_gate(true, false);
@@ -100,8 +93,8 @@ fn a_supervised_call_produces_a_labelled_corpus_row_by_itself() {
         Some("granted")
     );
 
-    // Agreement is a label too. A corpus of corrections alone teaches that
-    // every decision was wrong.
+    // Agreement is a label too: a corpus of corrections alone teaches that every decision was
+    // wrong.
     let mut g = supervised_gate(true, true);
     let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
     let row = g.corpus().remove(0);
@@ -114,27 +107,12 @@ fn a_supervised_call_produces_a_labelled_corpus_row_by_itself() {
     assert!(!row.is_disagreement());
 }
 
-/// **R11: the corpus keeps the bytes, and from the adjudicator that asked an
-/// oracle.**
-///
-/// Two defects, one column each, and both were live:
-///
-/// * **`shown` held the person's card, not the oracle's brief.** The gate asked its
-///   *decider* for `last_brief`, and at a supervised point the decider is the human
-///   adjudicator, whose `last_brief` is `req.brief()` — the decision card, whose
-///   first line is `decision — …`. Measured on this box 2026-09-21: `shown` was set
-///   on 147 of 5785 rows and was `NULL` on every row an oracle decided, so the
-///   corpus had 147 cards and **zero briefs**.
-/// * **`reply` did not exist**, so the bytes a verdict was read out of were dropped
-///   with the HTTP call that carried them. 1,192 rows are ones where the operator
-///   and the model differ — *"the rows a fine-tune is for"* — and none of them had
-///   its input.
-///
-/// The assertion is that both come from the ADVISOR, which the fixture stamps with
-/// its own id so the two cannot be confused.
+/// `shown` and `reply` come from the advisor and not from the decider: at a supervised point the
+/// decider is the person, whose brief is the card, so the oracle's brief and the bytes its verdict
+/// was read out of would both be lost.
 #[test]
 fn the_corpus_keeps_the_oracles_brief_and_reply_not_the_persons_card() {
-    let mut g = supervised_gate(true, false); // the model admits; the person stops it
+    let mut g = supervised_gate(true, false);
     let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
     assert!(g.corpus()[0].asked, "a person answered this one");
     let row = g.corpus().remove(0);
@@ -157,9 +135,8 @@ fn the_corpus_keeps_the_oracles_brief_and_reply_not_the_persons_card() {
         .expect("the oracle answered, so the reply is on the row");
     assert!(reply.contains("ALLOW 0"), "{reply}");
 
-    // **And nothing is filed where nobody spoke.** At `always-ask` with no advisor
-    // the gate consults no oracle, and both columns stay empty rather than carrying
-    // the card or a previous call's reply.
+    // Nothing is filed where nobody spoke: with no advisor both columns stay empty rather than
+    // carrying the card or a previous call's reply.
     let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
         .with_mode(crate::mode::Mode::ALWAYS_ASK);
     let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
@@ -171,11 +148,8 @@ fn the_corpus_keeps_the_oracles_brief_and_reply_not_the_persons_card() {
     );
     assert_eq!(row.reply, None, "and it is not a reply either");
 
-    // **The model's own verdict admits, and that path uses to file nothing at all.**
-    // It returns before the gate ever reaches its decider, so the brief and the reply
-    // that admitted the call were dropped and `shown` kept whatever the previous call
-    // had put there. Measured: 486 rows whose `verdict_by` names an oracle, and not
-    // one of them had `shown`.
+    // The model's own verdict admits, and that path returns before the gate reaches its decider,
+    // so the brief and the reply that admitted the call have to be filed by the path itself.
     let mut g = supervised_gate(true, true).with_mode(crate::mode::Mode::AUTO);
     let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
     let row = g.corpus().remove(0);
@@ -197,8 +171,8 @@ fn the_corpus_keeps_the_oracles_brief_and_reply_not_the_persons_card() {
     );
 }
 
-/// **The adviser is not load-bearing.** An oracle that cannot answer leaves the
-/// person answering exactly as they would at `always-ask`.
+/// The adviser is not load-bearing: an oracle that cannot answer leaves the person answering
+/// exactly as they would at `always-ask`.
 #[test]
 fn a_silent_oracle_does_not_stop_the_person_being_asked() {
     struct Mute;
@@ -231,13 +205,9 @@ fn a_silent_oracle_does_not_stop_the_person_being_asked() {
     assert!(row.asked);
 }
 
-/// **A grant stops asking YOU and does not stop asking the MODEL.**
-///
-/// > *"it can remember my allow_session, still ask model later, still record"*
-///
-/// Three claims in one test because they are one mechanism: the person is asked
-/// once, the oracle is asked on every covered call, and every covered call is a
-/// labelled row.
+/// A grant stops asking the person and does not stop asking the model. Three claims in one test
+/// because they are one mechanism: the person is asked once, the oracle on every covered call, and
+/// every covered call is a labelled row.
 #[test]
 fn a_standing_grant_settles_the_person_and_still_asks_the_model() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -251,8 +221,7 @@ fn a_standing_grant_settles_the_person_and_still_asks_the_model() {
     impl Adjudicator for Counted {
         fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
             self.n.fetch_add(1, Ordering::SeqCst);
-            // The person takes the SESSION grant, which is the answer this whole
-            // test is about — an `allow_once` would settle one call and prove
+            // The person takes the SESSION grant: an `allow_once` would settle one call and prove
             // nothing about what a remembered answer does.
             let want = |o: &&DecisionOption| {
                 if self.allow {
@@ -289,10 +258,9 @@ fn a_standing_grant_settles_the_person_and_still_asks_the_model() {
         allow: true,
         n: asks_model.clone(),
     });
-    // A point that ASKS about writes and lets one answer stand for the session —
-    // the shape a grant is for. Written out rather than borrowed from `NAMED`,
-    // because supervision is no longer a point and this test is about the grant,
-    // not about which dot on the ladder happens to have that scope today.
+    // A point that asks about writes and lets one answer stand for the session, which is the
+    // shape a grant is for. Written out, because this test is about the grant and not about which
+    // point happens to have that scope today.
     let asks_and_grants = crate::mode::Mode {
         name: "test:asks-and-grants",
         grants: crate::mode::GrantScope::Session,
@@ -332,10 +300,9 @@ fn a_standing_grant_settles_the_person_and_still_asks_the_model() {
         assert!(r.operator.is_some(), "and the operator's ruling is on it");
     }
 
-    // The first is a judgement made with the verdict on screen; the other two
-    // are a standing ruling applied. `asked` separates them and the note says
-    // which grant, so a trainer can weight them differently instead of
-    // discovering later that it could not tell them apart.
+    // The first is a judgement made with the verdict on screen, the other two a standing ruling
+    // applied: `asked` separates them and the note says which grant, so a trainer can weight them
+    // differently.
     assert!(rows[0].asked);
     assert!(!rows[1].asked && !rows[2].asked);
     let note = match rows[1].operator.as_ref().unwrap() {
@@ -347,8 +314,8 @@ fn a_standing_grant_settles_the_person_and_still_asks_the_model() {
     assert!(note.contains("granted for this session"), "{note}");
 }
 
-/// **A command asks every time**, whatever is granted. The operator's own rule,
-/// and supervised does not have a relaxed version of it.
+/// A command asks every time whatever is granted, and supervision has no relaxed version of that
+/// rule.
 #[test]
 fn an_exec_call_is_not_covered_by_a_grant_at_a_supervised_point() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -368,24 +335,15 @@ fn an_exec_call_is_not_covered_by_a_grant_at_a_supervised_point() {
         .with_advisor(advisor)
         .start_supervised(true)
         .with_exec_follows_mode(false)
-        // An absolute path and a pinned shell, so layer A resolves the action
-        // and it reaches an adjudicator at all. A bare `cargo` under
-        // `ShellTrust::Unknown` is `not_run` and would pass this test for the
-        // wrong reason — nobody asked because nothing was decidable.
+        // An absolute path and a pinned shell, so layer A resolves the action and it reaches an
+        // adjudicator at all: a bare `cargo` under `ShellTrust::Unknown` is `not_run`, and this
+        // test would pass for the wrong reason.
         .with_surroundings(pinned())
         .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
 
-    // **A shell call that RUNS something** (R21). This was `/bin/cat …`, which is a
-    // read inside the workspace and is therefore clause 4 now — the subject here is
-    // exec asking, so the fixture has to be a call that is still exec. `sed` is the
-    // one that stays exec on the classifier's own account: `sed -n 1p` reads, and
-    // `sed` computes `execute_code` too, because GNU sed's `e` command and `s///e`
-    // run a shell. See `Baseline::reads_only`.
-    //
-    // **Two exec calls, and two different shapes of them.** The shape cache would
-    // settle the *second* identical call — only for a `MayApprove` tier, which an
-    // exec call is — so what this asks of two shapes is the honest version of
-    // *nobody but the person settles these*.
+    // Exec, and two different shapes of it. `sed -n` reads and still asks, where `cat` would be
+    // clause 4; the shapes differ because the cache settles an identical second call at a
+    // `MayApprove` tier.
     for cmd in [
         "/bin/sed -n 1p /w/src/lib.rs",
         "/usr/bin/awk {print} /w/src/lib.rs",
@@ -406,15 +364,9 @@ fn an_exec_call_is_not_covered_by_a_grant_at_a_supervised_point() {
     );
 }
 
-/// **A configured glob settles the call and the model is still asked.**
-///
-/// > *"we have configured globs already, they can go thru model in the
-/// > supervised mode too"*
-///
-/// Both directions. A `deny` is worth as much as an `allow` here: a model that
-/// routinely wants to admit what the operator's rules refuse is exactly the
-/// miscalibration to find before automode, and it is invisible if only the
-/// admissions are measured.
+/// Both directions, because a `deny` is worth as much as an `allow` here: a model that routinely
+/// wants to admit what the operator's rules refuse is the miscalibration to find before automode,
+/// and it is invisible if only the admissions are measured.
 #[test]
 fn a_permission_rule_is_still_measured_against_the_model() {
     let rules = |json: serde_json::Value| {
@@ -451,9 +403,8 @@ fn a_permission_rule_is_still_measured_against_the_model() {
         Some("upheld")
     );
 
-    // A `deny` rule refuses, and an oracle that would have admitted is recorded
-    // disagreeing. This is the over-refusal signal and it only exists because
-    // the deny path asks too.
+    // A `deny` rule refuses and an oracle that would have admitted is recorded disagreeing: the
+    // over-refusal signal exists only because the deny path asks too.
     let mut g = gate(json!({ "edit": "deny" }), true);
     assert!(matches!(
         g.admit(&call("edit", &json!({"path": "a.rs"}))),
@@ -469,8 +420,7 @@ fn a_permission_rule_is_still_measured_against_the_model() {
     );
     assert!(row.is_disagreement());
 
-    // And nothing about the advice changed the outcome: the same rules with a
-    // model that would refuse still admit and still refuse, respectively.
+    // The advice changed no outcome: the same rule with a model that would refuse still admits.
     let mut g = gate(json!({ "edit": "allow" }), false);
     assert_eq!(
         g.admit(&call("edit", &json!({"path": "a.rs"}))),
@@ -478,9 +428,8 @@ fn a_permission_rule_is_still_measured_against_the_model() {
     );
 }
 
-/// At every point but `supervised` a settled call spends no oracle round trip.
-/// There is no model to ask, and paying latency for a row nobody asked for is
-/// what this guards.
+/// A settled call at a point that is not supervised spends no oracle round trip: paying latency
+/// for a row nobody asked for is what this guards.
 #[test]
 fn a_rule_at_a_non_supervised_point_consults_nothing() {
     let cfg = json!({ "edit": "allow" });
@@ -493,8 +442,7 @@ fn a_rule_at_a_non_supervised_point_consults_nothing() {
         GateDecision::Admit
     );
     let row = g.corpus().remove(0);
-    // The verdict column holds what decided — the rule — and no label is
-    // invented, because nothing was consulted to agree or disagree with.
+    // The verdict column holds what decided, the rule, and no label is invented.
     assert!(
         row.model_verdict
             .as_deref()
@@ -504,15 +452,9 @@ fn a_rule_at_a_non_supervised_point_consults_nothing() {
     assert!(row.operator.is_none());
 }
 
-/// **The model has its turn regardless of what settled the call.**
-///
-/// > *"supervised mode is essentially a normal mode but we always ask model. and
-/// > model has its turn regardless of glob, deny, allow, allow_session or glob
-/// > deny or allow from config"*
-///
-/// One case per short-circuit in `admit`, so a path added later that forgets to
-/// ask fails here rather than quietly producing rows with no verdict. The
-/// breaker is the one deliberate exception and is asserted as such.
+/// One case per short-circuit in `admit`, so a path added later that forgets to ask fails here
+/// rather than quietly producing rows with no verdict. The breaker is the one deliberate exception
+/// and is asserted as such.
 #[test]
 fn every_settled_path_still_gives_the_model_its_turn() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -552,7 +494,7 @@ fn every_settled_path_still_gives_the_model_its_turn() {
         crate::permission::config_to_ruleset(j.as_object().unwrap()).unwrap()
     };
 
-    // Each case: how to set the gate up, and the call that trips that path.
+    // The two calls the cases below trip their path with.
     let path = json!({"path": "src/lib.rs"});
     let secret = json!({"path": "/home/op/.ssh/id_ed25519"});
 
@@ -570,8 +512,8 @@ fn every_settled_path_still_gives_the_model_its_turn() {
         assert_eq!(g.log[0].effect, effect, "and the rule still decides");
     }
 
-    // 2. the mode admits unasked. `supervised` never does, so this is asserted
-    //    at a point that does — the wiring is shared and the rule is the same.
+    // 2. the mode admits unasked. `supervised` never does, so this is asserted at a point that
+    //    does: the wiring is shared and the rule is the same.
     let n = std::sync::Arc::new(AtomicUsize::new(0));
     let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Counting(n.clone()));
     let mut g = AdjudicatedGate::new(Box::new(Fixed::new("human:op", true)))
@@ -588,10 +530,9 @@ fn every_settled_path_still_gives_the_model_its_turn() {
         "a grant-covered call still consults the model"
     );
 
-    // 0. the breaker is the exception, and it is one on purpose: the calls
-    //    reaching it are near-duplicates of rows already recorded, and paying an
-    //    oracle round trip per iteration of a retry loop is what the breaker
-    //    exists to prevent.
+    // 0. the breaker is the exception on purpose: the calls reaching it are near-duplicates of
+    //    rows already recorded, and an oracle round trip per iteration of a retry loop is what
+    //    the breaker exists to prevent.
     let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": "deny" }))));
     for _ in 0..5 {
         let _ = g.admit(&call("edit", &path));
@@ -604,14 +545,9 @@ fn every_settled_path_still_gives_the_model_its_turn() {
     assert!(asked >= 3, "and only after it has opened, asked {asked}");
 }
 
-/// **A short-circuit is not a verdict**, and a row must not record agreement
-/// with one.
-///
-/// `ModelAdjudicator` answers five questions without asking a model — an
-/// unresolved action, an always-ask entry, an blocked one, an uncollected
-/// trail, an intent outside its earned scope. From outside, those produce the
-/// same `AdjudicationDecision` a real verdict does. Labelling against them would
-/// manufacture signal, which is worse than none because it looks like data.
+/// `ModelAdjudicator` answers several questions without asking a model (an unresolved action, an
+/// always-ask entry, an uncollected trail), and from outside those produce the same decision a real
+/// verdict does. Labelling against them would manufacture signal, which looks like data.
 #[test]
 fn an_unconsulted_oracle_produces_no_label() {
     struct Silent;
@@ -645,8 +581,7 @@ fn an_unconsulted_oracle_produces_no_label() {
         row.operator.is_none(),
         "no oracle spoke, so there is nothing the operator agreed or disagreed with"
     );
-    // The row still exists and still says what happened — silence is recorded,
-    // not dropped.
+    // Silence is recorded, not dropped: the row still says what happened.
     assert!(row.model_verdict.is_some());
     assert!(row.asked);
     // And a head renders it as an absence rather than as an opinion.
@@ -658,13 +593,9 @@ fn an_unconsulted_oracle_produces_no_label() {
     );
 }
 
-/// **Supervision changes who is consulted and nothing else.**
-///
-/// It used to be a mode, which meant selecting it also pinned the dispositions
-/// and the grant scope — and meant it could only change by restarting a session.
-/// It is a flag on the gate now, so this asserts the property that makes that
-/// safe: the same calls ask, the same answers travel, and only the verdict
-/// column appears.
+/// Supervision is a flag on the gate rather than a mode, so it can change mid-session; this
+/// asserts the property that makes that safe: the same calls ask, the same answers travel, and
+/// only the verdict column appears.
 #[test]
 fn supervision_changes_who_is_consulted_and_nothing_else() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -688,7 +619,7 @@ fn supervision_changes_who_is_consulted_and_nothing_else() {
     assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
     assert!(g.corpus()[0].operator.is_none());
 
-    // **On, mid-session, without rebuilding anything.**
+    // On, mid-session, without rebuilding anything.
     let said = g.set_supervision(true).expect("an advisor is installed");
     assert!(said.contains("supervision ON"), "{said}");
     assert!(g.supervising());

@@ -1,5 +1,5 @@
-//! **The adjudicated gate's tests**, one file per theme, and the fixtures they share. Each theme
-//! file reaches the fixtures, the gate and the imports below through `use super::*`.
+//! The adjudicated gate's tests, one file per theme, plus the fixtures they share. A theme file
+//! reaches everything here through `use super::*`.
 
 use super::*;
 
@@ -20,10 +20,10 @@ fn call<'a>(name: &'a str, args: &'a Value) -> GateCall<'a> {
     }
 }
 
-// ---------------------------------------------------------------- supervised
+// ---------------------------------------------------------------- fixtures
 
-/// An adjudicator that always picks the first option whose kind matches, and
-/// records what it was shown.
+/// An adjudicator that always picks the first option whose kind matches, and records what it was
+/// shown.
 struct Fixed {
     id: &'static str,
     allow: bool,
@@ -49,9 +49,9 @@ impl Adjudicator for Fixed {
             None => AdjudicationDecision::unavailable(req, self.id, "no such option"),
         }
     }
-    /// Stands in for a model adjudicator, so it reports like one. A double that
-    /// answered without saying whether an oracle was consulted would exercise
-    /// the `consulted: false` fallback in every test and never the real path.
+    /// Stands in for a model adjudicator, so it reports like one: a double that answered without
+    /// saying whether an oracle was consulted would exercise the `consulted: false` fallback in
+    /// every test and never the real path.
     fn last_advice(&self) -> Option<ModelAdvice> {
         self.id.starts_with("model").then(|| ModelAdvice {
             consulted: true,
@@ -67,8 +67,8 @@ impl Adjudicator for Fixed {
         self.id.to_string()
     }
 
-    /// **The fixture now carries both halves of an exchange** (R11), because the
-    /// corpus columns have to come from the adjudicator that asked an oracle.
+    /// The corpus columns come from the adjudicator that asked an oracle, so the fixture carries
+    /// both halves of the exchange.
     fn last_brief(&self) -> Option<String> {
         Some(format!(
             "brief — {}\ntrail: 1 operator message(s) of 1 scanned",
@@ -85,10 +85,9 @@ impl Adjudicator for Fixed {
 // The four outcome classes, at the gate.
 // -----------------------------------------------------------------------
 
-/// **A boundary that encloses, for the fixtures whose subject is something a boundary then
-/// admits.** Every namespace entered, both seals tested and held, egress denied — what
-/// `Bwrap::probe` refuses to return anything less than, plus the seals being *held* rather than
-/// merely not-open. See `boundary.rs` for what each clause is about.
+/// A boundary that encloses, for the fixtures whose subject is something a boundary then admits:
+/// every namespace entered, both seals held rather than merely not open, and egress denied, which
+/// is the least `Bwrap::probe` will accept.
 fn measured_boundary() -> crate::exec::Boundary {
     use crate::exec::{Egress, Namespace, NsState, Seal, SealKind, ViewSpec};
     let mut ns = std::collections::BTreeMap::new();
@@ -149,13 +148,11 @@ fn bash<'a>(args: &'a Value) -> GateCall<'a> {
     }
 }
 
-/// **The ladder's inputs for a call nothing was left off**: a durable rule when one is
-/// named, and a session grant that would be honoured.
+/// The ladder's inputs for a call nothing was left off: a durable rule when one is named, and a
+/// session grant that would be honoured.
 ///
-/// The ladder functions take an [`Offer`] rather than loose arguments because the rungs
-/// and the note explaining a missing one are one fact — see [`Offer`]. A test that wants
-/// a missing rung asks the gate for it (`AdjudicatedGate::request_for`) instead of
-/// assembling an `Offer` by hand, so the only way to see the two disagree is a real call.
+/// A test that wants a missing rung asks the gate for it (`AdjudicatedGate::request_for`) instead
+/// of assembling an [`Offer`] by hand, so a rung and its note cannot disagree only in a fixture.
 fn offered(derived: Option<&str>, program: &str) -> Offer {
     Offer {
         derived: derived.map(str::to_string),
@@ -166,12 +163,11 @@ fn offered(derived: Option<&str>, program: &str) -> Offer {
 }
 
 // -------------------------------------------------------------------------
-// R11 — the audit rows, read back at decision time
+// The audit rows, read back at decision time
 // -------------------------------------------------------------------------
 
-/// The same call with a turn id that carries a sequence, so ages are
-/// computable. `bash` names its turn "t1", which parses to nothing and is the
-/// honest `None` everywhere else.
+/// The same call with a turn id that carries a sequence, so ages are computable. `bash` names its
+/// turn "t1", which parses to nothing and is the honest `None` everywhere else.
 fn bash_at<'a>(args: &'a Value, turn_id: &'a str) -> GateCall<'a> {
     GateCall {
         turn_id,

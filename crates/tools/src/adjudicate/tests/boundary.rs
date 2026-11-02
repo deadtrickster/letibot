@@ -1,18 +1,9 @@
-//! **D16 and R98 at the gate.** Two rulings, one question: *may a standing answer settle a
-//! command, or must somebody be asked about this one?*
+//! Two rulings, one question: may a standing answer settle a command, or must somebody be asked
+//! about this one? Inside a measured boundary a per-command ruling protects nothing the mode's own
+//! writes could not do, so at `writes-allowed` a command there is admitted without a card; on a
+//! host with no boundary, a command that runs the project's own code asks every time.
 //!
-//! * D16 — inside a confinement letibot has **measured**, a per-command ruling protects nothing
-//!   a write the mode already admits could not do instead, so at `writes-allowed` a command
-//!   there is admitted without a card.
-//! * R98 — on a host with **no** boundary, a command that runs the project's own code (a test
-//!   runner, a build that executes it, a script in the checkout) asks every time, and no grant
-//!   settles it: the file can be rewritten between the answer and the next run.
-//!
-//! Every fixture here is a boundary built by hand rather than a probed one. A test that wanted
-//! a real `bwrap` could not run inside this box's own boundary (no nesting, no cgroup — see the
-//! FX note), and what these tests are about is the gate's reading of the measurement, not the
-//! measurement. `crates/tools/tests/remote_confine.rs` is where the argv a boundary is built
-//! from is measured, and `crates/tools/tests/confine.rs` is where the kernel is.
+//! The fixtures are boundaries built by hand, because a real `bwrap` cannot nest in this box's.
 
 use super::*;
 
@@ -22,10 +13,8 @@ use crate::exec::{Namespace, NsState, Seal, SealKind};
 // The boundary fixtures
 // ---------------------------------------------------------------------------
 
-/// **A boundary that encloses**: every namespace entered, both seals tested and held, egress
-/// denied. This is what `Bwrap::probe` refuses to return anything less than, plus the seals
-/// being *held* rather than merely not-open. The builder is `measured_boundary` in `tests.rs`,
-/// shared with the fixtures whose subject is something a boundary then admits.
+/// A boundary that encloses: every namespace entered, both seals held rather than merely not open,
+/// and the egress given. `measured_boundary` in `mod.rs` is the rest of it.
 fn measured(egress: crate::exec::Egress) -> crate::exec::Boundary {
     crate::exec::Boundary {
         egress,
@@ -37,8 +26,8 @@ fn measured_and_closed() -> crate::exec::Boundary {
     measured(crate::exec::Egress::Denied)
 }
 
-/// **An adjudicator that must not be reached.** A pass here is a pass only if nobody was asked,
-/// and an assertion on the audit row alone cannot tell *asked and allowed* from *not asked*.
+/// An adjudicator that must not be reached: an assertion on the audit row alone cannot tell
+/// asked-and-allowed from not-asked.
 struct Nobody;
 
 impl Adjudicator for Nobody {
@@ -53,8 +42,8 @@ impl Adjudicator for Nobody {
     }
 }
 
-/// **An adjudicator that records being asked**, and allows the call once. The record is the
-/// assertion: *it asked* is the whole of what a "still asks" test can prove.
+/// An adjudicator that records being asked and allows the call once: "it asked" is the whole of
+/// what a "still asks" test can prove.
 #[derive(Default)]
 struct Asked(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
@@ -77,8 +66,8 @@ impl Adjudicator for Asked {
     }
 }
 
-/// **An adjudicator that names an option this gate does not offer**, the way an older head or a
-/// replayed answer would: the gate must still honour *this call* and record nothing standing.
+/// An adjudicator that names an option this gate does not offer, the way an older head or a
+/// replayed answer would.
 struct Picks(&'static str);
 
 impl Adjudicator for Picks {
@@ -90,7 +79,7 @@ impl Adjudicator for Picks {
     }
 }
 
-/// **The admissions a gate told somebody about**, in order.
+/// The admissions a gate told somebody about, in order.
 #[derive(Default)]
 struct Told(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
@@ -131,13 +120,11 @@ fn last_by(g: &AdjudicatedGate) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// D16 — admitted, and what the row and the notice say
+// Admitted by the boundary, and what the row and the notice say
 // ---------------------------------------------------------------------------
 
-/// **The ruling, and the three commands the brief names.**
-///
-/// `cargo test`, a script the session wrote, and `rm -rf target` inside the checkout: all three
-/// admitted with nobody asked, the audit row saying why, and a line told to the operator.
+/// All three admitted with nobody asked, the audit row saying why, and a line told to the
+/// operator.
 #[test]
 fn inside_a_measured_boundary_a_command_is_admitted_without_a_card() {
     for (command, region) in [
@@ -159,8 +146,8 @@ fn inside_a_measured_boundary_a_command_is_admitted_without_a_card() {
             GateDecision::Admit,
             "`{command}` is inside the measured boundary and must not ask"
         );
-        // **The command arranged the way layer A will read it**, so a fixture cannot pass by
-        // being a string this classifier places differently from the real one.
+        // The command arranged the way layer A reads it, so the fixture cannot pass as a string
+        // the real classifier places differently.
         let reading = g.baseline_for(&call);
         assert!(
             reading.regions.iter().any(|r| r.as_str() == region),
@@ -198,9 +185,8 @@ fn inside_a_measured_boundary_a_command_is_admitted_without_a_card() {
     }
 }
 
-/// **A second call in the same session is admitted too.** The rule is not *once per session*:
-/// what D16 removes is the question, and a first-call-only version would leave the operator
-/// answering every build after the first.
+/// The rule is not once per session: what the boundary removes is the question, and a
+/// first-call-only version would leave the operator answering every build after the first.
 #[test]
 fn the_admit_is_not_a_once_per_session_thing() {
     let mut g = gate_at(
@@ -219,12 +205,11 @@ fn the_admit_is_not_a_once_per_session_thing() {
 }
 
 // ---------------------------------------------------------------------------
-// D16 — what still asks
+// What still asks inside a measured boundary
 // ---------------------------------------------------------------------------
 
-/// **Everything that crosses the boundary still asks.** `curl` and `cargo fetch` need egress;
-/// `git push` publishes, and its intents say so; `gh` is the credential tier. Each is asked
-/// even with a measured boundary in force.
+/// Everything that crosses the boundary still asks: egress, publication and the credential tier
+/// each get a card even with a measured boundary in force.
 #[test]
 fn a_command_that_crosses_the_boundary_still_asks() {
     for command in [
@@ -254,9 +239,8 @@ fn a_command_that_crosses_the_boundary_still_asks() {
     }
 }
 
-/// **A command that would work outside the checkout still asks** — the grant-that-widens-the-view
-/// clause. `/etc/motd` and the operator's home are not in the view, and a ruling about the
-/// command would be a ruling about a path the boundary does not contain.
+/// A command that would work outside the checkout still asks: a ruling about it would be a ruling
+/// about a path the boundary does not contain.
 #[test]
 fn a_write_outside_the_checkout_still_asks() {
     for command in [
@@ -280,10 +264,8 @@ fn a_write_outside_the_checkout_still_asks() {
     }
 }
 
-/// **The mac host shell: no boundary, so nothing is admitted by this rule.** The same three
-/// commands that pass above are asked here — this is the fixture the brief calls *a fake
-/// backend that reports no confinement*, and it is the state every session on the operator's
-/// laptop is in.
+/// No boundary means nothing is admitted by this rule: the same commands that pass above are
+/// asked here.
 #[test]
 fn without_a_measured_boundary_the_same_commands_still_ask() {
     for command in [
@@ -306,10 +288,9 @@ fn without_a_measured_boundary_the_same_commands_still_ask() {
     }
 }
 
-/// **A boundary that does not hold is not a boundary.** Three ways for `encloses()` to be
-/// false, each measured rather than assumed: a required namespace missing, a seal *open*, and a
-/// seal merely unverified. All three still ask, and the last one is the judgement call worth
-/// pinning — `complete()` tolerates an unverified seal, and D16's claim does not.
+/// A boundary that does not hold is not a boundary. Three ways for `encloses()` to be false: a
+/// required namespace missing, a seal open, and a seal merely unverified. `complete()` tolerates
+/// the last; this rule does not.
 #[test]
 fn a_boundary_that_does_not_hold_still_asks() {
     let cases: Vec<(&str, crate::exec::Boundary)> = {
@@ -354,8 +335,8 @@ fn a_boundary_that_does_not_hold_still_asks() {
     }
 }
 
-/// **A boundary that shares the host's network is not enclosed either**: something crosses it,
-/// and what crosses is what a card is still for.
+/// A boundary that shares the host's network is not enclosed either: what crosses it is what a
+/// card is still for.
 #[test]
 fn a_boundary_with_egress_to_the_host_still_asks() {
     let asked = Asked::default();
@@ -370,11 +351,9 @@ fn a_boundary_with_egress_to_the_host_still_asks() {
     assert_eq!(asked.count(), 1);
 }
 
-/// **D16 is about `writes-allowed` and says nothing about the other points.** Both directions,
-/// because either alone is a test a wrong implementation passes: `always-ask` must still ask
-/// (it is the point that is *only* asking), and `allow-all` still admits — but through its own
-/// rule, labelled `gate:mode`, so a reader can tell an admit D16 earned from one the point made
-/// unconditional.
+/// The admit is `writes-allowed` only, and both directions are asserted because either alone is a
+/// test a wrong implementation passes: `always-ask` still asks, and `allow-all` admits through its
+/// own `gate:mode` rule, so a reader can tell the two apart.
 #[test]
 fn the_rule_is_writes_allowed_only() {
     let asked = Asked::default();
@@ -391,9 +370,8 @@ fn the_rule_is_writes_allowed_only() {
         crate::mode::Mode::ALLOW_ALL,
         Some(measured_and_closed()),
     )
-    // A daemon turns this on for an unconfined seat (`with_exec_follows_mode(cfg.unconfined)`),
-    // and `allow-all`'s own promise is that exec follows the point — without it the call falls
-    // through to the adjudicator, which is the operator's 2026-09-11 rule still in force.
+    // A daemon turns this on for an unconfined seat, and `allow-all`'s promise is that exec
+    // follows the point; without it the call falls through to the adjudicator.
     .with_exec_follows_mode(true);
     assert_eq!(
         g.admit(&bash(&json!({ "command": "cargo test" }))),
@@ -402,9 +380,8 @@ fn the_rule_is_writes_allowed_only() {
     assert_eq!(last_by(&g), "gate:mode", "allow-all admits by its own rule");
 }
 
-/// **A command the grammar cannot read is not admitted by this rule either.** `encloses()` is
-/// necessary and not sufficient: an unreadable action is refused before this, at every point
-/// that does not admit everything.
+/// `encloses()` is necessary and not sufficient: an unreadable action is refused before it, at
+/// every point that does not admit everything.
 #[test]
 fn an_unreadable_command_is_not_admitted_by_the_boundary() {
     let asked = Asked::default();
@@ -413,8 +390,7 @@ fn an_unreadable_command_is_not_admitted_by_the_boundary() {
         crate::mode::Mode::WRITES_ALLOWED,
         Some(measured_and_closed()),
     );
-    // An unclosed quote: the grammar cannot read it, so nothing decided about it can be about
-    // a boundary.
+    // An unclosed quote: nothing decided about an unreadable command can be about a boundary.
     let decision = g.admit(&bash(&json!({ "command": "cargo test 'unclosed" })));
     assert!(
         !matches!(decision, GateDecision::Admit),
@@ -432,17 +408,12 @@ fn an_unreadable_command_is_not_admitted_by_the_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// R98 (1) — on a host with no boundary, the project's own code asks every time
+// On a host with no boundary, the project's own code asks every time
 // ---------------------------------------------------------------------------
 
-/// **A durable shape does not settle a test runner on an unconfined host**, and the same cache
-/// does still settle something that is not one.
-///
-/// The shape cache is the durable half of *a standing answer*: it outlives the session and is
-/// seeded, on this box, from the operator's own past approvals under this workspace. R98 says
-/// the file a runner executes can be rewritten between the answer and the next run, so the
-/// shape is not a licence — and the contrast keeps this from passing on a gate that had simply
-/// stopped honouring its cache.
+/// The shape cache is the durable half of a standing answer, and the file a runner executes can
+/// be rewritten between the answer and the next run, so the shape is not a licence. The contrast
+/// keeps this from passing on a gate that had stopped honouring its cache.
 #[test]
 fn a_durable_shape_does_not_settle_a_test_runner_without_a_boundary() {
     let asked = Asked::default();
@@ -469,9 +440,8 @@ fn a_durable_shape_does_not_settle_a_test_runner_without_a_boundary() {
         "an approval of this shape does not answer the next run"
     );
 
-    // **And the cache is not simply broken.** A shape over a command that runs nothing this
-    // project wrote still settles, silently, as it always did. `cargo fmt` is the pair that
-    // makes the test bite: same program, same exec access, same tier — and it is not a runner.
+    // And the cache is not simply broken: `cargo fmt` is the same program at the same tier and
+    // runs nothing this project wrote, so its shape still settles.
     let asked = Asked::default();
     let mut g = gate_at(
         Box::new(Asked(asked.0.clone())),
@@ -492,8 +462,8 @@ fn a_durable_shape_does_not_settle_a_test_runner_without_a_boundary() {
     assert_eq!(last_by(&g), "gate:shape");
 }
 
-/// **The same command inside a measured boundary is not asked twice** — the other side of the
-/// same sentence, so the rule above cannot be a rule about `cargo test` in general.
+/// The other side of the same sentence, so the rule above cannot be a rule about `cargo test` in
+/// general.
 #[test]
 fn the_same_runner_is_admitted_inside_the_boundary() {
     let mut g = gate_at(
@@ -508,9 +478,8 @@ fn the_same_runner_is_admitted_inside_the_boundary() {
     assert_eq!(last_by(&g), "gate:boundary");
 }
 
-/// **The card says why, and offers no standing rung.** An operator shown *allow for the
-/// session* over a call the gate would then refuse to remember is the defect `Offer` exists to
-/// prevent, so the ladder narrows to *this one* and the note carries the reason.
+/// A standing rung over a call the gate would refuse to remember is a button whose effect it
+/// declines, so the ladder narrows to this one call and the note carries the reason.
 #[test]
 fn the_card_narrows_the_ladder_and_says_why() {
     let mut g = gate_at(
@@ -539,8 +508,8 @@ fn the_card_narrows_the_ladder_and_says_why() {
         "the note names the ruling it is applying: {note}"
     );
 
-    // **And a command that is not the project's code keeps its full ladder** — otherwise this
-    // test would pass on a gate that had narrowed every ladder on every host.
+    // A command that is not the project's code keeps its full ladder, or this would pass on a
+    // gate that had narrowed every ladder on every host.
     let plain = g.request_for(&bash(&json!({ "command": "git status"})));
     let ids: Vec<&str> = plain.options.iter().map(|o| o.id.as_str()).collect();
     assert!(
@@ -550,8 +519,8 @@ fn the_card_narrows_the_ladder_and_says_why() {
     assert_eq!(plain.options_note, None, "and nothing is left off it");
 }
 
-/// **A hand-written `allow` rule does not settle it either** — the durable half of "session or
-/// durable grant". The rule is left in the config; it simply does not answer this call.
+/// The durable half of "session or durable grant": the rule is left in the config, it simply
+/// does not answer this call.
 #[test]
 fn a_durable_allow_rule_does_not_settle_a_runner_without_a_boundary() {
     let asked = Asked::default();
@@ -573,8 +542,8 @@ fn a_durable_allow_rule_does_not_settle_a_runner_without_a_boundary() {
         "a rule written about the last run does not answer this one"
     );
 
-    // **And it still governs what it can be trusted about**: the same rule over `git status`,
-    // which runs nothing this project wrote, is honoured without asking.
+    // It still governs what it can be trusted about: the same rule over `git status`, which runs
+    // nothing this project wrote, is honoured without asking.
     let mut g =
         gate_at(Box::new(Nobody), crate::mode::Mode::WRITES_ALLOWED, None).with_permission(vec![
             crate::permission::Rule::new("bash", "git status", crate::permission::Action::Allow),
@@ -586,12 +555,8 @@ fn a_durable_allow_rule_does_not_settle_a_runner_without_a_boundary() {
     assert_eq!(last_by(&g), "gate:permission");
 }
 
-/// **An `allow_once` answer does not seed the shape, so the next run asks again.**
-///
-/// This is the guard that actually bites. The shape cache is warmed from *any* human admit of a
-/// call shape, and without R98 the very first `cargo test` the operator allowed would have
-/// settled every later one — which is the shape of the original complaint: the grant was an
-/// answer about a file that has since been rewritten.
+/// The guard that actually bites: the shape cache is warmed from any human admit of a call shape,
+/// so without this the first `cargo test` the operator allowed would settle every later one.
 #[test]
 fn an_allow_once_answer_does_not_seed_a_shape_for_a_runner() {
     let asked = Asked::default();
@@ -616,17 +581,12 @@ fn an_allow_once_answer_does_not_seed_a_shape_for_a_runner() {
 }
 
 // ---------------------------------------------------------------------------
-// R98 (1) — the switch, and what its default is
+// The switch, and what its default is
 // ---------------------------------------------------------------------------
 
-/// **With the switch off — the default — an unconfined host behaves exactly as it did before
-/// R98 existed.**
-///
-/// The operator, on the first cut of this rule: *"asking on every build/test on the Mac would
-/// just push them to allow-all (which they already run, unsandboxed)"*. So the rule is a switch,
-/// and this is the half that says the default is the OLD behaviour, both ways round: a shape
-/// seeded from a past approval still settles a runner, and an `allow_session` answer still
-/// records a grant that settles the next one.
+/// The rule is a switch because asking on every build on a host with no boundary pushes people to
+/// allow-all. This is the half that says the default is the old behaviour, both ways round: a
+/// seeded shape settles a runner, and an `allow_session` answer still records a grant.
 #[test]
 fn the_default_leaves_an_unconfined_host_as_it_was() {
     let asked = Asked::default();
@@ -635,7 +595,7 @@ fn the_default_leaves_an_unconfined_host_as_it_was() {
         crate::mode::Mode::WRITES_ALLOWED,
         None,
     );
-    // A shape a previous approval would have seeded — with the switch off it is honoured.
+    // A shape a previous approval would have seeded: with the switch off it is honoured.
     let args = json!({ "command": "cargo test --offline" });
     let seen = g.request_for(&bash(&args));
     assert_eq!(
@@ -667,12 +627,9 @@ fn the_default_leaves_an_unconfined_host_as_it_was() {
     assert_eq!(g.grants().len(), 1, "the grant was recorded, as before");
 }
 
-/// **The always-ask tier survives the boundary, and the first cut of D16 lost it.**
-///
-/// `sudo -n true` and `shutdown -h now` carry no network intent and name no path, so a rule
-/// argued about *egress* and *the view* admitted both inside a measured boundary — the privilege
-/// and power lines of the always-ask list, quietly dropped. D16's own words put them back: the
-/// admit holds only where the tier is one a point may move at all.
+/// `sudo -n true` and `shutdown -h now` carry no network intent and name no path, so a rule argued
+/// about egress and the view would admit both: the boundary's admit holds only where the tier is
+/// one a point may move at all.
 #[test]
 fn the_always_ask_tier_still_asks_inside_the_boundary() {
     for command in ["sudo -n true", "shutdown -h now", "crontab /w/cron.txt"] {
@@ -692,13 +649,9 @@ fn the_always_ask_tier_still_asks_inside_the_boundary() {
     }
 }
 
-/// **A rung the ladder did not offer is refused, and leaves nothing standing behind it.**
-///
-/// The ladder is the first mechanism (`offer_for`), the request's own option lookup is the
-/// second — `admit` refuses an id it did not build — and the recording site's `unconfined_code`
-/// check is the third, unreachable while the first two hold. What this pins is the answer a
-/// person gets when an older head, a replayed answer or a test names the rung anyway: nothing
-/// runs, and no grant is left on the books for the gate to decline later.
+/// The ladder is the first mechanism and `admit`'s option lookup is the second, so an older head
+/// or a replayed answer naming a rung anyway gets nothing run and no grant left on the books for
+/// the gate to decline later.
 #[test]
 fn a_rung_the_ladder_did_not_offer_is_refused_for_a_runner() {
     for rung in ["allow_session", "allow_always"] {
@@ -717,8 +670,8 @@ fn a_rung_the_ladder_did_not_offer_is_refused_for_a_runner() {
         assert!(g.permission().is_empty(), "a rule was written for `{rung}`");
     }
 
-    // **And a command that is not the project's code still offers both rungs** — the same pair
-    // of mechanisms, on the side where they are supposed to work.
+    // A command that is not the project's code still offers both rungs, on the side where they
+    // are supposed to work.
     let mut g = gate_at(
         Box::new(Picks("allow_session")),
         crate::mode::Mode::WRITES_ALLOWED,
@@ -732,10 +685,8 @@ fn a_rung_the_ladder_did_not_offer_is_refused_for_a_runner() {
     assert_eq!(g.grants().len(), 1, "`cargo fmt` may still be granted");
 }
 
-/// **A plugin's look is not admitted by a boundary it does not run inside.** D16's admit is the
-/// boundary's, and `admit_unasked`'s one caller — a condition layer's `exec` look — is spawned by
-/// the daemon on its own host. So the same `cargo test` the model's call gets without a card is
-/// *would need your approval* for the look, and nothing is told as admitted.
+/// The admit is the boundary's, and `admit_unasked`'s one caller (a condition layer's `exec`
+/// look) is spawned by the daemon on its own host: the same command is a question there.
 #[test]
 fn an_unasked_call_is_not_admitted_by_the_boundary() {
     let told = Told::default();
