@@ -1,9 +1,6 @@
-//! A heredoc through `bash` is a write - the one shell shape where that is decidable,
-//! and the line a near miss earns instead.
-//!
-//! A model that writes a file with `cat > f <<'TAG'` leaves no diff row, gives the gate
-//! an exec instead of a path, records no edit, and says `bash` - what it called rather
-//! than what it did. Exactly one shape is recognised:
+//! A heredoc through `bash` is a write, and the one shell shape where that is decidable: a
+//! model that writes a file with `cat > f <<'TAG'` leaves no diff row, gives the gate an exec
+//! instead of a path, and says `bash` rather than what it did.
 //!
 //! ```text
 //! [cd <dir> &&] cat  > <path> <<[']TAG['] … TAG      (a file's whole contents)
@@ -12,10 +9,8 @@
 //! [cd <dir> &&] tee -a <path> <<[']TAG['] … TAG
 //! ```
 //!
-//! The conservatism is the design: a shape this refuses runs as it always did, losing
-//! only the record, while a shape accepted wrongly would write bytes the shell would not
-//! have - so every rule refuses when it cannot tell. [`recognise`] is a function of the
-//! command text alone, which is what makes the append case refusable rather than guessed.
+//! The conservatism is the design: a shape refused here runs as it always did and loses
+//! only the record, while one accepted wrongly writes bytes the shell would not have.
 
 use letibot_code::shell::{self, Context, RedirectOp, RedirectTarget, Stage, Word};
 
