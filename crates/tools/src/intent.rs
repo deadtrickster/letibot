@@ -2639,10 +2639,9 @@ impl Baseline {
             ));
         }
 
-        // 1. What an unresolvable construct means, which is no longer a refusal: an opaque fragment
-        //    could be any value, so the scope widens to the widest it could reach and the verdict stays
-        //    `Ask`. Two cases keep `NotRun`, both with no scope to widen: a parse error and an
-        //    anonymous program.
+        // 1. What an unresolvable construct means, which is no longer a refusal: the scope widens to
+        //    the widest it could reach and the verdict stays `Ask`. Two cases keep `NotRun`, both with
+        //    no scope to widen: a parse error and an anonymous program.
         let unreadable_structure = n.partial
             || n.unresolved
                 .iter()
@@ -3704,13 +3703,9 @@ impl Baseline {
         if capable {
             self.intents.insert(Intent::Network);
         }
-        // The write scan, separate from the capability scan and answering a question it
-        // never asked: which files does this script change. An edit through a script shows
-        // no diff and gives the operator no file name to weigh.
-        //
-        // It goes through `region_of` like every other path, so the tiers and the
-        // secret-store rules see a written path the way they see an argument. Body-wide
-        // rather than adjacency-based: a write is a write wherever it is.
+        // The write scan, answering a question the capability scan never asked: which files does this
+        // script change. Body-wide and through `region_of` like any other path, because an edit through
+        // a script shows no diff and gives the operator no file name to weigh.
         let writes = write_targets(body);
         if !writes.is_empty() {
             self.intents.insert(Intent::WriteFile);
@@ -3721,10 +3716,8 @@ impl Baseline {
         for w in &writes {
             match w {
                 WriteTarget::Literal(path) => {
-                    // Placed where it will actually be written: a body run after `cd repo`
-                    // writes `crates/x.rs` in the repository, not under the workspace, and a
-                    // script's write must be judged by the same directory as an argument. A
-                    // `~` goes through the same expansion too.
+                    // Placed where it will actually be written, so a body run after `cd repo` is judged by
+                    // the same directory an argument would be. A `~` goes through the same expansion.
                     let placed = {
                         let expanded = env.expand(path);
                         match (&self.cwd, expanded.starts_with('/')) {
@@ -3895,12 +3888,9 @@ const SHELLS_OUT: &[&str] = &[
     "%x(",
 ];
 
-/// The call a file path sits after, for a secret path to count as opened rather than
-/// mentioned.
-///
-/// The calls that open a file for writing, and how the path is found: `open(p)` is a read
-/// and `open(p,'w')` is a write, so a function whose mode decides carries the argument's
-/// position. See [`write_targets`].
+/// The call a file path sits after, for a secret path to count as opened rather than mentioned. The
+/// calls that open a file for writing, and where the path is: `open(p)` reads and `open(p,'w')`
+/// writes, so a function whose mode decides carries the argument's position.
 const WRITE_FUNCS: &[(&str, WriteForm)] = &[
     // Python: the second argument (or a `mode=` keyword) says whether it writes.
     ("open", WriteForm::ModeArg),
@@ -3923,22 +3913,17 @@ const WRITE_FUNCS: &[(&str, WriteForm)] = &[
 enum WriteForm {
     /// The first argument is the path; the call's own name is the verb.
     FirstArg,
-    /// The first argument is the path when the mode says so: `open(p,'w')`. A mode that
-    /// cannot be read as a literal is not reported - a runtime-built mode is a write whose
-    /// kind is unknown, and being shy costs a card that says less rather than a prompt that
-    /// was not earned.
+    /// The first argument is the path when the mode says so. A mode that cannot be read as a literal is
+    /// not reported: a runtime-built mode is a write of unknown kind, and being shy costs a card that
+    /// says less rather than a prompt that was not earned.
     ModeArg,
 }
 
 /// Methods whose RECEIVER is the file being written: `Path("x").write_text(s)`.
 const WRITE_METHODS: &[&str] = &["write_text", "write_bytes", "writelines"];
 
-/// What a write call's target turned out to be.
-///
-/// Public and serde-able because it goes on the card's wire: `write_targets` is an array of
-/// `{path, unresolved}` on the decision frame.
-///
-/// `Runtime` is not `Literal("")`: a path the scanner cannot place is the case a person
+/// What a write call's target turned out to be. Public and serde-able because it goes on the card's
+/// wire, and `Runtime` is not `Literal("")`: a path the scanner cannot place is the case a person
 /// most needs to see, and folding it into "no write" would hide it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WriteTarget {
@@ -3986,21 +3971,13 @@ const FILE_CALLS: &[&str] = &[
     "os.path.join",
 ];
 
-/// The paths a script opens for WRITING.
-///
-/// The capability scan asks what a script can reach; this asks what a card needs: which
-/// files does it change. An edit through a script shows no diff and gives the operator no
-/// file name to weigh.
-///
-/// A call, not a mention, is the discriminator. A write whose mode is not a literal is not
-/// read, and a receiver the scanner cannot read takes the unresolved arm rather than being
-/// dropped. Body-wide, because a write is a write wherever it is.
+/// The paths a script opens for writing: an edit through a script shows no diff and gives the operator
+/// no file name to weigh. A call and not a mention is the discriminator, and a receiver the scanner
+/// cannot read takes the unresolved arm rather than being dropped.
 fn write_targets(body: &str) -> Vec<WriteTarget> {
     let mut out: Vec<WriteTarget> = Vec::new();
-    // The names that stand for a path: `p = Path('src/syntax.rs')` then `open(p,'w')`. Not an
-    // evaluator - one step, only where the right-hand side is a literal this file can read,
-    // and only for the name that was assigned. The operator's own card is this shape, which
-    // is why the scanner cannot stop at expressions.
+    // The names that stand for a path: `p = Path('src/x.rs')` then `open(p,'w')`. Not an evaluator, one
+    // step, and only where the right-hand side is a literal this file can read.
     let names = assigned_paths(body);
     for (name, form) in WRITE_FUNCS {
         for (at, _) in body.match_indices(&format!("{name}(")) {
@@ -4164,12 +4141,9 @@ fn split_args(args: &str) -> Vec<String> {
     out
 }
 
-/// The path an expression is, when it is one at all. `None` means built at run time, which
-/// is a different fact from no write.
-///
-/// A plain literal, and `os.path.expanduser("...")` / `Path("...")` around one, because
-/// those are the shapes an edit script uses. `Path.home()/"x"`, `sys.argv[1]` and an
-/// f-string with `{}` are the runtime-built case, which this refuses to guess at.
+/// The path an expression is, when it is one at all: a plain literal, and `expanduser(...)` or
+/// `Path(...)` around one. `Path.home()/"x"`, `sys.argv[1]` and an f-string are built at run time,
+/// which is a different fact from no write.
 fn literal_path(expr: &str) -> Option<String> {
     let e = expr.trim();
     // A quoted string with no interpolation.
@@ -4199,11 +4173,9 @@ fn literal_path(expr: &str) -> Option<String> {
     quoted(inner)
 }
 
-/// The receiver expression before a `.method(`: `Path('a.txt')` from
-/// `Path('a.txt').write_text(s)`.
-///
-/// Paren-balanced rather than split on the first `(`: the naive version took `'a.txt')` out
-/// of `Path('a.txt')` and reported a runtime receiver for a literal two characters away.
+/// The receiver expression before a `.method(`: `Path('a.txt')` out of `Path('a.txt').write_text(s)`.
+/// Paren-balanced rather than split on the first `(`, which reported a runtime receiver for a literal
+/// two characters away.
 fn receiver_expr(before: &str) -> &str {
     let t = before.trim_end();
     let b = t.as_bytes();
@@ -4237,11 +4209,9 @@ fn receiver_expr(before: &str) -> &str {
     &t[..end]
 }
 
-/// Names bound once to a literal path, for the `p = Path('x')` ... `open(p,'w')` shape.
-///
-/// Deliberately one step and no more: a name reassigned later, or assigned from a call,
-/// resolves to nothing and takes the unresolved arm. Following reassignment needs data flow,
-/// and a scanner that guessed would be the eager direction.
+/// Names bound once to a literal path, for the `p = Path('x')` ... `open(p,'w')` shape. One step and no
+/// more: a name reassigned or assigned from a call takes the unresolved arm, because following it needs
+/// data flow and a guess would be the eager direction.
 fn assigned_paths(body: &str) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     for line in body.lines() {
@@ -4257,10 +4227,9 @@ fn assigned_paths(body: &str) -> std::collections::BTreeMap<String, String> {
         {
             continue;
         }
-        // Cut at `;` as well as `#`, because the dominant shape is one line doing several
-        // things: `p='crates/x.rs'; s=open(p).read()`. Reading the rest of the line as the
-        // right-hand side made every one of those an unresolved target, and the target is
-        // what `region_of` places and what the card names.
+        // Cut at `;` as well as `#`, because the dominant shape does one thing per clause:
+        // `p='crates/x.rs'; s=open(p).read()`. Reading the rest of the line as the right-hand side made
+        // every one of those an unresolved target.
         let rhs = rhs.split(['#', ';']).next().unwrap_or(rhs).trim();
         if let Some(path) = literal_path(rhs) {
             out.insert(name.to_string(), path);
@@ -4566,16 +4535,10 @@ fn stage_intents(s: &Stage) -> Vec<Intent> {
 
 // Which stage names a grant
 
-/// Fold one stage into the choice of the stage that names a grant - see
-/// [`Baseline::grant_program`].
-///
-/// `program` is the name as WRITTEN, not the wrapper's inner one: keying `sudo git status`
-/// on `git` would let a grant taken over a sudo call cover the command without sudo.
-///
-/// A stage that only sets the shell's own state never names a grant; otherwise the most
-/// consequential intent wins, because that is what decides the tier; and a tie goes to the
-/// first stage, because a pipeline filters at the end and naming `head` is the complaint
-/// this exists to fix. A stage whose program nobody could read names nothing.
+/// Fold one stage into the choice of the stage that names a grant. `program` is the name as WRITTEN,
+/// not the wrapper's inner one, or a grant taken over a sudo call would cover the command without it;
+/// a stage that only sets the shell's state names nothing, the most consequential intent wins, and a
+/// tie goes to the first stage.
 fn name_stage(
     slot: &mut Option<String>,
     weight: &mut Option<u8>,
@@ -4614,15 +4577,9 @@ fn naming_weight(program: &str, stage: &Stage) -> u8 {
     }
 }
 
-/// How much this intent asks to be the one that names an action.
-///
-/// Not a ranking of danger: this answers which stage in the line is doing the work, with the
-/// intent a person would describe the command by. A destroy outranks a build, a build
-/// outranks a search.
-///
-/// `EnvironmentMutation` sits below a read on purpose: `export` is the preamble to a command
-/// rather than the command, which is why a grant over it names nothing. `Unknown` is last
-/// because a name built on no finding is the least informative there is.
+/// How much this intent asks to be the one that names an action: which stage is doing the work, in the
+/// words a person would describe the line by. `EnvironmentMutation` sits below a read, since `export`
+/// is a preamble to a command rather than the command.
 fn consequence(i: Intent) -> u8 {
     match i {
         // Nothing restores what this loses.
@@ -4682,11 +4639,8 @@ mod destructive_flags {
         }
     }
 
-    /// `--delete` removes files at the destination, and layer A says so.
-    ///
-    /// The oracle is not asked to know rsync: it is told what the action does and reasons
-    /// about whether the operator asked for that. A reading without `Destroy` answers ALLOW
-    /// to this command under "copy the files over", and one with it does not.
+    /// `--delete` removes files at the destination, and layer A says so. The oracle is not asked to know
+    /// rsync: it is told what the action does and reasons about whether the operator asked for that.
     #[test]
     fn rsync_delete_is_destruction_and_a_plain_copy_is_not() {
         let with = Baseline::of_command(
@@ -4709,10 +4663,8 @@ mod destructive_flags {
         );
     }
 
-    /// Every spelling rsync honours, and nothing it does not.
-    ///
-    /// `--del` is the short form of `--delete-during`, the `--delete-*` family all delete,
-    /// and `--remove-source-files` deletes at the SOURCE.
+    /// Every spelling rsync honours and nothing it does not: `--del` is `--delete-during`, the
+    /// `--delete-*` family all delete, and `--remove-source-files` deletes at the SOURCE.
     #[test]
     fn every_deleting_spelling_is_caught_and_no_others() {
         for flag in [
@@ -4780,10 +4732,8 @@ mod destructive_flags {
 mod flag_coverage_survey {
     use super::*;
 
-    /// Which destructive flags layer A actually sees. A survey, printed.
-    ///
-    /// Not an assertion: it is here to make the gap countable, because "the table looks
-    /// fragile" is a hunch and a list is a decision.
+    /// Which destructive flags layer A actually sees, as a survey rather than an assertion, because "the
+    /// table looks fragile" is a hunch and a list is a decision.
     #[test]
     fn what_the_table_sees_and_what_it_misses() {
         let sur = Surroundings {
@@ -4958,12 +4908,9 @@ mod flag_rules {
         }
     }
 
-    /// Absence is not permission, and it is not denial either: an unrecognised program
-    /// derives [`Intent::Unknown`] and lands at `MayApprove`, which is ask somebody. It is
-    /// not admitted unasked and it is not refused for being unlisted.
-    ///
-    /// The two programs here were both unnamed, so the whole call read as `Unknown`. This
-    /// asserts what they classify as now, not that they stop being asked about.
+    /// Absence is not permission and not denial either: an unrecognised program derives
+    /// [`Intent::Unknown`] and lands at `MayApprove`, so it is asked about rather than admitted or
+    /// refused.
     #[test]
     fn the_programs_that_fell_to_unknown_in_the_rano_session_are_named() {
         let listing = Baseline::of_command("ar t target/debug/librano.rlib", &sur());
@@ -5081,12 +5028,8 @@ mod flag_rules {
         );
     }
 
-    /// A generated row names a flag, never a verb.
-    ///
-    /// A rule built from a verb fires on every use of it, so `git reset HEAD~5` came back
-    /// destructive when it leaves every commit reachable. `scripts/man-rows-to-table.py`
-    /// draws the line at the leading dash, and this asserts that line so a regenerated table
-    /// cannot quietly cross it.
+    /// A generated row names a flag, never a verb: a rule built from a verb fires on every use of it, so
+    /// `git reset HEAD~5` came back destructive while leaving every commit reachable.
     #[test]
     fn a_documented_row_is_a_flag_and_not_a_verb() {
         for r in DOCUMENTED_FLAG_RULES {
@@ -5110,11 +5053,8 @@ mod flag_rules {
         }
     }
 
-    /// The generated rows do not fire on anything the key says is harmless.
-    ///
-    /// The table is additive, so a row that fires on a negative twin costs a prompt somebody
-    /// has to dismiss. That has to stay true across a regeneration or it is not a table
-    /// anybody can regenerate.
+    /// The generated rows do not fire on anything the key says is harmless, since the table is additive
+    /// and a row that fires on a negative twin costs a prompt somebody has to dismiss.
     #[test]
     fn no_rule_fires_on_the_keys_negative_twins() {
         let key = include_str!("../tests/data/answer-key.tsv");
@@ -5154,14 +5094,8 @@ mod flag_rules {
 mod secret_is_not_destruction {
     use super::*;
 
-    /// Copying a private key destroys nothing, and that is the right answer.
-    ///
-    /// `Destroy` means something that existed is gone: deleted, overwritten, truncated. A
-    /// copy adds a file and removes none, so no flag rule fires and none should - if `cp`
-    /// derived `Destroy`, the word would stop meaning anything.
-    ///
-    /// The key is guarded on a different axis: `Region::Secret` marks where the bytes come
-    /// from, and disclosure across a boundary is `Tier::Blocked`, which nothing widens.
+    /// Copying a private key destroys nothing: `Destroy` means something that existed is gone, and a copy
+    /// adds a file and removes none. The key is guarded on another axis, where its bytes come from.
     #[test]
     fn a_private_key_is_guarded_as_a_secret_and_not_as_destruction() {
         let sur = Surroundings {
@@ -5216,15 +5150,9 @@ mod secret_is_not_destruction {
 mod recall {
     use super::*;
 
-    /// What fraction of destructive commands layer A can see.
-    ///
-    /// Recall is the number, and precision is the sanity check: a destructive flag missing
-    /// from the table is waved through silently, while a harmless one listed costs one
-    /// dismissed prompt.
-    ///
-    /// The key is hand-written, with the negative twin of each positive - a table that fired
-    /// on everything would score perfect recall and be useless, and only the negatives catch
-    /// that. Printed rather than asserted, because the point is to learn the number.
+    /// What fraction of destructive commands layer A can see: recall is the number and precision is the
+    /// sanity check, with the negative twin of each positive because a table that fired on everything
+    /// would score perfect recall and be useless.
     #[test]
     fn measure_recall_against_the_hand_written_key() {
         let key = include_str!("../tests/data/answer-key.tsv");
@@ -5291,13 +5219,9 @@ mod recall {
 mod model_findings_gap {
     use super::*;
 
-    /// How much of what a model found in the man pages layer A cannot see.
-    ///
-    /// Not "has no FlagRule": `rm` and `shred` derive `Destroy` from their NAME and need no
-    /// rule. The honest question is whether the whole table, name arms and flag rows
-    /// together, reaches `Destroy` for a command built from each finding.
-    ///
-    /// Printed, not asserted: a threshold would be asserting a target nobody has agreed.
+    /// How much of what a model found in the man pages layer A cannot see. Not "has no FlagRule", since
+    /// `rm` derives `Destroy` from its name: the question is whether the whole table reaches `Destroy`
+    /// for a command built from each finding.
     #[test]
     fn what_the_model_found_that_the_table_misses() {
         let sur = Surroundings {
@@ -5529,10 +5453,9 @@ mod heredoc_bodies {
             "{:?}",
             x.findings
         );
-        // Text that runs NOW with an expansion in it is as unreadable as `bash -c` with
-        // one, and the thing that catches it is the widening: `$DIR` has no known prefix and
-        // `rm` takes a path, so the scope becomes unbounded and
-        // `destruction_outside_the_project` fires as it does for `rm -rf /`.
+        // Text that runs NOW with an expansion in it is as unreadable as `bash -c` with one, and the
+        // widening catches it: `$DIR` has no known prefix and `rm` takes a path, so the scope becomes
+        // unbounded and the destruction rule fires.
         let y = b("bash <<'EOF'\nrm -rf $DIR\nEOF");
         assert_eq!(
             rule(&y),
@@ -5969,10 +5892,8 @@ mod scratch_tests {
         }
     }
 
-    /// The session's own scratch is its own region: `/tmp` is shared - a socket, a lock,
-    /// another user's file - and deleting there is a decision somebody has to make, while
-    /// this directory exists because this session was opened and stops mattering when it
-    /// ends.
+    /// The session's own scratch is its own region: `/tmp` is shared and deleting there is a decision
+    /// somebody has to make, while this directory exists because the session was opened.
     #[test]
     fn the_scratch_is_placed_apart_from_shared_temp() {
         let e = env();
@@ -6172,13 +6093,8 @@ open(p,'w').write(s)
         );
     }
 
-    /// The scan's result survives into the Baseline, which is the whole point: the detection
-    /// was right and the NAMES reached nobody, so a card could not say which file a script
-    /// rewrites.
-    ///
-    /// Three assertions: the path reaches the BASELINE, not only the scanner; a path the
-    /// scanner cannot place survives as `Runtime` rather than as an empty list; and the tier
-    /// is unchanged, because a card that shows more must not gate more.
+    /// The scan's result survives into the Baseline, which is the point: the detection was right and the
+    /// NAMES reached nobody. The tier is unchanged, because a card that shows more must not gate more.
     #[test]
     fn the_write_targets_reach_the_baseline_and_do_not_move_the_tier() {
         let env = env();
@@ -6394,15 +6310,10 @@ config = load('~/somewhere/seat.json')
             "the flow must be recorded: {:?}",
             b.flows.iter().map(|f| f.why.clone()).collect::<Vec<_>>()
         );
-        // And the tier is not changed by this scan: it promotes nothing, the same judgement
-        // the redirect arm makes.
-        //
-        // But it is not the tier a redirect reaches, and that asymmetry is left standing on
-        // purpose: the block is `scan_script`'s existing rule about a secret named inside a
-        // script, which does not distinguish a read from a write. Narrowing it means deciding
-        // that a write to a known secret path with no egress is consentable, which is a policy
-        // change with its own measurement. Pinned so the day somebody narrows that rule they
-        // find this test rather than a surprise.
+        // The scan promotes nothing, like the redirect arm. The asymmetry with a redirect is left
+        // standing on purpose: the block is the existing rule about a secret named inside a script,
+        // which does not tell a read from a write, and narrowing it is a policy change with its own
+        // measurement.
         assert!(
             matches!(b.tier, Tier::Blocked { .. }),
             "the capability scan's own rule decides this and is deliberately untouched; \
@@ -6418,11 +6329,8 @@ config = load('~/somewhere/seat.json')
         );
     }
 
-    /// Only a NON-SHELL body is scanned by this, which is the whole reason `ScriptLang`
-    /// exists: a shell body is read by the grammar, so a Python-shaped string inside it is a
-    /// string.
-    ///
-    /// Both halves in one test, because the assertion is a difference.
+    /// Only a NON-SHELL body is scanned by this, which is why `ScriptLang` exists: a shell body is read
+    /// by the grammar, so a Python-shaped string inside it is a string.
     #[test]
     fn only_a_foreign_body_is_scanned_this_way() {
         let foreign = "python3 - <<'PY'\nopen('/tmp/zzz','w')\nPY";
@@ -6483,11 +6391,9 @@ open('a.txt','a').write(more)
     }
 }
 
-/// A script named as a path is read the way a here-document body is, because a path-named
-/// script otherwise reports `execute_code` and nothing about what the file does.
-///
-/// The cases that must not collapse: the file may be unreadable, missing, or written by an
-/// earlier stage of the same command, and it can change between the scan and the run.
+/// A script named as a path is read the way a here-document body is, because a path-named script
+/// otherwise reports `execute_code` and nothing about what the file does. The file may be unreadable,
+/// missing, written by an earlier stage, or changed between the scan and the run.
 #[cfg(test)]
 mod a_script_named_as_a_path {
     use super::*;
@@ -6726,10 +6632,8 @@ open(p,'w').write(s.replace('x','y'))
         assert_eq!(script_argument(&inner, &argv).as_deref(), Some("foo.py"));
     }
 
-    /// A shell script at a path is read by the GRAMMAR, not by the token scan, for the same
-    /// reason a shell here-document is: `scan_script` is a tokeniser built for python, ruby
-    /// and js, while the shell already has a parser here, and `fold` is what turns a shell
-    /// body into intents and regions.
+    /// A shell script at a path is read by the GRAMMAR, not the token scan, for the same reason a shell
+    /// here-document is: the shell already has a parser here, and `fold` turns a body into intents.
     #[test]
     fn a_shell_script_at_a_path_is_read_by_the_grammar() {
         let text = "#!/bin/bash\nrm -rf /opt/things\n";
