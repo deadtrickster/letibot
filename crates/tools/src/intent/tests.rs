@@ -1395,6 +1395,66 @@ fn the_measured_command_resolves_because_pwd_is_the_calls_own_directory() {
     );
 }
 
+/// A `for` over a brace list is the passes the shell makes of it, so every read and every write
+/// per pass is one the parser reports rather than a hole.
+#[test]
+fn a_loop_over_a_brace_list_reports_one_write_per_pass() {
+    let dir = "/home/dead/Projects/letibot";
+    let x = b(&format!(
+        "for i in {{1..3}}; do cp {dir}/in {dir}/out$i; done"
+    ));
+    assert!(x.resolved, "{:?}", x.findings);
+    let n = x.command.clone().expect("a shell command");
+    let reads: Vec<Option<&str>> = n
+        .stages
+        .iter()
+        .map(|s| s.argv.first().and_then(|w| w.literal()))
+        .collect();
+    let writes: Vec<Option<&str>> = n
+        .stages
+        .iter()
+        .map(|s| s.argv.get(1).and_then(|w| w.literal()))
+        .collect();
+    assert_eq!(
+        reads,
+        vec![
+            Some("/home/dead/Projects/letibot/in"),
+            Some("/home/dead/Projects/letibot/in"),
+            Some("/home/dead/Projects/letibot/in")
+        ]
+    );
+    assert_eq!(
+        writes,
+        vec![
+            Some("/home/dead/Projects/letibot/out1"),
+            Some("/home/dead/Projects/letibot/out2"),
+            Some("/home/dead/Projects/letibot/out3")
+        ]
+    );
+    assert_eq!(x.regions, [Region::Workspace].into_iter().collect());
+    // The words it makes are the words of the same list written out, so the list a person
+    // could have typed and the range are one reading.
+    let typed = b(&format!("for i in 1 2 3; do cp {dir}/in {dir}/out$i; done"));
+    let words = |x: &Baseline| -> Vec<(String, Vec<String>)> {
+        x.command
+            .as_ref()
+            .expect("a shell command")
+            .stages
+            .iter()
+            .map(|s| {
+                (
+                    s.program.text().unwrap_or_default().to_string(),
+                    s.argv
+                        .iter()
+                        .map(|w| w.text().unwrap_or_default().to_string())
+                        .collect(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(words(&typed), words(&x));
+}
+
 /// `$HOME` and a variable the same command assigned are values; nothing else is. A
 /// substitution's value is not in the text, or nothing assigned it, or bash expands the
 /// argument list before a prefix assignment lands.

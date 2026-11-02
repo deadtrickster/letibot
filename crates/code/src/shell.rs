@@ -891,13 +891,28 @@ fn unrolled_for(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Nor
         if child.field.as_deref() != Some("value") {
             continue;
         }
-        let Resolved::Literal(v) = resolve(child, source, &out.binds) else {
-            return false;
+        // A brace list in the list position is the words bash makes of it, so
+        // `for i in {1..3}` is three passes like `for i in 1 2 3`.
+        let words = match brace_words(child, source) {
+            Some(words) => words,
+            None => match resolve(child, source, &out.binds) {
+                Resolved::Literal(v) => vec![Word::Literal(v)],
+                _ => return false,
+            },
         };
-        if !one_word(&v) {
+        for w in words {
+            // A brace alternative the shell would glob is a file set, not a value.
+            let Word::Literal(v) = w else {
+                return false;
+            };
+            if !one_word(&v) {
+                return false;
+            }
+            values.push(v);
+        }
+        if values.len() > MOST_ITERATIONS {
             return false;
         }
-        values.push(v);
     }
     if values.is_empty() || values.len() > MOST_ITERATIONS {
         return false;
@@ -2315,6 +2330,43 @@ mod tests {
         assert_eq!(x.stages[3].argv[0], Word::Literal("done /w/b".into()));
     }
 
+    /// A `for` over a brace list is the passes the shell makes of it: a brace is decided by the
+    /// text, so the body is walked once per word rather than left unread.
+    #[test]
+    fn a_for_over_a_brace_list_is_unrolled_into_the_words_it_makes() {
+        let x = n("for i in {1..3}; do cat /w/f$i; done");
+        assert!(x.is_resolved(), "{:?}", x.unresolved);
+        let tails: Vec<Option<&str>> = x
+            .stages
+            .iter()
+            .map(|s| s.argv.last().and_then(Word::literal))
+            .collect();
+        assert_eq!(tails, vec![Some("/w/f1"), Some("/w/f2"), Some("/w/f3")]);
+        assert!(
+            x.stages
+                .iter()
+                .all(|s| s.certainty == Certainty::Conditional),
+            "a brace list does not make a loop body unconditional"
+        );
+
+        // A brace concatenated with text, and two brace words in one list.
+        let x = n("for i in {a,b}.txt; do cat /w/$i; done");
+        assert!(x.is_resolved(), "{:?}", x.unresolved);
+        let tails: Vec<Option<&str>> = x
+            .stages
+            .iter()
+            .map(|s| s.argv.last().and_then(Word::literal))
+            .collect();
+        assert_eq!(tails, vec![Some("/w/a.txt"), Some("/w/b.txt")]);
+        let x = n("for i in {1..2} {8,9}; do echo $i; done");
+        assert!(x.is_resolved(), "{:?}", x.unresolved);
+        assert_eq!(x.stages.len(), 4);
+
+        // Past the bound, and a brace alternative the shell would glob: unread, as before.
+        assert!(!n("for i in {1..100}; do echo $i; done").is_resolved());
+        assert!(!n("for i in {a,*}; do echo $i; done").is_resolved());
+    }
+
     /// **A list the command does not spell is not unrolled**, and each of these is a real
     /// `for` from the same corpus.
     #[test]
@@ -2327,8 +2379,6 @@ mod tests {
             "for f in $(ls); do grep -n x $f; done",
             // Two words from one: a single binding cannot stand for both.
             "for f in \"a b\"; do grep -n x $f; done",
-            // A number of passes nobody wrote down.
-            "for f in {a,b}.txt; do grep -n x $f; done",
         ] {
             let x = n(cmd);
             assert!(!x.is_resolved(), "{cmd} was unrolled: {:?}", x.stages);
