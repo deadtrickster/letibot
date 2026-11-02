@@ -1,8 +1,6 @@
-//! **A job's completion notice, two lines a job, and its whole card one click away.**
-//!
-//! The operator, pasting one: *"i dont need job completion card that huge - first line is
-//! j<id> - slug - truncated cmd and second line is truncated output. click behaves similar to
-//! diff click - popup with full card"*. See `ui::transcript::job_card`.
+//! A job's completion notice: two lines a job - the id, slug and truncated command, then the
+//! truncated output - and the whole card one click away, in a popup, the way a diff row is.
+//! See `ui::transcript::job_card`.
 
 use super::*;
 use crate::ui::transcript::job_card::{JobTail, ended_jobs, notice_jobs};
@@ -463,11 +461,9 @@ fn a_meanwhile_batch_draws_its_heading_and_two_lines_per_job() {
     assert_eq!(a.notice_rows.len(), 5, "{:?}", a.notice_rows);
 }
 
-/// **The turn-end batch folds the same way, and says what is true.** pg-noop, 2026-10-11: a batch
-/// headed *"while you were busy"* reached a model that had been idle for an hour; the operator
-/// ruled *"jobs were ran for a reason and held for a reason. once turn ends no reason to hold"*,
-/// so a held batch now comes the moment its turn ends, headed *"while you were working"*. The head
-/// recognises the heading by its tag, not its words — this pins that the new words still fold.
+/// The turn-end batch folds the same way, and says what is true: a batch held while the turn ran is
+/// released the moment its turn ends, headed `while you were working`. The head recognises the
+/// heading by its tag and not by its words, which is what this pins.
 #[test]
 fn a_turn_end_batch_folds_to_its_heading_and_two_lines_per_job() {
     let jobs = notice_jobs(MEANWHILE_TURN_END).expect("the batch's jobs parse");
@@ -489,12 +485,9 @@ fn a_turn_end_batch_folds_to_its_heading_and_two_lines_per_job() {
     assert!(!joined.contains(BOILERPLATE), "{joined}");
 }
 
-/// **The line naming the plan rows that wait on a completion is read, and drawn without its
-/// instruction to the model.** `harnessd` appends it after the closing paragraph when a row was
-/// attached to the job with `wait_on` — the operator, 2026-10-11: *"the completion should mention
-/// associated todos"* (pg-noop: a gate's completion arrived and the row waiting on it stayed open).
-/// Before this head knew the line, *"a line after the closing"* would have sent the whole notice
-/// back to raw prose.
+/// The line naming the plan rows that wait on a completion is read, and drawn without its
+/// instruction to the model: `harnessd` appends it after the closing paragraph when a row was
+/// attached to the job with `wait_on`. Unread, the whole notice would go back to raw prose.
 #[test]
 fn the_rows_waiting_on_a_completion_are_kept_on_the_compact_row() {
     let waiting = "Waiting on this: \"make tier 1 green\" (the operator's), \"CRITERION\" (yours) \
@@ -561,10 +554,9 @@ fn hovering_a_notice_brightens_every_row_it_opens_from() {
     }
 }
 
-/// **The note that says "continue from the summary above" opens with the summary in it** — the
-/// operator: *"then session note - continue from the summary above (click for details). well i
-/// clicked - no summary"*. The popup was the note's own sentence; the summary is the compacted
-/// transcript's first row, often far above and hidden entirely at the `conversation` rung.
+/// The note that says continue from the summary above opens with the summary in it: the popup is the
+/// note's own sentence otherwise, and the summary is the compacted transcript's first row, often far
+/// above and hidden entirely at the `conversation` rung.
 #[test]
 fn the_continue_note_opens_with_the_summary_it_points_at() {
     let hub = Hub::new("s");

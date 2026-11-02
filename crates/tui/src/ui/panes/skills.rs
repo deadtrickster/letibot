@@ -1,19 +1,11 @@
-//! **The skills this box has** — `/skills`, one row each: the name, where it was found and its
-//! one line. Enter hands that skill's body to the session.
+//! The skills this box has - `/skills`, one row each: the name, where it was found and its one
+//! line. Enter hands that skill's body to the session.
 //!
-//! # Why the rows say where a skill came from
-//!
-//! A skill is material to follow only as far as it does not contradict the operator, and the
-//! label is the fact a reader needs to weigh it: `the operator's` is their own instruction, and
-//! `this project`, `installed from …`, `the fabric` and `written by a model` are not. The prompt's
-//! index carries the same label for the same reason, and this pane draws the daemon's rows
-//! unaltered so the two cannot come to different answers about one skill.
-//!
-//! # Enter, and why the head does not hold the body
-//!
-//! Enter sends `LoadSkill` (`Action::LoadSkill`): the DAEMON loads the body, writes the
-//! operator's message and runs the turn. A head that fetched a body and composed a prompt would
-//! be a second writer of a row, and a fabric skill's body is a read only the daemon may make.
+//! The row's label is the fact a reader needs to weigh a skill, since a skill is material to follow
+//! only as far as it does not contradict the operator: `the operator's` is their own instruction and
+//! `this project`, `installed from`, `the fabric` and `written by a model` are not. The prompt's
+//! index carries the same label, and the pane draws the daemon's rows unaltered so the two agree.
+//! Enter sends `LoadSkill`: a head that composed the prompt would be a second writer of a row.
 
 use crate::app::*;
 use rano::agent::pane::{self, PaneLines};

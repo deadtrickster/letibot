@@ -3,75 +3,28 @@
 
 use super::*;
 
-/// How much of the stream reaches the transcript.
-///
-/// **Five rungs, and the bottom one is a different kind of thing from the other four.** The
-/// four are *registers* — how much of the event stream is shown — and they are ordered by
-/// how loud they are. `Conversation` is a *scope*: the conversation, and nothing the head did
-/// to produce it. It sits at the bottom because that is the order they are cycled in and
-/// because it shows the least, but the row it is about is not a decibel.
-///
-/// The name is letibot's to choose and **both heads use it** (R37, §11.6): `Verbosity` is this
-/// ladder and these levels are its vocabulary, so a reader moving between the two heads must
-/// not have to learn two words for one view. The key or verb that reaches it is each head's
-/// own.
+/// How much of the stream reaches the transcript: four registers ordered by loudness, plus
+/// `Conversation` at the bottom, which is a scope and not a register - the conversation and nothing
+/// the head did to produce it - there because it shows the least and is cycled to first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verbosity {
-    /// **The conversation alone** — the operator's messages and the model's answers, and
-    /// nothing the head did to produce them.
-    ///
-    /// Hidden: tool calls, tool outcomes, tool payloads, reasoning, head arrivals, command
-    /// attribution. **Not hidden, and this is the ruling rather than a preference:**
-    ///
-    /// * **Warnings.** [`Verbosity::Loud`]'s docstring settled it and the reasoning transfers
-    ///   whole — a warning is a fact the daemon chose to *interrupt* with, and this whole
-    ///   ladder is applied to the transcript at once, so a rung that hid one would
-    ///   retroactively erase a warning already read. That is not a filter but a revision.
-    /// * **Decision cards.** A gate card is not a tool row. Hiding it makes the session
-    ///   unanswerable while the call times out against a quiet screen.
-    /// * **Liveness.** This rung's own risk, and it is specific to it: with the tool rows
-    ///   hidden, **a ten-minute tool-heavy turn draws nothing at all**. The composer's border
-    ///   keeps the spinner and the elapsed time, so working and wedged stay distinguishable —
-    ///   see `App::turn_status`, which is not gated by any of this.
-    /// * **The operator's own act.** A `!` line and the `ToolResult` it produced are the
-    ///   conversation, not the head's working: *"an act of the person at the keyboard is never
-    ///   hidden by verbosity"* — this ladder governs how much of the MODEL's working you see,
-    ///   and it must not hide what YOU did. See [`Verbosity::keeps`], which is where the row's
-    ///   `origin` is read and where the ruling is argued — this docstring said *hidden: tool
-    ///   outcomes* until a `! ls` on a live head proved the sentence wrong.
-    ///
-    /// **It is a view.** Nothing is dropped from the transcript, the ledger, the corpus or
-    /// what is sent to the model, and the filter is applied to the whole transcript at once,
-    /// so switching back restores every row including the span it was on. That is what makes
-    /// hiding safe here where an elision would need a placeholder per row — R29's remedy rule
-    /// is satisfied by the MODE being named on screen (`App::scroll_state`'s neighbour,
-    /// `App::rung_state`), which is the thing the operator asked to be rid of.
+    /// The conversation alone: the operator's messages and the model's answers.
+    /// Warnings, decision cards and the operator's own act are never hidden - hiding one would
+    /// revise what was already read or make a gate card unanswerable - and nothing is dropped.
     Conversation,
     /// Assistant text and tool outcomes only.
     Terse,
     /// Plus reasoning.
     Normal,
-    /// Plus head arrivals and who issued which command.
-    ///
-    /// **And a warning is not on this ladder.** This doc used to promise that
-    /// *Loud* adds warnings, and the code never gated them — so the doc and the
-    /// head disagreed, and R10 asked which was wrong. The code was right and the
-    /// doc was: a warning is a fact the daemon chose to INTERRUPT with, and a
-    /// level that hides it makes the head the thing that decides the operator
-    /// should not have seen it. Worse in this shape than in most: `Verbosity` is
-    /// applied to the whole transcript at once, so switching to `terse` would
-    /// retroactively erase a warning that had already been read — which is not a
-    /// filter but a revision. What a reader has against a warning is `/notes
-    /// dismiss`, which is per-note, visible, and counted on `/status`.
+    /// Plus head arrivals and who issued which command. A warning is not on this ladder: the daemon
+    /// chose to interrupt with it, so a level that hid it would make the head the thing deciding the
+    /// operator should not have seen it.
     Loud,
 }
 
 impl Verbosity {
-    /// **Every rung, in the order the ladder climbs** — R38's one list.
-    ///
-    /// The card's seeding, the typed name, the cycle and the `next()` all ask *which of
-    /// the values is this*, and a second list is a second answer. This is the same lesson
-    /// the completion table and the `mode` settings row each cost this tree once.
+    /// Every rung, in the order the ladder climbs: the one list the card's seeding, the typed name,
+    /// the cycle and `next()` all read. A second list is a second answer, and the two would drift.
     pub const ALL: [Verbosity; 4] = [
         Verbosity::Conversation,
         Verbosity::Terse,
@@ -99,54 +52,24 @@ impl Verbosity {
         }
     }
 
-    /// **Whether the rows the head made are drawn at all** — R37's one question.
-    ///
-    /// A predicate rather than a comparison at every call site: `== Verbosity::Conversation`
-    /// spelled out in five places is five places to update when a second scope-shaped rung
-    /// arrives, and the question being asked is *is this rung a scope*, not *is it
-    /// that value*.
+    /// Whether the rows the head made are drawn at all. A predicate rather than a comparison at every
+    /// call site: the question asked is whether this rung is a scope, not whether it is that value,
+    /// so a second scope-shaped rung is one edit here.
     pub fn hides_the_working(self) -> bool {
         matches!(self, Verbosity::Conversation)
     }
 
-    /// What a row of the head's own making needs, to be drawn under this rung.
-    ///
-    /// The conversation is `User` and `Assistant`; everything else in a transcript is
-    /// evidence *about* the conversation — a tool call, its outcome and payload, the model's
-    /// reasoning, a system update — and this rung is the one that shows the conversation and
-    /// not the working.
-    ///
-    /// **Except when the person at the keyboard is the one who acted**, which is a second
-    /// sentence rather than a footnote to the first: the rows that carry such an act are their
-    /// own `User` line and the `ToolResult` whose `origin` says they ran it.
+    /// What a row of the head's own making needs to be drawn under this rung: the conversation is
+    /// `User` and `Assistant`, and everything else is evidence about it. The exception is a row the
+    /// person at the keyboard acted on, which is the conversation too.
     pub fn keeps(self, item: &letibot_transcript::TranscriptItem) -> bool {
         use letibot_transcript::TranscriptItem as T;
         if !self.hides_the_working() {
             return true;
         }
-        // **An act of the person at the keyboard is never hidden by verbosity.**
-        //
-        // MEASURED on a live head, and this is the whole of the report: the operator typed
-        // `! ls`, the store held the right two rows — their own `User` line and the `bash`
-        // result with `origin: CallOrigin::Operator { … }` — the turn started correctly, and
-        // **the operator never saw the result on the screen**. Their own guess was the right
-        // one: *"i guess it was eaten by verbosity level"*, and their verbosity is
-        // `read-edits`, whose rung is this one.
-        //
-        // It is the wrong thing for a rung to eat, and the reason is the whole of what this
-        // ladder is for. **Verbosity governs how much of the MODEL's working you see; it must
-        // not hide what YOU did.** A `ToolResult` the operator ran is therefore the
-        // conversation exactly as the `User` row beside it is, and it is drawn at every rung of
-        // [`Verbosity::ALL`].
-        //
-        // **And it is still a tool row.** Being kept is a question about the filter and not
-        // about the fold: the row is drawn the way tool output is drawn — its header, its
-        // `+N lines`, and `ctrl-v`/`/t` to open it — and it is never expanded against the
-        // operator's wishes, because the fold is the operator's own switch and this clause
-        // does not touch it.
-        //
-        // [`operator_act`] reads the one fact that makes this knowable, and `origin` is on the
-        // row precisely so no head has to guess it: `None` is a call the MODEL proposed.
+        // An act of the person at the keyboard is never hidden by verbosity: this ladder governs how
+        // much of the MODEL's working you see, and it must not hide what YOU did. The row is still
+        // drawn as a tool row - its header, its `+N lines` - so the fold stays the operator's.
         if operator_act(item) {
             return true;
         }
@@ -154,46 +77,13 @@ impl Verbosity {
     }
 }
 
-/// **One of the things that can be shown or not** — the list the operator asked for.
-///
-/// > *"the verbositiy and visiblity toggles need a rewrite and normalization - some toggled by
-/// > shortcuts some by /commands. What I want - a list of things that can be shown and then
-/// > verbosity profiles composed by switching them on and off. For example leticl has read-edits
-/// > verbosity levels when all is hidden except edits"*
-///
-/// Five, and **[`Show::ALL`] is the only place one is added**: the row filter, the card,
-/// `/verbosity`, [`Visibility::parse`] and the key dispatch all walk that one list, so a switch
-/// in it is reachable by every one of them and a switch outside it is reachable by none.
-///
-/// # The three that are NOT on this list, and why the list must not grow them
-///
-/// **Warnings**, **decision cards** and **liveness** are not hideable, and there is no switch
-/// here to hang them on. [`Verbosity::Conversation`]'s docstring carried those three rulings
-/// and they survive: they are not repealed by putting a switch list beside the ladder, and the
-/// reasoning transfers whole.
-///
-/// * **Warnings.** *"a warning is a fact the daemon chose to interrupt with"*, and a filter
-///   applied to the whole transcript at once would *"retroactively erase a warning already
-///   read. That is not a filter but a revision."* A warning is a [`Note`] and not a row, so
-///   the list could not express one even if somebody wanted it to.
-/// * **Decision cards.** *"A gate card is not a tool row. Hiding it makes the session
-///   unanswerable while the call times out against a quiet screen."*
-/// * **Liveness.** [`App::turn_status`] is not gated by anything here, and this list is why it
-///   matters: `conversation` hides the tool rows, so a ten-minute tool-heavy turn would draw
-///   nothing at all, and the composer's border is what keeps working and wedged apart.
-///
-/// **And the operator's own act is not on the list either**, though unlike those three it has a
-/// switch that appears to cover it: `tools` is *"tool calls, their outcomes and their
-/// payloads"*, and the `ToolResult` of a `!` line is one of those rows. It is drawn anyway —
-/// *"an act of the person at the keyboard is never hidden by verbosity"* — and the clause lives
-/// in [`Verbosity::keeps`] rather than as a sixth switch, because **a switch is something a
-/// reader can turn off and this is not.**
+/// One of the things that can be shown or not. `Show::ALL` is the only place one is added, since the
+/// row filter, the card, `/verbosity`, the parse and the key dispatch all walk it. Warnings, decision
+/// cards, liveness and the operator's own act are not on it - they are not a reader's to turn off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Show {
-    /// **The cards that say what the head CHANGED** — an `edit`/`write` call and its diff.
-    ///
-    /// The operator's own switch, and the one the ladder could not be told: it is off at
-    /// every rung of the ladder and on at `read-edits`, which is a set and not a rung.
+    /// The cards that say what the head changed: an `edit`/`write` call and its diff. Off at every
+    /// rung of the ladder and on at `read-edits`, which is a set and not a rung.
     Edits,
     /// Tool calls, their outcomes and their payloads.
     Tools,
@@ -228,14 +118,9 @@ impl Show {
         }
     }
 
-    /// What it covers, in the reader's terms rather than the head's.
-    ///
-    /// **In this slice `tools`, `thinking` and `system` are the LADDER's switches**, drawn by
-    /// the rung [`Visibility::rung`] names: they are what [`Verbosity::Terse`], `Normal` and
-    /// `Loud` each turn ON, and their `hidden` end is the bottom of the ladder — which is why
-    /// `read-edits`, *"all is hidden except edits"*, is the switch list's one new drawing and
-    /// not a fifth kind of row filter. `edits` and `raw-calls` are this list's own and are
-    /// honoured switch by switch.
+    /// What it covers, in the reader's terms. `tools`, `thinking` and `system` are the LADDER's
+    /// switches, drawn by the rung; `edits` and `raw-calls` are this list's own and honoured switch by
+    /// switch, which is why `read-edits` is a drawing and not a fifth row filter.
     pub fn covers(self) -> &'static str {
         match self {
             Show::Edits => {
@@ -249,26 +134,9 @@ impl Show {
         }
     }
 
-    /// **The chord, as the pair that cannot drift**: the name a seam and the hint bar spell,
-    /// and the key the terminal actually sends.
-    ///
-    /// One entry for both, because a name in one table and a key in another is exactly how a
-    /// chord comes to be advertised and do nothing — and the key dispatch asks this table rather
-    /// than matching chords by hand ([`Key::show`]).
-    ///
-    /// **Why these two keys, kept from the arms they were written in.** `ctrl-r` for the thinking
-    /// is the fold this head has always had. `ctrl-x` for the raw markup is not one of the obvious
-    /// letters, and each of the obvious ones is taken: `ctrl-r` is the thinking — and the operator
-    /// ruled it out for this one by name, *"I want to save the ability to see raw tool calls but
-    /// it should be behind some chord, different to C-r"* — `ctrl-c`, `ctrl-d`, `ctrl-z`, `ctrl-s`
-    /// and `ctrl-q` are the terminal's own (two of them flow control that would freeze a pane),
-    /// `ctrl-l`, `ctrl-t` and `ctrl-s` are already this head's, and `ctrl-a/e/w/u/y/k/b/f` are the
-    /// composer's readline keys, which are muscle memory and not available. `alt-r` would read
-    /// better in the hint bar and is not safe: a lone `Esc` followed by a typed `r` arrives in the
-    /// same read as `ESC r`, and the composer's interrupt is `Esc` twice. What is left and is
-    /// mnemonic is **`x` for the XML-ish markup** — `<function=…><parameter=…>` — which is exactly
-    /// what the chord shows; `0x18` is unbound here, is not one of the tty's control characters,
-    /// and readline uses it only as a prefix, so nothing is waiting for a second byte.
+    /// The chord as the pair that cannot drift: the name a seam and the hint bar spell, and the key
+    /// the terminal sends. One entry for both, because a name in one table and a key in another is how
+    /// a chord is advertised and does nothing. `ctrl-x` for the raw markup is mnemonic and unbound.
     pub fn chord(self) -> Option<(&'static str, Key)> {
         match self {
             Show::Thinking => Some(("ctrl-r", Key::CtrlR)),
@@ -277,11 +145,9 @@ impl Show {
         }
     }
 
-    /// The levels this switch holds — what `/verbosity SWITCH=LEVEL` will take for it.
-    ///
-    /// `edits`, `system` and `raw-calls` have no body to fold: an edit card is drawn with its
-    /// excerpt or it is not drawn, a system row is a sentence, and the raw markup is the raw
-    /// markup. `tools` and `thinking` have bodies, which is what `folded` is.
+    /// The levels this switch holds - what `/verbosity SWITCH=LEVEL` takes for it. `edits`, `system`
+    /// and `raw-calls` have no body to fold, so they are drawn or not; `tools` and `thinking` have
+    /// bodies, which is what `folded` is.
     pub fn levels(self) -> &'static [Level] {
         match self {
             Show::Tools | Show::Thinking => &[Level::Hidden, Level::Folded, Level::Open],
@@ -289,14 +155,9 @@ impl Show {
         }
     }
 
-    /// **Where one press of this switch's chord takes it** — `None` for a switch no key
-    /// reaches.
-    ///
-    /// **The chord never lands on `hidden`**, and that is a ruling rather than a shortcut: the
-    /// chord's switch is the ladder's, the ladder hides a whole rung at a time
-    /// ([`Visibility::rung`]), and a press that put `thinking: hidden` on the status row would
-    /// name a state the screen does not carry. What a chord does is the body's — fold it and
-    /// unfold it — and hiding a row kind whole is what a profile is for.
+    /// Where one press of this switch's chord takes it, `None` for a switch no key reaches. The chord
+    /// never lands on `hidden`: the ladder hides a whole rung at a time, so `thinking: hidden` on the
+    /// status row would name a state the screen does not carry.
     pub fn by_chord(self, now: Level) -> Option<Level> {
         self.chord()?;
         Some(if now == Level::Open {
@@ -311,13 +172,9 @@ impl Show {
     }
 }
 
-/// **How much of one kind of row reaches the screen** — the value one switch holds.
-///
-/// Three levels and not two, and the third is what makes ONE mechanism out of two. The
-/// operator: *"some toggled by shortcuts some by /commands"*. Measured, those two were `ctrl-r`
-/// folding the model's thinking and `/t` unfolding every tool row — both questions about a
-/// BODY — while the rung above them hid whole rows, a question about the ROW. `folded` and
-/// `hidden` are those two answers, spelled one way.
+/// How much of one kind of row reaches the screen. Three levels and not two, and the third is what
+/// makes one mechanism out of two: `folded` and `hidden` are the two answers a reader already had -
+/// fold this body, hide this row - spelled one way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     /// The row is not drawn at all.
@@ -329,10 +186,8 @@ pub enum Level {
 }
 
 impl Level {
-    /// **Three words and no synonyms** — the operator's own words for the two ENDS of a switch
-    /// are *on* and *off*, and the middle one has no name in them; so `hidden`, `folded` and
-    /// `open` are what `/verbosity SWITCH=LEVEL` takes and what a refusal names, rather than
-    /// this head guessing which end somebody meant.
+    /// Three words and no synonyms: the operator's words for a switch's two ends are on and off, and
+    /// the middle has no name in them, so `hidden`, `folded` and `open` are what a refusal names.
     pub fn as_str(self) -> &'static str {
         match self {
             Level::Hidden => "hidden",
@@ -351,40 +206,9 @@ impl Level {
     }
 }
 
-/// **A profile IS its set** — one table, one row per profile, and the row's list is the
-/// profile.
-///
-/// **Not a variant of an enum with a `set()` beside it.** The operator asked for *"verbosity
-/// profiles composed by switching them on and off"*, and a profile that had to be DECODED into
-/// its switches would be a second definition of it — the copy this file keeps refusing to make,
-/// and the one that drifts the moment a switch is added.
-///
-/// # The table
-///
-/// | profile | the set it IS |
-/// |---|---|
-/// | `conversation` | the empty list — *"the conversation and nothing the head made"* |
-/// | `read-edits` | `{edits: open}` — **the operator's own example**: *"all is hidden except\n///   edits"*, which is `conversation` with ONE switch turned up |
-/// | `terse` | `read-edits` plus `{tools: folded}` |
-/// | `normal` | `terse` plus `{thinking: folded}` — where this head starts |
-/// | `loud` | `normal` plus `{system: open}` |
-///
-/// **Absence from a row's list is `hidden`**, which is what makes the empty list a sentence:
-/// a set is what is turned on, and everything a profile does not name is off.
-///
-/// # What a profile's levels mean here, and the one remainder
-///
-/// `edits` and `raw-calls` are honoured switch by switch ([`Visibility::keeps`], and the raw
-/// markup's own flag). `tools`, `thinking` and `system` are the LADDER's three, and the ladder
-/// turns them on together above its bottom rung, so at `terse`, `normal` and `loud` the rows of
-/// all three are drawn — as they are today — whatever level the row names. `conversation` and
-/// `read-edits` are exact: they turn none of the three on, and the bottom rung is the rung that
-/// hides them.
-///
-/// **Which is leticl's shape as well as this head's**: there, `reading-hides-p` is asked only at
-/// the two READING rungs (`:reading` and `:read-edits`) and the rungs above draw everything;
-/// what separates `:terse`, `:normal` and `:loud` there is `verbosity-at-least`'s gates, which
-/// is what separates `Terse`, `Normal` and `Loud` here (`src/session/events.lisp:120`).
+/// A profile IS its set: one table, one row per profile, and the row's list is the profile. Not an
+/// enum with a `set()` beside it, which would be a second definition that drifts when a switch is
+/// added. Absence from the list is `hidden`, which makes `conversation`'s empty list a sentence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Profile {
     /// The word `/verbosity` takes, the card lists and `head.toml` keeps.
@@ -435,11 +259,9 @@ impl Profile {
         why: "normal, plus who attached and who issued which command",
     };
 
-    /// **The table, in the order the card lists them.** `read-edits` sits next to
-    /// `conversation` rather than at the end because it is `conversation` with one switch up —
-    /// leticl puts it in the same place in its ring for the same reason
-    /// (`+verbosity-ladder+`, `src/session/events.lisp:113`: *"it draws everything `:reading`
-    /// draws PLUS the cards that say what the head CHANGED"*).
+    /// The table, in the order the card lists them. `read-edits` sits next to `conversation` rather
+    /// than at the end because it IS `conversation` with one switch up, and the ring climbs from
+    /// there.
     pub const ALL: [Profile; 5] = [
         Self::CONVERSATION,
         Self::READ_EDITS,
@@ -473,22 +295,9 @@ impl Profile {
     }
 }
 
-/// **The set of switches in force** — and the questions asked of it.
-///
-/// *Is this switch showing* ([`Visibility::shows`]), *which profile is this set, if any*
-/// ([`Visibility::profile`], [`Visibility::as_str`] — `custom …` when none), and the two
-/// questions the render asks of the set ([`Visibility::keeps`],
-/// [`Visibility::hides_the_working`]).
-///
-/// **The set is the state and the profile is a question asked of it.** That is the operator's
-/// ask, whole: a reader who takes `normal` and turns one switch up has a set that is no profile,
-/// and the head says `custom …` on the status row rather than pretending they are on one — which
-/// is the difference between this and the ladder, where the only state was one of four names.
-///
-/// The three questions the render used to ask of a rung are asked of this instead, and there is
-/// one place each: [`Visibility::keeps`] (is this row drawn), [`Visibility::hides_the_working`]
-/// (is anything of the head's hidden, which is what the run markers are counted for) and
-/// [`Visibility::rung`] (which rung the LADDER's own rows are drawn at).
+/// The set of switches in force. The set is the state and the profile is a question asked of it, so
+/// a reader who takes `normal` and turns one switch up has a set that is no profile and the status
+/// row says `custom` rather than pretending otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Visibility {
     pub(crate) edits: Level,
@@ -498,13 +307,9 @@ pub struct Visibility {
     pub(crate) raw_calls: Level,
 }
 
-/// What a typed word means, once [`Visibility::parse`] has read it.
-///
-/// **Two shapes and not one**, because a switch named on its own is a question about the set it
-/// is applied to and a profile is a whole set: `/verbosity tools=hidden` says *this switch, from
-/// where I am*, and `/verbosity terse` says *that set and no other*. Reading the two as one
-/// would make `edits=open` mean `{edits: open}` — every other switch hidden — which is
-/// `read-edits`, a profile, and not what a reader who already had `loud` typed.
+/// What a typed word means. Two shapes and not one, because a switch named alone is a question about
+/// the set in force and a profile is a whole set: read as one, `edits=open` would mean `read-edits`
+/// rather than what a reader who already had `loud` typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
     /// A whole set: a profile's, or the set a `custom …` name spells out.
@@ -540,13 +345,9 @@ impl Visibility {
         Visibility::of(Profile::NORMAL)
     }
 
-    /// **The set with everything the ladder draws turned on** — what an OPEN run is drawn at.
-    ///
-    /// R37 AMENDED: *"opening a run is the rung lifted for its rows and no others"* — and
-    /// "lifted" means the set that shows the lot, which is where the walk used to pass
-    /// `Verbosity::Normal` for exactly this reason (`Normal::keeps` answers `true` for every
-    /// row). It is `loud`'s set because that is the profile that shows everything the ladder
-    /// can, and it carries `edits` with it so an open run draws its edit cards too.
+    /// The set with everything the ladder draws turned on: what an OPEN run is drawn at. It is
+    /// `loud`'s set because that is the profile showing everything the ladder can, and it carries
+    /// `edits` with it so an open run draws its edit cards too.
     pub fn lifted() -> Visibility {
         Visibility::of(Profile::LOUD)
     }
@@ -586,13 +387,9 @@ impl Visibility {
         Profile::of(self)
     }
 
-    /// **The name of this state**, for the status row, `/status` and `head.toml`: the profile's
-    /// name when the set is one, and `custom …` with the switches that differ from the head's
-    /// start when it is not (*"any set that is no profile reads as `custom …`"*).
-    ///
-    /// The spelling round-trips through [`Visibility::parse`], which is what makes it a name
-    /// rather than a caption — a preference written here means the same set when it is read
-    /// back, and that is the whole of *"a stored preference keeps meaning"*.
+    /// The name of this state, for the status row, `/status` and `head.toml`: the profile's name when
+    /// the set is one, and `custom` with the switches that differ from the head's start when it is
+    /// not. It round-trips through `parse`, which is what makes it a name and not a caption.
     pub fn as_str(self) -> String {
         if let Some(p) = self.profile() {
             return p.name.to_string();
@@ -607,18 +404,9 @@ impl Visibility {
         words.join(" ")
     }
 
-    /// **The one reader of a typed word** — a profile name, a switch name, or `SWITCH=LEVEL` —
-    /// and it is the same function `head.toml` is read with ([`App::load_prefs`]) and the same
-    /// one the key dispatch's names come from.
-    ///
-    /// A bare switch name turns that switch ON: *on* and *off* are the operator's words for the
-    /// two ends of a switch and the middle level has no name in them, so `/verbosity edits` is
-    /// `edits=open` and a reader who meant `folded` says `folded`.
-    ///
-    /// The refusal is a sentence and not `None`, because the caller's answer to a word this
-    /// head does not know is to SAY what it does know — the list of profiles and of switches —
-    /// and a parse that only said *no* would put that list in a second place, which is the copy
-    /// that drifts.
+    /// The one reader of a typed word: a profile name, a switch name, or `SWITCH=LEVEL` - the same
+    /// function `head.toml` is read with. A bare switch name turns it on, on and off being the
+    /// operator's words for the two ends. The refusal is a sentence because the caller repeats it.
     pub fn parse(typed: &str) -> Result<Change, String> {
         let t = typed.trim().to_ascii_lowercase();
         if t.is_empty() {
@@ -688,10 +476,9 @@ impl Visibility {
             named.push((show, level));
         }
         if whole {
-            // **A whole set, read against a BASE** — the head's own start, because that is what
-            // `as_str` writes a custom name as: the switches that differ from it. One word is
-            // `SWITCH=LEVEL` and is applied to the set IN FORCE; `custom …` is a set and replaces
-            // it, which is the same distinction `Change` carries.
+            // A whole set, read against a BASE - the head's own start, which is what `as_str` writes a
+            // custom name as. One word is `SWITCH=LEVEL`, applied to the set IN FORCE; `custom` replaces
+            // it, which is the distinction `Change` carries.
             let mut back = Visibility::starting();
             for (s, l) in named {
                 back = back.with(s, l);
@@ -702,23 +489,9 @@ impl Visibility {
         Ok(Change::Switch(s, l))
     }
 
-    /// **Is this row drawn** — and it is the ladder's answer plus the one clause the ladder
-    /// cannot say.
-    ///
-    /// *"an `edit`/`write` call and its diff"* is kept when `edits` is showing, whatever the
-    /// rung says. leticl differs from it in exactly one predicate and says so in as many words —
-    /// *"`read-edits` KEEPS THE EDITS, AND THIS IS THE ONLY PLACE THAT DECIDES IT"*
-    /// (`src/cards/hidden-run.lisp:40`) — and **this is our one place**: `item_lines` and the run
-    /// finder both ask this, so a second opinion about which rows are hidden cannot put a marker
-    /// beside a row that is still on the screen.
-    ///
-    /// **And the operator's own act is asked BEFORE the switch**, because the switches are
-    /// verbosity too: `tools` is *"tool calls, their outcomes and their payloads"*, and the
-    /// `ToolResult` of a `!` line is one of those rows — *"an act of the person at the keyboard
-    /// is never hidden by verbosity"*. [`Verbosity::keeps`] carries the ruling and reads the
-    /// `origin`; it is asked here as well so the `edits` clause below cannot hide a call a
-    /// person made either. The door's list holds no `edit`/`write` name today and a list that can
-    /// grow is not a reason to leave the hole in the one predicate that decides.
+    /// Is this row drawn: the ladder's answer plus the one clause the ladder cannot say - an
+    /// `edit`/`write` card is kept when `edits` is showing, whatever the rung says. This is the one
+    /// place it is decided. The operator's own act is asked first, the switches being verbosity too.
     pub fn keeps(self, item: &letibot_transcript::TranscriptItem) -> bool {
         if operator_act(item) {
             return true;
@@ -735,14 +508,9 @@ impl Visibility {
         self.rung().hides_the_working()
     }
 
-    /// **The rung the LADDER's own rows are drawn at** — `tools`, `thinking` and `system` are
-    /// [`Verbosity::Terse`], `Normal` and `Loud`'s three switches, so a set that turns them on
-    /// in the ladder's order names a rung, and a set that turns none of them on is the bottom.
-    ///
-    /// **Which is what makes `read-edits` the operator's rung.** *"all is hidden except
-    /// edits"* turns none of the three on, so the tool rows, the thinking and the system rows
-    /// are hidden by exactly the rung that has always hidden them — the ladder is still what
-    /// hides those rows, and the one thing it could not be told is the edit card.
+    /// The rung the LADDER's own rows are drawn at: `tools`, `thinking` and `system` are the three
+    /// switches of `terse`, `normal` and `loud`, so a set that turns them on in the ladder's order
+    /// names a rung and one that turns none on is the bottom - which makes `read-edits` a rung.
     pub fn rung(self) -> Verbosity {
         if self.shows(Show::System) {
             Verbosity::Loud
@@ -755,15 +523,9 @@ impl Visibility {
         }
     }
 
-    /// **Can the ladder draw this set, switch by switch** — and which switch it cannot, when it
-    /// cannot.
-    ///
-    /// The ladder turns its three switches on in one order: `tools`, then `thinking`, then
-    /// `system`. So a set that hides a switch BELOW one it shows (`tools=hidden` while the
-    /// thinking is on) is a set no rung can be — the rung that draws the thinking draws the tool
-    /// rows too — and the verb refuses it rather than storing a word the screen would not carry.
-    /// **This is the "a profile that changes nothing is worse than an unfinished rewrite"
-    /// rule, made mechanical**: what cannot be drawn is not stored.
+    /// Can the ladder draw this set, switch by switch - and which switch it cannot. The ladder turns
+    /// its three on in one order, so a set that hides a switch BELOW one it shows is a set no rung can
+    /// be, and the verb refuses it rather than storing a word the screen would not carry.
     pub fn undrawable(self) -> Option<Show> {
         if self.shows(Show::Tools) || !self.shows(Show::Thinking) {
             if self.shows(Show::Thinking) || !self.shows(Show::System) {
@@ -775,19 +537,9 @@ impl Visibility {
     }
 }
 
-/// **Is this row the act of the person at the keyboard** — the one fact verbosity may not hide.
-///
-/// R24 part two's [`letibot_transcript::CallOrigin`] is what makes it knowable, and it is the
-/// whole reason the field is on the row: a `ToolResult` the daemon appended for a call the
-/// OPERATOR ran — the `bash` behind their `!` line, a `/web-fetch` from their own console —
-/// carries `Some(CallOrigin::Operator { who })`, while one the model proposed carries `None`.
-/// A head that inferred it from *no proposing assistant row above* would be guessing, which is
-/// the defect the field was added to end.
-///
-/// **The `User` row beside such a result is the operator's too**, and it needs no predicate
-/// here: `User` is kept at every rung already, because it is the conversation. This answers only
-/// the half that was hidden — see [`Verbosity::keeps`] for the ruling and the measurement, and
-/// [`Visibility::keeps`] for why it is asked before the switch list.
+/// Is this row the act of the person at the keyboard - the one fact verbosity may not hide.
+/// `CallOrigin::Operator` is what makes it knowable and is why the field is on the row: a head that
+/// inferred it from the absence of a proposing row above would be guessing.
 pub(crate) fn operator_act(item: &letibot_transcript::TranscriptItem) -> bool {
     matches!(
         item,
@@ -798,19 +550,9 @@ pub(crate) fn operator_act(item: &letibot_transcript::TranscriptItem) -> bool {
     )
 }
 
-/// **Is this row one that says what the head CHANGED** — the one predicate `read-edits` differs
-/// by, and the only place it is decided.
-///
-/// **Two signals, both the tree's own** (leticl's `item-shows-an-edit-p`, `src/cards/hidden-run.lisp:53`):
-/// the daemon sends the excerpt on a finished call — which is the signal a `bash` command
-/// carries when the file changed under it — and the call's NAME through [`card::Verb::of`],
-/// where `edit`, `patch`, `apply_patch`, `str_replace`, `write`, `write_file` and `create` are the
-/// two verbs.
-///
-/// **An unknown tool name is not an edit**, and neither is a call whose outcome is not `Ok` —
-/// leticl: *"this predicate is allowed to be wrong in the direction of hiding, never in the
-/// direction of claiming."* A refused write changed nothing, and the renderer draws no diff for
-/// it either (`item_lines`' own gate), so the two agree about the same row.
+/// Is this row one that says what the head CHANGED: the one predicate `read-edits` differs by. Two
+/// signals, both the tree's own - the excerpt on a finished call, and the call's name through
+/// `card::Verb::of`. An unknown name or a refused call is not an edit: this errs toward hiding.
 pub(crate) fn is_edit_card(item: &letibot_transcript::TranscriptItem) -> bool {
     let letibot_transcript::TranscriptItem::ToolResult {
         name,
@@ -843,15 +585,9 @@ pub(crate) fn names(words: &[String]) -> String {
     }
 }
 
-/// How much of a foldable thing is on the screen.
-///
-/// Two states and a key that flips them, rather than a per-item toggle: the
-/// pointer here is a wheel, not a cursor — it scrolls and selects nothing — so a
-/// per-item affordance would still need a cursor mode, and a cursor mode is a
-/// second keymap for a head whose whole input surface is one line. The
-/// **discoverability** is bought instead by the fold's own header
-/// naming its key — `▸ thinking · 18 lines · ctrl-r` — which is on the screen at
-/// the moment the operator wants it.
+/// How much of a foldable thing is on the screen: two states and a key that flips them, rather than
+/// a per-item toggle. The pointer here is a wheel that selects nothing, so a per-item affordance
+/// would need a cursor mode and a second keymap. The fold's header names its key instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fold {
     /// A title and a count. The default for reasoning, because the reasoning is

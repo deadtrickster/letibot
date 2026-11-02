@@ -1,9 +1,5 @@
-//! **A restart and a stale prompt, one line each, and the whole of each one click away.**
-//!
-//! The operator, pasting what pg-noop's head drew after its restart onto a new build — a
-//! `prefix_stale` note, a `restart_restored` note and the session's `[restart] …` notice, each a
-//! wrapped paragraph: *"these gray walls are hilarious … make them the usual one liners"*. See
-//! `ui::transcript::restart_card` and `ui::transcript::stale_card`.
+//! A restart and a stale prompt: one line each, and the whole of each one click away in a popup.
+//! See `ui::transcript::restart_card` and `ui::transcript::stale_card`.
 
 use super::redcard::{holds, popup_text, rows_with, with_notice, with_warning};
 use super::*;
@@ -395,10 +391,9 @@ fn a_restart_warning_and_its_notice_are_one_line() {
     }
 }
 
-/// **One restart, one header** — pg-noop, 2026-10-15: the card's popup drew the warning (the
-/// header and its four `reminded (not re-run)` lines) and, under it, the notice it absorbed,
-/// which opens with the SAME header. The notice is the warning's text in more words, so the popup
-/// is the notice alone: the header once, every job's line, nothing lost.
+/// One restart, one header. The notice the card absorbed is the warning's text in more words and opens
+/// with the same header, so the popup is the notice alone: the header once, every job's line, nothing
+/// lost.
 #[test]
 fn a_restart_card_opens_with_its_header_once() {
     for warning_first in [false, true] {
@@ -469,11 +464,8 @@ fn a_card_popup_keeps_its_text_when_no_row_repeats_its_header() {
     assert_eq!(card_popup_text("head", &[]), "head");
 }
 
-/// **A restart and the children it handed over are ONE line** — pg-noop, 2026-10-14: one restart
-/// drew `session · restarted · down 2s · restored: 12 subagents · click for details` from the
-/// warning, then `session · restarted · down 2s · click for details` from the notice with an
-/// `Agent you-are-reading-part · …` line per child under it — twelve of them. The `[task]` group
-/// is the restart's own: counted on its line, and in the popup, never drawn as a fold.
+/// A restart and the children it handed over are ONE line. The `[task]` group is the restart's own:
+/// counted on its line and in the popup, never drawn as a fold with a line per child under it.
 #[test]
 fn a_restart_and_the_children_it_handed_over_are_one_line() {
     let line = "restarted · down 2s · restored: 12 subagents · click for details";

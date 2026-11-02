@@ -1,19 +1,11 @@
-//! **A collapsed notice stays collapsed** — the pairing R89 makes (`one_event`: one event, one
-//! row) across the two doors that replace a transcript, and across the reader's own retirement.
+//! A collapsed notice stays collapsed: the pairing `one_event` makes (one event, one row) holds
+//! across the doors that replace a transcript and across the reader's own retirement.
 //!
-//! The operator, 2026-11-01: *"btw after certain evens all collapsed notifications reappear"*. A
-//! notice is *collapsed* when its one-line card stands for the session row that says the same
-//! event — a `[reseat]`, a `[restart]`, an `EMERGENCY —` for a red tip, a stale prompt. Two things
-//! un-collapsed it:
-//!
-//! * the reader's `ctrl-n`. `is_absorbed` asked *is this note retired* and answered *then draw the
-//!   row*, so a key whose whole promise is *hide this* swapped one line for the wall it replaced;
-//! * any event that replaced the transcript — a `/resync`, a reattach, a switch back. `absorbed`
-//!   was keyed by the row's INDEX and cleared at both doors, so every collapse went with it.
-//!
-//! Both are the same rule now: a row is collapsed while its note's card is on the screen **or** the
-//! reader retired that note, and the pairing is keyed by the row's `item_id` so a snapshot that
-//! hands back the same rows keeps it.
+//! A notice is collapsed when its one-line card stands for the session row that says the same event
+//! - a `[reseat]`, a `[restart]`, an `EMERGENCY` for a red tip, a stale prompt. The rule is that a
+//! row is collapsed while its note's card is on the screen OR the reader retired that note, and the
+//! pairing is keyed by the row's `item_id`, so a snapshot handing back the same rows keeps it. Keyed
+//! by index, every resync, reattach and switch back would clear it.
 
 use super::*;
 use letibot_transcript::Speaker;
@@ -69,12 +61,9 @@ fn screen(a: &mut App) -> String {
     a.screen(120, 40).join("\n")
 }
 
-/// **The collapse, as the operator sees it**: one card for the warning and NO row of its own.
-///
-/// `notice_rows` is the rows a click opens — every agent and System row the frame drew — so a
-/// collapsed row is one that is not in it. Asserted both ways, because either half alone is a
-/// picture nobody could act on: a card with the row under it is the duplicate R89 exists to end,
-/// and neither is the event gone from the screen.
+/// The collapse, as the operator sees it: one card for the warning and NO row of its own.
+/// `notice_rows` is the rows a click opens, so a collapsed row is one that is not in it - asserted
+/// both ways, since a card with the row under it is the duplicate the pairing exists to end.
 fn collapsed(a: &mut App, what: &str) {
     let s = screen(a);
     assert_eq!(
@@ -97,12 +86,9 @@ fn a_reseat_is_one_card_and_no_row() {
     );
 }
 
-/// **`ctrl-n` hides the notice; it does not hand its row back.**
-///
-/// The key's promise (`/help`): *retire every note this head is showing — hidden, still counted on
-/// /status, `/notes` prints them and `/notes restore` brings them back*. Before this, retiring the
-/// card put the `[reseat]` row on the screen in its place: the reader asked for the wall to go and
-/// got the wall.
+/// `ctrl-n` hides the notice; it does not hand its row back. Retiring the card must not put the
+/// `[reseat]` row on the screen in its place: the reader asked for the wall to go, and the note is
+/// still counted on `/status`.
 #[test]
 fn a_retired_notice_keeps_its_row_collapsed() {
     let (mut a, _hub) = watched();
@@ -124,11 +110,9 @@ fn a_retired_notice_keeps_its_row_collapsed() {
     );
 }
 
-/// **And it stays retired across the events that replace the transcript.**
-///
-/// A `/resync` (a `Hello` carrying a fresh snapshot), a reattach and a switch away and back all
-/// re-plant the warning — the same `(code, ts, detail)`, so the same key — and none of them may
-/// bring back the row the reader retired.
+/// And it stays retired across the events that replace the transcript: a `/resync`, a reattach and a
+/// switch away and back all re-plant the same note under the same key, and none of them may bring
+/// back the row the reader retired.
 #[test]
 fn a_retired_notice_stays_collapsed_across_a_resync_and_a_switch() {
     let (mut a, hub) = watched();
@@ -157,16 +141,9 @@ fn a_retired_notice_stays_collapsed_across_a_resync_and_a_switch() {
     );
 }
 
-/// **A note the 64-note cap evicted still holds its row collapsed** — the pairing outlives the note
-/// it names, because the reader's retirement is what it is about.
-///
-/// `App::file_note` keeps 64 notes and drops the OLDEST, while `App::absorbed` keeps a pairing for
-/// every id the key set still names (`App::load`'s `retain` says so in as many words). So a
-/// long-lived head reaches a state where the pairing is here, the reader retired it, and the note
-/// is gone — and `is_absorbed` asked the notes alone, so the row came back on the first rebuild
-/// after the eviction. A rebuild is what an expansion is (`set_lift` → `invalidate_history`),
-/// which is how the operator met it: *"when i click on tool calls counter tools expand and all
-/// hidden with Ctrl-n notification are showed up again"*.
+/// A note the 64-note cap evicted still holds its row collapsed: the pairing outlives the note it
+/// names, because it is about the reader's retirement. `file_note` drops the oldest note while
+/// `absorbed` keeps a pairing per id, so asking the notes alone hands the row back at a rebuild.
 #[test]
 fn a_retired_notice_whose_note_was_evicted_keeps_its_row_collapsed() {
     let (mut a, _hub) = watched();
@@ -200,12 +177,9 @@ fn a_retired_notice_whose_note_was_evicted_keeps_its_row_collapsed() {
     );
 }
 
-/// **A note the reader did NOT retire gives its rows back when its card cannot be drawn** — the
-/// rule that must not be lost with the one above.
-///
-/// A snapshot's warnings are history (`Placed::Before`, R19): a head that attached after the
-/// reseat has no card to stand for the row, so the row is the only thing that says the event
-/// happened, and hiding it would hide the event.
+/// A note the reader did NOT retire gives its rows back when its card cannot be drawn: a snapshot's
+/// warnings are history, so a head that attached after the event has no card to stand for the row,
+/// and hiding the row would hide the event.
 #[test]
 fn a_snapshot_warning_with_no_card_gives_its_row_back() {
     let hub = Hub::new("s");

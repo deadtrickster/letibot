@@ -183,10 +183,9 @@ fn the_rows_of_an_edit_are_mapped_to_its_file_and_its_first_changed_line() {
     assert!(ys.windows(2).all(|w| w[1] == w[0] + 1), "{ys:?}");
 }
 
-/// **A click on an edit row opens the change in a popup, not the editor** — the operator,
-/// 2026-10-08: *"I dont need the full rano chrome when I look on the full edit, but i do need
-/// the context - so full file with diff and cursor placement at the beginning of the first diff.
-/// preferably in a popup and of course Esc must just close it"*.
+/// A click on an edit row opens the change in a popup, not the editor: the whole file with the
+/// change inline and the cursor at the first diff. Esc closes it, and the conversation underneath is
+/// untouched.
 #[test]
 fn a_click_on_an_edit_row_opens_the_change_in_a_popup_not_the_editor() {
     let ws = workspace("click");
@@ -269,11 +268,9 @@ fn esc_closes_the_diff_popup_onto_the_conversation() {
     );
 }
 
-/// **A permission card that arrives while the diff popup is open stays answerable** (R67 item
-/// 4). The popup's handler sits below the cards so a question arriving mid-read can be
-/// answered, and then returned `Break` for every key ahead of the decision ladder: digits,
-/// ↑↓ and Enter scrolled the diff or vanished. With a decision open the card has its keys, the
-/// popup keeps the wheel, the page keys and Esc, and the bar names both.
+/// A permission card that arrives while the diff popup is open stays answerable. With a decision
+/// open the card has its keys, the popup keeps the wheel, the page keys and Esc, and the bar names
+/// both - a popup that took every key ahead of the decision ladder answered nothing.
 #[test]
 fn a_decision_under_the_diff_popup_takes_its_keys() {
     use letibot_sessionlog::event::OptionKind;
@@ -722,13 +719,9 @@ fn the_file_before_the_edit_is_the_file_with_the_edit_undone() {
     assert_eq!(crate::app::diff_popup::whole_file_before(&other, &c), None);
 }
 
-/// **Scrolling the popup moves the popup and nothing else, and there is no caret.**
-///
-/// The operator, 2026-10-09: *"if i scroll here back and forth very fast, the very bottom keymap
-/// starts to flicker and my green caret starts to appear literally everywhere, including prompt
-/// box borders"*. The keys are the popup's while it is open, so a caret parked in the composer
-/// is an affordance for a field nobody is typing in — and every frame that showed it had the
-/// terminal's cursor visible while the rows were being written.
+/// Scrolling the popup moves the popup and nothing else, and there is no caret: the keys are the
+/// popup's while it is open, so a caret parked in the composer is an affordance for a field nobody
+/// is typing in.
 #[test]
 fn scrolling_the_popup_repaints_only_the_popup_and_shows_no_caret() {
     let ws = workspace("popscroll");
@@ -776,10 +769,8 @@ fn scrolling_the_popup_repaints_only_the_popup_and_shows_no_caret() {
     );
 }
 
-/// **`ctrl-e` on an empty prompt is the editor, with nothing changed to open it on** — the
-/// operator, 2026-10-09: *"how i just open a file?"*, then *"ctrl-e which brings me to the
-/// editor … let it work only on empty prompt"*. rano opens with its own `Open:` prompt up, so
-/// the next thing typed is a path; `ctrl-]` comes back as from any pane.
+/// `ctrl-e` on an empty prompt is the editor, with nothing changed to open it on: rano opens with its
+/// own `Open:` prompt up so the next thing typed is a path, and `ctrl-]` comes back as from any pane.
 #[test]
 fn ctrl_e_on_an_empty_prompt_opens_the_editor_asking_for_a_file() {
     let ws = workspace("ctrle");
@@ -888,10 +879,9 @@ fn ctrl_bracket_with_nothing_changed_points_at_ctrl_e() {
     );
 }
 
-/// **The pane is framed in the head's own look, not nano's** — the operator, 2026-10-09: *"we
-/// still have rano header on top, the ranos keymap with white backgrounds for each key, it just
-/// feels alien"*. No `rano 0.x` title row and no two-row function bar: the file in the top edge,
-/// rano's keys faint in the bottom one, the diff popup's frame.
+/// The pane is framed in the head's own look, not nano's: no `rano 0.x` title row and no two-row
+/// function bar. The file sits in the top edge, rano's keys faint in the bottom one, and a change
+/// says `modified` there.
 #[test]
 fn the_editor_pane_wears_the_heads_frame_not_nanos() {
     let ws = workspace("frame");
@@ -932,11 +922,8 @@ fn the_editor_pane_wears_the_heads_frame_not_nanos() {
     );
 }
 
-/// **rano stays inside the frame: two columns in from each side, like the diff popup.** The
-/// operator, 2026-10-11: *"text goes beyond it, column number sits on it. text should be confined
-/// within vertical lines, even if they are invisible"*. The pane was given the frame's width less
-/// the LEFT indent only, so its last column was the frame's own: a long line ran to the corner and
-/// the `Ln/Col` readout sat on it.
+/// rano stays inside the frame: two columns in from each side, like the diff popup. Given the frame's
+/// width less the LEFT indent only, a long line ran to the corner and the `Ln/Col` readout sat on it.
 #[test]
 fn the_editor_keeps_two_columns_clear_on_the_right_of_its_frame() {
     let ws = workspace("margin");
@@ -1142,21 +1129,9 @@ fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     assert!(a.diff_popup.is_none(), "a drag was taken for a click");
 }
 
-/// **A selection holds the VIEW still, not the keyboard** — the other half of the operator's
-/// ⌘C report (2026-10-27): *"Cmd-C with a mouse selection copies AND types a `c`"*, so a
-/// selection copied mid-prompt corrupts the prompt.
-///
-/// **The `c` is not this head's doing and cannot be fixed here**, and that is measured rather than
-/// assumed: Ghostty forwards ⌘C as `CSI 99;9u` under the kitty keyboard this head asks for, and
-/// rano drops the super bit on the way in, so what reaches [`crate::app::App::key`] is the same
-/// [`Key::Char('c')`](Key) a person types. See
-/// `crate::app::keys::input`'s `a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit`
-/// for the decode, and the two-line rano change that swallows it.
-///
-/// The fix a reader will reach for is *swallow typing while a selection is held*, and this test is
-/// why not: a drag copies and then holds the frame (`selection_held`, ctrl-p's hold), and the
-/// operator keeps typing into a prompt under it. A head that went deaf there would trade one
-/// corrupted prompt for a prompt that cannot be written at all.
+/// A selection holds the VIEW still, not the keyboard: a drag copies and then holds the frame while
+/// the operator keeps typing into a prompt under it, so a head that went deaf there would trade a
+/// corrupted prompt for one that cannot be written at all.
 #[test]
 fn a_selection_does_not_swallow_what_is_typed() {
     let ws = workspace("pointer-typing");
@@ -1384,11 +1359,9 @@ fn hovering_an_edit_card_brightens_all_of_its_rows() {
     }
 }
 
-/// **A note the `notes` tool rewrote is an edit card** — the operator, of a `notes replace` row
-/// that named its file three times (the target, the tool's `replaced …` sentence, the diff's own
-/// path line) and closed on *"detected afterwards — not made by `edit`"*, which was false: the
-/// tool made it. *"what i want is it to behave like a regular diff card - clickable/enterable to
-/// diff popup"*. So: one header naming the file once, the diff, no prose, and a click opens it.
+/// A note the `notes` tool rewrote is an edit card: one header naming the file once, the diff, no
+/// prose, and a click opens it - the tool made the change, so it must behave like a regular diff
+/// card.
 #[test]
 fn a_note_the_notes_tool_rewrote_is_drawn_and_clicked_as_an_edit() {
     let ws = workspace("notes");
@@ -1456,11 +1429,8 @@ fn a_decision_arriving_takes_the_keyboard_back_from_the_editor() {
     );
 }
 
-/// **The pointer's light belongs to the screen it was taken on** — the operator: *"when i hover
-/// over diff card it highlights, then i click and the popup text on that position is highlighted
-/// too"*. The popup is drawn over the rows the card lit, and the light stayed on them; the popup is
-/// not scrolled to the pointer, and could not always be (a change at the file's start or end), so
-/// what it lit there was nothing in particular.
+/// The pointer's light belongs to the screen it was taken on. The popup is drawn over the rows the
+/// card lit and is not scrolled to the pointer, so a light left on them marks nothing in particular.
 #[test]
 fn a_click_that_opens_the_popup_leaves_no_light_on_it() {
     let ws = workspace("stale-hover");

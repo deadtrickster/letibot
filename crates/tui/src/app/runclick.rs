@@ -1,35 +1,19 @@
-//! **A run's marker opens by its parts** — the operator: *"when I see this "[7 tool calls, 11
-//! thinking lines]" and then click on tool calls section or thinking section i wanted them to
-//! expand. Esc should fold them back"*.
+//! A run's marker opens by its parts: a click on the calls clause opens the tool calls, on the
+//! thinking clause the reasoning, and anywhere else the whole run. Esc folds it back.
 //!
-//! Opening a run is `ctrl-t`'s act already (`payload_sel` naming the run's first row, the rung
-//! lifted for that run's rows — see `ui::transcript::markers::run_open_at`). A click does the same
-//! for the run under the pointer, and lifts only the kind it was on: the calls clause opens the
-//! tool calls, the thinking clause the reasoning, anything else the whole run. Esc closes it as it
-//! closes any open run.
-//!
-//! # One switch, one writer
-//!
-//! The lift is **one field** ([`App::lift`]) and it applies to **the thing `payload_sel` names** —
-//! a run of rows, or [`LIVE_RUN`] for the turn still running ([`App::lifted`]). `set_lift` and
-//! `drop_lift` are the only writers, and the panel goes with the switch: a lift with no panel is a
-//! state whose only exit is a row that may have scrolled away, which is the operator's *"it gets
-//! stuck"*.
-//!
-//! **The thinking has two spellings of *open* and one verb.** Where the rung draws the thinking,
-//! its openness is the fold ([`App::reasoning`], moved by `ctrl-r`, `/think` and `head.toml`);
-//! where the rung hides it, the only spelling that draws it is the lift on a run. [`App::thinking_open`]
-//! is the one reader and [`App::set_thinking`] the one writer, so a click, `ctrl-r`, `/think` and
-//! `esc` flip the same state — and the state is the one that is DRAWN, so a stale fold at a hiding
-//! rung cannot answer for a screen that does not show it.
+//! The lift is one field (`App::lift`), applied to whatever `payload_sel` names - a run of rows or
+//! `LIVE_RUN` for the turn in flight - and the panel goes with it, because a lift with no panel has
+//! no key that could close it.
+//! The thinking has two spellings of open - the fold where the rung draws the reasoning, the lift
+//! where it hides it - and `thinking_open`/`set_thinking` are the one reader and writer of both.
 
 use super::*;
 use crate::app::visibility::Show;
 
-/// **One clause of a marker on the last frame** — where it was drawn and what a click opens.
-/// The run a live pane's marker stands for — the turn in flight, whose rows have not landed.
+/// The run a live pane's marker stands for - the turn in flight, whose rows have not landed.
 pub(crate) const LIVE_RUN: &str = "\u{0}live";
 
+/// One clause of a marker on the last frame: where it was drawn and what a click opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MarkerHit {
     /// The screen row of the window it is on.
@@ -89,11 +73,9 @@ fn clauses(cells: &[char]) -> Vec<(usize, usize, Option<Show>)> {
     out
 }
 
-/// **A row an open run leaves out**, because the click asked for the other kind: the reasoning
-/// when it asked for the tool calls, and the tool rows (and a round's call-only assistant row)
-/// when it asked for the thinking. The rung's own ladder cannot say *thinking without tools* —
-/// thinking is a higher rung than tools — so an open run is drawn lifted and this takes the
-/// other kind out.
+/// A row an open run leaves out, because the click asked for the other kind: the reasoning when it
+/// asked for the calls, the tool rows and empty assistant rows when it asked for the thinking. The
+/// rung ladder cannot express thinking without tools, so the lift plus this filter is what does.
 pub(crate) fn run_skips(only: Option<Show>, it: &letibot_sessionlog::view::SnapshotItem) -> bool {
     use letibot_transcript::TranscriptItem as T;
     match (only, it.item.as_ref()) {
@@ -114,27 +96,18 @@ pub(crate) fn run_think(only: Option<Show>, think: Fold) -> Fold {
 }
 
 impl App {
-    /// **The kind a click lifted, for the turn still running** — the pane's half of the one
-    /// switch.
-    ///
-    /// Two addresses draw the same lift, and neither is derived from a second field: the pane
-    /// itself ([`LIVE_RUN`]), and **a run whose counted work is still running** — the marker on
-    /// such a run counts calls that are not rows yet (`MarkerFacts::of`), so a click on its
-    /// clause is a question about the work in flight as well, and the panel alone would show
-    /// nothing of the kind that was asked for (the operator's *"clicked on the tools counter —
-    /// empty panel"*). The expensive question is only asked while a lift is set.
+    /// The kind a click lifted, for the turn still running: the pane's half of the one switch. A run
+    /// whose counted work is still running draws a marker over calls that are not rows yet, so its
+    /// clause must lift for the pane too or the panel shows none of the kind asked for.
     pub(crate) fn lifted(&self) -> Option<Show> {
         let show = self.lift?;
         let id = self.payload_sel.as_deref()?;
         (id == LIVE_RUN || self.run_carries_live_now(id)).then_some(show)
     }
 
-    /// **Throw the one switch** — the kind a run is drawn lifted to, on the run named.
-    ///
-    /// The address and the kind are written together, which is what makes an orphan impossible:
-    /// the lift is only ever read against `payload_sel`, so a door that cleared one and not the
-    /// other (the old `set_verbosity`, and `ctrl-r` through it) can no longer leave a lift with
-    /// no panel to close it.
+    /// Throw the one switch: the kind a run is drawn lifted to, on the run named. The address and the
+    /// kind are written together, which is what makes a lift with no panel to close it impossible -
+    /// the lift is only ever read against `payload_sel`.
     pub(crate) fn set_lift(&mut self, show: Option<Show>, run: &str) {
         self.lift = show;
         // The panel's address and its offset are one act — see [`App::open_payload_window`],
@@ -144,12 +117,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Put the switch back, and take its panel with it.**
-    ///
-    /// A panel is the lift's own address and carries its exit (`esc folds the run back`), so the
-    /// two go together — the defect this closes is a lift whose panel was cleared by somebody else
-    /// and which then had no key that could reach it. A ctrl-v window on one result is **not** the
-    /// lift's and is left alone.
+    /// Put the switch back, and take its panel with it. A panel is the lift's own address and carries
+    /// its exit, so the two go together; a `ctrl-v` window on one result is not the lift's and is left
+    /// alone.
     pub(crate) fn drop_lift(&mut self) {
         let panel = self.payload_sel.as_deref() == Some(LIVE_RUN) || self.run_is_open();
         if self.lift.is_none() && !panel {
@@ -164,15 +134,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Is the model's thinking open on the screen** — one question, whichever of the two
-    /// spellings holds it.
-    ///
-    /// It is asked of what is **drawn**, not of a field: above the bottom rung the reasoning rows
-    /// are drawn and their openness is the fold; at the bottom rung (`conversation`, `read-edits`)
-    /// they are hidden and the fold draws nothing at all, so the answer there is the lift on a run.
-    /// A reader who had `thinking = "open"` in `head.toml` and then chose `read-edits` has a fold
-    /// nobody can see; counting it as open would make `ctrl-r` a key that closes something
-    /// invisible and opens nothing.
+    /// Is the model's thinking open on the screen - one question, whichever of the two spellings holds
+    /// it. It is asked of what is drawn, not of a field: at the bottom rung the reasoning rows are
+    /// hidden, so a fold there would answer for a screen that does not show it.
     pub(crate) fn thinking_open(&self) -> bool {
         if self.visibility.hides_the_working() {
             self.lift == Some(Show::Thinking)
@@ -181,16 +145,9 @@ impl App {
         }
     }
 
-    /// **Open or close the thinking** — the one writer of the answer above, and the reason a click
-    /// and `ctrl-r` cannot disagree about it.
-    ///
-    /// **Which spelling it moves is decided by the rung and by nothing else.** Where the reasoning
-    /// rows are drawn, the switch is the fold and `/verbosity thinking=…` is the one writer of it
-    /// (so the status row, `head.toml` and the drawing move together). At the bottom rung they are
-    /// hidden and writing the fold would move the RUNG rather than the thinking —
-    /// `thinking=folded` over `conversation` is `normal`, and `esc` would then *raise* a rung
-    /// instead of returning to a default — so there the switch is the lift, on the newest run
-    /// there is.
+    /// Open or close the thinking: the one writer of the answer above, which is why a click and
+    /// `ctrl-r` cannot disagree. Which spelling it moves is decided by the rung - the fold where the
+    /// reasoning is drawn, the lift at the bottom rung, where writing the fold would move the RUNG.
     pub(crate) fn set_thinking(&mut self, open: bool) -> Option<Action> {
         if self.visibility.hides_the_working() {
             if !open {
@@ -198,13 +155,9 @@ impl App {
                 return None;
             }
             return match self.newest_run_id() {
-                // **A run with no thinking in it is not opened on the thinking.** `run_skips`
-                // drops every `ToolResult` row and every empty-text `Assistant` row when the kind
-                // asked for is the thinking, so lifting a run that holds none of it would hide
-                // the calls it DOES hold and draw nothing in their place — `[3 tool calls]`
-                // vanished, the run blank. That is the mirror of *"clicked on the tools counter —
-                // empty panel"*, on the rung the operator actually runs, and the honest answer is
-                // the sentence plus the way out rather than a press that eats the screen.
+                // A run with no thinking in it is not opened on the thinking: `run_skips` would drop
+                // its tool rows and draw nothing in their place. The honest answer is the sentence plus
+                // the way out, not a press that eats the screen.
                 Some(run) if self.run_holds_thinking(&run) => {
                     self.set_lift(Some(Show::Thinking), &run);
                     None
@@ -246,12 +199,9 @@ impl App {
         self.set_thinking(!self.thinking_open())
     }
 
-    /// **Does the run named hold any thinking** — the question a key that opens the thinking has
-    /// to ask before it lifts anything, because `run_skips` hides everything else.
-    ///
-    /// The live tail's answer is the pane's own count (the thinking streamed and not yet a row);
-    /// a run of rows is asked row by row, and only the rows the rung hides count — a reasoning row
-    /// the reader can already see is drawn by the rung and is not what the lift is for.
+    /// Does the run named hold any thinking: the question a key that opens the thinking must ask,
+    /// because `run_skips` hides everything else. The live tail answers from the pane's own count; a
+    /// run of rows is asked row by row, and only the rows the rung hides count.
     fn run_holds_thinking(&self, run: &str) -> bool {
         if run == LIVE_RUN {
             return self.live_work_now().think_lines > 0;
@@ -272,10 +222,9 @@ impl App {
             crate::ui::row_hidden(&self.items, self.visibility, r)
                 && matches!(
                     self.items[r].item.as_ref(),
-                    // **A row with no words is not thinking.** The marker counts
-                    // `reasoning_display_lines(text)`, so an empty reasoning row is counted by
-                    // nothing and draws nothing — lifting a run that holds only those would hide
-                    // the calls beside them for a screenful of nothing.
+                    // A row with no words is not thinking: the marker counts display lines, so an
+                    // empty reasoning row is counted by nothing and draws nothing, and lifting for it
+                    // would hide the calls beside it for a screenful of nothing.
                     Some(letibot_transcript::TranscriptItem::Reasoning { text, .. })
                         if !text.trim().is_empty()
                 )
@@ -297,20 +246,9 @@ impl App {
         })
     }
 
-    /// **The marker clauses among lines `start..end` of the conversation**, as screen rows of the
-    /// window — the same walk over `spans` that [`App::file_rows_in`] makes. A marker is drawn on
-    /// the run's own first row, or glued to the prose row just before it; either way the run is
-    /// the hidden stretch starting at the first hidden row from there.
-    ///
-    /// **And a marker with no hidden row under it stands for the work in flight** — `[1 tool
-    /// call]` glued to the sentence that introduced a call (`live_joins`), while that call has no
-    /// row at all. That is the one state where the counter is drawn and there is nothing to name:
-    /// a round's result rows are appended only after every call in it has run, so the very first
-    /// call of a round is counted by a marker with no run behind it. This used to drop the clause
-    /// (`continue`), which is a counter drawn in the working's register that answers nothing —
-    /// the operator, 2026-11-01: *"why running tool call rendered in yellow is no longer
-    /// clickable?"*. The address is [`LIVE_RUN`], the same one the pane's own counter carries,
-    /// and [`App::open_marker`] already knows what to do with it.
+    /// The marker clauses among lines `start..end`, as screen rows of the window. A marker with no
+    /// hidden row under it stands for the work in flight - a round's first call is counted before any
+    /// result row exists - and its address is `LIVE_RUN`, the same one the pane's counter carries.
     pub(crate) fn marker_rows_in(&self, start: usize, end: usize) -> Vec<MarkerHit> {
         let end = end.min(self.hist_lines.len());
         let mut out = Vec::new();
@@ -346,14 +284,9 @@ impl App {
         out
     }
 
-    /// The clause under the pointer, on the last frame.
-    ///
-    /// **The pointer's `x` is a terminal cell and a clause's columns are the row's own** — the
-    /// gutter is padded onto every row after the frame is composed, so a record read off
-    /// `hist_lines` is short by exactly that much. This is the defect the header's git field had
-    /// (`rect.x=59 drawn_col=61`): the target is real and sits two columns left of what it drew,
-    /// so a click on the tail of the clause lands on nothing while one in the middle works —
-    /// which reads as *sometimes it clicks, sometimes it does not*.
+    /// The clause under the pointer, on the last frame. The pointer's `x` is a terminal cell and a
+    /// clause's columns are the row's own: the gutter is padded on after the frame is composed, so a
+    /// record read off `hist_lines` is short by that much and the target sits left of what it drew.
     pub(crate) fn marker_at(&self, x: u16, y: u16) -> Option<&MarkerHit> {
         let top = self
             .hits
@@ -424,11 +357,9 @@ impl App {
     /// they make opens with the same kind. **The pane does not keep it**: the next round's pane
     /// starts as the rung draws it, and a new turn drops the lift entirely.
     pub(crate) fn carry_live_open(&mut self) {
-        // **The VALUE is not this function's business.** A reader who opened the thinking keeps
-        // the thinking open; what a round's end moves is the ADDRESS, from the pane (which is
-        // over) to the rows the work became — the handover that stops the panel vanishing at the
-        // moment it is most worth reading. `on_turn_event` drops the lift at a new TURN, and that
-        // is the only boundary allowed to change it.
+        // The VALUE is not this function's business: a round's end moves the ADDRESS, from the pane
+        // to the rows the work became, so the panel does not vanish when it is worth reading. Only a
+        // new turn, in `on_turn_event`, drops the lift.
         if self.lift.is_none() || self.payload_sel.as_deref() != Some(LIVE_RUN) {
             return;
         }
@@ -449,11 +380,8 @@ impl App {
         // run lifted whole), and the pane has no rows to lift whole — so it opens the calls, which
         // is what the marker it is drawn on counts.
         let show = m.show.or((m.run == LIVE_RUN).then_some(Show::Tools));
-        // **The same clause, twice, is the toggle** — the operator's *"click once opens, click
-        // again closes"* — and it is a toggle on the STATE and not on the frame: `payload_sel`
-        // still naming this run is what says the panel the first click opened is still up.
-        // Nothing here depends on the marker's row being on the screen, which is the half of
-        // the old defect a second click could not reach.
+        // The same clause, twice, is the toggle - and a toggle on the STATE, not on the frame:
+        // `payload_sel` still naming this run is what says the panel the first click opened is up.
         if self.payload_sel.as_deref() == Some(m.run.as_str()) && self.lift == show {
             if show == Some(Show::Thinking) {
                 // Through the one verb, so a click closes exactly what `ctrl-r` would.
@@ -463,10 +391,8 @@ impl App {
             }
             return;
         }
-        // **`payload_sel` names the live run too**, and it did not use to: the lift lived in
-        // `live_open` alone, which is not what [`App::run_is_open`] reads — so the panel a click
-        // opened could not be closed by Esc, named no keys in the hint bar and scrolled as the
-        // conversation rather than as a view. One field for one act.
+        // `payload_sel` names the live run too, so one field answers for one act: the panel a click
+        // opened is the one Esc closes, the hint bar names it, and it scrolls as a view.
         self.set_lift(show, &m.run);
     }
 
