@@ -24,7 +24,12 @@
 pub mod cache;
 pub mod config;
 pub mod cosine;
+pub mod model;
+
+#[cfg(test)]
+mod fixture;
 
 pub use cache::{Cache, CacheError, Hit, db_path};
 pub use config::{ConfigError, Mode, Settings};
 pub use cosine::{Index, cosine};
+pub use model::{BUILTIN_MODEL, Model, ModelError, builtin_dir};
