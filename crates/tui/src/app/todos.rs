@@ -16,20 +16,12 @@ pub(crate) struct OperatorAsk {
     pub(crate) options: Vec<String>,
 }
 
-/// **A question card the operator put away with Esc** — still pending, nothing sent.
+/// A question card the person put away with Esc: still pending, nothing sent.
 ///
-/// The operator, 2026-10-12: *"i want to be able to escape the selection card. sometimes i need
-/// time to think and just let the card stay"*. So Esc is not an answer of any kind — not an
-/// abstention, not a denial, nothing on the wire — it takes the card off the screen and keeps
-/// everything that was on it: the decision itself (`decision`), the words typed under it
-/// (`draft`, the composer's text, which is the card's field while the card is up) and the row the
-/// highlight was on (`sel`). alt-a puts it back exactly so ([`App::bring_back_question`]).
-///
-/// One shape for both kinds of question card. A model's `ask_user_question` card is the daemon's
-/// open decision and keeps waiting under its own deadline — the resident line counts it down
-/// ([`App::waiting_line`]); a todo row's card (`req_id` starting [`TODO_ASK`]) is this head's own
-/// and has no clock. `session_id` is the session it was asked in, so a switch never brings a
-/// card back over the wrong conversation.
+/// Esc is not an answer of any kind, not even an abstention; it takes the card off the screen and
+/// keeps its decision, the words typed under it and the row the highlight was on, so alt-a puts it
+/// back exactly as it was ([`App::bring_back_question`]). `session_id` is where it was asked, so a
+/// switch never brings a card back over the wrong conversation.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AwayCard {
     pub(crate) session_id: String,
@@ -106,16 +98,10 @@ impl App {
         out
     }
 
-    /// **Open the question card for a row that waits on the operator** — `content` names the row
-    /// (Enter on it in the todo pane), `None` takes the first one (alt-a, from the resident line).
-    ///
-    /// **The card is the question card `ask_user_question` draws**, not a second one: a
-    /// `question` decision with the row's options as its choices, put on this head's own list of
-    /// open cards. Every way of answering it is the card's — arrows and Enter for an option, `N --
-    /// note` for an option with a note, typed words, `abstain` — and [`App::settle_question`]
-    /// sends the answer to the ROW (`Action::AnswerTodo`) because the card's id says it is one.
-    /// It is this head's alone: no decision is open on the daemon, so a resync simply takes it
-    /// down and alt-a puts it back.
+    /// Open the question card for a row that waits on the person: `content` names the row, `None`
+    /// takes the first. It is the same card `ask_user_question` draws, with the row's options as its
+    /// choices, and [`App::settle_question`] sends the answer to the row rather than to the daemon.
+    /// No decision is open on the wire, so a resync takes it down and alt-a puts it back.
     pub(crate) fn open_operator_ask(&mut self, content: Option<&str>) {
         let asks = self.operator_asks();
         let ask = match content {
@@ -241,22 +227,15 @@ impl App {
         Action::AnswerQuestion { req_id, answer }
     }
 
-    /// **After a todo answer, the next question — or the word that there is none.**
-    ///
-    /// The operator answered one of three waiting rows and the resident line simply moved to the
-    /// next question: *"i answered what was asked by the todo, and it didnt hide"*. Two fixes in
-    /// one place. The card goes straight on to the NEXT row still waiting on the operator in this
-    /// session — the answered one is left out at once ([`App::todo_answered`]), not when the
-    /// board comes back — and closes when none remain; and a short line says which of the two
-    /// happened, so moving on never reads as the answer being ignored:
+    /// After a todo answer, the next question or the word that there is none: the card moves on to
+    /// the next waiting row in this session and closes when none remain, saying which happened, so
+    /// moving on never reads as the answer being ignored. Another card on screen is left alone: the
+    /// next row waits for alt-a rather than jumping in front.
     ///
     /// ```text
     /// answered — 2 more waiting on you
     /// answered — nothing else is waiting on you
     /// ```
-    ///
-    /// Another card on the screen (the model's question, a permission) is left alone: the next
-    /// row waits for alt-a rather than jumping in front of it.
     fn advance_operator_asks(&mut self) {
         let left = self.operator_asks();
         let Some(next) = left.first() else {
@@ -278,22 +257,13 @@ impl App {
         }
     }
 
-    /// **Esc on a question card: put it away, answer nothing.**
+    /// Esc on a question card: put it away and answer nothing. The question stays pending, since it
+    /// is neither an abstention nor a denial, and the resident line keeps saying so.
     ///
-    /// The operator: *"i want to be able to escape the selection card. sometimes i need time to
-    /// think and just let the card stay"*. The card leaves the screen and the question stays
-    /// PENDING — nothing is sent: not an abstention (that is the typed `abstain`, a choice), not
-    /// a denial. The model's call keeps waiting under its own deadline, a todo row keeps waiting
-    /// with no clock, and the resident line says so with the key that brings it back.
-    ///
-    /// **The words go with the card.** While a question is up the composer is its field, so
-    /// what is typed there is the card's draft: it is taken off the composer (which would
-    /// otherwise send it to the model as a prompt) and put back by alt-a with the highlight.
-    ///
-    /// **A permission card is put away the same way** (R90.5): Esc used to fall through it — it
-    /// closed a pane behind the card, or reached the editor and armed the Esc-Esc interrupt, so a
-    /// second Esc interrupted the very turn waiting on the card. One meaning for Esc on every
-    /// decision card: step away, answer nothing, alt-a brings it back.
+    /// The words go with the card: while a question is up the composer is its field, so what is
+    /// typed there is a draft that would otherwise be sent to the model, and alt-a puts it back with
+    /// the highlight. A permission card is put away the same way, so Esc means one thing on every
+    /// decision card instead of reaching the editor behind it.
     pub(crate) fn put_question_away(&mut self) {
         let Some(d) = self.open.first() else {
             return;
@@ -423,25 +393,9 @@ impl App {
         }
     }
 
-    /// **The front card changed, or did not** — run after every key and every frame (R90.3,
-    /// R90.4).
-    ///
-    /// * The highlight is reset exactly when `open[0]` is a different card from the one it was
-    ///   last reset for. A decision arriving BEHIND the card on screen leaves it alone (↓↓ to
-    ///   deny, a second permission arrives, Enter still denies), and the next card up starts at
-    ///   its top rather than at the row the last one was answered on.
-    /// * A question that comes to the front over composer text does not take that text as its
-    ///   answer: the words are held ([`App::held_line`]) and the card gets an empty field — the
-    ///   permission path's rule, *"your line is held"*. They come back to the composer as soon as
-    ///   no question is in front.
-    ///
-    /// The openers that seed a card themselves (alt-a's [`App::bring_back_question`] and
-    /// [`App::open_operator_ask`]) hold the line and claim `sel_for` before they put the card's
-    /// own draft into the composer, so the draft is not mistaken for the operator's line here.
-    /// **An answer to the model's question or a permission is leaving: its card closes now**
-    /// (R90.29). It used to stay up until `DecisionAnswered` came back, and a second Enter in
-    /// that gap sent the same answer again; a todo row's card already closed at once. The card
-    /// is kept in [`App::answering`] so a refusal can put it back.
+    /// An answer to the model's question or to a permission is leaving, so its card closes now: kept
+    /// up until `DecisionAnswered` came back, a second Enter in that gap sent the same answer again.
+    /// The card is held in [`App::answering`] so a refusal can put it back.
     pub(crate) fn answer_leaving(&mut self, req_id: &str) {
         let Some(i) = self.open.iter().position(|d| d.req_id == req_id) else {
             return;
@@ -489,6 +443,12 @@ impl App {
         true
     }
 
+    /// The front card changed, or did not: run after every key and every frame.
+    ///
+    /// The highlight is reset exactly when `open[0]` is a different card from the one it was reset
+    /// for, so a decision arriving behind the card on screen leaves it alone. A question arriving
+    /// over composer text does not take that text as its answer: the words are held
+    /// ([`App::held_line`]) and come back when no question is in front.
     pub(crate) fn sync_front(&mut self) {
         let front = self
             .open
@@ -665,8 +625,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **`/todo …` — the operator's own rows.** The verb's forms, and each one sends the
-    /// whole list:
+    /// `/todo ...`, the person's own rows. Every form sends the whole list.
     ///
     /// ```text
     /// /todo finish the parity row        add it, at the end
@@ -677,44 +636,21 @@ impl App {
     /// /todo postpone paste the token     the same, naming a row the MODEL wrote
     /// ```
     ///
-    /// **A number is numbered over the operator's rows and not the union**, because the model's
-    /// rows are not the operator's to edit — that is the same rule `/rename` and `/compact` keep
-    /// about acting on the session you are in. The count is the one the pane prints for that half.
+    /// A number counts the person's rows only, since the model's rows are not theirs to edit. A
+    /// non-numeric argument names any row by its own words, because the pane numbers only one half
+    /// and `todo_write` refuses to postpone: without it a row the model wrote had no name this verb
+    /// could use. A parent's row is refused, because a parent owns its children's states.
     ///
-    /// **`postpone`/`resume` also take a row's own WORDS, and that is the reach.** The pane numbers
-    /// the operator's rows and only those, so a row the MODEL wrote had no name this verb could use
-    /// — and no other door either: `todo_write` refuses `postponed` (a model that could silence its
-    /// own plan could abandon it). MEASURED: fourteen turns spent restating one true sentence about
-    /// a row that was correct and waiting on a person. The words are the board's one key
-    /// (`set_operator_states` resolves the operator's rows by their exact trimmed text), so a
-    /// non-numeric argument names any row on the board: the operator's own half is moved in the
-    /// list this head owns, and a MODEL's row goes out as a state move beside it — one frame, one
-    /// act. A parent's row is refused by name, because a parent owns its own rows' states.
-    ///
-    /// **Marked complete rather than deleted** by `done`, and **struck off rather than deleted** by
-    /// `rm`: the operator's ruling is *"only i should be able to delete todo items. as a rule
-    /// everything that ever created stays in history"*, so neither verb removes a row. `done` is a
-    /// record of work finished, `rm` is a record of work decided against — the row keeps its words,
-    /// its author and its place on the board either way, and `/todo resume N` lifts either. The
-    /// model may move a row's STATUS (by quoting its words) and may not remove one, which is the
-    /// operator's ruling recorded on `TodoBoard`.
-    /// **THE OPERATOR'S OWN ROWS, DRAWN FROM THE MOMENT THEY ARE SENT** — their half of what
+    /// Neither verb removes a row: `done` and `rm` are records of work finished and work decided
+    /// against, the row keeps its words and its place, and `/todo resume N` lifts either. The model
+    /// may move a row's status and may not remove one.
+    /// The person's own rows, drawn from the moment they are sent: their half of what
     /// `pending_prompts` does for their words.
     ///
-    /// The operator: *"when i send todos they appear in the todo pane some time later — it feels
-    /// like their appearance depend on the turn state. but to me - im not sure if i lost them or
-    /// not."* They did not lose them: the write publishes at once (`set_operator_todos` has a
-    /// retry for exactly that), but the COMMAND reaches the worker behind whatever is running
-    /// and is injected at the next step boundary (`harness.rs`: *"the step boundary is the only
-    /// place any of the three can be injected"*), and until `TodosUpdated` arrives the pane drew
-    /// only what the daemon had published — nothing, for the whole of a running turn.
-    ///
-    /// So the head applies the list it is about to send, the same trust `pending_prompts` places:
-    /// show what I sent until the daemon answers. `mine` is the operator's whole half (the
-    /// command replaces it), so the optimistic state is the model's rows as they stand with this
-    /// half in their place — and `TodosUpdated` replaces the union wholesale when it lands, in
-    /// the daemon's own order, which is why nothing here needs to guess at that order for longer
-    /// than the boundary.
+    /// The write publishes at once, but the command reaches the worker behind whatever is running and
+    /// is injected at the next step boundary, so until `TodosUpdated` arrives the pane drew only
+    /// what the daemon had published: nothing, for a whole running turn. The head applies the list
+    /// it is about to send and the daemon's answer replaces it, in the daemon's own order.
     pub(crate) fn echo_operator_todos(&mut self, mine: Vec<letibot_sessionlog::event::TodoEntry>) {
         self.todos
             .retain(|t| t.by != letibot_sessionlog::event::TodoBy::Operator);
@@ -755,36 +691,18 @@ impl App {
         }
     }
 
-    /// **Copy the template TODO.md's items onto the operator's half of the board** — leticl's
-    /// `%seed-operator-todos`, run where leticl runs it: the moment the head has learned its
-    /// list. The behaviour copied, piece by piece:
+    /// Copy the template `TODO.md`'s items onto the person's half of the board, the moment the head
+    /// has learned its list.
     ///
-    /// * **The template is a `TODO.md`, parsed by the same reader the repo section uses**
-    ///   (`render_todo_md`) — a starter list is written in the format the operator already
-    ///   writes by hand, boxes and indented bodies included, and there is no second syntax
-    ///   to learn.
-    /// * **ITEMS ONLY are copied**: the checkbox rows, not the headings and their roll-ups.
-    ///   What is copied is what leticl copies — the text, the body, and the mark: `[x]`
-    ///   seeds a completed row (how a template carries something already settled), anything
-    ///   else seeds an open one.
+    /// The template is parsed by the same reader the repo section uses, so a starter list is written
+    /// in the format already used by hand. Items only: the checkbox rows and not the headings, with
+    /// `[x]` seeding a completed row and anything else an open one. The body rides in `content`,
+    /// since this head keeps no second list and the wire has one field, and body lines join with a
+    /// middle dot so each stays a segment.
     ///
-    ///   The one place this cannot be leticl: **the body rides in `content`, joined `“ · ”`**.
-    ///   leticl keeps a `:detail` beside its rows in its own sqlite; this head keeps no second
-    ///   list, and the wire's `TodoEntry` is `content`/`status`/`by` — leticl's own push drops
-    ///   the detail at the same door. The card already made this head's choice for a typed
-    ///   detail (`title “ — ” detail`); body LINES join with `·` so each continuation stays a
-    ///   segment rather than merging into one sentence.
-    ///
-    /// * **ONCE PER PROJECT, marked even when nothing was added** — an empty template records
-    ///   the seeding and says so, because the alternative re-reads it on every start. A
-    ///   MISSING file is not marked: leticl says why and leaves the project unseeded, so the
-    ///   file the operator was going to write still gets its chance.
-    /// * **Refusals are notes, not silences** — from the operator's side *the feature did not
-    ///   work* and *I never turned it on* look identical otherwise.
-    ///
-    /// The rows go out through the same door `/todo TEXT` uses — `echo_operator_todos` for the
-    /// optimistic view, `SetOperatorTodos` for the whole half — so a seed and a typed row cannot
-    /// become different acts.
+    /// Once per project and marked even when nothing was added, or every start re-reads the file; a
+    /// missing file is not marked, so the one about to be written still gets its chance. Refusals are
+    /// notes rather than silences, and the rows go out through `/todo TEXT`'s own door.
     pub(crate) fn seed_todos(&mut self) {
         if !self.todo_seed_due() {
             return;

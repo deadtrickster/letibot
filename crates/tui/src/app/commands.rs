@@ -3,18 +3,13 @@
 
 use super::*;
 
-/// **The verbs `/todo` answers itself** — the four that move a row, plus `when`, which gives one a
-/// condition. Everything else is offered to the `todo` layer first (`command_todo`), because what
-/// a NEW row may be spelled like is a project's policy, and the write stays the head's.
+/// The verbs `/todo` answers itself: the four that move a row, plus `when`. Everything else is
+/// offered to the `todo` layer first, because what a new row may be spelled like is a project's
+/// policy, while the write stays the head's.
 ///
-/// **This list and the `match` in [`App::todo_command`] are one list, and the first cut had them as
-/// two.** `when` was missing here, so with a layer installed `/todo when 1 j7` was handed to the
-/// guest, which read it as a bare title — `when 1 j7` — and answered an `add_todo`: the head's own
-/// verb, swallowed by a layer that had no way to know it was one. Nothing was red, because no head
-/// had a host built at the time a command ran (see [`App::plugin_host`]); installing the built-in
-/// is what made it reachable. A verb added to the match without a word here is the same defect
-/// again, which is why the words are one constant and one test drives every one of them at a
-/// recording layer (`the_heads_own_verbs_never_reach_a_layer`, `app/tests/todo_layer.rs`).
+/// This list and the `match` in [`App::todo_command`] are one list: a verb there without a word
+/// here is handed to the guest, which reads it as a title. One constant, and a test drives every
+/// word of it at a recording layer (`the_heads_own_verbs_never_reach_a_layer`).
 pub(crate) const OWN_VERBS: [&str; 5] = ["done", "rm", "postpone", "resume", "when"];
 
 /// Is this word one the head answers, rather than one a layer may own?
@@ -122,31 +117,10 @@ impl App {
         // that changes nothing is worse than an unfinished rewrite, because it lies about the
         // screen."* The refusal names the switch that cannot be honoured and the way round it.
         if let Some(s) = next.undrawable() {
-            // **And the sentence names the way round that actually works — with the REMEDY
-            // FIRST, because a notice is trimmed to the frame.**
-            //
-            // Two faults in one line, and the second was found by the test below rather than by
-            // reading it. It read *"`{s}` cannot be off while something above it is on"*, which
-            // is backwards in BOTH cases this can fire: the ladder turns `tools`, `thinking` and
-            // `system` on in that order, so what cannot be drawn is a switch **on** with one below
-            // it **off** — `thinking=open` while `tools=hidden` (which is `read-edits` and then the
-            // thinking's chord), or `system=open` while the thinking is hidden. The old wording
-            // named the switch the reader had just turned ON as the one to turn off, so the only
-            // way to follow it was to make the set worse.
-            //
-            // And when it was fixed the other way round, the test failed: `say` draws the sentence
-            // through `trim_to(…, w)`, so at 100 columns a refusal that opened by explaining the
-            // ladder was cut off **before the verb that undoes it** — an R29 remedy the reader
-            // cannot see is the same as no remedy. So the one word that always works comes first,
-            // then which switch is drawn while which is off, then the profiles.
-            //
-            // **And the switches it names are only the ones BELOW the offending one**, which is a
-            // third fault the same test found: the first cut collected every switch that was off,
-            // so `read-edits`' thinking refusal read *"`tools` and `system` is off"* — the verb
-            // agreeing with nothing, and `system` named as a requirement when it sits ABOVE
-            // `thinking` and is nothing of the kind. The ladder is a prefix, so what a switch that
-            // is ON needs is the ones below it: the statement is now true, and with one name it
-            // reads as a sentence.
+            // The sentence names the way round that works, with the remedy FIRST: `say` trims it to
+            // the frame, so a refusal that opened by explaining the ladder was cut off before the verb
+            // that undoes it. The ladder turns switches on in order, so what cannot be drawn is a
+            // switch on with one BELOW it off, and only those below are named.
             const LADDER: [Show; 3] = [Show::Tools, Show::Thinking, Show::System];
             let below = LADDER.iter().position(|l| *l == s).unwrap_or(0);
             let missing: Vec<String> = LADDER[..below]
@@ -310,21 +284,13 @@ impl App {
         None
     }
 
-    /// **A door verb the operator typed, turned into the call the wire wants** — R31, R34.
+    /// A door verb the person typed, turned into the call the wire wants.
     ///
-    /// Returns the tool's OWN name and the arguments object, or a sentence saying why not.
-    /// The head's whole knowledge is the three facts on the row: **which field a bare line
-    /// goes into, what kind it is, and which fields have defaults.** Nothing here knows what
-    /// `web_search` does.
-    ///
-    /// * **No bare form** (`field` empty) — the row's own `why_json` sentence is returned, so
-    ///   the refusal names the reason the daemon gave rather than the head's guess at it.
-    /// * **A line with nothing after the verb** — refused by name, because a bare call to a
-    ///   tool that needs a query is a call nobody meant.
-    /// * **Anything that looks like a JSON object** goes through untouched, which is the form
-    ///   R31 keeps for a tool with several arguments. A line that *starts* with `{` is the
-    ///   operator asking for the JSON form; there is no tool whose bare text begins that way
-    ///   by accident and the ambiguity is resolved in favour of the form they can see.
+    /// It returns the tool's own name and the arguments object, or a sentence saying why not, and it
+    /// knows only the three facts on the row: which field a bare line fills, what kind it is, and
+    /// which fields have defaults. A row with no bare form returns the daemon's own `why_json`; a
+    /// line with nothing after the verb is refused by name; anything starting with `{` goes through
+    /// untouched as the JSON form.
     pub(crate) fn head_run_call(
         &self,
         tool: &letibot_sessionlog::HeadRunTool,
@@ -423,21 +389,13 @@ impl App {
             .unwrap_or_else(|| vec!["local".to_string()])
     }
 
-    /// **Whether a picker row is one this box can actually take.**
+    /// Whether a picker row is one this box can actually take, so the colour answers *will this work
+    /// if I press enter*.
     ///
-    /// The operator, 2026-10-04: *"model peeker should green models we have keys for. — if i
-    /// choose a model without key picker should ask for the key."* So the colour answers *will this
-    /// work if I press enter*.
-    ///
-    /// Two ways to be ready, and they are different facts: a credential this box holds
-    /// ([`Self::keyed_providers`]), or **no credential wanted at all**
-    /// ([`Self::keyless_choices`]). `local` was once hardcoded here for the second
-    /// reason — *"leaving it uncoloured would read as this row has no key about the one
-    /// row that never wanted one"* — and the operator found what a hardcoded literal
-    /// costs the moment there is a second such row: *"dense78 needs a key this box does
-    /// not hold"*, about a LAN box with no key and no meter. The daemon publishes the
-    /// list now, for the same reason it publishes the keyed one: it is the half that
-    /// knows.
+    /// Two ways to be ready and they are different facts: a credential this box holds, or no
+    /// credential wanted at all. The keyless list comes from the daemon, not a literal, because the
+    /// daemon is the half that knows, and a hardcoded `local` went wrong the moment there was a
+    /// second such row.
     pub(crate) fn choice_ready(&self, name: &str) -> bool {
         let name = name.trim();
         // **Three ways a row can name its model, so three candidates.**
@@ -468,18 +426,10 @@ impl App {
     }
 
     pub(crate) fn command(&mut self, cmd: &str) -> Option<Action> {
-        // **The operator's own tool call** — R24 part two's door, R31's bare form, R34's
-        // hyphen.
-        //
-        // First, because a door verb is neither this head's nor the daemon's other half's:
-        // it is a TOOL, and it has to be matched against the list the daemon published
-        // before anything else gets to refuse it as an unknown word.
-        //
-        // **Both spellings are accepted and only one is offered** (R34): the operator who
-        // types `/web_search` because that is what the daemon calls it *"should not be told
-        // they are wrong"*, so the transform runs at the lookup and the tool's own name goes
-        // on the wire. The head holds no schema — it knows which field takes the line and
-        // what kind it is, both published on the row.
+        // The person's own tool call, first: a door verb is neither this head's nor the daemon's
+        // other half's but a TOOL, and it has to be matched against the published list before
+        // anything else refuses it as an unknown word. Both spellings are accepted and only one is
+        // offered, so a hyphen is looked up and the tool's own name goes on the wire.
         let (typed_verb, rest) = match cmd.trim().split_once(char::is_whitespace) {
             Some((v, r)) => (v, r),
             None => (cmd.trim(), ""),
@@ -503,15 +453,10 @@ impl App {
             }
         }
 
-        // **`/cells MESSAGE` — the message, and what is on this screen with it.**
-        //
-        // `harness what=screen` lets the model ASK; this is the operator pointing.
-        // Same rows, same bytes, and captured here rather than a moment later on
-        // purpose: the screen being talked about is the one that was there when
-        // Enter was pressed, and a turn takes seconds during which it moves.
-        //
-        // Rendered from this head, at this head's size, escape codes intact — the
-        // whole point is what is actually painted, not a description of it.
+        // `/cells MESSAGE`: the message and what is on this screen with it. Captured here and not a
+        // moment later, because the screen meant is the one that was there when Enter was pressed and
+        // a turn takes seconds. Rendered from this head at this head's size, escapes intact: the
+        // point is what is painted, not a description of it.
         // **An operator's mark** (TODO R81) — `app/feedback.rs`.
         if let Some(a) = self.feedback_command(cmd) {
             return a;

@@ -11,36 +11,19 @@ use letibot_transcript::{TranscriptItem, UserPart};
 type Built = (usize, RowClass, Vec<String>, Option<Marker>, bool);
 
 impl App {
-    /// Throw the rendered history away; it is rebuilt from `items` and `notes`
-    /// on the next frame. One place, because forgetting one of the two cursors
-    /// duplicates or loses everything after it.
-    ///
-    /// For the three callers that really do mean *all of it*: a snapshot replaced
-    /// `items` wholesale, a fold changed how many lines every cached block renders
-    /// to, and a width change moved every wrap. Everything else means
-    /// [`App::invalidate_history_from`].
+    /// Throw the rendered history away; it is rebuilt from `items` and `notes` on the next frame.
+    /// One place, because forgetting one of the two cursors duplicates or loses everything after it.
+    /// For the callers that mean all of it; everything else means [`App::invalidate_history_from`].
     pub(crate) fn invalidate_history(&mut self) {
         self.invalidate_history_from(0);
     }
 
-    /// The rendered history is stale **from row `k` on**. Rows above it are
-    /// settled: nothing this head is told can change what they render to.
+    /// The rendered history is stale from row `k` on: rows above it are settled, since nothing this
+    /// head is told can change what they render to.
     ///
-    /// # Why this is not `invalidate_history`
-    ///
-    /// It was, at every call site, and the comment at the largest one already said
-    /// what the code did not do — *"the row's rendered form changed, so the history
-    /// cache from that row on is stale"*. Measured over one replay of a real
-    /// 89-row session: 89 row bodies arriving and 46 turn-state transitions, each
-    /// re-rendering the whole transcript ahead of the row that moved, so the cost
-    /// of a session grows as its square.
-    ///
-    /// **It is not a repaint.** [`crate::term::paint_full`] diffs every frame
-    /// against the glass and writes only the rows whose text changed, so a rebuild
-    /// that produces the same lines writes no bytes. Measured on the same replay,
-    /// with all four turn-state invalidations removed: 1,253,922 bytes against
-    /// 1,256,038, and the same final screen to the byte. This is the cost of the
-    /// *render*, and nothing about what reaches the terminal.
+    /// It is not a repaint. The painter diffs every frame against the glass and writes only rows
+    /// whose text changed, so a rebuild that produces the same lines writes no bytes; this is what
+    /// keeps a session's cost from growing with its square.
     pub(crate) fn invalidate_history_from(&mut self, k: usize) {
         if k == 0 {
             self.hist_lines.clear();
@@ -60,15 +43,12 @@ impl App {
             self.call_targets.clear();
             return;
         }
-        // A row the walk has not reached yet has nothing rendered to throw away,
-        // and rewinding to it would rewind past rows that are fine.
+        // A row the walk has not reached has nothing rendered to throw away, and rewinding to it
+        // would rewind past rows that are fine.
         //
-        // **Unless the head is in tail mode.** A tail walk does not pass the rows it
-        // skipped, so it leaves no marks (`fill_backward`) — and "no mark" here would
-        // otherwise mean "nothing to do", which is how a row that *changed* above the
-        // window would keep being drawn as it was. With no marks to rewind by, the only
-        // correct answer is to throw the history away and render the tail again: the
-        // rows above the floor were never rendered, so there is nothing to be stale.
+        // Unless the head is in tail mode: a tail walk passes no marks, and "no mark" here would
+        // otherwise mean "nothing to do" for a row that changed above the window, so the only
+        // correct answer is to throw the history away and render the tail again.
         let Some(mark) = self.hist_marks.get(k).copied() else {
             if self.hist_floor > 0 {
                 self.invalidate_history_from(0);
@@ -87,42 +67,17 @@ impl App {
         self.retarget_before(k);
     }
 
-    /// Put `call_targets` back to what it held when the walk was about to draw
-    /// row `k`: the calls of the nearest assistant row above it that has a body.
-    ///
-    /// Derived rather than stored, and it has to match the walk exactly — the walk
-    /// **replaces** the table at every assistant row with a body, including one
-    /// that proposed no calls at all, because `call_0` is positional within a
-    /// round and a merge is how round 4's `call_0` came to wear round 1's path.
-    /// So the scan stops at the first such row rather than accumulating.
+    /// Put `call_targets` back to what it held when the walk was about to draw row `k`: the calls of
+    /// the nearest assistant row above it that has a body. Derived and not stored, and it has to
+    /// match the walk exactly, which replaces the table at every such row: `call_0` is positional
+    /// within a round, so the scan stops at the first one rather than accumulating.
     pub(crate) fn retarget_before(&mut self, k: usize) {
         self.call_targets = targets_before(&self.items, k);
     }
 
-    /// The first row whose rendering a change to row `idx` can reach.
-    ///
-    /// **A row is not rendered in isolation, and this is the trap in narrowing an
-    /// invalidation.** An assistant row asks which of the calls it proposed have
-    /// come back, and that answer lives in the rows *after* it, up to the next
-    /// assistant or user row — [`round_results`]. So the unit that has to be
-    /// re-rendered is the ROUND, not the row: a tool result's body arriving
-    /// changes what the assistant row above it draws, and rewinding only to the
-    /// result leaves the proposal beside its own answer. Measured as exactly that
-    /// — `TODO.md` on the screen twice — by
-    /// `a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it`,
-    /// and against a real session by
-    /// `a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero`,
-    /// which is the one that exercises a rewind rather than a rebuild.
-    ///
-    /// Keyed on `kind` rather than on the body, because [`round_results`] breaks on
-    /// an *announced* assistant row whose content has not arrived yet, and two
-    /// answers to "where does this round start" is one too many.
-    /// **Where the marker counting row `idx` is drawn** — at a rung that hides the working, the
-    /// start of the stretch of undrawn rows `idx` belongs to, and the drawn row before it, whose
-    /// line the marker is glued to. A run spans rounds, so its marker can sit on an EARLIER
-    /// round's prose line than `idx`'s own round, and rebuilding from the round's head left that
-    /// line with the count it had (the operator's *"backfilled"*). `idx` itself at any other rung,
-    /// or when it is a drawn row.
+    /// Where the marker counting row `idx` is drawn: the start of the stretch of undrawn rows it
+    /// belongs to, and the drawn row before it, whose line the marker is glued to. A run spans
+    /// rounds, so its marker can sit on an earlier round's prose line.
     pub(crate) fn run_head(&self, idx: usize) -> usize {
         let vis = self.visibility;
         if !vis.hides_the_working() || idx >= self.items.len() {
@@ -136,6 +91,13 @@ impl App {
         start.saturating_sub(1)
     }
 
+    /// The first row whose rendering a change to row `idx` can reach: the row's round, not the row.
+    /// An assistant row asks which of its calls came back and that answer lives in the rows after
+    /// it, so rewinding only to a result leaves a proposal beside its own answer.
+    ///
+    /// Keyed on `kind` rather than the body, because [`round_results`] breaks on an announced
+    /// assistant row whose content has not arrived, and two answers to where a round starts is one
+    /// too many.
     pub(crate) fn round_head(&self, idx: usize) -> usize {
         // A user row is its own head — a conversation of user rows must not
         // rewind to zero on every one. Anything else belongs to the nearest
@@ -178,23 +140,14 @@ impl App {
         }
     }
 
-    /// One frame: `h` lines of at most `w` columns.
+    /// Hold the view, or let it follow again: `ctrl-p` and nothing else. While held the head writes
+    /// nothing at all, because one written cell is one lost selection; the events keep arriving and
+    /// folding. Only the reader can know a selection exists, since a Shift-drag never reaches this
+    /// process, so [`App::screen`] composes one frame at the release and this counts what arrived.
     ///
-    /// # The cost of a frame does not grow with the session
-    ///
-    /// §13.3's rule is about the whole render path, not only the lexer, and the
-    /// previous shape broke it downstream of the part that was careful: the frozen
-    /// prefix was lexed once and rendered once, and then **copied in full on every
-    /// frame** — `hist_lines.clone()`, plus a `stable_lines.clone()` inside each
-    /// block cache — so drawing at 10 Hz cost O(everything said so far), ten times a
-    /// second, to put `h` lines on a screen.
-    ///
-    /// So the body is assembled as a list of [`Seg`]s — the history borrowed, the
-    /// live tail owned and freshly rendered — and only the visible window is
-    /// materialised. A frame costs O(live tail + window). The history's length
-    /// reaches the frame only as an integer.
-    ///
-    /// # The bottom of the screen
+    /// The composer's frame, drawn by [`App::main_area`], is the box below: structure rather than
+    /// colour, so it survives the `--replay` pipe, and its border rows carry what would otherwise
+    /// need rows of their own.
     ///
     /// ```text
     ///   ╭────────────────────────────────────────────── 1 subagent running ─╮
@@ -202,58 +155,6 @@ impl App {
     ///   ╰────────────────────────────── ⚠ · ⠹ Responding · 4.2s · 1.2k chars ─╯
     ///   ctrl-s sessions · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · …
     /// ```
-    ///
-    /// **The bar is one constant string.** It used to open with the keys that change —
-    /// `enter send` idle, `esc interrupt` while a turn runs — and those are three
-    /// different lengths in front of the same tail, so the line moved sideways whenever
-    /// a turn started or the first character was typed. See `Editor::hint`.
-    ///
-    /// **A box, not an accent bar.** Both were on the table and the box wins on
-    /// three counts, none of them taste:
-    ///
-    /// 1. It is *structure*, not colour. This head has a `color: false` mode that
-    ///    is not a monochrome theme — it is `--replay`, a pipe to a file, and CI —
-    ///    and an accent bar plus a raised background is exactly nothing there. It
-    ///    is also nothing in a light-theme terminal, where a dark block is either
-    ///    invisible or unreadable depending on which half of the pair lands.
-    /// 2. **The border rows carry the content that would otherwise need rows of
-    ///    its own.** The top edge is what the session is talking to; the bottom
-    ///    edge is §13.2b's disclosure counters, which used to be a line. So the
-    ///    box costs one net row over the old two-line chrome, not two, and every
-    ///    row on the screen says something.
-    /// 3. It degrades by *deletion* rather than by becoming wrong: at 40 columns
-    ///    the legends truncate and the box is still a box, and when the terminal
-    ///    is too short for it the borders go and the input keeps its `›`.
-    ///
-    /// What is deliberately **not** in the field: any prose. The old input line
-    /// read `ask something · /help · ctrl-r thinking · ctrl-t tool output` — four
-    /// jobs in one line, which is why it read as a status message and not as a
-    /// place to type. Neither surveyed project puts anything inside the input.
-    /// The affordance is the caret and the container.
-    /// **Hold the view, or let it follow again** (R56) — `ctrl-p` and nothing else.
-    ///
-    /// # The contract, and it is all of it: while held, the head writes NOTHING
-    ///
-    /// Not a spinner, not a clock, not a counter that ticks. **One written cell is one lost
-    /// selection** — the terminal clears a selection as soon as anything is painted over it, so
-    /// there is no gentler way to keep painting and keep the selection. The events keep arriving
-    /// and this head keeps folding them; it simply stops drawing, which is why nothing in the
-    /// protocol or in the daemon had to change.
-    ///
-    /// **The reader is the only party who can know a selection exists.** With mouse reporting on,
-    /// a Shift-drag is handed to the TERMINAL and never reaches this process — which is exactly
-    /// why Shift is the gesture — so *do not repaint while something is selected* is not
-    /// implementable as written. The reader knows, so the reader holds the view.
-    ///
-    /// # How the hold is kept, in three pieces
-    ///
-    /// * [`App::screen`] composes ONE frame when the hold begins — with the marker on it, which
-    ///   is the single write the freeze owes — and returns that same frame byte for byte
-    ///   thereafter, so the terminal's own diff produces no bytes at all;
-    /// * [`App::take_redraw`] refuses while held, so nothing can force `invalidate` and a full
-    ///   repaint behind the hold's back;
-    /// * this function, which counts what arrived ONCE, at the release, because a live count while
-    ///   held would be an animation and an animation is writes.
     pub(crate) fn toggle_hold(&mut self) -> Option<Action> {
         if self.hold {
             self.hold = false;
@@ -275,20 +176,12 @@ impl App {
         None
     }
 
-    /// **Render the tail of a conversation instead of all of it.**
+    /// Render the tail of a conversation instead of all of it: the frame shows the end of a session,
+    /// and walking from row 0 to draw the bottom forty lexes every row above them.
     ///
-    /// The frame shows the *end* of a session, and the end is what this renders first.
-    /// On a session of thousands of turns and 160 MB, walking from row 0 to draw the
-    /// bottom 40 rows lexes every row above them, which is the operator's *"does
-    /// nothing, then ... after a while it renders history"*.
-    ///
-    /// Walks **backward** from the current floor, rendering whole rows, until
-    /// `want` lines are covered or the beginning is reached. Each row is rendered by
-    /// the same [`item_lines`] the forward walk uses, with the same context — by
-    /// *field*, from [`targets_before`] rather than from the forward walk's running
-    /// table, which is the only thing that made direction matter.
-    ///
-    /// Returns how many rows it rendered, for a test to count.
+    /// It walks backward from the current floor, rendering whole rows with the same [`item_lines`]
+    /// and the same targets taken by field from [`targets_before`], which is the only thing that made
+    /// direction matter. Returns how many rows it rendered, for a test to count.
     pub(crate) fn fill_backward(&mut self, want: usize) -> usize {
         self.fill_backward_until(want, None)
     }
@@ -320,19 +213,10 @@ impl App {
             .as_ref()
             .map(|t| t.turn_rows.iter().cloned().collect())
             .unwrap_or_default();
-        // (row, class, lines, tight) for each row, newest first as they are built. The row
-        // index rides along for R36: the block these are assembled into is PREPENDED to the
-        // history, so every span already in `spans` shifts by its length and the new ones
-        // have to be recorded here rather than recovered later.
-        //
-        // `tight` is R37 AMENDED's: a run of hidden rows draws one marker line that must
-        // read as the continuation of the prose above it, so the separator's blank line is
-        // suppressed for that row. It rides in this tuple rather than being recomputed in
-        // the assembly loop because the assembly has only the row index and the class.
-        // `(row, class, lines, marker, joinable)`: the marker's TEXT and whether the model's
-        // own sentence introduces it. Two facts rather than one, because a marker that stands
-        // alone still needs the separator's blank — which is the operator's *"add an empty
-        // line between them"* — and a marker that joins must not have it.
+        // `(row, class, lines, marker, joinable)`: the block these are assembled into is prepended to
+        // the history, so the records have to be made here rather than recovered later. `joinable`
+        // rides along because the assembly loop has only the row index and the class, and a marker
+        // that joins must not have the separator's blank line.
         let mut built: Vec<Built> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
@@ -345,10 +229,9 @@ impl App {
                     .map(|(_, _, l, _, _)| l.len() + 1)
                     .sum::<usize>()
         };
-        // **The row condition is `Option`al on purpose.** Written as `k > stop_row` with a
-        // `0` meaning "no row", the disjunct is true for every `k > 0` and the walk renders
-        // the whole session — 400 rows where a screen was asked for, found by the debug
-        // print and not by reading it. `None` is the lines-only walk.
+        // The row condition is `Option`al on purpose: written as `k > stop_row` with 0 meaning "no
+        // row", the disjunct is true for every `k > 0` and the walk renders the whole session.
+        // `None` is the lines-only walk.
         // **What the turn is doing that no row holds yet**, computed once for this walk.
         // The backward walk is entered when the transcript is too big to render forward, and
         // it still has to count the work in flight against the run it belongs to.
@@ -364,29 +247,15 @@ impl App {
         // **The run `ctrl-t` opens**, once, for the same reason the forward walk computes it
         // once: the seam names the chord only where it acts.
         let newest_run = newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live);
-        // **`carry`: the walk does not stop in the middle of a run.**
-        //
-        // A run's marker is drawn at its FIRST row, and this walk renders the newest rows
-        // first — so the start is the last thing it reaches. Stopping before it (on the line
-        // budget) left the rows it had already passed with nothing on the screen at all: the
-        // reader scrolling a tool-heavy turn would see prose and then a hole, and the counts
-        // for the rows they were looking at would be nowhere. The cost of continuing is a
-        // pass of a cheap predicate per row — the rows themselves draw no lines and are
-        // dropped from `built` — which is nothing next to a marker that is not there.
+        // `carry`: the walk does not stop in the middle of a run. A run's marker is drawn at its
+        // first row and this walk renders the newest first, so stopping on the line budget would
+        // leave the rows it passed with nothing on screen. Continuing costs one cheap predicate per
+        // row, and the rows draw no lines.
         let mut carry = false;
-        // **`need_speaker`: a marker with nothing drawn beside it yet.**
-        //
-        // The operator, on a real screen: *"sometimes you do it same line - sometimes dont."*
-        // They were right, and this is why. The marker joins the sentence it continues **when
-        // the prose row is already in the block**, and that depends on where the line budget
-        // happened to stop: a reader one line short of the window fills exactly one line — the
-        // marker's — and the narration above it is never built, so the marker stands alone.
-        // The same transcript joined or did not depending on how far somebody had scrolled.
-        //
-        // So the walk does not stop while the newest rendered row is a marker that has no row
-        // above it: it renders one more row, which is the prose, and the join in the assembly
-        // loop becomes unconditional. One extra row, only when a marker is the top of what has
-        // been drawn.
+        // `need_speaker`: a marker with nothing drawn beside it yet. The marker joins the sentence it
+        // continues only when that prose row is already in the block, which depends on where the line
+        // budget stopped, so the walk renders one more row rather than let the same transcript join or
+        // not depending on how far somebody had scrolled.
         let mut need_speaker = false;
         loop {
             let enough = covered(&built) >= want

@@ -19,59 +19,32 @@ impl App {
 
     /// File something that happened between rows, at the row it happened at.
     pub(crate) fn note(&mut self, n: Note) {
-        // **A warning is announced once, so it is noted once.**
+        // A warning is announced once, so it is noted once: the same `Warning` reaches a head from
+        // the snapshot at anchor 0 and from the live arm at the current end, and the second copy
+        // reads as pinned under the conversation.
         //
-        // The same `Warning` can reach a head twice: `adopt` plants everything the
-        // snapshot carries at anchor 0, and the live arm anchors at the CURRENT
-        // end of the transcript. Two copies of one announcement, in two places —
-        // and the second one sits under the conversation, so new rows arrive
-        // beneath it and it reads as pinned to the bottom. The operator, on three
-        // of them: *"sometimes new messages come under those three but then those
-        // three again pinned to the bottom, sometimes they just stay pinned"*.
-        //
-        // Identity is `(code, detail, ts)`: `ts` is the log's own clock for the
-        // envelope that carried it, so the same announcement has the same one by
-        // whichever route it arrives, and two genuinely separate warnings that
-        // agree on all three are the same sentence at the same instant — which a
-        // reader cannot tell apart either, and should not be shown twice.
-        //
-        // The FIRST anchor wins. A warning belongs where it happened, and the
-        // later arrival is a redelivery rather than a new event.
-        //
-        // The identity is [`note_key`]'s, and it is one rule for the whole head: the
-        // same three facts (code, the log's `ts`, and the detail) that `/notes dismiss`
-        // retires a note by and that [`holds`] asks a snapshot against. A note that a
-        // *snapshot* already carries is not filed a second time at a live seam either —
-        // the snapshot's copy is the older statement of the same fact (R19).
+        // Identity is `(code, log ts, detail)`, the same key `/notes dismiss` retires by, and the
+        // FIRST anchor wins: a warning belongs where it happened and the later arrival is a
+        // redelivery.
         if holds(&self.notes, &n) {
             return;
         }
         self.file_note(n);
     }
 
-    /// **Put a note in the conversation**, with the bookkeeping and without the identity test.
+    /// Put a note in the conversation, with the bookkeeping and without the identity test.
     ///
-    /// The split exists for [`Note::Pane`], which is the one disclosure that cannot be
-    /// *redelivered* and so must not be deduplicated: a pane's ending is filed by the head that
-    /// took the pane, the pane is taken on the first `TermEnded`, and the second `!term mc`
-    /// that exits 7 with the same sentence on its screen is a **second ending** and not the same
-    /// one announced twice. [`note_key`] cannot tell those two apart — they are the same line,
-    /// the same reason and the same rows — so the rule that protects a warning from a snapshot
-    /// would silently swallow every repeat of a pane that dies at once, which is the defect
-    /// this variant exists for.
+    /// The split exists for [`Note::Pane`], the one disclosure that cannot be redelivered: a second
+    /// `!term mc` exiting 7 with the same words is a second ending, and [`note_key`] cannot tell it
+    /// from the first, so deduplicating would swallow every repeat of a pane that dies at once.
     pub(crate) fn file_note(&mut self, n: Note) {
         let at = self.items.len();
-        // **A note that joins a burst changes a row that is already drawn.** The burst's row
-        // is one line with a count, and the count lives in the FIRST live member's seam — so the
-        // count is stale the moment a second member lands, and the walk is incremental. The
-        // rewind goes to the row BEFORE that seam: `hist_marks[k]` records the state after the
-        // notes at seam `k` were drawn (`window::walk_history` draws a seam's notes and then
-        // pushes the mark), so rewinding to the head's own seam would skip the note whose row
-        // has to change. See [`burst_at`] for why the row is the head's.
+        // A note that joins a burst changes a row that is already drawn: the burst's count lives in
+        // the FIRST member's seam, and the walk is incremental. The rewind goes to the row before
+        // that seam, because `hist_marks[k]` is the state after seam k was drawn.
         //
-        // **The note it must chain with is the previous one of its KIND, not the previous one
-        // filed** — the wall this exists for interleaves a `queue_blocked` with a
-        // `queue_branch_kept`, and a look at `notes.last()` would miss every second member.
+        // The note it chains with is the previous one of its KIND, not the previous one filed: the
+        // wall interleaves two codes, and `notes.last()` would miss every second member.
         let head = coalescable(&n).and_then(|_| {
             let prev = self
                 .notes
@@ -106,17 +79,11 @@ impl App {
         }
     }
 
-    /// **Is this note one the reader has retired?**
+    /// Is this note one the reader has retired? A retired note is not rendered and nothing else
+    /// changes: it stays in `notes`, [`App::notes_lines`] lists it, [`App::retired_notes`] counts it.
     ///
-    /// A retired note is not rendered, and nothing else about it changes: it stays
-    /// in `notes`, [`App::notes_lines`] lists it with its text, and
-    /// [`App::retired_notes`] counts it. See [`App::dismissed`].
-    ///
-    /// **Two ways to be retired, and they are one question.** The key set is the reader's
-    /// act on one copy ([`App::dismissed`]); the watermark is the reader's act on a *kind*
-    /// ([`App::read_marks`], and `read_marks`' docstring is the argument for why a key set
-    /// alone is a hide and not a mark). A note either way is hidden, counted and listed, so
-    /// everything that asks this question — the drawing walk, `/notes`, `/status` — keeps
+    /// Two ways to be retired and they are one question: the key set is the reader's act on one
+    /// copy, the watermark on a kind. Both mean hidden, counted and listed, so every asker keeps
     /// asking one question.
     pub(crate) fn is_retired(&self, n: &Note) -> bool {
         self.dismissed.contains(&note_key(n)) || already_read(&self.read_marks, n)
@@ -132,29 +99,15 @@ impl App {
             .map(|(_, ts)| *ts)
     }
 
-    /// **`ctrl-n`'s act: say how far this reader has read, per kind** — then hide what that
-    /// covers, in the one record the rest of the head reads.
+    /// `ctrl-n`'s act: say how far this reader has read, per kind, then hide what that covers.
     ///
-    /// Per **kind**, and that is the whole difference from `dismissed`: the mark is
-    /// `(code, newest ts)`, so it is a statement about a stream of notices rather than about
-    /// the copies of them this head happens to hold. A copy that arrives afterwards — the
-    /// same incident re-said in different words, a re-scrubbed replay, a snapshot's re-plant
-    /// — is read because it is not newer, whatever identity it comes under.
+    /// Per kind and not per copy: the mark is `(code, newest ts)`, so a copy that arrives after it
+    /// is read because it is not newer, whatever identity it comes under. A note with no clock is
+    /// not marked, since two of them cannot be ordered and a mark of 0 would hide the second for
+    /// ever; the key set handles those. Marks only move forwards.
     ///
-    /// **A note with no clock is not marked.** `ts == 0` is a note that happened on the
-    /// socket rather than on the session's log (`unreadable_frame`, `log_gap`), and two of
-    /// them cannot be ordered — so a mark of `0` would hide the second one for ever. Those
-    /// are hidden by the key set, which is the right instrument for a copy with no clock.
-    ///
-    /// **Only forwards.** A mark is `max`, never a replacement, so a mark set while this
-    /// head holds fewer notes than it once did cannot rewind and re-draw an older incident.
-    ///
-    /// **The mark is a DRAWING input, so moving it rebuilds what was drawn.** `hist_lines` is a
-    /// cache of rendered rows and the walk only consults the mark when it WRITES one — so a line a
-    /// note contributed before the press survives in the cache until something rebuilds it. This
-    /// used to be the caller's half (`retire` rebuilds, and `ctrl-n` happens to call it first),
-    /// which is one writer too many: any door that moves the mark without also rebuilding leaves
-    /// the wall on the screen. One function, both halves.
+    /// The mark is a drawing input, so moving it rebuilds what was drawn: one function does both,
+    /// because a door that moved the mark alone would leave the wall on the screen.
     pub(crate) fn mark_read(&mut self) {
         let before = self.read_marks.clone();
         for (_, n) in &self.notes {
@@ -176,29 +129,14 @@ impl App {
         }
     }
 
-    /// **Put every note the mark covers into `dismissed`**, and answer how many went in.
+    /// Put every note the mark covers into `dismissed`, and answer how many went in. One writer for
+    /// the second half of the mark, called from the three moments the two records can disagree: a
+    /// note being filed, a mark being set, and the key set being replaced from the file.
     ///
-    /// One writer for the second half of the mark, called from the three moments the two
-    /// records can disagree: a note being filed ([`App::file_note`]), a mark being set
-    /// ([`App::mark_read`]), and the key set being replaced from the file
-    /// ([`App::refresh_retired`] — which is the one that would otherwise drop a key this head
-    /// added in memory and draw a wall that was cleared).
-    ///
-    /// **`dismissed` stays the record everything else reads.** The walk, `/notes`' marker,
-    /// the `/status` count and `one_event`'s absorption all ask `dismissed`, and a second
-    /// place for "hidden" is a second place for them to disagree — so the watermark decides
-    /// and `dismissed` records.
-    ///
-    /// # Why this is `<=` where the draw is `<`
-    ///
-    /// The two questions are not the same one. The DRAW asks *is this news*, and a notice born
-    /// in the same millisecond as the mark is news — the head cannot order the two, and
-    /// drawing loses nothing while hiding loses a line for ever. This asks *was this note on
-    /// the screen when the reader pressed the key*, and the answer for a note at the mark's own
-    /// instant is yes, because the mark was taken FROM it. So the copies this head holds at the
-    /// instant of the mark are recorded as read, and a copy that arrives at that same instant
-    /// later is not. Without this, the newest line would be hidden only by its key — and a
-    /// `head.toml` reload or the cap would bring exactly that one back.
+    /// `dismissed` stays the record everything else reads: the walk, `/notes`' marker, the `/status`
+    /// count and `one_event` all ask it, and a second place for hidden is a second place to
+    /// disagree. This is `<=` where the draw is `<`: the draw asks *is this news*, this asks *was it
+    /// on the screen when the key was pressed*, and the mark was taken from the newest line.
     pub(crate) fn hide_read(&mut self) -> usize {
         let mut added = 0;
         for (_, n) in &self.notes {
@@ -287,17 +225,12 @@ impl App {
         added
     }
 
-    /// **Take back what the file says is retired, not only what this head wrote.**
+    /// Take back what the file says is retired, not only what this head wrote: `load_prefs` runs
+    /// once at startup, so a dismissal another head recorded since is otherwise invisible and
+    /// `/notes` shows a retired note as live.
     ///
-    /// `load_prefs` runs once, at startup. A head that has been up for hours has a
-    /// `dismissed` that only ever grew from its own presses — so a dismissal another head
-    /// recorded since is invisible, and `/notes` shows a note that is retired on disk as
-    /// live on the screen. The file is the durable record (`load_prefs`' own comment says
-    /// so), and reading it is what makes that true rather than a claim.
-    ///
-    /// Called where the operator is looking or acting — the listing and the chord — rather
-    /// than on a timer: nothing here needs to notice a change nobody has asked about, and a
-    /// stat-and-read on a keypress is free while a poll loop is a poll loop.
+    /// Called where the person is looking or acting rather than on a timer: nothing needs to notice
+    /// a change nobody asked about, and a read on a keypress is free while a poll loop is a poll loop.
     pub(crate) fn refresh_retired(&mut self) {
         let Some(path) = self.prefs_path.clone() else {
             return;
@@ -317,17 +250,13 @@ impl App {
         }
     }
 
-    /// True when a §13.2b disclosure counter has moved **past what this reader has been shown**.
+    /// True when a disclosure counter has moved past what this reader has been shown. The triangle
+    /// is a pointer at `/status` and reading that screen acknowledges it; without the second half
+    /// the mark is permanent, since the counters are cumulative and a head that took two resyncs
+    /// carried `⚠` for the rest of its life while saying nothing new.
     ///
-    /// R51 item 17: the triangle is a POINTER at `/status`, and reading that screen acknowledges
-    /// it. Without the second half the mark is permanent — the counters are cumulative and start
-    /// at zero with the process, so a head that took two resyncs carried `⚠` for the rest of its
-    /// life while saying nothing new, and the operator asked the only question available:
-    /// *"how to hide that resync counter arrow?"*
-    ///
-    /// **Up to the value that was READ, and not a switch.** A resync *after* the one that was
-    /// acknowledged is a new fact about this head, so the mark comes back — which is what makes
-    /// acknowledging safe rather than a way to turn the alarm off and forget it.
+    /// Up to the value that was read and not a switch, so a resync after the acknowledged one is a
+    /// new fact and the mark comes back: acknowledging is safe, not a way to turn the alarm off.
     pub(crate) fn alarmed(&self) -> bool {
         self.counters().exceeds(self.acked)
     }
@@ -380,25 +309,16 @@ impl App {
         self.notice_until = None;
     }
 
-    /// **Take down the notes whose sentence has been on the screen long enough** — the codes
-    /// in [`letibot_sessionlog::warning::FLEETING`], on this head's clock. See
-    /// [`FLEETING_MS`] for the duration and for why a timer is allowed here at all.
+    /// Take down the notes whose sentence has been on the screen long enough, on this head's clock:
+    /// the codes in [`letibot_sessionlog::warning::FLEETING`]. See [`FLEETING_MS`] for the duration.
     ///
-    /// **Returns whether anything went**, so the one caller can rebuild the rendered history
-    /// *once*. A note is a seam in `hist_lines` and the walk that put it there is incremental,
-    /// so the only honest way to un-draw a line is to rebuild — the shape [`App::retire`] has
-    /// for the reader's own act. Without the return this would have to rebuild on every frame
-    /// after the deadline, for ever, which is the quadratic cost `invalidate_history_from`'s
-    /// own docstring measures.
+    /// It returns whether anything went, so the caller rebuilds once: a note is a seam and the walk
+    /// is incremental, so un-drawing a line means rebuilding, and without the answer this would
+    /// rebuild on every frame after the deadline.
     ///
-    /// **Spent, not retired.** `retire` is the reader's act and this is a clock's, and they
-    /// are told apart by where the key goes: a retired key is written to `head.toml` as this
-    /// reader's memory, and a timer may not write to that file — a key the reader retired is
-    /// theirs, and one they *restore* must stay restored. So the note leaves [`App::notes`]
-    /// rather than joining [`App::dismissed`], and the argument for letting it leave at all
-    /// is R10's own sentence: *the session log holds the durable fact; a note is how a head
-    /// shows it once* — with the second half of that here, because the queue's standings are
-    /// on the bottom edge and are showing it now.
+    /// Spent, not retired: a retired key is written to `head.toml` as the reader's memory and a
+    /// timer may not write that file, so this leaves [`App::notes`] rather than joining
+    /// [`App::dismissed`]. The standings on the bottom edge are showing the fact now.
     pub(crate) fn fade_fleeting_notes(&mut self) -> bool {
         let before = self.notes.len();
         self.notes.retain(|(_, n)| !past_its_time(n, self.now_ms));
@@ -406,16 +326,12 @@ impl App {
     }
 }
 
-/// **How a save treats the retired set** — because one write cannot express both verbs.
+/// How a save treats the retired set, because one write cannot express both verbs: a dismissal
+/// asserts a key is retired and a restore asserts it is not, which is a removal.
 ///
-/// A dismissal asserts that a key **is** retired. A restore asserts that the set is **not**,
-/// which is a removal. A union adds and never removes, so it can express the first and cannot
-/// express the second; a replacement can express both, but applying it to a dismissal would
-/// discard every key another head had retired since this one loaded — which is the operator's
-/// original report (*"i dismissed letibot notes but they stay"*).
-///
-/// So the verb decides the write, and the call site says which it is rather than a bool that
-/// could be passed by accident.
+/// A union adds and never removes, so it cannot restore; a replacement can do both but would
+/// discard keys another head retired since this one loaded. The verb decides the write, and the
+/// call site says which it is rather than passing a bool that could be passed by accident.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RetiredWrite {
     /// Add to the file's set. A dismissal is an assertion no other head's save may contradict.
@@ -459,19 +375,12 @@ impl Counters {
     }
 }
 
-/// **Where a note sits, or whether it sits in the conversation at all.**
+/// Where a note sits, or whether it sits in the conversation at all.
 ///
-/// `head-parity-2026-09-21.md` **R19**, the operator's ruling of 2026-09-22. A warning is
-/// *how a head shows a fact once*; a head that has just attached has shown nothing, so a
-/// snapshot's warnings were being replayed as though they had just happened — at position
-/// 0, above a conversation they did not precede. The operator restarted a head and was met
-/// by twelve red lines: *"i dont want to see that on restart."*
-///
-/// The distinction is not age — a snapshot's warnings are not old, they are **prior**: the
-/// head was not there. So a note filed live is anchored at a seam of this conversation and
-/// a note that arrived with a snapshot has no seam to be drawn at, and the two are told
-/// apart by this type rather than by a sentinel position that would be a lie the walk
-/// would have to undo.
+/// A warning is how a head shows a fact once, and a head that has just attached has shown nothing,
+/// so replaying a snapshot's warnings drew a wall of red above a conversation they did not
+/// precede. The distinction is not age: a snapshot's warnings are prior, and the head was not
+/// there, so they have no seam to be drawn at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Placed {
     /// At this many rows: the seam the walk puts it back into.
