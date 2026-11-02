@@ -16,42 +16,32 @@ Five reasons are usually given. They are not equally real.
 | 4 | decode slows as KV grows | real |
 | 5 | KV memory pressure across sessions | real - this is the OOM above |
 
-Reason 3 is the one everybody assumes, and Falsifier B killed it. 160 samples, scored on
-compile-and-tests-pass: 0.829 at zero depth, 0.875 at 20k, **1.000 at 60k**, 0.900 at 150k.
-Fisher exact between 20k and 150k: **p = 1.000**. The only significant contrast was 0k against
-60k and its sign runs *backwards* - the shallowest condition was the worst. Depth did not hurt;
-the absence of a conversation did.
+Reason 3 is the one everybody assumes, and Falsifier B killed it: 160 samples scored on
+compile-and-tests-pass gave 0.829 at zero depth, 0.875 at 20k, **1.000 at 60k**, 0.900 at 150k, with
+Fisher p = 1.000 between 20k and 150k and the *shallowest* condition worst. Depth did not hurt; the
+absence of a conversation did.
 
-So compaction is driven by the wall and by resources, not by quality. The trigger is `n_ctx`
-and memory pressure, and the right local policy is *compact when you must, as late as
-possible*.
+So compaction is driven by the wall and by resources, not by quality, and the right local policy is
+*compact when you must, as late as possible*.
 
 ## 2. What it costs
 
-The strategy these numbers are of, because there is more than one: **flatten**. The
-conversation is collapsed into one user message with `system: []` and `tools: {}`, a summary is
-asked for, the history is replaced, and the conversation continues. Measured on a harness that
-does this, on this box:
+The strategy these numbers are of: **flatten**. The conversation is collapsed into one user message with
+`system: []` and `tools: {}`, a summary is asked for, the history is replaced. Measured on a harness that
+does this: **144,436 tokens, cache hit 0, about 13 minutes** to the first summary token, and **the next
+real turn is also cold**, because the prefix is now entirely different. Detail is destroyed irreversibly,
+and a short context made this model reason **about 4x longer** - every truncation-by-length in the run
+happened at zero depth.
 
-- **144,436 tokens, cache hit 0, about 13 minutes** to the first summary token.
-- **The next real turn is also cold**, because the prefix is now entirely different. This half
-  is the half the design turns on.
-- Detail is destroyed irreversibly.
-- And a short context made this model reason **about 4x longer** - median 6,468 generated
-  tokens against about 1,400, with every truncation-by-length in the whole run occurring at
-  zero depth. Compaction can cost tokens on the far side too.
+One correction, because it changes where the cost lands: on a strategy that re-sends the previous request
+**byte-identical** and appends only the instruction, the summarising call is cheap. What cannot be cheap
+is the moment the history is replaced. **The reduction is what costs, and it costs the next turn.**
 
-One correction, because it changes where the cost lands: on a strategy that re-sends the previous
-request **byte-identical** and appends only the instruction, the summarising call is cheap. What cannot
-be cheap is the moment the history is actually replaced. **The reduction is what costs, and it costs
-the next turn.**
-
-The tree branches on the backend for that reason, and the currency differs: a local llama.cpp miss
-costs time (200-375 tok/s, about ten minutes on a 240k prompt), a cloud miss costs money, and a cloud
-provider takes messages rather than tokens so no prefix machinery applies to it at all. A local server
-keeps the expensive half a true prefix of what it holds (`summarise_overrun`); a cloud provider folds
-and continues with no overlap (`plan_fold`). `plan_overrun` chooses, `Harness::compact_inner` carries
-it out.
+The tree branches on the backend for that reason, and the currency differs: a local llama.cpp miss costs
+time (200-375 tok/s), a cloud miss costs money, and a cloud provider takes messages rather than tokens so
+no prefix machinery applies to it at all. A local server keeps the expensive half a true prefix of what
+it holds (`summarise_overrun`); a cloud provider folds and continues with no overlap (`plan_fold`).
+`plan_overrun` chooses, `Harness::compact_inner` carries it out.
 
 ## 3. The conflation at the heart of it
 
@@ -80,14 +70,10 @@ than prose about it.
 
 ### Why structural beats prose
 
-Most of a conversation is already typed and we throw the schema away. Tool calls have names,
-arguments and a closed `ToolOutcome` vocabulary. `read src/foo.rs:1-200`,
-`grep X → 3 hits in Y`, `cargo test → 3 failures`, `decided A because B` are *events*, not
-sentences. A prose summary flattens them into English; a map keeps them as nodes with
-identities.
-
-The model is then needed only for the genuinely prose parts - reasoning and assistant text -
-which is a far smaller job than summarising a conversation.
+Most of a conversation is already typed and we throw the schema away. Tool calls have names, arguments
+and a closed `ToolOutcome` vocabulary: `read src/foo.rs:1-200`, `grep X → 3 hits in Y`, `cargo test → 3
+failures` are *events*, not sentences. A prose summary flattens them into English; a map keeps them as
+nodes with identities, and the model is needed only for the genuinely prose parts.
 
 ### Maintained incrementally, which is what removes the stall
 
@@ -131,19 +117,16 @@ Zoom-as-paging - place a cached block at the tail, prefix untouched, near-free -
 original shape of this section, and it was tested and settles negative.
 `experiments/kv-stitching/RESULTS.md`.
 
-The reason is stronger than a partial correction being hard. It is that there is nothing to correct.
+The reason is stronger than a partial correction being hard: there is nothing to correct.
 `llama_memory_recurrent`'s cells *are* sequence ids, so a per-sequence save writes **one** cell whose
-payload is the entire accumulator: 36 layers, **111.4 MiB, fixed and independent of length** (114.6
-MiB after a *64-token* prompt). The attention half is 24 KiB/token across the other 12 layers, so **a
-block's contribution to three quarters of the model is not extractable** - "recompute a fraction to
-reconcile it" is not a poor approximation, it is not an operation.
+payload is the entire accumulator: 36 layers, **111.4 MiB, fixed and independent of length**. The
+attention half is 24 KiB/token across the other 12 layers, so **a block's contribution to three quarters
+of the model is not extractable** - "recompute a fraction to reconcile it" is not a poor approximation,
+it is not an operation.
 
-Measured against a determinism floor established first (36 consecutive bit-identical repeats over 200
-greedy tokens): every stitch short of the divergence diverges at token **5-172**, recomputing 98% of
-the prompt still breaks at token 5, and at or before the divergence it is bit-identical. Asking a slot
-for an honest prefix of itself confirms it without doctoring: **three fixed re-entry points, not a
-sliding window** - `d ≤ 3` free, `4 ≤ d ≤ 516` rewinds to a checkpoint, `d > 516` costs the entire
-prefix from token 0.
+Measured against a determinism floor established first: every stitch short of the divergence diverges at
+token **5-172**, recomputing 98% of the prompt still breaks at token 5, and asking a slot for an honest
+prefix of itself confirms **three fixed re-entry points, not a sliding window**.
 
 ### What survives, and why the design was built this way
 
@@ -164,14 +147,10 @@ to keep them.
 
 Universal, on both paths: **Objective / Important Details / Work State (Completed, Active, Blocked) /
 Next Move / Relevant Files**, every section kept even when empty, and *"preserve exact file paths,
-symbols, commands, error strings, URLs and identifiers"*. The reason is §4's, one level down: **a
-section is a question, and an absent section is a question nobody was asked.** "Nothing is blocked"
-and "nobody said" are different facts, and a prose ask collapses them.
-
-`SUMMARY_SECTIONS` is that list, so a test holds the instruction's text to it; the wire carries seven
-of the eight leaves (`WIRE_SECTIONS`) and the eighth is the record itself. The instruction also tells
-the model what it is about to lose - *"anything you do not carry into it is lost"* - because a
-summariser that is not told the prior record is discarded will assume it survives.
+symbols, commands, error strings, URLs and identifiers"*. The reason is §4's, one level down: **a section
+is a question, and an absent section is a question nobody was asked.** `SUMMARY_SECTIONS` is that list,
+and the wire carries seven of the eight leaves (`WIRE_SECTIONS`); the eighth is the record itself. The
+instruction also says what is about to be lost - *"anything you do not carry into it is lost"*.
 
 ### A verbatim tail of recent turns, split by where the model runs
 
