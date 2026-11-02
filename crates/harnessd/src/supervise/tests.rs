@@ -759,6 +759,8 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
             pid: rec.pid,
             identity: rec.identity.clone(),
             scope: rec.scope.clone(),
+            scope_dir: None,
+            owner_dir: None,
         })
         .expect("adopted");
     assert_eq!(adopted, id);
@@ -796,6 +798,8 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
             pid: vanished.pid,
             identity: vanished.identity.clone(),
             scope: vanished.scope.clone(),
+            scope_dir: None,
+            owner_dir: None,
         })
         .expect("adopted");
     let deadline = Instant::now() + Duration::from_secs(10);

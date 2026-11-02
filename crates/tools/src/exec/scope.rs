@@ -289,6 +289,15 @@ pub trait ScopeTree: Send + Sync {
     /// An invisible watcher is an unreapable one.
     fn list(&self) -> Vec<ScopeId>;
 
+    /// Note a scope that already exists and that this tree did not open - a job adopted from
+    /// another host in the same process, whose cgroup is under that host's root.
+    ///
+    /// The default does nothing, which is the honest answer for a tree that cannot be told:
+    /// nothing is *reaped* differently by remembering one, [`ScopeTree::end`] works on any path.
+    /// What it buys is a listing that can show the scope - and a scope nobody lists is the
+    /// invisible watcher again.
+    fn remember(&self, _scope: &ScopeId) {}
+
     /// Remove the tree's own empty directories, and report how many went. Only unpopulated
     /// directories go: a populated one is somebody's live work, and the kernel refuses it anyway.
     /// Debris that holds nothing is still debris.
@@ -1032,6 +1041,16 @@ impl ScopeTree for Cgroup2 {
         self.open.lock().expect("scope list").clone()
     }
 
+    /// The cgroup is already there - it belongs to the host that opened it - so the only act
+    /// left is to list it. `prune` reads the filesystem rather than this list, so a scope
+    /// remembered here is still only removed when it holds nothing.
+    fn remember(&self, scope: &ScopeId) {
+        let mut open = self.open.lock().expect("scope list");
+        if !open.contains(scope) {
+            open.push(scope.clone());
+        }
+    }
+
     fn prune(&self) -> usize {
         let mut n = 0;
         prune_at(&self.root, &mut n);
@@ -1382,6 +1401,15 @@ impl ScopeTree for ProcessGroups {
 
     fn list(&self) -> Vec<ScopeId> {
         self.open.lock().expect("scope list").clone()
+    }
+
+    /// The group is already there and already recorded in the directory the giver wrote it
+    /// to, so listing it is the whole act ([`Cgroup2::remember`]'s reason).
+    fn remember(&self, scope: &ScopeId) {
+        let mut open = self.open.lock().expect("scope list");
+        if !open.contains(scope) {
+            open.push(scope.clone());
+        }
     }
 
     fn prune(&self) -> usize {

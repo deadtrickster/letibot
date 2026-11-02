@@ -31,8 +31,8 @@ pub use confine::{
     TmpView, Unconfined, ViewSpec,
 };
 pub use host::{
-    Adopted, Aggregate, DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion,
-    Protected, SpawnRequest, Waited, job_label,
+    Adopted, Aggregate, DeadlineFired, Deadlines, Handover, HostProcesses, JobView, ProcessHost,
+    Promotion, Protected, SpawnRequest, Waited, hand_over, job_label,
 };
 pub use jobs::{
     DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, MemoryCap, OutputFile, OutputSlice, Stdin,

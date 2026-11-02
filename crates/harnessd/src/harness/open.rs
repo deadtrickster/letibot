@@ -1901,6 +1901,10 @@ impl Harness {
                     pid: rec.pid,
                     identity: rec.identity.clone(),
                     scope: rec.scope.clone(),
+                    // A record from a daemon that died: the cgroup it names died with that
+                    // process, so the directory has to be made again from the name.
+                    scope_dir: None,
+                    owner_dir: None,
                 };
                 if let Ok(id) = procs.adopt(&adopted)
                     && let Some(w) = &job_watch

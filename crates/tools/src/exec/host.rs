@@ -263,9 +263,24 @@ pub trait ProcessHost: Send + Sync {
     /// asked* and *its deadline passed* are different things to have happened.
     fn kill_job_as(&self, job: &JobId, by: &str) -> Result<Reaping, ExecError>;
 
-    /// Take a job this backend did not start, and make it one of its own. The caller is
-    /// a restarted daemon, and everything above this layer is written against the backend's
-    /// own job table; a host that cannot identify a pid must answer *I cannot*.
+    /// The jobs this host is holding that will NOT go with it: a job in an `explicit` scope
+    /// outlives the session that started it, so a session that ends hands them on rather than
+    /// ending them. Read where a session's estate is settled, and empty on a host with no
+    /// mechanism to answer with.
+    fn survivors(&self) -> Vec<Adopted> {
+        Vec::new()
+    }
+
+    /// Stop listing a job. Called by [`hand_over`] on the side that gave it up, so two tables
+    /// cannot both claim one process.
+    fn forget(&self, job: &JobId) {
+        let _ = job;
+    }
+
+    /// Take a job this backend did not start, and make it one of its own. The callers are a
+    /// restarted daemon and a session handing its survivors to its heir; everything above this
+    /// layer is written against the backend's own job table, and a host that cannot identify a
+    /// pid must answer *I cannot*.
     fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
         Err(ExecError::Spawn(format!(
             "this backend cannot adopt `{}`: the record outlived the process that started the \
@@ -696,7 +711,9 @@ pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// A job this host did not start: a restarted daemon's record of one, as this layer needs it.
-/// See [`HostProcesses::adopt`].
+/// See [`HostProcesses::adopt`], and [`hand_over`] for the caller that hands one to a peer
+/// rather than taking one back from the store.
+#[derive(Debug, Clone)]
 pub struct Adopted {
     pub handle: String,
     pub command: String,
@@ -708,6 +725,69 @@ pub struct Adopted {
     pub identity: String,
     /// The owner scope as the record spells it: `session.<name>`, `turn.<name>`, `explicit.<name>`.
     pub scope: String,
+    /// The directory the job's own scope really is, when the caller handing it over still holds
+    /// it.
+    ///
+    /// `None` from a daemon's record, whose cgroup died with the process that made it; the
+    /// directory is then re-derived from `scope`, which is the best a name can do. A hand-over
+    /// inside one process has the real one, and it is the whole of the evidence that a later
+    /// kill reaches the process: two hosts in one daemon have a root each
+    /// ([`super::scope::host_tree`] makes a `letibot.<pid>.<seq>` per tree), so a re-derived
+    /// directory would be a new, empty cgroup on the heir's side and its `job_kill` would end
+    /// nothing.
+    pub scope_dir: Option<String>,
+    /// The directory of the scope that reaps it, for the same reason: an `explicit` scope
+    /// opened by the giver is not under the heir's root, and opening one there would give the
+    /// job a second owner.
+    pub owner_dir: Option<String>,
+}
+
+/// One job moved from the host that held it to another: the handle, the name a sentence uses,
+/// and - when it did not move - why. A caller records these rather than a count, because a
+/// hand-over that moved nothing and one that moved two are different facts, and `0` is neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Handover {
+    pub job: JobId,
+    pub label: String,
+    /// `None` when it moved; the refusal otherwise.
+    pub refused: Option<String>,
+}
+
+/// Give `to` every job `from` would otherwise leave running when it goes.
+///
+/// An `explicit` scope is a resource somebody declared should outlive the session that started
+/// it - right for a long-lived checkout on a box that stays up, and an orphan the moment that
+/// session is a subagent's, because a subagent's session ends when its task does. Ending one
+/// would be a lie about what `explicit` means; leaving it would be the leak T24 exists to stop.
+/// So it moves, and it moves as the record a restarted daemon already uses ([`Adopted`]), so
+/// `job_list`, `job_output` and `job_kill` work in the heir without a second implementation of
+/// any of them.
+///
+/// A job that moved leaves the giver's table ([`ProcessHost::forget`]): a job in two tables is
+/// two owners, which is the thing this package is about.
+pub fn hand_over(from: &dyn ProcessHost, to: &dyn ProcessHost) -> Vec<Handover> {
+    from.survivors()
+        .into_iter()
+        .map(|a| {
+            let label = job_label(a.slug.as_deref(), &a.handle);
+            let job = JobId(a.handle.clone());
+            match to.adopt(&a) {
+                Ok(_) => {
+                    from.forget(&job);
+                    Handover {
+                        job,
+                        label,
+                        refused: None,
+                    }
+                }
+                Err(why) => Handover {
+                    job,
+                    label,
+                    refused: Some(why.to_string()),
+                },
+            }
+        })
+        .collect()
 }
 
 /// A record's scope spelling back into the two things a cgroup needs, with the conservative
@@ -1492,18 +1572,44 @@ impl ProcessHost for HostProcesses {
     }
 
     /// Take a job the daemon did not start, and make it one of this host's. Everything above
-    /// reads the host's own job table, so the record becomes a [`Job`]. The cgroup name is derivable,
-    /// which makes the re-open exact; a vanished process settles as [`JobState::Dead`], never `Exited`.
+    /// reads the host's own job table, so the record becomes a [`Job`]. When the record carries
+    /// the directories the job really occupies they are used verbatim - the alternative is a
+    /// fresh cgroup on this host's root, which would be an empty directory named after a
+    /// process that is somewhere else. Failing that the cgroup name is derivable and the
+    /// re-open is exact; a vanished process settles as [`JobState::Dead`], never `Exited`.
     fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
         let id = JobId(a.handle.clone());
         if self.find(&id).is_some() {
             return Ok(id);
         }
         let (kind, name) = scope_kind_of(&a.scope);
-        let owner = self.scope_for(kind, Some(&name))?;
-        let scope = self
-            .tree
-            .open(kind, &format!("job-{}", a.handle), Some(&owner))?;
+        let (owner, scope) = match (&a.owner_dir, &a.scope_dir) {
+            (Some(owner_dir), Some(scope_dir)) => {
+                // The two directories are the record, and this host's tree is told about them
+                // so `scopes()` and the housekeeping prune can see them: a scope nobody lists
+                // is an unreapable one, which is the whole of T24.
+                let owner = super::scope::ScopeId {
+                    kind,
+                    name,
+                    path: std::path::PathBuf::from(owner_dir),
+                };
+                let scope = super::scope::ScopeId {
+                    kind,
+                    name: format!("job-{}", a.handle),
+                    path: std::path::PathBuf::from(scope_dir),
+                };
+                self.tree.remember(&owner);
+                self.tree.remember(&scope);
+                (owner, scope)
+            }
+            _ => {
+                let owner = self.scope_for(kind, Some(&name))?;
+                let scope = self
+                    .tree
+                    .open(kind, &format!("job-{}", a.handle), Some(&owner))?;
+                (owner, scope)
+            }
+        };
         let job = Arc::new(Job::new(
             id.clone(),
             a.command.clone(),
@@ -1881,6 +1987,46 @@ impl ProcessHost for HostProcesses {
 
     fn scopes(&self) -> Vec<ScopeId> {
         self.tree.list()
+    }
+
+    /// The running jobs that will NOT go with this host: those in an `explicit` scope, which
+    /// outlives the session by design and therefore has no reaper left when the session ends.
+    /// A job whose pid no longer answers is left out - it is not a survivor, it is a row.
+    fn survivors(&self) -> Vec<Adopted> {
+        self.jobs
+            .lock()
+            .expect("jobs")
+            .iter()
+            .filter(|j| j.state().is_running())
+            .filter_map(|j| {
+                let life = j.lifetime();
+                if life.owner.kind != ScopeKind::Explicit {
+                    return None;
+                }
+                Some(Adopted {
+                    handle: j.id.0.clone(),
+                    command: j.command.clone(),
+                    slug: j.slug.clone(),
+                    cwd: j.cwd.clone(),
+                    pid: j.pid,
+                    // The identity the heir's watcher compares against. Read here and not
+                    // invented: an identity that never matches would settle the handed-over job
+                    // as `Dead` on its first look and leave the process running with nobody
+                    // watching it, which is the orphan this whole path exists to prevent.
+                    identity: super::procs::read(j.pid)
+                        .map(|p| format!("start:{}", p.start))
+                        .unwrap_or_default(),
+                    scope: format!("explicit.{}", life.owner.name),
+                    scope_dir: Some(life.scope.path.display().to_string()),
+                    owner_dir: Some(life.owner.path.display().to_string()),
+                })
+            })
+            .collect()
+    }
+
+    fn forget(&self, job: &JobId) {
+        self.jobs.lock().expect("jobs").retain(|j| &j.id != job);
+        self.by_id.lock().expect("jobs by id").remove(job);
     }
 
     fn reap_log(&self) -> Vec<Reaping> {
