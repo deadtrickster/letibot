@@ -9,7 +9,7 @@ use letibot_transcript::SegmentEdge;
 
 /// A throwaway transcript directory: `<tmp>/letibot-claude-<tag>-<pid>/<project>/<id>.jsonl`.
 /// A **directory** and not one file, because the listing walks projects and the id is
-/// found by name — both are part of what is being tested.
+/// found by name - both are part of what is being tested.
 fn fixture(tag: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!("letibot-claude-{tag}-{}-{}", std::process::id(), {
@@ -35,7 +35,7 @@ fn written(tag: &str) -> (PathBuf, PathBuf) {
         r#"{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-10-07T12:28:34.023Z","cwd":"/home/dead/Projects/x","gitBranch":"main","version":"2.1.285","origin":{"kind":"human"},"promptSource":"typed","message":{"role":"user","content":"make the tests pass"}}"#,
         // 2. A thought, with a signature the source keeps and this build ignores.
         r#"{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-10-07T12:28:36.500Z","message":{"model":"claude-opus-5-5","id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"the failing test is about paths","signature":"CAQSpAU"}]}}"#,
-        // 3. An answer, and the call it makes — one block per line, as the source writes it.
+        // 3. An answer, and the call it makes - one block per line, as the source writes it.
         r#"{"type":"assistant","uuid":"a2","parentUuid":"a1","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-10-07T12:28:37.000Z","message":{"model":"claude-opus-5-5","id":"msg_1","role":"assistant","content":[{"type":"text","text":"Running the suite."},{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"cargo test"}}]}}"#,
         // 4. The result, in a later `user` line, paired by `tool_use_id`.
         r#"{"type":"user","uuid":"u2","parentUuid":"a2","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-10-07T12:29:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"test result: ok. 3 passed","is_error":false}]}}"#,
@@ -209,7 +209,7 @@ fn every_shape_maps_in_order_with_its_own_time_and_its_speaker() {
 }
 
 /// **Rule 4, measured on the file**: the bytes and the mtime are the same after a read as
-/// before it. A read that wrote anything — a WAL, a lock, a normalisation — would move one.
+/// before it. A read that wrote anything - a WAL, a lock, a normalisation - would move one.
 #[test]
 fn reading_leaves_the_transcript_exactly_as_it_was() {
     let (dir, path) = written("untouched");
@@ -278,7 +278,7 @@ fn the_listing_names_the_id_the_mtime_the_size_the_model_and_the_first_ask() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A missing directory and a missing id are two different sentences** — the pair the
+/// **A missing directory and a missing id are two different sentences** - the pair the
 /// operator asked to be told apart for opencode, and the same rule here.
 #[test]
 fn a_missing_directory_and_a_missing_id_are_different_sentences() {
@@ -327,7 +327,7 @@ fn an_empty_id_is_refused_rather_than_matched() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A tool result whose call this build never saw** — a transcript that begins after a
+/// **A tool result whose call this build never saw** - a transcript that begins after a
 /// compaction, or a branch whose call is in another file. Counted, and named `tool`, so
 /// the card says something rather than nothing.
 #[test]
@@ -371,7 +371,7 @@ fn a_frame_is_carried_with_its_author_and_plumbing_is_said_not_drawn() {
             "<bash-input> gh pr merge 1</bash-input>",
             Some(("! gh pr merge 1", Speaker::Operator)),
         ),
-        // A paste is the person's words, with the frame taken off — the closing tag
+        // A paste is the person's words, with the frame taken off - the closing tag
         // carries the id in the real spelling.
         (
             "<pasted_content id=\"17da\">\n\nhello there\n</pasted_content id=\"17da\">",
@@ -428,7 +428,7 @@ fn a_frame_is_carried_with_its_author_and_plumbing_is_said_not_drawn() {
     ));
 }
 
-/// **The speaker is read off the source's own declaration**, not guessed from the text —
+/// **The speaker is read off the source's own declaration**, not guessed from the text  -
 /// the counts in `declared_speaker`'s doc are from this box's transcripts.
 #[test]
 fn the_speaker_is_the_sources_declaration() {
@@ -453,7 +453,7 @@ fn the_speaker_is_the_sources_declaration() {
         of(r#"{"isMeta":true,"origin":{"kind":"human"}}"#),
         Speaker::Agent
     );
-    // Absent is the operator — the reading an old row gets, and what a head drew for it.
+    // Absent is the operator - the reading an old row gets, and what a head drew for it.
     assert_eq!(of("{}"), Speaker::Operator);
 }
 
@@ -536,7 +536,7 @@ fn a_half_written_last_line_is_named_as_that() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A subagent transcript beside the session is counted and not walked** — the `Task`
+/// **A subagent transcript beside the session is counted and not walked** - the `Task`
 /// call and its report are already rows in the parent, and the child's working
 /// conversation is its own session (see the module doc's `isSidechain` section).
 #[test]

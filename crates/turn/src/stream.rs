@@ -21,8 +21,8 @@
 //! # The second trap, which the first one hides
 //!
 //! §5.6 requires `return_progress: true`. llama.cpp builds a progress frame with
-//! `send_partial_response(slot, {}, true)` (`server-context.cpp:5955`) — a
-//! **default-constructed** `completion_token_output` — and then unconditionally
+//! `send_partial_response(slot, {}, true)` (`server-context.cpp:5955`) - a
+//! **default-constructed** `completion_token_output` - and then unconditionally
 //! writes `res->tokens = { tkn.tok }`. The frame therefore carries a fabricated
 //! **token id 0**:
 //!
@@ -32,8 +32,8 @@
 //!   3 stop=0 prog=False tokens=[3833] predicted=1 content='One'
 //! ```
 //!
-//! So the naive fix for the first trap — "accumulate `tokens` from every non-final
-//! frame" — prepends three zeros to a 17-token generation and corrupts the ledger
+//! So the naive fix for the first trap - "accumulate `tokens` from every non-final
+//! frame" - prepends three zeros to a 17-token generation and corrupts the ledger
 //! on the very first turn. The two fields §5.6 makes mandatory interact.
 //!
 //! # The rule
@@ -46,7 +46,7 @@
 //!
 //! # The third trap: the server sometimes emits no frame at all for a token
 //!
-//! T23, and it is a defect in **upstream llama.cpp** — fixed locally in the operator's
+//! T23, and it is a defect in **upstream llama.cpp** - fixed locally in the operator's
 //! fork, commit **`d10f94713`** (*"server : emit the frame for a token that ends in a
 //! partial UTF-8 character"*, author date 2026-09-10, committed to branch **`glm-all`**
 //! in `~/Projects/llama.cpp` on 2026-09-19), which is the tree the `llama-server` on
@@ -66,7 +66,7 @@
 //! was already incremented, in both the plain (`:6450`) and the speculative
 //! (`:6615`) decode paths. So a token whose bytes leave the generated text ending
 //! mid-character produces **no frame**, while the counter it advanced is reported
-//! by the *next* frame — which carries only its own id:
+//! by the *next* frame - which carries only its own id:
 //!
 //! ```text
 //!   {"content":"😀",  "tokens":[141334],"tokens_predicted":1}
@@ -76,11 +76,11 @@
 //! `" 😂"` is two tokens, `[26525, 224]`: `26525` spells a space and the **first
 //! three bytes** of a four-byte emoji, so it is suppressed, and `224` (the fourth
 //! byte) completes the character and carries the accumulated text. **Id `26525` is
-//! never transmitted** — in stream mode the terminal frame's `tokens` array is
+//! never transmitted** - in stream mode the terminal frame's `tokens` array is
 //! empty (`server-context.cpp:4326`), so there is nowhere else for it to appear.
 //!
-//! The signature is exactly `advance 2, ids 1`, never `2, 0` — a suppressed token
-//! emits nothing, so there is no zero-id frame — and `advance 3, ids 1` when a
+//! The signature is exactly `advance 2, ids 1`, never `2, 0` - a suppressed token
+//! emits nothing, so there is no zero-id frame - and `advance 3, ids 1` when a
 //! character is spread over three tokens. It is content-dependent, not periodic:
 //! ASCII and common typographic punctuation are single vocabulary entries and never
 //! trigger it, which is why 400 tokens of prose reproduce nothing and a line of
@@ -94,7 +94,7 @@
 //! # Why the guard STAYS, and this is the part that must not be skimmed
 //!
 //! **The fix lives on a patch branch, not in upstream.** `glm-all` is rebased onto
-//! upstream master — its own HEAD is *"rebase onto upstream master e613ef2c8"* — so the
+//! upstream master - its own HEAD is *"rebase onto upstream master e613ef2c8"* - so the
 //! patch survives exactly as long as somebody keeps rebasing it. Every server but this
 //! one is unpatched, including this one the moment it is rebuilt from upstream `master`
 //! or from a release. So this accumulator is **not dead code and not a historical
@@ -105,40 +105,40 @@
 //!
 //! # What it does against an unpatched server, which is what this promises
 //!
-//! Not a history lesson — the behaviour on a box that never took the patch:
+//! Not a history lesson - the behaviour on a box that never took the patch:
 //!
 //! 1. **The frame is refused**, and so is every frame after it, because
 //!    [`IdAccumulator::push`] stops at the first frame that does not account for its own
 //!    advance. `26525` never reaches the ledger: its id does not exist anywhere on the
 //!    wire, so a ledger containing it would be a ledger of ids the model did not
 //!    produce.
-//! 2. **Every id before that frame is kept** — and *how many that is depends on where the
+//! 2. **Every id before that frame is kept** - and *how many that is depends on where the
 //!    first suppressed token landed*, which is worth stating rather than promising a
 //!    partial. The refusal is carried as [`AbortCause::FrameMismatch`], so the turn is
 //!    marked interrupted holding what was accounted for instead of failing with `nothing
 //!    was recorded`. **A generation that STARTS with a split character keeps nothing**: the
 //!    first frame already disagrees, `ids` is empty, and the abort carries an empty head
-//!    with `partial_kept: false` — which is the same thing an unpatched server does to the
+//!    with `partial_kept: false` - which is the same thing an unpatched server does to the
 //!    OAI and Anthropic serialisers, whose opening chunk is gated on `n_decoded == 1`.
 //!    Measured on this box, prompt *"repeat exactly"* over twenty emoji, 60 tokens: **31 of
-//!    the 60 counter-frames carry an id with empty `content`** — that empty-content-with-an-id
-//!    frame IS the patch, since pre-`d10f94713` it was not sent at all — so an unpatched
+//!    the 60 counter-frames carry an id with empty `content`** - that empty-content-with-an-id
+//!    frame IS the patch, since pre-`d10f94713` it was not sent at all - so an unpatched
 //!    server would have withheld 31 ids here and the guard would have fired at the first of
 //!    them. The patched server, measured the same way: 60 tokens, 60 ids, **0 bad frames**.
 //!    That asymmetry is the whole reason the guard is worth its keep, and it is a
-//!    measurement rather than a recollection — see the test that pins it.
+//!    measurement rather than a recollection - see the test that pins it.
 //! 3. **The frames are written out verbatim**, neighbours included, and the path is
-//!    announced as `frame_capture_written` on the session log — a warning in the routine
+//!    announced as `frame_capture_written` on the session log - a warning in the routine
 //!    register (see `letibot_sessionlog::warning`), because the evidence being kept is
 //!    the mechanism *working*. Capture switched off is `frame_capture_disabled` and a
 //!    capture that could not be written is `frame_capture_failed`, which **is** in the
 //!    failure register, because then there is no evidence at all.
-//! 4. **The operator reads which of two faults it was** in the interrupt sentence —
+//! 4. **The operator reads which of two faults it was** in the interrupt sentence  -
 //!    [`Mismatch`]. The direction of the mismatch is the evidence, and it is free:
 //!    `ids < advance` means the server **withheld** what it counted, which is this gate
 //!    and nothing else (nothing withholds forward); `ids > advance` means it sent
 //!    **more** than it counted, which no withholding can explain. Same refusal, same
-//!    kept answer, different first thing to check — the server's build in the first case,
+//!    kept answer, different first thing to check - the server's build in the first case,
 //!    the captured frames in the second. Before this they were one sentence, which is
 //!    R12's defect in a second family: *two facts, one code.*
 //!
@@ -151,7 +151,7 @@
 //!
 //! **Nothing on this side changes with the patch**: the accumulator accepts or refuses
 //! the same frames either way, and a patched server simply never produces a refused one.
-//! That is the property to keep — the guard is a function of what arrives, not of which
+//! That is the property to keep - the guard is a function of what arrives, not of which
 //! server the operator happens to be running.
 
 use letibot_tokencore::TokenId;
@@ -172,7 +172,7 @@ pub enum StreamError {
         n_decoded: u64,
         previous: u64,
         ids: usize,
-        /// **Which fault it was** — see [`Mismatch`]. R12's shape in a second family:
+        /// **Which fault it was** - see [`Mismatch`]. R12's shape in a second family:
         /// two different facts, one refusal, and the difference is free.
         reading: Mismatch,
     },
@@ -188,7 +188,7 @@ pub enum StreamError {
 pub enum Mismatch {
     /// The server counted more tokens than it sent. This is what a token whose bytes end
     /// mid-character does: `advance 2, ids 1`. See the module header for the mechanism and
-    /// for `d10f94713`, which is the fix — on a patch branch, so its absence is the default.
+    /// for `d10f94713`, which is the fix - on a patch branch, so its absence is the default.
     Withheld,
     /// The server sent more ids than it counted. **No withheld token explains this**, so it is
     /// a different fault: the counter and the ids disagree in the direction that cannot come
@@ -197,7 +197,7 @@ pub enum Mismatch {
 }
 
 impl Mismatch {
-    /// The token a corpus or a log line carries, beside the sentence a person reads — the
+    /// The token a corpus or a log line carries, beside the sentence a person reads - the
     /// same split `verdict` and `model_verdict` make. Stable, because something may count it.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -233,7 +233,7 @@ impl std::fmt::Display for StreamError {
                 n_decoded,
                 previous,
                 ids,
-                // **The reading decides the sentence** — R12's shape. The refusal is the
+                // **The reading decides the sentence** - R12's shape. The refusal is the
                 // same; what a reader does next is not. Read from the struct rather than
                 // recomputed, so the sentence and the abort cannot disagree.
                 reading,
@@ -277,7 +277,7 @@ pub struct StreamOutcome {
     /// Every generated id, in order, from the partial frames.
     pub ids: Vec<TokenId>,
     /// The concatenated `content` deltas. Kept for the journal and for display
-    /// only — it is never tokenized back. §4.1: the Journal cannot change a prompt.
+    /// only - it is never tokenized back. §4.1: the Journal cannot change a prompt.
     pub text: String,
     pub final_chunk: FinalChunk,
     /// The last progress frame seen, so `EXPLAIN` can report the prefill even when
@@ -285,7 +285,7 @@ pub struct StreamOutcome {
     pub last_progress: Option<PromptProgress>,
     /// Set when the accumulator, not the server, ended the turn.
     pub aborted: Option<AbortCause>,
-    /// Ms from the request to the first frame that carried an id — set by the engine, which
+    /// Ms from the request to the first frame that carried an id - set by the engine, which
     /// holds the clock (TODO R81).
     pub first_byte_ms: Option<u64>,
 }
@@ -305,7 +305,7 @@ pub enum AbortCause {
         n_decoded: u64,
         previous: u64,
         ids: usize,
-        /// Which of the two faults it was — see [`Mismatch`]. Carried on the abort as well
+        /// Which of the two faults it was - see [`Mismatch`]. Carried on the abort as well
         /// as on the error, because the abort is what the operator's sentence is built from.
         reading: Mismatch,
     },
@@ -557,7 +557,7 @@ mod tests {
                     // mid-character is the only thing that can make a server send fewer ids
                     // than it counted, so this is the detector firing on an unpatched server.
                     assert_eq!(reading, Mismatch::Withheld);
-                    // And the ids accounted for so far survive the refusal — this
+                    // And the ids accounted for so far survive the refusal - this
                     // is what `AbortCause::FrameMismatch` then keeps.
                     assert_eq!(acc.ids(), &[141334]);
                     return;
@@ -614,7 +614,7 @@ mod tests {
             ),
             "the withheld reading, and the FIRST frame: {e:?}"
         );
-        // **Nothing is kept**, because the very first token is the one that was withheld —
+        // **Nothing is kept**, because the very first token is the one that was withheld  -
         // which is the honest version of "the partial answer it preserves".
         assert!(acc.ids().is_empty());
         assert!(e.to_string().contains("d10f94713"), "{e}");
@@ -670,7 +670,7 @@ mod tests {
         );
         assert!(!over.contains("d10f94713"), "the wrong remedy: {over}");
         // **A grep for the gate must not hit the other fault.** `withheld` is the reading's
-        // name, so it is what a session log is searched for — and the over-sent sentence
+        // name, so it is what a session log is searched for - and the over-sent sentence
         // says the opposite thing, which is not a place that word belongs.
         assert!(
             !over.contains("withheld"),
@@ -679,7 +679,7 @@ mod tests {
         assert_ne!(withheld, over, "two faults, one sentence is the defect");
     }
 
-    /// **The refusal itself is unchanged by the reading** — both directions stop the turn at
+    /// **The refusal itself is unchanged by the reading** - both directions stop the turn at
     /// that frame and keep what came before, which is the property R12 must not have traded
     /// for a nicer sentence.
     #[test]
@@ -708,7 +708,7 @@ mod tests {
                         ..
                     }
                 ));
-                // And the ids accounted for before it are still there — the same guarantee
+                // And the ids accounted for before it are still there - the same guarantee
                 // the over-sent case gets.
                 assert_eq!(acc.ids(), &[141334]);
                 return;

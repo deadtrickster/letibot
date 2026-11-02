@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// A `User` row **this session appended** — a job settlement, a salvage notice,
+/// A `User` row **this session appended** - a job settlement, a salvage notice,
 /// an intent check. The same variant on the wire and never the operator's words.
 fn agent_row(text: &str) -> TranscriptItem {
     TranscriptItem::User {
@@ -84,7 +84,7 @@ fn a_childs_answer_is_settled_once_and_never_overwritten() {
         }
     );
 
-    // **A path out with no answer still settles** — the one that would hang a parent: a
+    // **A path out with no answer still settles** - the one that would hang a parent: a
     // thread ending with the slot still `Running` is a `task_result` that never returns.
     let slot = TaskSlot::new("s-parent");
     {
@@ -122,7 +122,7 @@ fn a_childs_answer_is_settled_once_and_never_overwritten() {
 /// keep the one-nudge budget the operator rejected; the plan is now the idle clock's, and its tests live there.
 #[test]
 fn the_turn_boundary_says_what_the_turn_promised_and_not_what_the_plan_is() {
-    // A session with nothing declared has nothing to say at the boundary — the common case,
+    // A session with nothing declared has nothing to say at the boundary - the common case,
     // and the one that must stay silent.
     assert!(
         steer_for_turn(&encoded(), false, "t1", &[]).is_none(),
@@ -130,7 +130,7 @@ fn the_turn_boundary_says_what_the_turn_promised_and_not_what_the_plan_is() {
     );
     // And the finding that IS the boundary's own: a turn that declared something and did
     // nothing to show for it. It carries no plan text at all, which is the whole claim of
-    // this test — the two checks are no longer one message.
+    // this test - the two checks are no longer one message.
     let bare = IntentLedger::new();
     let steer = steer_for_turn(&bare, false, "t1", &[])
         .expect("no encoder is itself a finding, on every turn");
@@ -243,7 +243,7 @@ fn recency_is_carried_and_the_clock_is_absent_rather_than_invented() {
     };
     assert_eq!(by("recent").turns_ago, 0);
     assert_eq!(by("old").turns_ago, 5);
-    // `None` reads as *not recorded*, never as *just now* — which is why the
+    // `None` reads as *not recorded*, never as *just now* - which is why the
     // rebuilt-from-store rows keep it.
     assert_eq!(by("old").seconds_ago, None);
     assert!(by("recent").seconds_ago.is_some());

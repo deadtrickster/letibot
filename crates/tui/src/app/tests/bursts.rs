@@ -40,7 +40,7 @@ fn rows(screen: &[String], needle: &str) -> usize {
     screen.iter().filter(|r| r.contains(needle)).count()
 }
 
-/// **At one there is no burst** — the notice's own card, byte for byte what this head drew before
+/// **At one there is no burst** - the notice's own card, byte for byte what this head drew before
 /// there were bursts. The count is what a burst adds, and a count of one is not a count.
 #[test]
 fn one_notice_of_a_kind_is_drawn_exactly_as_it_was() {
@@ -121,7 +121,7 @@ fn the_count_and_the_expansion_agree() {
     assert!(at("agent/5") < at("agent/4"), "{popup}");
     assert!(at("agent/4") < at("agent/2"), "{popup}");
     assert!(at("agent/2") < at("agent/1"), "{popup}");
-    // **Which branch, without reading the text under it** — the member's own line.
+    // **Which branch, without reading the text under it** - the member's own line.
     for i in 1..=5u64 {
         assert!(
             popup.contains(&format!("· review · agent/{i} · blocked ·")),
@@ -168,7 +168,7 @@ fn a_failure_burst_carries_the_failure_register_and_never_expires() {
         "a red burst went quiet on a timer:\n{later}"
     );
 
-    // **And a routine burst is not red** — the quiet register is the count alone, because the
+    // **And a routine burst is not red** - the quiet register is the count alone, because the
     // `·` it would carry is the one the frame's own `session ·` already ends in.
     let mut b = head();
     for i in 1..=3u64 {
@@ -188,7 +188,7 @@ fn a_failure_burst_carries_the_failure_register_and_never_expires() {
     assert!(!quiet.contains("! 3 trees"), "{quiet}");
 }
 
-/// **Do not coalesce across kinds** — a count is a statement about ONE kind of thing, and
+/// **Do not coalesce across kinds** - a count is a statement about ONE kind of thing, and
 /// `5 notices` that are three different kinds is not a number a reader can act on.
 #[test]
 fn two_kinds_are_two_rows() {
@@ -219,7 +219,7 @@ fn two_kinds_are_two_rows() {
     assert!(!all.contains("1 reviews"), "{all}");
 }
 
-/// **A notice that is still live and changing is never counted** — `LIVE`'s rule, and the reason
+/// **A notice that is still live and changing is never counted** - `LIVE`'s rule, and the reason
 /// it exists: a burst is a count of things that HAPPENED, and a line that says *this is still
 /// true* would become a number nobody can act on.
 #[test]
@@ -247,7 +247,7 @@ fn a_live_notice_is_never_coalesced() {
     assert!(!all.contains("3 store_busy_wait"), "{all}");
 }
 
-/// **The window is a window** — a notice that arrives long after the one before it starts its own
+/// **The window is a window** - a notice that arrives long after the one before it starts its own
 /// row, because a morning's work is history and not a wall.
 #[test]
 fn a_notice_outside_the_window_starts_its_own_row() {
@@ -276,7 +276,7 @@ fn a_notice_outside_the_window_starts_its_own_row() {
     assert!(all.contains("review · agent/c · blocked"), "{all}");
 }
 
-/// **`ctrl-n` clears the whole burst**, and the count is hidden rather than dropped — the
+/// **`ctrl-n` clears the whole burst**, and the count is hidden rather than dropped - the
 /// watermark's own rule (`App::mark_read` takes the newest `ts` per kind, and a burst's members
 /// are all at or before it).
 #[test]
@@ -331,12 +331,12 @@ fn a_retired_member_leaves_the_others_drawn() {
         all.contains("! 3 reviews could not run"),
         "the burst lost its head and went with it:\n{all}"
     );
-    // **And the count is the live members', not the chain's** — three, not four.
+    // **And the count is the live members', not the chain's** - three, not four.
     assert_eq!(a.notes.len(), 4);
     assert_eq!(a.retired_notes(), 1);
 }
 
-/// **The count is true on the screen as the burst grows** — the walk is incremental, so a member
+/// **The count is true on the screen as the burst grows** - the walk is incremental, so a member
 /// arriving after the row was drawn has to rewind the row that changed (`App::file_note`).
 #[test]
 fn the_count_grows_on_the_screen_when_a_member_arrives() {
@@ -472,7 +472,7 @@ fn refusals_are_counted_by_family_and_keep_their_own_ids() {
             "req-{i} lost its identity:\n{popup}"
         );
     }
-    // **And `ctrl-n` is a mark about the family**, so it clears all five — the burst is what the
+    // **And `ctrl-n` is a mark about the family**, so it clears all five - the burst is what the
     // reader is clearing.
     assert_eq!(a.key(Key::CtrlN), None);
     assert!(
@@ -485,7 +485,7 @@ fn refusals_are_counted_by_family_and_keep_their_own_ids() {
 }
 
 /// **One member of a burst is still one click from its own text**, and a click on the row opens
-/// the list — the click map has one entry and it covers the row (`note_cards`).
+/// the list - the click map has one entry and it covers the row (`note_cards`).
 #[test]
 fn the_row_is_the_click_target_and_it_opens_the_list() {
     let mut a = head();

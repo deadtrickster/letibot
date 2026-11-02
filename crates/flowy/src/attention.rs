@@ -42,7 +42,7 @@ impl Level {
         }
     }
 
-    /// The node's two flags for this level. `Off` polls as `mentions` — the node
+    /// The node's two flags for this level. `Off` polls as `mentions` - the node
     /// cannot be asked for nothing, and the mark must still move over the room.
     pub fn server_filter(&self) -> ServerFilter {
         match self {
@@ -64,12 +64,12 @@ impl Level {
 
 /// Who "you" are, for the addressee and actor tests. Both ids, because a message
 /// to the person and a message to the agent working for them both reach the
-/// seat — flowy's `isOwnActor` asks the same question of both columns.
+/// seat - flowy's `isOwnActor` asks the same question of both columns.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     pub user_id: String,
     pub agent_id: String,
-    /// The seat's name — what a note's assignee stamp holds.
+    /// The seat's name - what a note's assignee stamp holds.
     pub name: String,
 }
 
@@ -139,7 +139,7 @@ impl Attention {
 
     /// The loosest level anywhere in the table: what the seat asks the node for,
     /// so nothing a session wants is filtered before it arrives. A watched thread
-    /// needs `all` on the wire — the node cannot filter by thread.
+    /// needs `all` on the wire - the node cannot filter by thread.
     pub fn loosest(&self) -> Level {
         let mut l = self.default;
         for v in self.rooms.values() {

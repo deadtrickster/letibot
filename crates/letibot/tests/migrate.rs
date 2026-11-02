@@ -18,7 +18,7 @@ use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
 use letibot_transcript::TranscriptItem;
 
 const SESSION: &str = "s-1789919514688401228";
-/// The last eight characters of [`SESSION`] — the branch and worktree suffix.
+/// The last eight characters of [`SESSION`] - the branch and worktree suffix.
 const SHORT: &str = "88401228";
 
 /// One throwaway world: a laptop, two hosts, a store, a checkout and a fake ssh.
@@ -103,17 +103,17 @@ impl Fixture {
     }
 
     /// **The fake ssh**: skip ssh's own options, then run the command against the home the target
-    /// names. A forward (`-N`) is recorded and exits — there is nothing to forward to here.
+    /// names. A forward (`-N`) is recorded and exits - there is nothing to forward to here.
     fn write_fake_ssh(&self) {
         self.write_fake_ssh_with("");
     }
 
-    /// The same fake, with a prelude — how a test makes a host misbehave. `prelude` runs **before**
+    /// The same fake, with a prelude - how a test makes a host misbehave. `prelude` runs **before**
     /// the command is dispatched, so a `sleep 300` there is a host that has stopped answering and an
     /// `exit 255` is one whose connection went away.
     fn write_fake_ssh_with(&self, prelude: &str) {
         // `[ $# -eq 0 ] && exit 0` first: `write_stub`'s probe runs this with no arguments, and
-        // the prelude is how a test makes a host misbehave — a `sleep 300` run by the probe would
+        // the prelude is how a test makes a host misbehave - a `sleep 300` run by the probe would
         // be this fixture hanging before any test began.
         let body = format!(
             "#!/bin/sh\n\
@@ -151,7 +151,7 @@ impl Fixture {
         git(&self.src, &["commit", "-q", "-m", "a tree to build"]);
     }
 
-    /// **The session's checkout**: one commit, one uncommitted file — the file is what proves the
+    /// **The session's checkout**: one commit, one uncommitted file - the file is what proves the
     /// move LISTS what it does not carry.
     fn make_checkout(&self) {
         std::fs::create_dir_all(&self.checkout).unwrap();
@@ -165,7 +165,7 @@ impl Fixture {
         std::fs::write(self.checkout.join("uncommitted.txt"), "left behind\n").unwrap();
     }
 
-    /// A session with three rows, a todo, a job and a mode — enough that a table the transfer
+    /// A session with three rows, a todo, a job and a mode - enough that a table the transfer
     /// forgot would be missed by the assertions below.
     fn seed_store(&self) {
         let store = Store::open(&self.store).unwrap();
@@ -239,7 +239,7 @@ impl Fixture {
             let home = self.remotes.join(name);
             std::fs::create_dir_all(home.join("bin")).unwrap();
             std::fs::create_dir_all(home.join(".config/letibot")).unwrap();
-            // **The host has its own keys** — a move refuses without them, and that refusal has
+            // **The host has its own keys** - a move refuses without them, and that refusal has
             // its own case below.
             std::fs::write(
                 home.join(".config/letibot/providers.toml"),
@@ -573,7 +573,7 @@ fn a_hidden_hop_moves_the_session_on_and_the_row_here_says_where() {
 fn a_session_stopped_on_a_card_is_refused_and_nothing_moves() {
     let f = Fixture::new("on-a-card");
     // A real daemon, in this process, on the socket the launcher's key says this folder's
-    // daemon listens on — with its activity saying "stopped on a card".
+    // daemon listens on - with its activity saying "stopped on a card".
     let registry = Registry::new();
     registry
         .create(SESSION, "the one that moves", SessionWiring::default())
@@ -613,11 +613,11 @@ fn a_session_stopped_on_a_card_is_refused_and_nothing_moves() {
 }
 
 /// **A host with no provider keys is refused before a byte moves**, and `--copy-keys` is the way
-/// to give it some — copied, mode 600, never printed.
+/// to give it some - copied, mode 600, never printed.
 #[test]
 fn a_host_without_provider_keys_is_refused_unless_the_keys_are_copied() {
     let f = Fixture::new("keys");
-    // A host that has none — removed here, because the fixture gives every host its own keys so
+    // A host that has none - removed here, because the fixture gives every host its own keys so
     // that the other cases are about the move and not about this refusal.
     std::fs::remove_file(f.remotes.join("lab2x1/.config/letibot/providers.toml")).unwrap();
     let out = f.migrate(&[SESSION, "--to", "lab2x1"]);

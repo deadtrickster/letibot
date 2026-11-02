@@ -16,7 +16,7 @@ use letibot_tui::app::App;
 use letibot_tui::driver::Link;
 use letibot_tui::ui::render::RenderConfig;
 
-/// The daemon's own first session — what a bare attach lands on.
+/// The daemon's own first session - what a bare attach lands on.
 const SEATED: &str = "s-seated";
 /// The session that is only in the store: the one the operator asked for.
 const STORED: &str = "s-stored";
@@ -212,7 +212,7 @@ fn a_session_with_no_stored_rows_still_draws_the_ordinary_banner() {
     link.detach();
 }
 
-/// **The restore was published before the head switched** — the row set is in the hub's
+/// **The restore was published before the head switched** - the row set is in the hub's
 /// view, so the switch's `Hello` carries it as a snapshot.
 #[test]
 fn rows_restored_before_the_switch_arrive_in_the_snapshot() {

@@ -5,8 +5,8 @@
 //!
 //! Every surveyed harness that gates on a shell command decides on a *string the
 //! shell will reinterpret*. `crates/tools/src/exec/predicate.rs` concedes it in its
-//! own words — *"not a shell parser… `eval`, here-docs, aliases, `$(...)` nesting
-//! past one level are unhandled"* — and calls itself a diagnosis rather than the
+//! own words - *"not a shell parser… `eval`, here-docs, aliases, `$(...)` nesting
+//! past one level are unhandled"* - and calls itself a diagnosis rather than the
 //! mechanism.
 //!
 //! This is not a local worry. **GuardFall** (Adversa AI, 2026-06-30) named it as a
@@ -24,8 +24,8 @@
 //! *hidden*; they are commands whose meaning **does not exist yet**. So:
 //!
 //! > A construct the grammar cannot resolve is reported as
-//! > [`Unresolved`] — naming the construct, what decision it denies, and its
-//! > position — and is **never** classified as safe.
+//! > [`Unresolved`] - naming the construct, what decision it denies, and its
+//! > position - and is **never** classified as safe.
 //!
 //! [`Normalised::is_resolved`] is the single predicate a gate reads, and
 //! `letibot_tools::adjudicate` maps `false` to `NotRun`: *nobody could decide*.
@@ -35,15 +35,15 @@
 //!
 //! What that costs is stated rather than hidden: `cat $FILE` is refused, and the
 //! refusal carries the fix (`docs/tool-design-brief.md` §3, *errors carry the fix*)
-//! — resolve the variable and pass the literal path. The alternative is deciding
+//! - resolve the variable and pass the literal path. The alternative is deciding
 //! about a target nobody can name, which is the theatre.
 //!
 //! # What it deliberately does NOT do
 //!
 //! It does not out-parse the shell, and it holds **no table of programs**. Which
-//! token sits in the command-name position is grammar; what that token *means* —
+//! token sits in the command-name position is grammar; what that token *means*  -
 //! that `sudo` wraps the next word, that `cat` surfaces its input, that `scp` leaves
-//! the box — is a table about this host's software, and a table is policy. Policy
+//! the box - is a table about this host's software, and a table is policy. Policy
 //! lives one crate up, in `letibot_tools::intent`, where the deny-list and the
 //! §3 flow rule live with it. This crate keeps the property the rest of it has: it
 //! knows about source text, and nothing about tools, turns or transcripts.
@@ -286,11 +286,11 @@ pub enum RedirectOp {
     Append,
     /// `<>`
     ReadWrite,
-    /// `>&`, `&>`, `<&` — duplicate or close a descriptor.
+    /// `>&`, `&>`, `<&` - duplicate or close a descriptor.
     Duplicate,
     /// `<<`, `<<-`
     HereDoc,
-    /// `<<<` — a here-string. Feeds one word to stdin.
+    /// `<<<` - a here-string. Feeds one word to stdin.
     HereString,
 }
 
@@ -330,7 +330,7 @@ pub enum RedirectTarget {
     /// `1`.
     Descriptor(u32),
     /// A here-document. `literal` is false when the delimiter was unquoted, i.e.
-    /// the shell will expand the body — and then the body's own expansions are
+    /// the shell will expand the body - and then the body's own expansions are
     /// separately unresolvable.
     HereDoc {
         literal: bool,
@@ -450,7 +450,7 @@ pub struct Stage {
     /// most: nobody knows what program this is.
     pub program: Word,
     pub argv: Vec<Word>,
-    /// `VAR=1 cmd` — the assignments that apply to this stage only.
+    /// `VAR=1 cmd` - the assignments that apply to this stage only.
     pub assignments: Vec<Assignment>,
     pub redirects: Vec<Redirect>,
     pub context: Vec<Context>,
@@ -556,7 +556,7 @@ impl Normalised {
         self.unresolved.is_empty() && !self.partial
     }
 
-    /// Every program that will run, in source order, skipping the unresolved ones —
+    /// Every program that will run, in source order, skipping the unresolved ones  -
     /// so a caller must consult [`Normalised::is_resolved`] first or it is reading a
     /// list with silent holes. [`Normalised::unresolved_programs`] is the other half.
     pub fn binaries(&self) -> Vec<&str> {
@@ -723,7 +723,7 @@ pub fn normalise(source: &str) -> Normalised {
 }
 
 fn first_error<'a>(node: &'a Node, _src: &str) -> Option<&'a Node> {
-    // tree-sitter's `is_error()` is a node KIND here — rano's `Node` is plain data and
+    // tree-sitter's `is_error()` is a node KIND here - rano's `Node` is plain data and
     // names it rather than carrying a flag for it.
     if node.kind == "ERROR" || node.is_missing {
         return Some(node);
@@ -779,7 +779,7 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
         }
         "pipeline" => {
             // The pipe flags are a property of position in the pipeline, and they
-            // decide `Stage::stdout_surfaces` — which is the structural half of
+            // decide `Stage::stdout_surfaces` - which is the structural half of
             // §3's "may never enter the transcript".
             let members: Vec<&Node> = kids(node)
                 .into_iter()
@@ -827,7 +827,7 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
         }
         "for_statement" => {
             // A `for` over a list the command spells out is N commands, not one command
-            // whose variable nobody can know — see [`unrolled_for`].
+            // whose variable nobody can know - see [`unrolled_for`].
             if !unrolled_for(node, source, ctx, out) {
                 push_walk(node, source, ctx, out, Context::Loop);
             }
@@ -1793,7 +1793,7 @@ fn bound(node: &Node, source: &str, binds: &[(String, String)]) -> Option<String
 }
 
 /// The construct a node kind stands for, or `None` for "this code does not know
-/// this kind" — which is not the same as "this kind is harmless".
+/// this kind" - which is not the same as "this kind is harmless".
 fn construct_of(kind: &str) -> Option<Construct> {
     Some(match kind {
         "simple_expansion" | "expansion" => Construct::ParameterExpansion {
@@ -1909,7 +1909,7 @@ fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
         }
         out.push(if w.chars().any(|c| matches!(c, '*' | '?' | '[')) {
             // Pathname expansion runs over each word the braces produced, so `{*,x}` is a
-            // pattern and a name. A pattern is not a value — the same distinction
+            // pattern and a name. A pattern is not a value - the same distinction
             // [`Word::Glob`] already makes for `*.rs`.
             Word::Glob(w)
         } else {
@@ -2050,7 +2050,7 @@ fn brace_range(inner: &str) -> Brace {
         return char_range(lo, hi, step);
     };
     // **The padding is bash's, and it counts the sign.** Measured: `{-01..3}` is `-01 000 001
-    // 002 003` — the width is the wider endpoint INCLUDING its minus sign — while `{8..10}`
+    // 002 003` - the width is the wider endpoint INCLUDING its minus sign - while `{8..10}`
     // is `8 9 10` and `{001..3}` is `001 002 003`.
     let width = lo.len().max(hi.len());
     let leading_zero = |s: &str| {
@@ -2087,7 +2087,7 @@ fn brace_range(inner: &str) -> Brace {
 }
 
 /// `{a..e}`, `{a..e..2}`: both endpoints ONE character, and bash walks the code points
-/// between them. `{1..a}` is not a range — measured, bash leaves it literal.
+/// between them. `{1..a}` is not a range - measured, bash leaves it literal.
 fn char_range(lo: &str, hi: &str, step: u64) -> Brace {
     let (mut a, mut b) = (
         lo.chars().collect::<Vec<_>>(),
@@ -2185,7 +2185,7 @@ fn decode_ansi_c(text: &str) -> Option<String> {
                 Some(_) => return None,
                 None => out.extend_from_slice(b"\\x"),
             },
-            // A hex CODE POINT, decoded to UTF-8 — `\u00e9` is two bytes, not one.
+            // A hex CODE POINT, decoded to UTF-8 - `\u00e9` is two bytes, not one.
             'u' | 'U' => match hex(&mut it, if e == 'u' { 4 } else { 8 }) {
                 Some(n) => {
                     let ch = char::from_u32(n)?;
@@ -2299,7 +2299,7 @@ mod tests {
         // And the passes are in the shape, because they are what will run.
         assert_eq!(shape(&x), "grep -n <args> ; grep -n <args>");
 
-        // A bound value is a word of the body wherever it appears — inside a
+        // A bound value is a word of the body wherever it appears - inside a
         // concatenation and inside double quotes as much as on its own.
         let x = n("for f in /w/a /w/b; do cp $f $f.bak; echo \"done $f\"; done");
         assert!(x.is_resolved(), "{:?}", x.unresolved);
@@ -2333,12 +2333,12 @@ mod tests {
             let x = n(cmd);
             assert!(!x.is_resolved(), "{cmd} was unrolled: {:?}", x.stages);
         }
-        // The body is still read, once — unrolling is the extra, not the reading.
+        // The body is still read, once - unrolling is the extra, not the reading.
         let x = n("for f in *.rs; do grep -n x $f; done");
         assert_eq!(x.binaries(), vec!["grep"]);
     }
 
-    /// **A transform of the loop variable is not the variable** — the same rule the
+    /// **A transform of the loop variable is not the variable** - the same rule the
     /// intent layer keeps for `${#X}` (measured 2026-10-26: the grammar reports the name
     /// `f` for all of `$f`, `${f}`, `${#f}` and `${!f}`).
     #[test]
@@ -2404,8 +2404,8 @@ mod tests {
     fn a_command_assembled_at_runtime_is_unresolved_at_the_program_position() {
         let x = n("X=$(cat f); $X --now");
         assert!(!x.is_resolved());
-        // The inner `cat f` IS resolved and listed — this is what `predicate.rs`
-        // could not do — while the value it produces is not.
+        // The inner `cat f` IS resolved and listed - this is what `predicate.rs`
+        // could not do - while the value it produces is not.
         assert!(x.binaries().contains(&"cat"));
         let p = x.unresolved_programs();
         assert_eq!(p.len(), 1);
@@ -2568,7 +2568,7 @@ mod tests {
         let x = n("");
         assert_eq!(x.bytes, 0);
         assert!(x.stages.is_empty());
-        // `is_resolved` is true — there is nothing unresolvable in nothing — and
+        // `is_resolved` is true - there is nothing unresolvable in nothing - and
         // that is why a caller must look at `stages`/`bytes` too. §2.2: a zero with
         // no denominator is not a measurement.
         assert!(x.is_resolved());
@@ -2719,13 +2719,13 @@ mod tests {
         assert_eq!(shape(&n("rm -f f{1,2}.rs")), "rm -f <args>");
     }
 
-    /// **The braces bash leaves alone stay one literal word** — and each of these is a word
+    /// **The braces bash leaves alone stay one literal word** - and each of these is a word
     /// that really occurs (a `find -exec` terminator, a `{}` in a commit message).
     #[test]
     fn a_brace_the_shell_leaves_alone_stays_one_literal_word() {
         assert_eq!(argv("echo {a}"), ["{a}"]);
         assert_eq!(argv("echo {}"), ["{}"]);
-        // A quoted brace is not expanded, so it is one literal — and never refused.
+        // A quoted brace is not expanded, so it is one literal - and never refused.
         assert_eq!(argv("echo \"{a,b}\""), ["{a,b}"]);
         assert_eq!(argv("echo '{a,b}'"), ["{a,b}"]);
         // A mixed pair and a step that is not a number are not ranges.
@@ -2764,7 +2764,7 @@ mod tests {
         // A quoted `{` is not a brace: measured, `echo x'{'a,b'}'` prints ONE word `x{a,b}`.
         assert_eq!(argv("echo x'{'a,b'}'"), ["x{a,b}"]);
         // A quoted ALTERNATIVE inside unquoted braces is still an expansion (measured:
-        // `echo {a,'b'}` is two words), which this refuses rather than expands — an
+        // `echo {a,'b'}` is two words), which this refuses rather than expands - an
         // alternative holding a quote is a word whose bytes this does not model.
         assert!(!n("echo {a,'b'}").is_resolved());
     }
@@ -2776,7 +2776,7 @@ mod tests {
     fn a_compound_in_the_argument_position_is_walked_and_named() {
         let x = n("time (timeout 900 cargo test -p x 2>&1 | tail -3); echo done");
         assert!(!x.is_resolved(), "a compound argument was read as a word");
-        // The commands inside RUN, so they are stages — that is the half this used to lose.
+        // The commands inside RUN, so they are stages - that is the half this used to lose.
         for p in ["timeout", "tail", "echo"] {
             assert!(
                 x.binaries().contains(&p),
@@ -2794,7 +2794,7 @@ mod tests {
         );
     }
 
-    /// **A brace expansion the text does not decide stays unread** — the direction that
+    /// **A brace expansion the text does not decide stays unread** - the direction that
     /// costs a question rather than giving a wrong answer.
     #[test]
     fn a_brace_no_longer_readable_than_it_is_stays_unread() {
@@ -2904,7 +2904,7 @@ mod tests {
                 x.unresolved
             );
         }
-        // A bare `$` is a literal dollar to the shell — `--run=^$` is a regex, not a hole —
+        // A bare `$` is a literal dollar to the shell - `--run=^$` is a regex, not a hole  -
         // and a `$$` is a pid, which the intent layer reads as one of the shell's numbers.
         assert_eq!(argv("echo x$"), ["x$"]);
         assert_eq!(argv("cargo nextest -E run=^$"), ["nextest", "-E", "run=^$"]);
@@ -2937,12 +2937,12 @@ pub fn shape(n: &Normalised) -> String {
                 Some(t) if is_count_flag(t) => Some("-<n>".to_string()),
                 // A flag is part of the shape, because a flag is where a command
                 // changes kind: `sed -n` prints and `sed -i` rewrites. `--opt=value`
-                // keeps the option and holes the value — one token, two halves.
+                // keeps the option and holes the value - one token, two halves.
                 Some(t) if t.starts_with('-') && t.len() > 1 => Some(match t.split_once('=') {
                     Some((opt, _)) => format!("{opt}=<v>"),
                     None => t.to_string(),
                 }),
-                // An operand, or a word nobody could read — both are holes, and the
+                // An operand, or a word nobody could read - both are holes, and the
                 // caller below decides whether this one joins the run.
                 _ => None,
             };
@@ -3083,7 +3083,7 @@ mod unresolved_reporting {
     //! repeated over and over, also 66 lines???"*
     use super::*;
 
-    /// One variable, used five times, is one reason — not five copies of the
+    /// One variable, used five times, is one reason - not five copies of the
     /// same 220-character sentence.
     #[test]
     fn one_cause_is_explained_once_however_many_places_it_has() {
@@ -3099,7 +3099,7 @@ mod unresolved_reporting {
             "the explanation repeated:\n{report}"
         );
         // Every place still reachable, up to the cap, and the rest counted
-        // rather than dropped — a summary may never be silent about what it
+        // rather than dropped - a summary may never be silent about what it
         // summarised.
         assert!(report.contains("… and 1 more place(s)"), "{report}");
         assert!(

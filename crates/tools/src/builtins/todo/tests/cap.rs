@@ -68,7 +68,7 @@ fn a_title_over_the_cap_is_refused_by_name_and_nothing_is_written() {
     assert!(board.snapshot().is_empty(), "nothing was written: {said}");
 }
 
-/// **A title AT the cap is written whole** — the bound is a bound and not a shave, and the row
+/// **A title AT the cap is written whole** - the bound is a bound and not a shave, and the row
 /// that passes is the row the model gets back.
 #[test]
 fn a_title_at_the_cap_is_written() {
@@ -86,8 +86,8 @@ fn a_title_at_the_cap_is_written() {
     assert_eq!(all[0].content, exact, "the words are kept verbatim");
 }
 
-/// **The cap is on the TITLE, and the detail after ` — ` is not capped.** A row whose title fits
-/// is written whole, detail and all — that is the sentence the tool's description gives the
+/// **The cap is on the TITLE, and the detail after ` - ` is not capped.** A row whose title fits
+/// is written whole, detail and all - that is the sentence the tool's description gives the
 /// model for anything long, so it has to be the thing that actually passes.
 #[test]
 fn a_long_detail_after_the_separator_is_not_the_title() {
@@ -124,7 +124,7 @@ fn a_row_written_before_the_cap_can_still_be_restated_and_moved() {
     }]);
     let mut sink = RecordingToolSink::new();
 
-    // The whole-list form, restating it — the case that would be a wedge if the cap were
+    // The whole-list form, restating it - the case that would be a wedge if the cap were
     // checked on the row rather than on the write.
     let r = rt.invoke(
         "t1",
@@ -182,7 +182,7 @@ fn a_parents_target_write_follows_the_same_cap() {
         "nothing reached the child's board: {said}"
     );
 
-    // **And a title at the cap lands there** — the rule is a bound, not a bar.
+    // **And a title at the cap lands there** - the rule is a bound, not a bar.
     let exact = "w".repeat(TODO_TITLE_MAX);
     let r = rt.invoke(
         "t2",

@@ -238,7 +238,7 @@ fn a_vm_that_down_brings_down_is_not_killed() {
 // at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
 // for ever.
 #[cfg(target_os = "linux")]
-/// A pid that is no longer this run's firecracker is never signalled — a pid reused by
+/// A pid that is no longer this run's firecracker is never signalled - a pid reused by
 /// something else between the listing and the reap is not the VM.
 #[test]
 fn a_pid_that_is_not_the_runs_firecracker_is_left_alone() {

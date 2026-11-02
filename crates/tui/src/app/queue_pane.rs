@@ -40,10 +40,10 @@ fn quantised(now: u64) -> u64 {
     now / CLOCK_QUANTUM_MS * CLOCK_QUANTUM_MS
 }
 
-/// The feed's name in `plugin.toml` and in `Input::feeds` — one word, both sides.
+/// The feed's name in `plugin.toml` and in `Input::feeds` - one word, both sides.
 pub(crate) const FEED: Feed = Feed::Queue;
 
-/// **What the feed is called in a sentence** — a layer that failed is told which pane it was
+/// **What the feed is called in a sentence** - a layer that failed is told which pane it was
 /// drawing, and *the queue* is the word the operator uses.
 const PANE: &str = "the queue";
 
@@ -68,9 +68,9 @@ impl App {
             .saturating_add(self.now_ms.saturating_sub(self.queues_got_ms))
     }
 
-    /// **The queue, as a plugin reads it** — see this module's doc for what is here and why.
+    /// **The queue, as a plugin reads it** - see this module's doc for what is here and why.
     pub(crate) fn queue_feed(&self) -> Value {
-        // **The clock is quantised** — see [`CLOCK_QUANTUM_MS`]: the input is the host's cache key,
+        // **The clock is quantised** - see [`CLOCK_QUANTUM_MS`]: the input is the host's cache key,
         // so a millisecond clock is a wasm call per frame for a number no row can draw.
         let now = quantised(self.queue_plugin_now());
         let q = &self.queues;
@@ -79,7 +79,7 @@ impl App {
         let serving_owner = |owner: &str, repo: &str| {
             !owner.is_empty() && serving(repo).is_some_and(|l| l.owner == owner)
         };
-        // **A row's verbs, from the daemon's own rule** — which of them would move it, and for each
+        // **A row's verbs, from the daemon's own rule** - which of them would move it, and for each
         // that would not, the sentence saying why. The plugin prints the ones that act.
         let verbs_of = |row: &Selected<'_>| -> Value {
             Value::Array(
@@ -111,7 +111,7 @@ impl App {
             json!({
                 "queue": "review",
                 "id": r.id,
-                // `branch`, or `target` — the target's own red tip.
+                // `branch`, or `target` - the target's own red tip.
                 "kind": r.kind,
                 "live": review_open(&r.state),
                 "state": r.state,
@@ -167,7 +167,7 @@ impl App {
                 "pushed": m.pushed,
                 "evidence": cut(&m.evidence, whole),
                 "fixes": m.fixes.as_deref().map(|f| cut(f, whole)),
-                // **What a queued landing waits for** — the gate in flight in its repository,
+                // **What a queued landing waits for** - the gate in flight in its repository,
                 // already in the pane's words (`gate running on 1f2a3b4 for 2m`).
                 "waits_on": (m.state == "queued")
                     .then(|| running.get(m.repository.as_str()).cloned())
@@ -178,7 +178,7 @@ impl App {
                     .map(|s| step_of(s, whole))
                     .collect::<Vec<Value>>(),
                 // **The step its gate is running right now**, with the tail and how long since it
-                // last changed — the facts that tell whether a `gating` row is working or stuck
+                // last changed - the facts that tell whether a `gating` row is working or stuck
                 // without opening a file on the daemon's box.
                 "running_gate": m.running_gate.as_ref().map(|g| {
                     let key = format!("{}#{}", m.id, g.step);
@@ -279,16 +279,16 @@ impl App {
             .filter(|l| l["stale"].as_bool() == Some(true))
             .count();
         json!({
-            // **The host's clock**, so a plugin that wants to measure an age can — and so the
+            // **The host's clock**, so a plugin that wants to measure an age can - and so the
             // `*_ms` fields above are one subtraction and not a guess. A guest has no clock.
             "now_ms": now,
             "at_ms": q.at_ms,
-            // **Whose queues these are** — the words the pane's own header uses, so a project's
+            // **Whose queues these are** - the words the pane's own header uses, so a project's
             // layer can reword the scope without knowing how the head resolved it.
             "scope": {
                 "kind": self.queue_scope.kind(),
                 "words": self.queue_scope_words(),
-                // **Whether a row must name its repository** — the host's answer, because the
+                // **Whether a row must name its repository** - the host's answer, because the
                 // question is *how many are in scope* and the head is what resolved the scope.
                 // A plugin reading this instead of the words is the whole point of the field.
                 "several": several_of(&scope),
@@ -313,7 +313,7 @@ impl App {
             "leases": leases,
             "recent": recent,
             // **The counters the pane's tab strip carries**, so a plugin's header says the same
-            // numbers without counting rows itself — and `finished` is the count the parent asked
+            // numbers without counting rows itself - and `finished` is the count the parent asked
             // for, because the finished rows are the ones that must not compete with live work.
             "counts": {
                 "review": q.reviews.iter().filter(|r| review_open(&r.state)).count(),
@@ -331,8 +331,8 @@ impl App {
         })
     }
 
-    /// **The scope, in the words the pane's own header uses** — `this session's repository —
-    /// letibot`, `every repository`, `/path — named`. One string, so a plugin draws it rather than
+    /// **The scope, in the words the pane's own header uses** - `this session's repository  -
+    /// letibot`, `every repository`, `/path - named`. One string, so a plugin draws it rather than
     /// re-deriving it from `kind` and a path.
     fn queue_scope_words(&self) -> String {
         match self.queue_filter(&self.queue_scope) {
@@ -403,7 +403,7 @@ impl App {
         }
     }
 
-    /// **What the queue's layer is asked with** — the one feed it declared, the fold state of the
+    /// **What the queue's layer is asked with** - the one feed it declared, the fold state of the
     /// rows the person has opened, and the size of the pane it will be drawn in.
     fn queue_input(&self, state: Option<Value>) -> Input {
         let mut feeds = std::collections::BTreeMap::new();
@@ -572,7 +572,7 @@ fn move_of(m: &QueueMove, now: u64) -> Value {
     })
 }
 
-/// The scope's `kind`, as the feed spells it — `here`, `all`, `path`.
+/// The scope's `kind`, as the feed spells it - `here`, `all`, `path`.
 impl QueueScope {
     pub(crate) fn kind(&self) -> &'static str {
         match self {

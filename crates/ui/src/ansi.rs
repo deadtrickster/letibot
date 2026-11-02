@@ -45,7 +45,7 @@ pub fn painted(p: Painter, line: &str) -> String {
         let role = role(pen);
         // **Only a change is painted.** `ls` writes `ESC[0m` before every name and a reset
         // after it, and a head that emitted a span per sequence would put four sequences on
-        // a line that needs two — and would close a span that was never opened.
+        // a line that needs two - and would close a span that was never opened.
         match (open, role) {
             (true, None) => {
                 out.push_str(&p.close());
@@ -172,8 +172,8 @@ impl Look {
         }
     }
 
-    /// Nothing this head paints: no role, no reverse, no background. The common case — a screen is
-    /// mostly its own default pen — and it must cost no bytes.
+    /// Nothing this head paints: no role, no reverse, no background. The common case - a screen is
+    /// mostly its own default pen - and it must cost no bytes.
     fn is_plain(self) -> bool {
         self.role.is_none() && !self.reverse && self.bg.is_none()
     }
@@ -202,7 +202,7 @@ pub fn lines(screen: &Screen, palette: Palette) -> Vec<String> {
     painted_rows(screen.rows(), palette)
 }
 
-/// [`lines`] over any rows of cells — the live grid, or [`Screen::view`]'s rectangle with the
+/// [`lines`] over any rows of cells - the live grid, or [`Screen::view`]'s rectangle with the
 /// scrollback in it. One walk, so a row read back from history is painted exactly as it was
 /// when it was on the glass.
 fn painted_rows<'a>(
@@ -327,7 +327,7 @@ mod tests {
         );
     }
 
-    /// One run, painted: the role's own opening sequence, the text, and a reset — which is
+    /// One run, painted: the role's own opening sequence, the text, and a reset - which is
     /// what `Painter::paint` produces at the top level, spelled out so the test asserts on
     /// bytes rather than on another call into the thing it is testing.
     fn span(role: Role, text: &str) -> String {
@@ -360,7 +360,7 @@ mod tests {
             "a reset before a colour is a no-op and the colour is still painted"
         );
         // The header line of the same capture carries no escape at all, and is handed back as
-        // it stands — the fast path, which is what makes the per-line call affordable.
+        // it stands - the fast path, which is what makes the per-line call affordable.
         let header = "total 124";
         assert_eq!(painted(colour(), header), header);
         // And the sequence bodies are nowhere in the painted line: no `[` a reader could see.
@@ -495,7 +495,7 @@ mod tests {
     fn a_background_a_program_painted_reaches_the_frame() {
         let mut screen = Screen::new(1, 6);
         // `mc`'s panel, filled to the screen's edge: a blue background, and its rightmost column a
-        // *space* the program painted. `37` is white, which this head has no role for — a panel's
+        // *space* the program painted. `37` is white, which this head has no role for - a panel's
         // text keeps the reader's own foreground, which is what the table above says about white.
         screen.feed(b"\x1b[44;37mpanel \x1b[0m");
         assert_eq!(
@@ -503,7 +503,7 @@ mod tests {
             vec!["\x1b[44mpanel \x1b[0m"],
             "the slot the program asked for, the panel's own trailing blank, and a close"
         );
-        // Under `Palette::None` the panel is its text and nothing else — no sequence reaches a
+        // Under `Palette::None` the panel is its text and nothing else - no sequence reaches a
         // replay or a CI log from here either. The trailing blank is the *screen's* and stays: the
         // row is the grid's, and only the painting is the palette's.
         assert_eq!(lines(&screen, Palette::None), vec!["panel "]);
@@ -568,7 +568,7 @@ mod tests {
         let line = "\u{1b}[44;7mX\u{1b}[0m";
         assert_eq!(painted(colour(), line), "X");
         assert_eq!(painted(Painter::new(Palette::None), line), "X");
-        // And the screen, fed the same bytes, draws both — so the difference is the reader and not
+        // And the screen, fed the same bytes, draws both - so the difference is the reader and not
         // the pen.
         let mut screen = Screen::new(1, 2);
         screen.feed(line.as_bytes());
@@ -625,7 +625,7 @@ mod tests {
 
     /// **A wide glyph is one glyph, and its tail is not a column.** The tail cell carries the same
     /// pen and is skipped, so a coloured CJK filename is one run of two columns rather than two runs
-    /// of one — and the glyph is not overwritten by its own second half.
+    /// of one - and the glyph is not overwritten by its own second half.
     #[test]
     fn a_wide_glyph_is_one_run_and_its_tail_contributes_no_column() {
         let mut screen = Screen::new(1, 4);

@@ -22,11 +22,11 @@ use crate::{BuildError, Builder, Loader, MANIFEST, Manifest, Module, WASM};
 pub(crate) enum Act {
     /// Answer this JSON.
     Answer(Value),
-    /// Answer `{"pass":true}` — the hook falls through, spelled in the answer rather than left out.
+    /// Answer `{"pass":true}` - the hook falls through, spelled in the answer rather than left out.
     Pass,
-    /// Answer `Ok(None)` — the hook is unchanged, which is the other spelling of falling through.
+    /// Answer `Ok(None)` - the hook is unchanged, which is the other spelling of falling through.
     Unchanged,
-    /// Answer `{"mask":true}` — no answer here and none below.
+    /// Answer `{"mask":true}` - no answer here and none below.
     Mask,
     /// Fail, as a trap or an exhausted fuel budget does.
     Trap(String),
@@ -34,7 +34,7 @@ pub(crate) enum Act {
     Malformed(String),
     /// Ask the layer below on the first call, then answer with what came back.
     AskBelow(Value),
-    /// Ask the layer below on every call, including the one that already carries `below` — the
+    /// Ask the layer below on every call, including the one that already carries `below` - the
     /// second ask, which must be a recorded failure and not a loop.
     AlwaysAsk(Value),
 }
@@ -325,7 +325,7 @@ impl Builder for FakeBuilder {
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 /// A directory under `std::env::temp_dir()` with a name no other test in this process takes,
-/// removed when the test ends — including when it ends by panicking.
+/// removed when the test ends - including when it ends by panicking.
 pub(crate) struct TempDir {
     path: PathBuf,
 }
@@ -384,13 +384,13 @@ pub(crate) fn layer_with(root: &Path, name: &str, hooks: &[&str], capabilities: 
     write_wasm(&dir, hooks, act);
 }
 
-/// Rewrite a layer's `plugin.wasm` — a rebuild, or a change to what it answers.
+/// Rewrite a layer's `plugin.wasm` - a rebuild, or a change to what it answers.
 pub(crate) fn write_wasm(dir: &Path, hooks: &[&str], act: Act) {
     let acts: Vec<(&str, Act)> = hooks.iter().map(|h| (*h, act.clone())).collect();
     write_wasm_bytes(dir, &script(&acts));
 }
 
-/// Write a layer's `plugin.wasm` byte for byte — a hand-edited file, or a rebuild whose bytes
+/// Write a layer's `plugin.wasm` byte for byte - a hand-edited file, or a rebuild whose bytes
 /// moved without its behaviour moving.
 pub(crate) fn write_wasm_bytes(dir: &Path, bytes: &[u8]) {
     std::fs::write(dir.join(WASM), bytes).expect("plugin.wasm");

@@ -59,7 +59,7 @@ fn target_of(fd: i32) -> String {
         .unwrap_or_default()
 }
 
-/// A WAL connection that has actually written — the shape every `Store` is.
+/// A WAL connection that has actually written - the shape every `Store` is.
 fn open(path: &Path) -> Connection {
     let conn = Connection::open(path).expect("a connection");
     conn.busy_timeout(std::time::Duration::from_secs(30))
@@ -133,7 +133,7 @@ fn sequential_open_and_close_reuses_the_descriptor() {
     );
 }
 
-/// **A closed connection's descriptor outlives it while another connection to the file lives** —
+/// **A closed connection's descriptor outlives it while another connection to the file lives**  -
 /// so a session that closes its store gives the store back and not the descriptor.
 #[test]
 fn a_closed_connection_holds_its_descriptor_until_the_last_one_goes() {

@@ -71,7 +71,7 @@ pub fn jpeg(w: u16, h: u16) -> Vec<u8> {
     out
 }
 
-/// **A structurally complete GIF** — `GIF89a`, a logical screen descriptor, a two-entry colour
+/// **A structurally complete GIF** - `GIF89a`, a logical screen descriptor, a two-entry colour
 /// table, one image descriptor with a data sub-block, and the trailer.
 pub fn gif(w: u16, h: u16) -> Vec<u8> {
     let mut out = b"GIF89a".to_vec();
@@ -91,7 +91,7 @@ pub fn gif(w: u16, h: u16) -> Vec<u8> {
     out
 }
 
-/// **A structurally complete WEBP** — a `RIFF`/`WEBP` container with one `VP8L` chunk.
+/// **A structurally complete WEBP** - a `RIFF`/`WEBP` container with one `VP8L` chunk.
 pub fn webp(w: u32, h: u32) -> Vec<u8> {
     let mut vp8l = vec![0x2f]; // the VP8L signature byte
     vp8l.extend_from_slice(&((w - 1) | ((h - 1) << 14)).to_le_bytes());
@@ -107,7 +107,7 @@ pub fn webp(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-/// **One image as the `data:` reference a row carries** — the shape both a `Media` and a
+/// **One image as the `data:` reference a row carries** - the shape both a `Media` and a
 /// `UserPart::Image` hold, so a fixture does not spell the prefix a second time.
 pub fn data_ref(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", crate::media::encode_base64(bytes))
@@ -128,7 +128,7 @@ fn jpeg_segment(out: &mut Vec<u8>, marker: u8, payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
-/// **A zlib stream of stored blocks** — a real deflate stream, and one whose bytes are the input,
+/// **A zlib stream of stored blocks** - a real deflate stream, and one whose bytes are the input,
 /// so the fixture needs no compressor. A stored block carries at most 65535 bytes.
 fn zlib_stored(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x78, 0x01]; // CMF/FLG: deflate, 32 KiB window, no dictionary
@@ -190,7 +190,7 @@ mod tests {
         );
     }
 
-    /// **The CRCs are computed, not zero** — the whole difference between the fixture this module
+    /// **The CRCs are computed, not zero** - the whole difference between the fixture this module
     /// replaces and a picture: an encoder writes them and a decoder checks them.
     #[test]
     fn the_png_is_a_picture_and_not_a_header() {

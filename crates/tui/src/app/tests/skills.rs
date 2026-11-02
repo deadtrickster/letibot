@@ -34,7 +34,7 @@ fn frame(skills: Vec<SkillRow>) -> ServerFrame {
 }
 
 /// **`/skills` opens the pane and asks the daemon**, and the pane draws every row with the source
-/// it came from — the one fact a reader weighs a skill by.
+/// it came from - the one fact a reader weighs a skill by.
 #[test]
 fn slash_skills_opens_the_pane_and_the_rows_carry_their_sources() {
     let mut a = app();
@@ -56,7 +56,7 @@ fn slash_skills_opens_the_pane_and_the_rows_carry_their_sources() {
 }
 
 /// **`/skills NAME` hands that skill over**, and the rest of the line goes on as the operator's
-/// prompt in the same turn — which is why the action carries it rather than a second send.
+/// prompt in the same turn - which is why the action carries it rather than a second send.
 #[test]
 fn slash_skills_names_one_and_carries_the_rest_of_the_line() {
     let mut a = app();
@@ -78,7 +78,7 @@ fn slash_skills_names_one_and_carries_the_rest_of_the_line() {
     );
 }
 
-/// **Enter on a pane row is the same door as the verb** — the row under the cursor, by name.
+/// **Enter on a pane row is the same door as the verb** - the row under the cursor, by name.
 #[test]
 fn enter_on_a_skill_row_hands_that_skill_over() {
     let mut a = app();

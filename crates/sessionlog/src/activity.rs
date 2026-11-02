@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// **The kind and the id of one thing a busy session waits on** — see the module header for which
+/// **The kind and the id of one thing a busy session waits on** - see the module header for which
 /// of them mean *this session acts again on its own* and which one means *a person must*.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "on", content = "id", rename_all = "snake_case")]
@@ -19,10 +19,10 @@ pub enum Waiting {
     /// span, never from the round-level `TurnStarted`/`TurnFinished` pair.
     Turn,
     /// The round's generation ended and the calls it proposed are running; the next round reads
-    /// their results. The finer detail inside [`Waiting::Turn`] — a head draws it, and nothing about
+    /// their results. The finer detail inside [`Waiting::Turn`] - a head draws it, and nothing about
     /// *will this session act again* depends on it.
     Calls,
-    /// **The model is owed something and the turn that says it has not started yet** — a
+    /// **The model is owed something and the turn that says it has not started yet** - a
     /// settlement queued or held, a monitor that has fired, a message or a prompt waiting for the
     /// worker. This is the window every timer in `crates/bridge` was invented for.
     Delivery,
@@ -39,7 +39,7 @@ pub enum Waiting {
 }
 
 impl Waiting {
-    /// The word the wire and a head's line use for the kind — `turn`, `calls`, `delivery`, `job`,
+    /// The word the wire and a head's line use for the kind - `turn`, `calls`, `delivery`, `job`,
     /// `monitor`, `child`, `ask`.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -61,7 +61,7 @@ impl Waiting {
         }
     }
 
-    /// **`job j8032`, `monitor ci`, `ask adj-s1-0001`** — how a line that shows the list says one
+    /// **`job j8032`, `monitor ci`, `ask adj-s1-0001`** - how a line that shows the list says one
     /// entry, and how `leticode_status` names it as data. One function rather than one per reader,
     /// because two spellings of the same fact is the drift this file exists to stop.
     pub fn label(&self) -> String {
@@ -72,7 +72,7 @@ impl Waiting {
     }
 
     /// **Does this session move only when a person moves it?** True for [`Waiting::Ask`] and
-    /// nothing else — the whole of why `Activity` is not a boolean.
+    /// nothing else - the whole of why `Activity` is not a boolean.
     pub fn needs_a_person(&self) -> bool {
         matches!(self, Waiting::Ask(_))
     }
@@ -107,7 +107,7 @@ pub enum Activity {
 }
 
 impl Activity {
-    /// A list, in the order [`Waiting::rank`] fixes, with nothing in it read as `Quiet` — so the
+    /// A list, in the order [`Waiting::rank`] fixes, with nothing in it read as `Quiet` - so the
     /// daemon cannot publish `Busy { waiting_on: [] }` and mean *quiet* in one place and *busy* in
     /// another.
     pub fn of(mut waiting_on: Vec<Waiting>) -> Activity {
@@ -131,7 +131,7 @@ impl Activity {
         }
     }
 
-    /// **The card this session is stopped on**, when it is — the one entry a caller has to do
+    /// **The card this session is stopped on**, when it is - the one entry a caller has to do
     /// something about. A session can in principle hold more than one; the oldest is the answer,
     /// because it is the one that has waited longest.
     pub fn ask(&self) -> Option<&str> {
@@ -141,14 +141,14 @@ impl Activity {
         })
     }
 
-    /// **Whether the session will move without a person** — true when the list holds anything but
+    /// **Whether the session will move without a person** - true when the list holds anything but
     /// a card. A `Busy` made only of an ask is the *stopped* state, which is why this is not
     /// `!is_quiet()`.
     pub fn moves_by_itself(&self) -> bool {
         self.waiting_on().iter().any(|w| !w.needs_a_person())
     }
 
-    /// **`waiting on: job j8032 · monitor ci`**, or empty for a quiet session — the one muted line
+    /// **`waiting on: job j8032 · monitor ci`**, or empty for a quiet session - the one muted line
     /// a head draws (the TUI's status row) and a caller reads in `leticode_status`.
     pub fn line(&self) -> String {
         let labels: Vec<String> = self.waiting_on().iter().map(Waiting::label).collect();
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
 
     /// The order is the line's order and the wire's order, and it is fixed here so that two
-    /// computations of the same facts are the same value — which is what *published only when it
+    /// computations of the same facts are the same value - which is what *published only when it
     /// changes* rests on.
     #[test]
     fn the_list_is_ordered_by_kind_then_name() {
@@ -212,7 +212,7 @@ mod tests {
     }
 
     /// **An ask is the only entry that waits for a person**, and a session stopped on one moves by
-    /// itself for nothing — which is the difference `wait`'s exit code 10 is about.
+    /// itself for nothing - which is the difference `wait`'s exit code 10 is about.
     #[test]
     fn only_a_card_waits_for_a_person() {
         let busy = Activity::of(vec![Waiting::Turn, Waiting::Job("j1".into())]);
@@ -253,7 +253,7 @@ mod tests {
     }
 
     /// A wire value from a build that knows a kind this one does not is refused, rather than read
-    /// as some other kind — the same argument `PROTOCOL_VERSION` 36 makes about `TodoStatus`:
+    /// as some other kind - the same argument `PROTOCOL_VERSION` 36 makes about `TodoStatus`:
     /// `serde` has no catch-all on this enum on purpose.
     #[test]
     fn an_unknown_kind_is_refused_rather_than_guessed() {

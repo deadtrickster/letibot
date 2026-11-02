@@ -1,7 +1,7 @@
 use super::*;
 use crate::testing::writable_harness;
 
-/// **`read` carries the historical line and the age, above the body — the
+/// **`read` carries the historical line and the age, above the body - the
 /// operator's ask verbatim.**
 #[test]
 fn read_carries_the_historical_line_with_the_age() {
@@ -33,7 +33,7 @@ fn read_carries_the_historical_line_with_the_age() {
     assert!(caveat_at < body_at, "the caveat comes first: {said}");
 }
 
-/// **A note the tool writes lands where the reader reads it — and by
+/// **A note the tool writes lands where the reader reads it - and by
 /// name, by path, and with `.md` spelled or not, it is the same note.**
 #[test]
 fn add_writes_into_the_project_notes_dir_and_reads_back() {
@@ -212,7 +212,7 @@ fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
     );
 
     // **And a genuinely new note is admitted**, in the same corpus, through
-    // the same gate — the half that a floor set too low would break.
+    // the same gate - the half that a floor set too low would break.
     let r = h.call(
         "notes",
         r###"{"action":"add","name":"compaction-tail-clamp","abstract":"compaction folds the first half of a conversation into a summary and the tail is clamped against the budget","text":"## What is folded\n\nThe first half.\n\n## The tail\n\nClamped.\n"}"###,
@@ -400,7 +400,7 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
     let mut h = writable_harness();
     let (ws, _) = h.notes_dirs();
     // The absolute spelling is compared against the backend's own cwd, which is
-    // canonicalised when the backend opens — so the fixture's path is too.
+    // canonicalised when the backend opens - so the fixture's path is too.
     let abs = std::fs::canonicalize(&ws).unwrap_or_else(|_| ws.clone());
     std::fs::create_dir_all(ws.join(NOTES_DIR)).expect("project dir");
 
@@ -469,7 +469,7 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
         std::fs::read_to_string(ws.join(NOTES_DIR).join("scored.md")).unwrap(),
         "the gate scored this one before it landed\n"
     );
-    // And the gate on that door is still the gate — a verbatim copy under a new
+    // And the gate on that door is still the gate - a verbatim copy under a new
     // name is the shape the floor was measured against.
     let r = h.call(
         "notes",
@@ -483,8 +483,8 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
     assert!(r.render().contains("near-copy"), "{}", r.render());
 }
 
-/// **A read reaches the box-wide dir — outside every session's backend
-/// view — and an unknown name refuses with the notes that exist.**
+/// **A read reaches the box-wide dir - outside every session's backend
+/// view - and an unknown name refuses with the notes that exist.**
 #[test]
 fn read_reaches_the_box_wide_dir_and_a_miss_lists_what_exists() {
     let mut h = writable_harness();
@@ -523,7 +523,7 @@ fn read_reaches_the_box_wide_dir_and_a_miss_lists_what_exists() {
 }
 
 /// **The tool is `Access::Write` in the schema and narrows to a read for
-/// `list`/`read` — and a write-denied downgrade drops it from the seat.**
+/// `list`/`read` - and a write-denied downgrade drops it from the seat.**
 #[test]
 fn the_access_class_is_write_and_the_read_verbs_narrow() {
     let scope: Arc<dyn NotesScope> = Arc::new(FixtureScope {
@@ -677,7 +677,7 @@ fn search_answers_with_paths_line_numbers_and_lines() {
 }
 
 /// **A search that matches nothing abstains, and lists the notes there
-/// are** — clause 1 in the tool that most needs it, since a miss here is
+/// are** - clause 1 in the tool that most needs it, since a miss here is
 /// the caller's only evidence about a corpus it cannot see.
 #[test]
 fn a_search_that_matches_nothing_abstains_with_the_corpus() {
@@ -819,7 +819,7 @@ fn the_derived_abstract_stops_at_a_proper_sentence_end() {
         );
     }
     // A sentence longer than the cap is cut at a character boundary and says
-    // so — never silently, and never mid-character.
+    // so - never silently, and never mid-character.
     let long = format!("{} tail", "word ".repeat(80));
     let cut = first_sentence(&long).expect("a sentence");
     assert_eq!(cut.chars().count(), ABSTRACT_CHARS);

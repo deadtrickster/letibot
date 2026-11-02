@@ -68,7 +68,7 @@ impl App {
         self.dismissed.contains(&note_key(n)) || already_read(&self.read_marks, n)
     }
 
-    /// **What this reader has read of one kind of notice** — the newest `ts` a `ctrl-n`
+    /// **What this reader has read of one kind of notice** - the newest `ts` a `ctrl-n`
     /// covered, or `None` for a kind it has never read.
     #[cfg(test)]
     pub(crate) fn read_upto(&self, kind: &str) -> Option<u64> {
@@ -206,7 +206,7 @@ impl App {
         self.counters().exceeds(self.acked)
     }
 
-    /// **This head's six disclosure counters, as one value** — the shape the alarm and its
+    /// **This head's six disclosure counters, as one value** - the shape the alarm and its
     /// acknowledgement both compare, so *"has anything moved"* has one definition.
     pub(crate) fn counters(&self) -> Counters {
         Counters {
@@ -304,8 +304,8 @@ impl Counters {
 pub(crate) enum Placed {
     /// At this many rows: the seam the walk puts it back into.
     Seam(usize),
-    /// **Before this window.** Reachable — `/notes` lists it, `/status` counts it, and a
-    /// reader who wants it is one verb away — and not drawn, because it is not news.
+    /// **Before this window.** Reachable - `/notes` lists it, `/status` counts it, and a
+    /// reader who wants it is one verb away - and not drawn, because it is not news.
     Before,
 }
 
@@ -336,14 +336,14 @@ pub(crate) enum Note {
     /// A pane's ending, as a row that is still there a minute later. An ending used to be a notice, which lives for
     /// `NOTICE_MS`, so a program that died at once flashed and was gone.
     Pane {
-        /// The line that was run, verb included — *what ended* is half the fact.
+        /// The line that was run, verb included - *what ended* is half the fact.
         line: String,
         /// **The last rows the program left on the screen**, in order and with the blank
         /// ones dropped. See [`TermPane::last_rows`] for why the screen and not the bytes,
         /// and why the tail.
         said: Vec<String>,
         /// The daemon's own sentence: the exit status, or the operator's act. Never
-        /// guessed here — see [`ServerFrame::TermEnded`].
+        /// guessed here - see [`ServerFrame::TermEnded`].
         reason: String,
         /// This head asked for the end and the person confirmed it: its own record that it sent
         /// [`Action::TermClose`], and not a reading of the reason's wording. `closed` and not `left`, since leaving
@@ -480,7 +480,7 @@ pub const COALESCE_MS: u64 = 60_000;
 /// and a line saying *this is still true* is not one of them.
 pub const LIVE: &[&str] = &["store_busy_wait"];
 
-/// **The plural a burst of this code is counted in** — `5 reviews could not run` rather than
+/// **The plural a burst of this code is counted in** - `5 reviews could not run` rather than
 /// `5 × queue_blocked`. A code with no row here is counted by its code, which is the head's own
 /// vocabulary everywhere else (`notice_card::warning_notice` leads with it too).
 pub const COUNTED_AS: &[(&str, &str)] = &[
@@ -513,7 +513,7 @@ pub const COUNTED_AS: &[(&str, &str)] = &[
     ("denied", "calls the gate refused"),
 ];
 
-/// The phrase a burst of `code` is counted in — its own, or the code itself.
+/// The phrase a burst of `code` is counted in - its own, or the code itself.
 pub(crate) fn counted_as(code: &str) -> &str {
     COUNTED_AS
         .iter()
@@ -543,13 +543,13 @@ pub(crate) fn chains(a: &Note, b: &Note) -> bool {
     }
 }
 
-/// **Is this note one the reader has retired?** — [`App::is_retired`] as a free function, for the
+/// **Is this note one the reader has retired?** - [`App::is_retired`] as a free function, for the
 /// walk and for [`burst_at`], which hold the head's fields destructured.
 pub(crate) fn note_retired(dismissed: &[String], marks: &[(String, u64)], n: &Note) -> bool {
     dismissed.contains(&note_key(n)) || already_read(marks, n)
 }
 
-/// The `ts` of note `j` when it may chain with `kind` — drawn, coalescable, the same kind.
+/// The `ts` of note `j` when it may chain with `kind` - drawn, coalescable, the same kind.
 fn chained_ts(notes: &[(Placed, Note)], j: usize, kind: &str) -> Option<u64> {
     if !matches!(notes[j].0, Placed::Seam(_)) {
         return None;
@@ -560,7 +560,7 @@ fn chained_ts(notes: &[(Placed, Note)], j: usize, kind: &str) -> Option<u64> {
     }
 }
 
-/// **The first member of the burst `i` belongs to** — the chain walked backwards.
+/// **The first member of the burst `i` belongs to** - the chain walked backwards.
 pub(crate) fn burst_head(notes: &[(Placed, Note)], i: usize) -> usize {
     let Some((kind, ts)) = coalescable(&notes[i].1) else {
         return i;
@@ -580,7 +580,7 @@ pub(crate) fn burst_head(notes: &[(Placed, Note)], i: usize) -> usize {
     head
 }
 
-/// The last member of the burst `i` belongs to — the chain walked forwards.
+/// The last member of the burst `i` belongs to - the chain walked forwards.
 fn burst_end(notes: &[(Placed, Note)], i: usize) -> usize {
     let Some((kind, ts)) = coalescable(&notes[i].1) else {
         return i;
@@ -603,11 +603,11 @@ fn burst_end(notes: &[(Placed, Note)], i: usize) -> usize {
 /// **What the walk does with one note**, as far as a burst is concerned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Burst {
-    /// A member of a burst whose counted row has already been drawn — draw nothing.
+    /// A member of a burst whose counted row has already been drawn - draw nothing.
     Drawn,
     /// Draw the note as it always was: it is not coalescable, or it is alone.
     Single,
-    /// **The head of a burst of two or more** — the indices of the live members, oldest first.
+    /// **The head of a burst of two or more** - the indices of the live members, oldest first.
     Counted(Vec<usize>),
 }
 

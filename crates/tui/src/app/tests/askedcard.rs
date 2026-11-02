@@ -5,17 +5,17 @@
 use super::redcard::{holds, popup_text, rows_with};
 use super::*;
 
-/// The question row as the session writes it (`Harness::question_row_text`) — pinned byte for
+/// The question row as the session writes it (`Harness::question_row_text`) - pinned byte for
 /// byte by `harnessd`'s `the_tuis_asked_card_fixtures_are_what_the_session_writes`.
 const QUESTION: &str = include_str!("fixtures/asked_question_row.txt");
-/// The same row as the session wrote it before R90.24 — options on one ` | ` line, the shape
+/// The same row as the session wrote it before R90.24 - options on one ` | ` line, the shape
 /// every stored transcript from before it holds.
 const QUESTION_V1: &str = include_str!("fixtures/asked_question_row_v1.txt");
 /// The operator's answer row (`Harness::operator_answer_text`), pinned by the same test.
 const ANSWER: &str = include_str!("fixtures/asked_answer_row.txt");
 
 /// What the tool's result says, the shape the operator pasted: the answer, attributed, and the
-/// note to the model — nine lines.
+/// note to the model - nine lines.
 const PAYLOAD: &str = "answer: A — in scope, via a DuckDB dialect frontend\n\
     [note] this answer is attributed to dead; it is what they said, not what the harness \
     inferred. A note qualifies the option it came with — do not read it as a separate answer.\n\
@@ -73,7 +73,7 @@ fn with_exchange() -> App {
 }
 
 /// **The question is ONE line**: the first clause of its first sentence, how many options it
-/// offered, and where the rest is — none of the paragraphs, none of the options' words.
+/// offered, and where the rest is - none of the paragraphs, none of the options' words.
 #[test]
 fn the_question_draws_as_one_line() {
     let mut a = with_exchange();
@@ -118,7 +118,7 @@ fn the_answer_says_what_it_answers() {
     assert!(re[0].contains('…') && visible_width(re[0]) <= 60, "{re:?}");
 }
 
-/// **An operator's row after anything else names nothing** — only the session's question
+/// **An operator's row after anything else names nothing** - only the session's question
 /// right before it is what it answers.
 #[test]
 fn a_reply_to_nothing_is_drawn_as_before() {
@@ -169,7 +169,7 @@ fn a_click_on_the_question_opens_it_whole() {
     assert_eq!(a.screen(120, 20), before);
 }
 
-/// **The question's tool card is its header**, folded: no `[note]` lines and no seam — the
+/// **The question's tool card is its header**, folded: no `[note]` lines and no seam - the
 /// exchange is the two rows under it. `/t` unfolds it as it unfolds every card.
 #[test]
 fn the_question_card_is_its_header_folded() {
@@ -221,7 +221,7 @@ const K3: &str = "Leave it in scratch for now — I'll read it there first";
 const K4: &str = "Only send me the numbers; don't touch the repo";
 
 /// A head holding the question row `question` and, when there is one, the operator's `answer`
-/// row right after it — with the question's popup open and laid out at `cols`.
+/// row right after it - with the question's popup open and laid out at `cols`.
 fn popup_for(question: &str, answer: Option<&str>, cols: usize) -> App {
     let mut a = app();
     a.apply(hello(
@@ -312,7 +312,7 @@ fn the_popup_draws_the_options_vertically_and_marks_the_choice() {
     );
 }
 
-/// **Before an answer exists, nothing is marked** — the options are still one per line.
+/// **Before an answer exists, nothing is marked** - the options are still one per line.
 #[test]
 fn an_unanswered_question_marks_nothing() {
     let a = popup_for(KLICK, None, 200);
@@ -390,7 +390,7 @@ fn a_chosen_option_holding_the_separator_is_one_option() {
     );
 }
 
-/// **R90.24: the options are a list**, so an option holding ` | ` is one option — and a row
+/// **R90.24: the options are a list**, so an option holding ` | ` is one option - and a row
 /// written before the list shape still reads as it did.
 #[test]
 fn the_options_are_a_list_and_the_old_line_still_parses() {
@@ -407,7 +407,7 @@ fn the_options_are_a_list_and_the_old_line_still_parses() {
     );
 }
 
-/// **Narrow, each option wraps under its own text** — a hanging indent past its number, and the
+/// **Narrow, each option wraps under its own text** - a hanging indent past its number, and the
 /// mark stays on the option's first row.
 #[test]
 fn a_narrow_popup_wraps_each_option_under_its_text() {

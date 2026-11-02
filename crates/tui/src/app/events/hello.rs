@@ -1,5 +1,5 @@
-//! **A `Hello`**: the daemon seating this head in a session — on the first attach, a switch, a
-//! reconnect — with the snapshot it brings.
+//! **A `Hello`**: the daemon seating this head in a session - on the first attach, a switch, a
+//! reconnect - with the snapshot it brings.
 
 use super::*;
 use letibot_sessionlog::event::Usage;

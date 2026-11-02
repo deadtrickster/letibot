@@ -25,7 +25,7 @@ pub const PLAN_DIR: &str = "plans";
 pub const PLAN_EXT: &str = "md";
 
 /// The most bytes one plan document may be. A plan longer than this is a design
-/// document, and a design document is work — which is the thing plan mode is not
+/// document, and a design document is work - which is the thing plan mode is not
 /// for.
 const MAX_PLAN_BYTES: usize = 128 * 1024;
 
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_write_to_the_work_is_not_expressible_here() {
-        // Not "refused because it is not allowed" — refused because it is not a
+        // Not "refused because it is not allowed" - refused because it is not a
         // name. There is no argument on this tool that names a file outside the
         // plan directory, which is the whole of D9's mechanism.
         let mut h = harness();

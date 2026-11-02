@@ -26,7 +26,7 @@ pub(crate) use panes::help::*;
 pub(crate) use panes::notes::*;
 pub(crate) use panes::subagents::*;
 pub(crate) use panes::todos::*;
-/// The fit ladder — what gives way on a short screen — is rano's (`rano::agent::fit`).
+/// The fit ladder - what gives way on a short screen - is rano's (`rano::agent::fit`).
 pub(crate) use rano::agent::fit::{Fit, FitInput, fit_ladder};
 pub(crate) use transcript::assistant::*;
 pub(crate) use transcript::blocks::*;

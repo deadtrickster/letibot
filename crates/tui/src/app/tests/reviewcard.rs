@@ -8,10 +8,10 @@ use crate::ui::transcript::review_card::{Verdict, decisive, notice_review, warni
 use rano::render::{Line, Span};
 use rano::style::Role;
 
-// Every fixture is what `harnessd` writes — pinned byte for byte by
+// Every fixture is what `harnessd` writes - pinned byte for byte by
 // `mergequeue::notices::tests::the_tuis_review_card_fixtures_are_what_the_queue_writes`.
 
-/// **The notice the operator pasted** — `notices::parked` for a branch whose reviewer could not
+/// **The notice the operator pasted** - `notices::parked` for a branch whose reviewer could not
 /// decide.
 const CANNOT_DECIDE: &str = include_str!("fixtures/review_cannot_decide_notice.txt");
 const BLOCKED: &str = include_str!("fixtures/review_blocked_notice.txt");
@@ -35,7 +35,7 @@ const RED_NOTICE: &str = include_str!("fixtures/red_main_notice.txt");
 
 const BRANCH: &str = "agent/panic-groupingsets-join";
 
-/// **The operator's line** — the shape they asked for, word for word.
+/// **The operator's line** - the shape they asked for, word for word.
 const OPERATORS_LINE: &str = "review · agent/panic-groupingsets-join · could not decide · BUT the \
                               ask's acceptance cannot be met on this base… · click for details";
 
@@ -156,7 +156,7 @@ fn warning_shapes() -> Vec<(&'static str, &'static str, String)> {
     ]
 }
 
-/// **The readers read what the daemon writes** — the fixtures ARE its output, and each comes to
+/// **The readers read what the daemon writes** - the fixtures ARE its output, and each comes to
 /// the verdict its words say.
 #[test]
 fn the_readers_read_every_shape_the_queue_writes() {
@@ -188,8 +188,8 @@ fn the_readers_read_every_shape_the_queue_writes() {
     }
 }
 
-/// **The BUT clause is the decisive one** — the operator's rule: *"for "could not decide" the
-/// sentence starting with BUT is the decisive one if present; otherwise the first sentence"* —
+/// **The BUT clause is the decisive one** - the operator's rule: *"for "could not decide" the
+/// sentence starting with BUT is the decisive one if present; otherwise the first sentence"*  -
 /// and its first clause is what the line carries.
 #[test]
 fn the_sentence_that_opens_with_but_is_the_reason() {
@@ -210,7 +210,7 @@ fn the_sentence_that_opens_with_but_is_the_reason() {
     assert_eq!(decisive("   "), None);
 }
 
-/// **The operator's notice is ONE line** — the branch, the verdict, the BUT clause — and nothing
+/// **The operator's notice is ONE line** - the branch, the verdict, the BUT clause - and nothing
 /// of the reasons or of the paragraph to the model.
 #[test]
 fn the_pasted_notice_draws_as_one_line() {
@@ -272,7 +272,7 @@ fn every_review_warning_draws_as_one_line_and_opens_whole() {
     }
 }
 
-/// **A narrow screen cuts the line with the head's `…`** — it never wraps.
+/// **A narrow screen cuts the line with the head's `…`** - it never wraps.
 #[test]
 fn a_narrow_screen_cuts_the_line() {
     let mut a = with_notice(CANNOT_DECIDE);
@@ -331,9 +331,9 @@ fn sgr_of(role: Role, p: rano::style::Palette) -> String {
     row[0][..at].to_string()
 }
 
-/// **The verdict is drawn in the role the queue pane gives its state** — a refusal and a
+/// **The verdict is drawn in the role the queue pane gives its state** - a refusal and a
 /// reviewer that could not decide in the attention register, a blocked review in the failure
-/// register — on a session row and on a warning alike.
+/// register - on a session row and on a warning alike.
 #[test]
 fn the_verdict_is_coloured_by_what_it_means() {
     let cfg = RenderConfig {
@@ -368,8 +368,8 @@ fn the_verdict_is_coloured_by_what_it_means() {
     assert!(rows[0].contains(&painted), "{:?}", rows[0]);
 }
 
-/// **A red target and a parked review in one wake** are a line each — the daemon puts the
-/// target's trouble before the parked rows (`Harness::queue_emergency_notices`) — and a job's
+/// **A red target and a parked review in one wake** are a line each - the daemon puts the
+/// target's trouble before the parked rows (`Harness::queue_emergency_notices`) - and a job's
 /// completion after them keeps its own two lines.
 #[test]
 fn a_row_of_several_notices_is_a_line_a_notice() {
@@ -400,7 +400,7 @@ fn a_row_of_several_notices_is_a_line_a_notice() {
     assert!(holds(&whole, "frame_matches_golden"), "{whole}");
 }
 
-/// **What it does not know, it does not fold** — drawn as it arrived, every word on the screen,
+/// **What it does not know, it does not fold** - drawn as it arrived, every word on the screen,
 /// and no click target.
 #[test]
 fn a_shape_the_reader_does_not_know_falls_back() {
@@ -426,7 +426,7 @@ fn a_shape_the_reader_does_not_know_falls_back() {
             format!("Something the queue says first.\n\n{CANNOT_DECIDE}"),
         ),
     ] {
-        // **Not read as a review — and still one line a notice** (R89): the generic first
+        // **Not read as a review - and still one line a notice** (R89): the generic first
         // clause (or, for a row that opens with something else, that line and the review's
         // card under it), the reviewer's reasons a click away.
         let mut a = with_notice(&text);
@@ -464,7 +464,7 @@ fn a_shape_the_reader_does_not_know_falls_back() {
     }
 }
 
-/// **A review waiting for a VM slot is drawn as waiting, not as a fault** — the hub row of
+/// **A review waiting for a VM slot is drawn as waiting, not as a fault** - the hub row of
 /// 2026-10-12 was a red `queue_blocked` for a shortage that ended minutes later (TODO R86). The
 /// wait is in the queue pane's `waiting` register; the long wait in the failure register.
 #[test]
@@ -505,7 +505,7 @@ fn the_new_stop_shapes_carry_their_real_reason() {
     );
 }
 
-/// **An older daemon's shapes still draw** — a head can be newer than the daemon it watches.
+/// **An older daemon's shapes still draw** - a head can be newer than the daemon it watches.
 #[test]
 fn the_shapes_before_r86_still_draw() {
     let old_blocked = "the review of `agent/x` (`x`) is BLOCKED after 3 attempts without a \

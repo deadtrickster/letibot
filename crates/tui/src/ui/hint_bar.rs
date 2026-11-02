@@ -7,7 +7,7 @@ use rano::agent::hint_bar::{HintBar, HintMode, centred};
 use rano::render::Line;
 use rano::style::Role;
 
-/// **One of the conversation's chords, as the bar names it** — read from the table its dispatch
+/// **One of the conversation's chords, as the bar names it** - read from the table its dispatch
 /// reads where there is one (`Surface::chord`, `Show::chord`), so the two cannot drift.
 enum Chord {
     Surface(Surface, &'static str),
@@ -17,7 +17,7 @@ enum Chord {
 
 /// **The conversation's chords, in the order the bar names them.** The bar is over capacity at
 /// 80 columns by construction and keeps its head, so the order is a ranking: the panes and the
-/// reflexes first, `/help` — the index — last.
+/// reflexes first, `/help` - the index - last.
 const CONVERSATION: &[Chord] = &[
     Chord::Surface(Surface::Picker, "sessions"),
     Chord::Says("ctrl-n", "clears notes"),
@@ -25,7 +25,7 @@ const CONVERSATION: &[Chord] = &[
     Chord::Surface(Surface::Subagents, "subagents"),
     Chord::Show(Show::Thinking),
     // **`ctrl-v` and `/t` are adjacent on purpose** (R40): they are the two things a reader
-    // confuses, so the bar states both — one result against all of them.
+    // confuses, so the bar states both - one result against all of them.
     Chord::Says("ctrl-v", "newest result"),
     Chord::Says("/t", "all tool rows"),
     // **A notice line's details from the keyboard** (R89): the click's other half.
@@ -50,7 +50,7 @@ impl App {
             .join(" · ")
     }
 
-    /// **The open decision's half of the bar** (R90.2) — this head's, not rano's `Deciding`
+    /// **The open decision's half of the bar** (R90.2) - this head's, not rano's `Deciding`
     /// tail, which says *"a row number answers"*: a row number marks the row, and Enter answers.
     pub(crate) fn deciding_tail(&self) -> String {
         use crate::ui::cards::decision::{LADDER_HINT, PUT_AWAY_HINT};
@@ -164,7 +164,7 @@ impl App {
         } else if self.editor_focused() {
             Some(HintMode::Editor)
         } else if !self.open.is_empty() {
-            // **The decision's own bar** (R90.2) — a question's names the way to step away, and
+            // **The decision's own bar** (R90.2) - a question's names the way to step away, and
             // a permission's says a row number marks rather than answers.
             return crate::ui::render::row(&centred(Some(&editor), &self.deciding_tail(), w), p);
         } else if self.quit_card {
@@ -174,8 +174,8 @@ impl App {
         } else if self.editor_drawn() {
             Some(HintMode::EditorBehind)
         } else if self.pick.is_some() {
-            // **The cards in the chrome are in front of the surface** — they take their keys
-            // first in `App::key` — so the bar describes the card while one is up.
+            // **The cards in the chrome are in front of the surface** - they take their keys
+            // first in `App::key` - so the bar describes the card while one is up.
             Some(HintMode::Pick)
         } else {
             None

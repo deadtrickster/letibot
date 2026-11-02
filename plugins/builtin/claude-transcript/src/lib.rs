@@ -17,7 +17,7 @@ const PROJECTS: usize = 16;
 const FILES_PER_PROJECT: usize = 12;
 /// Transcripts one answer covers across every project.
 const FILES_TOTAL: usize = 24;
-/// Lines read to find the operator's first line of a transcript — the first user row of a real
+/// Lines read to find the operator's first line of a transcript - the first user row of a real
 /// session is usually within eight, and a header or a title row is not one.
 const HEAD_LINES: u64 = 16;
 /// Lines of a transcript an outline reads, of each kind.
@@ -38,14 +38,14 @@ struct In {
     /// The results of the looks asked for on the previous round, in the order they were asked.
     #[serde(default)]
     looks: Vec<Value>,
-    /// What this layer carried over from the previous round — the host keeps it and hands it back
+    /// What this layer carried over from the previous round - the host keeps it and hands it back
     /// unchanged (§1, principle 5: a plugin is stateless between calls).
     #[serde(default)]
     state: Value,
 }
 
 /// The host's own facts. Not capabilities: these are what the harness already knows. The host
-/// also sends the session id, which this layer has no use for — a transcript is named by the file
+/// also sends the session id, which this layer has no use for - a transcript is named by the file
 /// it is, not by the session asking.
 #[derive(Debug, Default, Clone, Deserialize)]
 struct Feeds {
@@ -880,7 +880,7 @@ fn row_of(text: &str) -> Option<Row> {
     }
 }
 
-/// The `text` blocks of a content list, joined — the model's words, without its thinking, its
+/// The `text` blocks of a content list, joined - the model's words, without its thinking, its
 /// tool calls or the results coming back.
 fn text_parts(parts: &[Value]) -> Option<String> {
     let mut out: Vec<&str> = Vec::new();
@@ -924,7 +924,7 @@ struct File {
     mtime: u64,
 }
 
-/// **The directory one call lists first**: a project's, or — with `all_projects` — the root that
+/// **The directory one call lists first**: a project's, or - with `all_projects` - the root that
 /// holds every project.
 fn listing_root(args: &Args, feeds: &Feeds) -> Result<String, (String, String)> {
     if args.all_projects {
@@ -1157,7 +1157,7 @@ fn stamp(ms: u64, now_ms: u64) -> String {
     format!("{text} ({ago})")
 }
 
-/// Days since 1970-01-01 to a civil date — Howard Hinnant's `civil_from_days`, which is exact for
+/// Days since 1970-01-01 to a civil date - Howard Hinnant's `civil_from_days`, which is exact for
 /// every date this tool will ever see and needs no table.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
@@ -1172,6 +1172,6 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// The layer's policy, tested natively — see `tests.rs`.
+/// The layer's policy, tested natively - see `tests.rs`.
 #[cfg(test)]
 mod tests;

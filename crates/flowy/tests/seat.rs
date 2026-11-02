@@ -1,9 +1,9 @@
 //! The seat against a fake node: the delivery contract, end to end, through the
 //! monitor registry the harness wakes on.
 //!
-//! The fake speaks exactly the doors the seat uses — `whoami`, `inbox/wait`
+//! The fake speaks exactly the doors the seat uses - `whoami`, `inbox/wait`
 //! (a real long poll, on a condvar), `inbox/ack`, `inbox/readers`,
-//! `chat/{room}/say`, `artifact/{id}`, `events` — and records the ORDER things
+//! `chat/{room}/say`, `artifact/{id}`, `events` - and records the ORDER things
 //! happened in, because the contract under test is an ordering: spool before
 //! ack, mark over everything read, notice before silence.
 
@@ -391,7 +391,7 @@ fn what_arrives_while_nobody_is_attached_is_handed_to_the_next_session_labelled(
     let seat = Seat::open(creds(&node, None), Some(&d), Some(&d)).unwrap();
     node.push(chat("deadtrickster", "user", "A-SEAT", "are you there?"));
     assert_eq!(seat.poll_once(), PollOutcome::Delivered(1));
-    // Acked on the node — the seat heard it — but no session had it.
+    // Acked on the node - the seat heard it - but no session had it.
     assert_eq!(node.state().acks.len(), 1);
     let cond = seat.attach("later", Attention::default());
     let why = cond.met().unwrap();
@@ -584,8 +584,8 @@ fn two_sessions_on_one_seat_talk_through_the_daemon_with_the_room_as_the_record(
     let a = seat.attach_as("s-1", "planner", Attention::default());
     let b = seat.attach_as("s-2", "coder", Attention::default());
 
-    // Planner tells coder. The node gets `to: seat` and the tagged body — the
-    // record — and coder gets it locally, because the node would never echo the
+    // Planner tells coder. The node gets `to: seat` and the tagged body - the
+    // record - and coder gets it locally, because the node would never echo the
     // seat's own message back.
     let sent = seat
         .say("general", "tests first", Some("seat/coder"), None)
@@ -644,7 +644,7 @@ fn the_board_is_sampled_as_a_level_and_delivered_as_edges() {
     assert_eq!(st.diff(&nag(&["a", "b"])), None);
     assert_eq!(st.diff(&nag(&["a", "b"])), None);
 
-    // One finished, one arrived — the COUNT is unchanged at 2 and the seat must
+    // One finished, one arrived - the COUNT is unchanged at 2 and the seat must
     // still say so, because the id set moved.
     let moved = st.diff(&nag(&["a", "c"])).expect("a new id is an edge");
     assert!(moved.contains("1 new assigned to you"), "{moved}");

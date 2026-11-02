@@ -38,7 +38,7 @@ struct Args {
     /// A session to resume out of the store and switch to, once attached.
     resume: String,
     /// A session to create and switch to, once attached. `Some("")` is an untitled
-    /// one — distinct from `None`, which is "do not make one".
+    /// one - distinct from `None`, which is "do not make one".
     new_session: Option<String>,
     since: u64,
     replay: Option<String>,
@@ -61,7 +61,7 @@ struct Args {
     /// `letibot --stop` is not written into the transcript as a forced one (TODO R92.21).
     reason: String,
     /// Answer "is there a daemon here, and does it speak this build's protocol" and
-    /// exit. No screen, no snapshot, no frame — see [`probe`].
+    /// exit. No screen, no snapshot, no frame - see [`probe`].
     probe: bool,
 }
 
@@ -473,7 +473,7 @@ pub fn interrupt_turns(
     }
     for s in &running {
         client.switch(&s.session_id, 0)?;
-        // `expected_seq = 0` is "no expectation" at the hub — never stale —
+        // `expected_seq = 0` is "no expectation" at the hub - never stale  -
         // which is what a client that is not following the stream gets to say.
         client.interrupt(0, reason)?;
         each(&s.session_id);
@@ -497,8 +497,8 @@ pub fn interrupt_turns(
 }
 
 /// **How the force path sends a signal**: `kill(pid, sig)`. A parameter rather than a
-/// call so a test can stand in a process that survives everything — the one case the
-/// head's last sentence is for — without needing a process the kernel cannot kill.
+/// call so a test can stand in a process that survives everything - the one case the
+/// head's last sentence is for - without needing a process the kernel cannot kill.
 pub type Signaller = std::sync::Arc<dyn Fn(i32, i32) -> std::io::Result<()> + Send + Sync>;
 
 /// The real one: `kill(2)`.
@@ -517,7 +517,7 @@ pub fn kill_signaller() -> Signaller {
 pub struct ForceTarget {
     /// The daemon's socket, for the interrupt half.
     pub socket: std::path::PathBuf,
-    /// `App::daemon_pid` — the process at the other end of this head's socket, from
+    /// `App::daemon_pid` - the process at the other end of this head's socket, from
     /// `SO_PEERCRED`. `None` and no signal is sent at all.
     pub pid: Option<i32>,
     /// When that process started, read when the stop began and re-read before every signal: a pid that now names a
@@ -530,7 +530,7 @@ pub struct ForceTarget {
 /// interrupt is not allowed to hold the signals up past this.
 pub const FORCE_INTERRUPT_WAIT: Duration = Duration::from_secs(3);
 
-/// How long the force path waits for the process after SIGKILL — the wrapper's
+/// How long the force path waits for the process after SIGKILL - the wrapper's
 /// `wait_gone "$p" 4`, four half-second steps.
 pub const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
 
@@ -632,7 +632,7 @@ fn discover(path: &std::path::Path) -> Result<Vec<String>, Box<dyn std::error::E
         Ok(_) => Ok(Vec::new()),
         Err(ClientError::Refused(reason)) => match reason.split_once("it holds ") {
             Some((_, list)) => Ok(list.split(", ").map(str::to_string).collect()),
-            // "this daemon holds none yet" — nothing held, nothing to interrupt.
+            // "this daemon holds none yet" - nothing held, nothing to interrupt.
             None => Ok(Vec::new()),
         },
         Err(e) => Err(e.into()),
@@ -640,7 +640,7 @@ fn discover(path: &std::path::Path) -> Result<Vec<String>, Box<dyn std::error::E
 }
 
 /// One `ListSessions` round trip: send it, then read frames until the reply
-/// arrives, discarding everything else — the seat's event stream keeps
+/// arrives, discarding everything else - the seat's event stream keeps
 /// arriving on the same channel, and an interrupt in progress makes it loud.
 fn ask_sessions(
     client: &mut HeadClient,
@@ -764,7 +764,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
 
     app.apply(hello);
     // After the `Hello`, so the head knows what the daemon holds before it asks for
-    // something else — a resume of a session that is already live is then a switch
+    // something else - a resume of a session that is already live is then a switch
     // rather than a round trip through the store.
     if !args.resume.is_empty() {
         app.request_session(&args.resume);
@@ -796,7 +796,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
                 }
                 link.tick(&mut app, size, &keys, &raw, &mut draw);
                 // The window title, after the tick: `draw` holds the terminal while `tick` holds
-                // the app, so it is read here — once a tick, written only when it changed.
+                // the app, so it is read here - once a tick, written only when it changed.
                 outside_the_frame(&term, &mut app);
                 // Getting back is this loop's job, because the socket is this layer's: the head knows that the link
                 // is down and how long, and only here is there a path to open and a `Link` to replace.
@@ -854,7 +854,7 @@ mod exit_tests {
 
     /// **A head that never seated a session prints nothing at all.** An empty line is still a
     /// line: a script reading stdout would take it for an id, and the operator would see a blank
-    /// where the answer should be — which is how a refusal comes to look like a bug in the exit.
+    /// where the answer should be - which is how a refusal comes to look like a bug in the exit.
     #[test]
     fn a_head_that_never_seated_a_session_prints_nothing() {
         let mut out: Vec<u8> = Vec::new();
@@ -976,7 +976,7 @@ mod probe_tests {
     }
 }
 
-/// **The terminal's modes for this head: every motion reported**, not only the buttons' — what
+/// **The terminal's modes for this head: every motion reported**, not only the buttons' - what
 /// the pointer is over is drawn (`app::pointer`), and that needs motion with no button held.
 fn any_motion() -> rano::term::Options {
     rano::term::Options {
@@ -1010,8 +1010,8 @@ fn outside_the_frame(term: &Terminal, app: &mut App) {
     }
 }
 
-/// **One read of the terminal, as this head's keys**: whatever `Terminal::events` returns —
-/// at most ~100 ms of quiet, the `VMIN=0 VTIME=1` read the loops above are paced by — mapped
+/// **One read of the terminal, as this head's keys**: whatever `Terminal::events` returns  -
+/// at most ~100 ms of quiet, the `VMIN=0 VTIME=1` read the loops above are paced by - mapped
 /// through [`crate::app::key_of`]. The bytes that read consumed are `Terminal::raw_input`.
 fn read_keys(term: &Terminal) -> Vec<crate::app::Key> {
     term.events()
@@ -1045,7 +1045,7 @@ fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>
     // Bytes rano read are not a `!term` pane's: `ctrl-\` is rano's replace, and a byte the editor consumed must not
     // reach the pane's way-out scan as though the terminal had sent it at a pane.
     let raw = if rano_took { Vec::new() } else { raw };
-    // rano's work between events, before the frame — rano's rule for a host.
+    // rano's work between events, before the frame - rano's rule for a host.
     app.editor_tick(Instant::now());
     (keys, raw)
 }

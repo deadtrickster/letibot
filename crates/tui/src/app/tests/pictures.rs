@@ -5,7 +5,7 @@
 use super::*;
 
 /// A PNG-shaped reference: signature, then a real IHDR carrying `w` and `h`. The bytes need not
-/// decode — nothing under test decodes a PNG; the head reads the header and hands the rest to the
+/// decode - nothing under test decodes a PNG; the head reads the header and hands the rest to the
 /// terminal, exactly as it does for a real paste.
 fn png_data_ref(w: u32, h: u32) -> String {
     let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -99,7 +99,7 @@ fn a_picture_under_the_chip_is_drawn_where_the_terminal_can_fill_it() {
 
     // **And the bytes went out, once**, under the id the placeholders name.
     let uploads = a.take_image_uploads();
-    // The image is the SECOND part — the chip's words are the first.
+    // The image is the SECOND part - the chip's words are the first.
     let id = rano::term::graphics::image_id(&format!("s.0#{}1", crate::ui::render::USER_PART));
     assert_eq!(uploads.len(), 2, "an upload and a placement");
     let reference = png_data_ref(320, 200);
@@ -163,7 +163,7 @@ fn enter_opens_the_picture_larger_and_esc_deletes_it() {
         "enter opened no picture:\n{open}"
     );
     // **Larger than the thumbnail**: the box the popup places is wider than half the frame, and
-    // the bytes are the same picture under the same id — a placement, not a second upload.
+    // the bytes are the same picture under the same id - a placement, not a second upload.
     let uploads = a.take_image_uploads();
     assert_eq!(uploads.len(), 1, "one placement: {uploads:?}");
     let placed = String::from_utf8_lossy(&uploads[0]).to_string();
@@ -183,7 +183,7 @@ fn enter_opens_the_picture_larger_and_esc_deletes_it() {
         "the picture was uploaded again rather than placed: {:?}",
         String::from_utf8_lossy(&uploads[0])
     );
-    // **Esc closes it, and the terminal is told to free the bytes** — a picture nothing draws is
+    // **Esc closes it, and the terminal is told to free the bytes** - a picture nothing draws is
     // memory with no owner.
     a.key(Key::Esc);
     assert!(a.diff_popup.is_none(), "esc left the picture open");
@@ -212,7 +212,7 @@ fn a_click_on_the_thumbnail_opens_the_same_picture() {
     );
 }
 
-/// **The frame's own record decides what a click opens** — a row of the operator's words is not a
+/// **The frame's own record decides what a click opens** - a row of the operator's words is not a
 /// picture's row, so a click there still falls through to the conversation.
 #[test]
 fn the_operators_words_are_not_the_picture() {

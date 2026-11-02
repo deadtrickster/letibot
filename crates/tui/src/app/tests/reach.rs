@@ -49,7 +49,7 @@ fn on_local(keyed: &str, vocab: &str) -> App {
     a
 }
 
-/// A probe that answers `up` and counts its calls — no network.
+/// A probe that answers `up` and counts its calls - no network.
 fn stub(a: &mut App, up: Arc<AtomicBool>, calls: Arc<AtomicUsize>) {
     a.reach.probe = Arc::new(move |ep: &str| {
         calls.fetch_add(1, Ordering::SeqCst);
@@ -61,7 +61,7 @@ fn stub(a: &mut App, up: Arc<AtomicBool>, calls: Arc<AtomicUsize>) {
     });
 }
 
-/// Run the loop's half until the probe has answered — `Driver::tick` calls `poll_reach`.
+/// Run the loop's half until the probe has answered - `Driver::tick` calls `poll_reach`.
 fn settle(a: &mut App) {
     for _ in 0..500 {
         a.poll_reach();
@@ -88,7 +88,7 @@ fn prompts(actions: &[Action]) -> Vec<String> {
         .collect()
 }
 
-/// **Nothing serving the local model: the chooser, with the reason, and the message held** — and
+/// **Nothing serving the local model: the chooser, with the reason, and the message held** - and
 /// esc gives the words back to the composer rather than sending them to nothing.
 #[test]
 fn a_message_to_a_local_model_nobody_serves_opens_the_chooser_with_the_reason() {
@@ -128,7 +128,7 @@ fn a_message_to_a_local_model_nobody_serves_opens_the_chooser_with_the_reason() 
     assert!(a.reach.reason.is_none() && a.reach.held.is_none());
 }
 
-/// **A local model that answers is not interrupted** — the message goes, no card — **and the check
+/// **A local model that answers is not interrupted** - the message goes, no card - **and the check
 /// is per attempt**: the same session, the server gone, the next message opens the chooser; the
 /// server back, the one after that is sent. Nothing is latched either way.
 #[test]
@@ -160,7 +160,7 @@ fn a_message_to_a_local_model_that_answers_is_sent_and_the_check_is_per_attempt(
 }
 
 /// **No local model on the box at all** (the daemon's `vocab` row is `none` and the session is on
-/// the local route — started with no GGUF and no provider): the chooser at once, no probe.
+/// the local route - started with no GGUF and no provider): the chooser at once, no probe.
 #[test]
 fn no_local_model_on_the_box_opens_the_chooser_without_a_probe() {
     let mut a = on_local(
@@ -187,7 +187,7 @@ fn no_local_model_on_the_box_opens_the_chooser_without_a_probe() {
     );
 }
 
-/// **A cloud row with no key goes through the key card, and the held message follows it** — the
+/// **A cloud row with no key goes through the key card, and the held message follows it** - the
 /// switch with the key, then the re-read, the default (`/default-model`, so it is asked once per
 /// box), and the message, in that order.
 #[test]
@@ -247,7 +247,7 @@ fn choosing_a_provider_with_no_key_leads_to_the_key_card_and_the_message_follows
 }
 
 /// **A cloud row the box holds a key for switches at once**, and the default and message follow;
-/// a session already on a provider is never checked here — its missing key is the daemon's card.
+/// a session already on a provider is never checked here - its missing key is the daemon's card.
 #[test]
 fn a_keyed_cloud_row_switches_and_a_provider_session_is_not_checked() {
     let mut a = on_local("deepseek", "/models/qwen.gguf");

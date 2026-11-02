@@ -42,7 +42,7 @@ fn a_conditions_sentence_says_which_kind_of_gone_it_was() {
 #[test]
 fn the_evaluator_fires_a_row_whose_handle_is_gone() {
     use letibot_tokencore::store::{TodoBy, TodoCondition, TodoItem, TodoStatus};
-    /// A stored row for one handle, as a restart would find it — the ending written down
+    /// A stored row for one handle, as a restart would find it - the ending written down
     /// before the daemon died.
     fn record(handle: &str, state: &str) -> JobRecord {
         JobRecord {
@@ -110,7 +110,7 @@ fn the_evaluator_fires_a_row_whose_handle_is_gone() {
         },
         "the record is what survives a restart"
     );
-    // And a handle nobody has run: met, and not dressed up as an ending — the distinction is
+    // And a handle nobody has run: met, and not dressed up as an ending - the distinction is
     // the operator's, since the result can be read up for one and not for the other.
     assert_eq!(
         fate_of(None, None),
@@ -200,7 +200,7 @@ fn a_subagents_ask_is_addressed_to_the_tree_root_and_not_to_its_parent() {
 
     // The answers the whole tree reaches: the root's own, handed down through `Parts`.
     let answers = Some(Arc::new(crate::answers::Answers::new()));
-    // The grandchild's set is built FROM the root's, which is what gives it the ROOT —
+    // The grandchild's set is built FROM the root's, which is what gives it the ROOT  -
     // the same set `Parts` carries for a grandchild.
     let root_watch = crate::jobwatch::JobWatchers::watching_tasks(&root_hub, None);
     let grandchild_watch = crate::jobwatch::JobWatchers::watching_tasks(&grandchild_hub, None)
@@ -227,8 +227,8 @@ fn a_subagents_ask_is_addressed_to_the_tree_root_and_not_to_its_parent() {
     assert_eq!(root, "s-root");
     assert!(head.is_none());
 
-    // **A root this daemon does not hold** — a harness with no daemon behind it, or a
-    // registry that has lost the session — is the same refusal rather than a card on a
+    // **A root this daemon does not hold** - a harness with no daemon behind it, or a
+    // registry that has lost the session - is the same refusal rather than a card on a
     // hub nothing will read. With no watcher set at all, the parent IS the tree's root.
     let (root, head) = subagent_ask_target(&registry, None, "s-absent", answers.as_ref());
     assert_eq!(root, "s-absent");
@@ -269,7 +269,7 @@ fn a_redirected_jobs_window_is_the_tail_of_its_file() {
     assert_eq!(all.from, 0);
     assert_eq!(all.to, body.len() as u64);
 
-    // **A file that is not there is `None`** — the job has not created it yet — which is
+    // **A file that is not there is `None`** - the job has not created it yet - which is
     // what the caller answers with the sentence that names the path.
     assert!(tail_file(&dir.join("nope.log").to_string_lossy(), 0, 10).is_none());
 
@@ -357,7 +357,7 @@ mod job_tail {
         let (command, state, slice) = a_settled_job(&host, &command);
 
         // **The fixture is the measurement or it is nothing**: the capture holds the
-        // preamble — bytes, produced > 0 — and not one byte of the work.
+        // preamble - bytes, produced > 0 - and not one byte of the work.
         assert!(slice.produced > 0, "j87's shape needs a non-empty capture");
         assert!(slice.text().contains("=== MIX"));
         assert!(
@@ -389,8 +389,8 @@ mod job_tail {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **j70's case must not regress**: a redirect whose capture is empty — the
-    /// `produced == 0` the old condition required — still tails the file, and the
+    /// **j70's case must not regress**: a redirect whose capture is empty - the
+    /// `produced == 0` the old condition required - still tails the file, and the
     /// window gains no phantom disclosure about bytes that were never there.
     #[test]
     fn a_redirect_with_an_empty_capture_still_tails_and_claims_no_preamble() {
@@ -415,7 +415,7 @@ mod job_tail {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **A `2>&1` merge is not a redirect** — it is what makes the capture complete,
+    /// **A `2>&1` merge is not a redirect** - it is what makes the capture complete,
     /// so the window is the capture. R41's parser guarantees it; this holds the
     /// window path to the same guarantee end to end.
     #[test]
@@ -502,7 +502,7 @@ mod job_tail {
     }
 
     /// **A job with no redirect is unaffected**: the capture is the window, exactly
-    /// as before — the redirect branch must not have widened into this case.
+    /// as before - the redirect branch must not have widened into this case.
     #[test]
     fn a_job_with_no_redirect_keeps_the_capture_as_the_window() {
         let Some((root, host)) = a_host("plain") else {
@@ -545,7 +545,7 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     );
 
     // **The handed-up variant carries the same name.** One bullet builder, so this is the
-    // same sentence under the other heading — and the owner is still named beside it.
+    // same sentence under the other heading - and the owner is still named beside it.
     let handed = completion_notice(&[settled("j65", Some("release-build"))], false);
     assert!(
         handed
@@ -559,7 +559,7 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
         "{bare}"
     );
     // **The name is the only difference.** Strip it from the named notice and what is left
-    // is the unnamed one, byte for byte — so "nothing regresses for those who do not use it"
+    // is the unnamed one, byte for byte - so "nothing regresses for those who do not use it"
     // is asserted rather than argued.
     assert_eq!(named.replace("release-build · ", ""), bare);
 }
@@ -699,7 +699,7 @@ fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
             job: "j9".into(),
             command: String::new(),
             // **And the name is gone with it.** A reaped job has no view left to read a
-            // slug off, so this is the other field that can be missing — and the notice
+            // slug off, so this is the other field that can be missing - and the notice
             // draws the id, which is the label's own fallback rather than a second rule.
             slug: None,
             state: "gone".into(),
@@ -752,7 +752,7 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
     // **What the child SAID.** Without this the notice is a doorbell with no answer behind it:
     // the parent is told something happened and must still go and read.
     assert!(text.contains("two facts off a fixture"), "{text}");
-    // R93.C2: one instruction, with the real handle — not "don't call `task_result` … call it".
+    // R93.C2: one instruction, with the real handle - not "don't call `task_result` … call it".
     assert!(
         text.ends_with("Full answer: `task_result` task=\"s-1-sub-1\"."),
         "{text}"
@@ -779,7 +779,7 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
     );
     assert!(bare.contains("`s-1-sub-1` done"), "{bare}");
 
-    // **Two children are one notice, two lines, and the plural sentence** — a round that spawned
+    // **Two children are one notice, two lines, and the plural sentence** - a round that spawned
     // a pair reports a pair rather than making the reader count the list themselves.
     let pair = subagent_notice(
         &[
@@ -800,7 +800,7 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
         "{pair}"
     );
 
-    // **A named child is named** — `fix-login · s-1-sub-1`, the job's spelling — while the
+    // **A named child is named** - `fix-login · s-1-sub-1`, the job's spelling - while the
     // closing still hands the model the real handle to collect it by.
     let named = subagent_notice(
         &[JobCompletion {
@@ -855,7 +855,7 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
     assert!(completion_notices(Vec::new(), "s-me", &[]).is_empty());
 
     // **The two nouns are the point.** A reader told `[job]` about a child goes looking for it
-    // with `job_output` — which is the wrong door, and is what a hand measurement had to find
+    // with `job_output` - which is the wrong door, and is what a hand measurement had to find
     // because nothing asserted this.
     let only_child = completion_notices(vec![child("s-1-sub-1")], "s-me", &[]);
     assert_eq!(only_child.len(), 1, "{only_child:?}");
@@ -866,14 +866,14 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
     assert!(only_job[0].starts_with("[job]"), "{:?}", only_job[0]);
     assert!(only_job[0].contains("job_output"), "{:?}", only_job[0]);
 
-    // **Both kinds are one wake and two sentences**, job first — the order the old inline code
+    // **Both kinds are one wake and two sentences**, job first - the order the old inline code
     // produced, kept so the record of a session reads the same way it did.
     let both = completion_notices(vec![job("j7"), child("s-1-sub-1")], "s-me", &[]);
     assert_eq!(both.len(), 2, "{both:?}");
     assert!(both[0].starts_with("[job]"), "{:?}", both[0]);
     assert!(both[1].starts_with("[task]"), "{:?}", both[1]);
 
-    // **Two children are one sentence, not two** — the plural arm of the child's own wording,
+    // **Two children are one sentence, not two** - the plural arm of the child's own wording,
     // asserted through the partition so the two functions cannot drift apart.
     let pair = completion_notices(vec![child("s-1-sub-1"), child("s-1-sub-2")], "s-me", &[]);
     assert_eq!(pair.len(), 1, "{pair:?}");
@@ -903,7 +903,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
         memory: None,
     };
 
-    // The level it was handed up to — the ROOT — is not the session that started it.
+    // The level it was handed up to - the ROOT - is not the session that started it.
     let theirs = completion_notices(vec![job.clone()], "s-root", &[]);
     assert_eq!(theirs.len(), 1, "{theirs:?}");
     assert!(
@@ -928,7 +928,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
         theirs[0]
     );
 
-    // **The same settlement, read by the session that started it** — which is the
+    // **The same settlement, read by the session that started it** - which is the
     // sentence that was right all along and must not have moved.
     let mine = completion_notices(vec![job.clone()], "s-child", &[]);
     assert!(
@@ -940,7 +940,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
     assert!(!mine[0].contains("started by"), "{:?}", mine[0]);
 
     // **Its own come first**, so one drain reads as this session's own news before what
-    // it is being told on somebody else's behalf — two owners, two notices, that order.
+    // it is being told on somebody else's behalf - two owners, two notices, that order.
     let mine_job = JobCompletion {
         owner: "s-root".into(),
         job: "j3".into(),
@@ -1013,7 +1013,7 @@ fn only_background_and_still_running_jobs_are_listed() {
     let job = |background, state| JobView {
         id: JobId("j1".into()),
         command: "grep -n x y".into(),
-        // Nobody named this one — which is the premise of every case below.
+        // Nobody named this one - which is the premise of every case below.
         slug: None,
         scope: scope(),
         owner: scope(),
@@ -1035,7 +1035,7 @@ fn only_background_and_still_running_jobs_are_listed() {
         None,
         JobState::Exited { code: 0 }
     )));
-    // A failure is still not a job — the tool result already carried it.
+    // A failure is still not a job - the tool result already carried it.
     assert!(!Harness::worth_listing(&job(
         None,
         JobState::Exited { code: 1 }
@@ -1073,7 +1073,7 @@ fn a_job_row_is_one_line_however_many_the_command_had() {
         "{line:?}"
     );
 
-    // A short command is left exactly as it is — no ellipsis promising more.
+    // A short command is left exactly as it is - no ellipsis promising more.
     assert_eq!(Harness::one_line("git status", 60), "git status");
     // Internal runs of whitespace collapse, so the width asked for is the
     // width drawn.
@@ -1115,7 +1115,7 @@ fn a_named_job_draws_its_name_beside_its_id_and_an_unnamed_one_does_not() {
         named,
         "  release-build · j65  running  12288 bytes  cargo build --release"
     );
-    // **The name is flattened like everything else on the row** — a name is one line
+    // **The name is flattened like everything else on the row** - a name is one line
     // however it was typed, and the listing is a listing.
     assert_eq!(
         Harness::job_name(&view(Some("release\nbuild"))),
@@ -1202,8 +1202,8 @@ fn a_fleet_url_is_read_the_way_the_operator_writes_it() {
     );
 }
 
-/// **The parent is told which jobs died with a VM child** (TODO.md R92.1, second half) — by
-/// label and command — and nothing is said when none did.
+/// **The parent is told which jobs died with a VM child** (TODO.md R92.1, second half) - by
+/// label and command - and nothing is said when none did.
 #[test]
 fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {
     use letibot_tools::exec::{JobId, JobState, JobView, ScopeId, ScopeKind};

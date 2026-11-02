@@ -34,8 +34,8 @@ impl App {
             self.hist_first_class = None;
             self.note_upto = 0;
             self.hist_class = None;
-            // The target table is the walk's own state — the round it is currently
-            // inside — so it is thrown away with the lines it labelled. Leaving it
+            // The target table is the walk's own state - the round it is currently
+            // inside - so it is thrown away with the lines it labelled. Leaving it
             // behind is what let a rebuild start at row 0 holding round 14's paths.
             self.call_targets.clear();
             return;
@@ -243,7 +243,7 @@ impl App {
                 k,
             );
             // The same reservation the forward walk makes, from the same rule and the same
-            // data — so the two walks wrap the introducing sentence identically and the
+            // data - so the two walks wrap the introducing sentence identically and the
             // marker lands in the room either of them left.
             let reserve = reserved_for_run(
                 &self.items,
@@ -261,7 +261,7 @@ impl App {
                 },
                 None => cfg.clone(),
             };
-            // **The marker is drawn whether the run is open or not** — see the forward walk's
+            // **The marker is drawn whether the run is open or not** - see the forward walk's
             // note: an open run's marker is the header of the rows it lifted, and its clauses are
             // the toggle that closes it again. The two walks keep the same three states.
             let unseen = unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k);
@@ -373,7 +373,7 @@ impl App {
                         rows,
                     )
                 }
-                // A row of an open run — its header was drawn at the run's first row — and a row
+                // A row of an open run - its header was drawn at the run's first row - and a row
                 // of a closed one, which draws nothing.
                 Some(_) => (body_class, body),
                 None => (body_class, body),
@@ -420,7 +420,7 @@ impl App {
                     }
                 }
                 let pack = prev == Some(RowClass::Activity) && *class == RowClass::Activity;
-                // **A marker that stands alone keeps the air prose gets** — which is what the
+                // **A marker that stands alone keeps the air prose gets** - which is what the
                 // operator asked for after their own message. Only a JOINED marker loses it.
                 if !block.is_empty() && !pack && (marker.is_none() || !*joinable) {
                     block.push(String::new());
@@ -529,7 +529,7 @@ impl App {
         )
     }
 
-    /// **A ctrl-v window is open** — `payload_sel` names a result, not a run (see
+    /// **A ctrl-v window is open** - `payload_sel` names a result, not a run (see
     /// [`App::run_is_open`]). What the scroll keys ask before they page a window.
     pub(crate) fn payload_window_open(&self) -> bool {
         self.payload_sel.is_some() && !self.run_is_open()
@@ -558,7 +558,7 @@ impl App {
         }
         self.payload_page = to;
         // The history buffer is a cache of the rendered rows, and the offset changes what one of
-        // them renders to — see [`App::page_payload`].
+        // them renders to - see [`App::page_payload`].
         self.invalidate_history();
         self.redraw = true;
     }
@@ -612,7 +612,7 @@ impl App {
                 .collect();
             let t = text.trim_start();
             if t.starts_with('…') && t.ends_with("esc closes") {
-                // The seam that ends the window — and with it the body, so a row this head
+                // The seam that ends the window - and with it the body, so a row this head
                 // appended under it is not a line of the payload either.
                 break;
             }
@@ -621,7 +621,7 @@ impl App {
         out
     }
 
-    /// The turn's in-flight work, as this head currently knows it — one function, so the
+    /// The turn's in-flight work, as this head currently knows it - one function, so the
     /// walk, the chord and the pane cannot disagree about what is running.
     pub(crate) fn live_work_now(&self) -> LiveWork {
         let superseded = !matches!(
@@ -704,7 +704,7 @@ impl App {
     /// nowhere else. Reaching the bottom returns the reader to following, which is an act they took, while
     /// arriving content never does.
     pub(crate) fn hold(&mut self, delta: isize) {
-        // **The row being held must be drawable before the hold can move off it** — or the
+        // **The row being held must be drawable before the hold can move off it** - or the
         // step is spent on a span table an arriving row just wiped, which is the pin this
         // answers. See [`App::render_held`].
         self.render_held(self.view_room.max(1));
@@ -721,7 +721,7 @@ impl App {
         if want >= bottom && delta > 0 {
             self.anchor = None;
             self.scroll = 0;
-            // **No `redraw` here either** — this is the flag's second home on the scroll path.
+            // **No `redraw` here either** - this is the flag's second home on the scroll path.
             // See the note at the foot of this function: a moved viewport is a diff, not an
             // erase.
             return;
@@ -786,8 +786,8 @@ impl App {
         if !stream {
             return 3;
         }
-        // **3, 6, 12, 24 … capped at 192** — bigger than any glass, so the cap is about
-        // sanity rather than reach — **and never past the bottom**: the step that lands
+        // **3, 6, 12, 24 … capped at 192** - bigger than any glass, so the cap is about
+        // sanity rather than reach - **and never past the bottom**: the step that lands
         // on the tail is the step that follows it, and `hold` treats it as arrival.
         (3usize << (self.wheel_run - 1).min(6)).min(dist.max(3))
     }
@@ -865,8 +865,8 @@ impl App {
                 into: held.into,
             });
             self.carry = None;
-            // **No `redraw`.** A moved viewport is a diff rather than an erase — the same
-            // rule the scroll keys keep — and this is the head moving a reader who did not
+            // **No `redraw`.** A moved viewport is a diff rather than an erase - the same
+            // rule the scroll keys keep - and this is the head moving a reader who did not
             // move: the frame that follows writes only the rows that changed.
             return;
         }
@@ -1158,7 +1158,7 @@ fn user_says(parts: &[UserPart], words: &str) -> bool {
     any && rest.is_empty()
 }
 
-/// One `User` row's text piece, if it has one — the same reading [`App::load`] and
+/// One `User` row's text piece, if it has one - the same reading [`App::load`] and
 /// [`App::record_item`] make when they retire a queued echo.
 fn text_part(p: &UserPart) -> Option<&str> {
     match p {
@@ -1176,7 +1176,7 @@ pub(crate) struct HistMark {
     pub(crate) lines: usize,
     /// `note_upto` before the row was drawn.
     pub(crate) note_upto: usize,
-    /// `hist_class` before the row was drawn — the separator's whole input.
+    /// `hist_class` before the row was drawn - the separator's whole input.
     pub(crate) class: Option<RowClass>,
 }
 

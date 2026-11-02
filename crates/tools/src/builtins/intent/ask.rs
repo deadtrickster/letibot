@@ -156,7 +156,7 @@ pub enum AskError {
     NoHead(String),
     /// It was posted and nobody answered.
     Unanswered(String),
-    /// It was posted and the deadline passed with no answer — the one silence a
+    /// It was posted and the deadline passed with no answer - the one silence a
     /// question's `default` may be taken on. An interrupt is [`Self::Unanswered`]: the
     /// operator was there.
     Expired(String),
@@ -457,7 +457,7 @@ pub(crate) fn todo_offer(q: &Question) -> String {
     )
 }
 
-/// **The model's own default, taken** — said to be the model's, never the person's.
+/// **The model's own default, taken** - said to be the model's, never the person's.
 fn defaulted(q: &Question, d: usize, why: &AskError, logged: &str) -> Invocation {
     let chosen = &q.options[d];
     let when = match why {
@@ -660,7 +660,7 @@ mod tests {
     const QD: &str =
         r#"{"question":"which approach?","options":["a","b"],"default":"b","timeout_s":45}"#;
 
-    /// **A default is taken on silence, and said to be the model's** — the operator: *"for
+    /// **A default is taken on silence, and said to be the model's** - the operator: *"for
     /// select tool allow model to give default and timeout so if im away it can proceed"*.
     #[test]
     fn a_default_is_taken_on_silence_and_is_nobodys_answer() {
@@ -893,7 +893,7 @@ mod tests {
         let out = r.render();
         assert!(out.contains("deadtrickster"), "{out}");
         assert!(out.contains("abstained"), "{out}");
-        // R93.B11: the same rule as an operator wait on a `todo_write` row — an abstention
+        // R93.B11: the same rule as an operator wait on a `todo_write` row - an abstention
         // is an answer, and the model proceeds on an assumption it states.
         assert!(
             out.contains("proceed and state the assumption you proceed on"),
@@ -930,7 +930,7 @@ mod tests {
             silence.render()
         );
         // **An empty answer is somebody saying nothing**, which is not a decision
-        // either — and it is refused rather than promoted to a shrug.
+        // either - and it is refused rather than promoted to a shrug.
         assert!(matches!(empty.outcome, ToolOutcome::NotRun { .. }));
         assert!(empty.render().contains("not a shrug"), "{}", empty.render());
         // **An abstention is a decision**, so it is the one that is not `not_run`.
@@ -1035,7 +1035,7 @@ mod tests {
         let j2 = serde_json::to_string(&free).unwrap();
         assert!(!j2.contains("option") && !j2.contains("note"), "{j2}");
         // An abstention is its own bytes, and an answer that is not one does not
-        // carry the field at all — so every frame from before it existed is
+        // carry the field at all - so every frame from before it existed is
         // byte-identical.
         let abstain = QuestionAnswer::abstaining();
         let j3 = serde_json::to_string(&abstain).unwrap();
@@ -1119,7 +1119,7 @@ mod tests {
     }
 
     /// **The model reads this text and nothing else**, so every shape a person can
-    /// answer in has to be in it — including the one that is not permission.
+    /// answer in has to be in it - including the one that is not permission.
     #[test]
     fn the_description_names_every_way_a_person_can_answer() {
         let s = AskUserQuestion::new(Arc::new(Headless)).schema();
@@ -1133,7 +1133,7 @@ mod tests {
             assert!(d.contains(needle), "the description omits {what}: {d}");
         }
         // R93.B11: the one rule for an abstention, the same one `todo_write`'s operator
-        // wait states — an answer that unblocks, with the assumption said.
+        // wait states - an answer that unblocks, with the assumption said.
         assert!(
             d.contains(
                 "abstention is an answer: they will not decide, so proceed and state the \

@@ -19,7 +19,7 @@ use letibot_harnessd::{Daemon, Dialect, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use serde_json::{Value, json};
 
-/// The brief, and the marker the fake's first answer carries — so the message the bridge
+/// The brief, and the marker the fake's first answer carries - so the message the bridge
 /// reports can be traced to the turn that produced it.
 const BRIEF: &str = "brief-marker: wire up the bridge";
 const FIRST_ANSWER: &str = "first-answer-marker: the brief is done";
@@ -63,7 +63,7 @@ const SLOW_COMMAND: &str = "git push origin bridge; sleep 30";
 /// milliseconds, and the assertion is what happened, not how fast.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// A directory that removes itself — a test that leaks a store per run fills the disk, and
+/// A directory that removes itself - a test that leaks a store per run fills the disk, and
 /// the run that finds out is not this one.
 struct TempDir(PathBuf);
 
@@ -99,10 +99,10 @@ impl Drop for TempDir {
 enum Answer {
     /// Prose, then a normal stop.
     Say(&'static str),
-    /// One `bash` call — the shape the gate asks about at `writes-allowed`, and a command
+    /// One `bash` call - the shape the gate asks about at `writes-allowed`, and a command
     /// it can refuse without running anything.
     AskBash,
-    /// One `bash` call the model asks to run in the **background** — the shape that leaves a
+    /// One `bash` call the model asks to run in the **background** - the shape that leaves a
     /// job behind, and the only event that says a job started.
     StartJob,
     /// The provider refusing the round: an HTTP error body, which is a turn that FAILS
@@ -364,7 +364,7 @@ impl World {
 
         let socket = root.join("daemon.sock");
         // The bridge finds a folder's daemon by the workspace's hash, so `$LETIBOT_SOCKET`
-        // names this one — the same override the shell honours, and the only way a test can
+        // names this one - the same override the shell honours, and the only way a test can
         // be sure it is talking to the socket it started.
         unsafe { std::env::set_var("LETIBOT_SOCKET", &socket) };
         // **The host this package is placed on**, as the operator's file would declare it. The
@@ -383,7 +383,7 @@ impl World {
         cfg.seat = Seat::Leticode;
         cfg.allow_bash = true;
         // The byte vocabulary: a session whose turns go to a provider needs no GGUF, which
-        // is what keeps llama.cpp — and every model file on this box — out of this test.
+        // is what keeps llama.cpp - and every model file on this box - out of this test.
         cfg.vocab_gguf = None;
         cfg.provider = Some(ProviderConfig {
             name: "deepseek".into(),
@@ -414,7 +414,7 @@ impl World {
         // daemon by connecting, and a socket that appears a moment later would be a race
         // between the test's first `start` and its own fixture.
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
-        // Where this daemon's tools run, written where harnessd writes it — see the host above
+        // Where this daemon's tools run, written where harnessd writes it - see the host above
         // for why the record says a host while the daemon is local.
         letibot_sessionlog::placement::write(&socket, "host:lab2x1").expect("the record");
         let worker_registry = registry.clone();
@@ -921,7 +921,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         json!(next),
         "and the cursor comes back: {rest}"
     );
-    // Every entry is compact: a cursor, a kind, and one line — never a payload.
+    // Every entry is compact: a cursor, a kind, and one line - never a payload.
     for entry in all["entries"].as_array().expect("entries") {
         assert!(entry["cursor"].is_u64(), "{entry}");
         assert!(entry["kind"].is_string(), "{entry}");
@@ -1136,7 +1136,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     );
 
     // **A turn it did not start, in its own ring.** The first bridge sends the line; the
-    // watcher — a second head, attached after the fact — sees the turn begin and the answer
+    // watcher - a second head, attached after the fact - sees the turn begin and the answer
     // land, which is the whole of `leticode_events` on a session it only watches.
     bridge
         .send(&session, "one more, and a second head should see it")
@@ -1180,7 +1180,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         .expect_err("a watcher does not interrupt a session it does not hold");
     assert!(refused.contains("watched, not held"), "{refused}");
     // …and none of that left the session: it is still the daemon's, still held, and the
-    // watching bridge still has it — a refused verb is not a detach.
+    // watching bridge still has it - a refused verb is not a detach.
     assert_eq!(hub.attached_heads(), 2, "nothing was detached by a refusal");
     let rows = watcher.list()["sessions"]
         .as_array()
@@ -1247,7 +1247,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         queue_hub.deciding_heads()
     );
     // And the same attach on a bridge that is pointed at a daemon which is not there is
-    // refused rather than started — see below.
+    // refused rather than started - see below.
 
     // --- list, and stop ----------------------------------------------------
     let listed = bridge.list();

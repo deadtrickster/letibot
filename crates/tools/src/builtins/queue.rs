@@ -12,11 +12,11 @@ use crate::schema::{Access, ToolSchema};
 /// The tool's name, in one place.
 pub const TOOL: &str = "queue";
 
-/// **The daemon's half** — the store and the repository the session is in. Every method answers
+/// **The daemon's half** - the store and the repository the session is in. Every method answers
 /// the sentence the model reads, or a refusal in words.
 pub trait QueueDesk: Send + Sync {
     /// **The queues, scoped and said so**: this session's repository unless `all` widens it to
-    /// every one, or `repository` names one (a path, a path's tail or a directory name) — which is
+    /// every one, or `repository` names one (a path, a path's tail or a directory name) - which is
     /// also what asks for it in full. The first line of every answer says what it printed.
     fn status(&self, all: bool, repository: Option<&str>) -> Result<String, String>;
     /// Gate a target's tip again. `None`s are the session's repository and its project's target.
@@ -29,7 +29,7 @@ pub trait QueueDesk: Send + Sync {
     fn propose_target(&self, target: &str, why: &str) -> Result<String, String>;
 }
 
-/// **No queue behind the tool** — a daemon with no `--store`, or a test registry. Every verb says
+/// **No queue behind the tool** - a daemon with no `--store`, or a test registry. Every verb says
 /// so by name rather than the tool being absent, which would read as a capability this build
 /// lacks.
 pub struct NoQueue;
@@ -237,7 +237,7 @@ mod tests {
     }
 
     /// **Each verb reaches the desk; a missing argument is refused by name; and `withdraw` goes
-    /// to the gate like any write** — here the default boundary, which decides nothing and so
+    /// to the gate like any write** - here the default boundary, which decides nothing and so
     /// refuses: the desk never hears it.
     #[test]
     fn each_action_reaches_the_desk_and_withdraw_is_gated_like_any_write() {
@@ -302,7 +302,7 @@ mod tests {
     }
 
     /// **`status` carries the scope the caller asked for, and asks for none when it asked for
-    /// none** — `None` is what the desk reads as *this session's own repository*.
+    /// none** - `None` is what the desk reads as *this session's own repository*.
     #[test]
     fn status_passes_the_scope_through_and_asks_for_none_by_default() {
         use crate::backend::HostBackend;

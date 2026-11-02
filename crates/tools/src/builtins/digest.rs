@@ -45,11 +45,11 @@ pub trait DigestRunner: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// **What every part reader's brief says of itself**, after its part number — the words
+/// **What every part reader's brief says of itself**, after its part number - the words
 /// [`is_part_reader_brief`] knows a reader by.
 const PART_READER_SAYS: &str = "of a longer body of text on somebody else's behalf.";
 
-/// **Whether a subagent's brief is a `digest` part reader's** — how a record written before
+/// **Whether a subagent's brief is a `digest` part reader's** - how a record written before
 /// helpers were marked ([`TaskSpec::helper`]) is still known for one: *"You are reading part 3 of
 /// 12 of a longer body of text on somebody else's behalf."*
 pub fn is_part_reader_brief(prompt: &str) -> bool {
@@ -178,13 +178,13 @@ impl DigestTool {
 }
 
 /// Bytes of findings per subagent prompt. Sized so a chunk plus the question plus
-/// the running answer sits well inside a small model's window — the child doing
+/// the running answer sits well inside a small model's window - the child doing
 /// the reading is not necessarily the model doing the asking.
 const CHUNK: usize = 24_000;
 /// The most chunks one call will fold. A bigger sweep is reported with what it covered, not
 /// silently half-read: an answer about the first third of a conversation reads as the whole.
 const MAX_CHUNKS: usize = 24;
-/// Rows the search may pull. High — the point is to read everything — but finite,
+/// Rows the search may pull. High - the point is to read everything - but finite,
 /// so a `match`-less call on a huge session is bounded rather than unbounded.
 const MAX_ROWS: usize = 4_000;
 
@@ -651,7 +651,7 @@ mod tests {
         );
     }
 
-    /// A fold that dies mid-way reports how far it got and what it had — a partial
+    /// A fold that dies mid-way reports how far it got and what it had - a partial
     /// answer labelled as partial, not a whole one that is quietly missing the end.
     #[test]
     fn a_dead_subagent_returns_what_was_read_and_says_it_is_the_old_end() {
@@ -702,7 +702,7 @@ mod tests {
     }
 
     /// A row larger than the chunk budget gets its own chunk rather than being
-    /// split — a tool result cut in half reads as two results.
+    /// split - a tool result cut in half reads as two results.
     #[test]
     fn an_oversized_row_is_never_split() {
         let rows = vec![row(0, 0, &"z".repeat(50_000)), row(0, 1, "small")];
@@ -793,7 +793,7 @@ mod tests {
     }
 
     /// **A reader's brief is known by its words**, so a record from before helpers were marked
-    /// is still known for one — and the words are the ones `fold` writes.
+    /// is still known for one - and the words are the ones `fold` writes.
     #[test]
     fn a_part_readers_brief_is_known_by_its_words() {
         #[derive(Default)]

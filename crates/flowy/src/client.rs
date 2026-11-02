@@ -61,7 +61,7 @@ impl Event {
         self.meta.get(key).and_then(|v| v.as_str()).unwrap_or("")
     }
 
-    /// `meta.actor_kind`, stamped by the node from the token — a client cannot
+    /// `meta.actor_kind`, stamped by the node from the token - a client cannot
     /// claim to be a person.
     pub fn actor_kind(&self) -> &str {
         self.meta_str("actor_kind")
@@ -104,7 +104,7 @@ pub struct InboxPage {
     pub reader: String,
     #[serde(default)]
     pub events: Vec<Event>,
-    /// How many went past this waiter that it was not woken for — flowy's
+    /// How many went past this waiter that it was not woken for - flowy's
     /// `Skipped`, which is what makes a broken filter look different from a
     /// quiet room.
     #[serde(default)]
@@ -183,7 +183,7 @@ pub struct Nag {
     pub open: i64,
     #[serde(default)]
     pub unowned: i64,
-    /// Assigned to me and still to do — the bucket a seat is nagged about.
+    /// Assigned to me and still to do - the bucket a seat is nagged about.
     #[serde(default)]
     pub mine_todo: i64,
     #[serde(default)]
@@ -220,7 +220,7 @@ pub struct ServerFilter {
 }
 
 /// The process behind a poll, reported so a repair can name a pid rather than
-/// match a command line — see flowy's `store.WaiterProcessOf`.
+/// match a command line - see flowy's `store.WaiterProcessOf`.
 #[derive(Debug, Clone)]
 pub struct WaiterProcess {
     pub pid: u32,
@@ -235,7 +235,7 @@ pub enum NodeError {
     Unreachable(String),
     /// The node answered and said no.
     Refused { code: u16, message: String },
-    /// `no inbox reader called NAME` — with the labels that DO exist.
+    /// `no inbox reader called NAME` - with the labels that DO exist.
     NoReader { name: String, known: Vec<String> },
     /// 2xx, but not the JSON expected.
     Malformed(String),
@@ -287,7 +287,7 @@ impl Node {
         }
     }
 
-    /// Swap the credential — a re-mint noticed by the seat loop.
+    /// Swap the credential - a re-mint noticed by the seat loop.
     pub fn with_token(&self, token: impl Into<String>) -> Node {
         Node {
             endpoint: self.endpoint.clone(),
@@ -347,7 +347,7 @@ impl Node {
     }
 
     /// Declare a reader at the head of the log. Explicit, never implied by a
-    /// wait — see [`NodeError::NoReader`].
+    /// wait - see [`NodeError::NoReader`].
     pub fn declare_reader(&self, name: &str) -> Result<Reader, NodeError> {
         parse(self.post("/api/inbox/reader", &json!({"as": name, "kind": "tracked"}))?)
     }
@@ -475,7 +475,7 @@ impl Node {
         Ok(events)
     }
 
-    /// The rows of one kind this token can read — `kind=skill` is the shelf.
+    /// The rows of one kind this token can read - `kind=skill` is the shelf.
     /// `kind`, not `type`: the `type=skill` filter answers nothing, and was tried.
     pub fn artifacts_of_kind(&self, kind: &str, limit: usize) -> Result<Vec<Artifact>, NodeError> {
         let v = self.get(&format!("/api/artifacts?kind={}&limit={limit}", enc(kind)))?;
@@ -532,7 +532,7 @@ fn map_http(e: HttpError) -> NodeError {
     }
 }
 
-/// The labels in `… readers here: a, b` — flowy's refusal carries them in prose
+/// The labels in `… readers here: a, b` - flowy's refusal carries them in prose
 /// and in a `readers` array; the prose is what survives [`map_http`].
 fn readers_in(message: &str) -> Vec<String> {
     let Some((_, rest)) = message.split_once("readers here:") else {

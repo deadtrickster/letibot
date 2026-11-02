@@ -46,7 +46,7 @@ fn byte_vocab_config(dir: &Scratch, id: &str) -> Config {
     cfg
 }
 
-/// The parts, with this box's project modes replaced by none — a resumed session takes its mode
+/// The parts, with this box's project modes replaced by none - a resumed session takes its mode
 /// from the store, and the test is about the prefix rather than about this laptop.
 fn parts(cfg: &Config) -> Parts {
     let parts = Parts::load(cfg).expect("the byte vocabulary loads");
@@ -94,7 +94,7 @@ fn seed(
         .put_transcript(transcript, id, &old)
         .expect("the transcript row");
     // **Written through the escape hatch on purpose**: `append_item` refuses a row that does not
-    // start where the transcript's prefix ends — that is the fix — so a fixture for the state a
+    // start where the transcript's prefix ends - that is the fix - so a fixture for the state a
     // buggy build left behind has to be written the way that build wrote it.
     for (seq, (offset, tokens, h_k)) in rows.iter().enumerate() {
         store
@@ -143,7 +143,7 @@ fn an_empty_transcript_is_reseated_onto_the_prompt_this_daemon_composes() {
     let old = seed(&dir, "s-reseat", "s-reseat#t0", &parts, &[]);
     let mut h = Harness::open(&parts, cfg, Hub::new("s-reseat")).expect("the session opens");
 
-    // **The store's own view of what the open above wrote** — and it is the process's ONE
+    // **The store's own view of what the open above wrote** - and it is the process's ONE
     // connection (`Store::open`), not a second opener: this is a read, and the sharing that makes
     // it one is pinned by `tests/store_handles.rs` and `tokencore/tests/connection_fds.rs`.
     let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
@@ -204,7 +204,7 @@ fn an_empty_transcript_is_reseated_onto_the_prompt_this_daemon_composes() {
     assert_eq!(restored.ledger.rows().len(), 1);
 }
 
-/// **An empty transcript already on this daemon's prompt is left exactly as it is** — the guard
+/// **An empty transcript already on this daemon's prompt is left exactly as it is** - the guard
 /// that keeps the re-seat from being a rewrite that happens on every open of a session nobody has
 /// spoken to yet, and its note from being pushed for a re-seat that did not happen.
 #[test]
@@ -236,14 +236,14 @@ fn an_empty_transcript_on_this_prompt_is_not_reseated_or_reported() {
 }
 
 /// **A transcript whose rows chain from a prefix it no longer names is forked onto that prefix**,
-/// the old transcript untouched — the repair for a store already in the state the defect left.
+/// the old transcript untouched - the repair for a store already in the state the defect left.
 #[test]
 fn a_transcript_that_does_not_rebuild_is_forked_onto_the_prefix_its_rows_chain_from() {
     let dir = Scratch::new("prefix-repair");
     let cfg = byte_vocab_config(&dir, "s-repair");
     let parts = parts(&cfg);
     // The prefix the rows were really written under: seven tokens, and it must be in the store
-    // for the repair to find it — which is what the buggy daemon left behind, because it wrote
+    // for the repair to find it - which is what the buggy daemon left behind, because it wrote
     // its own prefix row at open (that is where the length came from).
     let theirs: Vec<u32> = vec![9; 7];
     let h_init = hash_tokens(&theirs);
@@ -260,7 +260,7 @@ fn a_transcript_that_does_not_rebuild_is_forked_onto_the_prefix_its_rows_chain_f
         .expect("the prefix the rows were written under");
     drop(store);
 
-    // Two rows, at offsets 7 and 9 — past the end of the four-token prefix the transcript names.
+    // Two rows, at offsets 7 and 9 - past the end of the four-token prefix the transcript names.
     let first: Vec<u32> = vec![100, 101];
     let h0 = chain(&h_init, &first);
     let second: Vec<u32> = vec![102, 103, 104];

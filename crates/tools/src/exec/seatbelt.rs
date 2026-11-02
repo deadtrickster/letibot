@@ -17,7 +17,7 @@ use super::confine::{
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// Where to look for the helper instead. Set it to a path that is not there to exercise the
-/// refusal, which is what `tests/seatbelt.rs` does — the same seam [`super::confine::BWRAP_ENV`]
+/// refusal, which is what `tests/seatbelt.rs` does - the same seam [`super::confine::BWRAP_ENV`]
 /// is on the other platform.
 pub const SANDBOX_ENV: &str = "LETIBOT_SANDBOX_EXEC";
 
@@ -109,7 +109,7 @@ const CANARY_BODY: &str =
 pub struct Layout {
     /// The workspace, read-write at its own path.
     pub project: PathBuf,
-    /// `$HOME` inside the view — created if a view only abstractly asked for one.
+    /// `$HOME` inside the view - created if a view only abstractly asked for one.
     pub home: PathBuf,
     /// Where the command's `TMPDIR` points and where its scratch belongs.
     pub tmp: PathBuf,
@@ -916,7 +916,7 @@ fn snippet(s: &str) -> String {
     }
 }
 
-// The `Piece` form is unneeded by a local spawn — a policy has no far side — and the
+// The `Piece` form is unneeded by a local spawn - a policy has no far side - and the
 // [`Confinement`] default is exactly right for it, so nothing here overrides it.
 
 #[cfg(test)]
@@ -1101,7 +1101,7 @@ mod tests {
     fn a_tmpfs_home_and_a_per_command_tmp_become_directories_beside_the_profile() {
         // The view is abstract on purpose (`Tmpfs`, `PerCommand`); macOS has no mount
         // namespace to give it a fresh filesystem per command, so what it gets is a directory
-        // this daemon made, and the boundary records it as such — see `Seatbelt::probe`.
+        // this daemon made, and the boundary records it as such - see `Seatbelt::probe`.
         let v = ViewSpec::project_only("/Users/x/proj");
         let l = Layout::of(&v, Path::new("/Users/x"), Path::new("/tmp/lt"));
         assert_eq!(l.home, PathBuf::from("/tmp/lt/home"));

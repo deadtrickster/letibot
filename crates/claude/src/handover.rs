@@ -293,7 +293,7 @@ fn line_for(
         line["gitBranch"] = json!(b);
     }
     if agent {
-        // Claude Code's own spelling for text the person did not type — the same fact
+        // Claude Code's own spelling for text the person did not type - the same fact
         // `Speaker::Agent` carries on this side.
         line["isMeta"] = json!(true);
         line["promptSource"] = json!("system");
@@ -410,7 +410,7 @@ pub struct Appended {
 /// process is writing, and that refusal has to be provable in both directions.
 pub trait Live {
     /// The processes (as `pid: command`) alive for this project, or an error when the
-    /// check itself could not run — which the caller must treat as *somebody is there*.
+    /// check itself could not run - which the caller must treat as *somebody is there*.
     fn live_for(
         &self,
         project: &Path,
@@ -806,7 +806,7 @@ pub fn iso_ts(ms: u64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{milli:03}Z")
 }
 
-/// Epoch ms as `YYYYmmdd-HHMMSS` in UTC — the backup's name. UTC and not local time
+/// Epoch ms as `YYYYmmdd-HHMMSS` in UTC - the backup's name. UTC and not local time
 /// because a timezone is a fact this crate does not have, and a name that shifts with
 /// `TZ` is a name two machines disagree about.
 pub fn stamp_utc(ms: u64) -> String {

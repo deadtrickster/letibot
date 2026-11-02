@@ -18,7 +18,7 @@ fn room_row(item: u64, waiting: bool) -> TodoItem {
     }
 }
 
-/// **One row per item, updated not appended** — the whole of why the row's words carry no clock.
+/// **One row per item, updated not appended** - the whole of why the row's words carry no clock.
 /// A second pass over one claim is not a second row, and a pass that finds the wait ended moves
 /// the SAME row's edge rather than writing beside it.
 #[test]
@@ -44,7 +44,7 @@ fn a_second_pass_updates_the_row_and_never_adds_one() {
     );
 }
 
-/// **A pass that changes nothing is not an event** — no version bump, so no store write and no
+/// **A pass that changes nothing is not an event** - no version bump, so no store write and no
 /// publish on an idle daemon that is holding one item and doing nothing with it.
 #[test]
 fn a_pass_that_changes_nothing_bumps_nothing() {
@@ -78,7 +78,7 @@ fn an_item_that_is_gone_takes_its_row_with_it() {
     assert!(b.snapshot().is_empty(), "{:?}", b.snapshot());
 }
 
-/// **It must not fight a row the model wrote** — the board has one key and it is the trimmed
+/// **It must not fight a row the model wrote** - the board has one key and it is the trimmed
 /// `content`, so a row that already says these words IS this row: the pass moves it into place
 /// and writes no second copy of the same sentence.
 #[test]
@@ -137,7 +137,7 @@ fn retiring_by_the_edge_survives_a_board_rebuilt_from_a_store() {
         "hold `ram` #1 while the suite runs",
         TodoStatus::Pending,
     ));
-    // **A NEW board** — the restart. It remembers nothing about having written anything.
+    // **A NEW board** - the restart. It remembers nothing about having written anything.
     let b = TodoBoard::new(model);
     assert_eq!(b.snapshot().len(), 2);
 
@@ -149,7 +149,7 @@ fn retiring_by_the_edge_survives_a_board_rebuilt_from_a_store() {
 }
 
 /// **A row whose room edge names an item still held is left alone**, even if the pass writes no
-/// row for it — the guard on the other side of the retirement above, so a rebuilt board is not
+/// row for it - the guard on the other side of the retirement above, so a rebuilt board is not
 /// emptied by its first pass.
 #[test]
 fn a_rebuilt_board_keeps_the_rows_the_pass_is_about_to_write_again() {
@@ -165,7 +165,7 @@ fn a_rebuilt_board_keeps_the_rows_the_pass_is_about_to_write_again() {
     );
 }
 
-/// **The edge is the whole of quiet-or-loud** — `waits_on_the_room` is what the idle check reads,
+/// **The edge is the whole of quiet-or-loud** - `waits_on_the_room` is what the idle check reads,
 /// and it needs no snapshot from the caller because the daemon that wrote the row already asked
 /// the room.
 #[test]
@@ -178,7 +178,7 @@ fn the_room_edge_is_what_makes_the_row_quiet() {
     )));
 }
 
-/// **A quiet row is not asked about and is not listed as blocked either** — the operator's own
+/// **A quiet row is not asked about and is not listed as blocked either** - the operator's own
 /// silence rule, one kind over: a row whose blocker is the room working on what the holder waits
 /// for is not a plan to fix, so the check says nothing at all.
 #[test]
@@ -200,8 +200,8 @@ fn a_quiet_row_is_not_nagged_about() {
 }
 
 /// **A plan blocked only by the room is not a plan to fix.** The ready set is empty and every
-/// unmet need is a room edge — the roots [`all_on_the_operator`] already treats as not-the-plan's
-/// — so the degenerate *nothing can start* sentence must not fire either.
+/// unmet need is a room edge - the roots [`all_on_the_operator`] already treats as not-the-plan's
+/// - so the degenerate *nothing can start* sentence must not fire either.
 #[test]
 fn a_plan_that_only_waits_on_the_room_is_silent() {
     let quiet = room_row(1, true);

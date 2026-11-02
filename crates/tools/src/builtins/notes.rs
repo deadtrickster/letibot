@@ -19,7 +19,7 @@ pub trait NotesScope: Send + Sync {
     /// The workspace root: `AGENTS.md` and `.letibot/notes/` are read from
     /// here, and `.letibot/notes/` is the one directory the tool writes.
     fn workspace(&self) -> PathBuf;
-    /// The box-wide notes directory, beside `providers.toml` — read here,
+    /// The box-wide notes directory, beside `providers.toml` - read here,
     /// never written.
     fn global_dir(&self) -> PathBuf;
 }
@@ -112,7 +112,7 @@ pub fn sort_newest_first(paths: &mut [PathBuf]) {
     paths.sort_by(|a, b| mtime(b).cmp(&mtime(a)).then_with(|| a.cmp(b)));
 }
 
-/// Where the project notes live under a workspace — the one directory this tool
+/// Where the project notes live under a workspace - the one directory this tool
 /// writes, named once so the reader, the writer and the refusals that keep the
 /// other doors out cannot come to disagree about it.
 pub const NOTES_DIR: &str = ".letibot/notes";
@@ -126,7 +126,7 @@ pub(crate) fn refuse_a_path_into_the_notes_dir(
 ) -> Option<Invocation> {
     let relative = if path.starts_with('/') {
         // An absolute spelling of the same file. `workspace_path` is the cwd a
-        // relative path starts from — not `root_path`, which for an unconfined
+        // relative path starts from - not `root_path`, which for an unconfined
         // seat is `/` and would make the tail match mean nothing.
         let workspace = backend.workspace_path()?;
         let rest = path.strip_prefix(workspace.trim_end_matches('/'))?;
@@ -203,7 +203,7 @@ fn note_stem(raw: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-/// How long ago `meta` was last written, in the word `ps` uses for ages —
+/// How long ago `meta` was last written, in the word `ps` uses for ages  -
 /// the date beside the caveat, in this tree's own idiom.
 fn age_of(meta: &std::fs::Metadata) -> String {
     let Ok(mtime) = meta.modified() else {
@@ -266,7 +266,7 @@ pub const DUPLICATE_FLOOR: f64 = 0.30;
 /// A note's abstract: the line the index shows for it, and where that line came
 /// from.
 pub struct Abstract {
-    /// The line itself — one line, capped at [`ABSTRACT_CHARS`].
+    /// The line itself - one line, capped at [`ABSTRACT_CHARS`].
     pub text: String,
     /// `true` for the author's own marker line, `false` for the derived first sentence: a
     /// reader that cannot tell them apart takes a guess for a statement.
@@ -275,7 +275,7 @@ pub struct Abstract {
 
 /// The abstract the index shows for a note: the author's marker line when the
 /// file carries one, the first proper sentence of its prose otherwise. `None`
-/// only for a file with no prose at all — one that is nothing but headings.
+/// only for a file with no prose at all - one that is nothing but headings.
 pub fn abstract_of(text: &str) -> Option<Abstract> {
     if let Some(written) = written_abstract(text) {
         return Some(Abstract {
@@ -316,7 +316,7 @@ fn ends_a_sentence(text: &str, at: usize) -> bool {
     }
 }
 
-/// The author's abstract, as the marker line carries it — `None` when the file
+/// The author's abstract, as the marker line carries it - `None` when the file
 /// has no marker, or has one with nothing after it.
 fn written_abstract(text: &str) -> Option<String> {
     text.lines()
@@ -325,7 +325,7 @@ fn written_abstract(text: &str) -> Option<String> {
         .filter(|a| !a.is_empty())
 }
 
-/// The note's own text with its marker line taken out — what an `append` grows,
+/// The note's own text with its marker line taken out - what an `append` grows,
 /// and what keeps a rewrite from leaving two abstracts in one file.
 fn without_abstract(text: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
@@ -341,7 +341,7 @@ fn without_abstract(text: &str) -> String {
 }
 
 /// The file's bytes: the abstract line when there is one to carry, then the
-/// body — the marker never doubled, and never added when there is none.
+/// body - the marker never doubled, and never added when there is none.
 fn with_abstract(abstract_line: Option<&str>, body: &str) -> String {
     match abstract_line {
         Some(a) => format!("{ABSTRACT_MARKER} {a} -->\n\n{body}"),
@@ -350,7 +350,7 @@ fn with_abstract(abstract_line: Option<&str>, body: &str) -> String {
 }
 
 /// One line, from whatever the caller passed: an abstract is the index's line,
-/// so its newlines and runs of spaces are flattened rather than refused — the
+/// so its newlines and runs of spaces are flattened rather than refused - the
 /// note's own text is where a paragraph belongs.
 fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -395,7 +395,7 @@ fn strip_list_marker(line: &str) -> String {
     line.to_string()
 }
 
-/// Cut to [`ABSTRACT_CHARS`] at a character boundary, with an explicit ellipsis —
+/// Cut to [`ABSTRACT_CHARS`] at a character boundary, with an explicit ellipsis  -
 /// an abstract that simply stops reads as a fact about the note.
 fn cap(s: &str) -> String {
     if s.chars().count() <= ABSTRACT_CHARS {
@@ -492,7 +492,7 @@ impl NotesTool {
     }
 
     /// Every note the harness reads, in the order the injected block carries
-    /// them — the model's map for `read`, and the honest report of a source
+    /// them - the model's map for `read`, and the honest report of a source
     /// that is empty or missing rather than silence about it.
     fn list(&self) -> Invocation {
         let mut out = String::from("the standing notes the harness reads, in prompt order:\n");
@@ -718,7 +718,7 @@ impl NotesTool {
         Invocation::ok(answer)
     }
 
-    /// `add`, `append`, `replace` — the three write verbs, each refusing the
+    /// `add`, `append`, `replace` - the three write verbs, each refusing the
     /// case it must not do silently: `add` will not overwrite, `append` and
     /// `replace` will not create, and `replace` says what it threw away.
     fn write(&self, ctx: &mut InvokeCtx<'_>, action: &str, args: &Value) -> Invocation {
@@ -939,7 +939,7 @@ impl NotesTool {
                     .to_string(),
             }
         ));
-        // The digests and the span before the strings move into the pair — a
+        // The digests and the span before the strings move into the pair - a
         // diff card whose digest disagrees with its own before-side is worse
         // than no card.
         let (before_digest, after_digest) = (

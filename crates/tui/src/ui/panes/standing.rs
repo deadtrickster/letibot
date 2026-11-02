@@ -77,7 +77,7 @@ impl App {
                     Style::new(),
                 ),
             ]);
-            // **The disk's half, read now** — see the module doc. `None` is the file being
+            // **The disk's half, read now** - see the module doc. `None` is the file being
             // gone, and it is said in the same column the size and the age would be, so a row
             // that cannot answer them does not look like one that answered them badly.
             let right = match &disk {
@@ -130,7 +130,7 @@ impl App {
     }
 }
 
-/// The form, in the section's own words — `NoteForm` has exactly two, and this is the one
+/// The form, in the section's own words - `NoteForm` has exactly two, and this is the one
 /// place they become text.
 fn form_word(form: NoteForm) -> &'static str {
     match form {

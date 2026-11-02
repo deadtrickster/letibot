@@ -35,7 +35,7 @@ impl App {
     }
 
     /// **The head has asked, and is now waiting.** Called by the driver once, when the
-    /// frame has been written (or failed to be), and never before — a head that showed
+    /// frame has been written (or failed to be), and never before - a head that showed
     /// this line while it had not sent anything would be lying about what it did.
     pub fn stop_began(&mut self, who: &str, sent: bool, pid: Option<i32>, now_ms: u64) {
         self.stopping = Some(Stopping {
@@ -54,7 +54,7 @@ impl App {
     }
 
     /// **The head is stopping the daemon the forced way from the start**, because the
-    /// daemon is an older build. No stop frame went out — see [`ForceWhy::OlderDaemon`] —
+    /// daemon is an older build. No stop frame went out - see [`ForceWhy::OlderDaemon`]  -
     /// so `sent` is false and the farewell says why rather than *could NOT be sent*.
     pub fn force_stop_began(&mut self, who: &str, pid: Option<i32>, why: ForceWhy, now_ms: u64) {
         self.stopping = Some(Stopping {
@@ -197,7 +197,7 @@ impl App {
         self.begin_attach_at(self.now_ms);
     }
 
-    /// The same, with the clock stated rather than read, for a caller that knows it —
+    /// The same, with the clock stated rather than read, for a caller that knows it  -
     /// and for a test, which has no clock.
     pub fn begin_attach_at(&mut self, now_ms: u64) {
         self.attaching = true;
@@ -214,7 +214,7 @@ impl App {
     /// cursor is on separately per reader is the two-enumerations defect. A head in a conversation draws the daemon
     /// as a tree of projects, system agents and sessions; a head in a subagent draws its family.
     pub(crate) fn session_rows(&self) -> Vec<SessionRow> {
-        // The chain from the current session up to its root, by id — so the way back to where you
+        // The chain from the current session up to its root, by id - so the way back to where you
         // are is always on the screen.
         let mut path: Vec<String> = vec![self.session_id.clone()];
         let mut cur = self.session_id.as_str();
@@ -246,7 +246,7 @@ impl App {
         let projects = self.projects(&place);
         let here = self.here_nodes(&place);
         for project in &projects {
-            // **A removed session is not counted either** — a project line saying `(7)` over six
+            // **A removed session is not counted either** - a project line saying `(7)` over six
             // rows is a number that lies about what it hides, and the same filter feeds the
             // built-in layer's copy of this list (`App::sessions_feed`).
             let members: Vec<usize> = (0..self.sessions.len())
@@ -267,7 +267,7 @@ impl App {
             if !open {
                 continue;
             }
-            // **The project's own tree** — the sessions nobody spawned, and their children at any
+            // **The project's own tree** - the sessions nobody spawned, and their children at any
             // depth. A child whose parent is not on this list (a session whose parent is gone) is
             // a root here, which is the honest reading: an orphan is not a subagent.
             let branch = Branch {
@@ -381,7 +381,7 @@ impl App {
         }
     }
 
-    /// **Whether a session's own children are on the list** — the operator opened it, or the chain
+    /// **Whether a session's own children are on the list** - the operator opened it, or the chain
     /// to where this head is standing runs through it.
     fn children_open(&self, id: &str, path: &[String]) -> bool {
         self.expanded.iter().any(|e| e == id) || self.child_on_path(id, path)
@@ -394,7 +394,7 @@ impl App {
             .any(|s| s.parent_session_id.as_deref() == Some(id) && path.contains(&s.session_id))
     }
 
-    /// **Whether a session has a child drawn in `branch`** — the fact the fold glyph is made of: a
+    /// **Whether a session has a child drawn in `branch`** - the fact the fold glyph is made of: a
     /// `+` over a row whose children are in another branch opens nothing.
     fn children_in(&self, id: &str, branch: Option<Branch<'_>>) -> bool {
         self.sessions.iter().enumerate().any(|(k, s)| {
@@ -461,7 +461,7 @@ impl App {
             .collect()
     }
 
-    /// **The session at the top of this one's chain** — itself for a session nobody spawned.
+    /// **The session at the top of this one's chain** - itself for a session nobody spawned.
     fn root_of(&self, i: usize) -> usize {
         let mut at = i;
         for _ in 0..MAX_CHAIN {
@@ -515,7 +515,7 @@ impl App {
         None
     }
 
-    /// **The projects this daemon holds, in the order it lists them** — the top level of the tree.
+    /// **The projects this daemon holds, in the order it lists them** - the top level of the tree.
     pub(crate) fn projects(&self, place: &[Placement]) -> Vec<Project> {
         let mut out: Vec<Project> = Vec::new();
         for p in place {
@@ -949,7 +949,7 @@ impl App {
         None
     }
 
-    /// **Raise the confirmation card**, and it is the only place [`App::term_ask`] is set — so
+    /// **Raise the confirmation card**, and it is the only place [`App::term_ask`] is set - so
     /// there is one place a pane can be ended from, and it is the one that asks.
     pub(crate) fn ask_close(&mut self, line: &str, pane: u32) {
         // A card that names one of several says which by number; one that is the only pane
@@ -1102,27 +1102,27 @@ impl Link {
 /// let _ = self.client.detach();
 /// ```
 ///
-/// — whether the frame reached the socket was a race against the head's own shutdown, and
+/// - whether the frame reached the socket was a race against the head's own shutdown, and
 /// **a request is not an outcome**. This is the state that makes the difference: while it
 /// is unresolved the head does not leave, and the three facts it observes are kept apart,
 /// because each one is a different answer for the operator:
 ///
-/// * `sent` — the write returned `Ok`. The frame is in the kernel's buffer for this socket,
+/// * `sent` - the write returned `Ok`. The frame is in the kernel's buffer for this socket,
 ///   which is the most a writer can ever know.
-/// * `acked` — the daemon answered `Accepted { note: "stopping" }`. **This is the one that
+/// * `acked` - the daemon answered `Accepted { note: "stopping" }`. **This is the one that
 ///   says the request was read**, and the daemon sends it before it closes anything.
-/// * `closed` — the daemon's socket file is gone. Its `shutdown` unlinks that file after
+/// * `closed` - the daemon's socket file is gone. Its `shutdown` unlinks that file after
 ///   joining the accept loop, which is what the wrapper's *"the record is removed only
 ///   after the process is gone"* is the same shape of.
-/// * `gone` — **the daemon's process has exited and been collected.** Observed by reaping it
+/// * `gone` - **the daemon's process has exited and been collected.** Observed by reaping it
 ///   when it is this head's own child (`waitpid(WNOHANG)`) and by its `/proc` entry otherwise,
-///   **a zombie counting as gone** — because a child that has exited stays in `/proc` until its
+///   **a zombie counting as gone** - because a child that has exited stays in `/proc` until its
 ///   parent waits for it, and this head is that parent. The strongest observation available,
 ///   and the only one that is *the daemon has actually gone*.
 ///
 ///   **It was `fs::metadata("/proc/{pid}")`, and that is the defect the operator reported
 ///   twice**: *"they always tell me daemon not stopped after waiting for 5 sec, then `letibot
-///   --stop` tells nothing runs."* Both true — the daemon had stopped, and the test said
+///   --stop` tells nothing runs."* Both true - the daemon had stopped, and the test said
 ///   otherwise, because a zombie keeps its directory. The wrapper's test is right where the
 ///   wrapper runs and wrong here, and the difference is the relationship. See
 ///   [`crate::driver::Parentage`].
@@ -1146,7 +1146,7 @@ pub struct Stopping {
     /// out, so this is not a turn finishing its round. It is what tells a stop inside a command from a daemon that
     /// did not go.
     pub turn_busy: bool,
-    /// **The force path, when the head took it** — directly for an older daemon, or once,
+    /// **The force path, when the head took it** - directly for an older daemon, or once,
     /// automatically, when the ordinary stop's deadline passed with the process still there.
     /// `None` for a stop that never needed it.
     pub forced: Option<Forcing>,
@@ -1193,7 +1193,7 @@ pub struct Forcing {
     pub outcome: Option<ForceOutcome>,
 }
 
-/// **What the force path did** — `crate::head::force_stop`'s answer.
+/// **What the force path did** - `crate::head::force_stop`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForceOutcome {
     /// The daemon's process is gone, observed (zombie-aware, as `watch_stop` observes it).
@@ -1276,7 +1276,7 @@ pub(crate) fn pid_word(pid: Option<i32>) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DaemonSeat {
     /// The process at the other end of this socket, from `SO_PEERCRED`. `None` when the kernel
-    /// would not say, which compares equal to another `None` — the one case this cannot tell
+    /// would not say, which compares equal to another `None` - the one case this cannot tell
     /// apart, and the reason the protocol version is beside it.
     pub(crate) pid: Option<i32>,
     /// The version the daemon claims, from the `Hello` that seated this connection.
@@ -1294,7 +1294,7 @@ pub(crate) struct Branch<'a> {
 }
 
 impl Branch<'_> {
-    /// Whether session `i` is drawn in this branch — a child of another branch is a root of its
+    /// Whether session `i` is drawn in this branch - a child of another branch is a root of its
     /// own, never a row here.
     fn holds(&self, i: usize) -> bool {
         self.place
@@ -1303,7 +1303,7 @@ impl Branch<'_> {
     }
 }
 
-/// **Where one session is drawn** — the project, and the `system` group it belongs in when it is
+/// **Where one session is drawn** - the project, and the `system` group it belongs in when it is
 /// one of the harness's own agents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Placement {
@@ -1311,7 +1311,7 @@ pub(crate) struct Placement {
     pub(crate) system: Option<SystemKind>,
 }
 
-/// **A project: the top level of the tree** — a workspace root, shown by its name.
+/// **A project: the top level of the tree** - a workspace root, shown by its name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Project {
     /// The path the project is, and the key its fold state is kept under.
@@ -1348,7 +1348,7 @@ impl SystemKind {
         }
     }
 
-    /// One line saying what the group is — a fold whose contents a reader has to guess at is a fold
+    /// One line saying what the group is - a fold whose contents a reader has to guess at is a fold
     /// they will not open.
     pub(crate) fn legend(self) -> &'static str {
         match self {
@@ -1359,7 +1359,7 @@ impl SystemKind {
     }
 }
 
-/// **What a row of the session list is** — a session, or one of the three lines the tree is built
+/// **What a row of the session list is** - a session, or one of the three lines the tree is built
 /// from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Node {
@@ -1381,7 +1381,7 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    /// **The key this node's fold state is kept under** — a path for a project, `…/system` and
+    /// **The key this node's fold state is kept under** - a path for a project, `…/system` and
     /// `…/system/<group>` below it. Session ids begin `s-`, so the two can never collide.
     pub(crate) fn key(&self) -> &str {
         match self {
@@ -1422,14 +1422,14 @@ impl Node {
 /// is the second way of answering one question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionRow {
-    /// Index into `App::sessions`, or **`None` for a node's own line** — a stop with an act of its
+    /// Index into `App::sessions`, or **`None` for a node's own line** - a stop with an act of its
     /// own (`enter` folds it) and no session to switch to.
     pub(crate) idx: Option<usize>,
     /// 0 for a project, deeper inside the tree.
     pub(crate) depth: usize,
     /// What this row is: a session, or one of the tree's own lines.
     pub(crate) node: Node,
-    /// **Whether this row's rows are drawn under it** — `None` for a row that has none in this
+    /// **Whether this row's rows are drawn under it** - `None` for a row that has none in this
     /// branch, `Some(open)` for one that folds. The glyph and the enumeration are this one answer.
     pub(crate) open: Option<bool>,
 }
@@ -1440,7 +1440,7 @@ pub(crate) const MAX_CHAIN: usize = 64;
 
 /// **How far in a row is drawn.** The renderer caps the indent at three steps (rano's tree list,
 /// and a name pushed four steps in is off the right edge), and the built-in `sessions` layer caps
-/// at the same number — one picture, two drawings.
+/// at the same number - one picture, two drawings.
 const MAX_INDENT: usize = 3;
 
 /// The project a workspace belongs to: the top level of the session list, and the one rule a worktree needs so that
@@ -1459,7 +1459,7 @@ pub(crate) fn project_of(workspace: &str) -> Project {
         return named(path);
     };
     let above = segs[..at].join("/");
-    // `…/.claude/worktrees/agent-x` — the worktrees folder is the repository's own, so what
+    // `…/.claude/worktrees/agent-x` - the worktrees folder is the repository's own, so what
     // precedes `.claude` IS the project.
     if segs.get(at.wrapping_sub(1)) == Some(&".claude") {
         let repo = segs[..at - 1].join("/");
@@ -1467,10 +1467,10 @@ pub(crate) fn project_of(workspace: &str) -> Project {
     }
     let after = &segs[at + 1..];
     match after.len() {
-        // `…/worktrees/<repository>/agent-x` — one folder per repository, for an org folder of
+        // `…/worktrees/<repository>/agent-x` - one folder per repository, for an org folder of
         // several, so the repository is named here.
         n if n >= 2 => named(&format!("{above}/{}", after[0])),
-        // `…/letibot/worktrees/agent-x` — the folder is named after the repository inside it.
+        // `…/letibot/worktrees/agent-x` - the folder is named after the repository inside it.
         1 => {
             let name = above.rsplit('/').next().unwrap_or_default();
             named(&format!("{above}/{name}"))
@@ -1488,7 +1488,7 @@ fn named(key: &str) -> Project {
     }
 }
 
-/// **What a project is called**: the folder's name, which is what the operator asked for — *"shown
+/// **What a project is called**: the folder's name, which is what the operator asked for - *"shown
 /// by its name, not its full path"*.
 fn project_name(key: &str) -> String {
     if key.is_empty() {
@@ -1497,7 +1497,7 @@ fn project_name(key: &str) -> String {
     key.rsplit('/').next().unwrap_or(key).to_string()
 }
 
-/// What a session with no workspace at all is drawn under — a daemon too old to say, or a session
+/// What a session with no workspace at all is drawn under - a daemon too old to say, or a session
 /// whose row predates the column. It is a name, not a group invented for nothing.
 const NO_WORKSPACE: &str = "(no workspace)";
 

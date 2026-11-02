@@ -10,12 +10,12 @@ use letibot_turn::CompactionOutcome;
 
 use super::{ForkReport, ForkTail, Harness, HarnessError};
 
-/// What a clear did — the fork, the orientation it opened with, and what message zero gained
+/// What a clear did - the fork, the orientation it opened with, and what message zero gained
 /// and lost when it was recomposed.
 #[derive(Debug, Clone)]
 pub struct ClearReport {
     pub fork: ForkReport,
-    /// The new transcript's first item, verbatim — so the reply can say what the model was told
+    /// The new transcript's first item, verbatim - so the reply can say what the model was told
     /// and a test can assert it without reading the store.
     pub orientation: String,
     pub gained: Vec<String>,
@@ -45,7 +45,7 @@ impl Harness {
                 text: orientation.clone(),
             }],
         };
-        // No summary turn, so the outcome is the empty one — the same record `reingest` writes
+        // No summary turn, so the outcome is the empty one - the same record `reingest` writes
         // for the same reason. The fork reads it only for its `truncated` flag and its own note,
         // and the note is replaced by `lead`.
         let outcome = CompactionOutcome {
@@ -67,7 +67,7 @@ impl Harness {
         );
         self.compacting = false;
         let fork = fork?;
-        // Only after the fork landed — `adopt_reseat`'s own ordering rule.
+        // Only after the fork landed - `adopt_reseat`'s own ordering rule.
         let (mut gained, mut lost) = self.adopt_reseat(reseat);
         gained.sort();
         lost.sort();
@@ -137,7 +137,7 @@ impl Harness {
             out.push('\n');
         }
 
-        // Jobs: the backgrounded and the still running — `worth_listing`'s rule, the same rows
+        // Jobs: the backgrounded and the still running - `worth_listing`'s rule, the same rows
         // `/job` and the jobs pane show.
         let jobs: Vec<String> = match self.runtime.backend.processes() {
             None => vec!["  (this session has no process host, so it has no jobs)".into()],
@@ -207,7 +207,7 @@ impl Harness {
             ));
         }
 
-        // The queues for the repository this workspace is in — `queue status`'s own reading.
+        // The queues for the repository this workspace is in - `queue status`'s own reading.
         match (
             self.store.as_ref(),
             crate::mergequeue::desk::resolve(&self.cfg.workspace, None, None),

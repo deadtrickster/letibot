@@ -53,7 +53,7 @@ impl Scripted {
         })
     }
 
-    /// Every command run, each as one line — what a refusal is measured against.
+    /// Every command run, each as one line - what a refusal is measured against.
     fn ran(&self) -> Vec<String> {
         self.asked
             .lock()
@@ -82,7 +82,7 @@ impl Runner for Scripted {
     }
 }
 
-/// `xset q`'s answer, as X11 prints it — the one line this tool reads, in its own context.
+/// `xset q`'s answer, as X11 prints it - the one line this tool reads, in its own context.
 fn xset_q(delay: u32, rate: u32) -> Ran {
     Ran::ok(format!(
         "Keyboard Control:\n  auto repeat:  on    key click percent:  0    LED mask:  00000002\n  \
@@ -91,7 +91,7 @@ fn xset_q(delay: u32, rate: u32) -> Ran {
     ))
 }
 
-/// **A real unix socket on disk** — what a [`Channel`] insists on before it will claim a helper can
+/// **A real unix socket on disk** - what a [`Channel`] insists on before it will claim a helper can
 /// attach. A regular file at a `.sock` path would pass `exists` and prove nothing.
 fn a_socket() -> (TempDir, PathBuf) {
     let dir = TempDir::new();
@@ -104,7 +104,7 @@ fn a_socket() -> (TempDir, PathBuf) {
 // The changelog the tool records into
 // ---------------------------------------------------------------------------
 
-/// A changelog in a temp directory — the same fixture `host_changelog`'s tests use.
+/// A changelog in a temp directory - the same fixture `host_changelog`'s tests use.
 struct Log {
     dir: PathBuf,
     _owned: TempDir,
@@ -133,7 +133,7 @@ impl Log {
             .collect()
     }
 
-    /// The changes the file holds, folded by the changelog's own reader — a test that asked the
+    /// The changes the file holds, folded by the changelog's own reader - a test that asked the
     /// tool what it wrote would be a test of the tool's opinion.
     fn entries(&self) -> Vec<changelog::Entry> {
         changelog::read(&self.path()).entries
@@ -274,7 +274,7 @@ fn a_read_answers_macos_key_repeat() {
     assert_eq!(script.ran(), vec!["defaults read -g KeyRepeat"]);
 }
 
-/// **macOS's delay before the repeat is its own key**, `InitialKeyRepeat`, in the same unit — and a
+/// **macOS's delay before the repeat is its own key**, `InitialKeyRepeat`, in the same unit - and a
 /// `set` of it writes that key and not `KeyRepeat`.
 #[test]
 fn a_read_answers_macos_key_repeat_delay() {
@@ -333,7 +333,7 @@ fn a_key_repeat_delay_change_writes_initial_key_repeat() {
     assert_eq!(entries[0].change.after, "20");
 }
 
-/// **macOS's perf policy is `lowpowermode` in `pmset -g`** — the line and only the line, with the
+/// **macOS's perf policy is `lowpowermode` in `pmset -g`** - the line and only the line, with the
 /// unit stated and the privilege said out loud.
 #[test]
 fn a_read_answers_macos_perf_policy() {
@@ -354,7 +354,7 @@ fn a_read_answers_macos_perf_policy() {
 }
 
 /// **A macOS whose `pmset -g` has no `lowpowermode` line is refused by name**, with the version
-/// that arrived — not reported as an empty value, which would make a `before` out of nothing.
+/// that arrived - not reported as an empty value, which would make a `before` out of nothing.
 #[test]
 fn a_macos_without_lowpowermode_is_refused_by_name() {
     let script = Scripted::answering(vec![(
@@ -377,7 +377,7 @@ fn a_macos_without_lowpowermode_is_refused_by_name() {
     );
 }
 
-/// **A `pmset` that will not answer is a refusal, not an empty perf policy** — the same rule as
+/// **A `pmset` that will not answer is a refusal, not an empty perf policy** - the same rule as
 /// the governor: a value nobody could read is not a value nobody set.
 #[test]
 fn a_pmset_that_will_not_answer_refuses_the_read() {
@@ -397,7 +397,7 @@ fn a_pmset_that_will_not_answer_refuses_the_read() {
     );
 }
 
-/// **A perf-policy change runs `pmset -a lowpowermode` and records what the box reads back** —
+/// **A perf-policy change runs `pmset -a lowpowermode` and records what the box reads back**  -
 /// the macOS write arm, which nothing drove before.
 #[test]
 fn a_perf_policy_change_runs_pmset_and_records_both_values() {
@@ -429,7 +429,7 @@ fn a_perf_policy_change_runs_pmset_and_records_both_values() {
     assert_eq!(entries[0].change.after, "1");
 }
 
-/// **The same change with the helper is `sudo -A pmset …`** — the third argv shape the fixture
+/// **The same change with the helper is `sudo -A pmset …`** - the third argv shape the fixture
 /// scripts, and the one the real box takes, since `pmset` needs root.
 #[test]
 fn a_perf_policy_change_with_the_helper_runs_sudo_dash_a() {
@@ -480,7 +480,7 @@ fn a_perf_policy_change_with_the_helper_runs_sudo_dash_a() {
     );
 }
 
-/// **`lowpowermode` takes `0` or `1` and nothing else**, refused before a single command runs —
+/// **`lowpowermode` takes `0` or `1` and nothing else**, refused before a single command runs  -
 /// not even the read that would become the `before`.
 #[test]
 fn a_perf_policy_value_that_is_not_zero_or_one_is_refused_before_anything_runs() {
@@ -565,7 +565,7 @@ fn a_governor_this_box_does_not_have_is_refused_by_name() {
     assert!(said.contains(GOVERNOR), "the file is named: {said}");
 }
 
-/// **A key that was never set is a fact, said as one** — macOS's default applies, and there is no
+/// **A key that was never set is a fact, said as one** - macOS's default applies, and there is no
 /// value to record as a `before` until one is written.
 #[test]
 fn an_unset_macos_default_says_so_rather_than_answering_empty() {
@@ -587,7 +587,7 @@ fn an_unset_macos_default_says_so_rather_than_answering_empty() {
 // A setting this platform has not got is refused by name, and never mapped
 // ---------------------------------------------------------------------------
 
-/// **Linux has no `perf-policy`** — its knob is `cpu-governor`, and the refusal says so.
+/// **Linux has no `perf-policy`** - its knob is `cpu-governor`, and the refusal says so.
 #[test]
 fn linux_refuses_macoss_perf_policy_by_name_and_names_its_own() {
     let (script, platform) = linux("powersave", "performance powersave", 660, 25);
@@ -608,7 +608,7 @@ fn linux_refuses_macoss_perf_policy_by_name_and_names_its_own() {
     );
 }
 
-/// **macOS has no `cpu-governor`** — its knob is `perf-policy` (`pmset`), and a `set` is refused
+/// **macOS has no `cpu-governor`** - its knob is `perf-policy` (`pmset`), and a `set` is refused
 /// before anything runs.
 #[test]
 fn macos_refuses_a_linux_governor_by_name_and_names_its_own() {
@@ -647,7 +647,7 @@ fn a_platform_with_no_arm_refuses_every_setting() {
 }
 
 // ---------------------------------------------------------------------------
-// The two refusals that are the feature: no `why`, no `words` — before anything runs
+// The two refusals that are the feature: no `why`, no `words` - before anything runs
 // ---------------------------------------------------------------------------
 
 /// **A change with no `why` is refused while the box is still untouched.**
@@ -671,7 +671,7 @@ fn a_change_with_no_why_is_refused_before_the_shell_runs() {
     assert!(log.lines().is_empty(), "and nothing was recorded");
 }
 
-/// **A change with no `words` is refused the same way** — the operator's sentence is the half a
+/// **A change with no `words` is refused the same way** - the operator's sentence is the half a
 /// person can act on a month later.
 #[test]
 fn a_change_with_no_words_is_refused_before_the_shell_runs() {
@@ -732,7 +732,7 @@ fn a_value_the_setting_cannot_take_is_refused_before_the_shell_runs() {
     assert!(script.ran().is_empty(), "{:?}", script.ran());
 }
 
-/// **A governor word this kernel does not offer is refused with the list it does offer** — the
+/// **A governor word this kernel does not offer is refused with the list it does offer** - the
 /// value is checked against the machine before anything is written.
 #[test]
 fn a_governor_this_kernel_does_not_offer_is_refused_with_the_list() {
@@ -759,7 +759,7 @@ fn a_governor_this_kernel_does_not_offer_is_refused_with_the_list() {
 // Privilege, through the refusal and through the argv
 // ---------------------------------------------------------------------------
 
-/// **A setting that needs root, in a session with no way to ask, is refused with a sentence** —
+/// **A setting that needs root, in a session with no way to ask, is refused with a sentence**  -
 /// and nothing runs, because a daemon has no terminal to wait at.
 #[test]
 fn a_root_setting_with_no_askpass_refuses_and_runs_nothing() {
@@ -853,7 +853,7 @@ fn a_root_setting_with_the_helper_runs_sudo_dash_a() {
     );
 }
 
-/// **A helper is not a channel** — the reviewer's finding, pinned. `letibot-askpass` on this box
+/// **A helper is not a channel** - the reviewer's finding, pinned. `letibot-askpass` on this box
 /// with no session to ask on is a helper that would print *not inside a letibot session*, so the
 /// decision is a refusal naming what is missing, and the platform's own command never runs.
 #[test]
@@ -903,7 +903,7 @@ fn a_helper_with_no_session_to_ask_on_is_a_refusal_by_name() {
     assert!(log.lines().is_empty(), "and nothing was recorded");
 }
 
-/// **A socket nobody listens on is not a channel either** — the helper would attach to nothing and
+/// **A socket nobody listens on is not a channel either** - the helper would attach to nothing and
 /// fail one layer deeper, inside `sudo`, where the sentence is sudo's rather than ours.
 #[test]
 fn a_channel_whose_socket_is_not_there_is_a_refusal_by_name() {
@@ -1082,7 +1082,7 @@ fn a_read_back_that_fails_is_recorded_as_unread() {
     assert_eq!(entries[0].change.after, UNREAD);
 }
 
-/// **A session with no changelog refuses a change before it runs anything** — a change no record
+/// **A session with no changelog refuses a change before it runs anything** - a change no record
 /// would ever see is the state this tool exists to end.
 #[test]
 fn a_set_with_no_changelog_refuses_and_applies_nothing() {
@@ -1099,8 +1099,8 @@ fn a_set_with_no_changelog_refuses_and_applies_nothing() {
 }
 
 /// **A changelog that cannot be written stops the change**, because the record is the half that
-/// must not be missing. The `before` read runs first — it changes nothing, and it is the cheaper
-/// refusal — so one read has happened by the time the door refuses, and no write has.
+/// must not be missing. The `before` read runs first - it changes nothing, and it is the cheaper
+/// refusal - so one read has happened by the time the door refuses, and no write has.
 #[test]
 fn a_changelog_that_cannot_be_written_stops_the_change() {
     let (script, platform) = macos("2", "15", "0");
@@ -1149,7 +1149,7 @@ fn a_changelog_that_cannot_be_written_stops_the_change() {
     );
 }
 
-/// **A `before` that cannot be read stops the change** — a keyboard repeat that could not be read
+/// **A `before` that cannot be read stops the change** - a keyboard repeat that could not be read
 /// is not a keyboard repeat that was not set, and a revert would have nothing to put back.
 #[test]
 fn a_before_that_cannot_be_read_stops_the_change() {
@@ -1187,7 +1187,7 @@ fn a_before_that_cannot_be_read_stops_the_change() {
     );
 }
 
-/// **A value the platform would not take costs no command at all** — not even the read that would
+/// **A value the platform would not take costs no command at all** - not even the read that would
 /// have become the `before`. The `why`/`words` refusals are the same shape one step earlier.
 #[test]
 fn a_refused_value_runs_nothing_at_all() {
@@ -1214,7 +1214,7 @@ fn a_refused_value_runs_nothing_at_all() {
 // The revert round-trips through the changelog's own verb
 // ---------------------------------------------------------------------------
 
-/// **A change, a revert of it by the changelog's own verb, and the value put back** — the whole
+/// **A change, a revert of it by the changelog's own verb, and the value put back** - the whole
 /// loop, through the two tools' own doors and no hand-written JSON in between.
 #[test]
 fn a_revert_round_trips_through_the_changelogs_own_verb() {
@@ -1265,7 +1265,7 @@ fn a_revert_round_trips_through_the_changelogs_own_verb() {
 }
 
 // ---------------------------------------------------------------------------
-// `settings` — the vocabulary, named
+// `settings` - the vocabulary, named
 // ---------------------------------------------------------------------------
 
 /// **`settings` names the platform and every knob it has**, with the value and the privilege.
@@ -1340,7 +1340,7 @@ fn the_real_linux_arm_reads_this_boxs_governor() {
     );
 }
 
-/// **The macOS arm reads this box's real `KeyRepeat`** — on a Mac, and nowhere else.
+/// **The macOS arm reads this box's real `KeyRepeat`** - on a Mac, and nowhere else.
 #[cfg(target_os = "macos")]
 #[test]
 fn the_real_macos_arm_reads_this_boxs_key_repeat() {
@@ -1351,7 +1351,7 @@ fn the_real_macos_arm_reads_this_boxs_key_repeat() {
     assert!(said.contains("1/60 s"), "{said}");
 }
 
-/// **The real runner runs a real program** and reports its exit status — the one thing every
+/// **The real runner runs a real program** and reports its exit status - the one thing every
 /// other test in this file scripts away.
 #[test]
 fn the_system_runner_answers_with_the_program_and_its_exit() {

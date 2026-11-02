@@ -79,7 +79,7 @@ fn head() -> letibot_tui::app::App {
     app
 }
 
-/// **A frame, and a glass, at a steady state** — the whole per-frame path, in one test.
+/// **A frame, and a glass, at a steady state** - the whole per-frame path, in one test.
 #[test]
 fn a_frame_costs_no_allocation_per_unchanged_line() {
     // ---- the head's own frame -------------------------------------------------------------
@@ -236,7 +236,7 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     put(&mut shown, &mut scratch, &before);
 
     // Every key the conversation pane scrolls with, one at a time. The order matters only in that
-    // the page keys have somewhere to move FROM — a notch up, a page up, a notch down, a page up
+    // the page keys have somewhere to move FROM - a notch up, a page up, a notch down, a page up
     // again, then a page down.
     for key in [
         Key::WheelUp,

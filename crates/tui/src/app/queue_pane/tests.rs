@@ -97,7 +97,7 @@ fn a_snapshot() -> QueueSnapshot {
             gate_steps: vec![],
             running_gate: None,
         }],
-        // **One project, two repositories, one of which never asked for a queue** — the shape the
+        // **One project, two repositories, one of which never asked for a queue** - the shape the
         // `not_queued` list exists for, and the only shape in which the scope filter keeps it: a
         // repository outside this session's scope is not this pane's to name.
         not_queued: vec!["/home/dead/Projects/letim".into()],
@@ -115,7 +115,7 @@ fn a_snapshot() -> QueueSnapshot {
         unreadable: None,
         here: Some(QueueHere {
             workspace: "/home/dead/Projects/letibot".into(),
-            // `None` with several is *one project of several* — the head shows each of them.
+            // `None` with several is *one project of several* - the head shows each of them.
             repository: None,
             repositories: vec![
                 "/home/dead/Projects/letibot".into(),
@@ -138,7 +138,7 @@ fn a_head() -> App {
 }
 
 /// **The feed's own clock**: the snapshot's `at_ms` plus however long the head has held it, so an
-/// age the plugin draws is measured from the same instant the host pane measures from — rounded down
+/// age the plugin draws is measured from the same instant the host pane measures from - rounded down
 /// to the second, which is the finest thing a row can say (see `CLOCK_QUANTUM_MS`).
 #[test]
 fn the_feed_carries_the_hosts_clock_and_its_scope() {
@@ -164,20 +164,20 @@ fn the_feed_carries_the_hosts_clock_and_its_scope() {
 }
 
 /// **The clock is quantised to the second, so a frame that changes nothing a row can draw costs no
-/// wasm call** — the host answers a pane once per distinct `Input`, and a millisecond clock in the
+/// wasm call** - the host answers a pane once per distinct `Input`, and a millisecond clock in the
 /// feed is a cache that misses on every tick.
 #[test]
 fn the_feeds_clock_moves_once_a_second_and_not_once_a_frame() {
     let mut a = a_head();
     let first = a.queue_feed();
-    // **Within the second, the input is the SAME input** — 899 ms of frames, one answer.
+    // **Within the second, the input is the SAME input** - 899 ms of frames, one answer.
     a.now_ms += 899;
     assert_eq!(
         a.queue_feed(),
         first,
         "a frame inside the second is not a new question"
     );
-    // **And at the next second it is a new one** — the ages have moved, and a cache hit would draw
+    // **And at the next second it is a new one** - the ages have moved, and a cache hit would draw
     // the previous second's answer.
     a.now_ms += 101;
     let second = a.queue_feed();
@@ -189,7 +189,7 @@ fn the_feeds_clock_moves_once_a_second_and_not_once_a_frame() {
     );
 }
 
-/// **A row names its repository only when the scope keeps more than one** — the host's answer, from
+/// **A row names its repository only when the scope keeps more than one** - the host's answer, from
 /// the scope it RESOLVED, so a path scope over several repositories names them and a one-repository
 /// project does not.
 #[test]
@@ -208,7 +208,7 @@ fn the_scope_says_whether_a_row_must_name_its_repository() {
     let many = a_head();
     assert_eq!(many.queue_feed()["scope"]["several"], true);
 
-    // A named path: several, or not known to be one — so a row says which, and the words do not
+    // A named path: several, or not known to be one - so a row says which, and the words do not
     // enter into it (this is the case the prose-reading cut got wrong in both directions).
     let mut path = a_head();
     path.queue_scope = QueueScope::Path("/home/dead/Projects".to_string());
@@ -230,7 +230,7 @@ fn the_scope_says_whether_a_row_must_name_its_repository() {
     assert_eq!(none.queue_feed()["scope"]["several"], false);
 }
 
-/// **A review, in the words a person reads it in** — the state as the daemon spells it, the age in
+/// **A review, in the words a person reads it in** - the state as the daemon spells it, the age in
 /// milliseconds, `live` from the host's own rule, and the verbs the daemon would actually take.
 #[test]
 fn a_review_row_is_the_states_own_words_and_the_verbs_that_would_move_it() {
@@ -285,8 +285,8 @@ fn a_review_row_is_the_states_own_words_and_the_verbs_that_would_move_it() {
     assert_eq!(done["state"], "landed");
 }
 
-/// **A landing's gate, in the words a person reads** — `"timed out"`, not the Rust enum's serde
-/// spelling — and what a queued row is waiting for.
+/// **A landing's gate, in the words a person reads** - `"timed out"`, not the Rust enum's serde
+/// spelling - and what a queued row is waiting for.
 #[test]
 fn a_gate_step_is_the_persons_words_and_not_the_enums_spelling() {
     let a = a_head();
@@ -304,7 +304,7 @@ fn a_gate_step_is_the_persons_words_and_not_the_enums_spelling() {
     assert_eq!(step["output"], "the gate's own words");
 }
 
-/// **The lease's heartbeat and the STALE warning** — the two facts the pane's chrome carries, so a
+/// **The lease's heartbeat and the STALE warning** - the two facts the pane's chrome carries, so a
 /// plugin can draw them without inventing a lifetime.
 #[test]
 fn a_stale_lease_is_flagged_with_the_daemons_own_lifetime() {
@@ -342,7 +342,7 @@ fn a_red_target_and_the_counters_the_strip_carries() {
     assert_eq!(counts["red_targets"], 1);
 }
 
-/// **A move, and the repository that is no queue's** — the last two things the pane says.
+/// **A move, and the repository that is no queue's** - the last two things the pane says.
 #[test]
 fn a_move_and_a_repository_that_never_asked_for_a_queue() {
     let a = a_head();
@@ -357,7 +357,7 @@ fn a_move_and_a_repository_that_never_asked_for_a_queue() {
     assert_eq!(feed["not_queued"][0], "letim");
 }
 
-/// **A row the daemon would refuse says why, in the feed** — so a plugin's row can name the verb
+/// **A row the daemon would refuse says why, in the feed** - so a plugin's row can name the verb
 /// that would do something instead of printing four and letting the person find out.
 #[test]
 fn a_row_nothing_would_move_carries_every_reason() {

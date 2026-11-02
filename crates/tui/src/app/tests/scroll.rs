@@ -96,7 +96,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     let under = visible(&mut a);
     let top_before = a.view_top;
 
-    // 1. **Rows arrive BELOW the anchor** — the ordinary case: a turn commits what it
+    // 1. **Rows arrive BELOW the anchor** - the ordinary case: a turn commits what it
     //    has done and the transcript grows under a reader who is reading.
     for i in 100..108u64 {
         a.apply(ServerFrame::Event(env(
@@ -115,7 +115,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     );
     assert_eq!(a.anchor, Some(held.clone()), "and moved the held row");
 
-    // 2. **A row ABOVE the anchor grows** — R29's remedy line, a note, a tail that
+    // 2. **A row ABOVE the anchor grows** - R29's remedy line, a note, a tail that
     //    expanded. This is the case a line count cannot survive: every line below it
     //    shifts, and a count moves with them.
     {
@@ -137,7 +137,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     );
     assert_eq!(a.anchor, Some(held.clone()), "and moved the held row");
 
-    // 3. **A tool row GROWS as its output lands**, under the running turn — the third
+    // 3. **A tool row GROWS as its output lands**, under the running turn - the third
     //    way a line count creeps, and the one the live case is for.
     a.apply(ServerFrame::Event(env(
         3000,
@@ -366,7 +366,7 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     )));
     assert!(!a.hold, "the premise: the view is following");
 
-    // **The freeze, and the one write it owes** — the marker, on the hint bar's row.
+    // **The freeze, and the one write it owes** - the marker, on the hint bar's row.
     assert_eq!(a.key(Key::CtrlP), None, "the hold is not a daemon action");
     assert!(a.hold);
     let frozen = a.screen(100, 24);
@@ -377,7 +377,7 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     );
 
     // **And then nothing is written, however much arrives.** A turn streams, a round lands,
-    // two rows are appended — the frame must not move by a byte.
+    // two rows are appended - the frame must not move by a byte.
     for i in 0..20u64 {
         a.apply(ServerFrame::Event(env(
             3 + i,
@@ -411,14 +411,14 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     );
     assert_eq!(a.screen(100, 24), frozen);
 
-    // **The release follows again, and says how much arrived — once**, which is what makes
+    // **The release follows again, and says how much arrived - once**, which is what makes
     // the count honest: a live count while held would be an animation.
     assert_eq!(a.key(Key::CtrlP), None);
     assert!(!a.hold, "the second press releases");
     let released = a.screen(100, 24);
     assert_ne!(released, frozen, "the view did not come back");
     let said = released.join("\n");
-    // Said in the status row, after the turn's clock — cut to the room it has there, and whole
+    // Said in the status row, after the turn's clock - cut to the room it has there, and whole
     // in the notice a click opens.
     assert!(said.contains("the view follows again"), "{said}");
     let notice = a.notice.clone().unwrap_or_default();
@@ -489,7 +489,7 @@ fn arrows_walk_the_subagent_output_back_to_its_beginning() {
     let screen = a.screen(100, 24).join("\n");
     assert!(screen.contains("line 49"), "{screen}");
     assert!(!screen.contains("line 0"), "{screen}");
-    // Up walks back, and the draw clamps at the beginning — sixty ups on a
+    // Up walks back, and the draw clamps at the beginning - sixty ups on a
     // fifty-line view stop at the top rather than scrolling into nothing.
     for _ in 0..60 {
         a.key(Key::Up);
@@ -525,7 +525,7 @@ fn a_pane_taller_than_the_screen_scrolls_to_its_end() {
         "the tail is off-screen: {top}"
     );
 
-    // PageDown reaches it. Enough presses to pass the end — the clamp is
+    // PageDown reaches it. Enough presses to pass the end - the clamp is
     // what stops it, and scrolling past into blank rows would be its own bug.
     for _ in 0..20 {
         a.key(Key::PageDown);
@@ -987,7 +987,7 @@ fn an_open_result_window_reaches_its_end_comes_back_at_once_and_fits() {
 #[test]
 fn scroll_still_works_after_ctrl_t() {
     let mut a = app();
-    // The tail walk is what this is about — `walk_limit = 1` is how the other
+    // The tail walk is what this is about - `walk_limit = 1` is how the other
     // tail tests in this file get into it without building a megabyte.
     a.walk_limit = 1;
     // Tool results, because ctrl-t is what expands THEM: a fixture of plain
@@ -1595,7 +1595,7 @@ fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
     );
 
     // **The line is the status row's now** (`ui::progress_row`): one line, label · bar ·
-    // count · clock, and the rule is the same — the count must not shove the clock about.
+    // count · clock, and the rule is the same - the count must not shove the clock about.
     let mut a = app();
     let mut seen: Vec<usize> = Vec::new();
     // Across the whole run, and across a full cycle of spinner frames.
@@ -1646,9 +1646,9 @@ fn a_replaced_item_vector_cannot_invert_the_count() {
 #[test]
 fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
     let mut a = app();
-    // Above `MIN_FILLING`, so the bar is drawn — that is the thing under test here.
+    // Above `MIN_FILLING`, so the bar is drawn - that is the thing under test here.
     let n = 300u64;
-    // The rows the carry announces — still body-less, all of them.
+    // The rows the carry announces - still body-less, all of them.
     for i in 0..n {
         a.apply(ServerFrame::Event(env(
             i + 1,
@@ -1878,7 +1878,7 @@ fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
         );
     }
 
-    // **The transcript's scroll keys are still the transcript's** — the card's content
+    // **The transcript's scroll keys are still the transcript's** - the card's content
     // fits, so nothing here takes them.
     a.items = (0..80)
         .map(|i| SnapshotItem {
@@ -1899,7 +1899,7 @@ fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
     a.key(Key::PageUp);
     // **R36: the assertion is the HOLD, not a count.** `scroll` is derived and is only
     // recomputed by a paint, so a reader of it between a key and a frame sees the
-    // previous frame's number — which is why `following` is a question about the anchor.
+    // previous frame's number - which is why `following` is a question about the anchor.
     assert!(
         !a.following(),
         "the card stole the transcript's page key with nothing of its own to page"
@@ -1917,7 +1917,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
     assert!(a.dec_scroll > 0, "the premise: the window moved");
 
     // **Answer the first one**, because an open set is a queue and `open[0]` is the
-    // card on the screen (§1.4: oldest first) — a second `DecisionRequested` while the
+    // card on the screen (§1.4: oldest first) - a second `DecisionRequested` while the
     // first is unanswered is a second card behind it, not a replacement.
     a.apply(ServerFrame::Event(env(
         2,
@@ -1963,7 +1963,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
         },
     )));
     // The reset is in `screen`, where the offset is used, so the property is what the
-    // *frame* does with it — the same reason the clamp lives there.
+    // *frame* does with it - the same reason the clamp lives there.
     let screen = a.screen(80, 24).join("\n");
     assert_eq!(
         a.dec_scroll, 0,
@@ -2044,7 +2044,7 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
         "the meaning is not on the card in words, so a colourless head is told nothing:\n{screen}"
     );
 
-    // **A daemon that sends no such row greens nothing** — older than the field, and the head
+    // **A daemon that sends no such row greens nothing** - older than the field, and the head
     // reads an absent row as *no greening* rather than as *no keys*. `local` stays green,
     // which is its own rule and not this row's.
     let mut b = App::new(RenderConfig {
@@ -2117,7 +2117,7 @@ fn the_claiming_walk_keeps_the_entries_the_rows_are_not_drawing() {
 
 /// The marker joins the prose even when the tail walk rendered it first: `fill_backward` renders the newest
 /// rows first and stops on a line budget, so it reached the marker, broke, and never built the narration
-/// above it — which was drawn as a row of its own with the colon dangling. Asserted through the tail path.
+/// above it - which was drawn as a row of its own with the colon dangling. Asserted through the tail path.
 #[test]
 fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
     let mut a = app();
@@ -2355,10 +2355,10 @@ fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
     a.screen(80, 24);
     let above = a.view_top;
     // Drain the flag, so what is asserted below is about the notch rather than about anything
-    // the thirty rows did — the head's loop reads it at the top of every pass.
+    // the thirty rows did - the head's loop reads it at the top of every pass.
     let _ = a.take_redraw();
 
-    // **One notch down is a STEP, not the tail** — the opposite of what this test asserted
+    // **One notch down is a STEP, not the tail** - the opposite of what this test asserted
     // before, and the whole of the reversal.
     assert_eq!(a.key(Key::WheelDown), None);
     a.screen(80, 24);
@@ -2421,7 +2421,7 @@ fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
     let _ = a.take_redraw();
     let bottom = a.body_len - a.view_room;
 
-    // Park nine lines up — three notches' worth — so the walk down has somewhere to go.
+    // Park nine lines up - three notches' worth - so the walk down has somewhere to go.
     for _ in 0..3 {
         a.key(Key::WheelUp);
         a.screen(80, 24);
@@ -2671,7 +2671,7 @@ fn forty_rows(a: &mut App, n: u64) {
     }
 }
 
-/// A head in that conversation with the viewport scrolled up — six notches, which on this
+/// A head in that conversation with the viewport scrolled up - six notches, which on this
 /// fixture leaves the reader holding `s.19` with nothing above it in the window.
 fn scrolled_up(n: u64) -> App {
     let mut a = app();
@@ -2714,7 +2714,7 @@ fn carried_snapshot(ids: &[String], text: impl Fn(usize) -> String) -> Snapshot 
     snap
 }
 
-/// The words a row says, for an assertion — `row_words` is the head's own reading, so a test
+/// The words a row says, for an assertion - `row_words` is the head's own reading, so a test
 /// asking *what is on this row* asks it the way the carry does.
 fn words_at(a: &App, row: usize) -> String {
     a.items
@@ -2745,7 +2745,7 @@ fn a_carry_that_lengthens_the_transcript_leaves_the_reader_on_their_row() {
     let frame = a.screen(100, 30);
 
     // **The index is not the place.** Row `held.ordinal` in the new transcript is two rows
-    // above the reader's, and it is a different row — which is what the old fallback would
+    // above the reader's, and it is a different row - which is what the old fallback would
     // have held, silently, as though nothing had happened.
     assert_ne!(
         words_at(&a, held.ordinal),
@@ -2825,7 +2825,7 @@ fn a_rows_words_are_what_the_carry_matches_it_by() {
         "the engine's JOIN is the row's words"
     );
     assert!(row_says(&merged, &words), "and the row says them back");
-    // **The whole of it, and not a piece.** A row is found by what it says entire — a
+    // **The whole of it, and not a piece.** A row is found by what it says entire - a
     // prefix match would put the reader on the wrong row of a conversation that repeats
     // itself, which is the residue this match has to refuse.
     assert!(!row_says(&merged, "first"), "a piece is not the row");
@@ -2924,7 +2924,7 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
     let held = a.anchor.clone().expect("a held row");
     let was = words_at(&a, held.ordinal);
 
-    // The compaction's carry: a summary, then the recent tail — the reader's row is in the
+    // The compaction's carry: a summary, then the recent tail - the reader's row is in the
     // part that was summarised, and it is nowhere in what arrives.
     let ids: Vec<String> = (0..20).map(|i| format!("t.{i}")).collect();
     let snap = carried_snapshot(&ids, |i| match i {
@@ -2936,7 +2936,7 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
     a.apply(hello("s", vec![brief("s", "one", false)], snap));
     let frame = a.screen(100, 30);
 
-    // **The reader's row is not in the new transcript**, so the place cannot be held — and
+    // **The reader's row is not in the new transcript**, so the place cannot be held - and
     // the fixture says so rather than leaving it to the code: no row here says `was`.
     assert!(
         !a.items.iter().any(|it| row_says(it, &was)),
@@ -2952,7 +2952,7 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
         "and the view follows the tail, which is where it went"
     );
 
-    // **And it is SAID** — on the screen, where the reader is looking, and named for the row
+    // **And it is SAID** - on the screen, where the reader is looking, and named for the row
     // so the sentence is checkable rather than a shrug.
     let said = a
         .notice
@@ -3032,7 +3032,7 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
         a.notice
     );
 
-    // The bodies, the way the daemon publishes them — every one but the reader's, and the
+    // The bodies, the way the daemon publishes them - every one but the reader's, and the
     // ones below it first, so the buffer grows under the held window before the row that
     // names it has anything to match.
     let body = |i: u64| SessionEvent::TranscriptContent {
@@ -3063,7 +3063,7 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
     );
     assert!(a.notice.is_none(), "and nothing was said: {:?}", a.notice);
 
-    // **The reader's own row lands**, and it is placed under the new transcript's id — at the
+    // **The reader's own row lands**, and it is placed under the new transcript's id - at the
     // line it was at, because the conversation carried across is the same one.
     a.apply(ServerFrame::Event(env(2100, body(19))));
     let frame = a.screen(100, 30);
@@ -3121,7 +3121,7 @@ fn carried_appends(a: &mut App, seq: u64, ids: &[String], text: impl Fn(usize) -
 }
 
 /// **A fork as an ATTACHED head receives one**: the rows, and then the statement that names
-/// the boundary — `harness.rs`'s own order, which is the one a live `/reseat` is.
+/// the boundary - `harness.rs`'s own order, which is the one a live `/reseat` is.
 fn fork_live(
     a: &mut App,
     seq: u64,
@@ -3147,7 +3147,7 @@ fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
     assert_eq!(was, "row 19 says a thing", "the fixture's held row moved");
 
     // The carry: the same conversation under the new transcript's ids, with the re-seat's own
-    // note in front of it — so the integer the viewport holds names a different row.
+    // note in front of it - so the integer the viewport holds names a different row.
     let ids: Vec<String> = (0..62).map(|i| format!("t.{i}")).collect();
     fork_live(&mut a, 1000, "s", "t", &ids, |i| match i {
         0 => "This conversation was re-seated onto a new prompt.".to_string(),
@@ -3158,7 +3158,7 @@ fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
     let frame = a.screen(100, 30);
 
     // **The index is not the place.** Row `held.ordinal` in the transcript that arrived is two
-    // above the reader's and says something else — which is what the old fallback would have
+    // above the reader's and says something else - which is what the old fallback would have
     // held, silently, as though nothing had happened.
     assert_ne!(
         words_at(&a, held.ordinal),
@@ -3234,7 +3234,7 @@ fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
         "and the view follows the tail, which is where it went"
     );
 
-    // **And it is SAID** — on the screen, where the reader is looking, and named for the row.
+    // **And it is SAID** - on the screen, where the reader is looking, and named for the row.
     let said = a
         .notice
         .as_deref()
@@ -3287,7 +3287,7 @@ fn a_fork_stated_before_its_rows_waits_rather_than_calling_the_row_gone() {
     let held = a.anchor.clone().expect("a held row");
     let was = words_at(&a, held.ordinal);
 
-    // The statement, and then a frame — with not one row of the carry here yet.
+    // The statement, and then a frame - with not one row of the carry here yet.
     a.apply(ServerFrame::Event(env(1000, testing::forked("t", "s"))));
     a.screen(100, 30);
     assert!(
@@ -3384,7 +3384,7 @@ fn a_held_view_moves_for_the_readers_keys_and_not_for_the_stream() {
     );
 }
 
-/// **A hold a selection took ends when the reader acts elsewhere** — it was the selection's, so
+/// **A hold a selection took ends when the reader acts elsewhere** - it was the selection's, so
 /// that the text under it stayed put while it was made; a wheel afterwards is the reader moving
 /// on, and leaves the view moving and following as it did before the drag.
 #[test]
@@ -3407,27 +3407,27 @@ fn a_selections_hold_ends_with_the_next_key() {
 }
 
 // ---------------------------------------------------------------------------
-// **The reply drawn twice, once on each side of the question** — 2026-10-30.
+// **The reply drawn twice, once on each side of the question** - 2026-10-30.
 //
 // The operator's photograph, in order:
 //
 // ```text
 //   so, update the docs ?                                          10:19:38
 // [2 tool calls, 53 thinking lines]
-// The doc is stale in six places — … Rewriting it to what the code does:
+// The doc is stale in six places - … Rewriting it to what the code does:
 //   » Wrote rano/docs/pdf.md · ok · 7ms · 147 lines
 // [1 tool call, 19 thinking lines]
-// Different thread, and a useful one — §20.8 has been waiting on a real *-json.log:
+// Different thread, and a useful one - §20.8 has been waiting on a real *-json.log:
 //   also maybe we have docker on this host now? …                  10:20:10
 // [1 tool call, 18 thinking lines]
-// Different thread, and a useful one — §20.8 has been waiting on a real *-json.log: [1 tool call, 36 thinking lines]
+// Different thread, and a useful one - §20.8 has been waiting on a real *-json.log: [1 tool call, 36 thinking lines]
 // ```
 //
 // Their words: *"the reply started before my question was visible and then duplicated after."*
 //
 // **Which copy is which, from the code and not from the look.** The counts are drawn AFTER the
 // reply in the pane (`ui::transcript::live`, whose own comment records the operator's ruling
-// *"all of it after the reply"*), and the pane is drawn after every row — so the copy carrying
+// *"all of it after the reply"*), and the pane is drawn after every row - so the copy carrying
 // `[1 tool call, 36 thinking lines]` is the LIVE one, and the copy above the question is the
 // stored row. That is the opposite of what the shape suggests, and it is what makes the search
 // land in the right place.
@@ -3436,16 +3436,16 @@ fn a_selections_hold_ends_with_the_next_key() {
 // `TurnPane::text` holds the prose the deltas streamed into; the frame draws the rows and then
 // the pane. Nothing in the item list is duplicated, so a rule about the list cannot see this.
 //
-// **The live path already hands the prose over** — at the row's BODY (`App::record_item`), which
+// **The live path already hands the prose over** - at the row's BODY (`App::record_item`), which
 // is why the first test below passes on the tree before this change. What it cannot cover is a
 // row that arrives already holding its body: a snapshot. A snapshot is a *replacement*, and it
 // carries the turn's accumulated text (`Snapshot::turn`) beside rows whose bodies are in `items`
-// — and the daemon's view never trims that text when a row lands, so a head that re-attaches,
+// - and the daemon's view never trims that text when a row lands, so a head that re-attaches,
 // resyncs or switches back mid-turn is handed one paragraph twice, with no later event to take
 // the pane's copy away: the body it waits for has already happened. The second test is that door,
 // and it is the one that failed before the fix.
 
-/// **How many times the frame draws this text**, which is the assertion a duplicate needs — a
+/// **How many times the frame draws this text**, which is the assertion a duplicate needs - a
 /// count of rows can be right while the screen shows a paragraph twice.
 fn drawn_times(frame: &str, words: &str) -> usize {
     frame.matches(words).count()
@@ -3505,7 +3505,7 @@ fn a_reply_streamed_while_a_prompt_lands_is_drawn_once_below_it() {
             truncated: false,
         },
     );
-    // Round 2, streaming — and the operator types into the middle of it.
+    // Round 2, streaming - and the operator types into the middle of it.
     a.apply(ServerFrame::Event(env_at(
         7,
         2_000,
@@ -3632,7 +3632,7 @@ fn a_reattach_mid_turn_does_not_draw_the_reply_twice() {
         "the answer to the first prompt is drawn above the second prompt:\n{frame}"
     );
 
-    // **And the next round streams where it belongs** — under the question, not above it, and
+    // **And the next round streams where it belongs** - under the question, not above it, and
     // still without a second copy of the sentence that landed before the attach.
     a.apply(ServerFrame::Event(env_at(
         100,
@@ -3804,7 +3804,7 @@ fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
         "the pane still holds thinking the reasoning row holds: {:?}",
         t.reasoning.raw()
     );
-    // And the marker the reader sees counts each once — one call, one thinking line, both of them
+    // And the marker the reader sees counts each once - one call, one thinking line, both of them
     // the rows' own.
     let frame = a.screen(90, 40).join("\n");
     assert!(
@@ -3828,12 +3828,12 @@ fn thinking_open(a: &mut App) {
     a.reasoning = Fold::Open;
 }
 
-/// The rows of the frame that carry a reasoning body — the ones drawn under the `┃` rail.
+/// The rows of the frame that carry a reasoning body - the ones drawn under the `┃` rail.
 fn railed(frame: &str) -> usize {
     frame.lines().filter(|l| l.contains('┃')).count()
 }
 
-/// **The number in `[N thinking lines]`, read off the frame** — what a reader sees, not the field.
+/// **The number in `[N thinking lines]`, read off the frame** - what a reader sees, not the field.
 fn thinking_count(frame: &str) -> Option<usize> {
     frame.lines().find_map(|l| {
         let (_, rest) = l.split_once('[')?;
@@ -3941,14 +3941,14 @@ fn the_thinking_count_equals_what_the_fold_draws() {
     )));
     // **Long enough that the arithmetic and the drawing can part company**: 169 columns of
     // five-column words at an eighty-six-column frame is two lines by the frame's width and three
-    // by the eighty-two the step and the rail leave — which is what the fold actually draws.
+    // by the eighty-two the step and the rail leave - which is what the fold actually draws.
     let thought = format!("{}word", "word ".repeat(33));
     a.apply(ServerFrame::Event(env_at(
         4,
         1_100,
         testing::reasoning("r1", &thought),
     )));
-    // The marker, clicked — which is how a reader opens the working at this rung. The click is
+    // The marker, clicked - which is how a reader opens the working at this rung. The click is
     // what a person does; this writes what it writes: the one switch (`App::lift`) and the panel
     // that carries its exit (`payload_sel`, by the live tail's sentinel).
     a.lift = Some(Show::Thinking);
@@ -3979,7 +3979,7 @@ fn a_reattach_mid_thinking_draws_it_once() {
     hub.publish(testing::appended("s.u1", "user"));
     hub.record_item("s.u1", operator_row("what changed?"));
     hub.publish(testing::turn_started("r1"));
-    // The model thought, spoke, thought again — `turn::items`' three-item shape — and both
+    // The model thought, spoke, thought again - `turn::items`' three-item shape - and both
     // thoughts are rows.
     hub.publish(testing::reasoning("r1", LANDED));
     hub.publish(testing::appended("s.r1", "reasoning"));

@@ -1,4 +1,4 @@
-//! **The wire** — the frames a coordinator's socket would take and send, and the two idempotency
+//! **The wire** - the frames a coordinator's socket would take and send, and the two idempotency
 //! promises a reconnecting client depends on.
 //!
 //! These tests drive [`Room::answer`], which is the server's dispatch with the socket taken out, so
@@ -100,7 +100,7 @@ fn every_frame_round_trips_through_json() {
             beat_every_ms: 5_000,
             threshold: 3,
             identity: "the room on /tmp/room.sock — started 4s ago".to_string(),
-            // **The count is the SERVER's**, so a `Room` driven directly by a test answers zero —
+            // **The count is the SERVER's**, so a `Room` driven directly by a test answers zero  -
             // and the round trip is what this vector is for: the field is on the wire either way.
             missed: 2,
             missed_since_ms: 1_500,
@@ -260,7 +260,7 @@ fn a_repeated_claim_is_the_same_claim() {
         },
         1_100,
     );
-    // A new request id — a client that cannot remember what it sent — and the same claim comes
+    // A new request id - a client that cannot remember what it sent - and the same claim comes
     // back, with the clock where it was.
     let second = room.answer(
         &a,
@@ -416,7 +416,7 @@ fn a_dispute_and_its_ruling_cross_the_wire() {
     }
 }
 
-/// **The pane's read is a read**: every item (the finished ones too — a row that vanished is a row
+/// **The pane's read is a read**: every item (the finished ones too - a row that vanished is a row
 /// a person cannot account for), every open question, and the three fields the ROOM cannot answer
 /// left empty for the server to fill.
 #[test]
@@ -446,15 +446,15 @@ fn the_rooms_read_answers_every_item_and_the_open_questions() {
             assert_eq!(items[0].state_name(), "done");
             assert_eq!(items[1].holder(), None, "`s-b` has not claimed anything");
             assert!(questions.is_empty());
-            // **The three the state machine cannot answer** — the SERVER fills them, and a room
+            // **The three the state machine cannot answer** - the SERVER fills them, and a room
             // that invented them would be a second answer to *is the arbiter up*.
             assert!(identity.is_empty(), "{identity}");
             assert_eq!(arbiter, None);
             assert!(connected.is_empty(), "{connected:?}");
-            // **And the agents too** — who owns a queue is a fact about the daemon that seats one,
+            // **And the agents too** - who owns a queue is a fact about the daemon that seats one,
             // so a room driven on its own has none to name.
             assert!(agents.is_empty(), "{agents:?}");
-            // **And the tree** — the membership is the daemon's to describe, so a room driven on
+            // **And the tree** - the membership is the daemon's to describe, so a room driven on
             // its own holds nobody until one does (`Request::Members`).
             assert!(members.is_empty(), "{members:?}");
         }

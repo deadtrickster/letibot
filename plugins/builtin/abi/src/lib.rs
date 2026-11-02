@@ -13,7 +13,7 @@ use std::cell::UnsafeCell;
 /// refuses a bigger one with a sentence rather than the guest trapping on a short arena.
 pub const IN_CAP: usize = 1 << 20;
 
-/// The largest answer a hook may write — a view of a few hundred rows is far under it.
+/// The largest answer a hook may write - a view of a few hundred rows is far under it.
 pub const OUT_CAP: usize = 1 << 20;
 
 /// The answer the ABI calls *unchanged*: the layer passed, and the stack asks the one below.
@@ -24,7 +24,7 @@ pub const UNCHANGED: i32 = -1;
 struct Shared<T>(UnsafeCell<T>);
 
 // SAFETY: `wasm32-unknown-unknown` without atomics runs one thread, and rano instantiates a
-// store per call and joins it before returning — so no two hooks, and no hook and `rano_alloc`,
+// store per call and joins it before returning - so no two hooks, and no hook and `rano_alloc`,
 // ever run at once.
 unsafe impl<T> Sync for Shared<T> {}
 
@@ -79,10 +79,10 @@ pub fn input(ptr: i32, len: i32) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(at as *const u8, len) }
 }
 
-/// **Empty the answer arena** — the first thing every hook does, so what it answers does not
+/// **Empty the answer arena** - the first thing every hook does, so what it answers does not
 /// depend on what was answered before.
 pub fn reset() {
-    // SAFETY: see the module doc — one thread, one call at a time.
+    // SAFETY: see the module doc - one thread, one call at a time.
     unsafe { (*OUT.0.get()).at = 0 };
 }
 

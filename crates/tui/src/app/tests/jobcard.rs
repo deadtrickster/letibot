@@ -5,7 +5,7 @@
 use super::*;
 use crate::ui::transcript::job_card::{JobTail, ended_jobs, notice_jobs};
 
-/// The daemon's notices before R93.C3 (a byte count and the command on every bullet) — the shape
+/// The daemon's notices before R93.C3 (a byte count and the command on every bullet) - the shape
 /// every stored transcript from before it holds, so the head must keep reading it.
 const MINE: &str = include_str!("fixtures/job_notice_mine_v1.txt");
 const THEIRS: &str = include_str!("fixtures/job_notice_theirs_v1.txt");
@@ -16,11 +16,11 @@ const THEIRS_NOW: &str = include_str!("fixtures/job_notice_theirs.txt");
 /// R79's held batch: a `[meanwhile]` line over an ordinary `[job]` group, pinned by `harnessd`'s
 /// `the_meanwhile_notice_is_the_heads_fixture`.
 const MEANWHILE: &str = include_str!("fixtures/job_notice_meanwhile.txt");
-/// The same batch delivered the moment the turn it was held through ended — pinned by the same
+/// The same batch delivered the moment the turn it was held through ended - pinned by the same
 /// `harnessd` test.
 const MEANWHILE_TURN_END: &str = include_str!("fixtures/job_notice_meanwhile_turn_end.txt");
 
-/// The operator's paste, the notice's shape with one job — a command over several lines and the
+/// The operator's paste, the notice's shape with one job - a command over several lines and the
 /// memory clause, which is what used to defeat the fold and draw six raw rows.
 const ONE: &str = "[job] a job you backgrounded has ended:\n  - `build-and-test-null · j1042` exited 0 after 2m54s, wrote 1008 bytes: bash -c 'cd /home/dead/Projects/dbtest/pg-noop; echo \"=== building release\"\n  cargo build --release 2>&1 | tail -3'\n    memory: peak 245 MiB of a 8 GiB cap\nOutput: `job_output` job=\"j1042\".";
 
@@ -62,8 +62,8 @@ fn rows_with<'a>(screen: &'a [String], needle: &str) -> Vec<&'a String> {
     screen.iter().filter(|l| l.contains(needle)).collect()
 }
 
-/// **R93.C3: the notice as the daemon writes it now** — no byte count, and the command only on a
-/// job another session started — parses, and the card draws no empty command.
+/// **R93.C3: the notice as the daemon writes it now** - no byte count, and the command only on a
+/// job another session started - parses, and the card draws no empty command.
 #[test]
 fn the_notice_parser_reads_the_notice_without_bytes_or_own_command() {
     let (mine, jobs) = ended_jobs(MINE_NOW).expect("the owner's notice parses");
@@ -101,7 +101,7 @@ fn the_notice_parser_reads_the_notice_without_bytes_or_own_command() {
     );
 }
 
-/// **The parser reads what the daemon writes** — the fixtures ARE `completion_notice`'s output,
+/// **The parser reads what the daemon writes** - the fixtures ARE `completion_notice`'s output,
 /// so this is the half of the pin that says the TUI still understands it.
 #[test]
 fn the_notice_parser_reads_the_daemons_own_notices() {
@@ -140,7 +140,7 @@ fn the_notice_parser_reads_the_daemons_own_notices() {
     assert_eq!(notice_jobs(&both).map(|j| j.len()), Some(3));
 }
 
-/// **What it does not know, it does not draw compact** — `folded_notice`'s rule, kept.
+/// **What it does not know, it does not draw compact** - `folded_notice`'s rule, kept.
 #[test]
 fn a_notice_shape_the_parser_does_not_know_is_refused() {
     for (what, text) in [
@@ -241,7 +241,7 @@ fn several_jobs_in_one_notice_are_two_lines_each() {
     assert_eq!(a.notice_rows.len(), 6, "{:?}", a.notice_rows);
 }
 
-/// **At a narrow width the two lines stay two lines** — cut, not wrapped.
+/// **At a narrow width the two lines stay two lines** - cut, not wrapped.
 #[test]
 fn a_narrow_screen_cuts_the_lines_and_does_not_wrap_them() {
     let mut a = with_notice(ONE);
@@ -255,7 +255,7 @@ fn a_narrow_screen_cuts_the_lines_and_does_not_wrap_them() {
     }
 }
 
-/// **The output's last line is line 2** — asked for once, when the notice is on the screen,
+/// **The output's last line is line 2** - asked for once, when the notice is on the screen,
 /// at the tail of what the job wrote, and drawn when it lands.
 #[test]
 fn the_second_line_is_the_end_of_what_the_job_wrote() {
@@ -323,7 +323,7 @@ fn a_refused_tail_read_is_not_a_row_in_the_conversation() {
     assert!(joined.contains("⎿ wrote 1008 bytes"), "{joined}");
 }
 
-/// **A click on either line opens the whole card in the popup; Esc closes it** — the diff
+/// **A click on either line opens the whole card in the popup; Esc closes it** - the diff
 /// popup's mechanism, R69's one hit-test.
 #[test]
 fn a_click_on_a_notice_opens_the_full_card_and_esc_closes_it() {
@@ -370,7 +370,7 @@ fn a_click_on_a_notice_opens_the_full_card_and_esc_closes_it() {
     }
 }
 
-/// **The popup fills in when the output lands** — it was asked for when the notice was drawn,
+/// **The popup fills in when the output lands** - it was asked for when the notice was drawn,
 /// and the popup is laid out again on the answer.
 #[test]
 fn the_popup_shows_the_output_when_it_lands() {
@@ -530,7 +530,7 @@ fn the_rows_waiting_on_a_completion_are_kept_on_the_compact_row() {
     );
 }
 
-/// **A notice lights up whole under the pointer** — the operator: *"the card highlighted line by
+/// **A notice lights up whole under the pointer** - the operator: *"the card highlighted line by
 /// line on hover, yet click on each goes to the same job/agent card"*. Every row of it opens the
 /// same notice, so the pointer over any one brightens all of them, as an edit card does.
 #[test]

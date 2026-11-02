@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use letibot_http::Endpoint;
 
-/// The default node when nothing says otherwise — flowy's own default.
+/// The default node when nothing says otherwise - flowy's own default.
 pub const DEFAULT_ADDR: &str = "http://127.0.0.1:8787";
 
 /// Where a value was found.
@@ -94,7 +94,7 @@ pub struct Credentials {
     pub agent: String,
     pub token: String,
     /// The file the token was read from, when it was one. The seat loop re-reads
-    /// it to notice a re-mint — see [`crate::seat`].
+    /// it to notice a re-mint - see [`crate::seat`].
     pub token_file: Option<PathBuf>,
     pub addr_from: Source,
     pub agent_from: Source,
@@ -247,8 +247,8 @@ pub fn discover(o: &Onboarding) -> Result<Credentials, CredError> {
     } else if let Some(t) = o.env("FLOWY_TOKEN") {
         (t, Source::Env("FLOWY_TOKEN"), None)
     } else {
-        // The env file spells the token as `$(cat FILE)` — a shell line, not a
-        // value — so the file it names is what is read, and the token file is
+        // The env file spells the token as `$(cat FILE)` - a shell line, not a
+        // value - so the file it names is what is read, and the token file is
         // the source. A literal token in the env file is honoured too.
         let mut found = None;
         if let Some((v, src)) = from_env_file("FLOWY_TOKEN") {

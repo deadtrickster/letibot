@@ -44,7 +44,7 @@ fn a_row_that_only_contains_the_prompt_does_not_retire_it() {
         );
     }
 
-    // And the answer that IS one — a whole line — retires exactly that one.
+    // And the answer that IS one - a whole line - retires exactly that one.
     a.record_item(
         "s.4",
         TranscriptItem::User {
@@ -95,7 +95,7 @@ fn one_row_does_not_retire_two_identical_prompts() {
 }
 
 /// **A blank line is not a claim.** A piece that is empty carries no words, so it
-/// cannot say whether a prompt landed — and a row of blank lines must not retire
+/// cannot say whether a prompt landed - and a row of blank lines must not retire
 /// the queue by matching them.
 #[test]
 fn blank_lines_claim_nothing() {
@@ -196,7 +196,7 @@ fn a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted() {
     ));
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
 
-    // A body for a row this head never had: counted, said, and drawn nowhere —
+    // A body for a row this head never had: counted, said, and drawn nowhere  -
     // there is nothing to draw it on.
     a.record_item(
         "s.gone",
@@ -238,7 +238,7 @@ fn a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted() {
         "being behind is not a reason to resync"
     );
 
-    // A redelivery — a seq at or below this head's own — is not a distance.
+    // A redelivery - a seq at or below this head's own - is not a distance.
     a.apply(ServerFrame::Accepted {
         client_request_id: "r2".into(),
         seq: 1,
@@ -381,7 +381,7 @@ fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
 
     // **And a second pane that dies the same way is a second row.** The identity a note is
     // deduped by cannot tell two identical endings apart, so a pane's ending is filed without
-    // the redelivery test — otherwise the second `!term mc` would be swallowed by the first.
+    // the redelivery test - otherwise the second `!term mc` would be swallowed by the first.
     pane(&mut a, b"mc: not found\r\n");
     a.apply(ServerFrame::TermEnded {
         pane: Some(1),
@@ -477,7 +477,7 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
     assert!(twice.contains("nothing to retire"), "{twice}");
     assert!(!twice.contains("retired 0 note(s)"), "{twice}");
 
-    // **And back, if the reader was wrong** — the undo is exactly as cheap as the act.
+    // **And back, if the reader was wrong** - the undo is exactly as cheap as the act.
     typed(&mut a, "/notes restore");
     a.key(Key::Enter);
     let back = a.screen(100, 30).join("\n");
@@ -491,7 +491,7 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
 }
 
 /// **The reflex survives a restart** (R22 + R19 part 3), which is the half that stops it
-/// having to be repeated — and the half that used to be B's requirement and became A's
+/// having to be repeated - and the half that used to be B's requirement and became A's
 /// when the operator hit it.
 #[test]
 fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
@@ -521,7 +521,7 @@ fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
     );
     assert!(path.is_file(), "the press did not reach head.toml");
 
-    // A new head, the same file, the incident delivered **live** — the one delivery
+    // A new head, the same file, the incident delivered **live** - the one delivery
     // nothing else suppresses (a snapshot's copy is prior, a redelivery is not filed
     // twice), so what stops it here is the persisted retirement and nothing else.
     let mut b = app();
@@ -549,7 +549,7 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
     let mut a = app();
     a.clock(1_000);
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
-    // Three of one kind, at three instants — the shape of a retry ladder. Explicit stamps
+    // Three of one kind, at three instants - the shape of a retry ladder. Explicit stamps
     // rather than `Hub::publish`, because the mark is an ORDER and a test may not depend on
     // two publishes not landing in the same millisecond.
     for (i, ts) in [(1u64, 1_000u64), (2, 2_000), (3, 3_000)] {
@@ -564,7 +564,7 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
         )));
     }
     // **The premise, since bursts: three notices of one kind in one window are ONE counted
-    // row** (`app::COALESCE_MS`) — so this is a count to clear, not a wall, and every assertion
+    // row** (`app::COALESCE_MS`) - so this is a count to clear, not a wall, and every assertion
     // below is about the mark rather than about how many lines there were.
     let wall = a.screen(120, 40).join("\n");
     assert_eq!(
@@ -597,7 +597,7 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
     );
 
     // **A re-render in between.** A resync replaces `self.notes` wholesale from the daemon's
-    // snapshot — which still carries all three, because nothing trims the source — so this is
+    // snapshot - which still carries all three, because nothing trims the source - so this is
     // the strongest form of the thing that used to bring the wall back.
     a.apply(ServerFrame::Resync {
         reason: "queue overflow".into(),
@@ -672,7 +672,7 @@ fn a_notice_of_a_kind_the_watermark_never_covered_is_drawn() {
         0
     );
 
-    // **Older than the mark, and of a kind nobody has read** — the case a list-wide watermark
+    // **Older than the mark, and of a kind nobody has read** - the case a list-wide watermark
     // would swallow, and the one that must be drawn.
     a.apply(ServerFrame::Event(env_at(
         0,
@@ -741,7 +741,7 @@ fn a_notice_of_a_kind_the_reader_has_read_past_is_not_news_in_other_words() {
         0,
         "a re-worded copy of a notice the reader had read was drawn:\n{after}"
     );
-    // Hidden, and counted — the rule `/status` keeps for every retired note.
+    // Hidden, and counted - the rule `/status` keeps for every retired note.
     assert_eq!(a.notes.len(), 4, "it was dropped instead of hidden");
     assert_eq!(a.retired_notes(), 4);
     // And a NEWER one is still news: the mark is not a mute.
@@ -790,7 +790,7 @@ fn the_watermark_survives_the_key_set_being_reloaded_from_the_file() {
     assert_eq!(a.key(Key::CtrlN), None);
     assert!(path.is_file(), "the press did not reach head.toml");
 
-    // Another head saves the file with nothing retired in it — a restore, or a head that has
+    // Another head saves the file with nothing retired in it - a restore, or a head that has
     // never dismissed anything. This head's own key set is replaced by it.
     std::fs::write(&path, "diff = split\nretired =\n").expect("write the file");
     a.refresh_retired();
@@ -877,7 +877,7 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     let screen = a.screen(100, 30).join("\n");
     assert!(screen.contains("gate_timeout"), "{screen}");
 
-    // **Retired, and the wall goes — including its blank line.** The sentence said
+    // **Retired, and the wall goes - including its blank line.** The sentence said
     // `/notes`, so that is the verb; `/dismiss` is the same act under the word a
     // person types at a red block.
     typed(&mut a, "/dismiss");
@@ -1152,7 +1152,7 @@ fn a_dismissal_recorded_after_this_head_loaded_is_honoured_anyway() {
     assert_eq!(a.notes.len(), 1);
     assert_eq!(a.retired_notes(), 0, "nothing retired yet");
 
-    // **A second head retires it.** Not a call into `a` — a write to the file this
+    // **A second head retires it.** Not a call into `a` - a write to the file this
     // head will look at, which is the only thing the two processes share.
     let key = note_key(&a.notes[0].1);
     crate::prefs::save(
@@ -1165,7 +1165,7 @@ fn a_dismissal_recorded_after_this_head_loaded_is_honoured_anyway() {
     .unwrap();
 
     // **Before it looks, this head does not know.** `dismissed` is what it loaded at
-    // startup, and the file has moved since — which is the state the operator was in.
+    // startup, and the file has moved since - which is the state the operator was in.
     assert_eq!(
         a.retired_notes(),
         0,
@@ -1184,7 +1184,7 @@ fn a_dismissal_recorded_after_this_head_loaded_is_honoured_anyway() {
     let _ = std::fs::remove_dir_all(&dir);
 
     // And the same envelope arriving again lands retired rather than planting
-    // itself — the redelivery half of R10, now with the key read off the file
+    // itself - the redelivery half of R10, now with the key read off the file
     // rather than out of this head's own memory.
     a.key(Key::Esc);
     a.apply(ServerFrame::Event(live.clone()));
@@ -1237,7 +1237,7 @@ fn a_fresh_attach_shows_the_conversation_and_not_what_came_before_it() {
         "the note's text is on the screen, so it is not only the code that leaks:\n{screen}"
     );
 
-    // **Held, counted, listed** — the three things R19 asks for instead of drawing
+    // **Held, counted, listed** - the three things R19 asks for instead of drawing
     // them. `/notes` is where the fix puts them and `/status` is how a reader knows
     // there is something there.
     assert_eq!(a.notes.len(), 3, "{:?}", a.notes);
@@ -1346,7 +1346,7 @@ fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
         snapshot: Box::new(hub.snapshot()),
         scrubbed: Default::default(),
     });
-    // The border says it with a triangle, pinned right — a fact that exists
+    // The border says it with a triangle, pinned right - a fact that exists
     // only while it does, and never a resident sentence of bright yellow.
     let screen = a.screen(120, 24).join("\n");
     assert!(screen.contains('⚠'), "{screen}");
@@ -1354,7 +1354,7 @@ fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
         !screen.contains("dropped 12"),
         "the numbers are /status's, not the border's: {screen}"
     );
-    // The unboxed composer — no border to pin a triangle to — names them on a
+    // The unboxed composer - no border to pin a triangle to - names them on a
     // line of its own, read HERE, before the screen below acknowledges the alarm
     // (R51 item 17; the assertion used to sit after the `/status` read).
     let border = a.status_line(200);
@@ -1380,14 +1380,14 @@ fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
         .lines()
         .find(|l| {
             // Painted rows carry SGR codes before the label, so the shape is read off the
-            // plain text — the same stripper the pane uses on a name.
+            // plain text - the same stripper the pane uses on a name.
             let plain = without_control_lines(l);
             plain.trim_start().starts_with("resync") && plain.chars().any(|c| c.is_ascii_digit())
         })
         .expect("the resync row is on the /status screen");
     assert!(resync_row.contains('1'), "{resync_row}");
 
-    // **And READING it acknowledged the alarm** — R51 item 17, in the test that already had
+    // **And READING it acknowledged the alarm** - R51 item 17, in the test that already had
     // the whole story of one counter arriving. The numbers stay on the screen (asserted
     // above, after the read), the mark goes, and the screen says what it did.
     assert!(
@@ -1418,7 +1418,7 @@ fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
     );
 }
 
-/// **The acknowledgement is per counter and only up to what was read** — R51 item 17's
+/// **The acknowledgement is per counter and only up to what was read** - R51 item 17's
 /// *must not differ*, stated as arithmetic rather than through a screen.
 #[test]
 fn acknowledging_a_counter_silences_it_only_up_to_the_value_that_was_seen() {
@@ -1431,7 +1431,7 @@ fn acknowledging_a_counter_silences_it_only_up_to_the_value_that_was_seen() {
         ..Counters::default()
     };
     assert!(one.exceeds(none), "the first resync is news");
-    // Read it: acknowledged, and STILL not news — the second reading of the same number is
+    // Read it: acknowledged, and STILL not news - the second reading of the same number is
     // what a reader does not need a second time.
     assert!(!one.exceeds(one));
     // A resync after the one that was read is a different fact.
@@ -1440,8 +1440,8 @@ fn acknowledging_a_counter_silences_it_only_up_to_the_value_that_was_seen() {
         ..Counters::default()
     };
     assert!(two.exceeds(one), "the second resync is news again");
-    // **Per counter, not as a total.** A counter whose value went DOWN is not news — an alarm
-    // that fired on a decrease would be a mark nobody could ever clear — and a DIFFERENT
+    // **Per counter, not as a total.** A counter whose value went DOWN is not news - an alarm
+    // that fired on a decrease would be a mark nobody could ever clear - and a DIFFERENT
     // counter reaching a value this one already has is still its own news.
     assert!(!none.exceeds(one), "a decrease is not an incident");
     assert!(
@@ -1565,7 +1565,7 @@ fn a_replaced_daemon_is_noticed_said_and_re_asked() {
     );
 
     // **The socket died and the driver came back to a different process.** `head.rs` re-reads
-    // `SO_PEERCRED` on the new connection before the `Hello` is folded — that is the caller's
+    // `SO_PEERCRED` on the new connection before the `Hello` is folded - that is the caller's
     // order and this test's, because the arm reads `self.daemon_pid`.
     a.link_down("the daemon closed the connection");
     a.reconnect_sent();
@@ -1603,7 +1603,7 @@ fn a_replaced_daemon_is_noticed_said_and_re_asked() {
         );
     }
 
-    // **A rebuild that moved the wire is a replacement too**, even at the same pid — which is
+    // **A rebuild that moved the wire is a replacement too**, even at the same pid - which is
     // the reason the identity is a pair rather than the number alone.
     let mut b = app();
     b.set_daemon_pid(Some(4242));
@@ -1749,7 +1749,7 @@ fn a_rejection_shows_both_sequence_numbers() {
         expected_seq: 12,
         actual_seq: 40,
     });
-    // On its own line, above the composer — never *instead* of the composer,
+    // On its own line, above the composer - never *instead* of the composer,
     // which is what it used to be.
     let screen = a.screen(200, 12);
     let joined = screen.join("\n");
@@ -1789,7 +1789,7 @@ fn a_notice_does_not_outlive_its_welcome_or_hide_the_input() {
     );
 }
 
-/// **A notice expires in TIME, on this head's clock** — §11.3, and R13's second
+/// **A notice expires in TIME, on this head's clock** - §11.3, and R13's second
 /// symptom. The mirror of leticl's `a-notice-expires-and-an-alarm-does-not`.
 #[test]
 fn a_notice_expires_in_time_and_not_in_frames() {
@@ -1811,7 +1811,7 @@ fn a_notice_expires_in_time_and_not_in_frames() {
         "frames do not age a notice"
     );
     // **The boundary, and not \"eventually\": present a millisecond before the
-    // deadline, gone the millisecond it is due — and never `screen()` in between, so
+    // deadline, gone the millisecond it is due - and never `screen()` in between, so
     // the only thing that moved is the clock.
     a.clock(1_000 + NOTICE_MS - 1);
     assert!(
@@ -1900,7 +1900,7 @@ fn a_fleeting_notice_goes_after_its_time_and_a_failure_does_not() {
     );
 
     // **Spent, not retired.** The sentence leaves this head rather than joining the reader's
-    // own retired set — a timer may not write `head.toml`, because a key the reader restored
+    // own retired set - a timer may not write `head.toml`, because a key the reader restored
     // would then be re-retired by the clock on the next frame.
     assert_eq!(
         a.notes.len(),
@@ -1968,7 +1968,7 @@ fn one_warning_delivered_twice_is_noted_once() {
         wiring: Default::default(),
         sessions: Vec::new(),
     });
-    // And now the same envelope again, through the live arm — a redelivery.
+    // And now the same envelope again, through the live arm - a redelivery.
     a.apply(ServerFrame::Event(published.clone()));
 
     assert_eq!(
@@ -2083,7 +2083,7 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
         "the edge says nothing while a counter has moved:\n{screen}"
     );
 
-    // `/status`: the row is named, it is countable, and it carries the daemon's own code —
+    // `/status`: the row is named, it is countable, and it carries the daemon's own code  -
     // because moving the note off the screen took away the one place that spelling
     // appeared, and the code is the word a reader greps the session log for.
     a.command("status");
@@ -2103,7 +2103,7 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
     );
 
     // **The control: a code that changes the conversation is still a row in it.** Without
-    // this, a head that swallowed every warning would pass everything above — and R19's own
+    // this, a head that swallowed every warning would pass everything above - and R19's own
     // argument is that compactions are the rows the operator asked to keep seeing.
     let mut b = App::new(plain_cfg(80));
     assert_eq!(
@@ -2240,7 +2240,7 @@ fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
             "and the compaction is one row, not a block at `{}`:\n{screen}",
             profile.name
         );
-        // **The row says how to read the whole sentence, and a click (or alt-n) opens it** —
+        // **The row says how to read the whole sentence, and a click (or alt-n) opens it**  -
         // R89: it ended `· /notes` and could not be clicked.
         assert!(
             screen.contains("click for details"),
@@ -2255,7 +2255,7 @@ fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
             "the record the model reads was drawn in the conversation at `{}`:\n{screen}",
             profile.name
         );
-        // **And nothing was swallowed**: the whole sentence, record and all, is on `/notes` —
+        // **And nothing was swallowed**: the whole sentence, record and all, is on `/notes`  -
         // the unfold the row's seam names.
         a.command("notes");
         let listing = a.screen(100, 60).join("\n");
@@ -2316,7 +2316,7 @@ fn a_compaction_is_one_line_at_every_rung_and_the_forks_row_still_draws() {
         "the warning is still one row at `loud`:\n{screen}"
     );
     // **The fork's row is drawn, as ONE line** (R89: a System row was drawn whole, up to 190
-    // screen rows of the model's own record), and a click — or alt-n — opens it whole.
+    // screen rows of the model's own record), and a click - or alt-n - opens it whole.
     assert!(
         screen.contains("system · compacted summary ("),
         "the fork's own row vanished from the rung that draws what the head was given:\n{screen}"
@@ -2366,7 +2366,7 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
         .collect();
     assert_eq!(mismatch.len(), 1, "the failure has its own row:\n{screen}");
     // **Its register and its first clause are on the row, and its sentence is a click away**
-    // (R89): one line a notice, a failure included — the mark and the red say what it is.
+    // (R89): one line a notice, a failure included - the mark and the red say what it is.
     assert!(
         mismatch[0].contains("! ledger_chain_mismatch · row 41's head is not the one"),
         "{screen}"
@@ -2391,7 +2391,7 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
                   conversation across as it is; a new session gets the seated one from \
                   the start.";
     let hub = Hub::new("s");
-    // **A turn first, so the head is not drawing its empty-session placeholder** — notes
+    // **A turn first, so the head is not drawing its empty-session placeholder** - notes
     // live in the transcript's margin, and a session that has said nothing has no margin
     // to draw them in. Same preamble as `ctrl_n_retires_every_note_and_keeps_every_note`.
     hub.publish(testing::turn_started("t1"));
@@ -2412,7 +2412,7 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
         letibot_sessionlog::warning::Class::Routine,
         "the register is the whole of what a reader takes from the colour"
     );
-    // **One line now** — the operator, of the wall this note
+    // **One line now** - the operator, of the wall this note
     // used to draw: *"these gray walls are hilarious … make them the usual one liners"*
     // (`stale_card`). The remedy is the card's (`alt-r`), and the sentence is one click away.
     let screen = a.screen(120, 40).join("\n");
@@ -2442,7 +2442,7 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
 
 // ─────────────── a dismissed notice stays dismissed in every view ───────────────
 
-/// **A run folded into one counter, with notices filed at the end of the conversation** — the
+/// **A run folded into one counter, with notices filed at the end of the conversation** - the
 /// operator's frame: `[2 tool calls]` above the composer edge, and the notices he cleared above
 /// the live pane. The counter is what he clicked.
 fn a_run_with_notices() -> App {
@@ -2502,7 +2502,7 @@ fn a_run_with_notices() -> App {
             },
         )));
     }
-    // **The notices, at three instants** — explicit stamps, because a mark is an ORDER and two
+    // **The notices, at three instants** - explicit stamps, because a mark is an ORDER and two
     // publishes are not guaranteed to land in different milliseconds.
     for (i, ts) in [(1u64, 1_000u64), (2, 2_000), (3, 3_000)] {
         a.apply(ServerFrame::Event(env_at(
@@ -2520,7 +2520,7 @@ fn a_run_with_notices() -> App {
     a
 }
 
-/// Where `needle` starts on the screen, as (x, y) — the frames these tests read are the head's own.
+/// Where `needle` starts on the screen, as (x, y) - the frames these tests read are the head's own.
 fn where_at(screen: &[String], needle: &str) -> (u16, u16) {
     for (y, l) in screen.iter().enumerate() {
         let cells: String = crate::app::keyhints::cells(l).into_iter().collect();
@@ -2563,7 +2563,7 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
                 }),
             },
         )));
-        // One notice at the top of the conversation — its row is far above any window.
+        // One notice at the top of the conversation - its row is far above any window.
         if i == 1 {
             seq += 1;
             a.apply(ServerFrame::Event(env_at(
@@ -2591,7 +2591,7 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
     // Held, not dropped, and not retired: it is out of this window, which is a third answer.
     assert_eq!(a.notes.len(), 1, "the note is gone, not out of the window");
 
-    // **And a notice at the END of the conversation is drawn** — the rule is the seam, not the
+    // **And a notice at the END of the conversation is drawn** - the rule is the seam, not the
     // silence: a note whose row IS in the window still arrives.
     a.apply(ServerFrame::Event(env_at(
         0,
@@ -2629,7 +2629,7 @@ fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
         "the press did not clear the wall:\n{cleared}"
     );
 
-    // Open the run — the door the operator's click takes.
+    // Open the run - the door the operator's click takes.
     let (x, y) = where_at(&a.screen(200, 40), "2 tool calls");
     a.key(Key::Click { x: x + 1, y });
     let open = a.screen(200, 40).join("\n");
@@ -2651,7 +2651,7 @@ fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
         0,
         "the second expansion drew the retired wall:\n{again}"
     );
-    // And the mark is still the mark — nothing a drawing path did moved it.
+    // And the mark is still the mark - nothing a drawing path did moved it.
     assert_eq!(
         a.read_upto("model_endpoint_retry"),
         Some(3_000),

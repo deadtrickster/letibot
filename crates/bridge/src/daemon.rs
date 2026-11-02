@@ -58,7 +58,7 @@ fn fallback_runtime_base() -> PathBuf {
 }
 
 /// The key a workspace hashes to: the first twelve hex characters of its SHA-256, over
-/// the path with nothing added — the shell writes `printf '%s' "$WORKSPACE" | sha12`, and a
+/// the path with nothing added - the shell writes `printf '%s' "$WORKSPACE" | sha12`, and a
 /// trailing newline here would name a different socket for every folder.
 pub fn key(workspace: &Path) -> String {
     use sha2::Digest;
@@ -71,7 +71,7 @@ pub fn key(workspace: &Path) -> String {
 /// A folder's daemon: what it is called, where it listens, and where it writes its log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Daemon {
-    /// The workspace the key was taken from — the git toplevel, as the launcher resolves
+    /// The workspace the key was taken from - the git toplevel, as the launcher resolves
     /// it, because `letibot` in a subdirectory joins the repository's daemon.
     pub workspace: PathBuf,
     pub key: String,
@@ -83,7 +83,7 @@ pub struct Daemon {
     /// ([`letibot_sessionlog::placement`]), so this is the daemon's own answer. `None` is
     /// *nothing is known*, never *local*: see [`ensure_here`], which refuses rather than guesses.
     pub placement: Option<Placement>,
-    /// True when THIS call started the daemon, so the answer can say so — a bridge that
+    /// True when THIS call started the daemon, so the answer can say so - a bridge that
     /// claimed to have started a daemon somebody else's process was already serving would
     /// be describing the wrong process.
     pub started: bool,
@@ -121,7 +121,7 @@ pub fn workspace_of(worktree: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// The socket a key names under a rundir — one spelling, so `resolve` and the test that
+/// The socket a key names under a rundir - one spelling, so `resolve` and the test that
 /// pins the rule cannot drift.
 fn socket_in(rundir: &Path, key: &str) -> PathBuf {
     rundir.join(format!("{key}.sock"))
@@ -140,7 +140,7 @@ fn write_record(d: &Daemon, pid: u32, model: Option<&str>) -> std::io::Result<Pa
         None => String::new(),
     };
     // **`role` is the seat `daemon_args` starts**, and `dialect` is empty because this bridge
-    // does not decide one — the daemon reads it from its model. An empty field is what the shell
+    // does not decide one - the daemon reads it from its model. An empty field is what the shell
     // writes for a fact it does not have, and its readers treat it as absent.
     let record = serde_json::json!({
         "workspace": d.workspace.display().to_string(),
@@ -194,7 +194,7 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
     let workspace = workspace_of(workspace)?;
     let key = key(&workspace);
     // `$LETIBOT_SOCKET` is authoritative when set, exactly as in the shell: it is how a
-    // test — or a second head on the same folder — names a daemon the hash does not.
+    // test - or a second head on the same folder - names a daemon the hash does not.
     let socket = match std::env::var_os("LETIBOT_SOCKET") {
         Some(s) if !s.is_empty() => PathBuf::from(s),
         _ => socket_in(&rundir(), &key),
@@ -278,7 +278,7 @@ fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placemen
         "--role".into(),
         "leticode".into(),
         // The gate's asks go to an attached head, which is this bridge. `console` reads
-        // the daemon's own stdin, and a detached daemon has none — every gated call would
+        // the daemon's own stdin, and a detached daemon has none - every gated call would
         // refuse with "nobody answered".
         "--adjudicator".into(),
         "head".into(),
@@ -294,7 +294,7 @@ fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placemen
     }
     // **A VM ON that machine**, which is the pair `--host NAME --where firecode` and not another
     // placement: the host's own `firecode` boots the guest over this daemon's ssh link. Spelled
-    // the way harnessd parses it — `--vm` is the launcher's alias, expanded before it gets here.
+    // the way harnessd parses it - `--vm` is the launcher's alias, expanded before it gets here.
     if placement.is_vm() {
         args.push("--where".into());
         args.push("firecode".into());
@@ -355,7 +355,7 @@ fn start(
     let mut cmd = Command::new(binary);
     cmd.args(daemon_args(d, model, mode, placement))
         // The daemon links libllama for its TOKENIZER, and ggml registers every backend at
-        // load — 1.1 GB of a card for ops it never runs. `scripts/letibot` blindfolds it
+        // load - 1.1 GB of a card for ops it never runs. `scripts/letibot` blindfolds it
         // with the same variable, for the same reason and for harnessd only.
         .env("CUDA_VISIBLE_DEVICES", "")
         .stdin(Stdio::null())
@@ -391,7 +391,7 @@ fn reap(mut child: std::process::Child) {
         });
     if let Err(e) = spawned {
         // **Said rather than silent, and the daemon is not harmed by it**: the only thing lost
-        // is this process's tidiness, which is exactly the defect this function exists for — so
+        // is this process's tidiness, which is exactly the defect this function exists for - so
         // a bridge that cannot afford a thread says so on its stderr instead of leaking quietly.
         eprintln!(
             "  harnessd pid {pid} will not be waited for: the reaping thread could not be \
@@ -429,7 +429,7 @@ pub fn ensure(
     ensure_here(resolve(worktree)?, model, mode, placement)
 }
 
-/// [`ensure`] for a daemon already resolved — the shape a test drives, with a socket it bound
+/// [`ensure`] for a daemon already resolved - the shape a test drives, with a socket it bound
 /// itself and no folder to hash.
 pub fn ensure_here(
     mut d: Daemon,
@@ -627,8 +627,8 @@ mod tests {
             "the reaper must not shorten the daemon's life: it waits, it does not own"
         );
 
-        // **And it is reaped when it goes.** A zombie answers `kill(pid, 0)` with 0 — it is still
-        // in the process table — so this is the assertion the defect fails, and it fails by
+        // **And it is reaped when it goes.** A zombie answers `kill(pid, 0)` with 0 - it is still
+        // in the process table - so this is the assertion the defect fails, and it fails by
         // running out of deadline rather than by passing a zombie off as a process.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {

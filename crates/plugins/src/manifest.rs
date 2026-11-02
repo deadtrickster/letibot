@@ -55,7 +55,7 @@ impl std::fmt::Display for Scope {
     }
 }
 
-/// What a layer may ask the world for. Declared here, granted by the host (§3) — a capability in
+/// What a layer may ask the world for. Declared here, granted by the host (§3) - a capability in
 /// a manifest is a request, not a permission, and the [`crate::Loader`] is handed exactly this
 /// list so a module's imports cannot reach past it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -212,7 +212,7 @@ pub struct Manifest {
 pub struct ToolDecl {
     /// What the model calls it. The export is `tool_<name>`.
     pub name: String,
-    /// The prompt's one line for it — the same sentence `letibot_tools::schema::lint_description`
+    /// The prompt's one line for it - the same sentence `letibot_tools::schema::lint_description`
     /// has an opinion about, and `crate::plugins::tool` is where that opinion is applied.
     pub description: String,
     /// JSON Schema for the arguments. The runtime's `args::salvage` repairs a malformed call
@@ -230,7 +230,7 @@ impl ToolDecl {
 
 /// A tool name is an export name and a JSON key, so it is one word: lowercase, digits and `_`,
 /// starting with a letter. Refused rather than rewritten, because a name is what a model calls
-/// and what a manifest says — two spellings of it is a tool nothing answers.
+/// and what a manifest says - two spellings of it is a tool nothing answers.
 fn tool_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -489,7 +489,7 @@ fn strings(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// The same, for a key an older layer does not have — absent is an empty list.
+/// The same, for a key an older layer does not have - absent is an empty list.
 fn strings_opt(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
     match table.get(key) {
         Some(_) => strings(table, key),
@@ -781,7 +781,7 @@ type = "string"
         assert_eq!(m.tools[0].hook(), "tool_claude_transcript");
         assert_eq!(m.tools[0].description, "read another agent's transcripts");
         // The schema arrives as JSON, which is what the runtime's `salvage` reads and what a
-        // built-in tool writes by hand — nothing downstream knows which of the two it got.
+        // built-in tool writes by hand - nothing downstream knows which of the two it got.
         assert_eq!(m.tools[0].schema["type"], serde_json::json!("object"));
         assert_eq!(
             m.tools[0].schema["properties"]["what"]["type"],

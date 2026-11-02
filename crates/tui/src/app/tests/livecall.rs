@@ -5,7 +5,7 @@
 use super::*;
 
 /// A turn one round deep: the operator asked, the model narrated, one call is out and has not
-/// returned. Nothing of the call is a transcript row — that is the state the counter has no run
+/// returned. Nothing of the call is a transcript row - that is the state the counter has no run
 /// under it.
 fn a_call_in_flight(name: &str) -> App {
     let mut a = app();
@@ -70,7 +70,7 @@ fn a_call_in_flight(name: &str) -> App {
     a
 }
 
-/// The change a finished `edit` hands back — one line rewritten.
+/// The change a finished `edit` hands back - one line rewritten.
 fn a_change() -> letibot_sessionlog::event::ToolEdit {
     letibot_sessionlog::event::ToolEdit {
         path: "a.rs".into(),
@@ -85,7 +85,7 @@ fn a_change() -> letibot_sessionlog::event::ToolEdit {
     }
 }
 
-/// The call, finished, with a change on it — and its row NOT yet in the transcript, which is the
+/// The call, finished, with a change on it - and its row NOT yet in the transcript, which is the
 /// state a round of several calls is in for the whole of the round: the result rows are appended
 /// only after every call in it has run.
 fn a_finished_change() -> App {
@@ -121,7 +121,7 @@ fn find(screen: &[String], needle: &str) -> (u16, u16) {
     panic!("{needle:?} not on screen:\n{}", screen.join("\n"));
 }
 
-/// **The marker clause drawn on screen row `y`** — a `MarkerHit`'s `y` is a row of the window and
+/// **The marker clause drawn on screen row `y`** - a `MarkerHit`'s `y` is a row of the window and
 /// the conversation starts below the header, so the two are not the same number (the shift every
 /// `*_rows` record gets in `main_area`).
 fn clause_on(a: &App, y: u16) -> Option<&crate::app::runclick::MarkerHit> {
@@ -191,7 +191,7 @@ fn the_counters_columns_are_the_cells_it_was_drawn_in() {
         .collect();
     let drawn = &cells[clause.from + gutter..clause.to + gutter];
     assert_eq!(drawn, "1 tool call", "the record is not on its own words");
-    // The LAST column of the clause is inside it — the click that used to fall off the end.
+    // The LAST column of the clause is inside it - the click that used to fall off the end.
     let mut b = a_call_in_flight("bash");
     b.visibility = Visibility::of(Profile::CONVERSATION);
     b.invalidate_history();
@@ -315,7 +315,7 @@ fn a_cards_change_opens_the_popup_its_landed_row_opens() {
     );
 }
 
-/// **One rule for the rows that change shape while they are live** — the record is keyed by the
+/// **One rule for the rows that change shape while they are live** - the record is keyed by the
 /// CALL and not by the card's words, so the target survives the card going from `Running` to
 /// `Ran`, and a click after the change still answers about the same call.
 #[test]
@@ -326,7 +326,7 @@ fn the_target_follows_the_call_and_not_its_words() {
     let screen = a.screen(120, 30);
     let (x, y) = find(&screen, "Running");
     assert!(a.call_rows.iter().any(|(r, _)| *r == y as usize));
-    // The call finishes and the card now says `Ran` — a different string on the same row.
+    // The call finishes and the card now says `Ran` - a different string on the same row.
     a.apply(ServerFrame::Event(env_at(
         8,
         2_000,

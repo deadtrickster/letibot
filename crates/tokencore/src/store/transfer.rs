@@ -61,7 +61,7 @@ pub struct TableExport {
 }
 
 impl TableExport {
-    /// One column of one row, by name. A column this table does not have is `None` — for
+    /// One column of one row, by name. A column this table does not have is `None` - for
     /// the two marker columns a store newer than the file may not carry.
     pub fn cell<'a>(&self, row: &'a [Value], name: &str) -> Option<&'a Value> {
         let at = self.columns.iter().position(|c| c == name)?;
@@ -69,7 +69,7 @@ impl TableExport {
     }
 }
 
-/// **One session, its transcripts and everything keyed by it** — the file that travels.
+/// **One session, its transcripts and everything keyed by it** - the file that travels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionTransfer {
     pub format: u32,
@@ -80,7 +80,7 @@ pub struct SessionTransfer {
     pub session_id: String,
     pub tables: Vec<TableExport>,
     /// SHA-256 over this struct with the field absent, hex. The chain covers the tokens; this
-    /// covers what the chain cannot see — an item's JSON, a todo list, a mode.
+    /// covers what the chain cannot see - an item's JSON, a todo list, a mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
 }
@@ -103,7 +103,7 @@ pub struct ImportReport {
     pub caught_up: bool,
 }
 
-/// Where an import puts the session — the two things a transfer cannot know about the
+/// Where an import puts the session - the two things a transfer cannot know about the
 /// other side of the move.
 #[derive(Debug, Clone)]
 pub struct ImportInto {
@@ -124,7 +124,7 @@ impl SessionTransfer {
         self.table(name).map(|t| t.rows.as_slice()).unwrap_or(&[])
     }
 
-    /// **The session's own row**, or a refusal — nothing else in the file means anything
+    /// **The session's own row**, or a refusal - nothing else in the file means anything
     /// without it.
     pub fn session_row(&self) -> Result<(&TableExport, &Vec<Value>)> {
         let t = self.table("session").ok_or_else(|| {
@@ -162,7 +162,7 @@ impl SessionTransfer {
 }
 
 impl Store {
-    /// **Write one session out** — every row of every table in [`TABLES`], and the digest
+    /// **Write one session out** - every row of every table in [`TABLES`], and the digest
     /// over them.
     pub fn export_session(&self, session_id: &str) -> Result<SessionTransfer> {
         if self.session(session_id)?.is_none() {
@@ -309,7 +309,7 @@ impl Store {
         Ok(report)
     }
 
-    /// **Say where a session lives now** — `None` for the store you are reading (it is
+    /// **Say where a session lives now** - `None` for the store you are reading (it is
     /// live here), or the endpoint's name and when it moved.
     pub fn lives_on(&self, session_id: &str) -> Result<Option<(String, Option<i64>)>> {
         Ok(self
@@ -336,7 +336,7 @@ impl Store {
         Ok(())
     }
 
-    /// Every session marked as living somewhere else, by id — what a destination must know
+    /// Every session marked as living somewhere else, by id - what a destination must know
     /// before it takes a copy back, and what `--sessions` reads to say where a row went.
     pub fn migrated_sessions(&self) -> Result<Vec<(String, String, Option<i64>)>> {
         let conn = self.conn();
@@ -1081,7 +1081,7 @@ mod tests {
         seeded(&from);
         let good = from.export_session("sess-1").unwrap();
 
-        // 1. An item's JSON, edited — the digest is the only one that can see this.
+        // 1. An item's JSON, edited - the digest is the only one that can see this.
         let mut edited = good.clone();
         let items = edited
             .tables
@@ -1101,7 +1101,7 @@ mod tests {
             "nothing may be written when the file is refused"
         );
 
-        // 2. The digest recomputed over the edit — so the tamper is inside the CHAIN now,
+        // 2. The digest recomputed over the edit - so the tamper is inside the CHAIN now,
         // and the chain check is what refuses it. This is the arm a corrupt-but-consistent
         // file reaches.
         let mut rewired = good.clone();
@@ -1111,7 +1111,7 @@ mod tests {
             .find(|t| t.table == "transcript_item")
             .unwrap();
         let at = items.columns.iter().position(|c| c == "tokens").unwrap();
-        // One token changed, and the lengths still agree — exactly what a bit flip in the
+        // One token changed, and the lengths still agree - exactly what a bit flip in the
         // blob looks like.
         let value = items.rows[1][at].clone();
         let hexed = blob_cell(&value).unwrap();
@@ -1233,7 +1233,7 @@ mod tests {
         let there = Store::open_in_memory().unwrap();
         there.import_session(&gone, &into()).unwrap();
 
-        // The stale copy gets a row of its own — the thing the marker exists to prevent, done on
+        // The stale copy gets a row of its own - the thing the marker exists to prevent, done on
         // purpose here to prove it is caught.
         let loaded = here.load_transcript("tr-1").unwrap();
         let mut ledger = TokenLedger::restore(
@@ -1270,7 +1270,7 @@ mod tests {
         );
     }
 
-    /// **The marker is one column and it round trips** — `--sessions` reads it, and a
+    /// **The marker is one column and it round trips** - `--sessions` reads it, and a
     /// session that came home is a session whose marker is cleared rather than a row that
     /// was rewritten.
     #[test]
@@ -1297,7 +1297,7 @@ mod tests {
         assert!(s.migrated_sessions().unwrap().is_empty());
     }
 
-    /// An empty session — a row a daemon wrote at startup and nobody prompted into — moves
+    /// An empty session - a row a daemon wrote at startup and nobody prompted into - moves
     /// too, and its transcript has no chain to break.
     #[test]
     fn a_session_with_no_rows_moves_and_its_empty_transcript_is_fine() {

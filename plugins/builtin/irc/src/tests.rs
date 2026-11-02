@@ -28,7 +28,7 @@ fn s(id: &str, title: &str) -> Value {
     })
 }
 
-/// `base` with fields replaced — the fixture's one way of saying *and this one is different*.
+/// `base` with fields replaced - the fixture's one way of saying *and this one is different*.
 fn with(base: Value, more: Value) -> Value {
     let mut out = base;
     let (Some(to), Some(from)) = (out.as_object_mut(), more.as_object()) else {
@@ -70,7 +70,7 @@ fn ask(feed: &Value, state: &Value, rect: u32, event: Option<(&str, &str)>) -> V
     serde_json::from_str(&answer).expect("the answer is a view")
 }
 
-/// The state a view hands back — what the host keeps and gives the next call.
+/// The state a view hands back - what the host keeps and gives the next call.
 fn kept(view: &Value) -> Value {
     view["state"].clone()
 }
@@ -91,7 +91,7 @@ fn ids(view: &Value) -> Vec<Option<String>> {
         .collect()
 }
 
-/// The session rows only — every row a stop whose id is a session.
+/// The session rows only - every row a stop whose id is a session.
 fn sessions(view: &Value) -> Vec<Value> {
     rows(view)
         .into_iter()
@@ -217,7 +217,7 @@ fn a_subagent_is_not_in_the_nick_list() {
     );
 }
 
-/// **The session you are in is marked** — `»`, the strong name, and the first row, because that is
+/// **The session you are in is marked** - `»`, the strong name, and the first row, because that is
 /// the one a person always wants to find.
 #[test]
 fn the_session_you_are_in_is_marked() {
@@ -241,7 +241,7 @@ fn the_session_you_are_in_is_marked() {
 }
 
 /// **The column does not stretch.** A pane handed a hundred columns draws a thirty-column column
-/// with the fact pinned to ITS right edge — the whole reason the fact is a padded cell rather than
+/// with the fact pinned to ITS right edge - the whole reason the fact is a padded cell rather than
 /// the host's `facts` (which the host right-aligns against the rectangle).
 #[test]
 fn the_column_is_the_width_it_chose_and_not_the_rect() {
@@ -317,7 +317,7 @@ fn the_order_is_pinned_until_the_roster_changes() {
         vec!["s-a", "s-b", "s-c"],
         "you first, then the idle ones by recency"
     );
-    // `s-c` starts working. The rule would move it to the top of the working band — and it does
+    // `s-c` starts working. The rule would move it to the top of the working band - and it does
     // NOT, because the set of sessions did not change.
     let busy = feed_of(
         vec![
@@ -363,7 +363,7 @@ fn the_order_is_pinned_until_the_roster_changes() {
     );
 }
 
-/// **Hiding is a strip, and the strip is a stop** — a pane that hides itself to nothing is a pane
+/// **Hiding is a strip, and the strip is a stop** - a pane that hides itself to nothing is a pane
 /// somebody has to guess their way back into, and the key that brings it back has to be on a row
 /// the cursor can rest on.
 #[test]
@@ -405,7 +405,7 @@ fn hiding_leaves_a_strip_that_says_how_to_come_back() {
 }
 
 /// **Wider and narrower are the column's own, clamped** to a third of the rectangle and to the
-/// minimum — the two ends a person cannot press past.
+/// minimum - the two ends a person cannot press past.
 #[test]
 fn wider_and_narrower_are_clamped_to_a_third_and_to_the_minimum() {
     let f = feed_of(vec![with(s("s-a", "a"), json!({"heads": 1}))], "s-a");
@@ -434,7 +434,7 @@ fn wider_and_narrower_are_clamped_to_a_third_and_to_the_minimum() {
     assert!(!cell(row, 2).is_empty());
 }
 
-/// **The scope is a filter, and the header says what it hides** — the channel's name IS the scope,
+/// **The scope is a filter, and the header says what it hides** - the channel's name IS the scope,
 /// so a narrowed list can never look like a complete one.
 #[test]
 fn the_scope_narrows_to_the_project_and_says_what_it_hides() {
@@ -486,7 +486,7 @@ fn the_scope_narrows_to_the_project_and_says_what_it_hides() {
     assert_eq!(cell(&rows(&round)[0], 0), "#agent-x · 1 of 3 · 0 working");
 }
 
-/// **A `repo` the host asked git about wins over the worktree convention** — the convention is the
+/// **A `repo` the host asked git about wins over the worktree convention** - the convention is the
 /// fallback for a host that did not say, not the rule.
 #[test]
 fn the_feeds_repository_wins_over_the_worktree_convention() {
@@ -511,7 +511,7 @@ fn the_feeds_repository_wins_over_the_worktree_convention() {
     );
 }
 
-/// **A session the scope hides but that is WORKING keeps a place** — a narrowed list that hides the
+/// **A session the scope hides but that is WORKING keeps a place** - a narrowed list that hides the
 /// one agent doing something is how a person loses an agent.
 #[test]
 fn a_working_session_outside_the_scope_keeps_a_place() {
@@ -553,7 +553,7 @@ fn a_working_session_outside_the_scope_keeps_a_place() {
     assert_eq!(cell(&working, 0), "+", "and it keeps its mark");
 }
 
-/// **A running session that has gone quiet is drawn as news** — the whole question the fact column
+/// **A running session that has gone quiet is drawn as news** - the whole question the fact column
 /// answers, and the one place its role is not `faint` or `pending`.
 #[test]
 fn a_running_session_that_has_gone_quiet_is_drawn_as_news() {
@@ -596,7 +596,7 @@ fn a_running_session_that_has_gone_quiet_is_drawn_as_news() {
     );
 }
 
-/// **A host that hands no feed gets a screen that says so** — an empty nick list and a broken host
+/// **A host that hands no feed gets a screen that says so** - an empty nick list and a broken host
 /// look identical, and only one of them is the plugin's problem.
 #[test]
 fn a_host_with_no_feed_says_so() {
@@ -631,7 +631,7 @@ fn a_session_waiting_on_you_is_marked_in_its_name() {
     );
 }
 
-/// **A list with nothing in it is still a row** — an `empty` sentence would leave the pane with no
+/// **A list with nothing in it is still a row** - an `empty` sentence would leave the pane with no
 /// stop at all, and the keys that widen the column or the scope are on a stop.
 #[test]
 fn an_empty_feed_is_a_row_so_the_keys_stay_reachable() {
@@ -657,7 +657,7 @@ fn an_empty_feed_is_a_row_so_the_keys_stay_reachable() {
     assert_eq!(cell(&rows[0], 0), "#all · 0 here · 0 working");
 }
 
-/// **At the minimum width the list is still a list** — the mark and the fact never go, the name is
+/// **At the minimum width the list is still a list** - the mark and the fact never go, the name is
 /// cut, and nothing runs past the column's edge. This is the drawing itself, asserted, because a
 /// column that degrades into a broken grid is the one thing a narrow pane cannot afford.
 #[test]

@@ -11,7 +11,7 @@ use rano::style::Role;
 
 use crate::ui::render::{trim_to, visible_width};
 
-/// The eight steps a sparkline is drawn in, shortest to tallest — a history read as a shape
+/// The eight steps a sparkline is drawn in, shortest to tallest - a history read as a shape
 /// rather than as numbers.
 const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -38,7 +38,7 @@ pub(crate) enum Screen {
 /// from is replaced wholesale on every look, so a name would outlive its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stop {
-    /// Panel `panel`, block `block`, item `item` — a line, a table or tree row, or a markdown
+    /// Panel `panel`, block `block`, item `item` - a line, a table or tree row, or a markdown
     /// item, in the order that panel's blocks are drawn.
     Item {
         panel: usize,

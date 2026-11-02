@@ -13,11 +13,11 @@ pub(crate) const DAEMON_STARTED: &str = "daemon_started";
 
 /// **This daemon's binary is older than the store it serves** (`store::floor` in
 /// `letibot-tokencore`). Said on every attach by `server::seat_in` while it is true, and taken as
-/// STATE rather than as a note — see [`App::store_newer`].
+/// STATE rather than as a note - see [`App::store_newer`].
 pub(crate) const STORE_NEWER: &str = "store_newer";
 
 impl App {
-    /// **A boot step, taken as the state it is** — `true` when `code` was one, so the caller
+    /// **A boot step, taken as the state it is** - `true` when `code` was one, so the caller
     /// draws no row for it. The live arm and the snapshot both come here, so a head that attaches
     /// mid-boot (the hub's log replays them) and one that watched it agree.
     pub(crate) fn boot_warning(&mut self, code: &str, detail: &str) -> bool {
@@ -45,7 +45,7 @@ impl App {
                 if code == "turn_failed" {
                     return Disposition::Filtered;
                 }
-                // **The daemon's boot, as a state and not as rows** (R92.2) — the line on the
+                // **The daemon's boot, as a state and not as rows** (R92.2) - the line on the
                 // tail and the label on a queued prompt; the steps are not the conversation.
                 if self.boot_warning(&code, &detail) {
                     self.redraw = true;

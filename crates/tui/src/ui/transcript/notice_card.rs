@@ -20,7 +20,7 @@ use rano::style::Role;
 
 use crate::ui::transcript::line_cards::{CLICK, Card, first_clause, flat, sentences};
 
-/// The longest a summarised part of a line is before it is cut with `…` — so the line's other
+/// The longest a summarised part of a line is before it is cut with `…` - so the line's other
 /// facts and its hint survive at an ordinary width.
 const PART: usize = 60;
 
@@ -44,7 +44,7 @@ fn chars(n: usize) -> String {
     }
 }
 
-/// `958k`, `1.2M`, `512` — a token count as a person reads it.
+/// `958k`, `1.2M`, `512` - a token count as a person reads it.
 fn tokens(n: u64) -> String {
     match n {
         n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
@@ -69,7 +69,7 @@ fn gist(text: &str) -> String {
     first_clause(first)
 }
 
-/// **The one line for a session row no card reader and no fold accounts for** — never `None`.
+/// **The one line for a session row no card reader and no fold accounts for** - never `None`.
 pub(crate) fn session_notice(text: &str) -> Card {
     const READERS: &[fn(&str) -> Option<Card>] = &[
         length_cap,
@@ -93,12 +93,12 @@ pub(crate) fn session_notice(text: &str) -> Card {
         .unwrap_or_else(|| generic(text))
 }
 
-/// **Whether a `\n\n` group opens a notice of its own** — where [`notices`] splits a row.
+/// **Whether a `\n\n` group opens a notice of its own** - where [`notices`] splits a row.
 fn opens_notice(group: &str) -> bool {
     const OPENINGS: &[&str] = &[
         "Tool call ",
         "message from your parent session `",
-        // **And the other direction** — a child answering, a peer, the session hosting a review.
+        // **And the other direction** - a child answering, a peer, the session hosting a review.
         // Without it the row still drew (as the generic notice card) but its words were clipped
         // and its sender was not named.
         "message from session `",
@@ -120,7 +120,7 @@ fn opens_notice(group: &str) -> bool {
 }
 
 /// **A row's notices**: split at each blank line that a notice opens after. A group that does
-/// not open one belongs to the notice above it — its paragraph, which the popup shows.
+/// not open one belongs to the notice above it - its paragraph, which the popup shows.
 pub(crate) fn notices(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -159,7 +159,7 @@ pub(crate) fn generic(text: &str) -> Card {
     )
 }
 
-/// **A lead and a whole short text** — a note this head wrote as one sentence for one line
+/// **A lead and a whole short text** - a note this head wrote as one sentence for one line
 /// already (`not run`, an answer): flattened, not cut at a clause, and cut to the width by
 /// [`Card::cut`].
 pub(crate) fn whole_parts(lead: &str, role: Role, text: &str) -> Card {
@@ -167,7 +167,7 @@ pub(crate) fn whole_parts(lead: &str, role: Role, text: &str) -> Card {
     card(lead, role, vec![said.clone()], short(&said, PART))
 }
 
-/// `Tool call X was not executed: …`, once a call — the length cap's salvage.
+/// `Tool call X was not executed: …`, once a call - the length cap's salvage.
 fn length_cap(text: &str) -> Option<Card> {
     let mut by: Vec<(String, usize)> = Vec::new();
     let mut n = 0;
@@ -203,7 +203,7 @@ fn length_cap(text: &str) -> Option<Card> {
     ))
 }
 
-/// `[todo check] …` — the plan check that did not fold to its items.
+/// `[todo check] …` - the plan check that did not fold to its items.
 fn todo_check(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("[todo check] ")?;
     let (head, body) = rest.split_once('\n').unwrap_or((rest, ""));
@@ -295,7 +295,7 @@ fn intent_check(text: &str) -> Option<Card> {
     Some(card("intent check", Role::Attention, parts, title))
 }
 
-/// `[context check] you said "…". Your context is 54% full — 547,198 of 999,999 tokens. …`.
+/// `[context check] you said "…". Your context is 54% full - 547,198 of 999,999 tokens. …`.
 fn context_check(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("[context check] ")?;
     let mut parts = Vec::new();
@@ -318,7 +318,7 @@ fn context_check(text: &str) -> Option<Card> {
     Some(card("context check", Role::Attention, parts, title))
 }
 
-/// `The merge queue cannot …` / `is holding …` — the queue's older notices no card reads.
+/// `The merge queue cannot …` / `is holding …` - the queue's older notices no card reads.
 fn merge_queue(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("The merge queue ")?;
     let first = flat(rest.split("\n\n").next()?);
@@ -369,7 +369,7 @@ fn reseat(text: &str) -> Option<Card> {
     ))
 }
 
-/// What a monitor's bullet says after the watch's own description: `FIRED after 0.3s — …`.
+/// What a monitor's bullet says after the watch's own description: `FIRED after 0.3s - …`.
 pub(crate) fn monitor_said(bullet: &str) -> Option<(String, String)> {
     let b = bullet.strip_prefix('`')?;
     let (name, rest) = b.split_once('`')?;
@@ -380,7 +380,7 @@ pub(crate) fn monitor_said(bullet: &str) -> Option<(String, String)> {
     Some((name.to_string(), said.trim().to_string()))
 }
 
-/// `[monitor] N watch(es) fired:` and its bullets, when the fold did not take it — or, since
+/// `[monitor] N watch(es) fired:` and its bullets, when the fold did not take it - or, since
 /// R93.C8, one `[monitor] \`name\` fired: why.` / `… expired without firing.` line per watch.
 fn monitor(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("[monitor] ")?;
@@ -456,13 +456,13 @@ fn deliverable(text: &str) -> Option<Card> {
     ))
 }
 
-/// `session ID was seated … with a prompt this daemon would not compose now: …` — the stale
+/// `session ID was seated … with a prompt this daemon would not compose now: …` - the stale
 /// prompt's sentence, as the session row it is also written as: the `prefix_stale` card's line.
 fn stale_session(text: &str) -> Option<Card> {
     crate::ui::transcript::stale_card::stale_card(text)
 }
 
-/// `[answer] on "ROW": you asked "…" — the operator chose "X"…`.
+/// `[answer] on "ROW": you asked "…" - the operator chose "X"…`.
 fn answer(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("[answer] on \"")?;
     let (row, after) = rest.split_once("\": ")?;
@@ -509,7 +509,7 @@ fn overthinking(text: &str) -> Option<Card> {
     ))
 }
 
-/// **A System row's one line** — `system · compacted summary (18.7k chars)`, or its first clause.
+/// **A System row's one line** - `system · compacted summary (18.7k chars)`, or its first clause.
 pub(crate) fn system_notice(text: &str, bootstrap: bool) -> Card {
     let n = text.chars().count();
     let said = if bootstrap {

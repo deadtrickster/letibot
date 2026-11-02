@@ -53,7 +53,7 @@ fn settle(a: &mut App) {
     a.editor_tick(Instant::now());
 }
 
-/// Where rano is: the file it is holding and the 1-based line — read out of the pane's own
+/// Where rano is: the file it is holding and the 1-based line - read out of the pane's own
 /// answer, never out of the row a test handed in, so a pane that opened the wrong note fails.
 fn place(a: &App) -> (String, usize) {
     let e = a
@@ -121,7 +121,7 @@ fn the_pane_draws_the_indexes_abstract_and_the_files_own_size_and_age() {
         screen.contains("1 of 2 indexed"),
         "the budget's effect is the field this pane exists for: {screen}"
     );
-    // **A derived abstract says so, and an author's own line does not** — once each, so the
+    // **A derived abstract says so, and an author's own line does not** - once each, so the
     // marker cannot be decorating both halves.
     assert_eq!(
         screen.matches("(derived)").count(),
@@ -206,7 +206,7 @@ fn enter_opens_the_selected_note_in_the_editor_pane() {
         "the row under the cursor, not the one above it: {path}"
     );
     assert_eq!(line, 1, "a note is read from its first line");
-    // The whole file is what is on the screen — for an `indexed` note this is the point: the
+    // The whole file is what is on the screen - for an `indexed` note this is the point: the
     // prompt carries its headings and line ranges, and the text is only here.
     let screen = a.screen(120, 24).join("\n");
     assert!(screen.contains("the second note"), "{screen}");
@@ -349,7 +349,7 @@ fn the_rows_are_what_list_notes_said() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **An empty corpus says so rather than drawing an empty pane** — and Enter in it does
+/// **An empty corpus says so rather than drawing an empty pane** - and Enter in it does
 /// nothing rather than falling through to the composer.
 #[test]
 fn an_empty_corpus_says_so() {
@@ -400,8 +400,8 @@ fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     a.screen(120, 24);
     assert!(!a.take_actions().contains(&Action::ListNotes));
 
-    // **The note grows, with the pane open.** The size on the row moves at once — it is read
-    // here — so the form must be asked for again rather than left saying `verbatim` beside a
+    // **The note grows, with the pane open.** The size on the row moves at once - it is read
+    // here - so the form must be asked for again rather than left saying `verbatim` beside a
     // size that no longer fits.
     std::fs::write(&p, "x".repeat(4096)).unwrap();
     a.screen(120, 24);
@@ -414,7 +414,7 @@ fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     assert!(!a.take_actions().contains(&Action::ListNotes));
 
     // **And a note that did not exist before is a change too**, in the workspace's own notes
-    // directory — watched whether or not it has anything in it, so an empty pane does not sit
+    // directory - watched whether or not it has anything in it, so an empty pane does not sit
     // there saying there are none while one is being written.
     let mut b = app();
     b.session_id = "s1".into();

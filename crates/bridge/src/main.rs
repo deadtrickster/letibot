@@ -1,4 +1,4 @@
-//! `letibot-mcp` — the Claude Code bridge.
+//! `letibot-mcp` - the Claude Code bridge.
 //!
 //! ```text
 //!   letibot-mcp                              MCP over stdio (what Claude Code runs)
@@ -95,7 +95,7 @@ fn serve() -> i32 {
         Ok(()) => 0,
         Err(e) => {
             // A writer error is the client leaving; a reader error is the pipe. Neither is
-            // a bug in the bridge, and stdout is the wire — the sentence goes to stderr.
+            // a bug in the bridge, and stdout is the wire - the sentence goes to stderr.
             eprintln!("letibot-mcp: {e}");
             1
         }

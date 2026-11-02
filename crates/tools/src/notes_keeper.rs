@@ -497,7 +497,7 @@ fn proposal(line: &str, note: &Path) -> Result<Proposal, String> {
     })
 }
 
-/// `remove [<evidence>] <note path> — the evidence`, as the prompt asks for it.
+/// `remove [<evidence>] <note path> - the evidence`, as the prompt asks for it.
 fn parse_proposal(line: &str) -> Result<Proposal, String> {
     let t = line.trim();
     let Some(rest) = t.strip_prefix("remove") else {
@@ -534,7 +534,7 @@ fn parse_proposal(line: &str) -> Result<Proposal, String> {
         ));
     };
     let rest = rest.trim();
-    // The separator's length comes from the literal itself: `" — ".len()` is five bytes (two
+    // The separator's length comes from the literal itself: `" - ".len()` is five bytes (two
     // spaces and a three-byte em dash) and a hand-written `3` here was a real bug, caught by a
     // test slicing inside the dash.
     let (at, sep) =

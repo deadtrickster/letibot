@@ -53,7 +53,7 @@ CREATE INDEX IF NOT EXISTS process_open_idx ON process (state);
 CREATE INDEX IF NOT EXISTS process_session_idx ON process (session_id, state);
 "#;
 
-/// **Where a supervised process stands** — six states, and see the module header for why the last
+/// **Where a supervised process stands** - six states, and see the module header for why the last
 /// three are not interchangeable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcState {
@@ -67,7 +67,7 @@ pub enum ProcState {
     Stopped,
     /// Gone, with no exit recorded.
     Dead,
-    /// The host could not be reached to say — the process **may still run**.
+    /// The host could not be reached to say - the process **may still run**.
     Lost,
 }
 
@@ -98,8 +98,8 @@ impl ProcState {
         })
     }
 
-    /// **Is this a process the supervisor still has to look after?** `lost` is — the job may
-    /// still be running — and that is the whole point of the state.
+    /// **Is this a process the supervisor still has to look after?** `lost` is - the job may
+    /// still be running - and that is the whole point of the state.
     pub fn is_open(self) -> bool {
         matches!(
             self,
@@ -120,20 +120,20 @@ pub struct ProcessRecord {
     /// The session that owns it: what a teardown of that session kills, and what a restart's
     /// re-attachment re-arms.
     pub session: String,
-    /// The handle the model knows it by — `j65`.
+    /// The handle the model knows it by - `j65`.
     pub handle: String,
     /// `None` for this box, a host from `hosts.toml` otherwise. **The unit of a liveness check
     /// is this field**, never the job: one check per host per tick.
     pub host: Option<String>,
     pub pid: u32,
-    /// The process group a teardown signals, when the pid leads one — asked rather than assumed,
+    /// The process group a teardown signals, when the pid leads one - asked rather than assumed,
     /// because `kill -TERM -<pid>` on a pid that is not a leader signals *the caller's* group.
     pub pgid: Option<u32>,
     /// What makes a reused pid not this process. See the module header.
     pub identity: String,
     pub command: String,
     pub cwd: String,
-    /// The scope whose end reaps it, as a name — `session.s12`, `turn.t3`, or an explicit one.
+    /// The scope whose end reaps it, as a name - `session.s12`, `turn.t3`, or an explicit one.
     pub scope: String,
     pub started_ms: i64,
     /// When it must be gone, as a wall clock. `None` = nobody asked.
@@ -142,19 +142,19 @@ pub struct ProcessRecord {
     /// The exit status. Only `done` has one: a signal and a vanishing are not exit codes, and a
     /// reader that averaged them would be reporting a failure a command never gave.
     pub exit: Option<i32>,
-    /// Where the whole of its output is going, when it goes to a file — the remote job directory's
+    /// Where the whole of its output is going, when it goes to a file - the remote job directory's
     /// `<id>.out`, or a promoted run's spill.
     pub log_path: Option<String>,
     pub log_read: u64,
     /// **The last check**: when, how long it took, and what it answered. `check_how` is a short
-    /// word — `proc`, `ps`, `ssh`, `jobdir`, `expired` — never a payload.
+    /// word - `proc`, `ps`, `ssh`, `jobdir`, `expired` - never a payload.
     pub check_ms: Option<i64>,
     pub check_took_ms: Option<u64>,
     pub check_how: Option<String>,
 }
 
 impl ProcessRecord {
-    /// A record for a process that has just been launched, with the check fields unset — the
+    /// A record for a process that has just been launched, with the check fields unset - the
     /// honest state of a process nobody has looked at yet.
     pub fn starting(
         session: impl Into<String>,
@@ -194,7 +194,7 @@ impl ProcessRecord {
     }
 }
 
-/// **What one check of one process answered** — the three fields a check writes, in one value so
+/// **What one check of one process answered** - the three fields a check writes, in one value so
 /// a caller cannot set the outcome and forget the clock that dates it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
@@ -205,7 +205,7 @@ pub struct Check {
     pub at_ms: i64,
     /// How long it took.
     pub took_ms: u64,
-    /// A short word for how it was answered — see [`ProcessRecord::check_how`].
+    /// A short word for how it was answered - see [`ProcessRecord::check_how`].
     pub how: String,
 }
 
@@ -316,7 +316,7 @@ impl Store {
         Ok(out)
     }
 
-    /// **Every process this session owns**, open or ended, oldest first — what a teardown reads
+    /// **Every process this session owns**, open or ended, oldest first - what a teardown reads
     /// and what a test asserts against.
     pub fn processes_of(&self, session_id: &str) -> Result<Vec<ProcessRecord>> {
         let conn = self.conn();

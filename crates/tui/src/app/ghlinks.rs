@@ -8,7 +8,7 @@ use super::*;
 
 /// How often the references are read again.
 const REFS_EVERY_MS: u64 = 60_000;
-/// How many commits are kept to recognise a hash by — the newest, every ref's history.
+/// How many commits are kept to recognise a hash by - the newest, every ref's history.
 const COMMITS_KEPT: usize = 20_000;
 
 /// What the session's repository holds, as words can name it.
@@ -95,7 +95,7 @@ impl GitRefs {
     /// The link a word on the screen names, or `None` for a word this repository does not know.
     /// Allocates only for a word it links.
     pub(crate) fn url_of(&self, word: &str) -> Option<String> {
-        // `owner/repo#12` — says which repository, so it is linked whatever this one is.
+        // `owner/repo#12` - says which repository, so it is linked whatever this one is.
         if let Some((repo, n)) = word.rsplit_once('#')
             && repo.contains('/')
             && repo.split('/').count() == 2
@@ -105,7 +105,7 @@ impl GitRefs {
         {
             return Some(format!("https://github.com/{repo}/issues/{n}"));
         }
-        // `#12` — this repository's.
+        // `#12` - this repository's.
         if let Some(n) = word.strip_prefix('#')
             && !n.is_empty()
             && n.len() <= 7
@@ -113,7 +113,7 @@ impl GitRefs {
         {
             return Some(format!("https://github.com/{}/issues/{n}", self.slug));
         }
-        // A commit this repository has — by a prefix of at least seven, matching one commit.
+        // A commit this repository has - by a prefix of at least seven, matching one commit.
         if (7..=40).contains(&word.len()) && word.bytes().all(|b| b.is_ascii_hexdigit()) {
             let w = word.to_ascii_lowercase();
             let at = self.commits.partition_point(|c| c.as_str() < w.as_str());
@@ -123,7 +123,7 @@ impl GitRefs {
             }
             return None;
         }
-        // A branch this repository has — only a name with a `/` in it (`agent/fix`): a bare `main`
+        // A branch this repository has - only a name with a `/` in it (`agent/fix`): a bare `main`
         // on every line of prose is not a link anybody wanted.
         if word.contains('/') && self.branches.contains(word) {
             let name = word.strip_prefix("origin/").unwrap_or(word);

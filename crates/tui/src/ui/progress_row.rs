@@ -15,7 +15,7 @@ use rano::render::{Line, Role, Span};
 pub(crate) const PROGRESS_BAR_COLS: usize = 12;
 
 /// **One progress, in pieces the row can give up one at a time**: the advice first, then the
-/// clock, then the counts, then the bar and its percentage — and never the label.
+/// clock, then the counts, then the bar and its percentage - and never the label.
 #[derive(Debug, Clone)]
 pub(crate) struct Progress {
     /// What is happening, in the words of whoever is doing it. Never dropped.
@@ -29,7 +29,7 @@ pub(crate) struct Progress {
     pub(crate) counts: Option<String>,
     /// What to do about it, last on the row and the first piece given up.
     pub(crate) advice: Option<String>,
-    /// When it started, on this head's clock — the row's clock, and the order between two.
+    /// When it started, on this head's clock - the row's clock, and the order between two.
     pub(crate) since_ms: u64,
     /// Everything the block used to say, for the click.
     pub(crate) detail: String,
@@ -38,7 +38,7 @@ pub(crate) struct Progress {
     pub(crate) more: bool,
 }
 
-/// `s` with its first letter upper-cased — the daemon names an operation mid-sentence
+/// `s` with its first letter upper-cased - the daemon names an operation mid-sentence
 /// (`re-seating: rendering …`) and the row starts with it.
 fn capital(s: &str) -> String {
     let mut c = s.chars();
@@ -50,7 +50,7 @@ fn capital(s: &str) -> String {
 
 /// `done` of `total`, the numerator padded to the denominator's width so the clock after it does
 /// not walk as the count grows (the operator: *"move cat to the right most position or thngs jump
-/// around"* — the same rule, one widget later).
+/// around"* - the same rule, one widget later).
 fn of(done: u64, total: u64) -> String {
     let t = thousands(total);
     format!("{:>n$}/{t}", thousands(done), n = t.chars().count())
@@ -126,7 +126,7 @@ impl App {
                 bar: Some(Prefill {
                     total: *total,
                     // **Settled, not computed**: a landed row is `█`, never the prefill's `▓`
-                    // being-worked-on glyph — nothing here is being computed.
+                    // being-worked-on glyph - nothing here is being computed.
                     cache: *done,
                     processed: *done,
                     time_ms: 0,
@@ -140,7 +140,7 @@ impl App {
         }
         if let Some(c) = &self.compacting {
             let label = format!("Compacting half {} of {}", c.half, c.halves);
-            // **Reading, then writing** — the two phases of a fold, minutes apart. While the half's
+            // **Reading, then writing** - the two phases of a fold, minutes apart. While the half's
             // prompt is read the bar measures it; once the model writes, the count of what it has
             // written is the only number there is.
             let (bar, counts) = if c.processed > 0 && c.processed < c.prompt_tokens {
@@ -178,7 +178,7 @@ impl App {
             let total = b.announced.max(missing) as u64;
             let arrived = total - missing as u64;
             if now_ms.saturating_sub(b.at_ms) >= BODY_PATIENCE {
-                // **What this head OBSERVED, and no cause it cannot see** — it was told these rows
+                // **What this head OBSERVED, and no cause it cannot see** - it was told these rows
                 // exist and the bodies never arrived. The ids first, because the row is cut from
                 // the right; all of them in the click and on `/status`.
                 let mut ids: Vec<&str> = b.ids.iter().map(String::as_str).collect();
@@ -229,7 +229,7 @@ impl App {
         out
     }
 
-    /// **The progress the status row shows, and what a click on it would open** — `None` when
+    /// **The progress the status row shows, and what a click on it would open** - `None` when
     /// nothing is in progress. The last one to start, its forms fullest first, and the detail of
     /// every one that is live.
     pub(crate) fn progress_shown(&self) -> Option<(Vec<Line>, String, bool)> {

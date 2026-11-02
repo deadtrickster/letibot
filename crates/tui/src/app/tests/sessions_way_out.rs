@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A module that fails every call — a layer that traps, or runs out of fuel: from the stack's side
+/// A module that fails every call - a layer that traps, or runs out of fuel: from the stack's side
 /// of the seam the two are one thing (`docs/plugins-plan.md` §1, principle 4).
 struct Trap;
 
@@ -96,7 +96,7 @@ fn a_head_with_two_sessions() -> App {
     a
 }
 
-/// **A layer that traps is skipped and the built-in below it answers** — the list is still the
+/// **A layer that traps is skipped and the built-in below it answers** - the list is still the
 /// list, and the person is TOLD what happened to their layer when they open it.
 #[test]
 fn a_layer_that_traps_falls_down_to_the_builtin() {
@@ -122,7 +122,7 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
         stack, workspace,
     ));
 
-    // The list is drawn — by the built-in, below the layer that failed.
+    // The list is drawn - by the built-in, below the layer that failed.
     let list = a
         .sessions_list(100)
         .expect("the built-in answers under the trap");
@@ -144,7 +144,7 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
     assert!(said.contains("drawn from below it"), "{said}");
     assert!(a.take_sessions_failure().is_none(), "and only once");
 
-    // **Switching still works**: the second session, which is the third row — the project's line
+    // **Switching still works**: the second session, which is the third row - the project's line
     // is the first.
     a.picker_sel = 2;
     assert_eq!(
@@ -155,12 +155,12 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **No layer at all — a head whose built-in table could not be built — draws the head's own
+/// **No layer at all - a head whose built-in table could not be built - draws the head's own
 /// list**, through the same rano primitive, and the keys act on the same rows.
 #[test]
 fn a_broken_builtin_falls_to_the_plain_list() {
     let tmp = tempdir("empty");
-    // An empty stack: no project, no session, no user scope, and no built-in installed — the
+    // An empty stack: no project, no session, no user scope, and no built-in installed - the
     // binary that somehow carries nothing, which is the shape this fallback exists for.
     let stack = Stack::discover(
         None,
@@ -202,7 +202,7 @@ fn a_broken_builtin_falls_to_the_plain_list() {
 }
 
 /// **A layer that answers something the host cannot draw is treated as no answer**, and the head's
-/// own list is drawn — the same rule as a trap, one step later in the pipeline.
+/// own list is drawn - the same rule as a trap, one step later in the pipeline.
 #[test]
 fn an_answer_that_is_not_a_list_falls_to_the_plain_list() {
     /// A layer that answers a document with no tree in it: a view, but not one this pane can use.

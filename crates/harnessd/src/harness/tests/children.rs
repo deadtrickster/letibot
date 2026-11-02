@@ -54,7 +54,7 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
     assert_eq!(wt_base, base_sha, "the branch is cut from the base");
 
     // **The main tree is untouched**: its branch is still `main`, its HEAD is still
-    // the base, and its status is clean — the worktree did not move the main tree.
+    // the base, and its status is clean - the worktree did not move the main tree.
     let main_branch = super::git_in(
         root.to_str().unwrap(),
         &["rev-parse", "--abbrev-ref", "HEAD"],
@@ -65,7 +65,7 @@ fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
         .expect("the main tree's HEAD");
     assert_eq!(main_head, base_sha, "the main tree's HEAD is untouched");
     // The `.claude/` directory is where the worktree lives, and it is untracked in
-    // the main tree — that is expected, it is the worktree's home. The main tree's
+    // the main tree - that is expected, it is the worktree's home. The main tree's
     // *tracked* files are what must be untouched, so the status excludes it.
     let status = super::git_in(
         root.to_str().unwrap(),
@@ -113,7 +113,7 @@ fn a_subagent_title_is_a_row_and_a_session_name_is_an_address() {
         title.split_whitespace().count() > 6,
         "the naming rule must not reach a title: {title}"
     );
-    // Only the first line — a row is one line — and only past the generous bound.
+    // Only the first line - a row is one line - and only past the generous bound.
     assert_eq!(
         super::subagent_title("audit the store\nand the reader"),
         "audit the store"
@@ -208,7 +208,7 @@ fn a_stored_token_pair_is_used_only_for_the_conversation_it_measured() {
         Some((940_211, 940_211)),
     );
     // The 2026-10-02 row: an anchor at the conversation it measured, which the roll
-    // then adds the later rows to — see the restart test below for the addition.
+    // then adds the later rows to - see the restart test below for the addition.
     assert_eq!(
         super::recovered_scale(Some(940_211), Some(950_000), 1_486_369),
         Some((950_000, 940_211)),
@@ -220,7 +220,7 @@ fn a_stored_token_pair_is_used_only_for_the_conversation_it_measured() {
         None
     );
     // A row written before v12 has no ledger to anchor to. Unverifiable is not
-    // the same as wrong, but it IS the same as unmeasured — and the unscaled
+    // the same as wrong, but it IS the same as unmeasured - and the unscaled
     // window is the honest answer for unmeasured.
     assert_eq!(super::recovered_scale(Some(940_211), None, 940_211), None);
     // No provider count at all: a row whose turn never finished.
@@ -279,7 +279,7 @@ fn a_killed_subagent_settles_as_stopped_rather_than_as_an_answer() {
     ));
 }
 
-/// **A child nobody gave a model runs on its parent's** — *"so if no local config, and no
+/// **A child nobody gave a model runs on its parent's** - *"so if no local config, and no
 /// model - default to the same"*. `local` only for a parent that is itself local.
 #[test]
 fn a_child_with_no_model_named_runs_on_its_parents_model() {
@@ -291,7 +291,7 @@ fn a_child_with_no_model_named_runs_on_its_parents_model() {
             thinking: false,
         })
     };
-    // The parent's configuration as it is — its key with it, which no file holds here.
+    // The parent's configuration as it is - its key with it, which no file holds here.
     let mut parent = on("deepseek", Some("deepseek-chat"));
     parent.as_mut().unwrap().api_key = Some("sk-only-in-memory".into());
     let m =
@@ -303,7 +303,7 @@ fn a_child_with_no_model_named_runs_on_its_parents_model() {
     assert_eq!(m.label, "deepseek/deepseek-chat");
     assert!(m.local.is_none(), "{}", m.label);
 
-    // A parent on its own server gives `local` — the same model, which is the point.
+    // A parent on its own server gives `local` - the same model, which is the point.
     let l = inherited_spawn_model(&None, Some(Some(32768))).expect("local");
     assert_eq!(l.label, "local");
     assert_eq!(l.window, Some(32768));
@@ -358,8 +358,8 @@ fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
 /// child its siblings' work. And a child that has ANSWERED is still alive, so `exited` is the fact that decides.
 #[test]
 fn a_stop_takes_this_sessions_children_and_not_the_ones_that_are_gone() {
-    // The tree's one list, with four entries: three of mine — one still computing, one
-    // parked with an answer, one whose thread has ended — and one of my PARENT's, which is
+    // The tree's one list, with four entries: three of mine - one still computing, one
+    // parked with an answer, one whose thread has ended - and one of my PARENT's, which is
     // a sibling of mine and must not be in my answer.
     let mine_running = Arc::new(TaskSlot::new("s-child"));
     let mine_answered = Arc::new(TaskSlot::new("s-child"));
@@ -387,7 +387,7 @@ fn a_stop_takes_this_sessions_children_and_not_the_ones_that_are_gone() {
              parked — and no sibling's, no parent's, and none that has left"
     );
     // And from the other seat in the same tree: the root stops ITS children, not this
-    // session's. Same list, different answer — which is the whole reason the owner is on
+    // session's. Same list, different answer - which is the whole reason the owner is on
     // the slot.
     assert_eq!(
         stoppable_children(&slots, "s-root"),
@@ -444,7 +444,7 @@ fn the_wait_for_a_childs_thread_ends_when_the_thread_does() {
 /// computing.
 #[test]
 fn a_stop_says_what_it_stopped_and_what_it_could_not() {
-    // No children: no sentence at all, which is the ordinary case — a session with nothing
+    // No children: no sentence at all, which is the ordinary case - a session with nothing
     // running says nothing on the way out.
     assert_eq!(children_stopped_notice(&[]), None);
 
@@ -513,7 +513,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
     }
 
     // Two levels of the same door: a parent's steering source and a child's, each with its
-    // OWN runner — which is what "one level per session" means in code.
+    // OWN runner - which is what "one level per session" means in code.
     let stops = Arc::new(Mutex::new(Vec::new()));
     let parent_hub = Hub::new("s-root");
     let mut parent = HubSteering {
@@ -530,7 +530,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
         held: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
-        // falls back to `message from session `<id>`` — see `message_from_a_session`.
+        // falls back to `message from session `<id>`` - see `message_from_a_session`.
         parent: None,
     };
     let child_hub = Hub::new("s-child");
@@ -548,7 +548,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
         held: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
-        // falls back to `message from session `<id>`` — see `message_from_a_session`.
+        // falls back to `message from session `<id>`` - see `message_from_a_session`.
         parent: None,
     };
 
@@ -664,7 +664,7 @@ fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     // R93.C3: no byte count, and the model's own command is not echoed back.
     assert!(!text.contains("cargo build --release"), "{text}");
     assert!(!text.contains("4096"), "{text}");
-    // R93.C1: the closing names the door with the real handle — not `job_wait`, not `job="…"`.
+    // R93.C1: the closing names the door with the real handle - not `job_wait`, not `job="…"`.
     assert!(text.ends_with("Output: `job_output` job=\"j7\"."), "{text}");
     assert!(!text.contains("job_wait") && !text.contains('…'), "{text}");
 }
@@ -713,7 +713,7 @@ fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
     }
 }
 
-/// **What the head attached to a subagent is told about a command the child leaves** — R67
+/// **What the head attached to a subagent is told about a command the child leaves** - R67
 /// item 15: the line it typed, named back, and where to send it instead.
 #[test]
 fn a_command_a_child_leaves_is_named_back_to_its_head() {
@@ -743,7 +743,7 @@ fn a_progress_bar_is_one_line_and_not_every_update_concatenated() {
         vec!["100%"],
         "the row is what a terminal would end up showing"
     );
-    // **A SHORTER final segment leaves the tail of the longer one standing** — that is
+    // **A SHORTER final segment leaves the tail of the longer one standing** - that is
     // what the screen showed, and dropping the tail would be inventing a different one.
     // (The naive `after the last \r` rule gets this wrong.)
     assert_eq!(progress_lines("abcdefgh\rXY"), vec!["XYcdefgh"]);
@@ -777,7 +777,7 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
         held: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
-        // falls back to `message from session `<id>`` — see `message_from_a_session`.
+        // falls back to `message from session `<id>`` - see `message_from_a_session`.
         parent: None,
     };
 
@@ -838,7 +838,7 @@ fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
         held: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
-        // falls back to `message from session `<id>`` — see `message_from_a_session`.
+        // falls back to `message from session `<id>`` - see `message_from_a_session`.
         parent: None,
     };
 
@@ -902,7 +902,7 @@ fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
     let root = role_for(&cfg);
     assert!(root.tools.iter().any(|t| t == "flowy"));
     // **And the person can be asked.** The operator's ruling, 2026-10-09: *"yeah i
-    // want you to be able to ask me for a choice"* — the seat carries it whether or
+    // want you to be able to ask me for a choice"* - the seat carries it whether or
     // not a room is attached, because asking is not a room's business.
     assert!(
         root.tools.iter().any(|t| t == "ask_user_question"),

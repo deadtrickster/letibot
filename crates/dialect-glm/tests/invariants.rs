@@ -149,7 +149,7 @@ fn render_incremental_agrees_with_render() {
     assert_eq!(checked, 323_847, "the enumeration changed shape");
 }
 
-/// The same, appending a whole batch rather than one item — which is what a turn
+/// The same, appending a whole batch rather than one item - which is what a turn
 /// actually does: reasoning, content and several tool calls arrive together.
 #[test]
 fn render_incremental_agrees_for_multi_item_appends() {
@@ -190,7 +190,7 @@ fn incremental_agrees_span_for_span() {
 }
 
 /// Adjacent `Text` spans are an artefact of where the renderer happened to break the
-/// string, not a difference — merge them before comparing span sequences.
+/// string, not a difference - merge them before comparing span sequences.
 fn merge_text(spans: &[RenderSpan]) -> Vec<RenderSpan> {
     let mut out: Vec<RenderSpan> = Vec::new();
     for s in spans {
@@ -255,7 +255,7 @@ fn parse_round_trips_reasoning_and_two_tool_calls() {
     let parsed = GlmParser::new().parse(&tokens, &decoder, false);
 
     // Kind and payload must round-trip exactly. The ranges are not asserted here by
-    // value — they are checked below by tiling, which is the property the ledger
+    // value - they are checked below by tiling, which is the property the ledger
     // actually needs and which hand-written offsets would only imitate.
     let shape = |s: &ParsedSpan| match s {
         ParsedSpan::Control { role, .. } => format!("control:{role:?}"),
@@ -340,7 +340,7 @@ fn a_string_argument_that_looks_like_json_does_not_round_trip() {
 }
 
 /// A vocab-shaped tokenizer for the tests: one id per control literal, one per
-/// character of text. It is not GLM's vocab and does not need to be — that is the
+/// character of text. It is not GLM's vocab and does not need to be - that is the
 /// whole point of `RenderSpan` being text plus control tokens.
 fn tokenize(spans: &[RenderSpan]) -> (Vec<u32>, TableDecoder) {
     let mut decoder = TableDecoder::new();
@@ -374,7 +374,7 @@ fn tokenize(spans: &[RenderSpan]) -> (Vec<u32>, TableDecoder) {
     (ids, decoder)
 }
 
-/// The injection case, checked on span *kinds* rather than on the flattened string —
+/// The injection case, checked on span *kinds* rather than on the flattened string  -
 /// where it is invisible, because both renderings produce the same bytes.
 #[test]
 fn user_text_spelling_a_control_token_stays_text() {

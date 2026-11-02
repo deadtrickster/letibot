@@ -13,7 +13,7 @@ pub const RETIRED_CAP: usize = 512;
 /// config pane; adding one here is adding a row there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadPrefs {
-    /// `split` — two panels — or `unified` always. The toggle is the whole
+    /// `split` - two panels - or `unified` always. The toggle is the whole
     /// choice; the width is the renderer's business.
     pub diff: DiffPref,
     /// A new project's starter todos: `false` is off (the default), `true` reads the default
@@ -283,7 +283,7 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 ),
                 other => p.git_format = Some(other.to_string()),
             },
-            // R10. An empty value is a real value — "nothing is retired" — and not
+            // R10. An empty value is a real value - "nothing is retired" - and not
             // a key this build does not know, so it is not reported as one.
             "retired" => {
                 p.retired = v
@@ -310,8 +310,8 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
     (p, notes)
 }
 
-/// Write the file, keeping every line that is not one of ours — a comment, a
-/// key from a newer build — where it was. Creates the directory.
+/// Write the file, keeping every line that is not one of ours - a comment, a
+/// key from a newer build - where it was. Creates the directory.
 pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let ours: [(&str, String); 10] = [
@@ -324,7 +324,7 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
         // Quoted like the rest, and never multi-line: no key contains a comma or a
         // space, which is what keeps a hand-edited file honest.
         ("retired", format!("\"{}\"", p.retired.join(","))),
-        // The switch's own words — a path is quoted, `true`/`false` are bare — and the record,
+        // The switch's own words - a path is quoted, `true`/`false` are bare - and the record,
         // which is hashed keys for the same reason `retired`'s are.
         (
             "todo_template",
@@ -334,7 +334,7 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
             },
         ),
         ("todo_seed", format!("\"{}\"", p.todo_seed.join(","))),
-        // The template itself quoted, or `false` bare — the two words the file may hold.
+        // The template itself quoted, or `false` bare - the two words the file may hold.
         (
             "git_format",
             match &p.git_format {

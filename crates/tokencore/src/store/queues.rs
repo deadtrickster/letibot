@@ -130,13 +130,13 @@ CREATE TABLE IF NOT EXISTS target_health (
 );
 "#;
 
-/// **What a review row is about** — a branch somebody wants landed, or the target's own tip.
+/// **What a review row is about** - a branch somebody wants landed, or the target's own tip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewKind {
     /// A branch put up to land on the target.
     Branch,
-    /// **The target branch's RED tip** — *"when main becomes red - main itself goes to review"*.
+    /// **The target branch's RED tip** - *"when main becomes red - main itself goes to review"*.
     /// Taken first, as soon as a reviewer is free.
     Target,
 }
@@ -154,14 +154,14 @@ impl ReviewKind {
     }
 }
 
-/// **Where a review is** — the review queue's closed set. Its outcome is a verdict; it never
+/// **Where a review is** - the review queue's closed set. Its outcome is a verdict; it never
 /// touches git.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewState {
     /// Waiting for a reviewer.
     Waiting,
-    /// **A reviewer is on it** — claimed by the lease holder (`owner`), with a deadline.
+    /// **A reviewer is on it** - claimed by the lease holder (`owner`), with a deadline.
     Reviewing,
     /// **Accepted, bound to `reviewed_sha`, and handed to the merge queue** in the same
     /// transaction. Terminal for this queue.
@@ -170,11 +170,11 @@ pub enum ReviewState {
     Rejected,
     /// The reviewer could not decide (`needs_human`). Terminal until a person rules.
     CannotDecide,
-    /// **The review could not be RUN** — a reviewer that could not start, or attempts spent on
+    /// **The review could not be RUN** - a reviewer that could not start, or attempts spent on
     /// deadlines. Raised at high severity (decision 4); not terminal: a person's `restart` or
     /// `approve` moves it, and a project that opted in merges it via its main session.
     Blocked,
-    /// Taken out of the queue — by a person, or because the branch is already on the target.
+    /// Taken out of the queue - by a person, or because the branch is already on the target.
     Withdrawn,
     /// Carried over from a store that predates the split, as a record and nothing else.
     Archived,
@@ -215,7 +215,7 @@ impl ReviewState {
     }
 }
 
-/// **Where a landing is** — the merge queue's closed set. No model touches it.
+/// **Where a landing is** - the merge queue's closed set. No model touches it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeState {
@@ -225,9 +225,9 @@ pub enum MergeState {
     Gating,
     /// On the target, pushed when there was somewhere to push.
     Landed,
-    /// **The gate was red** — the branch is bad. Terminal.
+    /// **The gate was red** - the branch is bad. Terminal.
     Failed,
-    /// **The gate ran past its deadline and was killed** (decision 9) — not `failed`.
+    /// **The gate ran past its deadline and was killed** (decision 9) - not `failed`.
     TimedOut,
     /// The rebase onto the target's tip conflicted. Terminal; reported, never resolved.
     Conflict,
@@ -279,7 +279,7 @@ impl MergeState {
     }
 }
 
-/// **The target branch's health** — what the last gate of its tip said (decision 10).
+/// **The target branch's health** - what the last gate of its tip said (decision 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthState {
@@ -287,7 +287,7 @@ pub enum HealthState {
     Gating,
     /// The gate passed at `sha`.
     Green,
-    /// **The gate failed at `sha`** — an emergency: the merge queue lands nothing but the fix.
+    /// **The gate failed at `sha`** - an emergency: the merge queue lands nothing but the fix.
     Red,
     /// The gate ran past its deadline at `sha`. Nothing lands on a tip nobody could judge.
     TimedOut,
@@ -317,7 +317,7 @@ impl HealthState {
     }
 }
 
-/// **One review row** — see the `review_queue` table in [`QUEUES_SQL`].
+/// **One review row** - see the `review_queue` table in [`QUEUES_SQL`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewRow {
     pub id: String,
@@ -349,7 +349,7 @@ pub struct ReviewRow {
     pub attempts: u32,
     /// The last attempt's failure, verbatim.
     pub failure: String,
-    /// `accept`, `reject` or `needs_human` — the gatekeeper's words — once judged.
+    /// `accept`, `reject` or `needs_human` - the gatekeeper's words - once judged.
     pub verdict: Option<String>,
     /// `reviewer:<handle>` or `operator:<session>`.
     pub verdict_by: Option<String>,
@@ -361,12 +361,12 @@ pub struct ReviewRow {
     /// The reason for the state, in the queue's words.
     pub evidence: String,
     pub created_ms: u64,
-    /// **When the row entered its current state** — what the pane's age is measured from.
+    /// **When the row entered its current state** - what the pane's age is measured from.
     pub state_ms: u64,
     pub updated_ms: u64,
 }
 
-/// **One merge row** — see the `merge_queue` table in [`QUEUES_SQL`].
+/// **One merge row** - see the `merge_queue` table in [`QUEUES_SQL`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeRow {
     pub id: String,
@@ -375,7 +375,7 @@ pub struct MergeRow {
     pub target: String,
     pub branch: String,
     pub worktree: Option<String>,
-    /// **The head the approving verdict judged** — the only head this row may land.
+    /// **The head the approving verdict judged** - the only head this row may land.
     pub approved_sha: String,
     pub approved_by: String,
     pub priority: MergePriority,
@@ -409,7 +409,7 @@ pub struct QueueTransition {
     pub why: String,
 }
 
-/// **The lease on a repository's queues** — who serves them, and how recently it said so.
+/// **The lease on a repository's queues** - who serves them, and how recently it said so.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueLease {
     pub repository: String,
@@ -426,7 +426,7 @@ pub struct QueueLease {
     pub acquired_ms: u64,
 }
 
-/// **Who is asking for a lease** — the claimant's half of [`QueueLease`].
+/// **Who is asking for a lease** - the claimant's half of [`QueueLease`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseClaim {
     pub owner: String,
@@ -438,13 +438,13 @@ pub struct LeaseClaim {
 /// **What a claim came to.**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaseOutcome {
-    /// This claimant holds it now. `previous` is the lease it replaced — an EXPIRED one, never
-    /// a live one — or `None` when nobody held it or the claimant already did. Recovery reads
+    /// This claimant holds it now. `previous` is the lease it replaced - an EXPIRED one, never
+    /// a live one - or `None` when nobody held it or the claimant already did. Recovery reads
     /// it: rows the previous owner held mid-work are the ones it may move.
     Held { previous: Option<QueueLease> },
     /// **Somebody else holds it, and its heartbeat is live.**
     HeldBy(QueueLease),
-    /// **This build does not match the store** — the file's schema is not the one this binary
+    /// **This build does not match the store** - the file's schema is not the one this binary
     /// knows. Such a daemon serves no queue (requirement 1).
     WrongSchema { store: i64, mine: i64 },
 }
@@ -497,7 +497,7 @@ impl Move {
     }
 }
 
-/// **What a [`Move`] may write into a column** — text and integers, which is every column a move
+/// **What a [`Move`] may write into a column** - text and integers, which is every column a move
 /// writes.
 pub trait IntoColumn {
     fn into_column(self) -> Value;
@@ -533,7 +533,7 @@ impl IntoColumn for i64 {
     }
 }
 
-/// A new review row's fields — the enqueuer's half.
+/// A new review row's fields - the enqueuer's half.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewReview {
     pub id: String,
@@ -558,7 +558,7 @@ pub struct Approval {
     /// person saw for an approve-over).
     pub expect: ReviewState,
     pub expect_owner: Option<String>,
-    /// The head the verdict judged — becomes `approved_sha` on the merge row.
+    /// The head the verdict judged - becomes `approved_sha` on the merge row.
     pub reviewed_sha: String,
     /// `reviewer:<handle>` or `operator:<session>`.
     pub by: String,
@@ -579,7 +579,7 @@ const MERGE_COLUMNS: &str = "id, review_id, repository, target, branch, worktree
      approved_by, priority, fixes, state, owner, onto_sha, rebased_sha, landed_sha, pushed, \
      gate_steps_json, evidence, created_ms, state_ms, updated_ms";
 
-/// The columns a [`Move`] may write on `review_queue` — the guard that keeps a typo from
+/// The columns a [`Move`] may write on `review_queue` - the guard that keeps a typo from
 /// becoming SQL.
 const REVIEW_SETTABLE: &[&str] = &[
     "repository",
@@ -739,7 +739,7 @@ fn record(
 }
 
 impl Store {
-    /// **The schema the FILE says it is, read now** — not the one this connection opened at.
+    /// **The schema the FILE says it is, read now** - not the one this connection opened at.
     /// The lease claim reads it in its own transaction (requirement 1).
     pub fn stored_schema_version(&self) -> Result<i64> {
         Ok(self
@@ -792,7 +792,7 @@ impl Store {
         })
     }
 
-    /// Every review row, every state — or one repository's. A row this build cannot read is an
+    /// Every review row, every state - or one repository's. A row this build cannot read is an
     /// error naming the word, never a shorter list.
     pub fn review_rows(&self, repository: Option<&str>) -> Result<Vec<ReviewRow>> {
         let sql = match repository {
@@ -825,7 +825,7 @@ impl Store {
 
     /// **Move a review row from `from` to `to`, only if it is still in `from`** (and owned by
     /// `mv.expect_owner` when one is named), appending the transition in the same transaction.
-    /// `Ok(false)` is *somebody else moved it first* — a fact, not an error.
+    /// `Ok(false)` is *somebody else moved it first* - a fact, not an error.
     pub fn move_review(
         &self,
         id: &str,
@@ -1081,7 +1081,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// Record a move that is not a row's — the target's health, a lease changing hands.
+    /// Record a move that is not a row's - the target's health, a lease changing hands.
     #[allow(clippy::too_many_arguments)]
     pub fn record_transition(
         &self,
@@ -1219,7 +1219,7 @@ impl Store {
         Ok(n == 1)
     }
 
-    /// Give the lease up — on shutdown, so a successor need not wait out the heartbeat.
+    /// Give the lease up - on shutdown, so a successor need not wait out the heartbeat.
     pub fn release_queue_lease(&self, repository: &str, owner: &str, now_ms: u64) -> Result<bool> {
         self.write_tx(|tx| {
             let n = tx.execute(
@@ -1406,7 +1406,7 @@ impl Store {
         })
     }
 
-    /// **The v23 queue as it was archived** — `(id, branch, state, evidence)` per row, for the
+    /// **The v23 queue as it was archived** - `(id, branch, state, evidence)` per row, for the
     /// pane and for a person deciding about rows the operator has not ruled on yet.
     pub fn archived_v23_queue(&self) -> Result<Vec<(String, String, String, String)>> {
         let there: bool = self

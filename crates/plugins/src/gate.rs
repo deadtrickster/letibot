@@ -89,8 +89,8 @@ impl Builder for CargoBuilder {
 }
 
 /// Where cargo put the module: `<crate name with dashes as underscores>.wasm` under
-/// `target/wasm32-unknown-unknown/release/`, in the layer directory or — for a layer that lives
-/// inside a workspace — in the nearest ancestor that has a `target`.
+/// `target/wasm32-unknown-unknown/release/`, in the layer directory or - for a layer that lives
+/// inside a workspace - in the nearest ancestor that has a `target`.
 fn artifact(dir: &Path) -> Option<PathBuf> {
     let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
     let table: toml::Table = toml::from_str(&manifest).ok()?;
@@ -114,7 +114,7 @@ fn artifact(dir: &Path) -> Option<PathBuf> {
 pub struct ReplayDiff {
     pub hook: String,
     pub input: Value,
-    /// What the live stack answers now — `None` for a mask or for nothing answering.
+    /// What the live stack answers now - `None` for a mask or for nothing answering.
     pub live: Option<Value>,
     pub shadow: Option<Value>,
     /// The layer that answered each side, so a diff says which layer moved and not only what.
@@ -134,7 +134,7 @@ pub struct GateReport {
     /// pane expensive.
     pub fuel: Vec<(String, u64)>,
     pub diffs: Vec<ReplayDiff>,
-    /// The first step that failed, named — `build: …`, `load: …`, `shadow: …`, `replay: …`.
+    /// The first step that failed, named - `build: …`, `load: …`, `shadow: …`, `replay: …`.
     pub failure: Option<String>,
 }
 
@@ -159,7 +159,7 @@ pub fn gate(stack: &Stack, rec: &Recorder, cand: &Candidate, builder: &dyn Build
         failure: None,
     };
 
-    // 1. build — the source is what is applied, so the module read below is the one just built.
+    // 1. build - the source is what is applied, so the module read below is the one just built.
     match builder.build(&cand.dir) {
         Ok(log) => report.build_log = log,
         Err(e) => {
@@ -168,7 +168,7 @@ pub fn gate(stack: &Stack, rec: &Recorder, cand: &Candidate, builder: &dyn Build
         }
     }
 
-    // 2. load — fresh from disk, and the manifest fresh with it: the build may have moved the
+    // 2. load - fresh from disk, and the manifest fresh with it: the build may have moved the
     //    source and the plugin.toml beside it since the poll that made this candidate.
     let manifest = match Manifest::read(&cand.dir) {
         Ok(manifest) => manifest,
@@ -209,14 +209,14 @@ pub fn gate(stack: &Stack, rec: &Recorder, cand: &Candidate, builder: &dyn Build
     cand.remember(&sha, module.clone());
     report.load = Ok(());
 
-    // 3. shadow — a clone with the candidate applied. The live stack is not touched, so a
+    // 3. shadow - a clone with the candidate applied. The live stack is not touched, so a
     //    candidate refused below leaves the session answering exactly as it was.
     let mut shadow = stack.clone();
     if let Err(why) = shadow.apply(cand.clone()) {
         return report.stop(format!("shadow: {why}"));
     }
 
-    // 4. replay — the same inputs through both stacks, side by side.
+    // 4. replay - the same inputs through both stacks, side by side.
     for hook in module.hooks() {
         let inputs = rec.inputs(&hook);
         if inputs.is_empty() {

@@ -36,7 +36,7 @@ use super::scope::{Cgroup2, Reaping, ScopeId, ScopeTree, join_script};
 /// and a program cannot produce them by accident.
 const MARK_OPEN: &str = "\x1b]1337;letibot;";
 
-/// What ends a trailer — BEL, the short spelling of an OSC's terminator.
+/// What ends a trailer - BEL, the short spelling of an OSC's terminator.
 const MARK_CLOSE: u8 = 0x07;
 
 /// How long a session waits for the shell to come up and answer its first trailer.
@@ -57,7 +57,7 @@ const MAX_TURN: usize = 32 * 1024 * 1024;
 /// variant that talks about commands and gates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellError {
-    /// The shell is not there — it exited, or the pty's far end closed.
+    /// The shell is not there - it exited, or the pty's far end closed.
     Gone(String),
     /// The trailer did not arrive inside the deadline. The session is desynchronised: the
     /// trailer for this line is still coming, and the next `run` would read it and call it
@@ -101,15 +101,15 @@ impl std::error::Error for ShellError {}
 /// carries no `Debug`.
 #[derive(Clone)]
 pub struct ShellConfig {
-    /// The shell and its flags. [`super::console::shell`] is the operator's — `/bin/bash -ic`
-    /// — and the tests pass `--norc` so an assertion is about this module and not about
+    /// The shell and its flags. [`super::console::shell`] is the operator's - `/bin/bash -ic`
+    /// - and the tests pass `--norc` so an assertion is about this module and not about
     /// whatever the operator's rc prints.
     pub shell: Vec<String>,
     /// Pairs put in front of the shell's environment. The daemon's own environment is the
-    /// console's (`super::console`'s argument), so this is what a *session* adds — `TERM`
+    /// console's (`super::console`'s argument), so this is what a *session* adds - `TERM`
     /// above all, because a shell on a pty without one is a shell that cannot colourise.
     pub env: Vec<(String, String)>,
-    /// Where the session starts. A startup fact, not a report — see the module header:
+    /// Where the session starts. A startup fact, not a report - see the module header:
     /// once the shell is running, [`ShellSession::cwd`] is the answer and this is history.
     pub cwd: PathBuf,
     /// The pty's size, in columns and rows. The head's pane rectangle at the moment of
@@ -117,7 +117,7 @@ pub struct ShellConfig {
     pub cols: usize,
     pub rows: usize,
     /// The scope the session lives in, and the tree that will end it. `None` is a session
-    /// nobody owns — a test's, and named as such by [`ShellSession::close`].
+    /// nobody owns - a test's, and named as such by [`ShellSession::close`].
     pub scope: Option<ScopeId>,
     pub tree: Option<Arc<dyn ScopeTree>>,
     /// How long the first trailer gets.
@@ -143,7 +143,7 @@ impl Default for ShellConfig {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Turn {
     /// Everything the shell wrote between the previous trailer and this one, with the echo of
-    /// the trailer's own line removed. This is the pane's feed — raw bytes, escapes and
+    /// the trailer's own line removed. This is the pane's feed - raw bytes, escapes and
     /// all, because a screen is what consumes them.
     pub bytes: Vec<u8>,
     /// `$?`, read at the top of the trailer's function body, where it is still the status of
@@ -343,7 +343,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 pub struct ShellSession {
     /// The master end. Reads are the shell's output; writes are its input.
     master: std::fs::File,
-    /// The shell's pid — which is the pid the scope wrapper `exec`ed into, so it is a member
+    /// The shell's pid - which is the pid the scope wrapper `exec`ed into, so it is a member
     /// of the session's cgroup.
     pid: i32,
     mark: String,
@@ -383,7 +383,7 @@ impl std::fmt::Debug for ShellSession {
 
 impl ShellSession {
     /// Start the session. One pty, one shell on the far end of it, one cgroup if the
-    /// caller named one, and a first trailer read before this returns — so a caller never
+    /// caller named one, and a first trailer read before this returns - so a caller never
     /// holds a session that has not answered anything.
     pub fn open(cfg: &ShellConfig) -> Result<ShellSession, ShellError> {
         let (prog, args) = argv(cfg)?;
@@ -423,7 +423,7 @@ impl ShellSession {
             use std::os::unix::process::CommandExt;
             cmd.pre_exec(|| {
                 if libc::setsid() < 0 {
-                    // Already a group leader, which a forked child is not — so this is a
+                    // Already a group leader, which a forked child is not - so this is a
                     // failure we do not understand, and the shell still runs.
                 }
                 let _ = libc::ioctl(0, libc::TIOCSCTTY as _, 0);
@@ -436,7 +436,7 @@ impl ShellSession {
             .map_err(|e| ShellError::Start(format!("{prog}: {e}")))?;
         let pid = child.id() as i32;
         // The parent's own slave handles go now. A slave this process still holds open is
-        // a master read that never reports the child's exit — `pty.rs`'s own test measures
+        // a master read that never reports the child's exit - `pty.rs`'s own test measures
         // thirty seconds of that.
         let master = pty.into_master();
         drop(cmd);
@@ -519,7 +519,7 @@ impl ShellSession {
         self.env.as_deref()
     }
 
-    /// The report from a turn, dropped whole when it is empty — a trailer with no third field
+    /// The report from a turn, dropped whole when it is empty - a trailer with no third field
     /// (a shell this build did not generate) must not wipe an environment that was observed.
     fn take_env(&mut self, turn: &Turn) {
         if !turn.env.is_empty() {
@@ -710,7 +710,7 @@ pub(crate) fn set_size(master: &std::fs::File, cols: usize, rows: usize) {
     }
 }
 
-/// Is there anything to read, inside `d`? `Ok(false)` is a timeout and not an error — the
+/// Is there anything to read, inside `d`? `Ok(false)` is a timeout and not an error - the
 /// caller loops, because the deadline is the caller's and not the poll's.
 fn wait_readable(f: &std::fs::File, d: Duration) -> std::io::Result<bool> {
     use std::os::fd::AsRawFd;
@@ -758,7 +758,7 @@ mod tests {
         }
     }
 
-    /// A scratch directory, per test and per process — the tree's own pattern.
+    /// A scratch directory, per test and per process - the tree's own pattern.
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("letibot-shell-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -835,7 +835,7 @@ mod tests {
         );
     }
 
-    /// `export`, a function and an alias survive too — the other three things the operator
+    /// `export`, a function and an alias survive too - the other three things the operator
     /// named, and each is a different mechanism: an environment variable, a shell function,
     /// and a name the shell expands at read time.
     #[test]
@@ -1042,7 +1042,7 @@ mod tests {
         assert!(matches!(e, ShellError::Desynchronised(_)), "{e}");
 
         // And it is not dead. The trailer that was in flight arrives, and catching up
-        // puts the session back in step — the turn it returns is the one that timed out.
+        // puts the session back in step - the turn it returns is the one that timed out.
         assert!(
             s.resync(LONG),
             "the trailer that was in flight never arrived"
@@ -1154,7 +1154,7 @@ mod tests {
         assert!(matches!(argv(&cfg), Err(ShellError::Config(_))));
     }
 
-    /// The scan, on hand-written bytes — the split marker, the two facts, and the cwd
+    /// The scan, on hand-written bytes - the split marker, the two facts, and the cwd
     /// that contains the separator. Pure, so this is the framing's own test rather than a
     /// test of bash.
     #[test]
@@ -1239,7 +1239,7 @@ mod tests {
         let dir = tmp("exits");
         let mut s = ShellSession::open(&config(&dir)).expect("a shell session");
         // The trailer is written by the function *before* the shell processes `exit`, so this
-        // turn can succeed or fail depending on which line the shell read first — and either
+        // turn can succeed or fail depending on which line the shell read first - and either
         // ending is honest. What must not happen is a hang.
         let _ = s.run("exit 3", Duration::from_secs(5));
         let deadline = Instant::now() + Duration::from_secs(10);

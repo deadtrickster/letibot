@@ -1,4 +1,4 @@
-//! **A run's marker opens by its parts** — the operator: *"when I see this "[7 tool calls, 11
+//! **A run's marker opens by its parts** - the operator: *"when I see this "[7 tool calls, 11
 //! thinking lines]" and then click on tool calls section or thinking section i wanted them to
 //! expand. Esc should fold them back"*.
 
@@ -8,7 +8,7 @@ use super::*;
 type Chord<'a> = (&'a str, Box<dyn Fn() -> Key>, Box<dyn Fn() -> Key>);
 
 /// The shape of `a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence`: prose ending in
-/// a colon, one reasoning row, four tool results — at the conversation rung, one marker.
+/// a colon, one reasoning row, four tool results - at the conversation rung, one marker.
 fn a_run() -> App {
     a_run_of(
         "let me check the file\nand then the other one\nand then the tests",
@@ -25,7 +25,7 @@ fn a_run_of(think: &str, extra: usize) -> App {
         Hub::new("s").snapshot(),
     ));
     // **The operator's own shape**: an answer that ENDS IN A COLON, then the work. An
-    // assistant row is the conversation, so it is kept — and the marker has to read as
+    // assistant row is the conversation, so it is kept - and the marker has to read as
     // the continuation of the sentence it points at.
     a.apply(ServerFrame::Event(env(
         1,
@@ -62,7 +62,7 @@ fn a_run_of(think: &str, extra: usize) -> App {
             }),
         },
     )));
-    // One reasoning block, then four tool results — all hidden, all contiguous.
+    // One reasoning block, then four tool results - all hidden, all contiguous.
     a.apply(ServerFrame::Event(env(
         3,
         SessionEvent::TranscriptAppended {
@@ -124,7 +124,7 @@ fn find(screen: &[String], needle: &str) -> (u16, u16) {
     panic!("{needle:?} not on screen:\n{}", screen.join("\n"));
 }
 
-/// Where the LAST `needle` starts on the screen — for a frame holding two markers of the same
+/// Where the LAST `needle` starts on the screen - for a frame holding two markers of the same
 /// shape, where the test means the lower one.
 fn find_last(screen: &[String], needle: &str) -> (u16, u16) {
     for (y, l) in screen.iter().enumerate().rev() {
@@ -325,7 +325,7 @@ fn a_run_opened_on_its_tool_calls_scrolls_to_both_ends() {
 
 // ───────────────── one switch: the click, the chord and esc ─────────────────
 
-/// **A head at `read-edits` with a turn in flight that has thought and committed no row** — the
+/// **A head at `read-edits` with a turn in flight that has thought and committed no row** - the
 /// state the operator's click is made in. The rung hides the working, so the live pane draws its
 /// own marker and the thinking is behind it; that is the marker whose thinking clause they click.
 fn a_live_thought(thought: &str) -> App {
@@ -390,7 +390,7 @@ fn a_click_on_thinking_and_ctrl_r_are_one_verb() {
         frame(&mut a)
     );
 
-    // And it opens what the click closed — the newest run there is, at a rung that hides the
+    // And it opens what the click closed - the newest run there is, at a rung that hides the
     // thinking and so cannot express it any other way.
     a.key(Key::CtrlR);
     assert!(a.thinking_open(), "ctrl-r did not open it again");
@@ -429,7 +429,7 @@ fn a_second_click_on_the_same_clause_puts_it_back() {
         open.contains("let me check the file"),
         "the first click opens the thinking:\n{open}"
     );
-    // **The marker is still on the screen**, and its clause is still a target — that is what makes
+    // **The marker is still on the screen**, and its clause is still a target - that is what makes
     // the second press a click at all.
     let (x, y) = find(&a.screen(200, 40), "3 thinking lines");
     a.key(Key::Click { x: x + 1, y });
@@ -464,7 +464,7 @@ fn an_open_runs_marker_is_drawn_over_the_rows_it_lifted() {
         open.contains("let me check the file"),
         "and the rows it stands over are drawn under it:\n{open}"
     );
-    // **The header comes first** — it is the run's first line, not a line under its content.
+    // **The header comes first** - it is the run's first line, not a line under its content.
     let header = open
         .lines()
         .position(|l| l.contains("4 tool calls"))
@@ -532,7 +532,7 @@ fn esc_on_a_window_does_not_fold_the_thinking() {
         a.thinking_open(),
         "closing a window folded the thinking with it"
     );
-    // **And the next press is the fold's own** — the general arm, which is what `esc` means when no
+    // **And the next press is the fold's own** - the general arm, which is what `esc` means when no
     // panel is in front of it.
     a.key(Key::Esc);
     assert!(!a.thinking_open(), "the second esc did not close the fold");
@@ -717,8 +717,8 @@ fn a_panel_on_the_live_counter_scrolls_the_conversation() {
         !open.contains("page the result"),
         "a window's keys for a window that is not there:\n{open}"
     );
-    // **And the keys move the conversation.** `following()` is the honest predicate here — the
-    // view holds a ROW, and `scroll` is recomputed from it at the next draw — and a key that paged
+    // **And the keys move the conversation.** `following()` is the honest predicate here - the
+    // view holds a ROW, and `scroll` is recomputed from it at the next draw - and a key that paged
     // a payload window instead leaves the view exactly where it was.
     assert!(a.following(), "the premise: the view is at the tail");
     for (name, up, down) in [
@@ -733,7 +733,7 @@ fn a_panel_on_the_live_counter_scrolls_the_conversation() {
     }
 }
 
-/// **A click on a different run's counter does not leave the first one latched** — one panel, one
+/// **A click on a different run's counter does not leave the first one latched** - one panel, one
 /// kind, one run: the lift names the run it was thrown on, and the run before it is drawn as the
 /// rung draws it.
 #[test]
@@ -798,7 +798,7 @@ fn a_click_on_another_runs_counter_does_not_leave_the_first_open() {
     a.key(Key::Click { x: x + 1, y });
     assert!(frame(&mut a).contains(FIRST), "the first run opened");
     assert_eq!(a.lift, Some(Show::Thinking));
-    // And now a click on the SECOND run's thinking clause — the lower of the two markers, which
+    // And now a click on the SECOND run's thinking clause - the lower of the two markers, which
     // is why the locator is `find_last`: both say `1 thinking line`, and the first run's header
     // stays on the screen now that it is open.
     let screen = a.screen(100, 30);
@@ -932,7 +932,7 @@ fn a_round_boundary_does_not_touch_the_thinking() {
     assert_eq!(a.lift, None, "and no boundary threw the switch");
 }
 
-/// **A frame changes nothing** — three draws with no input are the same lines, and a click that has
+/// **A frame changes nothing** - three draws with no input are the same lines, and a click that has
 /// been made is the same state on every frame after it. A state re-derived or re-applied at DRAW
 /// time is the shape that made one session latch and another oscillate.
 #[test]
@@ -953,7 +953,7 @@ fn frames_with_no_input_do_not_move_the_switch() {
     assert_ne!(closed[0], open[0], "the click changed nothing at all");
 }
 
-/// **`ctrl-r` above the bottom rung is still the fold** — `terse` draws the reasoning rows (folded)
+/// **`ctrl-r` above the bottom rung is still the fold** - `terse` draws the reasoning rows (folded)
 /// and the ladder can draw them open, so the chord must move the fold there and not look for a run
 /// to lift. The two spellings are chosen by what the rung DRAWS, and `terse` draws the thinking.
 #[test]
@@ -987,7 +987,7 @@ fn ctrl_r_at_terse_still_moves_the_fold() {
     assert!(!frame(&mut a).contains(THOUGHT));
 }
 
-/// **`esc` returns the thinking to the default from the chord's spelling too** — a landed thought,
+/// **`esc` returns the thinking to the default from the chord's spelling too** - a landed thought,
 /// the fold opened with `ctrl-r`, and one Esc.
 #[test]
 fn esc_returns_the_fold_to_its_default() {

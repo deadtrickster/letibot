@@ -85,7 +85,7 @@ fn meta() -> Meta {
     Meta::fresh(Path::new("/home/dead/Projects/x"), Some("main".into()))
 }
 
-/// **The conservative subset, field by field** — and the rows it refuses to fake.
+/// **The conservative subset, field by field** - and the rows it refuses to fake.
 #[test]
 fn a_handover_writes_the_subset_the_documentation_documents() {
     let dir = tmp("write");
@@ -374,7 +374,7 @@ fn a_note_appends_one_line_and_the_backup_is_the_original_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **No live Claude, no append** — and the refusal comes before the backup, so a refused
+/// **No live Claude, no append** - and the refusal comes before the backup, so a refused
 /// append leaves no debris either.
 #[test]
 fn an_append_refuses_while_a_claude_is_live_for_the_project_and_writes_nothing() {
@@ -422,7 +422,7 @@ fn an_append_refuses_while_a_claude_is_live_for_the_project_and_writes_nothing()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **No backup, no write** — a directory that cannot be written to refuses the append and
+/// **No backup, no write** - a directory that cannot be written to refuses the append and
 /// leaves the transcript exactly as it was.
 #[test]
 fn a_backup_that_cannot_be_made_refuses_the_append() {

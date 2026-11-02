@@ -7,8 +7,8 @@
 //! config, and post token **ids**. Three model services on this box are singletons
 //! that evict each other and have shared a port, so the model behind `:8080` is
 //! whichever one was started last. Point qwen's vocabulary at GLM and the ids are
-//! simply out of range — qwen-3.8-flash-next has 248,320 tokens and GLM-5.3-Flash
-//! has 154,880 — and the server answers:
+//! simply out of range - qwen-3.8-flash-next has 248,320 tokens and GLM-5.3-Flash
+//! has 154,880 - and the server answers:
 //!
 //! ```text
 //! 400 {"error":{"message":"Prompt contains invalid tokens", ...}}
@@ -118,7 +118,7 @@ fn skip_unreachable(endpoint: &Endpoint, what: &str, configured: bool, required:
 pub fn served_ctx(endpoint: &Endpoint) -> Option<u64> {
     let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
     // `n_ctx` sits inside `default_generation_settings`, and it is a number rather
-    // than a string, so `field` — which reads quoted values — cannot serve.
+    // than a string, so `field` - which reads quoted values - cannot serve.
     let at = body.find("\"n_ctx\"")?;
     let rest = &body[at + "\"n_ctx\"".len()..];
     let rest = rest.trim_start().strip_prefix(':')?.trim_start();
@@ -158,7 +158,7 @@ pub fn served_slots(endpoint: &Endpoint) -> Option<usize> {
 pub fn expect(endpoint: &Endpoint, want: &str) {
     let served = match served_model(endpoint) {
         Ok(s) => s,
-        // Not reachable is the live tests' own business — they fail on the request
+        // Not reachable is the live tests' own business - they fail on the request
         // and their failure says so. This one is only about serving the WRONG model.
         Err(e) => {
             eprintln!(
@@ -203,7 +203,7 @@ pub fn matches(served: &str, want: &str) -> bool {
 /// each absence is its own fact - the caller refuses naming the missing thing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedProps {
-    /// The GGUF the server loaded, as it reports it — `…/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf`.
+    /// The GGUF the server loaded, as it reports it - `…/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf`.
     pub model_path: Option<String>,
     /// The chat template the server reports, verbatim, with the final newline stripped: a
     /// comparison against a shipped template therefore trims trailing whitespace on both sides,
@@ -271,7 +271,7 @@ fn json_string(body: &str, key: &str) -> Option<String> {
         rest = esc.as_str();
         match c {
             // The terminator: an unescaped quote. `c` consumed it, so there is
-            // nothing to strip — `rest` already points past the value.
+            // nothing to strip - `rest` already points past the value.
             '"' => return (!out.is_empty()).then_some(out),
             '\\' => {
                 let e = rest.chars().next()?;
@@ -335,7 +335,7 @@ mod tests {
             field(live, "\"media_marker\"").as_deref(),
             Some("<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>")
         );
-        // An endpoint with no marker at all — a metered provider, or a server without `mtmd`.
+        // An endpoint with no marker at all - a metered provider, or a server without `mtmd`.
         let visionless = r#"{"modalities":{"vision":false},"n_ctx":8192}"#;
         assert_eq!(field(visionless, "\"media_marker\""), None);
         // An empty marker is no marker: mtmd refuses it, so a caller must not treat it as one.
@@ -421,7 +421,7 @@ mod tests {
 #[cfg(test)]
 mod ctx_tests {
     /// `n_ctx` is a NUMBER nested inside `default_generation_settings`, so the
-    /// quoted-string reader used for `model_path` cannot find it — the parse is
+    /// quoted-string reader used for `model_path` cannot find it - the parse is
     /// separate on purpose and this is what pins that.
     #[test]
     fn the_window_is_read_out_of_a_props_body() {

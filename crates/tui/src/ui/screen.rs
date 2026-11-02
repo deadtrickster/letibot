@@ -1,5 +1,5 @@
-//! **The frame**: everything the head draws, composed into the terminal's rows — the header,
-//! the conversation, the cards and panes, the composer and the hint bar — and where the cursor goes.
+//! **The frame**: everything the head draws, composed into the terminal's rows - the header,
+//! the conversation, the cards and panes, the composer and the hint bar - and where the cursor goes.
 
 use crate::app::*;
 use crate::ui::panes::queue::Standings;
@@ -18,7 +18,7 @@ impl App {
             && self.hold_size == (term_w, h)
             && let Some(frame) = &self.hold_frame
         {
-            // The held frame, with the pointer's marks on it — a selection made on a held view
+            // The held frame, with the pointer's marks on it - a selection made on a held view
             // (and a drag holds the view, `app::pointer`) changes only the rows it marks.
             let mut out = frame.clone();
             self.relight();
@@ -26,15 +26,15 @@ impl App {
             return out;
         }
         let mut out = self.compose_screen(term_w, h);
-        // **Every key hint on this frame is a button**, read back off the frame itself — see
+        // **Every key hint on this frame is a button**, read back off the frame itself - see
         // `app::keyhints`. Before the links pass, which only adds escapes.
         self.scan_hints(&out);
         // **Every link on this frame is a link** (OSC 8) where the terminal speaks it, **and a
-        // target** — see `App::draw_links` and `app::links`.
+        // target** - see `App::draw_links` and `app::links`.
         self.draw_links(&mut out);
         if self.hold {
             // **The marker takes the hint bar's row.** It is one row that always exists, so the
-            // freeze costs no height and reflows nothing — and it is the row that already talks
+            // freeze costs no height and reflows nothing - and it is the row that already talks
             // about keys, which is the row a held view's one sentence belongs on.
             let gutter = Self::gutter(term_w);
             let w = term_w.saturating_sub(2 * gutter).max(1);
@@ -53,7 +53,7 @@ impl App {
             self.hold_size = (term_w, h);
             self.hold_frame = Some(out.clone());
         }
-        // **The pointer's marks, last** — the hover and the selection — and after the held frame
+        // **The pointer's marks, last** - the hover and the selection - and after the held frame
         // is kept, so what is kept is the frame itself and the marks are painted on every serve.
         // See `app::pointer`.
         self.relight();
@@ -169,9 +169,9 @@ impl App {
             self.prompt.as_ref()
         };
         // **Which rows of the card are which value's**, set only when the card in the slot IS
-        // the setting card — see `mode_hits` below.
+        // the setting card - see `mode_hits` below.
         let mut pick_spans: Option<Vec<std::ops::Range<usize>>> = None;
-        // **Which card the slot holds, as a click target** (R69) — set by the arm that drew it,
+        // **Which card the slot holds, as a click target** (R69) - set by the arm that drew it,
         // so the record names the card on the screen and not one that is merely open.
         let mut card_target: Option<Target> = None;
         let (dec, dec_pinned): (Vec<String>, Vec<String>) =
@@ -248,14 +248,14 @@ impl App {
         // A stood-down auto-compaction rides the same slot for the same reason: a state of the session, never
         // given up by the fit ladder while it is true. See [`App::compact_off_line`].
         let compact_off = self.compact_off_line(w);
-        // **A paused plan-check rides the same slot, for the same reason** — see
+        // **A paused plan-check rides the same slot, for the same reason** - see
         // [`App::nag_pause_line`]: a state of the session, never given up by the fit ladder while
         // it is true, so a silent board is never read as a broken one.
         let nag_pause = self.nag_pause_line(w);
-        // **A board waiting on the operator rides the same slot** — see [`App::waiting_line`]: a
+        // **A board waiting on the operator rides the same slot** - see [`App::waiting_line`]: a
         // state, never given up by the fit ladder while a person is being waited on.
         let waiting = self.waiting_line(w);
-        // **A stale prompt the operator said `not now` to rides the same slot** — the reseat
+        // **A stale prompt the operator said `not now` to rides the same slot** - the reseat
         // card pinned (`app::reseat`): a state, never given up by the fit ladder while it is
         // true, so it keeps staring while the operator keeps working.
         let reseat_strip = self.reseat_strip(w);
@@ -295,7 +295,7 @@ impl App {
             composer: self.editor.height(self.composer_cols(), h),
             card: dec.len(),
             pinned: dec_pinned.len(),
-            // **Never a row of its own** — the notice is drawn in the status row, which is
+            // **Never a row of its own** - the notice is drawn in the status row, which is
             // reserved whether or not anything is in it (see `let status`).
             notice: false,
             // No stuck sentence any more: a slow turn is the Responding row in yellow.
@@ -344,7 +344,7 @@ impl App {
             chrome.push(l);
         }
         // The turn's own row, last before the box: directly above the composer when nothing else
-        // is up, and below the typing aids when they are — a completion list that is not adjacent
+        // is up, and below the typing aids when they are - a completion list that is not adjacent
         // to the line being typed is the one row here that must not move.
         if show_status {
             notice_at = Some(chrome.len());
@@ -361,7 +361,7 @@ impl App {
         }
         let caret_at = chrome.len() + caret_row;
         chrome.extend(input_rows);
-        // **The bottom edge's standings, and where on the edge they were drawn** — kept the way
+        // **The bottom edge's standings, and where on the edge they were drawn** - kept the way
         // `box_top_at` keeps the count labels', because the fit and the backstop below can still
         // move the row, so the row is resolved once the frame's final shape is known.
         let mut standings_at: Option<(usize, (usize, usize))> = None;
@@ -380,7 +380,7 @@ impl App {
         // The setting card's click facts are recorded below, once the frame's final shape is
         // known (`mode_hits`).
         let pre_chrome = chrome.len();
-        // Backstop. The ladder above cannot always win — `h` can be 2 — and a head
+        // Backstop. The ladder above cannot always win - `h` can be 2 - and a head
         // that returns more lines than the terminal has scrolls its own composer
         // off the bottom.
         if chrome.len() >= h {
@@ -403,7 +403,7 @@ impl App {
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
         let mut out = self.main_area(w, room, header.is_some());
-        // **The frame's click record starts here**, with what `main_area` just drew — its stop
+        // **The frame's click record starts here**, with what `main_area` just drew - its stop
         // rows and its scroll are this frame's. See `app::hits`.
         self.record_main_hits(gutter, term_w, usize::from(header.is_some()), room);
         while out.len() < room {
@@ -415,12 +415,12 @@ impl App {
             out.insert(0, l);
             body_rows += 1;
         }
-        // **The body's height, kept on the head** — the first row of the chrome is where a link
+        // **The body's height, kept on the head** - the first row of the chrome is where a link
         // stops being a target: a URL the operator is typing is text, and a click in the middle
         // of it belongs to the caret. See [`App::draw_links`].
         self.body_rows = body_rows;
         // Rows the backstop took off the front of the chrome, read before the extend
-        // below consumes it — the edge's index has to come down by exactly this many.
+        // below consumes it - the edge's index has to come down by exactly this many.
         let drained = pre_chrome - chrome.len();
         // The setting card's hit rows, `(y, k)` for every row value `k` was drawn on, its `why` lines included,
         // placed where THIS frame put the card. Empty unless the card is the setting card and was drawn whole.
@@ -462,7 +462,7 @@ impl App {
                         .collect()
                 }
                 Target::SettingCard => self.mode_hits.clone(),
-                // The two rows open the answer half, which the fit never trims — each as many
+                // The two rows open the answer half, which the fit never trims - each as many
                 // lines as it wrapped to.
                 Target::ReseatCard => {
                     let [one, two] = self.reseat_choice_lines(w).map(|r| r.len());
@@ -497,7 +497,7 @@ impl App {
                 monitors: labels.monitors.map(|(col, w)| (col + gutter, w)),
             })
         });
-        // **The cut flash notice, as a target** — where this frame put it, if the backstop and the
+        // **The cut flash notice, as a target** - where this frame put it, if the backstop and the
         // truncate left it on the frame.
         if row_clicks
             && let Some(row) = notice_at
@@ -607,7 +607,7 @@ impl App {
             (body_rows + caret_at).min(out.len().saturating_sub(1)),
             caret_col.min(w.saturating_sub(1)) + gutter,
         ));
-        // **While the editor pane has the keyboard, the caret is rano's** — where it put it, or
+        // **While the editor pane has the keyboard, the caret is rano's** - where it put it, or
         // hidden when rano hides it (over its diff view, a list, a help page).
         if self.editor_focused() {
             self.cursor = self.edit_pane.as_ref().and_then(|p| p.caret);
@@ -625,7 +625,7 @@ impl App {
             if visible_width(l) > w {
                 *l = trim_to(l, w);
             }
-            // The pad goes on in place — one reallocation that may extend the existing buffer,
+            // The pad goes on in place - one reallocation that may extend the existing buffer,
             // rather than a second `String` that leaves the first to be freed.
             if gutter > 0 && !l.is_empty() {
                 l.insert_str(0, &pad);
@@ -694,7 +694,7 @@ impl App {
     pub(crate) fn box_top(&self, w: usize) -> (String, BoxTopLabels) {
         // **The number is the rows the pane draws, and not a second rule about them**: the one
         // lifecycle predicate ([`SubagentState::is_finished`]) the pane's own active group is
-        // built from — *"an agent is alive from spawn until it has finished"*.
+        // built from - *"an agent is alive from spawn until it has finished"*.
         let top = BoxTop {
             subagents_running: self.subagents.iter().filter(|s| !s.is_finished()).count(),
             jobs_running: self.jobs.iter().filter(|j| j.running).count(),
@@ -731,7 +731,7 @@ impl App {
             rung: self.rung_state(),
         };
         let standings = self.queue_standings();
-        // **The words, kept for the record below** — the same string `bottom_markers` draws, so
+        // **The words, kept for the record below** - the same string `bottom_markers` draws, so
         // the search for it on the finished row can only find what this frame put there.
         let words = standings.words();
         let right = bottom_markers(
@@ -776,7 +776,7 @@ impl App {
                 )
             }
         };
-        // **Where the standings landed, off the finished row** — the target's rectangle is the
+        // **Where the standings landed, off the finished row** - the target's rectangle is the
         // span's own columns, and the only thing that knows them is the line the terminal is
         // about to draw.
         let at = words.and_then(|words| drawn_span(&edge, &words));
@@ -784,7 +784,7 @@ impl App {
     }
 
     /// **What fills the screen above the cards**: the terminal pane, an open output or pane,
-    /// the help, the picker — or, when none of them is open, the conversation.
+    /// the help, the picker - or, when none of them is open, the conversation.
     pub(crate) fn main_area(&mut self, w: usize, room: usize, has_header: bool) -> Vec<String> {
         // The rectangle in the terminal's cells, whatever is drawn in it, and the click map emptied: only the
         // conversation's branch below fills it, so a click is never measured against rows a pane is covering.
@@ -792,26 +792,26 @@ impl App {
         self.edit_area = crate::ui::editor::editor_inner(x, y, w, room).into();
         self.file_rows.clear();
         self.notice_rows.clear();
-        // **And a finished child's lines with them** — a frame with no conversation on it draws no
+        // **And a finished child's lines with them** - a frame with no conversation on it draws no
         // settlement, and a click measured against the last frame's rows would switch to a child
         // from under whatever is covering it now.
         self.task_rows.clear();
         self.task_switches.clear();
         self.card_rows.clear();
-        // **And the turn's call cards go with them** — a frame with no conversation on it draws
+        // **And the turn's call cards go with them** - a frame with no conversation on it draws
         // no live pane, and a click measured against the last frame's rows would open a call
         // under whatever is covering it now.
         self.call_rows.clear();
-        // **And a picture's rows go with them** — a frame with no conversation on it draws no
+        // **And a picture's rows go with them** - a frame with no conversation on it draws no
         // thumbnail, and a click measured against the last frame's rows would open a picture under
         // whatever is covering it now.
         self.picture_rows.clear();
         self.picture_refs.clear();
-        // **And the open payload window's lines go with them** — a frame with no conversation on
+        // **And the open payload window's lines go with them** - a frame with no conversation on
         // it draws no window, and a click measured against the last frame's lines would scroll a
         // window under whatever is covering it now.
         self.payload_rows.clear();
-        // **What is drawn here is `drawn()`'s answer** (R69) — the same value `App::key` routes
+        // **What is drawn here is `drawn()`'s answer** (R69) - the same value `App::key` routes
         // on and the hint bar describes, so the three can no longer be three hand-written orders
         // that disagree about which of several open panes is in front.
         match self.drawn() {
@@ -822,7 +822,7 @@ impl App {
                 let palette = self.cfg.palette();
                 let (rows, moved) = {
                     let p = self.term.as_mut().expect("just checked");
-                    // **Where it is drawn, for the click that lands on it** — the pane's top-left
+                    // **Where it is drawn, for the click that lands on it** - the pane's top-left
                     // in the terminal's cells, which `TermPane::route` subtracts from a mouse
                     // report so the program is told about its own column and row.
                     p.origin = (x, y);
@@ -849,7 +849,7 @@ impl App {
                 rows
             }
             Drawn::DiffPopup => {
-                // **A change opened by a click, read in its whole file** — over the conversation,
+                // **A change opened by a click, read in its whole file** - over the conversation,
                 // under a `!term` pane (which owns the keys first). See `app::diff_popup`.
                 self.diff_popup_rows(w, room)
             }
@@ -987,7 +987,7 @@ impl App {
                 }
                 self.pane_window(rows, room)
             }
-            // **One stop read whole**, over the pane — also through `pane_window`: a finding's
+            // **One stop read whole**, over the pane - also through `pane_window`: a finding's
             // evidence and a row's detail are written by a plugin and can be a screenful.
             Drawn::Surface(Surface::PluginDetail) => {
                 let lines = self.plugin_detail_lines(w).unwrap_or_else(|| {
@@ -1020,7 +1020,7 @@ impl App {
                     *row += y;
                 }
                 // **And the turn's own call cards**, which live below the history and are rows of
-                // this same window — the shift is the same one, and a record that forgot it is
+                // this same window - the shift is the same one, and a record that forgot it is
                 // the whole defect this list's note describes.
                 for (row, _) in &mut self.call_rows {
                     *row += y;
@@ -1051,7 +1051,7 @@ fn bottom_markers(
     if b.alarmed {
         right.push(Span::role("⚠", Role::Attention));
     }
-    // **What waits on you, folded away** — counted where the eye already goes, in the register
+    // **What waits on you, folded away** - counted where the eye already goes, in the register
     // the line it replaces was in, and with the key that brings it back.
     if let Some(n) = folded {
         sep(&mut right);
@@ -1068,7 +1068,7 @@ fn bottom_markers(
             Role::Attention,
         ));
     }
-    // **A plugin pane's own counter**, in the register the pane chose — the operator's ask for
+    // **A plugin pane's own counter**, in the register the pane chose - the operator's ask for
     // an agent's turn count, one screen over (`docs/plugins-slice1.md` C3's `badge`): drawn
     // where the waits-on-you counter is drawn, and only while that pane is on the screen.
     if let Some((text, role)) = badge {

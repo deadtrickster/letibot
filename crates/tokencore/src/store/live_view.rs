@@ -31,7 +31,7 @@ pub struct LiveView {
 
 impl LiveView {
     /// Attach `path` read-only. Refuses a file written by a newer build, as
-    /// [`Store::open`] would — including one whose reader floor this build is below.
+    /// [`Store::open`] would - including one whose reader floor this build is below.
     pub fn open(path: &Path) -> Result<Self> {
         let store = Store::open_in_memory()?;
         {
@@ -122,7 +122,7 @@ impl LiveView {
     }
 }
 
-/// `INSERT INTO main.table SELECT … FROM live.table <tail>`, over the columns both have —
+/// `INSERT INTO main.table SELECT … FROM live.table <tail>`, over the columns both have  -
 /// so a live file one migration behind still copies, with the newer columns defaulted.
 fn copy(conn: &Connection, table: &str, tail: &str, arg: &str) -> Result<usize> {
     let cols = |schema: &str| -> Result<Vec<String>> {

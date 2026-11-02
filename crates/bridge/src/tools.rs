@@ -22,7 +22,7 @@ use crate::diff;
 use crate::head::{self, Attention, Head, Turn};
 
 /// The default approval point. `writes-allowed` is the point whose grant scope is
-/// *session*, so an approval a person gives once covers that class of call — and exec,
+/// *session*, so an approval a person gives once covers that class of call - and exec,
 /// the network and the always-ask list still ask, which is what the bridge is for.
 pub const DEFAULT_MODE: &str = "writes-allowed";
 
@@ -89,7 +89,7 @@ impl Bridge {
             // package's work as being somewhere it is not.
             "placement": placement_json(h.placement.as_ref()),
             // The same thing in a sentence, because this is the field a model reads to answer
-            // *where is my work happening* — and the half that matters as much is what did NOT
+            // *where is my work happening* - and the half that matters as much is what did NOT
             // move: the model, the store and the gate are this box's.
             "tools_run": tools_run(h.placement.as_ref()),
         });
@@ -120,7 +120,7 @@ impl Bridge {
         // Before the brief, so the first tool call already runs at the point the caller
         // asked for: `Mode` is queued like a prompt and takes effect from the next call.
         if let Err(e) = h.set_mode(mode) {
-            // A session that cannot be moved is still a session — say so and let the brief
+            // A session that cannot be moved is still a session - say so and let the brief
             // run at the daemon's own point rather than losing the session to the failure.
             answer["mode_requested"] = json!(mode);
             answer["mode_error"] = json!(e);
@@ -211,7 +211,7 @@ impl Bridge {
     }
 
     /// A line into a session the bridge holds. Queued behind a running turn, as a head's
-    /// own prompt is — the daemon never rejects it.
+    /// own prompt is - the daemon never rejects it.
     pub fn send(&self, session: &str, text: &str) -> Result<Value, String> {
         if text.trim().is_empty() {
             return Err("`text` is empty: an empty prompt starts no turn".into());
@@ -269,7 +269,7 @@ impl Bridge {
             "activity": serde_json::to_value(&s.activity).unwrap_or(Value::Null),
             "waiting_on": s.waiting_on(),
             // Whether an unfinished todo needs one of the running jobs: `wait` does not hold on
-            // this any more — the daemon's activity does — and the key stays because it is a
+            // this any more - the daemon's activity does - and the key stays because it is a
             // question a caller already asks, answered now from the daemon's own list.
             "waiting_on_jobs": s.waiting_on_jobs(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
@@ -428,7 +428,7 @@ impl Bridge {
         json!({ "sessions": rows })
     }
 
-    /// One held session, or a refusal naming the ones it does hold — a caller that mistyped
+    /// One held session, or a refusal naming the ones it does hold - a caller that mistyped
     /// an id should not have to ask `leticode_list` to find out.
     fn head(&self, session: &str) -> Result<Arc<Head>, String> {
         let g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
@@ -465,7 +465,7 @@ fn session_name(raw: &str, key: &str) -> Result<String, String> {
     })
 }
 
-/// The first line of a message, for a listing row — a status line is one line, and a
+/// The first line of a message, for a listing row - a status line is one line, and a
 /// report of forty lines in a table is a table nobody reads.
 fn first_line(text: &str) -> String {
     text.lines()
@@ -732,7 +732,7 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
     json!({ "name": name, "description": description, "inputSchema": schema })
 }
 
-/// Which tool names this build answers — the list `tools/list` publishes, and the one
+/// Which tool names this build answers - the list `tools/list` publishes, and the one
 /// `tools/call` checks against, so a name can never be in one and not the other.
 pub fn names() -> Vec<&'static str> {
     vec![
@@ -778,7 +778,7 @@ fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
     }
 }
 
-/// A whole-number argument that may be absent — a cursor, a limit.
+/// A whole-number argument that may be absent - a cursor, a limit.
 fn arg_count(args: &Value, key: &str) -> Result<Option<u64>, String> {
     match args.get(key) {
         Some(Value::Null) | None => Ok(None),
@@ -1025,7 +1025,7 @@ mod tests {
         .expect_err("not a boolean");
         assert!(e.contains("`full`"), "{e}");
         // A cursor is a whole number, and a string or a negative one says which field it was
-        // rather than being read as zero — a cursor silently read as zero re-sends a ring.
+        // rather than being read as zero - a cursor silently read as zero re-sends a ring.
         for bad in [json!(-1), json!("12"), json!(1.5)] {
             let e = call(
                 &b,
@@ -1066,7 +1066,7 @@ mod tests {
     }
 
     /// A session this bridge does not hold is refused by name, and the refusal says what it
-    /// does hold — the caller's next move is one call, not a listing.
+    /// does hold - the caller's next move is one call, not a listing.
     #[test]
     fn an_unknown_session_is_refused_with_what_is_held() {
         let b = Bridge::new();

@@ -55,7 +55,7 @@ fn a_stale_prompt_raises_a_card_with_exactly_the_two_choices() {
         "two rows and no third — the card is a choice between these two: {s}"
     );
     // The short form: what changed and what was gained, not the paragraph on frozen prompts.
-    // Read off the card itself — the `prefix_stale` note row in the conversation is the whole
+    // Read off the card itself - the `prefix_stale` note row in the conversation is the whole
     // sentence, as it always was.
     let card = |a: &App| {
         let (content, choices) = a.reseat_card_lines(120);
@@ -107,7 +107,7 @@ fn reseat_now_sends_the_bare_reseat_exactly_as_typing_it_would() {
 
     // **The digit is a move, as on every card** (R90.6): `1` typed as the first character of a
     // line sent `/reseat` and forked the conversation, so a row number now marks the row and
-    // Enter answers it — the rule R90.2 put on the decision card, applied to this one.
+    // Enter answers it - the rule R90.2 put on the decision card, applied to this one.
     let (mut a, _hub) = stale();
     assert_eq!(a.key(Key::Char('1')), None, "the digit marks");
     assert_eq!(a.key(Key::Enter), Some(Action::Reseat { summarise: false }));
@@ -261,7 +261,7 @@ fn a_refused_reseat_lets_the_strip_send_again() {
 }
 
 /// **A reattach after a restart**: the `Hello` forgets the card, and the daemon's `prefix_stale`
-/// right after it raises it again, open — or, when the restarted daemon found the prompt
+/// right after it raises it again, open - or, when the restarted daemon found the prompt
 /// current, nothing does and the card is gone.
 #[test]
 fn an_attach_after_a_restart_shows_it_again_from_the_daemons_word() {
@@ -341,7 +341,7 @@ fn a_reseat_too_big_to_carry_verbatim_offers_one_with_a_summary() {
 }
 
 /// **R90.1: a pane's keys are the pane's.** With the card up, ctrl-t then Enter on a row, `1` in
-/// the session picker, Tab and Esc in todos all acted on the card — Enter and `1` sent `/reseat`.
+/// the session picker, Tab and Esc in todos all acted on the card - Enter and `1` sent `/reseat`.
 /// While a pane has the keyboard the card is the strip, and it is back when the pane closes.
 #[test]
 fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
@@ -419,7 +419,7 @@ fn a_digit_on_the_reseat_card_marks_the_row_and_reseats_nothing() {
     );
 }
 
-/// **R90.22: the card that says "pgdn scrolls" scrolls on PgDn** — `scroll_card` asked for an open
+/// **R90.22: the card that says "pgdn scrolls" scrolls on PgDn** - `scroll_card` asked for an open
 /// decision, so the page keys scrolled the transcript under the reseat card instead.
 #[test]
 fn the_page_keys_scroll_the_reseat_card_that_says_they_do() {
@@ -433,7 +433,7 @@ fn the_page_keys_scroll_the_reseat_card_that_says_they_do() {
     assert!(after.contains("pgup"), "{after}");
 }
 
-/// **R90.31: the reseat rows wrap rather than being cut** — the 79-character summarise row lost
+/// **R90.31: the reseat rows wrap rather than being cut** - the 79-character summarise row lost
 /// its reason on an ordinary terminal; a click on its second line still chooses it.
 #[test]
 fn the_reseat_rows_wrap_on_a_narrow_screen() {

@@ -67,7 +67,7 @@ pub fn present(what: &str, here: bool) -> Option<()> {
     present_given(what, here, required())
 }
 
-/// [`present`] with [`required`]'s answer handed in rather than read — the seam its test uses,
+/// [`present`] with [`required`]'s answer handed in rather than read - the seam its test uses,
 /// so the test never sets `LETIBOT_REQUIRE_APPARATUS` under a run that set it for real.
 fn present_given(what: &str, here: bool, required: bool) -> Option<()> {
     if here {
@@ -113,7 +113,7 @@ pub fn real_store_allowed() -> bool {
     real_store_allowed_given(std::env::var("LETIBOT_CHECK_REAL_STORE").ok().as_deref())
 }
 
-/// [`real_store_allowed`] with the reading handed in rather than read — the seam its test uses,
+/// [`real_store_allowed`] with the reading handed in rather than read - the seam its test uses,
 /// so the test never sets a variable under a run that set it for real (R67 item 17).
 fn real_store_allowed_given(flag: Option<&str>) -> bool {
     matches!(flag, Some(v) if !v.is_empty() && v != "0")
@@ -188,13 +188,13 @@ mod tests {
         assert!(!real_store_allowed_given(Some("")));
         assert!(!real_store_allowed_given(Some("0")));
 
-        // The prefix DOES refuse a missing apparatus — that is what it is for …
+        // The prefix DOES refuse a missing apparatus - that is what it is for …
         assert!(std::panic::catch_unwind(|| present_given("a store", false, true)).is_err());
         // … and the real store's decision is not that one: no flag, no panic, no reading.
         assert!(!real_store_allowed_given(None));
     }
 
-    /// `gguf_path` honours the override and never returns an empty path — the
+    /// `gguf_path` honours the override and never returns an empty path - the
     /// message a person reads depends on it naming something. The readings are handed to
     /// [`gguf_path_from`], not set in the environment (R67 item 17).
     #[test]
@@ -206,7 +206,7 @@ mod tests {
             ),
             PathBuf::from("/tmp/definitely-not-a-gguf")
         );
-        // With no override, a path is still named — with a HOME or without one.
+        // With no override, a path is still named - with a HOME or without one.
         assert!(!gguf_path_from(None, None).as_os_str().is_empty());
         assert!(
             !gguf_path_from(None, Some("/nonexistent-home".into()))

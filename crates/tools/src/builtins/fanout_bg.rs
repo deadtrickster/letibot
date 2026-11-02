@@ -13,8 +13,8 @@ use crate::runtime::Invocation;
 
 use super::fanout::{TOOL, table};
 
-/// **How much of the per-host journal one fanout keeps.** A window is not the point here — the
-/// journal is one line per branch, one per ending, and the table at the end — so this bounds a
+/// **How much of the per-host journal one fanout keeps.** A window is not the point here - the
+/// journal is one line per branch, one per ending, and the table at the end - so this bounds a
 /// pathological case (a fanout over a thousand hosts) and not a size an ordinary one reaches.
 pub const JOURNAL_BYTES: usize = 256 * 1024;
 
@@ -35,7 +35,7 @@ pub(super) fn start(
 ) -> Invocation {
     // **The host is asked for BEFORE the first branch starts.** A session with none has nowhere to
     // keep a handle, and branches running with nobody able to reach them is the silent omission
-    // this tool exists to prevent — one step worse for having started them.
+    // this tool exists to prevent - one step worse for having started them.
     let Some(local) = local else {
         return Invocation::failed(
             "`background: true` and this session has no process host",
@@ -99,7 +99,7 @@ pub(super) fn start(
 /// block on a branch; `state`, `output`, `wait` and `kill` make its ending visible above.
 pub struct FanoutJob {
     handle: JobId,
-    /// The name it answers to — `fanout`, `fanout-2`, … claimed out of the host's own record.
+    /// The name it answers to - `fanout`, `fanout-2`, … claimed out of the host's own record.
     slug: String,
     work: String,
     /// What `hosts.toml` declared, for the table's sentence about rows that never ran.
@@ -108,12 +108,12 @@ pub struct FanoutJob {
     fleet: Fleet,
     blocks: Option<Arc<Blocks>>,
     leases: Vec<letibot_tokencore::store::Lease>,
-    /// Every branch this fanout started, in plan order — the ones still running and the ones
+    /// Every branch this fanout started, in plan order - the ones still running and the ones
     /// already settled. Kept whole so a kill can report what a branch *was* after it ended.
     branches: Mutex<Vec<Running>>,
     started: Instant,
     inner: Mutex<Inner>,
-    /// Rung when the last branch settles — what [`Aggregate::wait`] blocks on.
+    /// Rung when the last branch settles - what [`Aggregate::wait`] blocks on.
     settled: Condvar,
     /// The journal `job_output` reads. See the module header for why it is append-only.
     capture: Mutex<Capture>,
@@ -126,7 +126,7 @@ struct Inner {
     done: Vec<Cell>,
     /// The label of every branch that has a fate, so the tracker asks once.
     settled: Vec<String>,
-    /// **Who ended it, when somebody did** — `None` until a kill.
+    /// **Who ended it, when somebody did** - `None` until a kill.
     stopped: Option<String>,
     state: Option<JobState>,
     took: Option<Duration>,
@@ -202,7 +202,7 @@ impl FanoutJob {
         }
     }
 
-    /// The loop itself — one pass over the branches, so a slow machine costs its own round trip and
+    /// The loop itself - one pass over the branches, so a slow machine costs its own round trip and
     /// not the whole fanout's, and a breath between passes.
     fn track_loop(&self) {
         loop {
@@ -212,8 +212,8 @@ impl FanoutJob {
                 }
                 match self.fleet.settled(&run) {
                     Some((state, took)) => {
-                        // **A row is written in ONE place.** Whoever ended the branch — a kill, a
-                        // deadline, the command itself — the fate comes from the flag this fanout
+                        // **A row is written in ONE place.** Whoever ended the branch - a kill, a
+                        // deadline, the command itself - the fate comes from the flag this fanout
                         // keeps, and the tracker is the only writer of `done`.
                         let fate = match self.stopped_by() {
                             Some(by) => Fate::Stopped { why: by, took },
@@ -284,7 +284,7 @@ impl FanoutJob {
         g.done.push(cell);
     }
 
-    /// **The table, the blocks, and the state** — once, whichever way the fanout ended.
+    /// **The table, the blocks, and the state** - once, whichever way the fanout ended.
     fn finish(&self) {
         let rows = {
             let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -337,7 +337,7 @@ impl FanoutJob {
         self.settled.notify_all();
     }
 
-    /// **End it early, before anything watches it** — a run whose handle the session refused, or
+    /// **End it early, before anything watches it** - a run whose handle the session refused, or
     /// one whose watcher thread could not start. Every branch is stopped on its own host and the
     /// table says so; the caller is handed the words.
     fn abandon(&self, why: &str) -> String {
@@ -368,7 +368,7 @@ impl FanoutJob {
 impl Aggregate for FanoutJob {
     fn command(&self) -> String {
         // **There is no single command line here**, and naming the first branch's would be a claim
-        // about all of them — so the row's command column is the plan.
+        // about all of them - so the row's command column is the plan.
         format!(
             "fanout: {} branch(es) on {}",
             self.plan.len(),
@@ -446,7 +446,7 @@ impl Aggregate for FanoutJob {
         let mut out = Vec::new();
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for run in &branches {
-            // **Only the branches that are still there** — `observed` is what `job_kill` prints as
+            // **Only the branches that are still there** - `observed` is what `job_kill` prints as
             // *what was running*, and a settled branch counted here would be a kill claiming to
             // have found work that had already ended.
             if g.settled.iter().any(|l| l == &run.leg.label) {
@@ -460,7 +460,7 @@ impl Aggregate for FanoutJob {
                 comm: format!("{}@{}", run.leg.label, run.leg.host),
                 cmdline: run.leg.command.clone(),
             });
-            // Each branch through its own host and its own process group (RH1) — there is no
+            // Each branch through its own host and its own process group (RH1) - there is no
             // cgroup of ours holding them, and a signal from here would reach nothing.
             self.fleet.stop(run, by);
         }
@@ -492,7 +492,7 @@ impl Aggregate for FanoutJob {
     }
 }
 
-/// The name a branch's journal line opens with — `fake1 on fake1`, `local (local)` — the same words
+/// The name a branch's journal line opens with - `fake1 on fake1`, `local (local)` - the same words
 /// [`Cell::line`] uses, so a branch that is running and the same branch once it has ended are two
 /// lines a reader follows rather than two spellings of one host.
 fn cell_label(leg: &Leg) -> String {

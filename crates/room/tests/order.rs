@@ -1,4 +1,4 @@
-//! **The ordering rule, stated as tests** — a tag is a queue, first come first served, and a tag
+//! **The ordering rule, stated as tests** - a tag is a queue, first come first served, and a tag
 //! is a lock.
 
 use letibot_room::{Refused, Room, Speaker};
@@ -69,7 +69,7 @@ fn a_tag_is_a_lock_so_a_second_claim_under_it_is_refused() {
     room.post(&b, "g", "gpu", "one card", 1_002).unwrap();
 
     room.claim(&a, "a2", "ram", 2_000).unwrap();
-    // `s-b`'s own request is *behind* the held one, and the tag is a lock — so no second claim
+    // `s-b`'s own request is *behind* the held one, and the tag is a lock - so no second claim
     // under `ram` at all, not even on its own item.
     assert!(matches!(
         room.claim(&b, "b2", "ram", 2_001),
@@ -108,7 +108,7 @@ fn an_abandoned_item_returns_to_the_head_of_its_tag() {
     room.claim(&a, "a2", "ram", 6_000).unwrap();
     room.sweep(6_000 + 90_001);
 
-    // The old request is in front of the newer one, because it was posted first — the queue moves
+    // The old request is in front of the newer one, because it was posted first - the queue moves
     // on from a claimant, not from the request.
     let ids: Vec<u64> = room.queue("ram").iter().map(|i| i.id).collect();
     assert_eq!(ids, [1, 2]);

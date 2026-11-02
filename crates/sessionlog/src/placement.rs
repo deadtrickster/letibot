@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// `<socket>.placement` — beside the socket and beside its `.lock`, named after the same key.
+/// `<socket>.placement` - beside the socket and beside its `.lock`, named after the same key.
 pub fn path(socket: &Path) -> PathBuf {
     socket.with_extension("placement")
 }
@@ -77,8 +77,8 @@ pub fn read(socket: &Path) -> Option<String> {
     (socket_identity(socket).ok()? == (recorded, stamp)).then_some(spelling)?
 }
 
-/// The identity of a socket: `(dev, ino)` — the pair that says *this file, not another one at the
-/// same name* — and the `ctime` pair that says *this binding of it*. A stat and not a connect: the
+/// The identity of a socket: `(dev, ino)` - the pair that says *this file, not another one at the
+/// same name* - and the `ctime` pair that says *this binding of it*. A stat and not a connect: the
 /// caller has already established that something is listening.
 fn socket_identity(path: &Path) -> std::io::Result<((u64, u64), (i64, u64))> {
     use std::os::unix::fs::MetadataExt;
@@ -90,7 +90,7 @@ fn socket_identity(path: &Path) -> std::io::Result<((u64, u64), (i64, u64))> {
 mod tests {
     use super::*;
 
-    /// A socket path in a scratch directory, with a real socket file at it — the record is about a
+    /// A socket path in a scratch directory, with a real socket file at it - the record is about a
     /// socket's identity, so a test beside a name that is not a socket would be testing a file. The
     /// listener is kept alive by the caller, and the scratch root is short because `SUN_LEN` is.
     fn a_socket(tag: &str) -> (PathBuf, std::os::unix::net::UnixListener) {

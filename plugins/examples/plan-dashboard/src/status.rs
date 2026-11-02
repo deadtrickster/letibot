@@ -1,12 +1,12 @@
 //! **The status file is the project's plan as data** (`docs/plugins-slice1.md` C5): the shape the
 //! agents rewrite instead of re-typing prose at whoever asks. These types are the whole of the
-//! contract with that file — a field this crate does not name is a field the agents may leave out,
+//! contract with that file - a field this crate does not name is a field the agents may leave out,
 //! so every one of them defaults and the file is read rather than demanded.
 
 use serde::{Deserialize, Serialize};
 
 /// The row statuses C5 fixes. They are `&str` constants rather than an enum because a status file
-/// is written by agents, and an unfamiliar status must render as an unfamiliar status — not turn
+/// is written by agents, and an unfamiliar status must render as an unfamiliar status - not turn
 /// the whole snapshot unreadable.
 pub const DONE: &str = "done";
 pub const IN_PROGRESS: &str = "in progress";
@@ -40,7 +40,7 @@ pub struct Status {
 
 impl Status {
     /// **The look's stdout as a status file, or the parser's own message.** serde_json's error
-    /// carries the line and column, because "unparseable" without a place is a hunt — and this
+    /// carries the line and column, because "unparseable" without a place is a hunt - and this
     /// message is what the pane shows as the panel's `why`.
     pub fn parse(text: &str) -> Result<Status, String> {
         serde_json::from_str::<Status>(text).map_err(|e| e.to_string())

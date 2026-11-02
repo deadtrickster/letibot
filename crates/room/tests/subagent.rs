@@ -1,4 +1,4 @@
-//! **Top-level sessions only** — a subagent is refused by name, at every verb, and the refusal is
+//! **Top-level sessions only** - a subagent is refused by name, at every verb, and the refusal is
 //! the sentence that says why: a subagent speaks through its parent.
 
 use letibot_room::{Refused, Room, Speaker};
@@ -57,7 +57,7 @@ fn the_parent_may_speak_for_the_work_and_the_child_may_not() {
     let claimed = room.claim(&parent, "c", "ram", 1_001).unwrap();
     assert_eq!(claimed.item.holder(), Some("s-a"));
 
-    // A subagent cannot even be vouched for — the rule is the room's, not the door's.
+    // A subagent cannot even be vouched for - the rule is the room's, not the door's.
     assert!(room.vouch(&Speaker::subagent("s-a-sub-1", "s-a")).is_err());
     assert_eq!(room.holding("s-a", 1_002).len(), 1);
 }

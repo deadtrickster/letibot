@@ -21,7 +21,7 @@ fn published(h: &Harness) -> Vec<Vec<letibot_sessionlog::Citation>> {
         .collect()
 }
 
-/// **The lines are read when the reply lands and the snapshot is what comes back** — a reply
+/// **The lines are read when the reply lands and the snapshot is what comes back** - a reply
 /// published again (a restore, a fork's carry) shows what it cited when it was written, not the
 /// file as it is now; a reply that cites nothing publishes nothing.
 #[test]

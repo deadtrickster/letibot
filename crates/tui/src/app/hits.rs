@@ -47,7 +47,7 @@ pub(crate) enum Target {
     /// **A todo row's `waits on …` link** (`todos_wait_links`), over the todos pane; its one stop
     /// is the link's index in that record. A click opens the job or the child the row waits on.
     TodoWait,
-    /// **A panel's title row in a plugin's pane** — C3's *a click on a panel opens its view*. Its
+    /// **A panel's title row in a plugin's pane** - C3's *a click on a panel opens its view*. Its
     /// one stop is the panel's index in the view, and it is not a stop of the pane: a panel's
     /// title is a door, and Enter is for the rows behind it.
     PluginPanel,
@@ -61,7 +61,7 @@ pub(crate) enum Target {
     SettingCard,
     /// A count label on the composer's top edge.
     CountLabel(CountLabel),
-    /// **A picture's thumbnail rows in the conversation** (`app::pictures`) — each row of the box,
+    /// **A picture's thumbnail rows in the conversation** (`app::pictures`) - each row of the box,
     /// over the block the picture was drawn in. A click opens the picture larger, in the popup the
     /// change and the notice open in.
     Picture,
@@ -69,7 +69,7 @@ pub(crate) enum Target {
     /// (`App::payload_click`), the same offset the arrows and the wheel move. The header and the
     /// seam are not this target: they are not lines of the payload.
     PayloadLine,
-    /// **The header's git field** — its `(…)` on the header row; a click opens the repo card.
+    /// **The header's git field** - its `(…)` on the header row; a click opens the repo card.
     GitField,
     /// The corner's repository: a click opens the merge queue pane scoped to that path
     /// (`QueueScope::Path`). It is the path and not the git field, which opens the card that can
@@ -86,7 +86,7 @@ pub(crate) enum Target {
 }
 
 /// **One target on the last frame**: where it was, what it was, and which of its stops each
-/// screen row belonged to — `(y, stop)`, in terminal rows, scroll applied.
+/// screen row belonged to - `(y, stop)`, in terminal rows, scroll applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Hit {
     pub(crate) rect: Rect,
@@ -109,7 +109,7 @@ impl App {
         self.hits.iter().rev().find(|h| h.rect.contains(x, y))
     }
 
-    /// **A pane's recorded stop rows, as screen rows** — pane row `r` is on the screen at
+    /// **A pane's recorded stop rows, as screen rows** - pane row `r` is on the screen at
     /// `top + r - pane_scroll` while it is inside the window. Read once, at draw time, with the
     /// scroll the draw itself clamped.
     fn pane_stops(&self, rows: &[usize], top: usize, room: usize) -> Vec<(usize, usize)> {
@@ -162,7 +162,7 @@ impl App {
                     target: Target::Surface(s),
                     stops,
                 });
-                // **Each `waits on …` link, over the row it sits on** — exactly the columns its
+                // **Each `waits on …` link, over the row it sits on** - exactly the columns its
                 // words were drawn in, and only while the window shows its row.
                 if s == Surface::Todos {
                     for (k, l) in self.todos_wait_links.clone().into_iter().enumerate() {
@@ -243,7 +243,7 @@ impl App {
                         stops: vec![(top + r, line)],
                     });
                 }
-                // **The notice rows, over the conversation they sit in** — one rectangle a row,
+                // **The notice rows, over the conversation they sit in** - one rectangle a row,
                 // the whole width, like the conversation's own: later records are on top.
                 for (y, k) in self.notice_rows.clone() {
                     self.hits.push(Hit {
@@ -257,7 +257,7 @@ impl App {
                         stops: vec![(y, k)],
                     });
                 }
-                // **A finished child's line, over the notice it is** — recorded after it, so it
+                // **A finished child's line, over the notice it is** - recorded after it, so it
                 // is the target a click on that row finds: the line is a door to the child, and
                 // the popup behind it is the secondary reading (`alt-n`).
                 for (y, k) in self.task_rows.clone() {
@@ -284,7 +284,7 @@ impl App {
                         stops: vec![(y, i)],
                     });
                 }
-                // **A picture's rows, over the block it was drawn in** — one rectangle a row, the
+                // **A picture's rows, over the block it was drawn in** - one rectangle a row, the
                 // whole width, like a notice's: the thumbnail is a box of placeholder cells whose
                 // columns a person cannot see, so the row IS the target.
                 for (y, k) in self.picture_rows.clone() {

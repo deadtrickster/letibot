@@ -66,7 +66,7 @@ fn the_pane_keeps_the_header_the_composer_and_the_status_their_rows() {
     let before = a.screen(80, 24);
     pane(&mut a, b"\x1b[2J\x1b[Hhello from mc\r\n");
     let during = a.screen(80, 24);
-    // **`size().0`, and not `rows()`** — on this screen `rows()` hands back the cells of
+    // **`size().0`, and not `rows()`** - on this screen `rows()` hands back the cells of
     // every row (`Chunks<Cell>`), and the number the pane was given is the size. The
     // rectangle is what this test is about, so it is asked for by name.
     let room = a.term.as_ref().expect("a pane").screen.size().0;
@@ -90,7 +90,7 @@ fn the_pane_keeps_the_header_the_composer_and_the_status_their_rows() {
     assert!(room >= 1, "the pane got a rectangle");
 }
 
-/// **The pane's rows are exactly `room`, at every size** — the property `vt-one` is
+/// **The pane's rows are exactly `room`, at every size** - the property `vt-one` is
 /// preserving, asserted from the head's side rather than from the screen's.
 #[test]
 fn the_pane_draws_exactly_the_rows_it_is_given() {
@@ -151,7 +151,7 @@ fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
              back to"
     );
     assert_eq!(a.input(), "", "the composer saw none of it");
-    // **The disclosure is the chrome line, and it is drawn while it is true** — see
+    // **The disclosure is the chrome line, and it is drawn while it is true** - see
     // [`App::detach`] for why the sentence is not a notice as well: a notice cannot be taken
     // back, and this one would have outlived the pane.
     let frame = a.screen(80, 24);
@@ -249,7 +249,7 @@ fn ending_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
     );
 
     // The operator ends it deliberately: `!term close` is typed at the composer (which a
-    // drawn pane owns, so this is the DETACHED case — the head has the pane and the card
+    // drawn pane owns, so this is the DETACHED case - the head has the pane and the card
     // names it), then confirmed with the one key that means yes.
     a.detach();
     typed(&mut a, "!term close");
@@ -315,7 +315,7 @@ fn a_term_close_asks_first_and_only_a_deliberate_yes_ends_anything() {
     a.head_id = "h1".into();
     let _ = a.screen(80, 24);
     pane(&mut a, b"nano's screen\r\n");
-    // The operator leaves first — a detach, and it raises no card at all.
+    // The operator leaves first - a detach, and it raises no card at all.
     a.pane_keys(b"\x1c");
     assert!(!a.pane_open());
     assert!(
@@ -345,7 +345,7 @@ fn a_term_close_asks_first_and_only_a_deliberate_yes_ends_anything() {
         "both keys, and which one is the default: {card:?}"
     );
 
-    // **Every key that is not a deliberate yes cancels**, Enter included — and the program
+    // **Every key that is not a deliberate yes cancels**, Enter included - and the program
     // is still running afterwards.
     for k in [Key::Enter, Key::Esc, Key::Char('n'), Key::Up] {
         let mut b = app();
@@ -514,8 +514,8 @@ fn a_pane_that_ends_on_its_own_closes_the_same_way_a_refusal_does() {
         a.screen(80, 24)
     );
 
-    // And a `TermEnded` for a pane this head never opened — a second head attached to the
-    // same session, which the frames are fanned out to — is dropped rather than said: it is
+    // And a `TermEnded` for a pane this head never opened - a second head attached to the
+    // same session, which the frames are fanned out to - is dropped rather than said: it is
     // not this head's pane and it has no rectangle to restore.
     let mut b = app();
     b.session_id = "s".into();
@@ -573,7 +573,7 @@ fn show_the_sessions_pane_tree() {
     a.push_surface(Surface::Picker);
     // **A ruler, because the question here is COLUMNS.** *Does the pane render the tree*
     // is a question about which column a row's name starts in, and an eyeball on a frame
-    // answers it wrongly at one column per level — which is what the first look did.
+    // answers it wrongly at one column per level - which is what the first look did.
     let ruler: String = (0..96)
         .map(|i| char::from_digit((i % 10) as u32, 10).unwrap())
         .collect();
@@ -693,7 +693,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
         carried.contains("Carrying the conversation") && carried.contains("/2702 rows"),
         "a named fill draws the bar: {carried}"
     );
-    // **A small one draws no bar** — under `MIN_FILLING` — and still no sentence, because
+    // **A small one draws no bar** - under `MIN_FILLING` - and still no sentence, because
     // the daemon did name it.
     a.apply(ServerFrame::Event(env(
         2,
@@ -719,7 +719,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
         waiting.contains("Rows arriving") && waiting.contains("0/4 rows"),
         "a snapshot with no bodies is a bulk announcement and is said: {waiting}"
     );
-    // **Past the patience it stops claiming to be progress** — and this is the sentence
+    // **Past the patience it stops claiming to be progress** - and this is the sentence
     // that found the operator a real daemon-side hole, so it is not gated by the bar's
     // threshold either.
     b.clock(1_000 + BODY_PATIENCE + 1);
@@ -941,7 +941,7 @@ fn a_panes_enter_is_the_panes_even_with_words_in_the_composer() {
     );
 }
 
-/// The frame's text with this head's own escapes taken out, one row per line — what a person
+/// The frame's text with this head's own escapes taken out, one row per line - what a person
 /// reads off the pane.
 fn pane_text(a: &mut App) -> String {
     a.screen(80, 12)
@@ -962,7 +962,7 @@ fn a_wheel_over_a_pane_reads_back_what_scrolled_off_it() {
         out.extend_from_slice(format!("line {i:02}\r\n").as_bytes());
     }
     // The pane is drawn at its own size before the program prints, as a real one is: a resize
-    // keeps the top of the grid, and the program — not this test — would redraw on `SIGWINCH`.
+    // keeps the top of the grid, and the program - not this test - would redraw on `SIGWINCH`.
     pane(&mut a, b"");
     pane_text(&mut a);
     a.apply(ServerFrame::TermOutput {
@@ -1008,7 +1008,7 @@ fn a_program_that_asked_for_the_mouse_is_sent_it_translated_to_the_pane() {
     pane(&mut a, b"\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[2Jpanels");
     a.screen(80, 12);
     let (ox, oy) = a.term.as_ref().unwrap().origin;
-    // A press at the terminal's column 10, row 5 — the pane's column 10-ox, row 5-oy.
+    // A press at the terminal's column 10, row 5 - the pane's column 10-ox, row 5-oy.
     let press = format!("\x1b[<0;{};{}M", 10, 5);
     assert_eq!(
         a.pane_keys(press.as_bytes()),
@@ -1125,7 +1125,7 @@ fn a_head_draws_one_of_several_panes_and_closes_the_one_it_names() {
     );
 
     // Leave, and close with no number: the pane this head holds is the one meant, and with two
-    // running the card says which by number. Cancelled — anything but `y` is.
+    // running the card says which by number. Cancelled - anything but `y` is.
     a.pane_keys(b"\x1c");
     typed(&mut a, "!term close");
     a.key(Key::Enter);

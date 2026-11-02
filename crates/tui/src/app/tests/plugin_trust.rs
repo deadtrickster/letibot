@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// A loader that answers for a layer's module with one that exports nothing, so a manifest with
-/// `hooks = []` admits and a manifest with hooks does not — which is all this test needs of an
+/// `hooks = []` admits and a manifest with hooks does not - which is all this test needs of an
 /// engine. The built-ins go to the real one, the way the head's own stack does it.
 struct NoHooks;
 
@@ -47,7 +47,7 @@ impl letibot_plugins::Loader for Layers {
     }
 }
 
-/// A project with one placed layer, and the trust book beside it — a temp directory, so nothing
+/// A project with one placed layer, and the trust book beside it - a temp directory, so nothing
 /// in this file can reach the operator's own `~/.config/letibot/plugin-trust.json`.
 fn a_project(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -153,7 +153,7 @@ fn plugin_trust_refuses_a_builtin_by_name() {
     let trust = letibot_plugins::Trust::open(project.join("plugin-trust.json"));
     let mut stack = letibot_plugins::Stack::discover(None, Some(&project), None, Arc::new(Layers));
     stack.set_trust(trust.clone());
-    // The binary's own layers, as the head's real stack carries them — the built-in `sessions`
+    // The binary's own layers, as the head's real stack carries them - the built-in `sessions`
     // layer is the one every head has.
     let failed = letibot_builtins::install(&mut stack);
     assert!(failed.is_empty(), "{failed:?}");

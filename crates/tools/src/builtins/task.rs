@@ -36,7 +36,7 @@ pub enum Placement {
 fn placement_seam(placement: &Placement) -> String {
     match placement {
         // **No branch on this path.** The VM works on a copy, and firecode delivers the copy's
-        // final state as a directory beside it when the VM comes down — the old line promised a
+        // final state as a directory beside it when the VM comes down - the old line promised a
         // branch, which a reader then went looking for (FIRECODE-NOTES).
         Placement::Firecode => {
             "  seam: the VM works on a COPY of the tree; its work comes back as \
@@ -113,7 +113,7 @@ fn placement_arg(
 }
 
 /// The `verify` argument: an acceptance check firecode runs after a VM-placed child finishes
-/// ([`TaskSpec::vm_verify`]). Refused off a VM, where nothing would run it — taking it silently
+/// ([`TaskSpec::vm_verify`]). Refused off a VM, where nothing would run it - taking it silently
 /// would leave the caller believing in a gate that does not exist.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn verify_arg(
@@ -184,7 +184,7 @@ impl Placement {
         }
     }
 
-    /// The spelling that round-trips through [`Placement::parse`] — a recorded subagent's
+    /// The spelling that round-trips through [`Placement::parse`] - a recorded subagent's
     /// spec is written with this and read back with that, so the two are one fact.
     pub fn as_str(&self) -> String {
         match self {
@@ -252,13 +252,13 @@ pub struct TaskSpec {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorktreeSpec {
     /// The slug the worktree and branch are named by. Empty is *derive it from the
-    /// prompt* — the default, and the one [`slug_from_prompt`] answers.
+    /// prompt* - the default, and the one [`slug_from_prompt`] answers.
     pub slug: String,
     /// The base ref the branch is cut from. `None` is the repo's current HEAD, which is
     /// the default and the one a caller that did not look at the branch gets.
     pub base: Option<String>,
     /// **The exception**: work in the main checkout rather than a fresh worktree.
-    /// `false` is the default — a `task_start` that did not name the main tree creates
+    /// `false` is the default - a `task_start` that did not name the main tree creates
     /// a worktree, and the main tree is the thing it exists to keep the child out of.
     pub main_tree: bool,
     /// The repository to cut the worktree from, when it is not the one the session root is in:
@@ -280,7 +280,7 @@ pub struct WorktreePlacement {
     pub branch: String,
     /// The base SHA the branch was cut from. The main tree's HEAD for the exception.
     pub base_sha: String,
-    /// Whether the child works in the main checkout — the exception, named in the
+    /// Whether the child works in the main checkout - the exception, named in the
     /// answer so the operator sees it rather than finds it.
     pub main_tree: bool,
 }
@@ -392,11 +392,11 @@ pub struct ChildName {
 /// judgement is the runner's, since the tools crate cannot see a store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LostChild {
-    /// **Its last row is an answer** — an `Assistant` with no call after it. The text a reader
+    /// **Its last row is an answer** - an `Assistant` with no call after it. The text a reader
     /// gets IS that row, and nothing recorded a settlement, so it is
     /// [`NOT_A_FINISHED_ANSWER`].
     Answered,
-    /// **It stopped before an answer**, and the words say where — `before it wrote a single row`,
+    /// **It stopped before an answer**, and the words say where - `before it wrote a single row`,
     /// `mid-bash, on a call it never got an answer to`, `after bash's result`. They are
     /// `subagent_record::EndedIn::brief`'s, and they read on from *"it stopped "*.
     Stopped(String),
@@ -409,7 +409,7 @@ pub const NOT_A_FINISHED_ANSWER: &str =
     "whatever it had written when it stopped, not a finished answer";
 
 impl ChildName {
-    /// `fix-login · s-…-sub-3`, or the bare handle for a child nobody named — the job rule
+    /// `fix-login · s-…-sub-3`, or the bare handle for a child nobody named - the job rule
     /// ([`crate::exec::job_label`]), so a child and a job are named the same way in every
     /// sentence about them.
     pub fn label(&self) -> String {
@@ -489,7 +489,7 @@ pub fn resolve_child_in(children: &[ChildName], asked: &str) -> Result<String, I
 }
 
 /// The refusal for a name more than one child carries. **It names the child the way it was asked
-/// for** — the job rule — and lists the candidates by their labels, so the next call can use the
+/// for** - the job rule - and lists the candidates by their labels, so the next call can use the
 /// handle.
 pub fn ambiguous_child(asked: &str, many: &[ChildName]) -> Invocation {
     let lines: String = many.iter().map(|c| format!("  {}\n", c.label())).collect();
@@ -508,7 +508,7 @@ pub fn ambiguous_child(asked: &str, many: &[ChildName]) -> Invocation {
 
 /// **The name a plain `task` child gets**: the `slug` it was given, or the one
 /// [`slug_from_prompt`] derives, made unique among the names `taken` already holds (`-2`, `-3`,
-/// …) — a child's name is a handle, and a name two children answer to resolves to neither.
+/// …) - a child's name is a handle, and a name two children answer to resolves to neither.
 pub fn child_slug(given: Option<&str>, prompt: &str, taken: impl Fn(&str) -> bool) -> String {
     let base = match given.map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => s.to_string(),
@@ -584,7 +584,7 @@ pub fn worktree_brief(path: &str, branch: &str) -> String {
 /// between turns from one wedged mid-call. `None` means this runner keeps no such record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStatus {
-    /// Still working — the child's turn has not ended. `note` is the daemon's own progress line
+    /// Still working - the child's turn has not ended. `note` is the daemon's own progress line
     /// from the child's opening phase (see [`TaskRunner::collect`] and `TaskSlot::note`), which is
     /// what it is called: it is NOT the child's last word, and nothing prints it as one.
     Running {
@@ -596,7 +596,7 @@ pub enum TaskStatus {
     Done {
         answer: String,
         /// **The child's present, which the answer is not.** `Some` with `working == false` is a
-        /// child that is still HERE and between turns — the state whose only door is a message, and
+        /// child that is still HERE and between turns - the state whose only door is a message, and
         /// the one a parent could not see before this field.
         child: Option<RunningChild>,
     },
@@ -607,7 +607,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    /// **Which of the states the child is in**, or `None` when this runner keeps no reading — the
+    /// **Which of the states the child is in**, or `None` when this runner keeps no reading - the
     /// one word a listing row and the full sentence both start from.
     pub fn doing(&self) -> Option<ChildDoing> {
         match self {
@@ -667,7 +667,7 @@ pub enum Finished {
         /// The branch the entry is about.
         branch: String,
     },
-    /// There is no branch to land, and this is why — a plain `task` child works in the
+    /// There is no branch to land, and this is why - a plain `task` child works in the
     /// parent's own tree, and a `task_start` in the main checkout works on main itself.
     NoBranch { why: String },
 }
@@ -720,7 +720,7 @@ pub trait TaskRunner: Send + Sync {
     /// hand the same answer over as news. A runner that records nothing has nothing to mark.
     fn consumed(&self, _handle: &str) {}
 
-    /// The handles this session has started, oldest first — what `task_result`
+    /// The handles this session has started, oldest first - what `task_result`
     /// lists when it is called with no handle, so a model that lost one can find
     /// it without the operator.
     fn started(&self) -> Vec<String> {
@@ -757,7 +757,7 @@ pub trait TaskRunner: Send + Sync {
         None
     }
 
-    /// `slug · handle` for one child, or the handle — [`subagent_label`] over [`Self::slug_of`].
+    /// `slug · handle` for one child, or the handle - [`subagent_label`] over [`Self::slug_of`].
     fn label_of(&self, handle: &str) -> String {
         subagent_label(self.slug_of(handle).as_deref(), handle)
     }
@@ -816,7 +816,7 @@ pub trait TaskRunner: Send + Sync {
         0
     }
 
-    /// **How many of this session's children have not answered yet** — still on their task, as
+    /// **How many of this session's children have not answered yet** - still on their task, as
     /// opposed to answered and idle. A child with any is not done (the operator's ruling): its
     /// answer is held until they have. Zero for a runner that keeps no slots.
     fn unsettled_children(&self) -> usize {
@@ -830,7 +830,7 @@ pub trait TaskRunner: Send + Sync {
         Vec::new()
     }
 
-    /// **Bring back ONE child a daemon that is gone left unfinished** — the `task_resume` door,
+    /// **Bring back ONE child a daemon that is gone left unfinished** - the `task_resume` door,
     /// and the same door the automatic restore goes through. `Ok` is the sentence for the model;
     /// `Err` is why it was not brought back, with nothing spawned.
     fn resume(&self, handle: &str) -> Result<String, String> {
@@ -851,7 +851,7 @@ pub enum RestoreMode {
     Remind,
 }
 
-/// **What a parent's open did with one child a previous daemon left behind** — see
+/// **What a parent's open did with one child a previous daemon left behind** - see
 /// [`TaskRunner::resume_recorded`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestartedChild {
@@ -872,7 +872,7 @@ pub enum RestartFate {
     /// It was mid-task and was NOT brought back; `why` is the sentence.
     NotResumed { why: String },
     /// It was mid-task, the daemon was down past the restore threshold, and it was left for the
-    /// model to bring back (`task_resume`) — where it was working, so the reminder can say.
+    /// model to bring back (`task_resume`) - where it was working, so the reminder can say.
     Reminded {
         worktree: Option<String>,
         branch: Option<String>,
@@ -1021,7 +1021,7 @@ impl Tool for TaskTool {
             Ok(v) => v,
             Err(refused) => return refused,
         };
-        // **The repository a VM copies**, when the model names one — only for a VM.
+        // **The repository a VM copies**, when the model names one - only for a VM.
         let vm_repo = args
             .get("repo")
             .and_then(|v| v.as_str())
@@ -1035,7 +1035,7 @@ impl Tool for TaskTool {
                  tree, and `task_start` takes `repo` for a worktree.",
             );
         }
-        // R79: when the child's answer reaches the model — refused by name before anything
+        // R79: when the child's answer reaches the model - refused by name before anything
         // spawns, as `bash` does.
         let wake = match super::bash::wake_arg(args) {
             Ok(w) => w,
@@ -1149,7 +1149,7 @@ impl Tool for TaskTool {
                  now, and this call did not wait for it. {} `task_result` with \
                  task=\"{handle}\" shows where it has got to.",
                 match &spec.model {
-                    // **The model is named when the child was given one** — a spawn that
+                    // **The model is named when the child was given one** - a spawn that
                     // prints only the role would leave the reader to guess which model is
                     // answering, and the whole point of the argument is that they chose.
                     Some(m) => format!("{m} (as a {})", spec.role),
@@ -1189,9 +1189,9 @@ fn first_line(prompt: &str) -> String {
 /// and only then does the child start in the tree just made.
 pub struct TaskStartTool {
     runner: Arc<dyn TaskRunner>,
-    /// The machines `where: "host:NAME"` may name — see [`TaskTool::with_hosts`].
+    /// The machines `where: "host:NAME"` may name - see [`TaskTool::with_hosts`].
     hosts: Option<crate::remote::Hosts>,
-    /// The skills corpus a call's `skills` names are checked against — see
+    /// The skills corpus a call's `skills` names are checked against - see
     /// [`TaskTool::with_skills`].
     skills: Option<Arc<crate::builtins::skill::SkillRegistry>>,
 }
@@ -1366,7 +1366,7 @@ impl Tool for TaskStartTool {
         // already exists, a directory or a worktree an earlier `task_start` made, is refused here
         // rather than by a child that never started.
         if !main_tree {
-            // Under the named repository, when there is one — the runner arranges it there.
+            // Under the named repository, when there is one - the runner arranges it there.
             let under = match &repo {
                 Some(r) if r.starts_with('/') => r.clone(),
                 Some(r) => format!("{workspace}/{r}"),
@@ -1445,10 +1445,10 @@ impl Tool for TaskStartTool {
             // spawn carries, and the tool does not invent one the runner did not make.
             worktree: None,
             // A `task_start` works in the worktree it just arranged, so a VM placement copies
-            // that — the child's own workspace, which is what `None` means.
+            // that - the child's own workspace, which is what `None` means.
             vm_source: None,
             vm_verify,
-            // **The child is named after its worktree** — the slug its branch `agent/<slug>` is
+            // **The child is named after its worktree** - the slug its branch `agent/<slug>` is
             // cut from, already made unique against the repository above. A main-tree child has
             // no branch of its own and is still named by the same slug.
             slug: Some(slug.clone()),
@@ -1488,7 +1488,7 @@ impl Tool for TaskStartTool {
             true => String::new(),
             false => placement_seam(&spec.placement),
         };
-        // **`Backgrounded`, not `Ok`** — the same reason `task` gives: the outcome
+        // **`Backgrounded`, not `Ok`** - the same reason `task` gives: the outcome
         // names a fact about the world, *this is running and has not answered yet*.
         Invocation::backgrounded(
             handle.handle.clone(),
@@ -1523,7 +1523,7 @@ impl Tool for TaskStartTool {
     }
 }
 
-/// `task_result` — collect a subagent `task` started.
+/// `task_result` - collect a subagent `task` started.
 pub struct TaskResultTool {
     runner: Arc<dyn TaskRunner>,
 }
@@ -1582,7 +1582,7 @@ impl Tool for TaskResultTool {
                 // is the sentence this stops printing, and the word is the one the single-handle
                 // answer uses. A child with no record is marked as one and says how far it got.
                 let state = match (&c.lost, &status) {
-                    // **Answered, and it is NOT a finished answer** — nothing recorded a
+                    // **Answered, and it is NOT a finished answer** - nothing recorded a
                     // settlement, so the text is whatever the child had written when it stopped.
                     (Some(LostChild::Answered), _) => format!(
                         "answered, read from its own session — {NOT_A_FINISHED_ANSWER}; no record \
@@ -1606,7 +1606,7 @@ impl Tool for TaskResultTool {
             }
             return Invocation::ok(out);
         };
-        // **The handle, or the child's name** — the job rule: the id wins, a name two children
+        // **The handle, or the child's name** - the job rule: the id wins, a name two children
         // carry is refused naming them, and anything else goes on as it was written.
         let handle = match resolve_child(self.runner.as_ref(), handle) {
             Ok(h) => h,
@@ -1619,7 +1619,7 @@ impl Tool for TaskResultTool {
         let lost = self.runner.lost(handle);
         let label = self.runner.label_of(handle);
         // A deadline always applies, and its expiry is its own outcome rather
-        // than being reported as completion — `job_wait`'s rule, for the same
+        // than being reported as completion - `job_wait`'s rule, for the same
         // reason: a wait that ran out and a child that answered are two facts.
         let timeout = args
             .get("timeout_ms")
@@ -1664,8 +1664,8 @@ impl Tool for TaskResultTool {
             timeout
         };
         let status = self.runner.look(handle, timeout);
-        // **An answer or a failure read here has been handed to the model** — the delivery the
-        // watcher would otherwise make — so the runner marks it read, and a daemon restart does
+        // **An answer or a failure read here has been handed to the model** - the delivery the
+        // watcher would otherwise make - so the runner marks it read, and a daemon restart does
         // not announce it again as news.
         if matches!(status, TaskStatus::Done { .. } | TaskStatus::Failed { .. }) {
             self.runner.consumed(handle);
@@ -1766,7 +1766,7 @@ fn doing_word(status: &TaskStatus) -> String {
     }
 }
 
-/// **`task_result`'s half of the child's state, with the name attached** — the state word and the
+/// **`task_result`'s half of the child's state, with the name attached** - the state word and the
 /// child's handle, for a sentence that has to say which child it is about.
 fn running_said(label: &str, status: &TaskStatus) -> String {
     format!("`{label}` is {}", doing_word(status))
@@ -1832,7 +1832,7 @@ impl Tool for TaskMessageTool {
             }),
             // `Session`, exactly as `task` and `task_result` are: this reaches a child's own
             // session and nothing on the host. The child's own gate governs whatever it does
-            // with what it is told — a parent cannot use a message to launder a capability.
+            // with what it is told - a parent cannot use a message to launder a capability.
             Access::Session,
         )
     }
@@ -1919,7 +1919,7 @@ impl Tool for TaskResumeTool {
         };
         let handle = handle.as_str();
         match self.runner.resume(handle) {
-            // **`Backgrounded`, as `task`'s is** — the child is working again and has not
+            // **`Backgrounded`, as `task`'s is** - the child is working again and has not
             // answered, and the outcome is what arms this session's watcher for its result.
             Ok(said) => Invocation::backgrounded(
                 handle.to_string(),

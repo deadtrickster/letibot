@@ -96,7 +96,7 @@ fn a_queue() -> Value {
     })
 }
 
-/// **One line of the chrome**, by its label — the `lines` block a panel draws above the rows.
+/// **One line of the chrome**, by its label - the `lines` block a panel draws above the rows.
 fn chrome_line<'a>(view: &'a Value, label: &str) -> Option<&'a Value> {
     view["panels"].as_array()?.iter().find_map(|p| {
         p["summary"].as_array()?.iter().find_map(|b| {
@@ -108,7 +108,7 @@ fn chrome_line<'a>(view: &'a Value, label: &str) -> Option<&'a Value> {
     })
 }
 
-/// The view the layer answers for a feed, as JSON — the hook's own door, minus the wasm arena.
+/// The view the layer answers for a feed, as JSON - the hook's own door, minus the wasm arena.
 fn view_of(feed: &Value, folded: &[(&str, bool)]) -> Value {
     let input = json!({
         "v": letibot_plugin::pane::V,
@@ -121,7 +121,7 @@ fn view_of(feed: &Value, folded: &[(&str, bool)]) -> Value {
     serde_json::from_str(&text).expect("and it is JSON")
 }
 
-/// **One cell's text**, whether it is the plain string spelling or `{"text","role"}` — a cell that
+/// **One cell's text**, whether it is the plain string spelling or `{"text","role"}` - a cell that
 /// carries a role is an object, and reading it as a string would make every assertion here vacuous.
 fn text_of(cell: &Value) -> String {
     match cell {
@@ -179,7 +179,7 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
         json!({"fold": true}),
         "and Enter folds it, which the host's `folded` map keeps"
     );
-    // **And nothing of the twelve is drawn** — this is the assertion the screenshot was about.
+    // **And nothing of the twelve is drawn** - this is the assertion the screenshot was about.
     assert!(
         !view.to_string().contains("r-done-"),
         "a finished row is behind the fold, not on the frame"
@@ -317,7 +317,7 @@ fn facts_of(row: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// **The address is under the cursor and on no other row** — the id exists so it can be typed into
+/// **The address is under the cursor and on no other row** - the id exists so it can be typed into
 /// `/queue approve`, and repeating it on every row was half of what made the pane illegible.
 #[test]
 fn the_address_is_under_the_cursor_and_on_no_other_row() {
@@ -347,7 +347,7 @@ fn the_address_is_under_the_cursor_and_on_no_other_row() {
             "`{id}` prints its address on a row that is not picked: {text}"
         );
     }
-    // And a row that IS the cursor's is the only one — an empty cursor means nobody's.
+    // And a row that IS the cursor's is the only one - an empty cursor means nobody's.
     let plain = view_of(&a_queue(), &[]);
     assert!(
         !plain.to_string().contains(" · head "),
@@ -355,7 +355,7 @@ fn the_address_is_under_the_cursor_and_on_no_other_row() {
     );
 }
 
-/// **Every live row's act names ITS OWN entry** — the whole of `Act::Verb`, and the reason a plugin
+/// **Every live row's act names ITS OWN entry** - the whole of `Act::Verb`, and the reason a plugin
 /// row can now say which entry the person's `a`/`v`/`r`/`d` mean.
 #[test]
 fn every_live_row_names_its_own_entry() {
@@ -385,7 +385,7 @@ fn every_live_row_names_its_own_entry() {
     }
 }
 
-/// **The verbs are the daemon's words**, so the row and the key bar cannot disagree — the operator's
+/// **The verbs are the daemon's words**, so the row and the key bar cannot disagree - the operator's
 /// `d drop` against `d rm` was two names for one key on one screen.
 #[test]
 fn the_verbs_are_the_daemons_words() {
@@ -408,7 +408,7 @@ fn the_verbs_are_the_daemons_words() {
     }
 }
 
-/// **A red target is an alarm and its own review is history** — the parent's correction: a
+/// **A red target is an alarm and its own review is history** - the parent's correction: a
 /// `RED TARGET` row that was withdrawn or superseded is not an alarm, and the alarm is the TARGET's
 /// health, on its own line.
 #[test]
@@ -431,7 +431,7 @@ fn a_red_target_is_a_line_of_its_own_and_its_old_review_is_history() {
     assert!(text.contains("the gate's step 2 failed"), "{text}");
 }
 
-/// **A stale lease is the alarm the operator asked for** — `STALE` and how long it has been silent.
+/// **A stale lease is the alarm the operator asked for** - `STALE` and how long it has been silent.
 #[test]
 fn a_stale_lease_says_so_and_names_the_lifetime_it_passed() {
     let mut feed = a_queue();
@@ -447,7 +447,7 @@ fn a_stale_lease_says_so_and_names_the_lifetime_it_passed() {
     assert_eq!(stale["role"], "attention");
 }
 
-/// **A healthy lease is drawn too, with its owner and a fresh heartbeat** — the half the first cut
+/// **A healthy lease is drawn too, with its owner and a fresh heartbeat** - the half the first cut
 /// dropped: the pane spoke only when a lease was STALE, so *nobody is serving this* and *it is
 /// served and well* looked the same, and the host pane this replaces said both.
 #[test]
@@ -459,14 +459,14 @@ fn a_healthy_lease_names_its_owner_and_its_heartbeat() {
         "the holder, the way the host pane names it"
     );
     assert_eq!(lease["tail"], "4s", "and how long since it last said so");
-    // **And no STALE line** — the legend names the word, so the chrome is what is asked.
+    // **And no STALE line** - the legend names the word, so the chrome is what is asked.
     assert!(
         chrome_line(&view, "STALE letibot").is_none(),
         "a fresh lease is not an alarm"
     );
 }
 
-/// **No lease at all is a sentence, not an absence** — *nothing is serving the queues* is the fact
+/// **No lease at all is a sentence, not an absence** - *nothing is serving the queues* is the fact
 /// a person needs, and a chrome that draws nothing when it has nothing says neither.
 #[test]
 fn no_lease_says_nothing_is_serving_the_queues() {
@@ -480,7 +480,7 @@ fn no_lease_says_nothing_is_serving_the_queues() {
     );
 }
 
-/// **A row names its repository when the scope holds more than one** — and only then. The answer is
+/// **A row names its repository when the scope holds more than one** - and only then. The answer is
 /// the host's (`scope.several`), never a reading of the scope's prose.
 #[test]
 fn a_row_names_its_repository_only_when_several_are_in_scope() {
@@ -498,7 +498,7 @@ fn a_row_names_its_repository_only_when_several_are_in_scope() {
         "the repository is on the row: {:?}",
         facts_of(live)
     );
-    // **And with one repository in scope it is not repeated** — even when the words contain a
+    // **And with one repository in scope it is not repeated** - even when the words contain a
     // separator, which is exactly what the prose-reading cut got wrong.
     let mut one = a_queue();
     one["scope"]["several"] = json!(false);
@@ -539,7 +539,7 @@ fn a_queued_landing_says_what_it_waits_for() {
     );
 }
 
-/// **No queue is a sentence, not an empty frame** — *nothing is in flight* and *the head has not
+/// **No queue is a sentence, not an empty frame** - *nothing is in flight* and *the head has not
 /// asked yet* are different facts, and only the layer knows which its list is.
 #[test]
 fn an_idle_queue_says_so_rather_than_drawing_nothing() {
@@ -563,7 +563,7 @@ fn an_idle_queue_says_so_rather_than_drawing_nothing() {
     );
 }
 
-/// **A row is one line**: the cells are the state, what it is about, and the state's words — and
+/// **A row is one line**: the cells are the state, what it is about, and the state's words - and
 /// the reason is the faint line under it, which is the shape the declutter branch established.
 #[test]
 fn a_row_is_one_line_with_the_reason_under_it() {
@@ -587,7 +587,7 @@ fn a_row_is_one_line_with_the_reason_under_it() {
     );
 }
 
-/// **A target's own review reads as a target**, never as a branch — `RED TARGET main`, the words the
+/// **A target's own review reads as a target**, never as a branch - `RED TARGET main`, the words the
 /// host pane used, so a person who learnt the pane keeps the word.
 #[test]
 fn a_target_review_says_red_target() {
@@ -641,7 +641,7 @@ fn a_gating_row_says_which_step_its_gate_is_on() {
 }
 
 /// **A `gating` row's `rm` is the verb that acts**, now that the queue lets a running landing be
-/// taken out of line — a row that offered only `restart (the queue is gating it right now)` had no
+/// taken out of line - a row that offered only `restart (the queue is gating it right now)` had no
 /// way out of the one state a queue gets stuck in.
 #[test]
 fn a_gating_rows_verb_is_withdraw() {

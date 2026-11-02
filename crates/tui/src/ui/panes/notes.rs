@@ -1,4 +1,4 @@
-//! **The notes**: the disclosures this head has shown, folded and unfolded (`/notes`) —
+//! **The notes**: the disclosures this head has shown, folded and unfolded (`/notes`)  -
 //! drawn by `rano::agent::notes` from the notes this head holds.
 
 use crate::app::*;
@@ -31,8 +31,8 @@ impl App {
 pub(crate) const PANE_LAST_LINES: usize = 4;
 
 /// **A note, in rano's words.** The register a warning is drawn in is its code's class, and
-/// the class is `letibot_sessionlog::warning`'s — the log's vocabulary, not this head's
-/// (R19, R29 part two) — so it is decided here and handed over.
+/// the class is `letibot_sessionlog::warning`'s - the log's vocabulary, not this head's
+/// (R19, R29 part two) - so it is decided here and handed over.
 pub(crate) fn note_view(n: &Note) -> view::Note {
     match n {
         Note::Warned(w) => {
@@ -93,7 +93,7 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
     }
 }
 
-/// One note, as the transcript draws it: ONE line a note (R89) — a card's ([`card_row`]) — and a
+/// One note, as the transcript draws it: ONE line a note (R89) - a card's ([`card_row`]) - and a
 /// pane's ending whole. See `rano::agent::notes::Note::lines` for the pane's.
 pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     match card_row(cfg, n) {
@@ -102,7 +102,7 @@ pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     }
 }
 
-/// **The mark and the role a warning's lead is drawn in** — its code's register in the census
+/// **The mark and the role a warning's lead is drawn in** - its code's register in the census
 /// (`letibot_sessionlog::warning`), rano's three marks for the three.
 pub(crate) fn class_mark(code: &str) -> (&'static str, rano::style::Role) {
     use letibot_sessionlog::warning::Class;
@@ -158,7 +158,7 @@ pub(crate) fn card_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
     Some(crate::ui::session_card_block(&[line], ts, cfg))
 }
 
-/// **A burst, as ONE row with a count** — the shape the retry row already has, applied to a kind
+/// **A burst, as ONE row with a count** - the shape the retry row already has, applied to a kind
 /// rather than to one endpoint's attempts.
 ///
 /// ```text
@@ -168,13 +168,13 @@ pub(crate) fn card_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
 /// ```
 ///
 /// The line is the count and the kind, in the kind's own register (`class_mark`, so a red burst
-/// is red and a refusal's is not), and the clock is the NEWEST member's — the row is news about
+/// is red and a refusal's is not), and the clock is the NEWEST member's - the row is news about
 /// the newest thing in it. At one member there is no burst at all: the walk draws the notice's
 /// own card, byte for byte what this head drew before there were bursts.
 ///
 /// **The details are not lost and are not a second click.** The popup lists every member newest
-/// first, each with its own line — its clock and its first clause, which for the queue's raises
-/// names the branch — and its whole text under it. A member is retired and listed and counted by
+/// first, each with its own line - its clock and its first clause, which for the queue's raises
+/// names the branch - and its whole text under it. A member is retired and listed and counted by
 /// its own key, so `/notes dismiss N` and `ctrl-n` still act on one notice or on the whole kind.
 pub(crate) fn burst_card(
     members: &[&Note],
@@ -187,7 +187,7 @@ pub(crate) fn burst_card(
     let n = members.len();
     // **The routine mark is the frame's own `·`** (`notice_card::warning_notice`'s rule, one
     // register over): drawn twice it reads as a stutter, so the quiet register is the count
-    // alone — and still not red.
+    // alone - and still not red.
     let line = if mark == "·" {
         format!("{n} {words} · {CLICK}")
     } else {
@@ -237,7 +237,7 @@ pub(crate) fn burst_lines(cfg: &RenderConfig, members: &[&Note]) -> Vec<String> 
     crate::ui::session_card_block(&[line], ts, cfg)
 }
 
-/// The whole note, with no fold — what `/notes` lists and what the transcript shows the head
+/// The whole note, with no fold - what `/notes` lists and what the transcript shows the head
 /// of. One renderer for both, so the listing cannot disagree with the screen about the text.
 #[cfg(test)]
 pub(crate) fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
@@ -257,7 +257,7 @@ mod tests {
         })
     }
 
-    /// **A compaction is one row and the model's record is not on it** — the figures, the code
+    /// **A compaction is one row and the model's record is not on it** - the figures, the code
     /// once, and the hint; a click opens the whole sentence (R89: it was `· /notes`, unclickable,
     /// and said its code twice).
     #[test]
@@ -291,7 +291,7 @@ mod tests {
         // **And nothing was swallowed**: the popup's text is the whole detail.
         let (_, text, _) = note_card(&n).expect("a card");
         assert_eq!(text, detail);
-        // **Every warning is one line now** — a code no card reads included, and a failure:
+        // **Every warning is one line now** - a code no card reads included, and a failure:
         // its reason's first clause, the rest a click away.
         for code in [
             "ledger_chain_mismatch",

@@ -10,7 +10,7 @@ use crate::gatekeeper::{Decision, LookedAt, ReviewRequest, Submission, Verdict};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-/// **The name of the tool, in one place** — the seat lists it, the schema answers it, and the
+/// **The name of the tool, in one place** - the seat lists it, the schema answers it, and the
 /// tests spell it. A tool whose name is written twice is a tool one of the two can rename.
 pub const TOOL: &str = "review_verdict";
 
@@ -20,7 +20,7 @@ struct Open {
     /// The session that OPENED this review, and the only one that may close it: the desk is one
     /// `Arc` for the daemon, so an unscoped pass would prune a review it never opened.
     host: String,
-    /// The reviewer's session id — the handle the queue's session started it under.
+    /// The reviewer's session id - the handle the queue's session started it under.
     child: String,
     entry_id: String,
     req: ReviewRequest,
@@ -137,7 +137,7 @@ impl ReviewDesk {
         open.retain(|o| o.host != host || children.iter().any(|c| c == &o.child));
     }
 
-    /// How many reviews are in flight — for a log line, and for a test that wants the count
+    /// How many reviews are in flight - for a log line, and for a test that wants the count
     /// rather than the rows.
     pub fn len(&self) -> usize {
         let open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -149,7 +149,7 @@ impl ReviewDesk {
     }
 }
 
-/// **One review as it stands**, for the pass that owns it — see [`ReviewDesk::open`].
+/// **One review as it stands**, for the pass that owns it - see [`ReviewDesk::open`].
 pub struct Review {
     /// The reviewer's session id, which is the handle `task_result` collects by.
     pub child: String,
@@ -165,7 +165,7 @@ pub struct Review {
 pub struct ReviewVerdictTool {
     desk: Arc<ReviewDesk>,
     /// **This session's own id, bound at open.** The author of a submission is a fact about the
-    /// harness the tool was seated in, never a field of the call — so a model cannot hand a
+    /// harness the tool was seated in, never a field of the call - so a model cannot hand a
     /// verdict in as somebody else.
     who: String,
 }
@@ -385,7 +385,7 @@ mod tests {
         let dir = TempDir::new();
         let backend = HostBackend::new(dir.path()).expect("a backend");
         // The temp dir outlives the backend only within one test; leak it there rather than
-        // complicate every caller — `todo`'s own tests do the same.
+        // complicate every caller - `todo`'s own tests do the same.
         std::mem::forget(dir);
         (desk, ToolRuntime::new(reg, Box::new(backend)))
     }
@@ -399,7 +399,7 @@ mod tests {
     }
 
     /// **A refusal read as a whole**: the sentence the tool named as the reason, then the body it
-    /// handed back. A refusal is two halves by construction — `Invocation::failed(what, advice)` —
+    /// handed back. A refusal is two halves by construction - `Invocation::failed(what, advice)`  -
     /// and a test that read only one of them would miss half of what the model is told.
     fn refusal(r: &crate::result::ToolResult) -> String {
         match &r.outcome {
@@ -410,7 +410,7 @@ mod tests {
 
     /// **The child's verdict is the child's act, and it is recorded as one.** The call is made
     /// by the session the review was opened for, and what comes back is the verdict it just
-    /// handed in — the same rendering a person reads — so the reviewer can see the queue has it.
+    /// handed in - the same rendering a person reads - so the reviewer can see the queue has it.
     #[test]
     fn a_reviewers_own_call_hands_its_verdict_in() {
         let (desk, rt) = desk_with_a_review("sub-1");
@@ -437,7 +437,7 @@ mod tests {
             r.payload
         );
 
-        // **And it is on the desk, waiting for the daemon's own write** — not written by the
+        // **And it is on the desk, waiting for the daemon's own write** - not written by the
         // tool, and not written by the child either: the queue's pass takes it.
         let taken = desk
             .take_verdict("sub-1")
@@ -458,7 +458,7 @@ mod tests {
         );
     }
 
-    /// **A verdict that is waiting can be SEEN without being taken** — the queue's worker asks
+    /// **A verdict that is waiting can be SEEN without being taken** - the queue's worker asks
     /// this before it calls a finished reviewer gone, and the pass that writes the row must still
     /// find its submission where it was.
     #[test]
@@ -595,7 +595,7 @@ mod tests {
     }
 
     /// **A single string where a list belongs is read as one item**, and `none` is recorded as
-    /// nothing looked at rather than as a file called `none` — the rule the old closing block
+    /// nothing looked at rather than as a file called `none` - the rule the old closing block
     /// kept, kept here because the words mean the same thing to a reviewer.
     #[test]
     fn a_lone_string_is_one_item_and_none_is_nothing() {

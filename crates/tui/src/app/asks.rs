@@ -1,4 +1,4 @@
-//! **The asks' state**: a provider key, a secret, a prompt — what the card is waiting for.
+//! **The asks' state**: a provider key, a secret, a prompt - what the card is waiting for.
 
 /// The provider key an ask collects; `provider` is the bare name for the card's words.
 /// Asked only when the daemon named the keyless row: `models.keys` absent means no greening,

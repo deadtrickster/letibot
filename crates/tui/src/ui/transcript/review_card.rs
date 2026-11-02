@@ -1,10 +1,10 @@
-//! **A review's outcome, drawn as ONE line** — and the whole of what the daemon said one click
+//! **A review's outcome, drawn as ONE line** - and the whole of what the daemon said one click
 //! away, in the popup the job card opens.
 //!
 //! The operator, after the red-target card landed, pasting a session notice that drew as dozens
-//! of lines — *"The reviewer of `agent/panic-groupingsets-join` (`s-…`), a branch of your tree,
+//! of lines - *"The reviewer of `agent/panic-groupingsets-join` (`s-…`), a branch of your tree,
 //! could not decide: The two root causes are the right ones and both patches are correct in
-//! themselves. …"* — and asking: *"same story about reviews - … one line + popup"*.
+//! themselves. …"* - and asking: *"same story about reviews - … one line + popup"*.
 //!
 //! # The line
 //!
@@ -43,20 +43,20 @@
 //! | `queue_vm_slots_exhausted`, that wait past 30 minutes | every hub | VM slots exhausted |
 //!
 //! `queue_needs_human` and `queue_blocked` (attempts spent) have two shapes each: the daemon's
-//! since TODO R86 (*"stops for a person: the reviewer could not decide at HEAD — "DECISIVE" …"*,
-//! *"is BLOCKED: N attempts to review it at HEAD ended without a verdict — …"*) and the one
+//! since TODO R86 (*"stops for a person: the reviewer could not decide at HEAD - "DECISIVE" …"*,
+//! *"is BLOCKED: N attempts to review it at HEAD ended without a verdict - …"*) and the one
 //! before it, which an older daemon still writes.
 //!
-//! An APPROVED review, a superseded one and a withdrawn one say nothing to a session or a hub —
-//! they are `QueueMoved` events, which the queue pane reads and the conversation does not draw —
+//! An APPROVED review, a superseded one and a withdrawn one say nothing to a session or a hub  -
+//! they are `QueueMoved` events, which the queue pane reads and the conversation does not draw  -
 //! so there is no line for them. The red tip's reviewer finding the target broken is a
 //! `target_red` warning, and `red_card`'s.
 //!
 //! # Only what this head can read is folded
 //!
 //! The reader keys on the opening, the backticked branch, and the words that carry the verdict;
-//! anything else is `None` and the row is drawn as before. The reason is a summary — the popup
-//! is the text, verbatim — so a reason that reads oddly costs nothing but a clause.
+//! anything else is `None` and the row is drawn as before. The reason is a summary - the popup
+//! is the text, verbatim - so a reason that reads oddly costs nothing but a clause.
 
 use rano::style::Role;
 
@@ -87,10 +87,10 @@ pub(crate) enum Verdict {
     CouldNotStart,
     /// Refused, and the complaints reached nobody.
     RefusedToldNobody,
-    /// **Waiting for a free VM slot** — firecode had none for the reviewer; not blocked, no
+    /// **Waiting for a free VM slot** - firecode had none for the reviewer; not blocked, no
     /// attempt counted (`queue_waiting_for_vm`, TODO R86).
     WaitingForVm,
-    /// **A VM-slot wait gone long** — slots are not freeing on their own
+    /// **A VM-slot wait gone long** - slots are not freeing on their own
     /// (`queue_vm_slots_exhausted`).
     SlotsExhausted,
 }
@@ -111,7 +111,7 @@ impl Verdict {
         }
     }
 
-    /// **The role the queue pane draws the row's state in** — one register for one state, on
+    /// **The role the queue pane draws the row's state in** - one register for one state, on
     /// the pane and here.
     pub(crate) fn role(self) -> Role {
         let state = match self {
@@ -235,7 +235,7 @@ fn unwrap_message(text: &str) -> &str {
     .unwrap_or(text)
 }
 
-/// **A branch's name, up to its closing backtick** — `(name, the rest)`; `None` for an empty
+/// **A branch's name, up to its closing backtick** - `(name, the rest)`; `None` for an empty
 /// name or one with a space or a line break in it.
 fn ticked(s: &str) -> Option<(&str, &str)> {
     let (name, rest) = s.split_once('`')?;
@@ -277,7 +277,7 @@ fn opening(text: &str) -> Option<(&'static str, &str)> {
     .find_map(|o| body.strip_prefix(o).map(|r| (o, r)))
 }
 
-/// **Whether `text` opens with a review's notice** — read as far as the verdict, so a row is
+/// **Whether `text` opens with a review's notice** - read as far as the verdict, so a row is
 /// split only before a notice this head would draw as a card.
 fn opens_notice(text: &str) -> bool {
     let Some((open, r)) = opening(text) else {
@@ -303,7 +303,7 @@ fn opens_notice(text: &str) -> bool {
     }
 }
 
-/// **A session notice, read** — `None` for a shape this head does not know.
+/// **A session notice, read** - `None` for a shape this head does not know.
 pub(crate) fn notice_review(text: &str) -> Option<Review> {
     if !opens_notice(text) {
         return None;
@@ -389,7 +389,7 @@ fn reasons_listed(r: &str) -> Option<String> {
     decisive(&reasons.join("; "))
 }
 
-/// **A hub warning's detail, read** — `None` for a shape this head does not know (a
+/// **A hub warning's detail, read** - `None` for a shape this head does not know (a
 /// `queue_blocked` about a landing, for one: that is the merge queue's, not a review's).
 pub(crate) fn warning_review(detail: &str) -> Option<Review> {
     if let Some(r) = detail.strip_prefix("a reviewer for `") {
@@ -447,7 +447,7 @@ pub(crate) fn warning_review(detail: &str) -> Option<Review> {
     }
     if let Some(r) = r.strip_prefix("is BLOCKED: ") {
         // `queue_blocked`, attempts spent: `N attempts to review it at HEAD ended without a
-        // verdict — no reviewer judged the branch: (1) …; (n) LAST.[ Each was a reviewer that
+        // verdict - no reviewer judged the branch: (1) …; (n) LAST.[ Each was a reviewer that
         // could not be PLACED …] `/queue restart …`
         let (n, r) = r.split_once(" attempts to review it at ")?;
         let (head, r) = r.split_once(" ended without a verdict — ")?;
@@ -496,7 +496,7 @@ pub(crate) fn warning_review(detail: &str) -> Option<Review> {
     None
 }
 
-/// **`stops for a person: the reviewer could not decide at HEAD — "DECISIVE" (BY; …`** — the
+/// **`stops for a person: the reviewer could not decide at HEAD - "DECISIVE" (BY; …`** - the
 /// head, and the decisive sentence's first clause.
 fn stops_for_a_person(r: &str) -> Option<(String, Option<String>)> {
     let r = r.strip_prefix("stops for a person: the reviewer could not decide at ")?;

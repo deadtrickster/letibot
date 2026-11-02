@@ -151,7 +151,7 @@ fn csi(it: &mut Peekable<Chars<'_>>) -> Option<Vec<u16>> {
 }
 
 /// An `OSC` string, with the introducer already consumed: it ends at `BEL` or at `ST`,
-/// and a sequence that never ends takes the rest of the line with it — which is what a
+/// and a sequence that never ends takes the rest of the line with it - which is what a
 /// terminal would do with it too.
 fn skip_osc(it: &mut Peekable<Chars<'_>>) {
     while let Some(c) = it.next() {
@@ -208,7 +208,7 @@ mod tests {
         let safe = without_control(hostile);
         // The text in order, with nothing of any sequence between it.
         assert_eq!(safe, "ared dim clear");
-        // The bytes went too — so this is a removal, not a substitution.
+        // The bytes went too - so this is a removal, not a substitution.
         assert_eq!(
             safe.len(),
             hostile.len() - "\u{1b}[31m\u{1b}[0m\u{1b}[8m\u{1b}[2J".len()
@@ -269,7 +269,7 @@ mod tests {
     }
 
     /// **The pair that is the whole point**: the document form keeps its lines, and the
-    /// single-line form flattens — which is why the two are two functions.
+    /// single-line form flattens - which is why the two are two functions.
     #[test]
     fn the_document_form_keeps_the_lines_and_loses_the_controls() {
         let doc = "first paragraph\n\nsecond \u{1b}[31mred\u{1b}[0m and a tab\there\nthird\n";

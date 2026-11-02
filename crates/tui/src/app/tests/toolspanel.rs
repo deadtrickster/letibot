@@ -59,7 +59,7 @@ fn a_turn_with_two_calls_running() -> App {
             }),
         },
     )));
-    // The model's working-out, landed as a row the conversation rung hides — which is what makes
+    // The model's working-out, landed as a row the conversation rung hides - which is what makes
     // the run the marker is on a run of REASONING while the calls it counts have no rows at all.
     a.apply(ServerFrame::Event(env(
         6,
@@ -136,7 +136,7 @@ fn the_tool_call_counter_lists_the_calls_that_are_still_running() {
     assert!(folded.contains("2 tool calls"), "{folded}");
 }
 
-/// **The counter's panel keeps its place when the round's rows land** — the calls stop being live
+/// **The counter's panel keeps its place when the round's rows land** - the calls stop being live
 /// and become transcript rows, and the reader who opened the panel is looking at the same calls,
 /// not at an empty one that lost its lift.
 #[test]

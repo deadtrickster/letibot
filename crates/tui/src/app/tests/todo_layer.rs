@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// **Every input a layer was asked with** — the only way to see what the head HANDS a layer, since
+/// **Every input a layer was asked with** - the only way to see what the head HANDS a layer, since
 /// the answer alone cannot tell a layer that read the feeds from one that ignored them.
 #[derive(Clone, Default)]
 struct Seen(Arc<Mutex<Vec<(String, Value)>>>);
@@ -21,7 +21,7 @@ impl Seen {
         ));
     }
 
-    /// Everything recorded, taken — so a test asserts about one command's input and not the last.
+    /// Everything recorded, taken - so a test asserts about one command's input and not the last.
     fn take(&self) -> Vec<(String, Value)> {
         std::mem::take(&mut *self.0.lock().expect("the recorder"))
     }
@@ -58,7 +58,7 @@ impl Module for Scripted {
 }
 
 /// The loader that puts [`Scripted`] behind a project layer's `plugin.wasm`, and the REAL engine
-/// behind the built-ins — so a test that means *the layer below* gets this binary's own module.
+/// behind the built-ins - so a test that means *the layer below* gets this binary's own module.
 struct ScriptedLoader {
     seen: Seen,
     answer: Option<String>,
@@ -157,7 +157,7 @@ fn project_layer_without_builtins(root: &Path, seen: &Seen) -> Stack {
     )
 }
 
-/// The head in one conversation, with a stack of the test's choosing — the same door
+/// The head in one conversation, with a stack of the test's choosing - the same door
 /// `sessions_way_out.rs` uses, because the folder a test can create is not the folder the fixture
 /// names and a host that disagreed about it would be rebuilt on the next command.
 fn a_head_with(stack: Stack) -> App {
@@ -286,7 +286,7 @@ fn an_act_the_head_does_not_know_adds_nothing() {
     let said = a.notice.clone().unwrap_or_default();
     assert!(said.contains("run_shell"), "the act is named: {said}");
     assert!(said.contains("nothing was added"), "{said}");
-    // It WAS asked, with the line the operator typed — so the silence is the head's refusal and
+    // It WAS asked, with the line the operator typed - so the silence is the head's refusal and
     // not a layer that never ran.
     let asked = seen.take();
     assert_eq!(asked.len(), 1);
@@ -295,14 +295,14 @@ fn an_act_the_head_does_not_know_adds_nothing() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **A layer that passes leaves the line to the head** — the way out, and what every `/todo` was
+/// **A layer that passes leaves the line to the head** - the way out, and what every `/todo` was
 /// before there was a layer. `-1` is not *no*, it is *not mine*.
 #[test]
 fn a_layer_that_passes_leaves_the_line_to_the_head() {
     let seen = Seen::default();
     let tmp = tempdir("pass");
-    // **No built-ins, and a layer that traps**, so the line reaches the head's own reading — the
-    // fallback arm — with a failure in hand. With `project_layer` the built-in answered `buy milk`
+    // **No built-ins, and a layer that traps**, so the line reaches the head's own reading - the
+    // fallback arm - with a failure in hand. With `project_layer` the built-in answered `buy milk`
     // itself and this test measured nothing of the arm it names.
     let stack = project_layer_without_builtins(&tmp, &seen);
     let mut a = a_head_with(stack);
@@ -316,7 +316,7 @@ fn a_layer_that_passes_leaves_the_line_to_the_head() {
         other => panic!("expected the head's own add, got {other:?}"),
     }
     assert_eq!(seen.len(), 1, "it was asked, and it passed");
-    // **And the layer's failure is what the person reads LAST** — `say` keeps only the last line,
+    // **And the layer's failure is what the person reads LAST** - `say` keeps only the last line,
     // so a failure said before the row's own sentence is overwritten by it and a session whose
     // layer is broken adds rows silently. This assertion is the one that fails on the old order.
     let said = a.notice.clone().unwrap_or_default();
@@ -370,7 +370,7 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
             ],
         },
     )));
-    // **No `TODO.md` read yet** — the pane has not drawn.
+    // **No `TODO.md` read yet** - the pane has not drawn.
     a.repo_todos = None;
     assert!(a.command("todo anything").is_some());
     let asked = seen.take();
@@ -413,7 +413,7 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **A layer that traps is said, and the layer below answers** — fail down, loudly
+/// **A layer that traps is said, and the layer below answers** - fail down, loudly
 /// (`docs/plugins-plan.md` §1, principle 4). The broken layer costs the person a sentence and
 /// nothing else: the built-in `todo` below it reads the line, and the row is added.
 #[test]

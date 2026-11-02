@@ -3,8 +3,8 @@
 //! # What this crate is
 //!
 //! The authoritative state of a session is an **append-only event log with a
-//! monotonic `seq`** (§13.2). Everything else — the snapshot, a head's screen, a
-//! stored transcript — is a projection of it. This crate is the log, the
+//! monotonic `seq`** (§13.2). Everything else - the snapshot, a head's screen, a
+//! stored transcript - is a projection of it. This crate is the log, the
 //! projections, the fan-out and the frames; it is not a daemon and it holds no
 //! model.
 //!
@@ -23,7 +23,7 @@
 //! | the mark advances over everything READ, not everything kept | [`cursor`] |
 //! | ack after the client has written the frame out | [`cursor::Batch::ack_after_render`] |
 //! | report what was filtered | [`protocol::Ack`], [`scrub::ScrubReport`] |
-//! | one authoritative reader, shared by many heads | [`hub`] — there is structurally only one |
+//! | one authoritative reader, shared by many heads | [`hub`] - there is structurally only one |
 //! | idle is quiet, not unwatched | [`hub::Hub::detach`] |
 //! | bounded scrollback that discloses the drop | [`log::SessionLog::dropped`], present-and-zero |
 //! | snapshot and register under one lock | [`hub::Hub::attach`] |
@@ -51,7 +51,7 @@ pub mod event;
 pub mod hub;
 pub mod log;
 pub mod metrics_tap;
-/// **Who a session is for** — the rule every list of sessions is grouped by. See [`origin`].
+/// **Who a session is for** - the rule every list of sessions is grouped by. See [`origin`].
 pub mod origin;
 // **The pane contract's document** (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
 pub mod pane;
@@ -123,37 +123,37 @@ pub use lift::{LogSink, from_turn_event};
 #[cfg(feature = "tools")]
 pub use lift_tools::{ToolLogSink, from_tool_event};
 
-/// **How a merge-queue gatekeeper's session title begins** — the first words of its brief, which a
+/// **How a merge-queue gatekeeper's session title begins** - the first words of its brief, which a
 /// child's title is cut from. A head reads it to keep the reviewer out of the subagents it counts;
 /// a row rebuilt from the session list has only the title.
 pub const GATEKEEPER_TITLE_PREFIX: &str = "You are the gatekeeper.";
 
-/// **How the notes keeper's session title begins** — its brief's first words, on
+/// **How the notes keeper's session title begins** - its brief's first words, on
 /// [`GATEKEEPER_TITLE_PREFIX`]'s rule. Here because the session list reads it, and the spelling is
 /// held together by a test in the one crate that sees both (`letibot-tui`).
 pub const NOTES_KEEPER_TITLE_PREFIX: &str = "You are the notes keeper.";
 
-/// **The seat a review is recorded under** — `Seat::Gatekeeper`'s store spelling. Here because a
+/// **The seat a review is recorded under** - `Seat::Gatekeeper`'s store spelling. Here because a
 /// crate below the daemon groups sessions too, and the mark that says *this row is a review* has to
 /// be one string: `is_conversation` and `crate::origin` both read it.
 pub const GATEKEEPER_SEAT: &str = "gatekeeper";
 
-/// **How every daemon's review-queue session id begins** — one workspace's daemon per key
+/// **How every daemon's review-queue session id begins** - one workspace's daemon per key
 /// ([`gatekeeper_session`]), and nothing else in the tree starts with this.
 pub const GATEKEEPER_SESSION_PREFIX: &str = "s-gatekeeper";
 
-/// How many hex characters a workspace key is — `launcher::key`'s twelve, and the length
+/// How many hex characters a workspace key is - `launcher::key`'s twelve, and the length
 /// [`is_gatekeeper_session`] reads to tell a review-queue session from a reviewer child of one.
 const WORKSPACE_KEY_LEN: usize = 12;
 
-/// **The review-queue session id of the daemon serving `workspace`** — `s-gatekeeper-<key>`. It
+/// **The review-queue session id of the daemon serving `workspace`** - `s-gatekeeper-<key>`. It
 /// used to be one constant in every daemon, and two of them appending to one transcript is silent
 /// corruption; it is derived from the workspace key and spelled here so a head can name it.
 pub fn gatekeeper_session(workspace: &std::path::Path) -> String {
     gatekeeper_session_for_key(&workspace_key(workspace))
 }
 
-/// [`gatekeeper_session`] from a key the caller already has — the launcher and the bridge both
+/// [`gatekeeper_session`] from a key the caller already has - the launcher and the bridge both
 /// resolve a folder to its key before anything else, and a second hash of the same path is a
 /// second chance to disagree about it.
 pub fn gatekeeper_session_for_key(key: &str) -> String {

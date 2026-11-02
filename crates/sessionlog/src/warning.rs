@@ -15,9 +15,9 @@
 /// The operator, having been shown a red note for a mistyped `/qwe` sitting in the same
 /// colour as `ledger_chain_mismatch`: *"red is stop the world event … a mistyped /qwe is not
 /// a session in trouble."* The instruction was to **measure before ruling**, and this is the
-/// count over the table **as it stood at the ruling** — 69 codes, 23 Routine, 46 Failure
+/// count over the table **as it stood at the ruling** - 69 codes, 23 Routine, 46 Failure
 /// (**73 today**; `the_register_census` is the number that is pinned, and this paragraph is
-/// the measurement the ruling was made on rather than a live mirror of the table) — of which
+/// the measurement the ruling was made on rather than a live mirror of the table) - of which
 /// **7** are *the reader asked for something that is not there*:
 ///
 /// ```text
@@ -31,24 +31,24 @@
 /// ```
 ///
 /// **Seven of forty-six, so the register is not diluted and the two-register rule was not
-/// wrong** — and the operator allowed for exactly that outcome (*"if it is two codes out of
+/// wrong** - and the operator allowed for exactly that outcome (*"if it is two codes out of
 /// forty, the right answer may be to move those two and leave the rule alone"*). What settles
 /// it for a third register rather than for leaving the rule alone is **where those seven
 /// fire**: at the moment the operator is typing. `slash_refused` is emitted on a typo, in
 /// front of the reader, while `ledger_chain_mismatch` is emitted at a replay nobody is
-/// watching. So the seven are not merely 15% of the table — they are the codes a reader meets
+/// watching. So the seven are not merely 15% of the table - they are the codes a reader meets
 /// *most often*, and they teach the red reflex on the occasions when nothing is wrong.
 ///
 /// # The discriminator, which is *not* "was it refused"
 ///
 /// **Whose act, and what is at risk beyond it.** A `Refused` note is the answer to something
 /// the reader just did, the correction is theirs to make now, and nothing but the line they
-/// typed is at stake. A `Failure` is a fact about the session — its integrity, its room, its
-/// ability to run the work at all — and the reader cannot fix it by typing something else.
+/// typed is at stake. A `Failure` is a fact about the session - its integrity, its room, its
+/// ability to run the work at all - and the reader cannot fix it by typing something else.
 ///
 /// **Two refusals of the reader's own act are not `Refused`**, and both are worth naming
 /// because they look like it: `mode_unpersisted` (the mode moved, and the *next* session will
-/// not carry it — at risk is a session that is not this one) and `title_not_stored` (the name
+/// not carry it - at risk is a session that is not this one) and `title_not_stored` (the name
 /// is lost at restart). The reader's line worked; what did not is the durable half.
 ///
 /// **Nothing moved to `Routine`**, and the table's own rule forbids it: *routine is a
@@ -58,10 +58,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     /// Housekeeping, a command's own answer, or a hiccup being handled. Drawn in the
-    /// dim register — no mark, no red.
+    /// dim register - no mark, no red.
     Routine,
     /// **The reader asked for something that is not there, and the fix is theirs.** Drawn
-    /// in the notice register — a mark, no red — because it is the *answer* to what they
+    /// in the notice register - a mark, no red - because it is the *answer* to what they
     /// typed, and the sentence already says what to do instead.
     Refused,
     /// Something did not work, did not happen, or could not be checked, and **what is at
@@ -74,7 +74,7 @@ impl Class {
         matches!(self, Class::Routine)
     }
 
-    /// **The red one.** What a reader is being asked to *stop for* — and the reason the
+    /// **The red one.** What a reader is being asked to *stop for* - and the reason the
     /// middle register exists is so this answer stays rare enough to carry that weight.
     pub fn is_failure(self) -> bool {
         matches!(self, Class::Failure)
@@ -112,7 +112,7 @@ pub const TABLE: &[(&str, Class)] = &[
     // **The operator's own call ran**, with the size disclosure: the count of context they
     // just chose to buy, said while they can still act on it.
     ("operator_call_ran", Class::Routine),
-    // **The operator's mark was taken** (TODO R81, `/fb`, alt-g / alt-b) — the confirmation
+    // **The operator's mark was taken** (TODO R81, `/fb`, alt-g / alt-b) - the confirmation
     // both heads draw. Routine: it answers what the operator just did, and it worked.
     ("feedback", Class::Routine),
     // The operator's own `!` line ran, and the note says what it put in the conversation.
@@ -130,7 +130,7 @@ pub const TABLE: &[(&str, Class)] = &[
     // admitted or not runnable, and a `!` line holding the daemon's one worker.
     ("operator_call_failed", Class::Failure),
     ("operator_shell_on_worker", Class::Failure),
-    // **The review queue's session did not open** — so nothing in the merge queue is reviewed by
+    // **The review queue's session did not open** - so nothing in the merge queue is reviewed by
     // this daemon, and from a head that looks exactly like a queue with nothing to review. Said
     // once per reason (`Sessions::ensure_gatekeeper`), on the daemon's own session.
     ("review_queue_not_open", Class::Failure),
@@ -160,16 +160,16 @@ pub const TABLE: &[(&str, Class)] = &[
     ("child_door_refused", Class::Refused),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
-    // repair that succeeded* — the compaction's own second half.
+    // repair that succeeded* - the compaction's own second half.
     ("reseated", Class::Routine),
-    // **`/clear` landed**: the operator's own act, answered — the conversation was replaced by a
+    // **`/clear` landed**: the operator's own act, answered - the conversation was replaced by a
     // fresh one for the same session, and this is the boundary row where the old one ended. A
     // report of a fork that succeeded, `reseated`'s register one verb along.
     ("cleared", Class::Routine),
     // The evidence for a refused frame was written where somebody can read it. The
     // refusal is the failure and it is said elsewhere; this is the capture working.
     ("frame_capture_written", Class::Routine),
-    // Capture is switched off, so nothing was written. A disclosure of configuration —
+    // Capture is switched off, so nothing was written. A disclosure of configuration  -
     // the code above, one branch along.
     ("frame_capture_disabled", Class::Routine),
     // A command the operator typed, answered: `mode_set` where the point moved, and
@@ -192,7 +192,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("mode_confirm_refused", Class::Routine),
     ("mode_consent_refused", Class::Refused),
     // The model server did not answer and the round is being taken again. The retry is
-    // the handling — and when the retries are exhausted the turn fails under
+    // the handling - and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
     ("model_endpoint_retry", Class::Routine),
     // **The endpoint that did not answer came back**: the recovery is the news, and a recovery
@@ -203,7 +203,7 @@ pub const TABLE: &[(&str, Class)] = &[
     // handling, nothing is lost (the rows are in memory), and if the store stays wedged the
     // turn fails under its own name.
     ("store_busy_wait", Class::Routine),
-    // The operator typed a provider key on the masked card and it was saved — the ask
+    // The operator typed a provider key on the masked card and it was saved - the ask
     // working, said once so the file it went to is on the record.
     ("provider_key_saved", Class::Routine),
     // The key card was closed with no key: the operator's own answer, and the turn says
@@ -251,10 +251,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // daemon has no `--store`. The branch is safe in its worktree and nothing will land it,
     // which the reader cannot fix by typing something else.
     ("merge_not_queued", Class::Failure),
-    // The merge queue serving again after `merge_queue_store_error` — see that row.
+    // The merge queue serving again after `merge_queue_store_error` - see that row.
     ("merge_queue_recovered", Class::Routine),
     // **The model proposing the project's queue target** (R76 item 2's `propose_target`): the
-    // exact `[queue] target = "…"` lines for the operator to choose. A proposal, not a fault —
+    // exact `[queue] target = "…"` lines for the operator to choose. A proposal, not a fault  -
     // nothing failed, and the decision it asks for is the operator's.
     ("queue_target_proposed", Class::Routine),
     // **The two queues' raises.** A review or landing that cannot run, a target RED, a reviewer
@@ -282,7 +282,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("queue_install_failed", Class::Failure),
     ("target_green", Class::Routine),
     ("queue_branch_kept", Class::Routine),
-    // **A session's workspace is gone** (R92.24) — said when it opens or wakes on a directory
+    // **A session's workspace is gone** (R92.24) - said when it opens or wakes on a directory
     // that no longer exists. A Failure: nothing the session runs can work until somebody acts.
     ("workspace_gone", Class::Failure),
     // **A session asked for a boundary and got an unconfined shell**: D16 admits a command
@@ -323,7 +323,7 @@ pub const TABLE: &[(&str, Class)] = &[
     // **What the stop ended on its way out**: a command was in flight, so it was ended rather
     // than waited for. The operator asked for this, so it is not a fault.
     ("daemon_stopping_runs", Class::Routine),
-    // The store's own notes about what opening or resuming did — the workspace it took
+    // The store's own notes about what opening or resuming did - the workspace it took
     // from the row, the title, the seat. Facts about where you are.
     ("resume_note", Class::Routine),
     ("open_note", Class::Routine),
@@ -340,11 +340,11 @@ pub const TABLE: &[(&str, Class)] = &[
     // the prefix it was created with, and the remedy is a verb the operator has (`/reseat`).
     // Written by `Harness::open` through `prefix_fingerprint`.
     ("prefix_stale", Class::Routine),
-    // **A wall the prompt goes on past** — compacted, room for the next turn, continuations
+    // **A wall the prompt goes on past** - compacted, room for the next turn, continuations
     // left: one routine line in place of the red failure each one used to publish. The wall that
     // ends the prompt is still `turn_failed`.
     ("context_wall_continued", Class::Routine),
-    // **A verbatim reseat that went ahead under the window but short of a turn's room** — as
+    // **A verbatim reseat that went ahead under the window but short of a turn's room** - as
     // close to the window as the session already was; compaction makes the room, as before.
     ("reseat_tight", Class::Routine),
     // **And the end of it**: the session has been moved onto the prompt this daemon seats, so
@@ -373,7 +373,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("operator_question_settled", Class::Routine),
     ("todo_answer_refused", Class::Failure),
     // An import's three routine notes: whose rows these are, what could not be a row
-    // (an unknown tag, a patch, a compaction — *counted and said, never dropped*), and
+    // (an unknown tag, a patch, a compaction - *counted and said, never dropped*), and
     // the count and spend it left behind.
     ("imported", Class::Routine),
     ("import_scrap", Class::Routine),
@@ -408,11 +408,11 @@ pub const TABLE: &[(&str, Class)] = &[
     ("length_batch_refused", Class::Failure),
     ("ended_in_reasoning", Class::Failure),
     // A guard fired. §18's own note on this register: *a guard nobody notices is a guard
-    // nobody wrote* — and both of these are a turn that was going nowhere, stopped.
+    // nobody wrote* - and both of these are a turn that was going nowhere, stopped.
     ("repetition_collapse", Class::Failure),
     ("reasoning_stall", Class::Failure),
-    // The prompt this box rebuilt diverged from what the server was sent — the code's own
-    // comment calls it *our defect* — or the check that would catch it was skipped.
+    // The prompt this box rebuilt diverged from what the server was sent - the code's own
+    // comment calls it *our defect* - or the check that would catch it was skipped.
     ("prefix_divergence", Class::Failure),
     ("prefix_check_skipped", Class::Failure),
     // The token chain does not agree with the ledger, or rows are missing from the
@@ -431,8 +431,8 @@ pub const TABLE: &[(&str, Class)] = &[
     // The capture of a refused frame did not happen, which is the one branch of that
     // trio that is not the mechanism working.
     ("frame_capture_failed", Class::Failure),
-    // An answer to a password prompt arrived with nothing waiting for it — the helper had
-    // given up, or another head answered first — so the call that needed the password did
+    // An answer to a password prompt arrived with nothing waiting for it - the helper had
+    // given up, or another head answered first - so the call that needed the password did
     // not get one.
     ("secret_late", Class::Failure),
     // **A line for the operator's own run found nothing waiting**: the card was raised for a
@@ -450,7 +450,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("mode_unpersisted", Class::Failure),
     // A seat is attached to this session and nothing said on the fabric can wake it.
     ("flowy_not_seated", Class::Failure),
-    // An answer reached the queue with nothing waiting for it — one of the two branches
+    // An answer reached the queue with nothing waiting for it - one of the two branches
     // says outright that this is a defect.
     ("answer_unclaimed", Class::Failure),
     // **Refused, and the clearest case in the table**: one channel's two verdicts belong in one
@@ -482,7 +482,7 @@ pub const TABLE: &[(&str, Class)] = &[
     // made, and the session is left on a model that works.
     ("model_switch_not_applied", Class::Refused),
     // **This session was closed so it could move to another machine** (`letibot --migrate`): the
-    // operator asked for it, nothing is deleted, and the row says where the live copy is now —
+    // operator asked for it, nothing is deleted, and the row says where the live copy is now  -
     // news about where the session lives, not something that went wrong.
     ("session_closed", Class::Routine),
     // The store, in every way it can fail to do its job: the session does not open, the
@@ -568,7 +568,7 @@ pub fn is_routine(code: &str) -> bool {
     class(code).is_routine()
 }
 
-/// [`class`], as the question a renderer asks about the **red** end — and the one R29 part
+/// [`class`], as the question a renderer asks about the **red** end - and the one R29 part
 /// two is about, because `Refused` is neither.
 pub fn is_failure(code: &str) -> bool {
     class(code).is_failure()
@@ -584,7 +584,7 @@ pub const ALARM_ONLY: &[&str] = &[
     "model_slow_first_byte",
 ];
 
-/// Whether this code is drawn on the edge rather than in the conversation — see
+/// Whether this code is drawn on the edge rather than in the conversation - see
 /// [`ALARM_ONLY`], whose docstring is the rule.
 pub fn to_the_alarm(code: &str) -> bool {
     ALARM_ONLY.contains(&code)
@@ -600,7 +600,7 @@ pub const FLEETING: &[&str] = &[
     "merge_queued",
 ];
 
-/// Whether this code's sentence is drawn for a while and then taken down — see
+/// Whether this code's sentence is drawn for a while and then taken down - see
 /// [`FLEETING`], whose docstring is the rule.
 pub fn is_fleeting(code: &str) -> bool {
     FLEETING.contains(&code)
@@ -731,7 +731,7 @@ mod the_register_census {
     /// classified deliberately rather than by copying the neighbour. This list is the finding,
     /// not a rule: the rule is `Class`'s discriminator.
     const READER_INPUT: &[&str] = &[
-        // **A command sent to a subagent that only its parent runs** (R67 item 15) — the reader's
+        // **A command sent to a subagent that only its parent runs** (R67 item 15) - the reader's
         // line, well formed, at a session that does not own the door it names.
         "child_door_refused",
         "import_no_db",
@@ -748,20 +748,20 @@ mod the_register_census {
         // **A key on the room's pane that the room refused**: well formed, the thing it names
         // will not take it, and the fix is the reader's next key.
         "room_act_refused",
-        // **A restart that was asked for and not made** — the same shape as the four room keys':
+        // **A restart that was asked for and not made** - the same shape as the four room keys':
         // the reader's own act, well formed, and the sentence says what stopped it (no launcher, a
         // launcher that refused, a supervisor that overran).
         "room_restart_refused",
-        // **A `/models` whose deferred switch could not be made** at the turn's end — the same
+        // **A `/models` whose deferred switch could not be made** at the turn's end - the same
         // shape as `mode_set_refused`: their line, well formed, and the session cannot carry it.
         "model_switch_not_applied",
-        // **The key card closed with no key** — the reader's own answer to the daemon's
+        // **The key card closed with no key** - the reader's own answer to the daemon's
         // question, and the turn's sentence says what to do (send again, or set the
         // variable). The same shape as `slash_refused`: the act was theirs, not a fault.
         "provider_key_refused",
         "reseat_refused",
         "slash_refused",
-        // **A `/todo` move naming a row that is not on the board** — the model rewrote its plan
+        // **A `/todo` move naming a row that is not on the board** - the model rewrote its plan
         // between the head's read and the write; the board published with it is the correction.
         "todo_move_unresolved",
     ];
@@ -845,7 +845,7 @@ mod the_register_census {
     }
 
     /// The predicate the head used to render with still answers for the quiet end, and a code
-    /// the table has never heard of is still drawn loudly — the safe direction to be wrong in.
+    /// the table has never heard of is still drawn loudly - the safe direction to be wrong in.
     #[test]
     fn the_unknown_code_is_still_a_failure() {
         assert!(is_routine("compacted"));

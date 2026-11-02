@@ -49,7 +49,7 @@ pub const FIRST_PORT: u16 = 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lease {
     pub id: i64,
-    /// `None` for this box, a `hosts.toml` name otherwise — the same spelling
+    /// `None` for this box, a `hosts.toml` name otherwise - the same spelling
     /// [`super::ProcessRecord::host`] uses, so a lease and the processes it serves say one thing.
     pub host: Option<String>,
     pub session: String,
@@ -118,7 +118,7 @@ impl Lease {
     }
 }
 
-/// **What is being asked for** — the ports, the prefix, and the two facts about the host that the
+/// **What is being asked for** - the ports, the prefix, and the two facts about the host that the
 /// caller measured rather than guessed.
 #[derive(Debug, Clone)]
 pub struct Ask<'a> {
@@ -132,7 +132,7 @@ pub struct Ask<'a> {
     /// The escape hatch of the host's kernel, read **there**: `(low, high)` as
     /// `/proc/sys/net/ipv4/ip_local_port_range` spells it.
     pub ephemeral: (u16, u16),
-    /// **Every port something is listening on there right now** — the `ss -ltn` half.
+    /// **Every port something is listening on there right now** - the `ss -ltn` half.
     pub busy: &'a BTreeSet<u16>,
     pub now_ms: i64,
 }
@@ -268,7 +268,7 @@ impl Store {
         })
     }
 
-    /// **Every block still held**, across every host and session — the reaper's work list and what
+    /// **Every block still held**, across every host and session - the reaper's work list and what
     /// `hosts` prints.
     pub fn held_leases(&self) -> Result<Vec<Lease>> {
         let conn = self.conn();
@@ -284,7 +284,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Every block this session ever held, newest last — what a close releases and a test asserts
+    /// Every block this session ever held, newest last - what a close releases and a test asserts
     /// against.
     pub fn leases_of_session(&self, session: &str) -> Result<Vec<Lease>> {
         let conn = self.conn();
@@ -308,7 +308,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **Give one block back.** `false` when it was not held — a release is idempotent because a
+    /// **Give one block back.** `false` when it was not held - a release is idempotent because a
     /// session's close, a scenario's end and the reaper can all reach the same lease, and two of
     /// them arriving is a fact about the code rather than a fault.
     pub fn release_lease(&self, id: i64, by: &str, now_ms: i64) -> Result<bool> {
@@ -320,7 +320,7 @@ impl Store {
         Ok(n == 1)
     }
 
-    /// **Give back every block a session still holds** — what its close does, and what the reaper
+    /// **Give back every block a session still holds** - what its close does, and what the reaper
     /// does for a session that is gone. Returns the ones that were actually held, so the caller can
     /// say what it released and tear down the prefixes of exactly those.
     pub fn release_session_leases(
@@ -351,7 +351,7 @@ impl Store {
         })
     }
 
-    /// The clock this module stamps with — one spelling, so a release and a take dated by two
+    /// The clock this module stamps with - one spelling, so a release and a take dated by two
     /// callers cannot disagree.
     pub fn lease_now_ms() -> i64 {
         now_ms()
@@ -366,7 +366,7 @@ mod tests {
         ports.iter().copied().collect()
     }
 
-    /// **Two sessions asking one host get disjoint blocks** — the rule the whole table exists for,
+    /// **Two sessions asking one host get disjoint blocks** - the rule the whole table exists for,
     /// and the one a lock in a tool could only half keep.
     #[test]
     fn two_sessions_on_one_host_get_disjoint_blocks() {
@@ -514,7 +514,7 @@ mod tests {
         let store = Store::open_in_memory().expect("a store");
         let none = busy(&[]);
         // 65534 would fit above, 65535 is the last port there is, and the range starts at the
-        // lowest port a block below it may use — so three fit nowhere.
+        // lowest port a block below it may use - so three fit nowhere.
         let e = store
             .allocate_lease(&Ask {
                 session: "s-a",
@@ -566,7 +566,7 @@ mod tests {
         );
     }
 
-    /// **A held block is skipped, not trimmed** — a block is contiguous because the service that
+    /// **A held block is skipped, not trimmed** - a block is contiguous because the service that
     /// takes four ports wants `first + 3` to be its own.
     #[test]
     fn a_held_block_is_stepped_over_whole() {
@@ -599,7 +599,7 @@ mod tests {
     /// **Nothing inside the ephemeral range is ever handed out**, whatever the run would fit.
     #[test]
     fn nothing_inside_the_range_is_offered() {
-        // A range that ends at the top leaves only below it — never inside it.
+        // A range that ends at the top leaves only below it - never inside it.
         assert_eq!(
             pick(&[], &busy(&[]), (32768, 65535), 1),
             Some((LOW_FIRST, LOW_FIRST))
@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(pick(&all, &busy(&[]), (32768, 60999), 1), None);
     }
 
-    /// **Below [`FIRST_PORT`] nothing is ever offered** — even when the ephemeral range says the
+    /// **Below [`FIRST_PORT`] nothing is ever offered** - even when the ephemeral range says the
     /// whole space is free, a block a session's user may not bind is a lease nothing can use.
     #[test]
     fn the_floor_is_an_unprivileged_port() {

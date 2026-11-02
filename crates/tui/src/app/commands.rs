@@ -29,7 +29,7 @@ pub(crate) fn add_todo_words(answer: &serde_json::Value) -> Option<String> {
     (!content.is_empty()).then(|| content.to_string())
 }
 
-/// The act name an answer carries, whatever it is — so the head can say WHICH act it refused
+/// The act name an answer carries, whatever it is - so the head can say WHICH act it refused
 /// instead of leaving the person with a line that did nothing.
 fn act_name(answer: &serde_json::Value) -> Option<&str> {
     answer.get("act")?.get("name")?.as_str()
@@ -108,7 +108,7 @@ impl App {
                 .filter(|l| !next.shows(**l))
                 .map(|l| format!("`{}`", l.name()))
                 .collect();
-            // `undrawable` only fires when one of those IS off, so the list is never empty — but
+            // `undrawable` only fires when one of those IS off, so the list is never empty - but
             // the sentence is built to read as a sentence anyway rather than to rely on it.
             let verb = if missing.len() == 1 { "is" } else { "are" };
             self.say(&format!(
@@ -186,7 +186,7 @@ impl App {
         None
     }
 
-    /// **The one writer of the two folds** — so a switch moved by a chord, by `/t`, by the
+    /// **The one writer of the two folds** - so a switch moved by a chord, by `/t`, by the
     /// config pane or by a profile all land in the same field, and none of them can move the
     /// other's.
     pub(crate) fn set_fold(&mut self, show: Show, fold: Fold) {
@@ -234,7 +234,7 @@ impl App {
         }
         self.diff_split = split;
         // **The history holds RENDERED rows**, and a diff style decides what one of them
-        // renders to — so the whole buffer is stale, not just the row that changed. The same
+        // renders to - so the whole buffer is stale, not just the row that changed. The same
         // invalidation `/think` and `/t` make, for the same reason.
         self.invalidate_history();
         let saved = self.save_prefs(RetiredWrite::Union);
@@ -259,7 +259,7 @@ impl App {
     ) -> Result<String, String> {
         let line = line.trim();
         if line.starts_with('{') {
-            // **Checked for BEING json and for nothing else** — the original rule, kept.
+            // **Checked for BEING json and for nothing else** - the original rule, kept.
             let v: serde_json::Value = serde_json::from_str(line)
                 .map_err(|e| format!("`{}` with `{{…}}` arguments: {e}", tool.name))?;
             if !v.is_object() {
@@ -545,9 +545,9 @@ impl App {
                 }
                 self.set_verbosity(&rest)
             }
-            // **`/diff` — R38's new setting.** It was `slash_refused` until today, and that
+            // **`/diff` - R38's new setting.** It was `slash_refused` until today, and that
             // refusal is the card R29 was filed from.
-            // **`/repo` — the repo card**, which a click on the header's git field also opens.
+            // **`/repo` - the repo card**, which a click on the header's git field also opens.
             _ if verb_arg(cmd, "repo").is_some() => {
                 self.git_repos = crate::gitfield::repos_in(&self.wiring.workspace);
                 self.repo_rows = self.read_repo_rows();
@@ -573,21 +573,21 @@ impl App {
             // `/v` keeps meaning the next rung: it is an alias in `HEAD_COMMAND_ALIASES`, deliberately not offered by
             // tab and deliberately still taken, since one key's worth of cycling is a promise this head made.
             "v" => self.set_verbosity("v"),
-            // One list on the screen at a time, and the settings asked for on the way in — both
+            // One list on the screen at a time, and the settings asked for on the way in - both
             // in `open_surface`'s arm for `Config`.
             "config" | "settings" => self.toggle_surface(Surface::Config),
-            // **`/jobs` is `ctrl-q`'s other spelling** — the same function the chord and a click
+            // **`/jobs` is `ctrl-q`'s other spelling** - the same function the chord and a click
             // on the count label run, so the three cannot drift.
             "jobs" => self.toggle_surface(Surface::Jobs),
-            // **Every question waiting on you, answering none** — see `app/waiting.rs`.
+            // **Every question waiting on you, answering none** - see `app/waiting.rs`.
             "asks" => {
                 self.slash_out = Some(("/asks".to_string(), self.asks_lines()));
                 self.push_surface(Surface::Listing);
                 None
             }
-            // **What this session is watching** — the monitors the model armed.
+            // **What this session is watching** - the monitors the model armed.
             "monitors" => self.toggle_surface(Surface::Monitors),
-            // **The plugin panes this session has** — C3/C4's `pane_` hooks. Bare, it is the
+            // **The plugin panes this session has** - C3/C4's `pane_` hooks. Bare, it is the
             // list of them by title; `/pane NAME` opens one, through the same door a row of
             // that list names, and asks the daemon for a fresh look as it opens.
             "pane" => {
@@ -746,7 +746,7 @@ impl App {
                 // `/models X --once` and `/models X --key K` need.
                 if matches!(verb, "models" | "model") && other.trim() == verb {
                     // Seeded to what answers now, so Enter on an untouched list
-                    // is a no-op — the same courtesy the mode picker pays. One
+                    // is a no-op - the same courtesy the mode picker pays. One
                     // opener, shared with the unreachable-model check (`app::reach`).
                     if !self.open_model_pick() {
                         return None;
@@ -776,11 +776,11 @@ impl App {
             return None;
         }
         let mut mine = self.operator_todos();
-        // **The state moves this command makes on rows that are not the operator's** — see the
+        // **The state moves this command makes on rows that are not the operator's** - see the
         // `postpone|resume` arm below, which is the only verb that can make one. Sent beside the
         // half, in one frame, because both are the board as the operator wants it.
         let mut moved: Vec<letibot_sessionlog::event::TodoState> = Vec::new();
-        // `done N` and `rm N` — a number is what the pane prints beside each of these rows.
+        // `done N` and `rm N` - a number is what the pane prints beside each of these rows.
         let (verb, arg) = match rest.split_once(char::is_whitespace) {
             Some((v, a)) => (v, a.trim()),
             None => (rest, ""),
@@ -858,7 +858,7 @@ impl App {
                 } else {
                     TodoStatus::Pending
                 };
-                // A NUMBER is one of the operator's own rows — the numbers the pane prints.
+                // A NUMBER is one of the operator's own rows - the numbers the pane prints.
                 if let Ok(at) = n.parse::<usize>() {
                     if at < 1 || at > mine.len() {
                         self.say(&format!(
@@ -888,7 +888,7 @@ impl App {
                         .iter()
                         .find(|t| t.content.trim() == want)
                         .map(|t| (t.content.clone(), t.by.clone()));
-                    // More than one row can say the same words — the halves are separate lists and
+                    // More than one row can say the same words - the halves are separate lists and
                     // nothing stops a model and a person writing the same sentence.
                     let ambiguous = self
                         .todos
@@ -1043,13 +1043,13 @@ impl App {
         Some(Action::SetOperatorTodos { items: mine, moved })
     }
 
-    /// **What a `command_` layer is handed beside the line** — the `feeds` object of
+    /// **What a `command_` layer is handed beside the line** - the `feeds` object of
     /// `docs/plugins-plan.md` §4.9's Feeds section, in the head's own reading of it.
     ///
     /// A feed is a fact the head ALREADY HOLDS and is already showing; handing it over adjudicates
     /// nothing and grants nothing, which is why it is a field on the input rather than a capability.
     /// Three here, and each is a shape written by hand rather than `serde_json::to_value` of the
-    /// head's struct — an added field on `TodoEntry` must not silently become a field of the
+    /// head's struct - an added field on `TodoEntry` must not silently become a field of the
     /// contract:
     ///
     /// ```jsonc
@@ -1058,14 +1058,14 @@ impl App {
     ///  "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}
     /// ```
     ///
-    /// * **`todos`** is the WHOLE board — the model's half and the operator's — in board order, with
+    /// * **`todos`** is the WHOLE board - the model's half and the operator's - in board order, with
     ///   the wire's own words for `status` (`pending`, `in_progress`, `completed`, `postponed`,
     ///   `cancelled`) and `by` (`model`, `operator`, `queue`, `Parent s-…`). Both halves, because a
     ///   layer deciding whether to add a row needs the rows that exist, and the model already reads
     ///   this same board through `todo_write`'s getter.
     /// * **`session`** is where the head is standing: the id and the folder a layer's own policy
     ///   may key on.
-    /// * **`repo_todos`** is the workspace's `TODO.md` as the todos pane drew it — and it is
+    /// * **`repo_todos`** is the workspace's `TODO.md` as the todos pane drew it - and it is
     ///   **absent, not empty, when the head has not read the file** (the pane reads it at draw
     ///   time, so a head that never opened the pane holds none). The two are different facts: `[]`
     ///   would say the file is empty, and a layer that wanted to check *is this already in the
@@ -1197,7 +1197,7 @@ impl App {
                     return None;
                 }
                 // **Union.** A dismissal asserts a key IS retired, and no other head's save
-                // is evidence to the contrary — this is the write `merge_retired` exists for.
+                // is evidence to the contrary - this is the write `merge_retired` exists for.
                 let saved = self.save_prefs(RetiredWrite::Union);
                 self.say(&format!(
                     "retired {hidden} note(s) — hidden, still counted on /status, and \
@@ -1272,7 +1272,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "queue",
         "open or close the merge-queue pane: what is landing on main, and why it is not",
     ),
-    // **`/skills` hands a skill's body to the session** as the operator's message — the body is
+    // **`/skills` hands a skill's body to the session** as the operator's message - the body is
     // the daemon's to inject, so the head sends the name and the rest of the line.
     (
         "skills",
@@ -1339,7 +1339,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("stats", "this head's counters — the same as /status"),
 ];
 
-/// **Which of a daemon row's `choices` its `value` names** — the reading both the picker's cursor
+/// **Which of a daemon row's `choices` its `value` names** - the reading both the picker's cursor
 /// and the card's `← now` are made of.
 ///
 /// A row's `value` is not always a choice verbatim. The daemon spells it as a name **plus whatever
@@ -1356,25 +1356,25 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
 ///
 /// **The value itself; failing that, the longest choice the value begins with at a boundary.**
 ///
-/// * **Not the value's first word — that was the defect, and the whole-value comparison is the
+/// * **Not the value's first word - that was the defect, and the whole-value comparison is the
 ///   branch that fixed it.** A NAME CAN ITSELF CONTAIN A SPACE (`Mode::WRITES_ALLOWED` is
 ///   `writes allowed`), so taking the first word turns it into `writes`, which names no choice,
 ///   and both readers fall back together to row 0. Measured on the real wire row: `writes allowed`
 ///   gave no cursor and no `← now` while every other named mode gave both.
 ///
 ///   **The daemon's own parser is why nobody noticed.** `Mode::parse` folds `_` and spaces to `-`
-///   on *both* sides, so `writes-allowed` and `writes allowed` both select that point — the head's
+///   on *both* sides, so `writes-allowed` and `writes allowed` both select that point - the head's
 ///   fixture said the hyphenated one and agreed with itself while the wire said the other.
 /// * **A boundary, so one name is not read as a prefix of another.** `automode-edits` begins with
 ///   `automode`, so a bare prefix match would seed on the shorter row. This branch is for the
-///   QUALIFIED values the daemon writes — `allow-all (this box, consented)`, `local (qwen-3.8-27b)`
-///   — where the qualifier follows a space and the name itself has none, which is why the old
+///   QUALIFIED values the daemon writes - `allow-all (this box, consented)`, `local (qwen-3.8-27b)`
+///   - where the qualifier follows a space and the name itself has none, which is why the old
 ///   first-word rule happened to survive them.
 ///
 /// A whitespace boundary and not a list of separators: the daemon writes `name (note)` and
 /// `name --flag`, and inventing a grammar for the qualifier would be a rule about a spelling this
 /// head does not own. If a future row qualifies a name with something that is not whitespace-
-/// separated, it shows up here as *no choice named* — which renders as no `← now`, the honest
+/// separated, it shows up here as *no choice named* - which renders as no `← now`, the honest
 /// answer, rather than as a mark on the wrong row.
 pub(crate) fn named_choice<'a>(value: &str, choices: &'a [String]) -> Option<&'a str> {
     choices

@@ -283,7 +283,7 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             ctl(out, &tk::TOOL_RESPONSE_OPEN);
             // `payload` verbatim. It is already the envelope the tool runtime
             // rendered (`ToolRuntime::transcript_item`), and adding a second one
-            // here wraps the model's result twice — see `outcome_envelope`.
+            // here wraps the model's result twice - see `outcome_envelope`.
             let _ = outcome;
             text(out, payload.clone());
             // The picture goes where the reading happened: a tool result that read an image carries it,
@@ -391,7 +391,7 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
     flush(&mut pending, out);
 }
 
-/// True when the transcript ends with an assistant turn already open — i.e. no
+/// True when the transcript ends with an assistant turn already open - i.e. no
 /// generation prompt should be appended, and the oracle must be asked with
 /// `add_generation_prompt: false`.
 pub fn ends_mid_turn(items: &[TranscriptItem]) -> bool {
@@ -409,7 +409,7 @@ pub enum Anomaly {
     /// sort would have to insert before bytes already in the KV cache. Append in call order.
     ToolResultsOutOfCallOrder { at: usize },
     /// Two tool calls in one turn share an id. The template's sort gives up on this
-    /// too, so it is not a divergence — but it makes a result unattributable.
+    /// too, so it is not a divergence - but it makes a result unattributable.
     DuplicateToolCallId { at: usize, id: String },
     /// `ToolCall.arguments` is not a JSON object, so it renders no argument pairs.
     ToolCallArgumentsNotAnObject { at: usize, name: String },

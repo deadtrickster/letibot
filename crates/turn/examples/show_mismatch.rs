@@ -2,7 +2,7 @@
 //!
 //! R12's shape in the frame-accounting family: one refusal, two faults, and the difference
 //! is the direction of the disagreement. This exists so the wording can be read without
-//! standing up a server — the frames themselves cannot be produced on demand, since the
+//! standing up a server - the frames themselves cannot be produced on demand, since the
 //! patched server does not emit them (see `stream.rs`'s module header).
 //!
 //! ```text

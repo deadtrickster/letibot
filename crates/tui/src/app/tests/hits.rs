@@ -1,11 +1,11 @@
-//! **R69: a click and a wheel notch go to what the last frame drew under the pointer** — every
+//! **R69: a click and a wheel notch go to what the last frame drew under the pointer** - every
 //! clickable surface clicked against the frame it was drawn in, the wheel routed by position,
 //! a click that hits nothing falling through, and a click in the same read as a scroll.
 
 use super::*;
 use letibot_sessionlog::protocol::{NoteEntry, NoteForm};
 
-/// The screen row `needle` was drawn on — the row a person aims at.
+/// The screen row `needle` was drawn on - the row a person aims at.
 fn row_of(frame: &[String], needle: &str) -> u16 {
     frame
         .iter()
@@ -99,7 +99,7 @@ fn a_click_on_each_pane_selects_the_row_drawn_under_it() {
 }
 
 /// **The decision card and the quit card take clicks on their rows**, read against where the
-/// frame put them — below whatever chrome was pushed above the card.
+/// frame put them - below whatever chrome was pushed above the card.
 #[test]
 fn a_click_on_the_decision_ladder_and_the_quit_card_selects_that_row() {
     let mut a = tall_card(false);
@@ -152,7 +152,7 @@ fn a_click_on_a_wrapped_rung_selects_that_rung() {
 
 /// **A click that lands on nothing a pane drew falls through.** The todos pane took every
 /// click, hit or miss, so the count labels on the composer's edge stopped working while it was
-/// open — and worked while the jobs or subagents pane was.
+/// open - and worked while the jobs or subagents pane was.
 #[test]
 fn a_click_outside_the_pane_reaches_the_count_label() {
     let mut a = app();
@@ -203,7 +203,7 @@ fn the_wheel_over_the_transcript_scrolls_the_transcript_not_the_card() {
     assert!(!a.following(), "the transcript did not move");
 }
 
-/// **And over the card, the card scrolls** — the same notch, aimed at it.
+/// **And over the card, the card scrolls** - the same notch, aimed at it.
 #[test]
 fn the_wheel_over_the_card_scrolls_the_card() {
     let mut a = tall_card(true);
@@ -247,7 +247,7 @@ fn a_click_after_a_wheel_step_in_the_same_read_picks_the_row_that_was_drawn() {
         .iter()
         .position(|s| matches!(s, TodoStop::Mine(c) if c == "row number 05"))
         .expect("the row is a stop");
-    // One read: a notch, then the click — no frame between them.
+    // One read: a notch, then the click - no frame between them.
     a.key(Key::WheelDown);
     assert!(a.pane_scroll > 0, "the premise: the notch moved the pane");
     a.key(Key::Click { x: 12, y });

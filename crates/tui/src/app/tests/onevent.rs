@@ -12,7 +12,7 @@ const RESEAT_ROW: &str =
 const RESEAT_SAID: &str = "session s was seated 10-08 21:14 with a prompt this daemon would not \
                             compose now: the tool schemas have changed since.";
 
-/// The two events a reseat writes, published to a hub so a snapshot carries the same envelope —
+/// The two events a reseat writes, published to a hub so a snapshot carries the same envelope  -
 /// and fed to the head as the same envelopes, which is what makes the note's key identical by
 /// both routes (`(code, ts, detail)`, `note_key`).
 fn reseat(hub: &Hub) -> Vec<letibot_sessionlog::event::Envelope> {
@@ -34,7 +34,7 @@ fn reseat(hub: &Hub) -> Vec<letibot_sessionlog::event::Envelope> {
     out
 }
 
-/// A head that attached empty and then **watched** the reseat happen — the row, then the warning,
+/// A head that attached empty and then **watched** the reseat happen - the row, then the warning,
 /// which is the order the daemon writes them in and the order that files the note at the row's
 /// seam.
 fn watched() -> (App, std::sync::Arc<Hub>) {

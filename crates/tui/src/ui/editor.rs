@@ -1,4 +1,4 @@
-//! **The editor pane, drawn** — rano's own renderer into the conversation's rectangle — and the
+//! **The editor pane, drawn** - rano's own renderer into the conversation's rectangle - and the
 //! map from the conversation's rows to the files they are about.
 
 use crate::app::*;
@@ -15,14 +15,14 @@ fn cells(n: usize) -> u16 {
 }
 
 /// **Where rano draws inside the pane's frame**: under the top edge, over the bottom one, and
-/// two columns in from each side — the diff popup's own indent, so the two read as one kind of
+/// two columns in from each side - the diff popup's own indent, so the two read as one kind of
 /// thing. The one rectangle both the drawing and the mouse routing use (`App::edit_area`).
 pub(crate) fn editor_inner(x: usize, y: usize, w: usize, room: usize) -> Rect {
     Rect::new(
         cells(x + 2),
         cells(y + 1),
         // Two columns off EACH side, not the left alone: the frame's corners are its first and
-        // last columns, so `w - 2` put rano's last column on the right edge — a long line ran to
+        // last columns, so `w - 2` put rano's last column on the right edge - a long line ran to
         // the corner and `Ln/Col` sat on it.
         cells(w.saturating_sub(4)),
         cells(room.saturating_sub(2)),
@@ -60,7 +60,7 @@ fn editor_title(name: &str, t: &rano::editor::FrameTitle, w: usize) -> Line {
     Line::new(spans)
 }
 
-/// **The pane's bottom edge: rano's keys, in the head's words** — `C-o write out · C-f where
+/// **The pane's bottom edge: rano's keys, in the head's words** - `C-o write out · C-f where
 /// is · …`, faint like every other key line here, as many as the edge holds. What rano's
 /// function bar would have said, in the order it would have said it.
 fn editor_keys(keys: &[(String, String)]) -> Line {
@@ -174,7 +174,7 @@ impl App {
             if let Some(f) = place {
                 out.push((line - start, f));
             } else if !self.items[sp.row].citations.is_empty() {
-                // **A cited line opens its file there** — the header at the range's first line,
+                // **A cited line opens its file there** - the header at the range's first line,
                 // each numbered line at its own. Read off the drawn row, so the line clicked is
                 // the line named.
                 if let Some(f) = self.cited_line(sp.at, line) {
@@ -186,7 +186,7 @@ impl App {
     }
 
     /// **The file and line a drawn line of a citation names**, walking up from `line` to the
-    /// header of the block it is in — `None` for a line outside any citation (the reply's prose).
+    /// header of the block it is in - `None` for a line outside any citation (the reply's prose).
     fn cited_line(&self, row_at: usize, line: usize) -> Option<FileRef> {
         let plain = |l: usize| -> String {
             crate::app::keyhints::cells(&self.hist_lines[l])

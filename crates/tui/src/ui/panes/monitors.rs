@@ -1,4 +1,4 @@
-//! **The monitors pane**: what this session is watching across turns — drawn by
+//! **The monitors pane**: what this session is watching across turns - drawn by
 //! `rano::agent::monitors` from the monitor table the daemon sends with its jobs.
 
 use crate::app::*;
@@ -30,7 +30,7 @@ impl App {
         }
     }
 
-    /// The live monitors the cursor walks — indices into [`App::monitors`].
+    /// The live monitors the cursor walks - indices into [`App::monitors`].
     pub(crate) fn monitor_stops(&self) -> Vec<usize> {
         self.monitors_view().stops()
     }
@@ -102,7 +102,7 @@ impl App {
         true
     }
 
-    /// **The arguments of the newest `monitor` call that armed `name`**, pretty-printed — the
+    /// **The arguments of the newest `monitor` call that armed `name`**, pretty-printed - the
     /// conversation's own record of what the model asked for. A `renew` or `retire` of the same
     /// name is not the arming call and is passed over.
     fn monitor_call(&self, name: &str) -> Option<String> {
@@ -125,7 +125,7 @@ impl App {
         })
     }
 
-    /// **`x`: retire the monitor under the cursor** — `/monitor retire NAME`, the daemon's verb,
+    /// **`x`: retire the monitor under the cursor** - `/monitor retire NAME`, the daemon's verb,
     /// so the record says the operator retired it and the model's next notice says so.
     pub(crate) fn retire_selected_monitor(&mut self) -> Option<Action> {
         let name = self.monitors_view().selected_monitor()?.name.clone();

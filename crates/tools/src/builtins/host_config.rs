@@ -48,7 +48,7 @@ impl From<Refusal> for Invocation {
 }
 
 /// **One setting, as one platform spells it.** `unit` is the platform's own unit and is printed
-/// with every value, because macOS's `KeyRepeat` is in 1/60 s and X11's rate is in hertz — two
+/// with every value, because macOS's `KeyRepeat` is in 1/60 s and X11's rate is in hertz - two
 /// numbers that would look interchangeable and are not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Setting {
@@ -56,7 +56,7 @@ pub struct Setting {
     pub name: &'static str,
     /// What the value counts, in this platform's words.
     pub unit: &'static str,
-    /// Whether changing it needs root — stated here so a refusal can say so before it runs.
+    /// Whether changing it needs root - stated here so a refusal can say so before it runs.
     pub needs_root: bool,
     /// How it is read and written, in the platform's own words: the commands, named.
     pub note: &'static str,
@@ -65,7 +65,7 @@ pub struct Setting {
 /// One read: the value the platform reports now, and how it was read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading {
-    /// The value, as the platform prints it. Empty is a fact — *not set* — and is said as one.
+    /// The value, as the platform prints it. Empty is a fact - *not set* - and is said as one.
     pub value: String,
     /// How it was read, in a person's words (`xset q`, `defaults read -g KeyRepeat`).
     pub how: String,
@@ -141,8 +141,8 @@ impl Ran {
 /// Where a platform's commands run: one argv in, one answer out.
 /// A trait so a test can drive the whole tool without changing this box's settings.
 pub trait Runner: Send + Sync {
-    /// Run one argv with these environment additions. `Err` is a spawn that never happened —
-    /// a program this box has not got — and is a different fact from a non-zero exit.
+    /// Run one argv with these environment additions. `Err` is a spawn that never happened  -
+    /// a program this box has not got - and is a different fact from a non-zero exit.
     fn run(&self, argv: &[String], env: &[(String, String)]) -> Result<Ran, String>;
 }
 
@@ -181,7 +181,7 @@ pub type Elevated = (Vec<String>, Vec<(String, String)>);
 /// Neither is in the daemon's own environment, so the harness hands them over at registry build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel {
-    /// The daemon's socket — what the helper connects to.
+    /// The daemon's socket - what the helper connects to.
     pub socket: PathBuf,
     /// The session the helper attaches as, so the card lands in front of the right person.
     pub session: String,
@@ -203,7 +203,7 @@ pub enum Privilege {
     Root,
     /// `sudo -A` with this helper, over this session's channel to the daemon.
     Askpass {
-        /// The helper sudo runs — `letibot-askpass`, which reaches the head.
+        /// The helper sudo runs - `letibot-askpass`, which reaches the head.
         helper: PathBuf,
         /// The socket and session the helper attaches on.
         channel: Channel,
@@ -319,7 +319,7 @@ fn helper() -> Option<PathBuf> {
     beside.or_else(|| which("letibot-askpass"))
 }
 
-/// The first `name` on `PATH` that is a file — what `command -v` answers, without a shell.
+/// The first `name` on `PATH` that is a file - what `command -v` answers, without a shell.
 fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -640,7 +640,7 @@ impl MacOs {
 /// The cpufreq governor's own file: one word, one line, one per CPU.
 pub const GOVERNOR: &str = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor";
 
-/// The governors this box offers — the file a value is checked against before anything runs.
+/// The governors this box offers - the file a value is checked against before anything runs.
 pub const GOVERNORS: &str = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors";
 
 /// The Linux settings, as X11 and cpufreq spell them.
@@ -686,7 +686,7 @@ impl Linux {
     }
 
     /// **X11's auto-repeat, which is one knob with two numbers.** `xset r rate <delay> <rate>`
-    /// sets both at once, so a `set` of either one has to carry the other's current value — a
+    /// sets both at once, so a `set` of either one has to carry the other's current value - a
     /// `set` that wrote only its own half would zero the other.
     fn repeat(&self) -> Result<(String, String, String), Refusal> {
         let ran = self.run(&["xset", "q"], &[])?;
@@ -739,7 +739,7 @@ impl Linux {
     }
 }
 
-/// The first integer after `key` in `text` — `auto repeat delay:  660    repeat rate:  25`.
+/// The first integer after `key` in `text` - `auto repeat delay:  660    repeat rate:  25`.
 fn after(text: &str, key: &str) -> Option<String> {
     let tail = text.split(key).nth(1)?;
     let digits: String = tail
@@ -976,10 +976,10 @@ pub struct HostConfigTool {
     /// is the state this tool exists to end, so `set` refuses there rather than applying one.
     scope: Option<Arc<dyn ChangelogScope>>,
     platform: Arc<dyn Platform>,
-    /// `None` is [`Privilege::detect`] at the call — a test's door, because setting
+    /// `None` is [`Privilege::detect`] at the call - a test's door, because setting
     /// `$SUDO_ASKPASS` in a test would race every other test in the process.
     privilege: Option<Privilege>,
-    /// The session's socket and id — what `letibot-askpass` attaches with, and what the daemon
+    /// The session's socket and id - what `letibot-askpass` attaches with, and what the daemon
     /// alone knows. `None` on a registry with no daemon behind it, where a setting that needs
     /// root is then refused by name instead of failing inside `sudo`.
     channel: Option<Channel>,
@@ -997,8 +997,8 @@ impl HostConfigTool {
         }
     }
 
-    /// **No changelog behind this tool.** `read` and `settings` still answer — they change
-    /// nothing — and `set` refuses before it runs anything.
+    /// **No changelog behind this tool.** `read` and `settings` still answer - they change
+    /// nothing - and `set` refuses before it runs anything.
     pub fn nowhere() -> HostConfigTool {
         HostConfigTool {
             scope: None,
@@ -1016,14 +1016,14 @@ impl HostConfigTool {
         self
     }
 
-    /// Drive another platform — a test's door, and the only way the arm this box is not is ever
+    /// Drive another platform - a test's door, and the only way the arm this box is not is ever
     /// measured.
     pub fn with_platform(mut self, platform: Arc<dyn Platform>) -> HostConfigTool {
         self.platform = platform;
         self
     }
 
-    /// Stand in for what this box can offer — a test's door for the privilege refusal.
+    /// Stand in for what this box can offer - a test's door for the privilege refusal.
     pub fn with_privilege(mut self, privilege: Privilege) -> HostConfigTool {
         self.privilege = Some(privilege);
         self
@@ -1070,7 +1070,7 @@ impl Tool for HostConfigTool {
                 },
                 "required": ["verb"]
             }),
-            // `set` runs the platform's own tool — `cpupower`, `pmset` — so the gate decides.
+            // `set` runs the platform's own tool - `cpupower`, `pmset` - so the gate decides.
             // `settings` and `read` narrow to a read below: asking what the keyboard repeat is
             // should not cost the operator a decision.
             Access::Exec,
@@ -1141,7 +1141,7 @@ pub fn dispatch(
     }
 }
 
-/// **What this platform has**, with each value read now — the answer to *which knob is it here*.
+/// **What this platform has**, with each value read now - the answer to *which knob is it here*.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn settings(platform: &dyn Platform) -> Result<String, Invocation> {
     let settings = platform.settings();
@@ -1218,7 +1218,7 @@ fn read(platform: &dyn Platform, args: &Value) -> Result<String, Invocation> {
     ))
 }
 
-/// **The three acts**: read, apply, record — and the checks that come before any of them.
+/// **The three acts**: read, apply, record - and the checks that come before any of them.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn set(
     scope: Option<&dyn ChangelogScope>,
@@ -1245,10 +1245,10 @@ fn set(
     let s = find(platform, &asked)?;
 
     // 2. **The value, before the read and before the record's door.** A value this setting would
-    //    never take costs no command at all — not even the read that would become the `before`.
+    //    never take costs no command at all - not even the read that would become the `before`.
     platform.check(s.name, &value).map_err(Invocation::from)?;
 
-    // 3. **No changelog behind this session is a refusal before the first command** — it is a fact
+    // 3. **No changelog behind this session is a refusal before the first command** - it is a fact
     //    about the registry, not about the box, so nothing needs measuring to find it out.
     let Some(scope) = scope else {
         return Err(Invocation::failed(
@@ -1304,7 +1304,7 @@ fn set(
         ),
     };
 
-    // 8. The record — the changelog's own `record` verb, so one function writes a line.
+    // 8. The record - the changelog's own `record` verb, so one function writes a line.
     let record = json!({
         "verb": "record",
         "what": s.name,
@@ -1374,7 +1374,7 @@ fn set(
     ))
 }
 
-/// The setting, by the name the caller used — with the platform's own refusal when it has none.
+/// The setting, by the name the caller used - with the platform's own refusal when it has none.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn find<'a>(platform: &'a dyn Platform, asked: &str) -> Result<&'a Setting, Invocation> {
     let wanted = asked.trim();

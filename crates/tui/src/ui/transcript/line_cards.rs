@@ -16,12 +16,12 @@ use crate::ui::*;
 /// What every card's line ends with: the row is a summary, and the popup is the text.
 pub(crate) const CLICK: &str = "click for details";
 
-/// **One notice, read** — what a card draws for it.
+/// **One notice, read** - what a card draws for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Card {
     /// The whole line, uncut: `review · agent/x · could not decide · BUT … · click for details`.
     pub(crate) line: String,
-    /// The part of the line drawn in [`Card::role`] — the alarm's head, the verdict's word.
+    /// The part of the line drawn in [`Card::role`] - the alarm's head, the verdict's word.
     pub(crate) accent: Range<usize>,
     pub(crate) role: Role,
     /// The popup's top edge.
@@ -96,7 +96,7 @@ impl Card {
 
 /// **A kind of session notice this head draws as a card.**
 pub(crate) struct SessionKind {
-    /// Whether `text` opens with one of this kind's notices — read from its first words only.
+    /// Whether `text` opens with one of this kind's notices - read from its first words only.
     pub(crate) opens: fn(&str) -> bool,
     /// The last words this kind's notices end with: where a row of several is split.
     pub(crate) ends: &'static [&'static str],
@@ -136,7 +136,7 @@ fn kind_of(text: &str) -> Option<&'static SessionKind> {
     SESSION_KINDS.iter().find(|k| (k.opens)(text))
 }
 
-/// **Whether a text opens with a notice a card reads** — where `notice_card` splits a row.
+/// **Whether a text opens with a notice a card reads** - where `notice_card` splits a row.
 pub(crate) fn opens_card(text: &str) -> bool {
     kind_of(text).is_some()
 }
@@ -180,9 +180,9 @@ pub(crate) fn warning_card(code: &str, detail: &str) -> Option<Card> {
         .find_map(|k| (k.read)(detail))
 }
 
-/// **The popup's top edge** for a card's text — a session row's or a warning's detail (whose
+/// **The popup's top edge** for a card's text - a session row's or a warning's detail (whose
 /// code the popup no longer has, so every warning reader is asked; each reads only its own
-/// shape) — and the role it is drawn in.
+/// shape) - and the role it is drawn in.
 pub(crate) fn popup_title(text: &str) -> Option<(String, Role)> {
     session_card(text)
         .or_else(|| WARNING_KINDS.iter().find_map(|k| (k.read)(text)))
@@ -243,7 +243,7 @@ pub(crate) fn sentences(text: &str) -> Vec<&str> {
     out
 }
 
-/// **A sentence's first clause** — cut at the first `, and` / `, so` / `, which` / `: ` / ` — `
+/// **A sentence's first clause** - cut at the first `, and` / `, so` / `, which` / `: ` / ` - `
 /// far enough in to be a clause, and a cut clause says so with `…`.
 pub(crate) fn first_clause(sentence: &str) -> String {
     /// A clause shorter than this is not the reason yet (`BUT, as`, `So: `).

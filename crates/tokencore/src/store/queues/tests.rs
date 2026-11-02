@@ -212,7 +212,7 @@ fn an_approval_binds_the_reviewed_head_and_creates_the_merge_row_once() {
     assert_eq!(s.merge_rows(Some("/repo")).unwrap().len(), 1);
 
     // The branch moved after approval: the merge row ends `moved`, the review is waiting again,
-    // with the new head — in one transaction.
+    // with the new head - in one transaction.
     s.move_merge(
         "m-r1",
         MergeState::Queued,
@@ -241,7 +241,7 @@ fn an_approval_binds_the_reviewed_head_and_creates_the_merge_row_once() {
 #[test]
 fn the_lease_is_held_by_one_daemon_and_taken_over_only_when_its_heartbeat_expires() {
     let d = TempDir::new("lease");
-    // **Two daemons are two CONNECTIONS** — `Store::open` would hand `b` the connection `a` is
+    // **Two daemons are two CONNECTIONS** - `Store::open` would hand `b` the connection `a` is
     // holding, and the compare-and-swap would be one daemon talking to itself.
     let a = Store::open_private(&d.db()).unwrap();
     let b = Store::open_private(&d.db()).unwrap();
@@ -375,7 +375,7 @@ fn a_store_the_queue_has_moved_past_grants_no_lease_and_stops_a_heartbeat() {
     assert!(!s.heartbeat_queue_lease("/repo", "A", 5).unwrap());
 }
 
-/// **Recovery touches only this repository's rows, and only those another owner held** — on v23
+/// **Recovery touches only this repository's rows, and only those another owner held** - on v23
 /// `recover` turned EVERY `taken` row in the store `stale`, including another daemon's live one.
 #[test]
 fn recovery_moves_only_the_rows_a_gone_owner_held_in_this_repository() {

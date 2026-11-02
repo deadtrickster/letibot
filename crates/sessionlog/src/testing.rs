@@ -86,11 +86,11 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
         write_targets: Vec::new(),
         req_id: req_id.into(),
         // §11.6's `kind`: which of the two vocabularies settles it. Not the access
-        // class — `exec` was here and reads as one, and a permission over `exec` is
+        // class - `exec` was here and reads as one, and a permission over `exec` is
         // still answered by option id.
         kind: "permission".into(),
         call_id: Some("c1".into()),
-        // The fixture's tool is a shell, so the declaration is `exec` — the one access a
+        // The fixture's tool is a shell, so the declaration is `exec` - the one access a
         // card draws the joining clause for. See
         // `SessionEvent::DecisionRequested::access`.
         access: "exec".into(),
@@ -205,7 +205,7 @@ pub fn content(item_id: &str, text: &str) -> SessionEvent {
     }
 }
 
-/// The daemon saying that a fork replaced the transcript — the event a carry is preceded by.
+/// The daemon saying that a fork replaced the transcript - the event a carry is preceded by.
 pub fn forked(transcript_id: &str, parent_id: &str) -> SessionEvent {
     SessionEvent::TranscriptForked {
         transcript_id: transcript_id.into(),
@@ -335,7 +335,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             lines: vec!["building".into(), "done".into()],
             next: None,
         },
-        // **What the session is waiting on** (`PROTOCOL_VERSION` 52) — the value a caller reads
+        // **What the session is waiting on** (`PROTOCOL_VERSION` 52) - the value a caller reads
         // instead of inventing a settle window. One of each: the two turn entries, the delivery
         // window, a job and a child by name, a monitor and the card that needs a person.
         SessionEvent::ActivityChanged {
@@ -352,7 +352,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
 }
 
 /// A realistic session: a user turn, reasoning, a tool call gated by a decision, and an answer
-/// with markdown in it — long and blocky enough to exercise §13.3's incremental lexer, emitted
+/// with markdown in it - long and blocky enough to exercise §13.3's incremental lexer, emitted
 /// as small deltas, which is how it arrives from the engine.
 pub fn recorded_session() -> Vec<SessionEvent> {
     let mut out = vec![
@@ -382,7 +382,7 @@ pub fn recorded_session() -> Vec<SessionEvent> {
         access: "read".into(),
     });
     out.push(tool_progress("c1", "40 of 276 lines"));
-    // The assistant row that MADE the call, appended before the row that answers it — which is
+    // The assistant row that MADE the call, appended before the row that answers it - which is
     // what the daemon does and what the store holds for every real session. It is also the row a
     // head reads a settled call's display target out of: the arguments live on it and nowhere else.
     out.push(appended("s.2", "assistant"));
@@ -530,7 +530,7 @@ pub fn scratch_root() -> std::path::PathBuf {
 /// in `$HOME` does not. Sixteen leaves ninety bytes for a test's own names and its socket.
 pub const SHORT_ROOT: usize = 16;
 
-/// `temp` itself when it is short, else `/tmp/lbt-<pid>` linked to it — or `temp` again if the
+/// `temp` itself when it is short, else `/tmp/lbt-<pid>` linked to it - or `temp` again if the
 /// link cannot be made, which leaves the old behaviour rather than a new failure.
 #[cfg(not(target_os = "macos"))]
 fn short_alias(temp: std::path::PathBuf) -> std::path::PathBuf {
@@ -582,7 +582,7 @@ pub fn socket_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     link.join(name)
 }
 
-/// Remove the `/tmp/<prefix><pid>[-<n>]` SYMLINKS whose process is gone — never a file or a
+/// Remove the `/tmp/<prefix><pid>[-<n>]` SYMLINKS whose process is gone - never a file or a
 /// directory, never a live pid's. Linux only, because `/proc` is the probe.
 fn sweep_dead_links(prefix: &str) {
     if !std::path::Path::new("/proc/self").exists() {

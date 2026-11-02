@@ -5,7 +5,7 @@ use super::*;
 use crate::ui::transcript::red_card::{Trouble, notice_tip, unjudged_warning_tip, warning_tip};
 
 /// The session notice, as `mergequeue::notices::health` writes it for the operator's red
-/// `main` — pinned byte for byte by `harnessd`'s
+/// `main` - pinned byte for byte by `harnessd`'s
 /// `the_tuis_red_card_fixtures_are_what_the_queue_writes`.
 const NOTICE: &str = include_str!("fixtures/red_main_notice.txt");
 /// The `target_red` warning `RepoQueue::target_went_red` raises for the same tip, pinned by the
@@ -13,7 +13,7 @@ const NOTICE: &str = include_str!("fixtures/red_main_notice.txt");
 const WARNING: &str = include_str!("fixtures/red_main_warning.txt");
 
 /// The session notice for a `main` whose gate step was killed at the gate's memory cap, as
-/// `mergequeue::notices::health` writes it — pinned by the same test.
+/// `mergequeue::notices::health` writes it - pinned by the same test.
 const KILLED_NOTICE: &str = include_str!("fixtures/unjudged_main_killed_notice.txt");
 /// The `gate_killed` hub warning for the same tip (`mergequeue::notices::gate_killed`).
 const KILLED_WARNING: &str = include_str!("fixtures/unjudged_main_killed_warning.txt");
@@ -75,7 +75,7 @@ pub(super) fn rows_with<'a>(screen: &'a [String], needle: &str) -> Vec<&'a Strin
     screen.iter().filter(|l| l.contains(needle)).collect()
 }
 
-/// The popup's rows, as text — laid out by a frame first.
+/// The popup's rows, as text - laid out by a frame first.
 pub(super) fn popup_text(a: &mut App) -> String {
     a.screen(120, 30);
     let p = a.diff_popup.as_ref().expect("the popup is open");
@@ -95,7 +95,7 @@ pub(super) fn holds(hay: &str, needle: &str) -> bool {
     flat(hay).contains(&flat(needle))
 }
 
-/// **The parsers read what the daemon writes** — the fixtures ARE its output.
+/// **The parsers read what the daemon writes** - the fixtures ARE its output.
 #[test]
 fn the_parsers_read_the_queues_own_texts() {
     let n = notice_tip(NOTICE).expect("the session notice parses");
@@ -114,7 +114,7 @@ fn the_parsers_read_the_queues_own_texts() {
 }
 
 /// **The session notice is ONE line**: the target, the short sha, the repository's name, the
-/// failing step and which of how many, the review — and nothing of the gate's output or of the
+/// failing step and which of how many, the review - and nothing of the gate's output or of the
 /// paragraph to the model.
 #[test]
 fn the_emergency_notice_draws_as_one_line() {
@@ -136,7 +136,7 @@ fn the_emergency_notice_draws_as_one_line() {
     );
 }
 
-/// **A narrow screen cuts the line with the head's `…`** — it never wraps.
+/// **A narrow screen cuts the line with the head's `…`** - it never wraps.
 #[test]
 fn a_narrow_screen_cuts_the_line() {
     let mut a = with_notice(NOTICE);
@@ -150,8 +150,8 @@ fn a_narrow_screen_cuts_the_line() {
     assert_eq!(a.notice_rows.len(), 1);
 }
 
-/// **A click on the line opens the whole notice** — the gate's output tail and its memory line
-/// included — in the job card's popup; Esc closes it.
+/// **A click on the line opens the whole notice** - the gate's output tail and its memory line
+/// included - in the job card's popup; Esc closes it.
 #[test]
 fn a_click_on_the_emergency_opens_the_whole_notice() {
     let mut a = with_notice(NOTICE);
@@ -233,7 +233,7 @@ fn the_warning_line_is_the_alarm_register() {
     assert!(rows[0].contains(RED), "{:?}", rows[0]);
 }
 
-/// **The reviewer's `target_red` warnings are one line as well** — a fix branch opened, one that
+/// **The reviewer's `target_red` warnings are one line as well** - a fix branch opened, one that
 /// could not be, and a project that only raises.
 #[test]
 fn the_reviewers_warnings_draw_as_one_line() {
@@ -272,7 +272,7 @@ fn the_reviewers_warnings_draw_as_one_line() {
     }
 }
 
-/// **The notice's siblings** — the gate TIMED OUT, and the gate could not judge the tip — are
+/// **The notice's siblings** - the gate TIMED OUT, and the gate could not judge the tip - are
 /// one line with their own word.
 #[test]
 fn a_timed_out_or_unjudged_target_is_one_line() {
@@ -366,7 +366,7 @@ fn an_emergency_beside_a_job_completion_keeps_both_compact() {
     assert_eq!(a.notice_rows.len(), 3, "{:?}", a.notice_rows);
 }
 
-/// **What it does not know, it does not fold** — drawn as it arrived, every word on the screen,
+/// **What it does not know, it does not fold** - drawn as it arrived, every word on the screen,
 /// and no click target.
 #[test]
 fn a_shape_the_parser_does_not_know_falls_back() {
@@ -388,7 +388,7 @@ fn a_shape_the_parser_does_not_know_falls_back() {
         let mut a = with_notice(&text);
         let screen = a.screen(200, 60);
         let joined = screen.join("\n");
-        // **Not read as red** — no `‼` guessed — and still ONE line (R89): the generic
+        // **Not read as red** - no `‼` guessed - and still ONE line (R89): the generic
         // first clause, the whole notice a click away.
         assert!(!joined.contains("‼"), "{what}: {joined}");
         assert_eq!(
@@ -436,7 +436,7 @@ fn a_shape_the_parser_does_not_know_falls_back() {
     assert!(!joined.contains("‼"), "{joined}");
 }
 
-/// **A gate killed at its memory cap is UNJUDGED, not red — one line, from the session notice
+/// **A gate killed at its memory cap is UNJUDGED, not red - one line, from the session notice
 /// and from the `gate_killed` warning alike**, and the whole text one click away.
 #[test]
 fn a_gate_killed_at_its_cap_is_one_unjudged_line() {
@@ -469,7 +469,7 @@ fn a_gate_killed_at_its_cap_is_one_unjudged_line() {
     }
 }
 
-/// **A `gate_killed` warning in a shape this head does not know is the generic line** — not read
+/// **A `gate_killed` warning in a shape this head does not know is the generic line** - not read
 /// as unjudged, and still one line with its detail a click away (R89).
 #[test]
 fn an_unknown_gate_killed_warning_falls_back() {
@@ -489,7 +489,7 @@ fn an_unknown_gate_killed_warning_falls_back() {
     assert!(!screen.join("\n").contains("UNJUDGED"));
 }
 
-/// **R89: one event, one row** — a red target's warning and the session's `EMERGENCY` notice
+/// **R89: one event, one row** - a red target's warning and the session's `EMERGENCY` notice
 /// for the same tip are one line, the notice in its popup.
 #[test]
 fn a_red_warning_and_its_emergency_notice_are_one_line() {

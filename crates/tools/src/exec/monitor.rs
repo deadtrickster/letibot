@@ -140,7 +140,7 @@ impl PortState {
 
 impl Watch {
     /// What a listing calls this, in words that name the handle rather than the
-    /// condition — because the handle is what a reader needs to go look.
+    /// condition - because the handle is what a reader needs to go look.
     pub fn describe(&self) -> String {
         match self {
             Watch::Job(id) => format!("job `{id}` leaving the running state"),
@@ -161,7 +161,7 @@ impl Watch {
         }
     }
 
-    /// The longest this watch may live — [`MAX_TTL`], or its condition's own cap.
+    /// The longest this watch may live - [`MAX_TTL`], or its condition's own cap.
     pub fn max_ttl(&self) -> Duration {
         match self {
             Watch::Custom(c) => c.0.max_ttl().unwrap_or(MAX_TTL),
@@ -286,7 +286,7 @@ impl std::fmt::Debug for Probe {
     }
 }
 
-/// What a path looked like when the monitor was declared. The baseline — a
+/// What a path looked like when the monitor was declared. The baseline - a
 /// path monitor with no baseline could only report existence, and "it changed"
 /// is the question people actually have.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -597,7 +597,7 @@ impl std::error::Error for MonitorError {}
 #[derive(Default)]
 pub struct Monitors {
     inner: Mutex<Registry>,
-    /// Woken when a monitor settles. This is the wake seam — see
+    /// Woken when a monitor settles. This is the wake seam - see
     /// [`Monitors::wait_for_any`].
     settled: Condvar,
     /// Woken by a blockable condition (push) so the poller re-polls immediately
@@ -625,7 +625,7 @@ struct Registry {
 }
 
 impl std::fmt::Debug for Monitors {
-    /// Not derived, because the plugin seam is a `dyn` trait with no `Debug` — and a listing that
+    /// Not derived, because the plugin seam is a `dyn` trait with no `Debug` - and a listing that
     /// printed it would be printing the daemon's wiring rather than a monitor.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Monitors")
@@ -661,7 +661,7 @@ impl Monitors {
     }
 
     /// Push: a blockable condition calls this when it changes, so the poller
-    /// wakes now rather than on the next [`TICK`]. Cheap and idempotent — a wake
+    /// wakes now rather than on the next [`TICK`]. Cheap and idempotent - a wake
     /// with nothing new to look at costs one re-poll.
     pub fn signal(&self) {
         self.wake.notify_all();
@@ -716,8 +716,8 @@ impl Monitors {
             (Watch::Custom(c), _) => {
                 let cond = c.0.clone();
                 // Install the push signal, so a blockable condition wakes the
-                // poller instead of waiting out TICK. Clone into `install` — it
-                // takes `self` by value — and keep the original for the probe.
+                // poller instead of waiting out TICK. Clone into `install` - it
+                // takes `self` by value - and keep the original for the probe.
                 cond.clone().install(self.signal_fn());
                 Probe::Custom(cond)
             }
@@ -830,7 +830,7 @@ impl Monitors {
     }
 
     /// One live monitor by name. A settled one is no longer watching, so it is not
-    /// here — its firing is in [`Monitors::firings`].
+    /// here - its firing is in [`Monitors::firings`].
     pub fn get(&self, name: &str) -> Option<Arc<Monitor>> {
         self.inner.lock().expect("monitors").live.get(name).cloned()
     }
@@ -863,7 +863,7 @@ impl Monitors {
     }
 
     /// One pass over every live monitor. Exposed so a test does not have to sleep
-    /// for the poller — a test that waits on a thread it cannot see is a test that
+    /// for the poller - a test that waits on a thread it cannot see is a test that
     /// is flaky on a loaded box.
     pub fn tick(&self) -> Vec<Firing> {
         let mut fired = Vec::new();
@@ -904,7 +904,7 @@ impl Monitors {
             let event = m.firing(ending);
             let mut reg = self.inner.lock().expect("monitors");
             if m.repeat && is_fire {
-                // Continuous: the monitor persists — it does not die and get
+                // Continuous: the monitor persists - it does not die and get
                 // re-declared. It re-baselines its probe for the next occurrence and
                 // keeps watching; the firing is one message in the stream.
                 m.rearm();
@@ -959,7 +959,7 @@ pub struct TimerCondition {
 }
 
 impl TimerCondition {
-    /// Fire after `interval`, and — when the monitor is continuous — every
+    /// Fire after `interval`, and - when the monitor is continuous - every
     /// `interval` after each firing.
     pub fn after(interval: Duration) -> Arc<Self> {
         Arc::new(TimerCondition {
@@ -1137,7 +1137,7 @@ fn parse_number(text: &str) -> Option<f64> {
 }
 
 /// A log tail: fires on each new line that matches a filter. A continuous
-/// monitor's example — the condition is stateless between firings except for how
+/// monitor's example - the condition is stateless between firings except for how
 /// far it has read, which `rearm` advances.
 #[derive(Debug)]
 pub struct LogTailCondition {
@@ -1478,7 +1478,7 @@ mod tests {
             false,
         )
         .unwrap();
-        // There is no `cgroup.events` here, so `populated_at` reads false — which
+        // There is no `cgroup.events` here, so `populated_at` reads false - which
         // is exactly the "empty before startup" case. It must NOT fire.
         assert!(
             ms.tick().is_empty(),

@@ -8,7 +8,7 @@ use crate::ui::panes::queue::{Selected, Verb, verb_moves};
 use letibot_plugin::pane::Act as RowAct;
 use std::ops::ControlFlow;
 
-/// The next stop from `at` in a list of `n`, wrapping — the one rule every list's arrows keep.
+/// The next stop from `at` in a list of `n`, wrapping - the one rule every list's arrows keep.
 fn step(at: usize, n: usize, up: bool) -> usize {
     match (up, at) {
         (true, 0) => n - 1,

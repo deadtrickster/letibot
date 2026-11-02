@@ -18,7 +18,7 @@ pub use rusqlite::{self, Connection};
 use crate::{CHANNEL, Emitter, Event, Msg, Value, kind, now_ms};
 
 /// The schema this build writes. In `meta` as `schema`; a reader that meets a larger number
-/// still reads — the table is kind-tolerant by construction (§2.2).
+/// still reads - the table is kind-tolerant by construction (§2.2).
 pub const SCHEMA: u32 = 1;
 
 /// `docs/metrics.md` §2.2, as written. `IF NOT EXISTS` throughout: eleven daemons of mixed
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS daily (
 );
 ";
 
-/// **One view per kind, naming the slots** — shipped by the reader rather than migrated
+/// **One view per kind, naming the slots** - shipped by the reader rather than migrated
 /// (§2.2), so a new kind is a new line here and never an `ALTER`. `TEMP`, so a read-only
 /// connection can make them.
 pub const VIEWS: &str = "
@@ -100,7 +100,7 @@ CREATE TEMP VIEW IF NOT EXISTS feedback AS
   FROM event WHERE kind = 'operator.feedback';
 ";
 
-/// `[metrics]`, resolved — what the daemon read from `providers.toml`.
+/// `[metrics]`, resolved - what the daemon read from `providers.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub enabled: bool,
@@ -109,7 +109,7 @@ pub struct Settings {
     /// The kinds that may keep `attrs.snippet` (§2.8). Decision 5: `context.claim` keeps its
     /// sentence by default while R71's floor is tuned.
     pub snippets: Vec<String>,
-    /// The most identical events one key may write per second (§2.9). `0` is no cap — the
+    /// The most identical events one key may write per second (§2.9). `0` is no cap - the
     /// honest case for it is a session that is *debugging* a defect and wants every row.
     pub rate_per_sec: u32,
     /// The file's ceiling in MiB (§2.9). `0` is no ceiling.
@@ -173,8 +173,8 @@ impl Settings {
     }
 }
 
-/// **Where the file is**: `$LETIBOT_METRICS_DB`, else beside the store the daemon was given —
-/// which on the operator's box is `~/.local/share/letibot/metrics.db` — so a test's temp store
+/// **Where the file is**: `$LETIBOT_METRICS_DB`, else beside the store the daemon was given  -
+/// which on the operator's box is `~/.local/share/letibot/metrics.db` - so a test's temp store
 /// gets a temp metrics file and never the operator's.
 pub fn path_beside(store: &Path) -> PathBuf {
     if let Some(p) = std::env::var_os("LETIBOT_METRICS_DB") {
@@ -205,7 +205,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         let _ = std::fs::create_dir_all(d);
     }
     let conn = Connection::open(path)?;
-    // 0600: §2.8 — the file holds the operator's own notes.
+    // 0600: §2.8 - the file holds the operator's own notes.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -224,7 +224,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// **Who is writing** — the daemon (`host/pid/start_ms`, the form `queue_transition.by` uses)
+/// **Who is writing** - the daemon (`host/pid/start_ms`, the form `queue_transition.by` uses)
 /// and its build, stamped on every row because mixed builds are normal here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
@@ -241,7 +241,7 @@ pub const RATE_BUDGET: u32 = 20;
 /// in and the granularity the rest of this file's timestamps already have (`ts_ms`).
 pub const WINDOW_MS: u64 = 1000;
 
-/// How often the same key may report that it is being suppressed — and the log line that goes
+/// How often the same key may report that it is being suppressed - and the log line that goes
 /// with it. A key that is over budget for a minute has already said everything it can.
 pub const ALERT_EVERY_MS: u64 = 60_000;
 
@@ -268,7 +268,7 @@ pub const SIZE_EVERY: Duration = Duration::from_secs(10);
 /// a 270M-row file shrinks in steps rather than wedging the daemon for an hour.
 pub const SIZE_ROWS_PER_PASS: usize = 250_000;
 
-/// Rows one delete statement removes — one rowid range, so the delete is a rowid walk and not a
+/// Rows one delete statement removes - one rowid range, so the delete is a rowid walk and not a
 /// scan of the table per chunk.
 pub const SIZE_CHUNK: i64 = 50_000;
 
@@ -276,7 +276,7 @@ pub const SIZE_CHUNK: i64 = 50_000;
 /// days it can reach are gone. Bounded, so a file whose oldest rows are all marks still returns.
 pub const SIZE_SKIP_CHUNKS: usize = 4;
 
-/// Pages `PRAGMA incremental_vacuum` may give back per call — 1,024 pages is 4 MiB at this file's
+/// Pages `PRAGMA incremental_vacuum` may give back per call - 1,024 pages is 4 MiB at this file's
 /// page size, which is a bounded wait on a thread that also writes the batch.
 pub const SIZE_PAGES_PER_PASS: i64 = 1024;
 
@@ -300,7 +300,7 @@ impl Key {
         }
     }
 
-    /// `session|kind|name|outcome` — one string a log line, a `metrics.suppressed` row and a
+    /// `session|kind|name|outcome` - one string a log line, a `metrics.suppressed` row and a
     /// reader can all answer *which key?* from.
     fn text(&self) -> String {
         format!(
@@ -319,7 +319,7 @@ struct Slot {
     window_ms: u64,
     written: u32,
     suppressed: u64,
-    /// Every event of this window, written or held back — the rate, for the alert.
+    /// Every event of this window, written or held back - the rate, for the alert.
     total: u64,
     /// When this key last said it was suppressing (`0` = never, so the first window reports).
     last_alert_ms: u64,
@@ -360,13 +360,13 @@ impl RateCap {
         }
     }
 
-    /// How many keys are held — a test's window on the map's ceiling.
+    /// How many keys are held - a test's window on the map's ceiling.
     pub fn keys(&self) -> usize {
         self.keys.len()
     }
 
     /// **Is this event a row of its own?** Rows the interval boundary owes are pushed into
-    /// `rows`, and the one line per key per minute into `log` — neither is the caller's to make,
+    /// `rows`, and the one line per key per minute into `log` - neither is the caller's to make,
     /// and both are empty for an event below the budget.
     pub fn admit(&mut self, e: &Event, rows: &mut Vec<Event>, log: &mut Vec<String>) -> bool {
         if self.budget == 0 {
@@ -396,7 +396,7 @@ impl RateCap {
         false
     }
 
-    /// Write out what every window still holds — at shutdown, and for a test that cannot wait
+    /// Write out what every window still holds - at shutdown, and for a test that cannot wait
     /// for the next event to close the interval.
     pub fn drain(&mut self, rows: &mut Vec<Event>, log: &mut Vec<String>) {
         for (key, mut slot) in std::mem::take(&mut self.keys) {
@@ -420,7 +420,7 @@ impl RateCap {
     }
 }
 
-/// **Close one window of one key**: its summary row, and — at most once a minute — the report that
+/// **Close one window of one key**: its summary row, and - at most once a minute - the report that
 /// this key is being suppressed. Both are absent for a window that wrote everything it saw, which
 /// is why a session below the budget is unchanged.
 fn roll(key: &Key, slot: &mut Slot, budget: u32, rows: &mut Vec<Event>, log: &mut Vec<String>) {
@@ -472,12 +472,12 @@ pub struct Writer {
     /// Batches lost to a commit that failed twice.
     pub lost: u64,
     last_prune: Option<u64>,
-    /// The rate cap (§2.9) — see [`RateCap`].
+    /// The rate cap (§2.9) - see [`RateCap`].
     cap: RateCap,
     /// Where a `metrics.suppressed` line goes: the daemon's log, or a test's `Vec`.
     log: Box<dyn FnMut(&str) + Send>,
     /// Does this FILE give freed pages back (§2.9)? A file created before this build set
-    /// `auto_vacuum` cannot, until the operator runs one `VACUUM` — see [`Writer::shrinks`].
+    /// `auto_vacuum` cannot, until the operator runs one `VACUUM` - see [`Writer::shrinks`].
     shrinks: bool,
     last_size_check: Option<u64>,
 }
@@ -528,8 +528,8 @@ impl Writer {
         }
     }
 
-    /// Where a suppression report goes. The daemon leaves the default — stderr, which is the log
-    /// it is started with — and a test takes the lines into a `Vec`.
+    /// Where a suppression report goes. The daemon leaves the default - stderr, which is the log
+    /// it is started with - and a test takes the lines into a `Vec`.
     pub fn log_with(&mut self, f: impl FnMut(&str) + Send + 'static) {
         self.log = Box::new(f);
     }
@@ -571,7 +571,7 @@ impl Writer {
         }
     }
 
-    /// **Write out what the rate cap still holds** — the partial window of every key. The writer's
+    /// **Write out what the rate cap still holds** - the partial window of every key. The writer's
     /// loop calls it when the channel closes; a test calls it to see the summary of a storm that
     /// never spanned two seconds.
     pub fn flush_cap(&mut self) -> rusqlite::Result<usize> {
@@ -700,7 +700,7 @@ impl Writer {
         let low = cap * SIZE_LOW_PCT / 100;
         // A previous pass's deletes are free pages until this runs, so the measurement below is
         // the LIVE size and not the file's. Both calls are bounded, and skipped entirely when
-        // there is nothing to give back — eleven daemons run this every ten seconds.
+        // there is nothing to give back - eleven daemons run this every ten seconds.
         if self.free_pages() > 0 {
             self.shrink(SIZE_PAGES_PER_PASS)?;
         }
@@ -709,7 +709,7 @@ impl Writer {
         }
         // The oldest row the cap may actually take. NOT the oldest row: a mark, or a row of a
         // marked turn, is kept forever, and a cap whose ceiling is the oldest MARK can never pass
-        // it — measured here as a file stuck at 3.7 MB against a 1 MiB cap, every pass, forever.
+        // it - measured here as a file stuck at 3.7 MB against a 1 MiB cap, every pass, forever.
         let Some((first, oldest)) = self.first_deletable()? else {
             return Ok(0);
         };
@@ -747,7 +747,7 @@ impl Writer {
             .is_none_or(|t| now.saturating_sub(t) >= SIZE_EVERY.as_millis() as u64)
     }
 
-    /// Roll `id > ?1 AND id <= ?2 AND ts_ms < ?3` up into `daily` and delete it — one transaction,
+    /// Roll `id > ?1 AND id <= ?2 AND ts_ms < ?3` up into `daily` and delete it - one transaction,
     /// so a row is either in both or in neither. Returns the rows deleted.
     fn roll_up_and_delete(
         &mut self,
@@ -782,7 +782,7 @@ impl Writer {
         Ok(gone)
     }
 
-    /// **The first row the cap may delete** — its `id` and `ts_ms`. `ORDER BY id LIMIT 1` over the
+    /// **The first row the cap may delete** - its `id` and `ts_ms`. `ORDER BY id LIMIT 1` over the
     /// table's own order, so it stops at the first match rather than scanning; the forever rows it
     /// steps over are the marks, which are few.
     fn first_deletable(&self) -> rusqlite::Result<Option<(i64, i64)>> {
@@ -799,7 +799,7 @@ impl Writer {
             })
     }
 
-    /// `PRAGMA page_size`, once — it cannot change under a live file.
+    /// `PRAGMA page_size`, once - it cannot change under a live file.
     fn page_size(&self) -> u64 {
         self.conn
             .query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0))
@@ -807,7 +807,7 @@ impl Writer {
             .unwrap_or(4096)
     }
 
-    /// **The file's size as SQLite counts it**, off the header — two pragmas, no I/O of the table.
+    /// **The file's size as SQLite counts it**, off the header - two pragmas, no I/O of the table.
     pub fn db_bytes(&self) -> u64 {
         let pages: i64 = self
             .conn
@@ -816,20 +816,20 @@ impl Writer {
         pages.max(0) as u64 * self.page_size()
     }
 
-    /// The parts of it that are rows rather than free pages — what a delete is measured against.
+    /// The parts of it that are rows rather than free pages - what a delete is measured against.
     fn live_bytes(&self) -> u64 {
         self.db_bytes()
             .saturating_sub(self.free_pages().max(0) as u64 * self.page_size())
     }
 
-    /// Pages on the freelist, waiting for a vacuum — the header's own count.
+    /// Pages on the freelist, waiting for a vacuum - the header's own count.
     fn free_pages(&self) -> i64 {
         self.conn
             .query_row("PRAGMA freelist_count", [], |r| r.get(0))
             .unwrap_or(0)
     }
 
-    /// Where this file is, as SQLite knows it — `PRAGMA database_list`'s `main` row. Empty for an
+    /// Where this file is, as SQLite knows it - `PRAGMA database_list`'s `main` row. Empty for an
     /// in-memory database, which is not a file the size cap can say anything about.
     pub fn path(&self) -> PathBuf {
         self.conn
@@ -857,7 +857,7 @@ impl Writer {
     }
 }
 
-/// **What [`start`] hands back** — the thread, for a clean join at shutdown.
+/// **What [`start`] hands back** - the thread, for a clean join at shutdown.
 pub struct Running {
     pub path: PathBuf,
     pub thread: std::thread::JoinHandle<()>,
@@ -865,7 +865,7 @@ pub struct Running {
 
 /// **Open the file, start the writer, install the emitter.** `Ok(None)` when `[metrics]` is off
 /// or another writer is already installed in this process; an error when the file could not be
-/// opened — which the daemon reports and starts without, never the reverse.
+/// opened - which the daemon reports and starts without, never the reverse.
 pub fn start(path: &Path, id: Identity, settings: Settings) -> rusqlite::Result<Option<Running>> {
     if !settings.enabled {
         return Ok(None);
@@ -933,7 +933,7 @@ pub fn serve(w: &mut Writer, rx: Receiver<Msg>, dropped: impl Fn() -> u64) {
             let _ = f.try_send(());
         }
         if closed {
-            // The last, partial window of every key is still held — a storm that ended before the
+            // The last, partial window of every key is still held - a storm that ended before the
             // second did should still say how many events it was.
             let _ = w.flush_cap();
             return;
@@ -986,7 +986,7 @@ mod tests {
         }
     }
 
-    /// Every row, column by column — what "byte-identical" is asserted on.
+    /// Every row, column by column - what "byte-identical" is asserted on.
     fn dump(path: &Path) -> Vec<String> {
         let c = Connection::open(path).unwrap();
         let mut st = c
@@ -1181,7 +1181,7 @@ mod tests {
         );
     }
 
-    /// **A storm becomes a handful of rows** (§2.9) — the 2026-10-27 shape: one key, a hundred
+    /// **A storm becomes a handful of rows** (§2.9) - the 2026-10-27 shape: one key, a hundred
     /// thousand events, one second. The budget's worth is written as itself, the rest is ONE row
     /// carrying the count, and the key says once that it is suppressing.
     #[test]
@@ -1267,7 +1267,7 @@ mod tests {
         );
     }
 
-    /// **Below the budget nothing changes** — the same events through a capped and an uncapped
+    /// **Below the budget nothing changes** - the same events through a capped and an uncapped
     /// writer are the same rows, to the column (§2.9).
     #[test]
     fn a_mix_below_the_budget_is_written_row_for_row_as_it_was_before_the_cap() {
@@ -1307,7 +1307,7 @@ mod tests {
                     .n1(q),
             );
         }
-        // A `context.claim` keeps its snippet; the others lose theirs — the cap must not touch
+        // A `context.claim` keeps its snippet; the others lose theirs - the cap must not touch
         // either decision.
         mix.push(
             Event::new(kind::CONTEXT_CLAIM)
@@ -1325,7 +1325,7 @@ mod tests {
         );
     }
 
-    /// **The map is bounded**: thousands of distinct keys in one second is not a memory leak — the
+    /// **The map is bounded**: thousands of distinct keys in one second is not a memory leak - the
     /// stale ones are written out and forgotten, and every event still gets its row.
     #[test]
     fn the_key_map_is_bounded_and_a_burst_of_distinct_keys_still_writes() {
@@ -1351,7 +1351,7 @@ mod tests {
         assert!(rows.is_empty() && log.is_empty(), "nothing was suppressed");
     }
 
-    /// **A key reports at most once a minute** — one line and one `metrics.suppressed` per key per
+    /// **A key reports at most once a minute** - one line and one `metrics.suppressed` per key per
     /// minute, however long the storm lasts, and the summaries keep counting meanwhile.
     #[test]
     fn a_suppressing_key_reports_once_a_minute_and_summarises_every_second() {
@@ -1420,7 +1420,7 @@ mod tests {
 
     /// **The size cap**: over the cap the oldest days are rolled up and deleted until the file is
     /// under the low-water mark, the rows decision 2 keeps forever survive, and the pages come
-    /// back — so `page_count` falls (§2.9).
+    /// back - so `page_count` falls (§2.9).
     #[test]
     fn the_size_cap_prunes_under_the_low_water_mark_keeps_the_forever_rows_and_shrinks_the_file() {
         let p = temp("size");

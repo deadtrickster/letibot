@@ -24,7 +24,7 @@ pub const TOOL: &str = "scenario";
 /// check is a sentence and not a turn.
 pub const DEFAULT_READY: Duration = Duration::from_secs(30);
 
-/// **How long the whole scenario may run when nobody says.** Five minutes — the roles' own
+/// **How long the whole scenario may run when nobody says.** Five minutes - the roles' own
 /// deadlines and the run's bound everything inside it anyway; this is the outer wall.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(300);
 
@@ -53,11 +53,11 @@ struct Role {
 struct Planned {
     roles: Vec<Role>,
     run: Option<Role>,
-    /// The whole call's wall — what every leg's deadline is capped by.
+    /// The whole call's wall - what every leg's deadline is capped by.
     until: Instant,
 }
 
-/// `scenario` — roles, a run, and a teardown that always happens.
+/// `scenario` - roles, a run, and a teardown that always happens.
 pub struct Scenario {
     file: Option<PathBuf>,
     paths: Option<Paths>,
@@ -98,7 +98,7 @@ impl Scenario {
         self
     }
 
-    /// Run this program instead of `ssh` — a test's fake, which never touches a network.
+    /// Run this program instead of `ssh` - a test's fake, which never touches a network.
     pub fn with_ssh(mut self, program: impl Into<PathBuf>) -> Scenario {
         self.ssh = Some(program.into());
         self
@@ -109,13 +109,13 @@ impl Scenario {
         self
     }
 
-    /// **Where the started processes are written down** — the daemon binds this to its session.
+    /// **Where the started processes are written down** - the daemon binds this to its session.
     pub fn with_book(mut self, book: Arc<dyn ProcessBook>) -> Scenario {
         self.book = book;
         self
     }
 
-    /// **The session's leases** (RH9) — what a role's `ready: {"port": "lease"}` takes its port
+    /// **The session's leases** (RH9) - what a role's `ready: {"port": "lease"}` takes its port
     /// from, and what the roles' containers are named under so the teardown can find them.
     pub fn with_leases(mut self, blocks: Arc<Blocks>) -> Scenario {
         self.blocks = Some(blocks);
@@ -196,7 +196,7 @@ impl Tool for Scenario {
                 },
                 "required": ["roles"]
             }),
-            // Starts services on other machines under the session's own gate — one card for the
+            // Starts services on other machines under the session's own gate - one card for the
             // whole scenario, whose arguments name every host it reaches and every command.
             Access::Exec,
         )
@@ -219,7 +219,7 @@ impl Tool for Scenario {
 }
 
 impl Scenario {
-    /// **The whole tool, without a call context** — the daemon's path is [`Tool::invoke`], and this
+    /// **The whole tool, without a call context** - the daemon's path is [`Tool::invoke`], and this
     /// is the same thing with the two facts a `ctx` would have supplied: this session's own backend
     /// (for a `local` role) and the work directory name. It is what a test drives.
     pub fn answer(
@@ -669,7 +669,7 @@ fn assign(
     Ok(held)
 }
 
-/// `Some(seconds)` from a JSON number, `None` when it is absent — or the sentence saying why the
+/// `Some(seconds)` from a JSON number, `None` when it is absent - or the sentence saying why the
 /// value is not a number of seconds.
 fn seconds(v: Option<&Value>) -> Result<Option<u64>, String> {
     match v {
@@ -812,7 +812,7 @@ fn run(
                 break;
             }
         };
-        // **Readiness, on the role's own host, with the role's own deadline** — and never past the
+        // **Readiness, on the role's own host, with the role's own deadline** - and never past the
         // whole scenario's, because the outer wall is what the caller is waiting for.
         let ready_after = match &role.ready {
             None => Some(Duration::ZERO),
@@ -920,7 +920,7 @@ fn run(
     };
     for (running, ready_after) in started.into_iter().rev() {
         // What it was BEFORE the teardown decides its row: a role that had already died ended, and
-        // one that was still up was stopped by this call — and the two are not the same sentence.
+        // one that was still up was stopped by this call - and the two are not the same sentence.
         let before = fleet.settled(&running);
         fleet.stop(&running, &by);
         // A role can end by itself between the question and the kill, and then `before` is a
@@ -969,7 +969,7 @@ fn run(
     }
 }
 
-/// **The block's facts, as the environment of a leg on `host`** — empty when this call took no
+/// **The block's facts, as the environment of a leg on `host`** - empty when this call took no
 /// block there.
 fn env_for(held: &[letibot_tokencore::store::Lease], host: &str) -> Vec<(String, String)> {
     let place = if host == LOCAL { None } else { Some(host) };
@@ -1015,7 +1015,7 @@ fn answer(
             }
         }
     }
-    // **What went back, and what could not be touched** — a refusal here is the operator's list
+    // **What went back, and what could not be touched** - a refusal here is the operator's list
     // doing its job, and a release nobody mentions is a block held for ever.
     for line in released {
         s.push_str(&format!("  lease: {line}\n"));
@@ -1043,7 +1043,7 @@ mod tests {
         assert_eq!(out, "pg -h lab2x1 -p 5432 --tag=lab2x1");
     }
 
-    /// **A role that is not there is named, with the roles that are** — the refusal a miss needs.
+    /// **A role that is not there is named, with the roles that are** - the refusal a miss needs.
     #[test]
     fn an_unknown_role_is_refused_with_the_roles_that_exist() {
         let e = substitute("x ${nope.host}", &facts()).unwrap_err();
@@ -1060,7 +1060,7 @@ mod tests {
         assert!(e.contains("ready: {\"port\": N}"), "{e}");
     }
 
-    /// **A fact this build does not have** — not everything about a role is a fact, and saying
+    /// **A fact this build does not have** - not everything about a role is a fact, and saying
     /// which two are is the whole of the refusal.
     #[test]
     fn a_fact_this_build_does_not_resolve_is_named() {
@@ -1115,7 +1115,7 @@ mod tests {
         assert!(reason.contains('a') && reason.contains('b'), "{reason}");
     }
 
-    /// **A role may not be called `run`** — one row, one cell, and `run` is already the client's.
+    /// **A role may not be called `run`** - one row, one cell, and `run` is already the client's.
     #[test]
     fn a_role_called_run_is_refused() {
         let args = serde_json::json!({
@@ -1126,7 +1126,7 @@ mod tests {
         assert!(body.contains("Rename the role"), "{body}");
     }
 
-    /// **`after` naming a role that is not there** is refused, with the roles that are — an order
+    /// **`after` naming a role that is not there** is refused, with the roles that are - an order
     /// that silently does not exist is a scenario that starts in the wrong order and passes.
     #[test]
     fn after_naming_no_role_is_refused_with_the_roles_there_are() {
@@ -1141,7 +1141,7 @@ mod tests {
         assert!(body.contains('a') && body.contains('b'), "{body}");
     }
 
-    /// **A readiness check is exactly one of the three**, and the refusal says so — a check that
+    /// **A readiness check is exactly one of the three**, and the refusal says so - a check that
     /// is three checks cannot say which one passed.
     #[test]
     fn a_readiness_check_names_one_thing() {

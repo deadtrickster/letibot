@@ -1,8 +1,8 @@
-//! **A red merge target, drawn as ONE line** — and the whole of what the daemon said one click
+//! **A red merge target, drawn as ONE line** - and the whole of what the daemon said one click
 //! away, in the popup the job card opens.
 //!
-//! The operator, pasting what one red `main` drew — a `target_red` warning that wrapped into a
-//! paragraph with the gate's output under it, and then the session's own `EMERGENCY —` notice to
+//! The operator, pasting what one red `main` drew - a `target_red` warning that wrapped into a
+//! paragraph with the gate's output under it, and then the session's own `EMERGENCY  - ` notice to
 //! the model with the same output again in a fenced block: *"please make all this: … a one-line
 //! similar to job - with a popup"*. Two big blocks for one event.
 //!
@@ -17,11 +17,11 @@
 //! second is the notice the project's root session reads (`mergequeue::notices::health`), which
 //! also numbers the failing step and names the red tip's review. Both are cut to the width with
 //! the head's `…`, and both are drawn in the failure register, the queue pane's `‼ EMERGENCY`.
-//! The two siblings of the session notice — the gate TIMED OUT, and the gate CANNOT JUDGE the tip
-//! because its own setup failed — get the same line with their own word, and so do the
+//! The two siblings of the session notice - the gate TIMED OUT, and the gate CANNOT JUDGE the tip
+//! because its own setup failed - get the same line with their own word, and so do the
 //! `target_red` warnings the red tip's reviewer raises (`finds `main` broken at …`, with or
-//! without a fix branch). A gate whose step was KILLED before it judged the code — at the gate's
-//! memory cap, or by a signal — is unjudged, not red, and gets its own line, from the session
+//! without a fix branch). A gate whose step was KILLED before it judged the code - at the gate's
+//! memory cap, or by a signal - is unjudged, not red, and gets its own line, from the session
 //! notice and from the `gate_killed` hub warning alike (`gate_setup_failed`'s warning is read the
 //! same way):
 //!
@@ -34,11 +34,11 @@
 //!
 //! # Only what this head can read is folded
 //!
-//! The card mechanism is `line_cards`' — this module is the red target's reader in its registry
+//! The card mechanism is `line_cards`' - this module is the red target's reader in its registry
 //! ([`SESSION`], [`WARNING`]). `folded_notice`'s rule and `compact_notice`'s: the head of the text must be exactly one of
 //! the daemon's openings, with a target, a sha and a repository in it. Anything else is `None`
 //! and the row is drawn as it was before this existed. **But the parser keys on the stable
-//! parts only** — the opening, the target, the sha, the repository, the failing step — and
+//! parts only** - the opening, the target, the sha, the repository, the failing step - and
 //! tolerates sentences it does not know after them: the daemon is expected to grow a sentence
 //! about what the landing tree lacks, and a new sentence must not cost the operator the one
 //! line. Nothing is lost by tolerating it: the line is a summary, and the popup is the text
@@ -50,10 +50,10 @@ use rano::style::Role;
 
 use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind, flat};
 
-/// The mark the line opens with — the queue pane's own for an emergency.
+/// The mark the line opens with - the queue pane's own for an emergency.
 pub(crate) const ALARM: &str = "‼";
 
-/// **The last words of a session notice** — `TOOL_WAYS`' closing clause in
+/// **The last words of a session notice** - `TOOL_WAYS`' closing clause in
 /// `mergequeue::notices`, which every `health` notice ends with. A row of several notices is
 /// split after it.
 const NOTICE_END: &str = "the operator, whose decision it is.";
@@ -67,15 +67,15 @@ pub(crate) enum Trouble {
     TimedOut,
     /// The gate's own setup failed, so it never judged the tip.
     Unjudged,
-    /// The gate's step was killed before it judged the code — at the gate's memory cap, or by a
-    /// signal — so the tip is unjudged (`mergequeue::gate::GATE_KILLED`).
+    /// The gate's step was killed before it judged the code - at the gate's memory cap, or by a
+    /// signal - so the tip is unjudged (`mergequeue::gate::GATE_KILLED`).
     Killed,
 }
 
-/// **The words a killed gate's evidence opens with** — `mergequeue::gate::GATE_KILLED`.
+/// **The words a killed gate's evidence opens with** - `mergequeue::gate::GATE_KILLED`.
 const GATE_KILLED: &str = "the gate's step was killed before it could judge the code";
 
-/// **What killed the gate, as the line says it** — read from the evidence's first sentence:
+/// **What killed the gate, as the line says it** - read from the evidence's first sentence:
 /// the gate's memory cap (`killed_at_cap_words`), or anything else (a signal from outside).
 fn killed_by(evidence: &str) -> String {
     if evidence.contains("KILLED at the gate's memory cap") {
@@ -103,7 +103,7 @@ pub(crate) struct RedTip {
     pub(crate) review: Option<String>,
     /// Who judged the tip broken, for a reviewer's warning.
     pub(crate) by: Option<String>,
-    /// What came of that verdict — a fix branch opened, or not.
+    /// What came of that verdict - a fix branch opened, or not.
     pub(crate) outcome: Option<String>,
 }
 
@@ -130,7 +130,7 @@ impl RedTip {
         })
     }
 
-    /// `‼ main RED at 60bf819c` — the part drawn in the failure register.
+    /// `‼ main RED at 60bf819c` - the part drawn in the failure register.
     pub(crate) fn head(&self) -> String {
         let short: String = self.sha.chars().take(8).collect();
         let word = match self.trouble {
@@ -195,7 +195,7 @@ impl RedTip {
     }
 }
 
-/// The last component of a repository's path — the queue pane's `repo_name`.
+/// The last component of a repository's path - the queue pane's `repo_name`.
 fn repo_name(repo: &str) -> String {
     std::path::Path::new(repo.trim_end_matches('/'))
         .file_name()
@@ -289,7 +289,7 @@ fn session_head(text: &str) -> Option<RedTip> {
     Some(tip)
 }
 
-/// **An unjudged target's hub warning, read** — `gate_killed` and `gate_setup_failed`, both
+/// **An unjudged target's hub warning, read** - `gate_killed` and `gate_setup_failed`, both
 /// `mergequeue::notices`' shape: `` `main` at SHA in REPO is UNJUDGED, not red: EVIDENCE. ``
 pub(crate) fn unjudged_warning_tip(detail: &str) -> Option<RedTip> {
     let r = detail.strip_prefix('`')?;
@@ -310,7 +310,7 @@ pub(crate) fn unjudged_warning_tip(detail: &str) -> Option<RedTip> {
     Some(tip)
 }
 
-/// **A session notice, read** — the opening, and from anywhere in it the failing step
+/// **A session notice, read** - the opening, and from anywhere in it the failing step
 /// (`The failing step is 1 of 1, `bin/firecode test`.`) and the red tip's review
 /// (`` first in the review queue (`red-main-…`) ``).
 pub(crate) fn notice_tip(text: &str) -> Option<RedTip> {

@@ -1,4 +1,4 @@
-//! **The words in a reply that name something become links** — the operator: *"do we render links
+//! **The words in a reply that name something become links** - the operator: *"do we render links
 //! as links? any chance to infer github branch names and prs?"*, and *"yes i want all 5"*.
 
 use super::*;
@@ -43,7 +43,7 @@ fn refs() -> crate::app::ghlinks::GitRefs {
     }
 }
 
-/// **A markdown link keeps its destination** — the label is the link, where the terminal speaks
+/// **A markdown link keeps its destination** - the label is the link, where the terminal speaks
 /// links; where it does not, the label is plain text and no sequence is written.
 #[test]
 fn a_markdown_links_label_opens_its_destination_only_where_links_are_spoken() {
@@ -64,7 +64,7 @@ fn a_markdown_links_label_opens_its_destination_only_where_links_are_spoken() {
     assert!(!plain.contains("\u{1b}]8;;"), "{plain:?}");
 }
 
-/// **The repository's own references link, and what it does not hold does not** — `#212`, a full
+/// **The repository's own references link, and what it does not hold does not** - `#212`, a full
 /// `owner/repo#24`, a commit it has, a branch it has; not a hex word it lacks, not a bare `main`.
 #[test]
 fn the_sessions_repository_references_link_and_unknown_words_stay_text() {

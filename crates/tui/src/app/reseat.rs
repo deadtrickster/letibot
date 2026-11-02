@@ -15,7 +15,7 @@ pub(crate) const RESEAT_SUMMARISE: &str =
 /// The card's second row: abstain, which pins the card rather than closing it.
 pub(crate) const NOT_NOW: &str = "Not now — continue on the old prompt (at my risk)";
 
-/// **The reseat card's state** — `App::reseat` is `Some` exactly while the daemon says this
+/// **The reseat card's state** - `App::reseat` is `Some` exactly while the daemon says this
 /// session's prompt is stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReseatCard {
@@ -99,7 +99,7 @@ impl App {
         self.reseat.as_ref().is_some_and(|c| c.open) && !self.slot_taken()
     }
 
-    /// **Reseat now** — exactly the line `/reseat` typed and sent, so the same refusals (no
+    /// **Reseat now** - exactly the line `/reseat` typed and sent, so the same refusals (no
     /// session yet, a read-only attach) and the same notice apply.
     pub(crate) fn reseat_now(&mut self) -> Option<Action> {
         match self.reseat.as_ref() {
@@ -132,7 +132,7 @@ impl App {
         action
     }
 
-    /// **Not now** — the card is pinned, never dismissed.
+    /// **Not now** - the card is pinned, never dismissed.
     pub(crate) fn reseat_abstain(&mut self) {
         if let Some(c) = self.reseat.as_mut() {
             c.open = false;

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 /// One live firecode VM, as its run's records describe it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldVm {
-    /// The run id (`firecode-20261014-191759-812644`) — what `firecode down` takes.
+    /// The run id (`firecode-20261014-191759-812644`) - what `firecode down` takes.
     pub run: String,
     /// The project the VM was booted on (`runs/<run>/project`).
     pub project: PathBuf,
@@ -27,7 +27,7 @@ pub struct HeldVm {
 
 impl HeldVm {
     /// *"fccode1: firecracker pid 861706, run firecode-20261014-191759-812644 started
-    /// 2026-10-14 19:17:59"* — the VM half of a capacity notice's line; the owner half is the
+    /// 2026-10-14 19:17:59"* - the VM half of a capacity notice's line; the owner half is the
     /// daemon's.
     pub fn line(&self) -> String {
         let pids = match self.pids.as_slice() {
@@ -53,7 +53,7 @@ impl HeldVm {
     }
 }
 
-/// firecode's `runs/` directory for the CLI at `bin` — the checkout's `runs`, beside the
+/// firecode's `runs/` directory for the CLI at `bin` - the checkout's `runs`, beside the
 /// `bin/` the CLI is in, the way [`super::FirecodeBackend`] finds a run's record.
 pub fn runs_dir(bin: &Path) -> Option<PathBuf> {
     let real = std::fs::canonicalize(bin).ok().or_else(|| {
@@ -68,7 +68,7 @@ pub fn runs_dir(bin: &Path) -> Option<PathBuf> {
     runs.is_dir().then_some(runs)
 }
 
-/// When a run was started, read off its id — `firecode-YYYYMMDD-HHMMSS-<pid>`.
+/// When a run was started, read off its id - `firecode-YYYYMMDD-HHMMSS-<pid>`.
 pub fn started_of(run: &str) -> Option<String> {
     let mut parts = run.strip_prefix("firecode-")?.split('-');
     let d = parts.next()?;
@@ -116,20 +116,20 @@ pub fn firecracker_run(args: &[String]) -> Option<String> {
     args.get(i + 1).filter(|r| !r.is_empty()).cloned()
 }
 
-/// Whether `pid` is a process that can still act — present in `<proc>` and not a zombie. A
+/// Whether `pid` is a process that can still act - present in `<proc>` and not a zombie. A
 /// zombie has exited; its entry stays until its parent reaps it, and that is not a VM holding a
 /// tap.
 pub fn alive(proc_root: &Path, pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(proc_root.join(pid.to_string()).join("stat")) else {
         return false;
     };
-    // `pid (comm) S …` — the state is the first field after the LAST `)`, since comm may hold one.
+    // `pid (comm) S …` - the state is the first field after the LAST `)`, since comm may hold one.
     stat.rsplit_once(')')
         .and_then(|(_, rest)| rest.split_whitespace().next())
         .is_none_or(|state| state != "Z" && state != "X")
 }
 
-/// Every firecracker process on the host, by the run it serves — `(run, pid)`.
+/// Every firecracker process on the host, by the run it serves - `(run, pid)`.
 pub fn firecrackers(proc_root: &Path) -> Vec<(String, u32)> {
     let Ok(dir) = std::fs::read_dir(proc_root) else {
         return Vec::new();
@@ -165,7 +165,7 @@ fn read_trimmed(p: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Every live VM firecode has a record of — a run directory under `runs` whose firecracker
+/// Every live VM firecode has a record of - a run directory under `runs` whose firecracker
 /// is alive in `proc_root` (`/proc`), oldest run first.
 pub fn live_vms(runs: &Path, proc_root: &Path) -> Vec<HeldVm> {
     let mut by_run: std::collections::BTreeMap<String, Vec<u32>> = Default::default();
@@ -211,14 +211,14 @@ impl Default for Patience {
     }
 }
 
-/// How a reap ended — what `/proc` said afterwards, not what was sent.
+/// How a reap ended - what `/proc` said afterwards, not what was sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reaped {
     /// `firecode down` brought it down: the guest stopped and its work was copied out.
     Down,
     /// It ignored `down` and was killed (SIGKILL): `how` names which kill took it.
     Killed { how: String },
-    /// Still alive after every step — named, so nobody reads a reap that failed as one that held.
+    /// Still alive after every step - named, so nobody reads a reap that failed as one that held.
     StillAlive { pids: Vec<u32>, tried: String },
 }
 

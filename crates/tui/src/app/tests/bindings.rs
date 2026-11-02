@@ -1,11 +1,11 @@
 //! **R69: each surface's keys are declared once**, and the hint bar and `/help` are that table
-//! read as words — so a binding appears in both, a plain letter never acts on a typed line, and
+//! read as words - so a binding appears in both, a plain letter never acts on a typed line, and
 //! a chord the bar names is the chord the dispatch runs.
 
 use super::*;
 use crate::app::keys::bindings::{Guard, On, Says};
 
-/// **A plain letter always carries the empty-composer guard** — the letters are the operator's
+/// **A plain letter always carries the empty-composer guard** - the letters are the operator's
 /// to type first. The queue pane's `a`/`v`/`d`/`r` had no guard where the subagents pane's
 /// `o`/`p` did (R67 item 1); the table makes the rule checkable for every surface at once.
 #[test]
@@ -23,7 +23,7 @@ fn every_plain_letter_binding_waits_for_an_empty_composer() {
     }
 }
 
-/// **And a word typed with any surface open reaches the composer** — the behaviour the guard is
+/// **And a word typed with any surface open reaches the composer** - the behaviour the guard is
 /// for, driven through the keys, for every surface a person can type over.
 #[test]
 fn a_word_typed_over_any_surface_reaches_the_composer() {
@@ -44,7 +44,7 @@ fn a_word_typed_over_any_surface_reaches_the_composer() {
         a.push_surface(s);
         let mut sent = Vec::new();
         // From its second letter on, a word is a typed line, and no letter in it is a verb. (Its
-        // FIRST letter on an empty composer is a key — that is what a pane letter is.)
+        // FIRST letter on an empty composer is a key - that is what a pane letter is.)
         for c in "hello: deploy or approve".chars() {
             sent.extend(a.key(Key::Char(c)));
         }
@@ -132,7 +132,7 @@ fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
     }
 }
 
-/// **A chord the conversation's bar names is the chord the dispatch runs** — `ctrl-s`, `ctrl-t`,
+/// **A chord the conversation's bar names is the chord the dispatch runs** - `ctrl-s`, `ctrl-t`,
 /// `ctrl-g` and `ctrl-q` are read from `Surface::chord` by both. Pressing each opens the surface
 /// the bar names it for, and the bar names it.
 #[test]
@@ -154,7 +154,7 @@ fn the_bars_pane_chords_are_the_chords_that_open_those_panes() {
 }
 
 /// **The bar says what ctrl-n does** (R67 item 9's open string): it retires every note this head
-/// is showing, and rano's sentence called it `ctrl-n notes` — which reads as *opens the notes*.
+/// is showing, and rano's sentence called it `ctrl-n notes` - which reads as *opens the notes*.
 #[test]
 fn the_conversation_bar_says_ctrl_n_clears_the_notes() {
     let a = app();
@@ -163,7 +163,7 @@ fn the_conversation_bar_says_ctrl_n_clears_the_notes() {
     assert!(!bar.contains("ctrl-n notes"), "{bar}");
 }
 
-/// **The subagent output's Enter and the tree's Enter are told apart on the bar** — with the
+/// **The subagent output's Enter and the tree's Enter are told apart on the bar** - with the
 /// output open over the tree the bar said the tree's "enter (or o) opens a subagent" while Enter
 /// re-read the output (R67 item 9). Generated from the surface in front, the bar cannot.
 #[test]

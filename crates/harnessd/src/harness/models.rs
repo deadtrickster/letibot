@@ -20,7 +20,7 @@ pub(crate) struct OwnServer {
     pub(crate) wiring: Arc<Wiring>,
 }
 
-/// The sentence a superseded request leaves behind — its asker's wait ends with the daemon's
+/// The sentence a superseded request leaves behind - its asker's wait ends with the daemon's
 /// own words rather than with the new requester's.
 pub(crate) fn superseded(name: &str) -> String {
     format!(
@@ -37,7 +37,7 @@ pub(crate) struct PendingSwitch {
     /// metered provider, `None` the daemon's own server.
     choice: Option<crate::config::ProviderConfig>,
     /// The model it lands on, in `/models`' spelling (`deepseek/deepseek-flash`, `local`), read
-    /// when it was recorded — so the sentence that says what will happen does not have to build
+    /// when it was recorded - so the sentence that says what will happen does not have to build
     /// the provider to name it.
     model: String,
 }
@@ -202,7 +202,7 @@ impl Harness {
         let old_dialect = self.cfg.dialect;
         // What tokenizes NOW, read before the engine below replaces it: a GGUF's
         // path, or `bytes:<hash>` for a daemon that started with no GGUF of its
-        // own — which is exactly the daemon this arm is new for.
+        // own - which is exactly the daemon this arm is new for.
         let old_gguf = self.engine.vocab().source().to_string();
         let was_tokens = self.session.ledger.len();
 
@@ -226,7 +226,7 @@ impl Harness {
         };
         // Resolving the dialect's control and stop tokens against the target's
         // vocabulary is the fit check `open` runs at daemon start; refused here
-        // for the same reason — at runtime a mismatch is silent.
+        // for the same reason - at runtime a mismatch is silent.
         let mut engine = TurnEngine::new(
             vocab.clone(),
             wiring.renderer.clone(),
@@ -612,7 +612,7 @@ impl Harness {
         let code = provider_refusal(e)?;
         let now = self.model_name();
         if now == back.previous {
-            // The round went to the model this session already was on — a switch that
+            // The round went to the model this session already was on - a switch that
             // landed on the name in force is not a switch, and there is nowhere back.
             return None;
         }
@@ -635,7 +635,7 @@ impl Harness {
             crate::slash::ModelChoice::OwnServer => self.set_provider(None),
             crate::slash::ModelChoice::Metered(pc) => self.set_provider(Some(pc)),
             // Its own door, because it verifies the vocabulary before it moves
-            // anything — see `Harness::set_local_model`.
+            // anything - see `Harness::set_local_model`.
             crate::slash::ModelChoice::Local(m) => self.set_local_model(&m),
         };
         match applied {
@@ -926,7 +926,7 @@ impl Harness {
     pub fn close_backend(&self) -> Option<String> {
         // The watchers first: their threads hold weak handles and re-check this
         // flag at most one wait chunk after close, so a session that closes does
-        // not keep its host — or its cgroups — alive behind a blocked thread.
+        // not keep its host - or its cgroups - alive behind a blocked thread.
         if let Some(w) = &self.job_watch {
             w.stop();
         }
@@ -1139,7 +1139,7 @@ pub fn local_switch_decision(
             match vocab {
                 // With no vocabulary of this daemon's own, the GGUF the target
                 // reported is the only weights this switch could ever have
-                // seated — so the refusal names it, which is what is true.
+                // seated - so the refusal names it, which is what is true.
                 None => format!(
                     " (it reports its weights at `{theirs}`; this daemon has no \
                      vocabulary of its own, so those are the only weights this \
@@ -1195,7 +1195,7 @@ fn dialect_for_target(
     match (matched.as_slice(), asserted) {
         // An unreadable assertion is refused before anything else, with its own
         // sentence: a key nobody can honour must not be stepped over, whatever
-        // the template said — the operator wrote it, so it is read or refused.
+        // the template said - the operator wrote it, so it is read or refused.
         (_, Some(Err(why))) => Err(why),
         ([], None) if props.chat_template.is_none() => Err(format!(
             "{} did not report a chat_template, so the dialect cannot be derived \
@@ -1401,7 +1401,7 @@ fn unsavable_key(k: &str) -> Option<&'static str> {
     }
 }
 
-/// How long the key card waits for an answer — longer than sudo's 120 s, because this one
+/// How long the key card waits for an answer - longer than sudo's 120 s, because this one
 /// may send somebody to a provider's website to make a key.
 pub(crate) const KEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -1410,7 +1410,7 @@ pub(crate) const NO_VOCAB_FOR_LOCAL: &str = "this daemon has no model vocabulary
      turns need none — and a local llama-server reads token ids computed here. Start a \
      daemon with --vocab <the served model's GGUF> to run on a local model.";
 
-/// Why a turn on a daemon with no model chosen is refused — see `Parts::load`.
+/// Why a turn on a daemon with no model chosen is refused - see `Parts::load`.
 pub(crate) const NO_MODEL_CHOSEN: &str = "no model is chosen for this session: this box has no local \
      model's vocabulary (GGUF) and no cloud provider. `/models` picks one — a cloud model asks \
      for its key once, and becomes this box's default.";

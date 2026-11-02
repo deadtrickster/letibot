@@ -360,7 +360,7 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
 ///
 /// MEASURED 2026-10-30, the incident this exists for: a session died and no restart could revive
 /// it, because a `read` of a 33-byte PNG header was stored as a picture and every turn sent it
-/// again —
+/// again  -
 ///
 /// ```text
 /// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
@@ -449,7 +449,7 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
             seen[1].1
         );
     }
-    // **The mark is against the picture** — and the model keeps its eyes, because the model was
+    // **The mark is against the picture** - and the model keeps its eyes, because the model was
     // never the problem.
     assert!(
         letibot_provider::messages::known_bad_picture(&reference).is_some(),
@@ -588,7 +588,7 @@ fn a_retry_that_is_refused_too_records_nothing_and_says_what_the_provider_said()
     );
 }
 
-/// A JSON string literal for a body this test builds — the fake's answer is a JSON document and a
+/// A JSON string literal for a body this test builds - the fake's answer is a JSON document and a
 /// refusal's words can hold anything.
 fn json_string(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()

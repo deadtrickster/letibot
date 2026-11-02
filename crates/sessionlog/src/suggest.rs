@@ -60,7 +60,7 @@ pub fn suggestion_prompt(
     p
 }
 
-/// **The reply, read as candidate lines — defensively.**
+/// **The reply, read as candidate lines - defensively.**
 ///
 /// The model is told to answer with lines and nothing else, and a small local model told
 /// that will mostly do so. But the parse must not TRUST the telling, because a reply that
@@ -69,7 +69,7 @@ pub fn suggestion_prompt(
 /// - **Markdown fences are stripped.** A model that wraps the lines in ` ```bash ` is
 ///   answering the question and decorating the answer; the fences are the decoration.
 /// - **Prose lines are dropped.** A line that is not a `!` line is the model talking, not
-///   suggesting — *"Here are some commands:"* is not a command, and offering it as one is
+///   suggesting - *"Here are some commands:"* is not a command, and offering it as one is
 ///   the same class of lie as an unattributed quote.
 /// - **Duplicates are dropped**, keeping the first, so a model that says a command twice
 ///   does not offer it twice.

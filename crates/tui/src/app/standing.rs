@@ -16,7 +16,7 @@ pub(crate) struct OnDisk {
 }
 
 impl OnDisk {
-    /// `None` — the file is not there — for every failure, and no attempt to tell *deleted*
+    /// `None` - the file is not there - for every failure, and no attempt to tell *deleted*
     /// from *unreadable*: both are *the index names something this disk does not have*, which
     /// is the one sentence the row owes.
     pub(crate) fn read(path: &str) -> Option<OnDisk> {
@@ -44,7 +44,7 @@ pub(crate) struct Corpus {
 }
 
 impl Corpus {
-    /// Fold one note in, from the `stat` the row's own draw has already taken — so the watch
+    /// Fold one note in, from the `stat` the row's own draw has already taken - so the watch
     /// costs a `read_dir` per directory and no second pass over the files.
     pub(crate) fn note(&mut self, path: &str, disk: Option<&OnDisk>) {
         self.files.push((
@@ -56,7 +56,7 @@ impl Corpus {
         }
     }
 
-    /// **Watch a directory whether or not any row sits in it** — the workspace's own notes
+    /// **Watch a directory whether or not any row sits in it** - the workspace's own notes
     /// directory, so that a note which does not exist YET is still a change when it is
     /// written, and an empty pane does not sit there claiming there are none.
     pub(crate) fn watch_dir(&mut self, dir: &std::path::Path) {
@@ -69,7 +69,7 @@ impl Corpus {
 }
 
 /// A directory's own mtime and how many `*.md` files it holds: the two facts that move when a
-/// note is written, renamed or deleted. `None` for a directory that is not there — an absent
+/// note is written, renamed or deleted. `None` for a directory that is not there - an absent
 /// notes directory is a real state, and one a first note is a change in.
 fn dir_signature(dir: &std::path::Path) -> Option<(u64, usize)> {
     let md = std::fs::read_dir(dir)

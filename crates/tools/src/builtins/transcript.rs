@@ -55,7 +55,7 @@ pub struct TranscriptRow {
     pub kind: String,
     /// For a `tool_result`, the tool that produced it. Empty otherwise.
     pub tool: String,
-    /// The row's visible text — what a renderer would show, not the JSON.
+    /// The row's visible text - what a renderer would show, not the JSON.
     pub text: String,
     pub created_ms: i64,
     /// How far back this row is from the conversation running now: `0` is the live transcript, `1`
@@ -123,12 +123,12 @@ pub struct SessionRow {
 }
 
 /// The store, as this tool needs it. The daemon implements it over `Store`; the
-/// trait lives here so `letibot-tools` keeps depending on nothing above it —
+/// trait lives here so `letibot-tools` keeps depending on nothing above it  -
 /// the same seam `harness` uses for `HarnessFacts` and `task` for `TaskRunner`.
 pub trait TranscriptSource: Send + Sync {
     /// Sessions in the store, newest activity first.
     fn sessions(&self) -> Vec<SessionRow>;
-    /// Run a query. `Err` is a store failure, never a miss — a miss is
+    /// Run a query. `Err` is a store failure, never a miss - a miss is
     /// `TranscriptHits` with no rows and a chain that says what was searched.
     fn find(&self, q: &TranscriptQuery) -> Result<TranscriptHits, String>;
 }
@@ -575,7 +575,7 @@ fn render_row(r: &TranscriptRow) -> String {
 }
 
 /// Head and tail, so a long row keeps both the thing that matched near the start
-/// and the thing that concluded it — and says how much went missing rather than
+/// and the thing that concluded it - and says how much went missing rather than
 /// trailing off into an ellipsis that could mean anything.
 fn excerpt(text: &str, cap: usize) -> String {
     let t = text.trim();
@@ -746,7 +746,7 @@ mod tests {
         );
     }
 
-    /// A miss on a kind lists the kinds there are — clause 1, so the retry is
+    /// A miss on a kind lists the kinds there are - clause 1, so the retry is
     /// informed rather than a second guess.
     #[test]
     fn a_kind_that_matches_nothing_lists_the_kinds() {
@@ -792,7 +792,7 @@ mod tests {
         assert!(out.contains("s2"), "{out}");
     }
 
-    /// No store is a refusal by name, never an empty answer — "no history" and
+    /// No store is a refusal by name, never an empty answer - "no history" and
     /// "nowhere to look" are different facts and only one of them is about the
     /// conversation.
     #[test]

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// **A layer with a scripted answer**, so a test can stand in a view the built-in would not draw —
+/// **A layer with a scripted answer**, so a test can stand in a view the built-in would not draw  -
 /// and record what it was asked, which the answer alone cannot tell.
 #[derive(Clone, Default)]
 struct Seen(Arc<Mutex<Vec<Value>>>);
@@ -48,7 +48,7 @@ impl Module for Scripted {
 }
 
 /// The loader that puts [`Scripted`] behind a project layer's `plugin.wasm`, and the REAL engine
-/// behind the built-ins — so a test that means *the layer below* gets this binary's own module.
+/// behind the built-ins - so a test that means *the layer below* gets this binary's own module.
 struct ScriptedLoader {
     seen: Seen,
     answer: Option<String>,
@@ -91,7 +91,7 @@ fn a_project(tag: &str, manifest: &str) -> PathBuf {
     dir
 }
 
-/// The manifest a scripted layer carries — the same shape the built-in's does.
+/// The manifest a scripted layer carries - the same shape the built-in's does.
 fn a_manifest(actions: &str) -> String {
     format!(
         "name = \"queue\"\n\
@@ -104,7 +104,7 @@ fn a_manifest(actions: &str) -> String {
     )
 }
 
-/// **A head holding a snapshot** with two live rows and a finished one — the fixture the operator's
+/// **A head holding a snapshot** with two live rows and a finished one - the fixture the operator's
 /// screenshot is about.
 fn a_head_with_a_queue() -> App {
     let mut a = app();
@@ -122,12 +122,12 @@ fn a_head_with_a_queue() -> App {
     a
 }
 
-/// **The built-in `queue` layer loads through the real engine and draws the pane** — the module this
+/// **The built-in `queue` layer loads through the real engine and draws the pane** - the module this
 /// binary carries, the same `install` the head calls, and the frame `App::screen` produces.
 #[test]
 fn the_builtin_queue_layer_draws_the_pane() {
     let mut a = a_head_with_a_queue();
-    // The head's own host, with this binary's built-ins at the bottom — the production path.
+    // The head's own host, with this binary's built-ins at the bottom - the production path.
     *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
         "s1",
         &std::env::temp_dir(),
@@ -149,7 +149,7 @@ fn the_builtin_queue_layer_draws_the_pane() {
         screen.contains("finished · 1"),
         "and the fold says how many there are: {screen}"
     );
-    // The host pane's own title is nowhere — this is the layer's pane.
+    // The host pane's own title is nowhere - this is the layer's pane.
     assert!(
         !screen.contains("review queue · merge queue"),
         "the host pane did not draw this: {screen}"
@@ -160,7 +160,7 @@ fn the_builtin_queue_layer_draws_the_pane() {
     );
 }
 
-/// **The plugin's view draws at 80×24 and at 239×61 without a refusal** — the two rectangles the
+/// **The plugin's view draws at 80×24 and at 239×61 without a refusal** - the two rectangles the
 /// brief names, and the two a real terminal gives: a narrow one where every column competes and a
 /// wide one where nothing is cut.
 #[test]
@@ -243,7 +243,7 @@ fn a_rows_verb_acts_on_the_entry_the_row_names() {
         "the row's own entry, not the host's cursor's"
     );
 
-    // **And on the second row it is the OTHER entry** — the same act, the row's id. `v` because
+    // **And on the second row it is the OTHER entry** - the same act, the row's id. `v` because
     // that row is a `queued` landing, and the daemon refuses `approve` on one of those (which is
     // the same rule `verb_moves` keeps for the host pane: a merge row is approved already).
     a.queue_sel = 1;
@@ -273,7 +273,7 @@ fn a_rows_verb_acts_on_the_entry_the_row_names() {
 }
 
 /// **A row asking for a verb its manifest does not declare is refused, and the host pane is drawn**
-/// — the allowlist a reviewer reads is the list of words that can be sent.
+/// - the allowlist a reviewer reads is the list of words that can be sent.
 #[test]
 fn a_layer_that_uses_an_undeclared_verb_is_refused_and_said() {
     let seen = Seen::default();
@@ -320,7 +320,7 @@ fn a_layer_that_uses_an_undeclared_verb_is_refused_and_said() {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// **A snapshot that has not arrived is nobody's to draw** — the plugin is not asked, because an
+/// **A snapshot that has not arrived is nobody's to draw** - the plugin is not asked, because an
 /// empty `reviews` would be a queue it drew as empty, which is the one thing the pane never does.
 #[test]
 fn a_queue_the_head_has_not_been_told_about_is_not_drawn_by_a_layer() {
@@ -412,7 +412,7 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
     );
     a.queue_sel = stops - 1;
 
-    // **Enter** — the key, not the map.
+    // **Enter** - the key, not the map.
     a.key(Key::Enter);
     assert_eq!(
         a.queue_folds.get("finished"),
@@ -433,7 +433,7 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
         "and the row now says how to close it:\n{screen}"
     );
 
-    // **And Enter again closes it** — the cursor is back on the fold row, which is the last stop.
+    // **And Enter again closes it** - the cursor is back on the fold row, which is the last stop.
     a.queue_sel = a.queue_plugin_stops - 1;
     a.key(Key::Enter);
     assert_eq!(a.queue_folds.get("finished"), Some(&false));
@@ -441,7 +441,7 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
     assert!(!screen.contains("agent/two"), "closed again: {screen}");
 }
 
-/// **The bar's Enter names the fold when the cursor is on it** — the row and the bar cannot
+/// **The bar's Enter names the fold when the cursor is on it** - the row and the bar cannot
 /// disagree about what the key does, because both read the same act.
 #[test]
 fn the_bars_enter_names_the_fold_when_the_cursor_is_on_it() {
@@ -463,7 +463,7 @@ fn the_bars_enter_names_the_fold_when_the_cursor_is_on_it() {
         bar.contains("opens the history"),
         "over the folded history it opens it: {bar}"
     );
-    // **And once it is open, the bar says the other direction** — a bar that went on offering
+    // **And once it is open, the bar says the other direction** - a bar that went on offering
     // `opens` over an open fold names a key whose press does the opposite.
     a.key(Key::Enter);
     a.screen(120, 30);
@@ -472,7 +472,7 @@ fn the_bars_enter_names_the_fold_when_the_cursor_is_on_it() {
     assert!(bar.contains("closes the history"), "{bar}");
 }
 
-/// **Enter on a LIVE row still opens the entry**, so the fold's key did not swallow the pane's own —
+/// **Enter on a LIVE row still opens the entry**, so the fold's key did not swallow the pane's own  -
 /// the two meanings of Enter, side by side.
 #[test]
 fn enter_on_a_live_row_opens_the_entry_and_not_a_fold() {
@@ -492,7 +492,7 @@ fn enter_on_a_live_row_opens_the_entry_and_not_a_fold() {
     );
 }
 
-/// **A closed fold takes its rows with it and the cursor comes back to the fold row** — a `queue_sel`
+/// **A closed fold takes its rows with it and the cursor comes back to the fold row** - a `queue_sel`
 /// left past the end of the shortened list is a pane drawn with no cursor on it.
 #[test]
 fn closing_the_fold_keeps_the_cursor_on_a_row_that_is_there() {
@@ -503,7 +503,7 @@ fn closing_the_fold_keeps_the_cursor_on_a_row_that_is_there() {
     ));
     a.queue_folds.insert("finished".into(), true);
     a.screen(120, 30);
-    // The cursor is deep in the history — the last row of the open list.
+    // The cursor is deep in the history - the last row of the open list.
     let open = a.queue_plugin_stops;
     a.queue_sel = open - 1;
     a.queue_folds.insert("finished".into(), false);
@@ -526,7 +526,7 @@ fn closing_the_fold_keeps_the_cursor_on_a_row_that_is_there() {
     );
 }
 
-/// **A finished row's verb acts on IT once the fold is open** — the operator's own need: *"so merge
+/// **A finished row's verb acts on IT once the fold is open** - the operator's own need: *"so merge
 /// queue has 4 failed items, we need a way to restart them"*. The four failed items are finished
 /// rows, so before the fold could be opened there was no key that could reach one.
 #[test]
@@ -656,7 +656,7 @@ fn the_layer_is_asked_once_a_second_and_not_once_a_frame() {
         "a frame inside the same second is a cache hit, not a wasm call"
     );
 
-    // **And the next second is a new question** — an age has moved, and the pane must be redrawn.
+    // **And the next second is a new question** - an age has moved, and the pane must be redrawn.
     a.now_ms += 500;
     a.redraw = true;
     a.screen(120, 30);
@@ -690,7 +690,7 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
         .expect("this binary carries the queue layer");
     std::fs::write(layer.join("plugin.wasm"), builtin.wasm).expect("the module");
     std::fs::write(layer.join("plugin.toml"), builtin.manifest).expect("the manifest");
-    // **`XDG_DATA_HOME` is how `session_plugins_dir` finds it** — set for this test only, and put
+    // **`XDG_DATA_HOME` is how `session_plugins_dir` finds it** - set for this test only, and put
     // back at the end, because it is process-wide and a leaked one would point every other test's
     // session scope at a temp directory.
     let was = std::env::var_os("XDG_DATA_HOME");
@@ -709,7 +709,7 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
         screen.contains("agent/one"),
         "the session's layer draws the pane:\n{screen}"
     );
-    // **The layer answering is the session's, not the built-in** — a session scope is above the
+    // **The layer answering is the session's, not the built-in** - a session scope is above the
     // built-in scope, so the id is `s1` and not `b-queue`. Its hash is taken here so the reload
     // below has something to differ from.
     let before: String;
@@ -726,7 +726,7 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
         before = layer.sha256.clone();
     }
 
-    // **Rewrite the module — the same bytes, a newer file.** `poll_changes` keys on the fingerprint
+    // **Rewrite the module - the same bytes, a newer file.** `poll_changes` keys on the fingerprint
     // (mtime and length), so a rewrite that lands in the same second still has to be noticed; the
     // loop's own guarantee is that a REBUILT module is a different file.
     let wasm = layer.join("plugin.wasm");
@@ -738,7 +738,7 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
     std::fs::write(&wasm, &bytes).expect("the rewritten module");
 
     // **The clock passes, the pane is drawn again, and the layer is re-read.** Forward, and past
-    // the poll's interval — a clock that went backwards would be a head whose tick never fires,
+    // the poll's interval - a clock that went backwards would be a head whose tick never fires,
     // which is a thing to test somewhere else and not a thing to test here by accident.
     let later = a.now_ms + 3_000;
     a.clock(later);
@@ -754,7 +754,7 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
         let layer = host
             .reader(crate::app::queue_pane::HOOK, crate::app::queue_pane::FEED)
             .expect("a queue layer");
-        // **The layer is no longer the bytes the built-in carries** — which is what a reload
+        // **The layer is no longer the bytes the built-in carries** - which is what a reload
         // means, and it is asserted without a second hasher: the built-in's hash is read off the
         // layer the binary installs, and the session layer's must differ from it now.
         assert_ne!(
@@ -777,7 +777,7 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
 #[ignore]
 fn probe_render_the_pane() {
     // **The operator's own shape**: two rows the queue is working on, four it has failed with, and
-    // the history folded away — the frame that was *"illegible mess"* before this pane.
+    // the history folded away - the frame that was *"illegible mess"* before this pane.
     let fixture = || {
         let mut a = a_head_with_a_queue();
         a.apply(queue_frame(queues(
@@ -860,7 +860,7 @@ fn a_click_on_a_gating_landing_opens_it() {
     assert_eq!(a.top_surface(), Some(Surface::QueueEntry));
 }
 
-/// **Enter on the same row opens it too**, with the keyboard alone — the two doors, one act.
+/// **Enter on the same row opens it too**, with the keyboard alone - the two doors, one act.
 #[test]
 fn enter_on_a_gating_landing_opens_it() {
     let mut a = a_head_with_a_queue();
@@ -892,7 +892,7 @@ fn gating_with_a_step(id: &str, tail: &str) -> letibot_sessionlog::event::QueueM
     m
 }
 
-/// A snapshot of one landing, taken at `at_ms` — the clock the pane measures ages against.
+/// A snapshot of one landing, taken at `at_ms` - the clock the pane measures ages against.
 fn a_snapshot_at(
     at_ms: u64,
     merges: Vec<letibot_sessionlog::event::QueueMerge>,
@@ -903,7 +903,7 @@ fn a_snapshot_at(
 }
 
 /// **The detail of a running gate names the step, its command, how long it has been going, and the
-/// end of what it has written** — the answer to *is it stuck?*, drawn from the snapshot alone.
+/// end of what it has written** - the answer to *is it stuck?*, drawn from the snapshot alone.
 #[test]
 fn the_detail_of_a_running_gate_names_the_step_and_the_tail() {
     let mut a = app();
@@ -947,7 +947,7 @@ fn the_detail_of_a_running_gate_names_the_step_and_the_tail() {
     );
 }
 
-/// **A tail that has not moved in minutes says so, and one that has just grown does not** — the two
+/// **A tail that has not moved in minutes says so, and one that has just grown does not** - the two
 /// halves a person has to be able to tell apart, and the reason the head keeps the last tail it saw.
 #[test]
 fn a_tail_that_has_not_moved_is_called_out() {
@@ -963,7 +963,7 @@ fn a_tail_that_has_not_moved_is_called_out() {
         "s1",
         &std::env::temp_dir(),
     ));
-    // **Twenty minutes later, the same bytes** — the step has written nothing since.
+    // **Twenty minutes later, the same bytes** - the step has written nothing since.
     a.now_ms = 3_662_000 + 20 * 60_000;
     a.apply(queue_frame(a_snapshot_at(
         3_662_000 + 20 * 60_000,
@@ -979,7 +979,7 @@ fn a_tail_that_has_not_moved_is_called_out() {
     );
     assert!(screen.contains("may be stuck"), "{screen}");
 
-    // **And one that grew a moment ago is not stuck** — the same row, a tail with one more line.
+    // **And one that grew a moment ago is not stuck** - the same row, a tail with one more line.
     // The five seconds are the head's own clock since the snapshot arrived (`queue_now`), which is
     // how a pane measures anything that happened between two snapshots.
     a.key(Key::Esc);
@@ -1003,7 +1003,7 @@ fn a_tail_that_has_not_moved_is_called_out() {
     assert!(!screen.contains("may be stuck"), "{screen}");
 }
 
-/// **A `queued` landing shows the TARGET's running gate** — the other way a queue sits still with
+/// **A `queued` landing shows the TARGET's running gate** - the other way a queue sits still with
 /// nothing failing: the row is gating nothing itself, `main` is, and `waits: gate running on … for
 /// 2m` says that something is happening but not what.
 #[test]
@@ -1072,7 +1072,7 @@ fn the_detail_asks_for_a_snapshot_on_the_panes_clock() {
     a.key(Key::Enter);
     a.screen(120, 40);
     a.take_actions();
-    // **Five seconds later, on the detail, with no frame applied** — the ask is the head's.
+    // **Five seconds later, on the detail, with no frame applied** - the ask is the head's.
     a.now_ms += crate::ui::panes::queue::REFRESH_MS;
     a.redraw = true;
     a.screen(120, 40);
@@ -1080,7 +1080,7 @@ fn the_detail_asks_for_a_snapshot_on_the_panes_clock() {
         a.take_actions().contains(&Action::ListMergeQueue),
         "the detail asks for the snapshot it is drawing a live gate from"
     );
-    // And inside the clock it does not ask twice — one field, two surfaces.
+    // And inside the clock it does not ask twice - one field, two surfaces.
     a.redraw = true;
     a.screen(120, 40);
     assert!(
@@ -1089,7 +1089,7 @@ fn the_detail_asks_for_a_snapshot_on_the_panes_clock() {
     );
 }
 
-/// **A tail that grew between two answers is not called stuck** — the same detail, drawn twice,
+/// **A tail that grew between two answers is not called stuck** - the same detail, drawn twice,
 /// where the second answer is the one the ask in the test above produced.
 #[test]
 fn a_growing_tail_is_not_called_stuck_on_the_detail() {
@@ -1110,7 +1110,7 @@ fn a_growing_tail_is_not_called_stuck_on_the_detail() {
     a.key(Key::Enter);
     let first = a.screen(120, 40).join("\n");
     assert!(first.contains("building"), "{first}");
-    // **The answer to the ask** — the step has written another line since.
+    // **The answer to the ask** - the step has written another line since.
     a.now_ms += crate::ui::panes::queue::REFRESH_MS;
     a.apply(queue_frame(a_snapshot_at(
         3_662_000 + crate::ui::panes::queue::REFRESH_MS,

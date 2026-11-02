@@ -21,7 +21,7 @@ fn a_bare_line_while_the_runs_request_is_open_is_not_spent_on_the_model() {
             reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
-    // **The card is put away, not answered** — esc's own act. The daemon keeps the request
+    // **The card is put away, not answered** - esc's own act. The daemon keeps the request
     // open and the run keeps waiting, which is exactly the window the measured `y` fell
     // through.
     a.key(Key::Esc);
@@ -60,7 +60,7 @@ fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
         "an ambiguous name must answer nothing at all"
     );
     // The card is still open, the words are still theirs, and the notice names the
-    // three they might have meant — rather than the courtesy line, which would mean
+    // three they might have meant - rather than the courtesy line, which would mean
     // the marked row had been answered for them.
     assert_eq!(a.open.len(), pushed, "the ask was answered anyway");
     assert_eq!(a.input(), "allow");
@@ -74,7 +74,7 @@ fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
     );
 
     // Finishing the word answers it. The ask stays in `open` until the daemon says
-    // it settled — the head does not remove it on the strength of its own submit.
+    // it settled - the head does not remove it on the strength of its own submit.
     a.set_composer("allow_session");
     assert_eq!(
         a.submit("allow_session".into()),
@@ -87,7 +87,7 @@ fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
     );
 }
 
-/// **A `!` line's word completes as a file name**, the way a shell's does — the
+/// **A `!` line's word completes as a file name**, the way a shell's does - the
 /// operator's `! ./stroppy/build/stroppy`, typed out whole because nothing offered it.
 #[test]
 fn a_bang_lines_word_completes_against_the_workspace() {
@@ -348,7 +348,7 @@ fn the_panes_and_the_promote_are_reachable_as_verbs() {
     let mut a = app();
     assert_eq!(a.submit("/todos".into()), Some(Action::ListTodos));
     assert!(a.is_open(Surface::Todos));
-    // …and closes it again, with no read the second time — a read on the way out
+    // …and closes it again, with no read the second time - a read on the way out
     // would be a round trip for a screen that is going away.
     assert_eq!(a.submit("/todos".into()), None);
     assert!(!a.is_open(Surface::Todos));
@@ -391,7 +391,7 @@ fn the_panes_and_the_promote_are_reachable_as_verbs() {
     assert!(f.want_new_session);
 
     // **`/promote` needs a command actually running**, and says which of the two
-    // silences it is in — the distinction the chord was fixed for.
+    // silences it is in - the distinction the chord was fixed for.
     let mut g = app();
     g.session_id = "s1".into();
     assert_eq!(g.submit("/promote".into()), None, "nothing is running");
@@ -447,7 +447,7 @@ fn a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged() {
         a.input()
     );
 
-    // **A head verb is still the head's** and is not forwarded — the arms above
+    // **A head verb is still the head's** and is not forwarded - the arms above
     // the fallthrough keep it, which is what makes the fallthrough safe.
     let mut b = app();
     b.session_id = "s1".into();
@@ -654,7 +654,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
     let one = question(&["postgres", "sqlite", "a new one"]);
 
     // **The card draws the model's choices**, and it no longer claims the ask
-    // offered none — which is what it said while drawing an empty ladder.
+    // offered none - which is what it said while drawing an empty ladder.
     let a = app();
     let card = a.decision_lines(&one, 200).join("\n");
     assert!(
@@ -667,7 +667,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
             "the choice {c:?} is not on the card: {card}"
         );
     }
-    // A question's rows are prose, so there is no `(option_id)` beside them — and
+    // A question's rows are prose, so there is no `(option_id)` beside them - and
     // the hint offers the free answer rather than naming an id the question has not
     // got.
     assert!(card.contains("or type your own answer"), "{card}");
@@ -725,7 +725,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
         other => panic!("got {other:?}"),
     }
 
-    // **3. Free text** — a sentence the model did not offer. This is the field the
+    // **3. Free text** - a sentence the model did not offer. This is the field the
     // requirement names as first-class, and the one the old code path could not
     // reach at all: it held the words and answered the marked row instead.
     let mut a = app();
@@ -748,7 +748,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
 
     // **And a question whose model offered nothing is still answerable in words.**
     // This is the boundary the four call sites have to agree about: no rows, so no
-    // marked answer and no digits — but the composer still answers.
+    // marked answer and no digits - but the composer still answers.
     let bare = question(&[]);
     let mut a = app();
     a.open.push(bare.clone());
@@ -765,7 +765,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
         other => panic!("got {other:?}"),
     }
     // An empty line on a question with no choices answers nothing rather than
-    // sending an empty answer the daemon would refuse — a refusal the head can
+    // sending an empty answer the daemon would refuse - a refusal the head can
     // predict is a keystroke thrown away.
     let mut a = app();
     a.open.push(bare);
@@ -788,7 +788,7 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
     };
     let one = question(&["postgres", "sqlite", "a new one"]);
 
-    // **The card says how**, and it says it in the half R20 never trims — the row
+    // **The card says how**, and it says it in the half R20 never trims - the row
     // nearest the composer, where a person is already looking when they answer.
     let a = app();
     let card = a.decision_lines(&one, 200).join("\n");
@@ -796,7 +796,7 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
     assert!(card.contains("puts your note on that choice"), "{card}");
 
     // **A choice with the person's own note on it.** The note rides the INDEX, so the
-    // model gets back which of the three it offered *and* what was said about it —
+    // model gets back which of the three it offered *and* what was said about it  -
     // folding the note into free text would lose the choice it qualifies.
     let mut a = app();
     a.open.push(one.clone());
@@ -849,7 +849,7 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
     }
 
     // **An abstention is a deliberate no-answer, and it is an answer.** It goes through
-    // the same frame as any other, saying so — not as an empty answer (which the daemon
+    // the same frame as any other, saying so - not as an empty answer (which the daemon
     // refuses) and not as silence (which is no frame at all).
     let mut a = app();
     a.open.push(one.clone());
@@ -912,7 +912,7 @@ fn a_child_whose_completion_arrived_does_not_count() {
         !screen.contains("subagent running"),
         "a finished child is still counted:\n{screen}"
     );
-    // **And it is drawn where finished children go**, under the fold — with `s-sub-2`, the
+    // **And it is drawn where finished children go**, under the fold - with `s-sub-2`, the
     // child this head never watched, which the list rebuilt and which is finished too.
     a.key(Key::CtrlG);
     let pane = a.screen(100, 24).join("\n");
@@ -1054,7 +1054,7 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
     // queued line rather than about the sent one the coalescing already folded it into.
     c.pending_prompts.clear();
     c.pending_prompts.push("a queued line".into());
-    // With nothing typed, `↑` IS the recall — the premise, so the refusal below is about the
+    // With nothing typed, `↑` IS the recall - the premise, so the refusal below is about the
     // draft and not about the key being dead.
     c.key(Key::Up);
     assert_eq!(c.input(), "a queued line", "the premise: the recall works");
@@ -1417,7 +1417,7 @@ fn the_model_lines_are_drawn_as_proposals_and_the_historys_as_facts() {
 }
 
 /// **A suggestion only fills the composer.** Nothing in the path submits: a Tab
-/// replaces the line, and Enter — the operator's own key — is what sends it.
+/// replaces the line, and Enter - the operator's own key - is what sends it.
 #[test]
 fn a_suggestion_only_fills_the_composer_and_never_submits() {
     let mut a = app();
@@ -1451,7 +1451,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
         Hub::new("s").snapshot(),
     ));
     // A command this session actually ran, so `! cargo` has a candidate and one character
-    // further on — `! cargo x` — has none.
+    // further on - `! cargo x` - has none.
     shell_row(&mut a, 1, "u1", "user", operator_row("! cargo test 199"));
     for i in 0..30u64 {
         // Contiguous sequence numbers: a gap here is a resync notice in the middle of
@@ -1503,7 +1503,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
     let empty = a.screen(100, 24);
     let top = composer_at(&empty);
 
-    // 1. Candidates — **in the composer's bottom edge**, and nothing above it moved.
+    // 1. Candidates - **in the composer's bottom edge**, and nothing above it moved.
     typed(&mut a, "! cargo");
     let candidates = a.screen(100, 24);
     assert!(
@@ -1526,7 +1526,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
     );
     assert_eq!(conversation(&candidates), conversation(&empty));
 
-    // 2. **Dismissed** — one character on, where nothing matches: the edge goes plain, and
+    // 2. **Dismissed** - one character on, where nothing matches: the edge goes plain, and
     //    still nothing moves.
     typed(&mut a, " x");
     let dismissed = a.screen(100, 24);
@@ -1538,7 +1538,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
         near_the_composer(&dismissed)
     );
 
-    // 3. And back — the reader who goes on typing and then backspaces must not watch the
+    // 3. And back - the reader who goes on typing and then backspaces must not watch the
     //    page move either way.
     a.key(Key::Backspace);
     a.key(Key::Backspace);
@@ -1551,7 +1551,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
         near_the_composer(&again)
     );
 
-    // **The `/command` half is the same edge** — the door the operator reported.
+    // **The `/command` half is the same edge** - the door the operator reported.
     a.set_composer("/se");
     let slash = a.screen(100, 24);
     assert_eq!(composer_at(&slash), top, "{:#?}", near_the_composer(&slash));
@@ -1665,7 +1665,7 @@ fn a_prompt_queued_behind_a_reseat_says_so() {
 }
 
 /// **A prompt typed while the daemon is still starting says it runs once the daemon has started**
-/// (TODO R92.2) — the rano "took ages and showed nothing but the queued prompt" report. The boot's
+/// (TODO R92.2) - the rano "took ages and showed nothing but the queued prompt" report. The boot's
 /// steps are a line on the tail, never rows; `daemon_started` takes both away.
 #[test]
 fn a_prompt_typed_while_the_daemon_boots_says_it_runs_once_started() {

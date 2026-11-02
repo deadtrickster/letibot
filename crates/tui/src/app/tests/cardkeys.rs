@@ -125,7 +125,7 @@ fn a_question_brought_back_over_typed_words_holds_them() {
 // ──────────────── R90.2 / R90.23: a row number marks a numbered row ────────────────
 
 /// `16` typed as a free answer to "how many workers?" answered choice 1 at the `1`. A digit now
-/// marks the row it names — and the numbers are drawn — and only Enter answers.
+/// marks the row it names - and the numbers are drawn - and only Enter answers.
 #[test]
 fn a_digit_on_a_question_marks_its_numbered_row_and_enter_answers() {
     let mut a = app();
@@ -429,7 +429,7 @@ fn the_arrows_scroll_a_reading_surface() {
     assert!(a.hint_bar(300).contains("↑↓"), "{}", a.hint_bar(300));
 }
 
-/// Enter over a reading pane with a line typed is swallowed — and now said.
+/// Enter over a reading pane with a line typed is swallowed - and now said.
 #[test]
 fn a_swallowed_enter_over_a_reading_pane_is_said() {
     let mut a = app();

@@ -22,7 +22,7 @@ pub const MCP_IDENTITY: &str = "letibot-mcp";
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
-    /// **The operator's own** — a `leticode` start, `/new`, a `--continue`, a head that asked
+    /// **The operator's own** - a `leticode` start, `/new`, a `--continue`, a head that asked
     /// over the socket. The default, and the answer for every row written before this column
     /// existed that nothing else claims: before it, every row was one of these.
     #[default]
@@ -31,17 +31,17 @@ pub enum SessionOrigin {
     /// ([`MCP_IDENTITY`]). Still a conversation, grouped apart because *they* did not open
     /// it.
     Package,
-    /// **The review queue's own session** — started by the daemon at startup
+    /// **The review queue's own session** - started by the daemon at startup
     /// (`harnessd`'s `sessions::gatekeeper`), one per workspace, whose board is the queue.
     Queue,
-    /// **A one-shot's** — `harnessd --prompt …`, which opens a session, runs the steps, prints
+    /// **A one-shot's** - `harnessd --prompt …`, which opens a session, runs the steps, prints
     /// the answers and exits. The session's rows stay, and a run a day for a month is thirty
     /// rows in a list nobody asked for.
     OneShot,
 }
 
 impl SessionOrigin {
-    /// The store's spelling — `session.origin`, and the wire's (the brief carries it as this
+    /// The store's spelling - `session.origin`, and the wire's (the brief carries it as this
     /// string, so a head sees the same word the database holds).
     pub fn as_str(self) -> &'static str {
         match self {
@@ -52,8 +52,8 @@ impl SessionOrigin {
         }
     }
 
-    /// The store's spelling read back. An unknown word is `None` — *this build cannot say who
-    /// that session was for* — rather than a guess, because a guess here is a session drawn in
+    /// The store's spelling read back. An unknown word is `None` - *this build cannot say who
+    /// that session was for* - rather than a guess, because a guess here is a session drawn in
     /// the wrong group.
     pub fn parse(s: &str) -> Option<Self> {
         // `one-shot` accepted as well as the store's `one_shot`: the column is ours, but a
@@ -97,8 +97,8 @@ pub enum SessionGroup {
 }
 
 impl SessionGroup {
-    /// Every group, in the order a list draws them. `Mine` is not a fold — the rows are drawn
-    /// under it — and the four after it are.
+    /// Every group, in the order a list draws them. `Mine` is not a fold - the rows are drawn
+    /// under it - and the four after it are.
     pub const ALL: [SessionGroup; 5] = [
         SessionGroup::Mine,
         SessionGroup::Subagents,
@@ -118,7 +118,7 @@ impl SessionGroup {
         }
     }
 
-    /// **One line saying what the group is**, drawn under its row — a fold whose contents a
+    /// **One line saying what the group is**, drawn under its row - a fold whose contents a
     /// reader has to guess at is a fold they will not open.
     pub fn legend(self) -> &'static str {
         match self {
@@ -130,13 +130,13 @@ impl SessionGroup {
         }
     }
 
-    /// **Whether this group is the operator's own** — the one group that is not a fold.
+    /// **Whether this group is the operator's own** - the one group that is not a fold.
     pub fn is_mine(self) -> bool {
         self == SessionGroup::Mine
     }
 }
 
-/// **One session, as the grouping rule reads it** — the facts a row carries that say what it is.
+/// **One session, as the grouping rule reads it** - the facts a row carries that say what it is.
 #[derive(Debug, Clone, Copy)]
 pub struct GroupRow<'a> {
     pub id: &'a str,
@@ -205,7 +205,7 @@ mod tests {
     use super::*;
 
     /// A row as the rule reads it, from the three facts most tests here need. The seat and the
-    /// title are set by the tests that are about them — `seat` and `titled`.
+    /// title are set by the tests that are about them - `seat` and `titled`.
     struct Seed {
         id: String,
         parent: Option<String>,
@@ -224,13 +224,13 @@ mod tests {
         }
     }
 
-    /// A seeded row with a seat on it — `gatekeeper` for a review.
+    /// A seeded row with a seat on it - `gatekeeper` for a review.
     fn seated(mut s: Seed, role: &str) -> Seed {
         s.role = Some(role.to_string());
         s
     }
 
-    /// A seeded row with a title on it — a reviewer's is cut from the review brief.
+    /// A seeded row with a title on it - a reviewer's is cut from the review brief.
     fn titled(mut s: Seed, title: &str) -> Seed {
         s.title = title.to_string();
         s
@@ -333,7 +333,7 @@ mod tests {
     }
 
     /// **The fallback, for rows written before the column.** The queue's id is derived from the
-    /// workspace and is stable, so a row with no `origin` is still recognised — which is what
+    /// workspace and is stable, so a row with no `origin` is still recognised - which is what
     /// makes this an upgrade rather than a flag day.
     #[test]
     fn a_queue_session_written_before_the_column_is_still_the_queue() {

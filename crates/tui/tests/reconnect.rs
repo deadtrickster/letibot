@@ -198,8 +198,8 @@ fn scripted_daemon(path: PathBuf) -> std::sync::mpsc::Receiver<Attach> {
             },
         )))
         .unwrap();
-        // Stay attached: read and discard whatever the head sends — a `Settings` and an
-        // `Ack`, both ordinary — until it goes away. Holding the stream open is the
+        // Stay attached: read and discard whatever the head sends - a `Settings` and an
+        // `Ack`, both ordinary - until it goes away. Holding the stream open is the
         // point; dropping it would look like the daemon leaving again.
         while r.read::<ClientFrame>().is_ok() {}
     });
@@ -232,7 +232,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     assert!(before.contains("remember this row"), "{before}");
 
     // **The daemon goes away.** Nothing is sent, the socket is simply closed, and the
-    // head has to notice from its reader thread ending — which is the case that used to
+    // head has to notice from its reader thread ending - which is the case that used to
     // be undetectable at rest, because an idle head writes nothing at all.
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && !a.detached() {
@@ -294,7 +294,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     settle(&mut link, &mut a);
 
     // **The requirement, as a number on the wire.** The retry is an `ATTACH` carrying the
-    // seq this head had read — not 0, which would take a fresh snapshot and start the
+    // seq this head had read - not 0, which would take a fresh snapshot and start the
     // transcript over.
     let second = attaches
         .recv_timeout(Duration::from_secs(5))
@@ -360,7 +360,7 @@ fn a_retry_that_cannot_connect_says_so_and_keeps_trying() {
         assert!(!a.should_quit(), "and is not a reason to leave");
     }
 
-    // And it says how long it has been trying, how many times, and what to do — a head
+    // And it says how long it has been trying, how many times, and what to do - a head
     // retrying silently for a minute is the failure it is retrying to avoid.
     a.clock(1_000 + 63_000);
     let waiting = frame(&mut a);
@@ -476,7 +476,7 @@ fn a_reconnecting_head_lands_on_the_session_it_is_in_not_the_daemons_current_one
     let _ = std::fs::remove_file(&path);
 }
 
-/// Read frames until `f` says stop — the second head's own socket, which nothing in this
+/// Read frames until `f` says stop - the second head's own socket, which nothing in this
 /// file's scripted peer needs.
 fn until(
     rx: &std::sync::mpsc::Receiver<Inbound>,

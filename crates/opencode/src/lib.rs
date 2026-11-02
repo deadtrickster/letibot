@@ -51,7 +51,7 @@ impl std::error::Error for ImportError {}
 
 pub type Result<T> = std::result::Result<T, ImportError>;
 
-/// Token counts, in whatever provider's units they were recorded — opencode's here.
+/// Token counts, in whatever provider's units they were recorded - opencode's here.
 /// Four numbers and a cache pair, matching opencode's `tokens` object.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tokens {
@@ -70,7 +70,7 @@ impl Tokens {
     }
 }
 
-/// One opencode session's own metadata — what rule 1 needs and what the header shows.
+/// One opencode session's own metadata - what rule 1 needs and what the header shows.
 #[derive(Debug, Clone)]
 pub struct SessionMeta {
     pub id: String,
@@ -91,7 +91,7 @@ pub struct SessionMeta {
 
 impl SessionMeta {
     /// **Rule 1, in one line.** What every imported row is, and whose it was, so a
-    /// reader who cannot tell whose sentence it is can weigh it — the same defect
+    /// reader who cannot tell whose sentence it is can weigh it - the same defect
     /// §1.5 names for a card that does not label a borrowed sentence.
     pub fn origin(&self) -> String {
         let who = match (&self.provider, &self.model) {
@@ -112,7 +112,7 @@ impl SessionMeta {
 pub struct Tree {
     pub root: SessionMeta,
     pub children: Vec<SessionMeta>,
-    /// Parts across the whole tree — the denominator. Not the root's, per the ruling.
+    /// Parts across the whole tree - the denominator. Not the root's, per the ruling.
     pub parts: u64,
 }
 
@@ -132,7 +132,7 @@ pub struct Row {
     pub item: TranscriptItem,
 }
 
-/// **A part that is real but is not a transcript row** — an unknown tag, a `patch`,
+/// **A part that is real but is not a transcript row** - an unknown tag, a `patch`,
 /// a `compaction`. Counted and said, never dropped.
 #[derive(Debug, Clone)]
 pub struct Scrap {
@@ -147,7 +147,7 @@ pub struct Scrap {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)] // taken once and dropped, so a boxed row buys nothing
 pub enum Event {
-    /// **The importer's own counter** — parts read, against the count from
+    /// **The importer's own counter** - parts read, against the count from
     /// `count(*)`. Not derived from what has not arrived: *an indicator must be the
     /// fact, not a rendering of the fact.*
     Progress {
@@ -166,7 +166,7 @@ pub struct Spend {
     pub tokens: Tokens,
 }
 
-/// What a whole read produced — the numbers the finish line and `/status` keep.
+/// What a whole read produced - the numbers the finish line and `/status` keep.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     /// Parts examined (the denominator).
@@ -314,7 +314,7 @@ impl Source {
         };
         report.set_tree(tree.sessions() as u64, total);
 
-        // `IN (?1, ?2, …)`, built from the ids — never interpolated, always bound.
+        // `IN (?1, ?2, …)`, built from the ids - never interpolated, always bound.
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = format!(
             "SELECT p.session_id, m.data, p.id, p.time_created, p.data \
@@ -497,7 +497,7 @@ fn interpret(
     let v: serde_json::Value = match serde_json::from_str(data) {
         Ok(v) => v,
         Err(e) => {
-            // A `part.data` that will not parse is real and is said, not dropped —
+            // A `part.data` that will not parse is real and is said, not dropped  -
             // the same rule as an unknown tag.
             report.scraps += 1;
             *report
@@ -531,7 +531,7 @@ fn interpret(
                 Some("user") => TranscriptItem::User {
                     // An imported conversation's `user` role is the person's. Nothing this
                     // importer reads is the harness's own voice, so R42's other value has no
-                    // site here — and saying so is cheaper than a reader wondering.
+                    // site here - and saying so is cheaper than a reader wondering.
                     speaker: letibot_transcript::Speaker::Operator,
                     parts: vec![UserPart::Text { text }],
                 },
@@ -964,7 +964,7 @@ mod tests {
         assert!(said.contains("no opencode database"), "{said}");
     }
 
-    /// **The tree, and the count, before the first row** — the recursive query the
+    /// **The tree, and the count, before the first row** - the recursive query the
     /// progress line's denominator comes from, across the whole tree.
     #[test]
     fn the_tree_count_is_the_whole_trees_and_a_stranger_id_is_no_such_session() {
@@ -992,7 +992,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// **The mapping, part by part** — and the progress counter is the importer's
+    /// **The mapping, part by part** - and the progress counter is the importer's
     /// own, counting parts read, not rows still missing a body.
     #[test]
     fn every_tag_maps_and_the_progress_counts_parts_read() {
@@ -1053,7 +1053,7 @@ mod tests {
         assert_eq!(report.spend.cost, 0.5);
         assert_eq!(report.spend.tokens.input, 100);
         assert_eq!(report.spend.tokens.cache_read, 30);
-        // opencode's own `total` is input+output+reasoning+cache_read(+write) —
+        // opencode's own `total` is input+output+reasoning+cache_read(+write)  -
         // checked against a real row: 6838+175+92+1920 = 9025.
         assert_eq!(report.spend.tokens.total(), 155);
 

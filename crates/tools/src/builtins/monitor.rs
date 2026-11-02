@@ -202,7 +202,7 @@ impl Tool for Monitor {
         let watch = if let Some(id) = args.get("job").and_then(|v| v.as_str()) {
             let jid = JobId(id.to_string());
             // Resolved to a live handle here, so a monitor can never be declared
-            // against an id that does not exist — and so the refusal is clause 1's
+            // against an id that does not exist - and so the refusal is clause 1's
             // listing rather than a monitor that watches nothing forever.
             let Some(h) = host.job_handle(&jid) else {
                 return super::jobs::unknown_job(&host.jobs(), id);
@@ -502,7 +502,7 @@ fn inside(path: &str) -> bool {
     depth > 0
 }
 
-/// **The refusal of a second watch on a pull request already watched** — naming the watch that
+/// **The refusal of a second watch on a pull request already watched** - naming the watch that
 /// has it, and the one `monitor` call that covers both its conditions and these.
 fn already_watched(
     monitors: &crate::exec::monitor::Monitors,
@@ -539,7 +539,7 @@ fn already_watched(
     ))
 }
 
-/// **A `github` watch, read** — `{"url": "https://github.com/o/r/pull/12", "until": "checks"}`, or
+/// **A `github` watch, read** - `{"url": "https://github.com/o/r/pull/12", "until": "checks"}`, or
 /// `repo` with `pr` or `issue` in place of the URL; `every_s` how often to look. See
 /// `exec::github`.
 fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
@@ -632,7 +632,7 @@ fn ttl_of(args: &Value) -> Result<Duration, Box<Invocation>> {
     ttl_within(args, DEFAULT_TTL, MAX_TTL)
 }
 
-/// [`ttl_of`] for a watch with caps of its own — a GitHub watch lives for days
+/// [`ttl_of`] for a watch with caps of its own - a GitHub watch lives for days
 /// (`exec::github`).
 fn ttl_within(args: &Value, default: Duration, cap: Duration) -> Result<Duration, Box<Invocation>> {
     let Some(ms) = args.get("ttl_ms").and_then(|v| v.as_u64()) else {
@@ -656,7 +656,7 @@ fn ttl_within(args: &Value, default: Duration, cap: Duration) -> Result<Duration
 }
 
 /// Clause 1 for a monitor name that is not there: what IS watching, and what has
-/// already settled — because a name that fired a minute ago is the most likely
+/// already settled - because a name that fired a minute ago is the most likely
 /// thing somebody is asking about.
 fn unknown_monitor(host: &dyn ProcessHost, asked: &str) -> Invocation {
     let Some(monitors) = host.monitors() else {
@@ -708,8 +708,8 @@ mod tests {
             "pattern",
             "match",
             "cmdline",
-            // `command` is now a legitimate condition — run a command and fire on
-            // its exit — not a process-name pattern. The rest stay banned.
+            // `command` is now a legitimate condition - run a command and fire on
+            // its exit - not a process-name pattern. The rest stay banned.
             "name_regex",
             "grep",
             "regex",
@@ -808,7 +808,7 @@ mod tests {
         );
     }
 
-    /// **A pull request already watched gets no second watch** — the refusal names the one that
+    /// **A pull request already watched gets no second watch** - the refusal names the one that
     /// has it and gives the single call for both: stroppy armed nine watches for three pull
     /// requests, three conditions apiece.
     #[test]

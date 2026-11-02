@@ -1,15 +1,15 @@
-//! **A reply's citations, put into the fences that name them** — the head's half of
+//! **A reply's citations, put into the fences that name them** - the head's half of
 //! `letibot_harnessd::citations`.
 //!
 //! The model wrote an empty fence labelled `path:start-end`; the daemon read those lines when the
 //! reply landed and sent them as [`Citation`]s. Here they go into the fence before the markdown
-//! is lexed, so rano draws the block as a citation — numbered as the file numbers it — and the
+//! is lexed, so rano draws the block as a citation - numbered as the file numbers it - and the
 //! label grows a note when there is something to say: the daemon could not read the lines, or
 //! the file on this machine no longer says what it said.
 //!
 //! **Which fences those are is [`letibot_transcript::citation`]'s rule, not a second copy of it
 //! here.** The daemon scans the same text with the same function, so a citation it recognised is
-//! a citation this fills — including the one-liner (` ```a/b.go:2-3``` `, opener and closer on one
+//! a citation this fills - including the one-liner (` ```a/b.go:2-3``` `, opener and closer on one
 //! line), which this head used to read as a block whose label had the closer glued onto it and so
 //! left empty.
 
@@ -51,7 +51,7 @@ pub(crate) fn fill<'t>(text: &'t str, cits: &[Citation], workspace: &str) -> Cow
                 used[k] = true;
                 out.push(block(fence.run, &cits[k], workspace));
             }
-            // Not one of ours: the block goes back exactly as written — the model's own code is
+            // Not one of ours: the block goes back exactly as written - the model's own code is
             // its own, and a fence inside it is text, not a fence.
             None => out.extend(lines[i..=fence.end].iter().map(|l| l.to_string())),
         }
@@ -87,7 +87,7 @@ fn block(fence: &str, c: &Citation, workspace: &str) -> String {
     s
 }
 
-/// **Whether the file on this machine no longer has the lines cited** — `false` when it cannot
+/// **Whether the file on this machine no longer has the lines cited** - `false` when it cannot
 /// be read here at all (a remote daemon, a VM's copy): no comparison is not a difference.
 pub(crate) fn drifted(c: &Citation, workspace: &str) -> bool {
     if c.lines.is_empty() || workspace.is_empty() && !Path::new(&c.path).is_absolute() {
@@ -166,7 +166,7 @@ mod tests {
     }
 
     /// **An unclosed fence does not take the closer of the block below it**, and the well-formed
-    /// block is still filled — the head reads fences by the same rule the daemon does.
+    /// block is still filled - the head reads fences by the same rule the daemon does.
     #[test]
     fn an_unclosed_fence_does_not_swallow_the_citation_below_it() {
         let text = "```a/b.go:2-3\nleft open\n\n```a/b.go:2-3```\n";

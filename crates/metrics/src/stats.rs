@@ -135,7 +135,7 @@ fn cell(v: ValueRef<'_>) -> String {
     }
 }
 
-/// **Any query, as a table** — `letibot stats sql`, and every verb below that is one query.
+/// **Any query, as a table** - `letibot stats sql`, and every verb below that is one query.
 pub fn query(
     c: &Connection,
     title: &str,
@@ -260,7 +260,7 @@ pub fn summary(c: &Connection, since: i64) -> Result<Table, String> {
     Ok(t)
 }
 
-/// **Q3 — the worker's queue wait per command verb, per build** (c12d044).
+/// **Q3 - the worker's queue wait per command verb, per build** (c12d044).
 pub fn waits(c: &Connection, since: i64) -> Result<Table, String> {
     let mut st = c
         .prepare(
@@ -315,7 +315,7 @@ pub fn waits(c: &Connection, since: i64) -> Result<Table, String> {
     Ok(t)
 }
 
-/// **Q1 and Q2 — what arrives, how, and mid-turn or not; and the wakes by cause** (R79).
+/// **Q1 and Q2 - what arrives, how, and mid-turn or not; and the wakes by cause** (R79).
 pub fn deliveries(c: &Connection, since: i64) -> Result<Vec<Table>, String> {
     Ok(vec![
         query(
@@ -344,7 +344,7 @@ pub fn deliveries(c: &Connection, since: i64) -> Result<Vec<Table>, String> {
     ])
 }
 
-/// **Q8 — tool reliability**: error rate, duration, memory peak against cap.
+/// **Q8 - tool reliability**: error rate, duration, memory peak against cap.
 pub fn tools(c: &Connection, since: i64) -> Result<Table, String> {
     query(
         c,
@@ -358,7 +358,7 @@ pub fn tools(c: &Connection, since: i64) -> Result<Table, String> {
     )
 }
 
-/// **Q7 — latency and throughput per model**: time to first token, tok/s, cache hit.
+/// **Q7 - latency and throughput per model**: time to first token, tok/s, cache hit.
 pub fn models(c: &Connection, since: i64) -> Result<Table, String> {
     let mut st = c
         .prepare(
@@ -397,7 +397,7 @@ pub fn models(c: &Connection, since: i64) -> Result<Table, String> {
             a.ttfb.push(t);
         }
         // The generation's own time when the server reported one, else the round's wall
-        // minus its first-token wait — a cloud round has no `predicted_ms` of its own.
+        // minus its first-token wait - a cloud round has no `predicted_ms` of its own.
         let gen_ms = if predicted_ms > 0.0 {
             predicted_ms
         } else {
@@ -477,7 +477,7 @@ pub fn turns(
     )
 }
 
-/// **Q15 — every mark with its turn's numbers beside it.**
+/// **Q15 - every mark with its turn's numbers beside it.**
 pub fn feedback(
     c: &Connection,
     since: i64,

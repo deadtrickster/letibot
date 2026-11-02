@@ -1,4 +1,4 @@
-//! **A background job's completion notice, drawn as two lines a job** — and its whole card one
+//! **A background job's completion notice, drawn as two lines a job** - and its whole card one
 //! click away.
 //!
 //! The operator, pasting a notice that took six wrapped rows of the transcript: *"i dont need job
@@ -7,7 +7,7 @@
 //!
 //! The row is the daemon's `completion_notice` (`crates/harnessd/src/harness.rs`), a `[job] …`
 //! user row spoken by the harness, and **it is the model's text**: what the model reads is not
-//! touched here. This is a rendering of it, the way [`folded_notice`] is — and it exists beside
+//! touched here. This is a rendering of it, the way [`folded_notice`] is - and it exists beside
 //! that fold because the fold could not account for the notice the operator pasted: a command
 //! written over several lines and the `memory:` line under it are both text the fold does not
 //! recognise, so it handed the whole row back raw, R7's paragraph to the model included.
@@ -19,11 +19,11 @@
 //!   ⎿ test result: ok. 12 passed; 0 failed
 //! ```
 //!
-//! The first is the job — id, the name the agent gave it, how it ended and how long it took,
+//! The first is the job - id, the name the agent gave it, how it ended and how long it took,
 //! and the command, flattened to one line and cut to the width. The second is **the last line
 //! the job wrote**: a build or a test run says how it went at its end (`test result: ok`,
 //! `error[E0425]`, `=== done`), and its head is the command echoing itself or a compiler's
-//! preamble. The output is not in the notice — R7 keeps the bytes one `job_output` away — so
+//! preamble. The output is not in the notice - R7 keeps the bytes one `job_output` away - so
 //! the head reads the job's tail the way the jobs pane reads a window (`ReadJobOutput`), once
 //! per job and only for a notice that is on the screen; until the answer lands, and for a job
 //! whose output this session cannot read, the line says what the notice itself knows: what the
@@ -31,7 +31,7 @@
 //!
 //! # Only the shape this head KNOWS is drawn compact
 //!
-//! [`folded_notice`]'s rule, kept: every line of the notice is accounted for — the heading is one
+//! [`folded_notice`]'s rule, kept: every line of the notice is accounted for - the heading is one
 //! of the four `completion_notice` writes, the bullet count matches the heading's, every bullet
 //! parses, the only text between bullets is a command's continuation and its `memory:` line, and
 //! the closing paragraph is one of the two the daemon writes. Anything else is `None`, and the
@@ -74,18 +74,18 @@ const HEADINGS: &[(&str, &str, bool)] = &[
 /// **One job a notice reports ended**, as the bullet says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EndedJob {
-    /// The handle, `j1042` — what `ReadJobOutput` takes.
+    /// The handle, `j1042` - what `ReadJobOutput` takes.
     pub(crate) id: String,
     /// The name the agent gave it, when it gave one.
     pub(crate) slug: Option<String>,
-    /// The process's own word — `exited 0`, `killed by job_kill`.
+    /// The process's own word - `exited 0`, `killed by job_kill`.
     pub(crate) state: String,
     /// How long it ran, in the daemon's spelling (`2m54s`, `4.4s`).
     pub(crate) after: String,
-    /// Bytes it wrote, all streams — `None` for a notice from after R93.C3, which dropped the
+    /// Bytes it wrote, all streams - `None` for a notice from after R93.C3, which dropped the
     /// count from the model's sentence.
     pub(crate) produced: Option<u64>,
-    /// The command, verbatim — several lines when it was written over several.
+    /// The command, verbatim - several lines when it was written over several.
     pub(crate) command: String,
     /// `memory: …`'s clause, when the notice carried one.
     pub(crate) memory: Option<String>,
@@ -93,7 +93,7 @@ pub(crate) struct EndedJob {
     pub(crate) owner: Option<String>,
 }
 
-/// **A `[job]` notice group, parsed** — whether it is this session's own (`mine`) and the jobs
+/// **A `[job]` notice group, parsed** - whether it is this session's own (`mine`) and the jobs
 /// it reports. `None` for anything that is not exactly the shape `completion_notice` writes.
 pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
     let rest = group.strip_prefix("[job] ")?;
@@ -145,7 +145,7 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
             }
             job.memory = Some(m.to_string());
         } else {
-            // **A command's own next line** — only before the memory clause, which the daemon
+            // **A command's own next line** - only before the memory clause, which the daemon
             // writes after the bullet's last line.
             let job = jobs.last_mut()?;
             if job.memory.is_some() {
@@ -172,7 +172,7 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
     Some((mine, jobs))
 }
 
-/// **The opening words of the daemon's line naming the plan rows that wait on a completion** —
+/// **The opening words of the daemon's line naming the plan rows that wait on a completion**  -
 /// `harnessd`'s `WAITING_ON_THIS` / `WAITING_ON_THESE`, which it writes as the last line of a
 /// `[job]` or `[task]` group, after the closing paragraph.
 pub(crate) const WAITING: &[&str] = &["Waiting on this: ", "Waiting on these: "];
@@ -183,14 +183,14 @@ pub(crate) fn is_waiting_line(line: &str) -> bool {
 }
 
 /// **The waiting line of a notice group, folded for a person**: the rows it names, without the
-/// instruction to the model that follows the dash — `Waiting on this: "make tier 1 green" (the
+/// instruction to the model that follows the dash - `Waiting on this: "make tier 1 green" (the
 /// operator's)`. `None` when the group has no such line.
 pub(crate) fn waiting_line(group: &str) -> Option<String> {
     let line = group.lines().rev().find(|l| is_waiting_line(l))?;
     Some(folded_waiting(line))
 }
 
-/// One waiting line, cut before ` — update …`, which is addressed to the model.
+/// One waiting line, cut before ` - update …`, which is addressed to the model.
 pub(crate) fn folded_waiting(line: &str) -> String {
     match line.rfind(" — update ") {
         Some(at) => line[..at].to_string(),
@@ -246,7 +246,7 @@ fn is_job_id(s: &str) -> bool {
 pub(crate) enum JobTail {
     /// Asked for; the answer has not landed.
     Asked,
-    /// The last lines the job wrote — a window that reached the end of its output.
+    /// The last lines the job wrote - a window that reached the end of its output.
     Lines(Vec<String>),
     /// The daemon cannot show it (the job was reaped and only its record is left, or the read
     /// was refused); the reason, in its words.
@@ -258,7 +258,7 @@ pub(crate) const TAIL_BYTES: u64 = 4096;
 
 /// **The groups of a notice row**, split where a new labelled notice starts. The daemon joins the
 /// notices of one wake with a blank line (`completion_notices`), and a `[job]` group ends at its
-/// own closing paragraph — so a blank line inside a command does not split it.
+/// own closing paragraph - so a blank line inside a command does not split it.
 pub(crate) fn notice_groups(text: &str) -> Vec<&str> {
     // `[meanwhile] ` is the line R79's held batch opens with; the groups under it are the
     // ordinary `[job]` / `[task]` ones (`job_notice_meanwhile.txt`).
@@ -288,7 +288,7 @@ pub(crate) fn notice_groups(text: &str) -> Vec<&str> {
     out
 }
 
-/// **The jobs a notice row reports**, across every `[job]` group in it — `(mine, job)` — or
+/// **The jobs a notice row reports**, across every `[job]` group in it - `(mine, job)` - or
 /// `None` when the row has no `[job]` group this head can read in full.
 pub(crate) fn notice_jobs(text: &str) -> Option<Vec<(bool, EndedJob)>> {
     if !text.starts_with('[') {
@@ -382,7 +382,7 @@ pub(crate) fn job_lines(j: &EndedJob, mine: bool, tail: Option<&JobTail>) -> [St
     [first, format!("  ⎿ {second}")]
 }
 
-/// Whitespace, newlines included, collapsed to single spaces — a command written over ten lines
+/// Whitespace, newlines included, collapsed to single spaces - a command written over ten lines
 /// is one line of a row.
 fn flat(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")

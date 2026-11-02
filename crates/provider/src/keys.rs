@@ -90,7 +90,7 @@ pub struct Gatekeeper {
 pub struct MemorySection {
     pub default: Option<String>,
     pub ceiling: Option<String>,
-    /// `memory.high` for the daemon's own process — a size, a fraction of the box, or `max`.
+    /// `memory.high` for the daemon's own process - a size, a fraction of the box, or `max`.
     pub daemon_high: Option<String>,
     /// The cap each merge-gate step runs under, in a cgroup of its own beside the daemon's:
     /// a size, a fraction of what is free when the gate starts, or `uncapped`.
@@ -128,7 +128,7 @@ pub struct MetricsSection {
     pub max_mb: Option<String>,
 }
 
-/// Read `[metrics]`. Missing file, missing section, unparseable file: all the defaults — a
+/// Read `[metrics]`. Missing file, missing section, unparseable file: all the defaults - a
 /// metrics setting is never a reason a daemon does not start.
 pub fn metrics(file: Option<&Path>) -> MetricsSection {
     let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
@@ -148,7 +148,7 @@ pub fn metrics(file: Option<&Path>) -> MetricsSection {
 }
 
 /// Read `[gatekeeper]`. A missing file, a missing section and an unparseable file
-/// are all `Gatekeeper::default()` — this is consulted at daemon start and must
+/// are all `Gatekeeper::default()` - this is consulted at daemon start and must
 /// never be a reason a daemon does not start.
 pub fn gatekeeper(file: Option<&Path>) -> Gatekeeper {
     let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);

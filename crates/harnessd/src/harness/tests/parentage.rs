@@ -31,7 +31,7 @@ impl Drop for Scratch {
     }
 }
 
-/// The parts, the config for `id`, and the store's path — or `None` when this box has no
+/// The parts, the config for `id`, and the store's path - or `None` when this box has no
 /// vocabulary GGUF (the open renders a stable prefix, so the file is the price of any open).
 fn parts_for(dir: &Scratch, id: &str) -> Option<(Parts, Config, std::path::PathBuf)> {
     let gguf = crate::vocab_gguf()?;
@@ -81,7 +81,7 @@ fn wiring(cfg: &Config) -> SessionWiring {
     }
 }
 
-/// The session's row, as the store holds it — the fact that outlives the daemon that wrote it.
+/// The session's row, as the store holds it - the fact that outlives the daemon that wrote it.
 fn stored_parent(path: &std::path::Path, id: &str) -> Option<String> {
     Store::open(path)
         .expect("the store")
@@ -126,7 +126,7 @@ fn a_session_a_person_started_has_no_parent() {
     assert_eq!(stored_parent(&path, "s-parentage-mine"), None);
 }
 
-/// **A child of a child is parented on the child, not on the root** — the tree is a chain, and a
+/// **A child of a child is parented on the child, not on the root** - the tree is a chain, and a
 /// rule that flattened it would put every grandchild directly under the operator's conversation.
 #[test]
 fn a_child_of_a_child_is_parented_on_the_child() {
@@ -188,7 +188,7 @@ fn a_daemon_whose_entry_forgot_reads_the_parent_off_the_row() {
 }
 
 /// **The caller's word is what a spawn relies on, because at the child's open there is nothing
-/// else** — the `task`/`task_start` shape, exactly: the id is minted, the config is built with the
+/// else** - the `task`/`task_start` shape, exactly: the id is minted, the config is built with the
 /// parent, and the session is adopted only *after* it opens.
 #[test]
 fn the_callers_word_is_written_when_nothing_else_knows() {
@@ -236,7 +236,7 @@ fn a_session_the_launcher_reopened_with_session_keeps_the_parent_it_was_born_wit
     // The launcher's shape: `--session` sets the id and nothing else.
     cfg.parent_session_id = None;
     let registry = letibot_sessionlog::registry::Registry::new();
-    // The store, so the startup door's `resumable` can read the row — exactly what
+    // The store, so the startup door's `resumable` can read the row - exactly what
     // `harnessd`'s own startup does (`StoreSessions::open` + `Registry::set_source`).
     registry.set_source(crate::sessions::StoreSessions::open(&cfg).expect("the store is readable"));
     let on_disk = registry

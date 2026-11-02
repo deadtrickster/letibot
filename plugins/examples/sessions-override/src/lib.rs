@@ -27,7 +27,7 @@ const RENAMED_ID: &str = "no-system-agents";
 fn answer(bytes: &[u8]) -> Option<String> {
     let input: Value = serde_json::from_slice(bytes).ok()?;
     match input.get("below") {
-        // The first call. `{"below": <input>}` is the ask — the whole request, so the layer below
+        // The first call. `{"below": <input>}` is the ask - the whole request, so the layer below
         // is asked exactly the question this one was.
         None => Some(json!({"below": input}).to_string()),
         Some(below) => edit(below.clone()).map(|view| view.to_string()),
@@ -57,7 +57,7 @@ fn edit(mut view: Value) -> Option<Value> {
     rows[at]["id"] = json!(RENAMED_ID);
     rows[at]["cells"] = json!([{"text": RENAMED, "role": "strong"}]);
     rows[at]["under"] = json!([LEGEND]);
-    // **And its rows go** — every row after it that is deeper than the group's own line, up to the
+    // **And its rows go** - every row after it that is deeper than the group's own line, up to the
     // next line at its depth. The list is flat, and `depth` is what says whose child a row is.
     let depth = rows[at]
         .get("depth")
@@ -77,7 +77,7 @@ fn edit(mut view: Value) -> Option<Value> {
     Some(view)
 }
 
-/// The list's rows, wherever the host's own answer put them — the path is the document's, not this
+/// The list's rows, wherever the host's own answer put them - the path is the document's, not this
 /// example's.
 fn rows(view: &Value) -> Option<&Vec<Value>> {
     view.get("panels")?
@@ -99,7 +99,7 @@ fn rows_mut(view: &mut Value) -> Option<&mut Vec<Value>> {
         .as_array_mut()
 }
 
-/// The pane hook — `pane_<name>`, the name a head opens by.
+/// The pane hook - `pane_<name>`, the name a head opens by.
 #[unsafe(no_mangle)]
 pub extern "C" fn pane_sessions(ptr: i32, len: i32) -> i32 {
     abi::hook(ptr, len, answer)
@@ -140,7 +140,7 @@ mod tests {
     }
 
     /// **The second call keeps everything and changes the one branch**: the name, the legend, and
-    /// the rows not drawn — and not one other row is touched.
+    /// the rows not drawn - and not one other row is touched.
     #[test]
     fn it_renames_the_branch_and_hides_its_rows() {
         let edited = edit(builtin_view()).expect("an edit");
@@ -164,7 +164,7 @@ mod tests {
         );
     }
 
-    /// **A list with no such branch is left alone** — the edit is an edit, not a requirement.
+    /// **A list with no such branch is left alone** - the edit is an edit, not a requirement.
     #[test]
     fn a_list_without_the_branch_is_untouched() {
         let view = json!({"panels": [{"summary": [{"tree": {"rows": [

@@ -19,7 +19,7 @@ pub mod stats;
 #[cfg(feature = "store")]
 pub mod store;
 
-/// **Every kind this tree writes** — `docs/metrics.md` §2.3's vocabulary, dotted.
+/// **Every kind this tree writes** - `docs/metrics.md` §2.3's vocabulary, dotted.
 pub mod kind {
     /// A turn began. Written with the turn's end (see the harness's `instruments`), stamped
     /// with the moment it began. `name` = the door; n1/n2/n3 = fill tokens, window, rounds.
@@ -37,7 +37,7 @@ pub mod kind {
     pub const WAKE: &str = "wake";
     /// A plan check sent (R77). `attrs.row` names the row; the follow-up says if it was touched.
     pub const NAG: &str = "nag";
-    /// Whether the turn after a nag touched the row it named — a second, small row, keyed by
+    /// Whether the turn after a nag touched the row it named - a second, small row, keyed by
     /// the nag's turn, because the answer is only known a turn later.
     pub const NAG_FOLLOWUP: &str = "nag.followup";
     /// A compaction. n = before / after (shown unit); `attrs` carry the ledger unit.
@@ -74,7 +74,7 @@ pub mod kind {
     pub const SUPPRESSED: &str = "metrics.suppressed";
 }
 
-/// The wall clock, in milliseconds — the unit of `ts_ms`.
+/// The wall clock, in milliseconds - the unit of `ts_ms`.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -87,7 +87,7 @@ pub fn now_ms() -> u64 {
 /// `None`, and the writer fills it from the tree `session_parent` taught it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
-    /// **The moment of the observation**, not of the write — a batch lands up to a second later.
+    /// **The moment of the observation**, not of the write - a batch lands up to a second later.
     pub ts_ms: u64,
     pub dur_ms: Option<u64>,
     pub session_id: Option<String>,
@@ -98,7 +98,7 @@ pub struct Event {
     pub kind: &'static str,
     pub name: Option<String>,
     pub outcome: Option<String>,
-    /// The kind's three headline numbers (§2.2) — `SUM`-able without parsing JSON.
+    /// The kind's three headline numbers (§2.2) - `SUM`-able without parsing JSON.
     pub n: [Option<i64>; 3],
     /// The rest of the kind's fields. Small, and **no content** unless the kind is named in
     /// `[metrics] snippets` (then `snippet` survives the writer; otherwise it is stripped).
@@ -182,7 +182,7 @@ impl Event {
         self
     }
 
-    /// An attribute only when there is one — so a site never writes `null`s it would have to
+    /// An attribute only when there is one - so a site never writes `null`s it would have to
     /// explain.
     pub fn attr_opt<V: Into<Value>>(self, key: &'static str, v: Option<V>) -> Event {
         match v {
@@ -211,7 +211,7 @@ pub enum Msg {
         session: String,
         parent: Option<String>,
     },
-    /// Write everything before this, then answer — for a test, and for a clean shutdown.
+    /// Write everything before this, then answer - for a test, and for a clean shutdown.
     Flush(SyncSender<()>),
 }
 
@@ -224,7 +224,7 @@ pub struct Emitter {
     dropped: AtomicU64,
 }
 
-/// §2.7's size: 8,192 rows is two minutes of a busy daemon's ~60 rows a turn — a writer that
+/// §2.7's size: 8,192 rows is two minutes of a busy daemon's ~60 rows a turn - a writer that
 /// has fallen that far behind is not coming back by waiting, and the count says so.
 pub const CHANNEL: usize = 8192;
 
@@ -269,7 +269,7 @@ impl Emitter {
 static GLOBAL: OnceLock<Emitter> = OnceLock::new();
 
 thread_local! {
-    /// A test's capture of what THIS thread emits — see [`capture`].
+    /// A test's capture of what THIS thread emits - see [`capture`].
     static CAPTURE: RefCell<Option<Vec<Event>>> = const { RefCell::new(None) };
 }
 
@@ -279,7 +279,7 @@ pub fn install(e: Emitter) -> bool {
     GLOBAL.set(e).is_ok()
 }
 
-/// Is anything listening — a writer, or a test's capture on this thread? A site whose event is
+/// Is anything listening - a writer, or a test's capture on this thread? A site whose event is
 /// costly to build asks first; most do not need to.
 pub fn enabled() -> bool {
     GLOBAL.get().is_some() || CAPTURE.with(|c| c.borrow().is_some())
@@ -321,7 +321,7 @@ pub fn flush(timeout: std::time::Duration) -> bool {
     GLOBAL.get().is_some_and(|g| g.flush(timeout))
 }
 
-/// **Run `f` and return what it emitted on this thread** — the instruments' tests. Nested
+/// **Run `f` and return what it emitted on this thread** - the instruments' tests. Nested
 /// captures are not supported; the inner one would steal the outer's events.
 pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<Event>) {
     CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
@@ -330,7 +330,7 @@ pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<Event>) {
     (r, got)
 }
 
-/// **The `#words` in an operator's note** — §2.5's tags, free vocabulary, counted as written.
+/// **The `#words` in an operator's note** - §2.5's tags, free vocabulary, counted as written.
 /// Lower-cased, trailing punctuation dropped, a bare `#` ignored.
 pub fn tags(note: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -353,7 +353,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// **The emitter never blocks** — the c12d044 rule, asserted on a channel nobody drains:
+    /// **The emitter never blocks** - the c12d044 rule, asserted on a channel nobody drains:
     /// past its capacity every send returns at once, and each one it could not take is counted.
     #[test]
     fn a_full_channel_drops_and_counts_and_never_blocks() {

@@ -52,7 +52,7 @@ impl std::fmt::Display for ClaimError {
 
 impl std::error::Error for ClaimError {}
 
-/// Where the claims live: `$XDG_RUNTIME_DIR/flowy`, else `~/.cache/flowy` —
+/// Where the claims live: `$XDG_RUNTIME_DIR/flowy`, else `~/.cache/flowy`  -
 /// flowy's `waiterDir`, so the two guards meet.
 pub fn claim_dir() -> Result<PathBuf, std::io::Error> {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
@@ -87,7 +87,7 @@ fn kind_path(pid_path: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// The pid recorded at `path`, and whether it is alive. `EPERM` is alive — it
+/// The pid recorded at `path`, and whether it is alive. `EPERM` is alive - it
 /// exists and belongs to somebody else.
 fn live_pid_in(path: &Path) -> Option<u32> {
     let raw = std::fs::read_to_string(path).ok()?;
@@ -120,7 +120,7 @@ impl WaiterClaim {
         if let Some(held) = live_pid_in(&path) {
             let kind = kind_in(&path);
             if kind == "forked" {
-                // A tracked waiter stands down a forked one — see the module docs.
+                // A tracked waiter stands down a forked one - see the module docs.
                 // SAFETY: SIGTERM to a pid we read from flowy's own claim file.
                 unsafe {
                     libc::kill(held as i32, libc::SIGTERM);

@@ -19,7 +19,7 @@ use letibot_harnessd::{Daemon, Dialect, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use serde_json::json;
 
-/// The brief the first session is started with — the marker is how the test knows the turn it
+/// The brief the first session is started with - the marker is how the test knows the turn it
 /// waited for is the one the model answered.
 const BRIEF: &str = "brief-marker: a daemon with nothing to do";
 const ANSWER: &str = "answer-marker: done";
@@ -46,7 +46,7 @@ fn idle_budget() -> Duration {
 #[path = "support/cpu.rs"]
 mod cpu;
 
-/// A directory that removes itself — a test that leaks a store per run fills the disk, and the
+/// A directory that removes itself - a test that leaks a store per run fills the disk, and the
 /// run that finds out is not this one.
 struct TempDir(PathBuf);
 
@@ -189,7 +189,7 @@ fn write_sse(mut stream: TcpStream) -> std::io::Result<()> {
 // The daemon, and the worktree it serves
 // ---------------------------------------------------------------------------
 
-/// A git repository with one commit — the bridge resolves a daemon by the workspace's hash, and
+/// A git repository with one commit - the bridge resolves a daemon by the workspace's hash, and
 /// `workspace_of` asks git for the toplevel.
 fn a_repository(at: &Path) {
     let run = |args: &[&str]| {
@@ -260,7 +260,7 @@ impl World {
 
         let socket = root.join("daemon.sock");
         // The bridge finds a folder's daemon by the workspace's hash, so `$LETIBOT_SOCKET`
-        // names this one — the same override the shell honours, and the only way a test can
+        // names this one - the same override the shell honours, and the only way a test can
         // be sure it is talking to the socket it started.
         unsafe { std::env::set_var("LETIBOT_SOCKET", &socket) };
 
@@ -269,7 +269,7 @@ impl World {
         cfg.seat = Seat::Leticode;
         cfg.allow_bash = true;
         // The byte vocabulary: a session whose turns go to a provider needs no GGUF, which
-        // is what keeps llama.cpp — and every model file on this box — out of this test.
+        // is what keeps llama.cpp - and every model file on this box - out of this test.
         cfg.vocab_gguf = None;
         cfg.provider = Some(ProviderConfig {
             name: "deepseek".into(),
@@ -322,7 +322,7 @@ impl World {
     }
 
     /// **One session the field's way**: `leticode_start` with a brief, and the turn it runs
-    /// waited for by its answer — so the session a phase stops has really turned.
+    /// waited for by its answer - so the session a phase stops has really turned.
     fn a_session(&self, bridge: &Bridge, worktree: &str) -> String {
         let started = bridge
             .start(
@@ -431,7 +431,7 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     let first = world.a_session(&bridge, &worktree);
     bridge.stop(&first).expect("the bridge stops the session");
     // The head's detach reaches the daemon on its own connection's thread, and ending a session
-    // is work — so the settle, not a fixed pause, is what says it is over.
+    // is work - so the settle, not a fixed pause, is what says it is over.
     let stopped = assert_idle("a session stopped after a turn");
 
     // --- 3. two sessions, ONE of them stopped ------------------------------

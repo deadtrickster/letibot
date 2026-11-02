@@ -25,7 +25,7 @@ mod status;
 mod time;
 mod view;
 
-/// Where the dashboard reads its plan from, relative to the project root — which is what a
+/// Where the dashboard reads its plan from, relative to the project root - which is what a
 /// project-scope layer's look resolves against.
 pub const STATUS_PATH: &str = ".letibot/status.json";
 
@@ -75,7 +75,7 @@ fn now() -> Option<i64> {
 fn view_before(input: &Value, now: Option<i64>) -> Value {
     let Ok(input) = Input::deserialize(input) else {
         // Unreadable is not the same as refused: a host that hands this pane something which is
-        // not a C3 input gets the first frame back — and the first frame asks for the file.
+        // not a C3 input gets the first frame back - and the first frame asks for the file.
         return to_value(loading());
     };
 
@@ -239,7 +239,7 @@ fn badge(status: &Status) -> Option<Badge> {
     None
 }
 
-/// `tiers`: one line per tier on the overview — the shape of the plan read down the frame — and a
+/// `tiers`: one line per tier on the overview - the shape of the plan read down the frame - and a
 /// table per tier behind the key, because the summary is a share of a row count and the rows are
 /// what a person acts on.
 fn tiers_panel(status: &Status) -> Panel {
@@ -545,8 +545,8 @@ fn blocked(tier: &Tier, row: &TierRow) -> Finding {
     }
 }
 
-/// The legend documents every label the frame actually uses — the tier line's `done/total`, each
-/// role's meaning, and every panel's denominator — so nothing in the frame is a word a reader has
+/// The legend documents every label the frame actually uses - the tier line's `done/total`, each
+/// role's meaning, and every panel's denominator - so nothing in the frame is a word a reader has
 /// to infer.
 fn legend(panels: &[Panel]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
@@ -606,7 +606,7 @@ fn frac(done: usize, total: usize) -> f64 {
     }
 }
 
-/// A tier is green when it is finished, working when something in it is, and quiet otherwise —
+/// A tier is green when it is finished, working when something in it is, and quiet otherwise  - 
 /// including a tier whose rows are all blocked, because "nothing is running" is what that means.
 fn tier_role(tier: &Tier) -> Role {
     let (done, total) = counts(tier);
@@ -768,7 +768,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The fixture a project copies, read here exactly as the plugin reads it over a look — an
+    /// The fixture a project copies, read here exactly as the plugin reads it over a look - an
     /// example that the crate beside it could not parse would be an example teaching the wrong
     /// shape.
     const EXAMPLE: &str = include_str!("../status.example.json");
@@ -831,7 +831,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Every stop in a view — lines and query-visible rows — because the contract's key rules are
+    /// Every stop in a view - lines and query-visible rows - because the contract's key rules are
     /// about stops, not about panels.
     fn stops(v: &Value) -> Vec<&Value> {
         let mut out = Vec::new();
@@ -1152,7 +1152,7 @@ mod tests {
             4
         );
 
-        // A frame with the state and no look — what a key press is — is the same dashboard.
+        // A frame with the state and no look - what a key press is - is the same dashboard.
         let again = view_at(
             &json!({"v": 1, "state": first["state"], "look": null,
                     "event": {"item": "tier1/sixty", "action": "look"}}),

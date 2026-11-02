@@ -1,4 +1,4 @@
-//! **The pickers**: sessions, and a setting's values — drawn by `rano::agent::picker` from
+//! **The pickers**: sessions, and a setting's values - drawn by `rano::agent::picker` from
 //! the daemon's session list and the setting's choices this head holds.
 
 use crate::app::*;
@@ -6,7 +6,7 @@ use crate::ui::render::row_strings;
 use rano::agent::picker::{SettingPicker, SettingValue};
 
 impl App {
-    /// The picker's rows as one list — the tests' entry point, since the drawing path reads
+    /// The picker's rows as one list - the tests' entry point, since the drawing path reads
     /// [`App::picker_layout`] for the row spans as well.
     #[cfg(test)]
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
@@ -19,7 +19,7 @@ impl App {
     pub(crate) fn picker_layout(&self, w: usize) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
         // **The list is the plugin's when there is one** (`app::sessions_pane`, the built-in
         // `sessions` layer); the head's own tree is the way out, and it draws through the same
-        // primitive with the same frame — one door, `App::picker_list`.
+        // primitive with the same frame - one door, `App::picker_list`.
         let content = self.picker_list(w).content;
         let stops = &content.stop_rows;
         let spans = stops
@@ -78,7 +78,7 @@ impl App {
                 "green: this box holds a key for it; the others ask for one when you take them"
                     .to_string()
             }),
-            // **Why the card is up, first, when the head opened it** — the model a message was
+            // **Why the card is up, first, when the head opened it** - the model a message was
             // about to go to could not be reached (`app::reach`). Under the list with the other
             // lines, not in the title: the click arithmetic counts the title as one row.
             consequence: self
@@ -90,7 +90,7 @@ impl App {
                 .chain(subject.consequence().iter().map(|l| l.to_string()))
                 .collect(),
         };
-        // The keys line, then the legend and the consequence, each one line — see
+        // The keys line, then the legend and the consequence, each one line - see
         // `SettingPicker::content`.
         let under = 1 + usize::from(picker.legend.is_some()) + picker.consequence.len();
         let content = picker.content(w);

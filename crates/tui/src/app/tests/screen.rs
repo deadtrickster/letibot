@@ -4,7 +4,7 @@ use super::*;
 
 /// **The window title is the session's name and the folder**, follows a rename, falls
 /// back to the short id for an untitled session, and carries no control character from
-/// a hostile title — the terminal would execute it.
+/// a hostile title - the terminal would execute it.
 #[test]
 fn the_window_title_names_the_session_and_follows_a_rename() {
     let mut a = app();
@@ -172,7 +172,7 @@ fn the_quit_card_can_stop_the_daemon_and_can_be_taken_back() {
     );
 
     // By number, without moving the cursor: the digit marks the row (R90.6), and the answer
-    // is the Enter after it — a digit that quit on its own stopped the daemon on the first
+    // is the Enter after it - a digit that quit on its own stopped the daemon on the first
     // character of a line somebody was typing.
     let mut b = app();
     b.clock(1_000);
@@ -231,7 +231,7 @@ fn the_composer_is_a_field_with_a_caret_in_it_and_no_prose() {
         "no prose inside the field: {:?}",
         screen[row]
     );
-    // The caret sits just past the prompt glyph, in an otherwise empty field —
+    // The caret sits just past the prompt glyph, in an otherwise empty field  -
     // and the field itself sits one gutter in from the terminal's edge.
     assert_eq!(col, 4 + App::GUTTER, "{:?}", screen[row]);
 
@@ -350,7 +350,7 @@ fn esc_leaves_the_setting_alone() {
 // FIRST and aims the click at the columns that frame recorded, because the target is where the
 // draw put it - a click against a test's own arithmetic would pass while the operator hit the border.
 
-/// **A click on the subagents label opens the subagents pane** — `ctrl-g`'s act under the
+/// **A click on the subagents label opens the subagents pane** - `ctrl-g`'s act under the
 /// pointer, aimed at the label the frame drew and not at a column the test computed.
 #[test]
 fn a_click_on_the_subagents_label_opens_the_subagents_pane() {
@@ -375,7 +375,7 @@ fn a_click_on_the_subagents_label_opens_the_subagents_pane() {
     let (col, w) = hits
         .subagents
         .expect("one subagent is running, so its label is drawn");
-    // The frame the click is measured against really does carry the label on that row —
+    // The frame the click is measured against really does carry the label on that row  -
     // the record and the glass agree, or the click below proves nothing.
     let row = screen
         .get(hits.row)
@@ -450,7 +450,7 @@ fn a_click_on_the_jobs_label_opens_the_jobs_pane_and_asks_for_its_table() {
 
 /// **A click one column outside a label opens nothing.** The labels are targets because
 /// the frame drew them there; the edge around them is furniture, and a click on it is a
-/// click nobody claimed — it must not reach a pane by rounding, luck or the gutter.
+/// click nobody claimed - it must not reach a pane by rounding, luck or the gutter.
 #[test]
 fn a_click_one_column_off_the_labels_opens_nothing() {
     let mut a = app();
@@ -517,7 +517,7 @@ fn a_click_one_column_off_the_labels_opens_nothing() {
 
 /// **A head with nothing in flight draws the edge but no label, and no click along it
 /// opens anything.** The counts are drawn only while they are true, so the click's target
-/// is absent with them — the same frame, the same row, nothing to claim the pointer.
+/// is absent with them - the same frame, the same row, nothing to claim the pointer.
 #[test]
 fn a_head_with_nothing_running_has_no_label_to_click() {
     let mut a = app();
@@ -587,7 +587,7 @@ fn a_narrow_edge_keeps_only_the_labels_it_drew() {
             elapsed_ms: 10,
         }],
     });
-    // 30 columns: no gutter, and an edge too narrow for both facts — the drawn line cuts
+    // 30 columns: no gutter, and an edge too narrow for both facts - the drawn line cuts
     // the jobs fact and keeps the subagents one.
     let screen = a.screen(30, 24);
     let hits = a

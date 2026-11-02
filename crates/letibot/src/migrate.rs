@@ -1,6 +1,6 @@
-//! **A session's whole daemon, on another machine — and back** (`docs/remote-hosts.md` RH4).
+//! **A session's whole daemon, on another machine - and back** (`docs/remote-hosts.md` RH4).
 //!
-//! The operator: *"move load from laptops — I start doing something, it starts eating resources
+//! The operator: *"move load from laptops - I start doing something, it starts eating resources
 //! and just stays on the hot laptop"*, then *"I want daemon migration to host thing now"*, and
 //! widening it: *"back and forth lol or just midween hosts"*. So this is not *up* and *down*: it
 //! is **one move with a source and a destination**, and `local` is an endpoint like any other.
@@ -15,25 +15,25 @@
 //!
 //! | what | how |
 //! |---|---|
-//! | **the session** | the store's rows, out of `letibot_tokencore::store::transfer` into a file, carried, and read in — with the same hash-chain check a resume makes |
+//! | **the session** | the store's rows, out of `letibot_tokencore::store::transfer` into a file, carried, and read in - with the same hash-chain check a resume makes |
 //! | **the tree** | `git bundle` of the source checkout's `HEAD`, cloned on the far side onto a branch `remote/<short id>`; nothing uncommitted is carried and the list of what was left behind is printed |
 //! | **the daemon** | `harnessd --session ID` on the destination, built there from a bundle of this tree at this commit (`cargo build --release --offline`) |
 //! | **the socket** | `ssh -N -L <local>:<remote>`, recorded beside the launcher's own daemon records so a head finds it where it finds any daemon |
 //!
 //! # Exactly one copy is live, and the marker says which
 //!
-//! A move does not delete the source: it marks it — `session.lives_on` — with the name of the
+//! A move does not delete the source: it marks it - `session.lives_on` - with the name of the
 //! endpoint holding the live copy, so `--sessions` says *lives on lab2x1 since …* rather than
 //! offering a conversation nobody is appending to. **The local store is the index of record**:
 //! every move rewrites the row here too, whatever hop the session took, because this is where
 //! the operator's `--sessions` and `--continue` are typed. That is what makes `lab2x1 ->
-//! lubuntu1` possible at all — the row here names lab2x1, so that is where the live copy is read
+//! lubuntu1` possible at all - the row here names lab2x1, so that is where the live copy is read
 //! from.
 //!
 //! # A still copy, and the two ways of making one
 //!
 //! Step one is quiesce: attach to the session's daemon and wait until
-//! [`Activity`](letibot_sessionlog::activity::Activity) is quiet — nothing in flight, nothing
+//! [`Activity`](letibot_sessionlog::activity::Activity) is quiet - nothing in flight, nothing
 //! owed, no monitor about to fire. A session stopped on a **card** is refused rather than waited
 //! out: the only thing that would clear it is a person, and a verb that silently waited for one
 //! would look like a hang.
@@ -54,8 +54,8 @@
 //! # What this module deliberately is NOT
 //!
 //! RH1 (`docs/remote-hosts.md`) runs a session's TOOLS on a host with the daemon staying here;
-//! this moves the daemon. They meet at two seams — `hosts.toml` and the git layout
-//! `root/<repo>/<short id>` — and both are implemented here *small and replaceable*, against the
+//! this moves the daemon. They meet at two seams - `hosts.toml` and the git layout
+//! `root/<repo>/<short id>` - and both are implemented here *small and replaceable*, against the
 //! doc's spelling, so whichever lands second can delete the copy instead of negotiating with it.
 
 use std::os::unix::net::UnixStream;
@@ -77,7 +77,7 @@ use letibot_tools::rpc::{Outcome, Retried};
 
 use crate::launcher;
 
-/// The name `local` has in this vocabulary — it is an endpoint like any other, and the marker
+/// The name `local` has in this vocabulary - it is an endpoint like any other, and the marker
 /// column spells it the way a host is spelled.
 pub const LOCAL: &str = "local";
 
@@ -108,7 +108,7 @@ const BUILD_PROGRESS: Duration = Duration::from_secs(10);
 /// host the same code path. **The ssh is `letibot_tools::remote::Ssh`** - one policy in this tree.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
-    /// `local`, or the host's table name — the spelling the marker column stores.
+    /// `local`, or the host's table name - the spelling the marker column stores.
     pub name: String,
     /// `None` for this box.
     pub ssh: Option<Ssh>,
@@ -144,7 +144,7 @@ impl Endpoint {
     }
 
     /// **The socket the session's daemon listens on**, for either kind of endpoint. A local
-    /// daemon is the folder's — `<rundir>/<key(workspace)>.sock`, the launcher's own rule — so
+    /// daemon is the folder's - `<rundir>/<key(workspace)>.sock`, the launcher's own rule - so
     /// the workspace is an argument here and not a lookup.
     pub fn daemon_socket_for(&self, session: &str, workspace: &str) -> String {
         if self.is_local() {
@@ -176,7 +176,7 @@ impl Endpoint {
         c
     }
 
-    /// **Run a shell script and capture it, inside its own bound** — [`STEP_BOUND`] on this box's
+    /// **Run a shell script and capture it, inside its own bound** - [`STEP_BOUND`] on this box's
     /// clock, because a verb whose next step is a 226 MB export must not sit on a host that stopped
     /// answering.
     fn run(&self, script: &str) -> Result<std::process::Output, String> {
@@ -184,7 +184,7 @@ impl Endpoint {
     }
 
     /// [`Endpoint::run`] for a step that cannot have changed anything: asked once more when the
-    /// first attempt does not answer ([`Retried::Once`] — the rule the backend follows, applied
+    /// first attempt does not answer ([`Retried::Once`] - the rule the backend follows, applied
     /// here so the two callers of an ssh call retry by the same class).
     fn read_step(&self, script: &str) -> Result<String, String> {
         let out = self.run_classed(script, Retried::Once, letibot_tools::remote::STEP_BOUND)?;
@@ -204,7 +204,7 @@ impl Endpoint {
         self.run_ok_within(script, letibot_tools::remote::STEP_BOUND)
     }
 
-    /// [`Endpoint::run_ok`] with a bound of its own — the build gets minutes, not seconds.
+    /// [`Endpoint::run_ok`] with a bound of its own - the build gets minutes, not seconds.
     fn run_ok_within(&self, script: &str, within: Duration) -> Result<String, String> {
         let out = self.run_classed(script, Retried::Never, within)?;
         if !out.status.success() {
@@ -266,8 +266,8 @@ impl Endpoint {
                 }
                 letibot_tools::rpc::Ended::Answered(out) => {
                     // ssh's own failure is 255 with nothing from the command. Of those, a
-                    // REFUSAL is definite — the machine answered and will go on answering the
-                    // same way — and the rest are lost connections.
+                    // REFUSAL is definite - the machine answered and will go on answering the
+                    // same way - and the rest are lost connections.
                     let dropped = out.status.code() == Some(255) && out.stdout.is_empty();
                     if !dropped {
                         letibot_tools::rpc::record(host, &step, took, Outcome::Ok);
@@ -362,14 +362,14 @@ impl Endpoint {
         }
         let quoted = sh_quote(path)?;
         // **Into a `.part` file, then renamed over `local`.** A caller can hand the same path for
-        // both ends — a bundle made on the source and pulled back through a temp file named the
-        // same — and creating `local` first would truncate the very file being read.
+        // both ends - a bundle made on the source and pulled back through a temp file named the
+        // same - and creating `local` first would truncate the very file being read.
         let part = local.with_extension("part");
         let out_file = std::fs::File::create(&part)
             .map_err(|e| format!("creating {}: {e}", part.display()))?;
         let began = Instant::now();
         let mut child = self
-            // **`base64 < file`, not `base64 file`** — BSD's base64 (a Mac, and a Mac is one of
+            // **`base64 < file`, not `base64 file`** - BSD's base64 (a Mac, and a Mac is one of
             // the two ends of a move) takes no file argument at all.
             .command(&format!("base64 < {quoted}"))
             .stdin(Stdio::null())
@@ -459,7 +459,7 @@ impl Endpoint {
     /// when its ssh does, and that is a fact about a socket somebody else may be using.
     fn spawn_detached(&self, argv_extra: &[String], say: &mut Say<'_>) -> Result<(), String> {
         let ssh = self.ssh.as_ref().expect("only a host is ssh'd to");
-        // The flags, then what makes this a forward, then the destination — a forward carries no
+        // The flags, then what makes this a forward, then the destination - a forward carries no
         // remote command, which is the one shape `Ssh::argv` does not spell.
         let mut full = vec![ssh.program().display().to_string()];
         full.extend(ssh.flags());
@@ -489,7 +489,7 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
-/// Single-quote a string for a shell, refusing one that cannot be quoted — a path with a `'` in
+/// Single-quote a string for a shell, refusing one that cannot be quoted - a path with a `'` in
 /// it is not one this verb has to support, and mangling it silently is worse than saying so.
 fn sh_quote(s: &str) -> Result<String, String> {
     if s.contains('\'') {
@@ -501,7 +501,7 @@ fn sh_quote(s: &str) -> Result<String, String> {
     Ok(format!("'{s}'"))
 }
 
-/// The first line of a script, for a refusal — the whole of it is noise and the first line names
+/// The first line of a script, for a refusal - the whole of it is noise and the first line names
 /// the act.
 fn first_line(script: &str) -> &str {
     script
@@ -561,7 +561,7 @@ pub struct Move {
     pub patience: Duration,
     /// Copy `~/.config/letibot/providers.toml` to the destination when it has none.
     pub copy_keys: bool,
-    /// **How long the destination's `cargo build` may take** — [`BUILD_BOUND`] unless the operator
+    /// **How long the destination's `cargo build` may take** - [`BUILD_BOUND`] unless the operator
     /// said (`--build-timeout`). A field rather than a constant read at the call, because a test
     /// that watched a real build would not be a test.
     pub build_bound: Duration,
@@ -580,7 +580,7 @@ impl Move {
         }
         // **The source's own build first, when the source is a host.** Everything below reads
         // that box's store through its own binary (this process cannot open a file over ssh), and
-        // a host that was moved TO has one — built by the move that put it there.
+        // a host that was moved TO has one - built by the move that put it there.
         if !self.from.is_local() {
             self.ensure_build(&self.from, say)?;
         }
@@ -634,7 +634,7 @@ impl Move {
         ));
 
         // The daemon, and the socket a head reaches it on. A LOCAL daemon is the launcher's to
-        // start — it is the folder's daemon, and starting one from here would be a second answer
+        // start - it is the folder's daemon, and starting one from here would be a second answer
         // to *which daemon does this folder have*.
         if !self.to.is_local() {
             self.start_daemon(&landed, say)?;
@@ -716,7 +716,7 @@ impl Move {
     /// **Wait until it is quiet, then make it still.**
     fn quiesce_and_shut(&self, facts: &Facts, say: &mut Say<'_>) -> Result<(), String> {
         // A host's daemon is reached through the forwarded socket, so the forward has to exist
-        // before it can be talked to — and it is the same forward a head uses, so establishing it
+        // before it can be talked to - and it is the same forward a head uses, so establishing it
         // here is not extra machinery.
         if !self.from.is_local() {
             self.forward(&self.from, &self.session, say)?;
@@ -824,11 +824,11 @@ impl Move {
 
         let landed = if self.to.is_local() {
             // **Back on a laptop, the branch is the result**: `remote/<host>/<short>`, and
-            // whether it is checked out is the operator's business — the parent reviews and
+            // whether it is checked out is the operator's business - the parent reviews and
             // merges, as with any worktree package.
             let dest = self.local_checkout()?;
             let refname = format!("remote/{}/{}", sanitize(&self.from.name), short);
-            // **The LOCAL copy of the bundle**, which is the one `git fetch` can open here — `at`
+            // **The LOCAL copy of the bundle**, which is the one `git fetch` can open here - `at`
             // is the path the bundle was made at, and on a host that is the host's.
             let here = sh_quote(&bundle.display().to_string())?;
             self.to.run_ok(&format!(
@@ -1028,7 +1028,7 @@ impl Move {
         })?;
         let staged = temp_path("providers")?;
         std::fs::write(&staged, &text).map_err(|e| format!("{}: {e}", staged.display()))?;
-        // The path is resolved ON THE HOST — `$HOME` is that machine's, and a `~` inside a
+        // The path is resolved ON THE HOST - `$HOME` is that machine's, and a `~` inside a
         // single-quoted argument would be a directory named `~`.
         let there = self.to.run_ok(
             "d=\"$HOME/.config/letibot\"; mkdir -p \"$d\" && chmod 700 \"$d\" && printf %s \
@@ -1259,7 +1259,7 @@ impl Move {
         })
     }
 
-    /// This tree's commit — what the far side must have been built from.
+    /// This tree's commit - what the far side must have been built from.
     fn local_commit(&self) -> Result<String, String> {
         let out = Command::new("git")
             .arg("-C")
@@ -1276,7 +1276,7 @@ impl Move {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// **The session's daemon on the host** — the same session id, so a head that knows the id
+    /// **The session's daemon on the host** - the same session id, so a head that knows the id
     /// finds it wherever it is.
     fn start_daemon(&self, landed: &Landed, say: &mut Say<'_>) -> Result<(), String> {
         let socket = self.to.daemon_socket(&self.session);
@@ -1406,7 +1406,7 @@ impl Move {
         Ok(())
     }
 
-    /// **Bring a dropped forward back, and the daemon with it** — what the launcher runs before it
+    /// **Bring a dropped forward back, and the daemon with it** - what the launcher runs before it
     /// attaches to a session that lives elsewhere.
     pub fn reattach(&self, say: &mut Say<'_>) -> Result<(), String> {
         if self.to.is_local() {
@@ -1461,12 +1461,12 @@ fn short_commit(commit: &str) -> &str {
 // The socket: quiesce, close, stop
 // -------------------------------------------------------------------------------------------
 
-/// `<rundir>/migrated-<session>.sock` — the local end of a moved session's forward.
+/// `<rundir>/migrated-<session>.sock` - the local end of a moved session's forward.
 pub fn forward_socket(session: &str) -> PathBuf {
     launcher::rundir().join(format!("migrated-{session}.sock"))
 }
 
-/// `<rundir>/migrated-<session>.json` — the record a head reads to find that socket, in the same
+/// `<rundir>/migrated-<session>.json` - the record a head reads to find that socket, in the same
 /// shape as the launcher's own (`workspace`, `socket`, …) so one reader serves both.
 pub fn record_path(session: &str) -> PathBuf {
     launcher::rundir().join(format!("migrated-{session}.json"))
@@ -1502,7 +1502,7 @@ fn quiesce(
     let mut activity = Activity::Quiet;
     let mut said: Vec<String> = Vec::new();
     loop {
-        // A frame that changes the answer, or 250 ms — whichever comes first. The timeout is not
+        // A frame that changes the answer, or 250 ms - whichever comes first. The timeout is not
         // the mechanism; it is what lets the deadline above be looked at.
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(ServerFrame::Hello { snapshot, .. }) => {
@@ -1569,7 +1569,7 @@ fn quiesce(
     }
 }
 
-/// **Close this session and wait for the daemon's answer** — the proof that it read the frame, not
+/// **Close this session and wait for the daemon's answer** - the proof that it read the frame, not
 /// merely that one was written.
 fn close_session(
     mut client: HeadClient,
@@ -1602,7 +1602,7 @@ fn close_session(
             Ok(_) => continue,
             Err(_) => {
                 // The session's hub closes as part of the close, so the connection ending IS the
-                // answer for a session this daemon held — the frame's own doc says so.
+                // answer for a session this daemon held - the frame's own doc says so.
                 say(&format!(
                     "{session} is closed on its daemon — nothing can append to it while it moves"
                 ));
@@ -1613,7 +1613,7 @@ fn close_session(
 }
 
 /// **Stop the daemon a move started.** It serves exactly this session, so the daemon-level stop is
-/// the narrower act here — the opposite of the local case, and the module header says why.
+/// the narrower act here - the opposite of the local case, and the module header says why.
 fn stop_daemon(
     mut client: HeadClient,
     frames: Receiver<ServerFrame>,
@@ -1647,7 +1647,7 @@ fn stop_daemon(
     Ok(())
 }
 
-/// The last eight characters of a session id — the branch and worktree suffix
+/// The last eight characters of a session id - the branch and worktree suffix
 /// (`docs/remote-hosts.md`'s `session-short-id`).
 pub fn short_id(session: &str) -> String {
     let mut chars: Vec<char> = session.chars().collect();
@@ -1716,7 +1716,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     let mut src: Option<PathBuf> = None;
     let mut patience = QUIESCE_PATIENCE;
     let mut build_bound = BUILD_BOUND;
-    // The far side's sub-verbs — internal, and flags so a host's `letibot` reads its command line
+    // The far side's sub-verbs - internal, and flags so a host's `letibot` reads its command line
     // like any other program.
     let mut export: Option<String> = None;
     let mut import: Option<String> = None;
@@ -1879,7 +1879,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         root: String::new(),
     };
 
-    // **Where the session lives NOW** — the local row's marker, because the local store is the
+    // **Where the session lives NOW** - the local row's marker, because the local store is the
     // index of record. This is what makes `--to lubuntu1` work for a session already on lab2x1.
     let local_store =
         Store::open(&store_path).map_err(|e| format!("opening {}: {e}", store_path.display()))?;
@@ -1958,8 +1958,8 @@ fn run_inner(args: &[String]) -> Result<(), String> {
 /// A host's endpoint: its root resolved to an absolute path ON that box, once, so that every later
 /// path is absolute and a `~` never has to survive a quoting layer.
 fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
-    // **The connection first**, because the two refusals it gives — a key that is missing or
-    // inside the operator's own ssh directory, and a host key nobody has accepted for letibot —
+    // **The connection first**, because the two refusals it gives - a key that is missing or
+    // inside the operator's own ssh directory, and a host key nobody has accepted for letibot  -
     // have to arrive before a byte moves, not after the store has been exported.
     let ssh = Ssh::connect(host.clone(), None, Paths::from_env())?;
     let probe = Endpoint {
@@ -2023,7 +2023,7 @@ fn usage() -> String {
 mod tests {
     use super::*;
 
-    /// **The file's grammar, and that a typo is refused rather than ignored** — through the one
+    /// **The file's grammar, and that a typo is refused rather than ignored** - through the one
     /// reader this box has, which is `crates/tools`'s since RH5: a migration and a remote session
     /// must not read one file two ways.
     #[test]
@@ -2072,7 +2072,7 @@ mod tests {
         assert_eq!(short_id(""), "session");
     }
 
-    /// A path with a quote in it is refused rather than mangled — the one thing this module's
+    /// A path with a quote in it is refused rather than mangled - the one thing this module's
     /// quoting cannot carry.
     #[test]
     fn a_path_with_a_quote_cannot_be_quoted_and_says_so() {

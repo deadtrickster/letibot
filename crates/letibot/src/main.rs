@@ -1,4 +1,4 @@
-//! `letibot` — one executable, several roles.
+//! `letibot` - one executable, several roles.
 //!
 //! A person types `letibot`. `sudo` runs a program path with no arguments. The
 //! daemon execs the render helpers by path. Those three callers cannot agree on an
@@ -18,7 +18,7 @@
 //!
 //! # Why argv[0] and not only subcommands
 //!
-//! **`sudo` is handed a program path and invokes it with no arguments** — the prompt
+//! **`sudo` is handed a program path and invokes it with no arguments** - the prompt
 //! is `argv[1]`, so `letibot askpass` cannot work there; there is nowhere to put the
 //! word `askpass`. `crates/harnessd/src/sudo.rs` writes `SUDO_ASKPASS=…` pointing at a
 //! file and looks for that file beside the daemon **by name**. So a role has to be
@@ -29,14 +29,14 @@
 //! # Why one binary
 //!
 //! MEASURED before the merge: `harnessd` 33.2 MB, `letibot-tui` 22.7 MB,
-//! `letibot-askpass` 2.5 MB — the three the installer ships, **58.4 MB**, and all
+//! `letibot-askpass` 2.5 MB - the three the installer ships, **58.4 MB**, and all
 //! three link `sessionlog`, `transcript`, `tools` and `provider`. One binary links
 //! each of those once, so `askpass` stops costing a whole Rust runtime to ask for a
 //! password. It is also one download, one checksum, one version.
 //!
 //! # The name table is a REGISTRY, and a duplicate is refused at BUILD time
 //!
-//! This is a dispatch table — exactly the shape that can hold a name twice, and this
+//! This is a dispatch table - exactly the shape that can hold a name twice, and this
 //! tree has found two of those recently (`symbolic-ref` in two match arms,
 //! `SetOperatorTodos` twice in a frame list). **Rust does not refuse a duplicate
 //! `match` arm**: MEASURED, a repeated string arm is `warning: unreachable pattern`,
@@ -45,7 +45,7 @@
 //!
 //! So there is one table, and the two `const` assertions below make a duplicate a
 //! COMPILE ERROR with the offence in the message. Deliberately stronger than a test,
-//! because a test that does not gate is the same as no test — and stronger than the
+//! because a test that does not gate is the same as no test - and stronger than the
 //! `match` this replaced, which could not see across the two kinds.
 //!
 //! # The symlinks are the interface, so they are load-bearing
@@ -96,7 +96,7 @@ pub const ALL_ROLES: &[Role] = &[
 /// How a name reaches a role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// A file NAME, for `argv[0]` — the symlink `install.sh` creates.
+    /// A file NAME, for `argv[0]` - the symlink `install.sh` creates.
     Program,
     /// A WORD a person types after `letibot`.
     Word,
@@ -156,7 +156,7 @@ const fn role_eq(a: Role, b: Role) -> bool {
     )
 }
 
-/// Every name is unique — across BOTH kinds, so a word may not collide with a program
+/// Every name is unique - across BOTH kinds, so a word may not collide with a program
 /// name either. That cross-kind collision is the one a `match` could never see.
 const fn is_disjoint(reg: &[(&str, Role, Kind)]) -> bool {
     let mut i = 0;
@@ -173,7 +173,7 @@ const fn is_disjoint(reg: &[(&str, Role, Kind)]) -> bool {
     true
 }
 
-/// Every role has exactly one `Program` name, and at least one `Word` — a role nobody
+/// Every role has exactly one `Program` name, and at least one `Word` - a role nobody
 /// can type is a role nobody can use, and a role with two program names is a symlink
 /// question with no answer.
 const fn every_role_has_one_program_name(reg: &[(&str, Role, Kind)]) -> bool {
@@ -265,7 +265,7 @@ fn main() -> ExitCode {
     let rest: Vec<std::ffi::OsString> = argv.collect();
 
     // **The name we were invoked by wins.** A symlink called `letibot-askpass` is
-    // `sudo` talking, and its first argument is the prompt — reading it as a
+    // `sudo` talking, and its first argument is the prompt - reading it as a
     // subcommand would eat the prompt and then refuse an unknown role.
     if let Some(role) = Path::new(&arg0).file_name().and_then(Role::from_argv0) {
         return roles::run(role, &rest);
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(Role::from_argv0(OsStr::new("tui")), None);
     }
 
-    /// The table itself, checked as data — the const assertion makes a duplicate
+    /// The table itself, checked as data - the const assertion makes a duplicate
     /// impossible to BUILD, and this makes the failure readable if somebody removes
     /// the assertion.
     #[test]

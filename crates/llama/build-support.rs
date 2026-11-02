@@ -10,7 +10,7 @@ const DEFAULT_LLAMA_DIR: &str = "/home/dead/Projects/llama.cpp";
 /// and not one because the two boxes disagree about which they build.
 const LLAMA_LIB_SUBDIRS: [&str; 2] = ["build-glm/bin", "build/bin"];
 
-/// What a `libllama` is called, by platform — the first that exists names the one.
+/// What a `libllama` is called, by platform - the first that exists names the one.
 const LLAMA_LIBRARIES: [&str; 3] = ["libllama.so", "libllama.dylib", "libllama.a"];
 
 /// The checkouts this box may have, in the order they are tried: the variable, then the

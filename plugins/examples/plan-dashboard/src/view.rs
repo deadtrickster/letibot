@@ -1,6 +1,6 @@
 //! **The pane contract's types** (`docs/plugins-slice1.md` C3), in serde: the input the host calls
 //! the hook with, and the `View` it reads back. They are written out here rather than imported
-//! from the host because a plugin is a separate crate with its own copy of the contract — the host
+//! from the host because a plugin is a separate crate with its own copy of the contract - the host
 //! validates an answer into *its* types, and this one has to produce JSON that survives that.
 //!
 //! The shape is serenedash's, which is why nothing is looser than it has to be: every bar carries
@@ -77,7 +77,7 @@ pub struct Look {
 }
 
 impl Look {
-    /// A path, read by the host — which is what the `read` capability buys, and all this plugin
+    /// A path, read by the host - which is what the `read` capability buys, and all this plugin
     /// asks for.
     pub fn read(path: &str) -> Look {
         Look {
@@ -94,7 +94,7 @@ pub struct Panel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     pub title: String,
-    /// What every bar in this panel is a share of — C3 makes this obligatory, because a bar
+    /// What every bar in this panel is a share of - C3 makes this obligatory, because a bar
     /// without a denominator is a decoration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denominator: Option<String>,
@@ -106,7 +106,7 @@ pub struct Panel {
     pub unavailable: Option<Unavailable>,
 }
 
-/// A panel that could not get its data: why, and what to do about it — never an empty drawing.
+/// A panel that could not get its data: why, and what to do about it - never an empty drawing.
 #[derive(Debug, Clone, Serialize)]
 pub struct Unavailable {
     pub why: String,
@@ -141,7 +141,7 @@ impl Block {
     }
 }
 
-/// One row of the grid: label, right-aligned value, a bar, a tail — laid out by the host so the
+/// One row of the grid: label, right-aligned value, a bar, a tail - laid out by the host so the
 /// numbers line up down the frame.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Line {
@@ -191,7 +191,7 @@ pub struct Kv {
 }
 
 /// Everything that tripped, in one list, each with what was measured, the numbers behind it, the
-/// fix and how to check it — one Enter reads one whole.
+/// fix and how to check it - one Enter reads one whole.
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
     pub id: String,
@@ -255,7 +255,7 @@ impl Action {
     }
 }
 
-/// **The colour language**, and the one sentence each colour means — the legend and the hover show
+/// **The colour language**, and the one sentence each colour means - the legend and the hover show
 /// the same string, so a reader is never guessing what "attention" was claiming.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]

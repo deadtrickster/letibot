@@ -63,7 +63,7 @@ pub fn close_the_turn(
     ledger.reconcile(turn_id, &said).steering()
 }
 
-/// [`close_the_turn`] for a seat whose plan tool is `todo_write` — the board line reads `plan`
+/// [`close_the_turn`] for a seat whose plan tool is `todo_write` - the board line reads `plan`
 /// (R93.F30; see [`ledger::Reconciliation::steering_over`]).
 pub fn close_the_turn_over(
     ledger: &IntentLedger,
@@ -196,7 +196,7 @@ mod tests {
                 .unwrap()
                 .access
         };
-        // Session state, not the operator's tree, and not `Read` — which is the
+        // Session state, not the operator's tree, and not `Read` - which is the
         // hole `docs/tool-survey.md` §1.4 found in grok-build.
         assert_eq!(by("todo"), Access::Session);
         assert_eq!(by("goal"), Access::Session);

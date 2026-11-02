@@ -60,7 +60,7 @@ fn settled(job: &str, state: &str, arrived: SystemTime) -> JobCompletion {
     }
 }
 
-/// A session's watcher set — a ROOT's when `child` is false, a child's (joined to a parent's
+/// A session's watcher set - a ROOT's when `child` is false, a child's (joined to a parent's
 /// tree, which is what gives it a level above) when true.
 fn watchers(hub: &Arc<Hub>, child: bool) -> Arc<JobWatchers> {
     let own = JobWatchers::watching_tasks(hub, None);
@@ -99,7 +99,7 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
         held: Default::default(),
         todos: None,
         // These fixtures are about deliveries, not about the tree: a session with no parent
-        // words a message `message from session `<id>`` — see `message_from_a_session`.
+        // words a message `message from session `<id>`` - see `message_from_a_session`.
         parent: None,
     }
 }
@@ -173,7 +173,7 @@ fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
     );
 }
 
-/// A ROOT's watcher set rung through a real registry's bell, with its hub adopted — so a test can
+/// A ROOT's watcher set rung through a real registry's bell, with its hub adopted - so a test can
 /// ask the worker's own question, *is there a wake for this session?*
 fn rung_watchers() -> (
     Arc<Hub>,
@@ -344,7 +344,7 @@ fn the_held_counts_are_said_on_the_hub_when_they_change() {
     assert_eq!(held_said(&hub), [(1, 1, 1), (0, 0, 0)]);
 }
 
-/// **A `when: job` row's job is delivered at once — to a ROOT too**, at the round boundary of the
+/// **A `when: job` row's job is delivered at once - to a ROOT too**, at the round boundary of the
 /// turn that is running. (Before R79 a root heard nothing mid-turn: its every settlement waited
 /// for the turn to end and then cost a wake turn.) A routine one beside it stays held.
 #[test]
@@ -379,7 +379,7 @@ fn a_when_job_rows_job_is_delivered_at_once() {
     assert_eq!(rec[0]["batch"], 1);
 }
 
-/// **The failure of a needed job is immediate** — named by the slug the row used — and recorded
+/// **The failure of a needed job is immediate** - named by the slug the row used - and recorded
 /// as a broken dependency rather than as a need met.
 #[test]
 fn the_failure_of_a_needed_job_is_immediate() {
@@ -407,7 +407,7 @@ fn the_failure_of_a_needed_job_is_immediate() {
 }
 
 /// **`wake: "now"` is immediate**, and so is a result the model asked for with a wait after it
-/// had been held — the sort re-reads what is held against what is wanted now.
+/// had been held - the sort re-reads what is held against what is wanted now.
 #[test]
 fn wake_now_and_a_wait_are_immediate() {
     let dir = Scratch::new("r79-now");
@@ -441,7 +441,7 @@ fn wake_now_and_a_wait_are_immediate() {
 }
 
 /// **The starvation cap**: a turn running with a result held past the (here shortened) cap gets
-/// the batch at its next round boundary anyway, as one note — and not before.
+/// the batch at its next round boundary anyway, as one note - and not before.
 #[test]
 fn the_starvation_cap_releases_the_batch_mid_turn() {
     let dir = Scratch::new("r79-cap");
@@ -628,7 +628,7 @@ fn a_wait_ons_grace_lasts_until_the_turn_after_the_completion_was_read() {
     );
 }
 
-/// **A result HELD under R79 is undelivered too, and quiet** — and so is a completion delivered as
+/// **A result HELD under R79 is undelivered too, and quiet** - and so is a completion delivered as
 /// a wake's own turn start, until the turn after it. The held queue is the other place an ended job
 /// can sit unread; pg-noop, 2026-10-11.
 #[test]
@@ -670,7 +670,7 @@ fn the_grace_has_a_backstop_and_the_clock_is_armed_for_it() {
     let now = SystemTime::now();
     assert!(askable(&board, &w, cap, now).is_empty(), "four minutes in");
 
-    // The clock: nothing askable, so it is armed for the backstop's end — about six minutes out.
+    // The clock: nothing askable, so it is armed for the backstop's end - about six minutes out.
     let jobs = graced_endings(
         letibot_tools::builtins::todo::RunningJobs::none(),
         &board,
@@ -810,7 +810,7 @@ fn a_want_is_forgotten_when_its_result_is_delivered_in_a_batch_or_already_was() 
     w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
     assert!(s.try_next().is_none(), "a routine completion is held");
     assert_eq!(w.held_count(), 1);
-    // Wanted only now, while it is held — and then handed over with the batch.
+    // Wanted only now, while it is held - and then handed over with the batch.
     w.want_now("j1", WantedNow::Awaited);
     assert!(d.batch(crate::delivery::Rule::Batch).is_some());
     assert_eq!(

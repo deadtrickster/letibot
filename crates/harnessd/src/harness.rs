@@ -173,7 +173,7 @@ impl Parts {
             tasks,
             lsp,
             skills,
-            // The daemon-wide board map, over the same store the sessions write — see the
+            // The daemon-wide board map, over the same store the sessions write - see the
             // field's doc for why it is here and not on a harness.
             child_boards: crate::child_todos::ChildBoards::shared(cfg.store.clone()),
             // A root session is its own tree; it has no parent's watcher set to join.
@@ -228,7 +228,7 @@ pub enum HarnessError {
 
 impl HarnessError {
     /// **The HTTP failure underneath this error**, for the two questions asked after it is
-    /// said — never for re-deciding whether to retry, which the ladder already answered.
+    /// said - never for re-deciding whether to retry, which the ladder already answered.
     pub fn http_cause(&self) -> Option<&letibot_turn::HttpError> {
         match self {
             HarnessError::Turn(TurnFailure::Http(e)) | HarnessError::Endpoint { cause: e, .. } => {
@@ -316,7 +316,7 @@ pub struct Reply {
     /// turn that only called tools and then stopped, and it is reported as empty
     /// rather than as the tool output.
     pub text: String,
-    /// One entry per submission — so a turn that called three tools has four.
+    /// One entry per submission - so a turn that called three tools has four.
     pub metrics: Vec<TurnMetrics>,
     pub rounds: usize,
     pub tool_calls: usize,
@@ -332,7 +332,7 @@ impl Reply {
         self.metrics.iter().filter_map(|m| m.f_keep()).collect()
     }
 
-    /// `f_sim` — cached over *this* prompt, per submission. Falls as the
+    /// `f_sim` - cached over *this* prompt, per submission. Falls as the
     /// conversation grows; see `TurnMetrics::f_sim`. Never compare it to a
     /// `f_keep` threshold.
     pub fn f_sim(&self) -> Vec<f64> {
@@ -344,15 +344,15 @@ impl Reply {
 /// moment it was appended.
 struct Said {
     speaker: Speaker,
-    /// **At most [`UTTERANCE_CHARS`] characters** — see [`TrailMirror::say`].
+    /// **At most [`UTTERANCE_CHARS`] characters** - see [`TrailMirror::say`].
     text: String,
-    /// It was longer than that when it was said, and says so — the flag is what
+    /// It was longer than that when it was said, and says so - the flag is what
     /// `Utterance::clipped` reports, and it is recorded here rather than recomputed
     /// because the text this struct holds is already the clipped one.
     clipped: bool,
     /// Which turn of this session it belongs to.
     turn: u32,
-    /// When it was said. `None` for a row rebuilt from the store — see
+    /// When it was said. `None` for a row rebuilt from the store - see
     /// [`TrailMirror`].
     at: Option<Instant>,
 }
@@ -432,7 +432,7 @@ impl TrailMirror {
         }
     }
 
-    /// **What the trail holds**, in bytes of text and in utterances — the third term of a
+    /// **What the trail holds**, in bytes of text and in utterances - the third term of a
     /// hub's [`Footprint`](letibot_sessionlog::hub::Footprint), read live because this is
     /// already shared behind its own lock.
     pub(crate) fn held(&self) -> (usize, usize) {
@@ -460,7 +460,7 @@ impl TrailMirror {
                 if text.trim().is_empty() {
                     continue;
                 }
-                // The same two caps a live utterance gets — see `say`. A resumed session's
+                // The same two caps a live utterance gets - see `say`. A resumed session's
                 // rows are the same text by the same rule, so a seeded trail and a live one
                 // are one bound.
                 let clipped = text.chars().count() > UTTERANCE_CHARS;
@@ -495,7 +495,7 @@ impl TrailMirror {
         self.lock().claim.clone()
     }
 
-    /// Record it. Called with the assistant's own prose for a turn — the sentence
+    /// Record it. Called with the assistant's own prose for a turn - the sentence
     /// before the tool calls, which is where a model says what it is about to do.
     fn claims(&self, text: &str) {
         let t = text.trim();
@@ -705,11 +705,11 @@ pub struct HubSteering {
     /// harness so a firing is delivered exactly once, whether it is picked up
     /// mid-turn here or between turns by [`Harness::wake`].
     monitor_cursor: Arc<AtomicUsize>,
-    /// **This session's results, delivered by R79's rules** — the immediates at every round
+    /// **This session's results, delivered by R79's rules** - the immediates at every round
     /// boundary, the held batch only past the starvation cap. `None` in a test that has no
     /// daemon behind it.
     deliveries: Option<Deliveries>,
-    /// **This session's children** — the tree's downward edge. An `Interrupt` that reaches a
+    /// **This session's children** - the tree's downward edge. An `Interrupt` that reaches a
     /// running turn IS this session being stopped, and a supervisor stops its children before
     /// it goes (see [`HarnessTaskRunner`]). `None` in a test with no session behind it.
     subagents: Option<Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
@@ -753,11 +753,11 @@ const WORKSPACE_GONE: &str = "workspace_gone";
 #[cfg(target_os = "macos")]
 const BOUNDARY_ABSENT: &str = "boundary_absent";
 
-/// The warning code for a session whose tools run on another machine — where its tree is,
+/// The warning code for a session whose tools run on another machine - where its tree is,
 /// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).
 const REMOTE_PLACEMENT: &str = "remote_placement";
 
-/// **"workspace gone", in one sentence** — said when a session opens or wakes on a workspace that
+/// **"workspace gone", in one sentence** - said when a session opens or wakes on a workspace that
 /// no longer exists (R92.24).
 fn workspace_gone(workspace: &std::path::Path) -> String {
     format!(
@@ -811,11 +811,11 @@ fn monitor_facts(fired: &[letibot_tools::exec::monitor::Firing]) -> serde_json::
     serde_json::json!({"fired": rows})
 }
 
-/// **How many ended monitors the pane lists** — the newest. A session that ran a repeating watch
+/// **How many ended monitors the pane lists** - the newest. A session that ran a repeating watch
 /// all day would otherwise ship its whole history with every job-table refill.
 pub const MONITORS_ENDED_SHOWN: usize = 20;
 
-/// **What reaps a monitor, as a person says it** — `session`, `turn`, or a named scope's own name;
+/// **What reaps a monitor, as a person says it** - `session`, `turn`, or a named scope's own name;
 /// the scope's id (`session.s0`) is the daemon's, not the reader's.
 fn owner_words(s: &letibot_tools::exec::scope::ScopeId) -> String {
     use letibot_tools::exec::scope::ScopeKind;
@@ -826,7 +826,7 @@ fn owner_words(s: &letibot_tools::exec::scope::ScopeId) -> String {
     }
 }
 
-/// **Who armed a monitor, as a person says it** — `turn pr-watch` was the harness on a
+/// **Who armed a monitor, as a person says it** - `turn pr-watch` was the harness on a
 /// `gh pr create`, `turn restart` a restart re-arming its stored call; a model's own turn is
 /// said as it is.
 fn declared_words(by: &str) -> String {
@@ -902,7 +902,7 @@ mod monitor_rows {
     use letibot_tools::exec::monitor::{DEFAULT_TTL, Monitors, Watch};
     use letibot_tools::exec::scope::{ScopeId, ScopeKind};
 
-    /// **The monitors pane's rows** — a live repeating watch is one row with its firing count and
+    /// **The monitors pane's rows** - a live repeating watch is one row with its firing count and
     /// its deadline; a one-shot that fired and one the operator retired are ended rows saying how,
     /// in the order they ended.
     #[test]
@@ -980,11 +980,11 @@ mod monitor_rows {
     }
 }
 
-/// Who `monitor`'s own `retire` op says retired a watch (`builtins::monitor`) — the model's act,
+/// Who `monitor`'s own `retire` op says retired a watch (`builtins::monitor`) - the model's act,
 /// which [`monitor_notice`] does not announce back to it.
 const MODEL_RETIRE: &str = "the model";
 
-/// Who a retire from the monitors pane says retired a watch — announced to the model, unlike its
+/// Who a retire from the monitors pane says retired a watch - announced to the model, unlike its
 /// own ([`MODEL_RETIRE`]).
 const OPERATOR_RETIRE: &str = "the operator";
 
@@ -1007,7 +1007,7 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     }
     for c in done {
         // R93.C3: no byte count (a number with nothing to do), and the command only for a job
-        // ANOTHER session started — the model wrote its own one call ago, and echoing it back in
+        // ANOTHER session started - the model wrote its own one call ago, and echoing it back in
         // full was most of the notice.
         let whose = if mine {
             String::new()
@@ -1077,7 +1077,7 @@ fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
         } else {
             format!(" (started by `{}`)", c.owner)
         };
-        // **The child by its name**, `fix-login · s-…-sub-3` — the job rule, and the same
+        // **The child by its name**, `fix-login · s-…-sub-3` - the job rule, and the same
         // spelling `task` printed when it started the child. A child nobody named (a settlement
         // from a daemon before names) is its bare handle, byte for byte what this always said.
         let label = letibot_tools::builtins::task::subagent_label(c.slug.as_deref(), &c.job);
@@ -1105,13 +1105,13 @@ fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
     s
 }
 
-/// **The closing a `[job]` notice for this session's own jobs ends with**, up to its handles — the
+/// **The closing a `[job]` notice for this session's own jobs ends with**, up to its handles - the
 /// words the head's fold and job card recognise (`tui`'s `PROMISES` and `CLOSINGS`).
 pub const JOB_CLOSING: &str = "Output: `job_output` ";
 /// The same for a `[task]` notice of this session's own children.
 pub const TASK_CLOSING: &str = "Full answer: `task_result` ";
 
-/// `job="j1", job="j2"` — the real handles, never a placeholder.
+/// `job="j1", job="j2"` - the real handles, never a placeholder.
 fn handles_as(field: &str, done: &[JobCompletion]) -> String {
     done.iter()
         .map(|c| format!("{field}=\"{}\"", c.job))
@@ -1122,7 +1122,7 @@ fn handles_as(field: &str, done: &[JobCompletion]) -> String {
 /// and are told apart here rather than in two queues, because two queues would be the second mechanism
 /// the ruling avoided. `owner != me` is what says whose a settlement was.
 fn completion_notices(done: Vec<JobCompletion>, me: &str, rows: &[TodoItem]) -> Vec<String> {
-    // **Mine first**, then what was handed up — so a session reading one wake reads its
+    // **Mine first**, then what was handed up - so a session reading one wake reads its
     // own settlements before its children's, and the order of the two groups cannot be
     // mistaken for one list.
     let (theirs, mine): (Vec<JobCompletion>, Vec<JobCompletion>) =
@@ -1227,14 +1227,14 @@ pub(crate) fn graced_endings(
     jobs
 }
 
-/// The opening words of [`waiting_on_these`]' line for one completion — what the head's fold
+/// The opening words of [`waiting_on_these`]' line for one completion - what the head's fold
 /// (`tui`'s `folded_notice`) and job card recognise the line by.
 pub const WAITING_ON_THIS: &str = "Waiting on this: ";
 /// The same for a group of several completions.
 pub const WAITING_ON_THESE: &str = "Waiting on these: ";
 
 /// **The held batch, as one note** (R79): the `[meanwhile]` line, then the settlements in
-/// [`completion_notices`]' own words — unchanged, so the head's compact job rows read the groups
+/// [`completion_notices`]' own words - unchanged, so the head's compact job rows read the groups
 /// under the heading exactly as they read a wake's.
 fn meanwhile_notice(
     batch: Vec<JobCompletion>,
@@ -1300,13 +1300,13 @@ impl Deliveries {
         }
         self.log.immediates(&now, std::time::SystemTime::now());
         let done: Vec<JobCompletion> = now.into_iter().map(|(c, _)| c).collect();
-        // **Delivered, and recorded as such** — the fact the plan check's grace reads
+        // **Delivered, and recorded as such** - the fact the plan check's grace reads
         // (`JobWatchers::grace_left`).
         self.watch.read_now(&done);
         completion_notices(done, &self.me, &rows)
     }
 
-    /// The board the notices name rows from — empty in a test with no board.
+    /// The board the notices name rows from - empty in a test with no board.
     fn rows(&self) -> Vec<TodoItem> {
         self.todos
             .as_ref()
@@ -1314,7 +1314,7 @@ impl Deliveries {
             .unwrap_or_default()
     }
 
-    /// **The held batch, taken and recorded**, as one `[meanwhile]` note — or `None` when nothing
+    /// **The held batch, taken and recorded**, as one `[meanwhile]` note - or `None` when nothing
     /// is held.
     pub(crate) fn batch(&self, rule: crate::delivery::Rule) -> Option<String> {
         let held = self.watch.take_held();
@@ -1375,7 +1375,7 @@ impl Deliveries {
         skip: impl Fn(&JobCompletion) -> bool,
         held_rule: crate::delivery::Rule,
     ) -> (BetweenTurns, Vec<JobCompletion>) {
-        // **Taken means owed until the turn that says it begins** — marked before the take,
+        // **Taken means owed until the turn that says it begins** - marked before the take,
         // because `pending` and `held` are what a reader waits on and the take is what clears
         // them. Without it the activity read quiet between the drain and the clock.
         if self.watch.pending() || self.watch.held_count() > 0 {
@@ -1416,7 +1416,7 @@ impl Deliveries {
         (BetweenTurns { now, batch }, said)
     }
 
-    /// **These results are in front of the model now** — the read record the plan check's grace
+    /// **These results are in front of the model now** - the read record the plan check's grace
     /// reads, and a subagent's `delivered` in the store.
     pub(crate) fn read(&self, told: &[JobCompletion]) {
         if !told.is_empty() {
@@ -1424,7 +1424,7 @@ impl Deliveries {
         }
     }
 
-    /// **These results were never told** — the turn that was to carry them did not open — so
+    /// **These results were never told** - the turn that was to carry them did not open - so
     /// they are held again, for the next break to say.
     pub(crate) fn put_back(&self, untold: Vec<JobCompletion>) {
         if !untold.is_empty() {
@@ -1461,7 +1461,7 @@ impl SteeringSource for HubSteering {
             return Some(m);
         }
         // The head first: somebody is waiting on it. Steering-scoped, so a
-        // compaction queued behind this turn stays queued for the worker — see
+        // compaction queued behind this turn stays queued for the worker - see
         // [`Hub::try_steering_command`].
         if let Some(cmd) = self.hub.try_steering_command() {
             return match cmd.kind {
@@ -1587,7 +1587,7 @@ impl SteeringSource for HubSteering {
         if fired.is_empty() {
             return None;
         }
-        // A firing is immediate by R79's rules and recorded as one — every one, even those
+        // A firing is immediate by R79's rules and recorded as one - every one, even those
         // the sentence leaves out (R93.C8).
         if let Some(d) = &self.deliveries {
             d.log_firings(&fired);
@@ -1600,7 +1600,7 @@ impl SteeringSource for HubSteering {
     }
 
     /// The take-back the operator issued from a head: the hub drops the head's still-queued prompts and
-    /// the engine's `Pending` drops the held text when this returns true. Both halves are one recall —
+    /// the engine's `Pending` drops the held text when this returns true. Both halves are one recall  -
     /// one prompt is in the hub's queue, another is already held here.
     fn try_withdraw(&mut self) -> bool {
         self.hub.try_withdraw_command()
@@ -1659,7 +1659,7 @@ pub struct Harness {
     /// the engine moves, so a session that changed weights measures notes it now speaks.
     note_vocab: Arc<Vocab>,
     /// **The skills this daemon loaded**, which the prompt's index is composed from and the page's
-    /// rows are read off — the same `Arc` the `skill` tool and the dashboard hold, so a pane and a
+    /// rows are read off - the same `Arc` the `skill` tool and the dashboard hold, so a pane and a
     /// prompt cannot list two different corpora.
     skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
     session: Session,
@@ -1678,7 +1678,7 @@ pub struct Harness {
     /// since rewriting message 0 forces a full cold re-prefill.
     prefix: StablePrefix,
     /// The store's content address for [`Harness::prefix`]. Empty when there is no
-    /// store, and never read in that case — compaction is refused before the id
+    /// store, and never read in that case - compaction is refused before the id
     /// would be used.
     prefix_id: String,
     /// How many ledger rows have reached the store.
@@ -1714,8 +1714,8 @@ pub struct Harness {
     /// [`Harness::take_new_title`].
     new_title: Option<String>,
     /// **The `!` sequence**: how many of the operator's own shell lines this session
-    /// has run. The `call_id` of each is `bang-<n>`, minted here because — unlike the
-    /// door — no head chooses one: the head sends the line and the daemon owns the run.
+    /// has run. The `call_id` of each is `bang-<n>`, minted here because - unlike the
+    /// door - no head chooses one: the head sends the line and the daemon owns the run.
     bang_seq: u64,
 
     /// The worker's serialization state for this session's operator runs: whether one is in flight on
@@ -1755,13 +1755,13 @@ pub struct Harness {
     /// the person's and it stares at them from their own head. Compared by text, so a different
     /// sentence is told again, and cleared by the fork that re-seats.
     stale_told: Option<String>,
-    /// **A fork whose rows are not all stored yet** (R91.2) — sealed by [`Harness::seal_fork`]
+    /// **A fork whose rows are not all stored yet** (R91.2) - sealed by [`Harness::seal_fork`]
     /// once they are.
     unsealed_fork: Option<UnsealedFork>,
-    /// **This turn's metrics, as it runs** (TODO R81) — begun and closed by the turn tail, fed
+    /// **This turn's metrics, as it runs** (TODO R81) - begun and closed by the turn tail, fed
     /// by the round loop. See `crate::instruments`.
     pub(crate) meter: crate::instruments::TurnMeter,
-    /// T21.3's encoder and error signal. Always constructed and always attached —
+    /// T21.3's encoder and error signal. Always constructed and always attached  -
     /// measuring costs nothing and `Verification::NoEncoder` is a state whose
     /// reason is ours rather than the model's.
     intent: Arc<IntentLedger>,
@@ -1804,7 +1804,7 @@ pub struct Harness {
     /// line per child that was resumed or could not be. Filled by `restore_after_restart` at open and
     /// said by the next turn the session takes.
     restart_notices: Vec<String>,
-    /// Whether this harness has said its workspace is gone (R92.24) — once, at the first wake
+    /// Whether this harness has said its workspace is gone (R92.24) - once, at the first wake
     /// that found it so.
     workspace_gone_said: bool,
     /// The monitor names live at the last [`Harness::sync_monitor_records`], sorted.
@@ -1813,11 +1813,11 @@ pub struct Harness {
     /// set for both kinds, because an entry has one `evidence` string and a second telling would be
     /// about the same row.
     gate_told: std::collections::HashSet<String>,
-    /// **The outage the retry ladder is in, if any** — one per endpoint, told ONCE when it ends.
+    /// **The outage the retry ladder is in, if any** - one per endpoint, told ONCE when it ends.
     /// See [`Outage`] for why the row is written at the end and not per attempt.
     outage: Option<Outage>,
     /// The cloud provider the turns go to, when the session has one. `None` is
-    /// the local server through the engine's own `/completion` path — **unless**
+    /// the local server through the engine's own `/completion` path - **unless**
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
     /// A provider chosen and not yet usable, because no key for it resolves. It used to be a refusal at
@@ -1851,7 +1851,7 @@ pub struct Harness {
     /// opens it, built where the refusal is and taken where a turn ends. Ending the turn on the refusal
     /// was half an answer, so the work goes on in a new turn. At most one, or a chain would ping-pong.
     fallback_continuation: Option<String>,
-    /// **This turn IS the automatic continuation a fallback earned** — set while it runs, so
+    /// **This turn IS the automatic continuation a fallback earned** - set while it runs, so
     /// [`Harness::fall_back_from`] moves the session to the next name without arming a second
     /// continuation. See `fallback_continuation` for why the bound exists.
     continuation_of_fallback: bool,
@@ -1865,7 +1865,7 @@ pub struct Harness {
 }
 
 /// A confirmation of `allow-all` waiting for a person: the daemon's half of the card another head's ask
-/// raised. The `asked` list is the rule and not bookkeeping — the card went to those heads and only
+/// raised. The `asked` list is the rule and not bookkeeping - the card went to those heads and only
 /// they can answer it, which makes *the bridge never consents for itself* structural.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingModeConfirm {
@@ -1883,14 +1883,14 @@ pub struct PendingModeConfirm {
 
 /// What a resume actually rebuilt, reported as numbers: the row count, the token count and the chain
 /// head are the evidence that `resumed` is only the claim. The head is what makes two resumes of one
-/// session comparable — if it differs, one of them is not the conversation the other was.
+/// session comparable - if it differs, one of them is not the conversation the other was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeReport {
     pub transcript_id: String,
     pub rows: usize,
     pub tokens: usize,
     pub head: String,
-    /// Where the tools are confined — this session's own root, which is not
+    /// Where the tools are confined - this session's own root, which is not
     /// necessarily the directory the daemon was started in.
     pub workspace: String,
     /// Anything about this resume the operator would otherwise find out later: a
@@ -1919,8 +1919,8 @@ pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) 
 }
 
 impl Harness {
-    /// The turn this harness last started, or empty before the first one. Empty is a real answer — a
-    /// turn that failed while being set up never got an id — and a head treats it as the pane it is
+    /// The turn this harness last started, or empty before the first one. Empty is a real answer - a
+    /// turn that failed while being set up never got an id - and a head treats it as the pane it is
     /// looking at, the only one that can be spinning then.
     pub fn last_turn_id(&self) -> &str {
         &self.last_turn_id
@@ -1945,7 +1945,7 @@ impl Harness {
             .clone()
     }
 
-    /// The project root this session's tools are confined to — the session's own,
+    /// The project root this session's tools are confined to - the session's own,
     /// resolved from the store at open, not necessarily the directory the daemon
     /// started in. The `/mode` command keys the per-project store on it.
     pub fn workspace(&self) -> &std::path::Path {
@@ -2079,7 +2079,7 @@ impl Harness {
             }
             mode.check(have, *seats)?;
         } else if consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name {
-            // No `supplies` means the open never ran the check — a session built by
+            // No `supplies` means the open never ran the check - a session built by
             // a test harness. Consent cannot be honoured against a list nobody
             // computed, so it is refused rather than granted on a guess.
             return Err("this session did not record what it can supply, so an \
@@ -2090,7 +2090,7 @@ impl Harness {
         let mut said = format!("this session is at `{}` from the next call", mode.name);
         if vouched {
             // Said here and not only on the card: the banner, the log warning and this sentence are what
-            // a person reads later. Not "the project's row still reads allow-all" — it does not, because
+            // a person reads later. Not "the project's row still reads allow-all" - it does not, because
             // nothing was written.
             said.push_str(
                 " — nothing confines this box, and this point stands on your \
@@ -2158,7 +2158,7 @@ impl Harness {
         }
         if !self.mode_needs_consent(mode) {
             // **The same `mode_set` line the `/mode` path writes**, because a point that moved
-            // has to be legible afterwards on the session it moved in — and this one moved
+            // has to be legible afterwards on the session it moved in - and this one moved
             // without anybody typing it, which is precisely the case a reader would question.
             let applied = match self.set_mode_consented(mode, false) {
                 Ok(said) => {
@@ -2351,7 +2351,7 @@ impl Harness {
             self.gate().supervising(),
             &self.door_tools(),
         );
-        // **Whether the board waits on the operator** — `none`, or how many and the first
+        // **Whether the board waits on the operator** - `none`, or how many and the first
         // question. A row here because a head that attaches after the question was asked never
         // saw the `waiting_on_operator` row, and must still draw the loud line.
         rows.push(letibot_sessionlog::protocol::SettingRow {
@@ -2442,7 +2442,7 @@ impl Harness {
     }
 
     /// The session's own config, to change a decision that is the session's
-    /// rather than the daemon's — `auto_compact` turning itself off after a
+    /// rather than the daemon's - `auto_compact` turning itself off after a
     /// compaction that did not free enough. See `Sessions::compact_if_at_the_wall`.
     pub fn config_mut(&mut self) -> &mut Config {
         &mut self.cfg
@@ -2476,7 +2476,7 @@ impl Harness {
         );
     }
 
-    /// The session's todo list as the model last wrote it — the board's
+    /// The session's todo list as the model last wrote it - the board's
     /// snapshot, which is what a resume restored and what `flush_todos` keeps
     /// durable.
     pub fn todo_list(&self) -> Vec<TodoItem> {
@@ -2508,13 +2508,13 @@ impl Harness {
         self.session.ledger_head()
     }
 
-    /// The ledger's whole token count — prefix and body together — which is the
+    /// The ledger's whole token count - prefix and body together - which is the
     /// number a compaction is measured against.
     pub fn ledger_len(&self) -> usize {
         self.session.ledger.len()
     }
 
-    /// Whether this session's turns go to a metered provider — the case where the
+    /// Whether this session's turns go to a metered provider - the case where the
     /// ledger and the provider's count are two different numbers.
     pub fn is_metered(&self) -> bool {
         self.provider.is_some()
@@ -2584,7 +2584,7 @@ impl Harness {
         &self.engine.endpoint
     }
 
-    /// **A warning on this session's log** — the operator's own sentence about something that
+    /// **A warning on this session's log** - the operator's own sentence about something that
     /// did not go as asked. One writer for the two doors that can refuse an attachment.
     pub(crate) fn warn(&self, code: &str, detail: String) {
         self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -2594,7 +2594,7 @@ impl Harness {
         });
     }
 
-    /// **R79's delivery for this session** — see [`Deliveries`]. `None` for a session with no
+    /// **R79's delivery for this session** - see [`Deliveries`]. `None` for a session with no
     /// watcher set, which has nothing to deliver.
     pub(crate) fn deliveries(&self) -> Option<Deliveries> {
         let watch = self.job_watch.clone()?;
@@ -2614,7 +2614,7 @@ impl Harness {
         self.monitors.as_ref()
     }
 
-    /// **The operator ends a monitor** — the monitors pane's `x`, as `/monitor retire NAME`. The
+    /// **The operator ends a monitor** - the monitors pane's `x`, as `/monitor retire NAME`. The
     /// record says who (`retired by the operator`), so the model's next notice says so, and the
     /// pane's table is refilled at once.
     pub fn retire_monitor_for_operator(&self, name: &str) -> crate::slash::SlashReply {
@@ -2662,7 +2662,7 @@ impl Harness {
     }
 
     /// **Install this session's skills source**, which is what a head's `ListSkills` is answered
-    /// from — the same rows the prompt's index is composed from, read on the ask.
+    /// from - the same rows the prompt's index is composed from, read on the ask.
     fn install_skills_source(&self) {
         let skills = self.skills.clone();
         self.session_registry.set_skills_source(
@@ -2994,11 +2994,11 @@ impl Harness {
                 ) && !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
             })
             .collect();
-        // The repository this session is the project of — read only when there is news.
-        // Every repository of the workspace — one, or each of a one-org project folder's.
+        // The repository this session is the project of - read only when there is news.
+        // Every repository of the workspace - one, or each of a one-org project folder's.
         let mine = crate::mergequeue::repositories_of_workspace(&self.cfg.workspace);
         let mut out = Vec::new();
-        // **Green again** (R92.6): an emergency this session was told about is over — said once,
+        // **Green again** (R92.6): an emergency this session was told about is over - said once,
         // and forgotten, so the next red of the same tip is news again (R92.31).
         for h in &greens {
             if !mine.contains(&h.repository) {
@@ -3061,7 +3061,7 @@ impl Harness {
 
     /// **The reviews the queue handed to THIS project's main session** (R61 decision 4's
     /// per-project option, `[queue] merge_via_session = true`): a review that could not run, so
-    /// the project gates and merges the branch itself — told once, read off the row.
+    /// the project gates and merges the branch itself - told once, read off the row.
     pub fn handover_notices(&mut self) -> Vec<String> {
         if !self.queue_news_is_mine() {
             return Vec::new();
@@ -3151,7 +3151,7 @@ impl Harness {
         served.started
     }
 
-    /// **Whether this session speaks in the box's room** — the daemon's own question, and the one
+    /// **Whether this session speaks in the box's room** - the daemon's own question, and the one
     /// the room pass's clock asks before it makes itself a reason to wake.
     pub fn has_room(&self) -> bool {
         self.room.is_some()
@@ -3185,14 +3185,14 @@ impl Harness {
         n
     }
 
-    /// Whether this harness is the review queue's own session — the one
+    /// Whether this harness is the review queue's own session - the one
     /// [`crate::sessions::gatekeeper::session`] names for this daemon's workspace, whose board is
     /// the queue.
     fn is_the_queue(&self) -> bool {
         self.hub.session_id() == crate::sessions::gatekeeper::session(&self.cfg.workspace)
     }
 
-    /// **The review queue, onto this session's board** — one row per review this daemon's queues
+    /// **The review queue, onto this session's board** - one row per review this daemon's queues
     /// serve that is waiting for a reviewer or under one, the rows a child is on marked with it.
     /// A VIEW, replaced whole from the store; the states stay in the store.
     pub fn fill_queue_board(&mut self) -> usize {
@@ -3240,14 +3240,14 @@ impl Harness {
         })
     }
 
-    /// **The repository a `/queue` verb may act in** (R92 item 5) — `None` is every repository.
+    /// **The repository a `/queue` verb may act in** (R92 item 5) - `None` is every repository.
     /// [`QueueScope::Here`](crate::slash::QueueScope::Here) is this session's own, and a session
     /// of no repository is told so with the line that reaches every repository.
     pub fn queue_scope(&self, scope: &crate::slash::QueueScope) -> Result<Option<String>, String> {
         crate::mergequeue::verbs::scope_repository(&self.cfg.workspace, scope)
     }
 
-    /// **[`Harness::queue_scope`] for a session of several repositories** — see
+    /// **[`Harness::queue_scope`] for a session of several repositories** - see
     /// [`crate::mergequeue::verbs::scope_repositories`].
     pub fn queue_scopes(
         &self,
@@ -3256,7 +3256,7 @@ impl Harness {
         crate::mergequeue::verbs::scope_repositories(&self.cfg.workspace, scope)
     }
 
-    /// **Which of `scopes` holds the row `id`** — the first when there is one scope (the verb
+    /// **Which of `scopes` holds the row `id`** - the first when there is one scope (the verb
     /// refuses a row outside it by name), else the one whose repository the row is of.
     pub fn queue_scope_of_row(&self, scopes: &[Option<String>], id: &str) -> Option<String> {
         if scopes.len() == 1 {
@@ -3273,7 +3273,7 @@ impl Harness {
         }
     }
 
-    /// `/queue restart ID` — a parked review back to waiting, a parked landing back in line.
+    /// `/queue restart ID` - a parked review back to waiting, a parked landing back in line.
     pub fn restart_review(
         &self,
         entry_id: &str,
@@ -3286,7 +3286,7 @@ impl Harness {
         })
     }
 
-    /// `/queue approve ID` — the operator's approval over the reviewer (decision 5).
+    /// `/queue approve ID` - the operator's approval over the reviewer (decision 5).
     pub fn approve_review(
         &self,
         entry_id: &str,
@@ -3299,7 +3299,7 @@ impl Harness {
         })
     }
 
-    /// `/queue veto ID WHY` — the operator's rejection, delivered to the child that did the work.
+    /// `/queue veto ID WHY` - the operator's rejection, delivered to the child that did the work.
     pub fn veto_review(
         &self,
         entry_id: &str,
@@ -3321,7 +3321,7 @@ impl Harness {
         })
     }
 
-    /// `/queue rm ID` — withdrawn, with the history kept.
+    /// `/queue rm ID` - withdrawn, with the history kept.
     pub fn remove_merge_entry(
         &self,
         entry_id: &str,
@@ -3334,7 +3334,7 @@ impl Harness {
         })
     }
 
-    /// `/queue reset [ID]` — every parked row of `repository` restarted, or the one named.
+    /// `/queue reset [ID]` - every parked row of `repository` restarted, or the one named.
     pub fn reset_reviews(
         &self,
         entry: Option<&str>,
@@ -3349,7 +3349,7 @@ impl Harness {
         })
     }
 
-    /// `/queue clean [ID]` — every parked row of `repository` withdrawn, or the one named.
+    /// `/queue clean [ID]` - every parked row of `repository` withdrawn, or the one named.
     pub fn clean_entries(
         &self,
         entry: Option<&str>,
@@ -3364,7 +3364,7 @@ impl Harness {
         })
     }
 
-    /// **The repository this session's queue verbs are about, and its target** — the one its
+    /// **The repository this session's queue verbs are about, and its target** - the one its
     /// workspace means (`mergequeue::repo_of_workspace`), keyed the way the queues key it, unless
     /// `named` is a path; and `[queue] target` (else `main`/`master`) when no target is named.
     pub fn queue_repository(
@@ -3375,7 +3375,7 @@ impl Harness {
         crate::mergequeue::desk::resolve(&self.cfg.workspace, named, target)
     }
 
-    /// `/queue regate [/REPO] [TARGET]` and the `queue` tool's `regate` — the target's tip gated
+    /// `/queue regate [/REPO] [TARGET]` and the `queue` tool's `regate` - the target's tip gated
     /// again even when it was already judged (R76 item 3). `who` goes on the move.
     pub fn regate_target(
         &self,
@@ -3398,7 +3398,7 @@ impl Harness {
         };
         let mut live = monitors.live_names();
         live.sort();
-        // **Only when the live set moved** — a wake is frequent and a store open is not free, and
+        // **Only when the live set moved** - a wake is frequent and a store open is not free, and
         // the only change this records is a monitor leaving the live set.
         if live == self.monitors_seen_live {
             return;
@@ -3420,7 +3420,7 @@ impl Harness {
         self.resumed.as_ref()
     }
 
-    /// The notes `open` made about a session it did not resume — see the field.
+    /// The notes `open` made about a session it did not resume - see the field.
     /// Empty for a resumed session, whose notes are in [`Harness::resumed`].
     pub fn open_notes(&self) -> &[String] {
         &self.open_notes
@@ -3463,7 +3463,7 @@ pub const JOB_OUTPUT_WINDOW: usize = 16 * 1024;
 /// with the offsets beside the text, so the pane need not parse a sentence it did not write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobWindow {
-    /// The offset this window actually starts at — the request is clamped to what
+    /// The offset this window actually starts at - the request is clamped to what
     /// survives, not refused.
     pub from: u64,
     /// One past the window's last byte.
@@ -3473,9 +3473,9 @@ pub struct JobWindow {
     /// Bytes that fell off the front of the ring before this window: what a head
     /// must disclose so a window's start is not read as the job's start.
     pub dropped: u64,
-    /// The job's own word — `exited 0`, `running`, `killed by …`.
+    /// The job's own word - `exited 0`, `running`, `killed by …`.
     pub state: String,
-    /// **Whether anything was ever executed for this job** — `true` only for the one
+    /// **Whether anything was ever executed for this job** - `true` only for the one
     /// state where the wrapper could not join the cgroup, so a head with an empty
     /// window can say *never ran* rather than *wrote nothing* (A.2, §11.6).
     pub never_ran: bool,
@@ -3495,7 +3495,7 @@ pub struct JobWindow {
 pub enum JobFate {
     /// Still running **here**. The condition is not met.
     Running,
-    /// It ended, and this is its own word — `exited 0`, `killed by job_kill`, `signalled 15`.
+    /// It ended, and this is its own word - `exited 0`, `killed by job_kill`, `signalled 15`.
     Ended { state: String },
     /// **Not a job this session knows**: it ended before this daemon came back, or the handle is
     /// wrong. The condition is met and the result is not here.
@@ -3507,7 +3507,7 @@ pub enum JobFate {
 /// and the handle is how a row names it.
 fn fate_line(handle: &str, fate: &JobFate) -> String {
     match fate {
-        // Never printed — a running job is not due — and answerable anyway, because a function
+        // Never printed - a running job is not due - and answerable anyway, because a function
         // that panics on the arm nobody reaches is a function whose contract is a rumour.
         JobFate::Running => format!("`{handle}` is still running"),
         JobFate::Ended { state } => format!("`{handle}` {state}"),
@@ -3612,7 +3612,7 @@ impl Harness {
         })
     }
 
-    /// **The stored row for one handle**, or `None` — the one read the output window and the
+    /// **The stored row for one handle**, or `None` - the one read the output window and the
     /// condition evaluator share, so the two cannot look in different places.
     fn recorded_job(&self, handle: &str) -> Option<JobRecord> {
         let store = self.store.as_ref()?;
@@ -3627,7 +3627,7 @@ impl Harness {
     /// honesty: only the process host can say a job runs now, and a stored `running` row is a fact about
     /// then. The record is the second look, because it is what survives a restart.
     pub fn job_fate(&self, handle: &str) -> JobFate {
-        // **Two looks, and [`fate_of`] is the decision between them** — the live table first,
+        // **Two looks, and [`fate_of`] is the decision between them** - the live table first,
         // because only the process host can say a job runs *now*, and the record second, because
         // it is what survives a restart.
         let live = self
@@ -3643,7 +3643,7 @@ impl Harness {
     /// caller can report and consume them in one breath. The fate is carried and not collapsed into a
     /// boolean, because a handle that ended here can be read and one never heard of cannot.
     pub fn due_todo_rows(&self) -> Vec<(String, String, JobFate)> {
-        // **The rows and both live facts, taken together** — the same reading `nag_notice` takes, so
+        // **The rows and both live facts, taken together** - the same reading `nag_notice` takes, so
         // the firing and the nag cannot disagree about whether a row is one the check may speak
         // about: a row waiting on a young child or on a running job is not due by EITHER door.
         let rows = self.todos.snapshot();
@@ -3653,7 +3653,7 @@ impl Harness {
     }
 
     /// The same read as [`Self::job_output`], as a window rather than a page of
-    /// prose — see [`JobWindow`] for why both exist.
+    /// prose - see [`JobWindow`] for why both exist.
     pub fn job_output_window(
         &self,
         job: &str,
@@ -3808,7 +3808,7 @@ fn job_window_for(
         state: state.word(),
         never_ran: state.never_ran(),
         lines: if slice.produced == 0 {
-            // **Empty, and the redirected case cannot reach here** — a job whose command
+            // **Empty, and the redirected case cannot reach here** - a job whose command
             // redirects its output was answered from the FILE above.
             Vec::new()
         } else {
@@ -3900,7 +3900,7 @@ fn next_job_offset(slice: &letibot_tools::exec::OutputSlice) -> Option<u64> {
 const VM_LOST: &str = "lost with its VM";
 
 /// **The background jobs a VM child left running, as its parent is told they died** (TODO.md
-/// R92.1) — `None` when there were none. Pure, so the wording is asserted without a VM.
+/// R92.1) - `None` when there were none. Pure, so the wording is asserted without a VM.
 pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option<String> {
     if lost.is_empty() {
         return None;
@@ -3933,7 +3933,7 @@ pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option
 mod clear;
 pub use clear::{ClearReport, clear_reply};
 
-// **A transcript whose rows do not rebuild under the prefix it names** — the repair to the fork
+// **A transcript whose rows do not rebuild under the prefix it names** - the repair to the fork
 // that a store already in that state needs, so a conversation is not refused for ever. See the
 // module's header for the shape it is, and why only that shape is repaired.
 mod children;
@@ -3999,7 +3999,7 @@ pub(crate) use wall::{
     sent_scale, wall_stops_this_round,
 };
 
-// **The branch is the deliverable** — the brief's rule checked when a worktree child's turn ends,
+// **The branch is the deliverable** - the brief's rule checked when a worktree child's turn ends,
 // and the line its parent reads when it ends dirty anyway. See the module's header.
 pub mod deliverable;
 
@@ -4036,7 +4036,7 @@ pub(crate) fn model_adjudicator(
     let mut oracle = crate::oracle::HttpOracle::new(ep, guard_model, cfg.oracle_budget)
         .with_question(cfg.oracle_question);
     // **The ceiling, when the operator named one** (R12). The default is the measured one;
-    // what this makes possible is acting on the one reading that is a budget — a reply cut
+    // what this makes possible is acting on the one reading that is a budget - a reply cut
     // off before its verdict says so, and `--oracle-max-tokens` is the wheel it names.
     if let Some(n) = cfg.oracle_max_tokens {
         oracle = oracle.with_max_tokens(n);
@@ -4095,7 +4095,7 @@ mod gatekeeper_reviews {
         }
     }
 
-    /// **A session above its repositories is told which ones it can name** — `task_start`'s
+    /// **A session above its repositories is told which ones it can name** - `task_start`'s
     /// refusal when its root is in no repository.
     #[test]
     fn the_repositories_under_a_root_are_named() {
@@ -4132,7 +4132,7 @@ mod gatekeeper_reviews {
             "a reviewer writes nothing"
         );
         // The child's title is cut from the brief's first line, and the head hides a child whose
-        // title begins with the mark — so the brief must begin with it, word for word.
+        // title begins with the mark - so the brief must begin with it, word for word.
         assert!(
             letibot_tools::gatekeeper::review_prompt(&req())
                 .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
@@ -4205,7 +4205,7 @@ mod gatekeeper_reviews {
         );
     }
 
-    /// **The keeper's brief begins with the mark**, on the gatekeeper's rule — so the piece that
+    /// **The keeper's brief begins with the mark**, on the gatekeeper's rule - so the piece that
     /// spawns one has nothing to change here when it lands.
     #[test]
     fn the_keepers_brief_begins_with_the_mark() {
@@ -4248,7 +4248,7 @@ mod gate_admissions {
         }
     }
 
-    /// One line, naming the command and the rule — and no second `bash` in it.
+    /// One line, naming the command and the rule - and no second `bash` in it.
     #[test]
     fn the_line_names_the_command_and_the_rule() {
         use letibot_tools::adjudicate::AdmissionSink;

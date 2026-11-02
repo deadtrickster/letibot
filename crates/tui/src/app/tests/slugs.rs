@@ -1,4 +1,4 @@
-//! **Subagents named by their slugs** — the operator: *"lets do slugs for subagents too"*. Every
+//! **Subagents named by their slugs** - the operator: *"lets do slugs for subagents too"*. Every
 //! place the head named a child by its session id (or by nothing but its brief) names it by the
 //! slug the daemon gave it, and a child nobody named is drawn exactly as before.
 
@@ -45,8 +45,8 @@ fn the_subagents_pane_names_a_child_by_its_slug() {
     );
 }
 
-/// **A child rebuilt from the daemon's list keeps its name** — the list carries the slug after a
-/// restart, when no spawn event is left to fold — and the header of a head standing in the child
+/// **A child rebuilt from the daemon's list keeps its name** - the list carries the slug after a
+/// restart, when no spawn event is left to fold - and the header of a head standing in the child
 /// names it, and its parent, by their slugs.
 #[test]
 fn the_list_carries_the_name_into_the_pane_and_the_header() {
@@ -74,7 +74,7 @@ fn the_list_carries_the_name_into_the_pane_and_the_header() {
 }
 
 /// **A child's completion notice reads by its name**, whether the daemon wrote the label
-/// (`fix-login · s-…`, since names) or only the handle (every stored notice before them) — and an
+/// (`fix-login · s-…`, since names) or only the handle (every stored notice before them) - and an
 /// old notice of a child nobody named folds exactly as it always did.
 #[test]
 fn a_folded_task_notice_names_the_child_by_its_slug_old_and_new() {
@@ -101,7 +101,7 @@ fn a_folded_task_notice_names_the_child_by_its_slug_old_and_new() {
         folded_notice(new, &a.subagents).expect("it folds"),
         "Agent fix-login · …28-sub-3 · fix the login page · done: all green"
     );
-    // An old notice — the bare handle — of a child the pane knows by name: named all the same.
+    // An old notice - the bare handle - of a child the pane knows by name: named all the same.
     let old = "[task] a subagent you started has finished:\n  \
                - `s-1789919514688401228-sub-3` done: all green\n\
                Full answer: `task_result` task=\"s-1789919514688401228-sub-3\".";

@@ -30,7 +30,7 @@ const SYSTEM: [(&str, &str); 3] = [
 /// How far up a parent chain this list walks before it decides the chain loops.
 const MAX_DEPTH: usize = 64;
 
-/// **How far in a row is drawn** — the renderer caps the indent at three steps (`rano`'s tree
+/// **How far in a row is drawn** - the renderer caps the indent at three steps (`rano`'s tree
 /// list, and a name pushed four steps in is off the right edge), and the head's own copy of this
 /// tree caps at the same number, so the two pictures are one.
 const MAX_INDENT: usize = 3;
@@ -45,7 +45,7 @@ type Branch<'a> = Option<(&'a str, Option<&'a str>)>;
 struct Feed {
     #[serde(default)]
     sessions: Vec<Session>,
-    /// The session the head is standing in — its list is drawn around it.
+    /// The session the head is standing in - its list is drawn around it.
     #[serde(default)]
     here: String,
     /// The head's home, so a workspace under it is drawn as `~/…`.
@@ -64,8 +64,8 @@ struct Session {
     slug: String,
     #[serde(default)]
     parent: Option<String>,
-    /// `operator`, `package`, `queue` or `one_shot`. Read by nothing here — the tree's facts are the
-    /// feed's (`project`, `system`) — and kept because a project's layer over it may want it.
+    /// `operator`, `package`, `queue` or `one_shot`. Read by nothing here - the tree's facts are the
+    /// feed's (`project`, `system`) - and kept because a project's layer over it may want it.
     #[serde(default)]
     #[allow(dead_code)]
     origin: String,
@@ -96,7 +96,7 @@ struct Session {
     /// The operator has paused its idle plan-check.
     #[serde(default)]
     nags_paused: bool,
-    /// **The project this session is drawn under** — the key its row's project line is folded by,
+    /// **The project this session is drawn under** - the key its row's project line is folded by,
     /// and the name that line says. Both come from the head, which is where the rule lives.
     #[serde(default)]
     project: String,
@@ -165,7 +165,7 @@ impl Ctx<'_> {
         key == format!("{project}/system") || key == format!("{project}/system/{group}")
     }
 
-    /// Whether session `i`'s parent is on this feed **and drawn in this branch** — the rule that
+    /// Whether session `i`'s parent is on this feed **and drawn in this branch** - the rule that
     /// decides whether a row is a root of the branch or a child inside it.
     fn parent_in(&self, i: usize, project: &str, system: Option<&str>) -> bool {
         self.sessions[i]
@@ -175,7 +175,7 @@ impl Ctx<'_> {
             .is_some_and(|p| self.in_branch(p, Some((project, system))))
     }
 
-    /// **The projects this feed holds, in the order it lists them** — the key and the name to draw.
+    /// **The projects this feed holds, in the order it lists them** - the key and the name to draw.
     fn projects(&self) -> Vec<(&str, &str)> {
         let mut out: Vec<(&str, &str)> = Vec::new();
         for s in self.sessions {
@@ -198,7 +198,7 @@ impl Ctx<'_> {
             .is_some_and(|s| s.project == project && s.system.as_deref() == system)
     }
 
-    /// Whether session `i` is drawn under `parent` **in this branch** — the fold glyph is about the
+    /// Whether session `i` is drawn under `parent` **in this branch** - the fold glyph is about the
     /// tree inside a row, so a child in another branch is not a reason for a `+`.
     fn kids_in(&self, parent: &str, branch: Branch<'_>) -> bool {
         self.sessions
@@ -207,7 +207,7 @@ impl Ctx<'_> {
             .any(|(i, s)| s.parent.as_deref() == Some(parent) && self.in_branch(i, branch))
     }
 
-    /// Whether one of `id`'s children is on the chain to the session `here` — the second reason a
+    /// Whether one of `id`'s children is on the chain to the session `here` - the second reason a
     /// row's children are on the list at all (see [`children`]), and so a reason for a `-`.
     fn child_on_path(&self, id: &str) -> bool {
         self.sessions
@@ -267,7 +267,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
         if !open {
             continue;
         }
-        // **The project's own tree** — the sessions nobody spawned, and their children.
+        // **The project's own tree** - the sessions nobody spawned, and their children.
         for &i in &members {
             if ctx.sessions[i].system.is_some() || ctx.parent_in(i, project, None) {
                 continue;
@@ -285,7 +285,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                 Some((project, None)),
             );
         }
-        // **The `system` branch**, when this project has one — and no line at all when it has not.
+        // **The `system` branch**, when this project has one - and no line at all when it has not.
         let system: Vec<usize> = members
             .iter()
             .copied()
@@ -357,7 +357,7 @@ fn node_row(key: String, depth: usize, title: String, legend: &str, open: bool) 
         id: key,
         depth: depth.min(MAX_INDENT),
         number: None,
-        // **A project's line is a PATH**, which is somebody's too — the same rule as a row's words.
+        // **A project's line is a PATH**, which is somebody's too - the same rule as a row's words.
         cells: vec![Cell::role(clean(&title), Role::Strong)],
         facts: Vec::new(),
         under: vec![legend.to_string()],
@@ -388,7 +388,7 @@ fn session_row(ctx: &Ctx<'_>, at: usize, depth: usize, number: usize, open: Opti
     }
 }
 
-/// **Whether this row has a fold, and which way** — about the tree *inside the branch it is drawn
+/// **Whether this row has a fold, and which way** - about the tree *inside the branch it is drawn
 /// in*: a `-` over a row would promise rows this list does not hold.
 fn has_fold(ctx: &Ctx<'_>, at: usize, branch: Branch<'_>) -> Option<Fold> {
     let id = ctx.sessions[at].id.as_str();
@@ -408,7 +408,7 @@ fn children(
     force: bool,
     branch: Branch<'_>,
 ) {
-    // **A row's children are drawn when it is OPENED, and not before** — the head's own rule:
+    // **A row's children are drawn when it is OPENED, and not before** - the head's own rule:
     // a collapsed default is what keeps thirty subagents from burying four conversations, and
     // `None` (nobody has said) is closed.
     let depth = depth.min(MAX_INDENT);
@@ -434,7 +434,7 @@ fn children(
     }
 }
 
-/// A session's name — its title, or a short id when it has none — with the three things a row says
+/// A session's name - its title, or a short id when it has none - with the three things a row says
 /// before anything else: the slug its parent and its branch call it by, `WAITING ON YOU`, and
 /// paused nags.
 fn name_of(s: &Session) -> String {
@@ -461,7 +461,7 @@ fn name_of(s: &Session) -> String {
         name
     };
     // **A title is somebody's, and a control character in it would be measured one way and drawn
-    // another** — the same rule the under line is drawn with, and the head's `row_name` is the
+    // another** - the same rule the under line is drawn with, and the head's `row_name` is the
     // same sentence.
     clean(&name)
 }
@@ -504,7 +504,7 @@ fn facts_of(s: &Session) -> Vec<Cell> {
     )]
 }
 
-/// The faint line under every row: the full id, and the workspace when there is one — for a stored
+/// The faint line under every row: the full id, and the workspace when there is one - for a stored
 /// session the only thing on the row that says what the conversation was about.
 fn under_of(s: &Session, home: &str) -> String {
     let id = clean(&s.id);
@@ -515,7 +515,7 @@ fn under_of(s: &Session, home: &str) -> String {
     }
 }
 
-/// `$HOME` written as `~` — the head's own shortening, done here because the row's text is this
+/// `$HOME` written as `~` - the head's own shortening, done here because the row's text is this
 /// layer's to decide.
 fn tilde(path: &str, home: &str) -> String {
     if home.is_empty() {
@@ -535,13 +535,13 @@ fn clean(text: &str) -> String {
         .collect()
 }
 
-/// A session's id, cut to the tail a person recognises — the head's `short_id` rule.
+/// A session's id, cut to the tail a person recognises - the head's `short_id` rule.
 fn short_id(id: &str) -> &str {
     let tail = id.rsplit(['-', ':']).next().unwrap_or(id);
     if tail.len() >= 6 { tail } else { id }
 }
 
-/// The pane's answer, or `None` for *unchanged* — a layer with nothing to say passes, and what is
+/// The pane's answer, or `None` for *unchanged* - a layer with nothing to say passes, and what is
 /// below it (or the head's own list) answers.
 fn answer(bytes: &[u8]) -> Option<String> {
     let input: Input = serde_json::from_slice(bytes).ok()?;
@@ -592,7 +592,7 @@ fn answer(bytes: &[u8]) -> Option<String> {
 fn row_value(row: &Out) -> Value {
     let mut out = serde_json::Map::new();
     out.insert("id".into(), json!(row.id));
-    // **How far in the row is drawn.** The list is FLAT — C3 nests by `children`, and a list
+    // **How far in the row is drawn.** The list is FLAT - C3 nests by `children`, and a list
     // that has already walked its own tree says the depth instead, which is what keeps a row's
     // column a function of where it is rather than of how the host happened to read it.
     if row.depth > 0 {
@@ -617,11 +617,11 @@ fn row_value(row: &Out) -> Value {
     Value::Object(out)
 }
 
-/// The layer's policy, tested natively — see `tests.rs`.
+/// The layer's policy, tested natively - see `tests.rs`.
 #[cfg(test)]
 mod tests;
 
-/// The pane hook — `pane_<name>`, the name a head opens by.
+/// The pane hook - `pane_<name>`, the name a head opens by.
 #[unsafe(no_mangle)]
 pub extern "C" fn pane_sessions(ptr: i32, len: i32) -> i32 {
     abi::hook(ptr, len, answer)

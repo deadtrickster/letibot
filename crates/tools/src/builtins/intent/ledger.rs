@@ -30,7 +30,7 @@ pub enum Verification {
     /// The item was marked complete and nothing ran. **This is not complete.**
     NoEffect,
     /// No effect log is attached to this session, so completion could not be
-    /// checked either way. Also not complete — and the reason is ours.
+    /// checked either way. Also not complete - and the reason is ours.
     NoEncoder,
 }
 
@@ -74,7 +74,7 @@ impl Status {
 }
 
 /// Where an intent came from. A plan step and a hand-written todo are both
-/// intents, and a prose commitment is a *candidate* — see [`commitments`].
+/// intents, and a prose commitment is a *candidate* - see [`commitments`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Todo,
@@ -190,7 +190,7 @@ impl std::fmt::Display for Board {
     }
 }
 
-/// One thing the diff found. Never a failure — T21.3 asks for steering, and a
+/// One thing the diff found. Never a failure - T21.3 asks for steering, and a
 /// wrong steer costs a few tokens where a wrong failure costs the turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
@@ -207,7 +207,7 @@ pub enum Finding {
     },
     /// A future-tense first-person sentence in the assistant's own text with no
     /// matching tool call. **A heuristic**, and labelled as one wherever it is
-    /// printed — see [`commitments`].
+    /// printed - see [`commitments`].
     ProseCommitment { sentence: String },
     /// The encoder is not wired. A finding about the harness, emitted first so it
     /// is never mistaken for a finding about the model.

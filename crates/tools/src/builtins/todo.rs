@@ -80,7 +80,7 @@ impl TodoBoard {
     ) -> Result<(usize, usize), String> {
         let mut model = self.todos.lock().unwrap_or_else(|e| e.into_inner());
         let mut operator = self.operator.lock().unwrap_or_else(|e| e.into_inner());
-        // Resolve every quote on BOTH halves before either is touched — see ALL OR NOTHING.
+        // Resolve every quote on BOTH halves before either is touched - see ALL OR NOTHING.
         let my_plan = resolve_plan(&model, mine, "your own")?;
         let their_plan = resolve_plan(&operator, theirs, "the operator's")?;
         let mine_moved = apply_states(&mut model, my_plan);
@@ -91,7 +91,7 @@ impl TodoBoard {
         Ok((mine_moved, theirs_moved))
     }
 
-    /// **The operator's half alone** — the shape a caller that has only their rows to move wants,
+    /// **The operator's half alone** - the shape a caller that has only their rows to move wants,
     /// and the one this board's own tests and the `operator` field had before `update` existed.
     pub fn set_operator_states(&self, updates: &[(String, TodoStatus)]) -> Result<usize, String> {
         self.set_states_on_both_halves(&[], updates)
@@ -103,7 +103,7 @@ impl TodoBoard {
     /// author's to retire, so a head refuses one by name rather than writing a silence.
     pub fn set_states(&self, updates: &[(String, TodoStatus)]) -> Result<usize, String> {
         let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
-        // Resolve every update BEFORE any is applied — see `set_operator_states` on ALL OR NOTHING:
+        // Resolve every update BEFORE any is applied - see `set_operator_states` on ALL OR NOTHING:
         // a call that names one good row and one bad one moves neither.
         let mut plan: Vec<(usize, TodoStatus)> = Vec::new();
         for (asked, status) in updates {
@@ -149,7 +149,7 @@ impl TodoBoard {
     pub fn set_waits(&self, plan: &[(String, Wait)]) -> Result<(usize, usize), String> {
         let mut model = self.todos.lock().unwrap_or_else(|e| e.into_inner());
         let mut operator = self.operator.lock().unwrap_or_else(|e| e.into_inner());
-        // Resolve every quote BEFORE any row moves — see `set_states_on_both_halves` on ALL OR
+        // Resolve every quote BEFORE any row moves - see `set_states_on_both_halves` on ALL OR
         // NOTHING.
         let mut resolved: Vec<(bool, usize, &Wait)> = Vec::with_capacity(plan.len());
         for (asked, wait) in plan {
@@ -267,7 +267,7 @@ impl TodoBoard {
                         true
                     }
                 }
-                // **And the operator's question comes off with them** — the door the check names
+                // **And the operator's question comes off with them** - the door the check names
                 // for a model that worked the answer out itself. An ANSWER stays: it is the
                 // operator's word on the row, not a wait.
                 Wait::Detach => {
@@ -306,7 +306,7 @@ impl TodoBoard {
             .clone()
     }
 
-    /// **The rows a parent has put on this board, as a sibling reader sees them** — the child
+    /// **The rows a parent has put on this board, as a sibling reader sees them** - the child
     /// cannot act on them (no field of `todo_write` aims at this half), but the tests and the
     /// daemon-side resolver both need to say what survived.
     pub fn parent_snapshot(&self) -> Vec<TodoItem> {
@@ -346,7 +346,7 @@ impl TodoBoard {
         let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
         let mut changed = false;
         let held: BTreeSet<u64> = rows.iter().map(|(item, _)| *item).collect();
-        // **The items this session no longer holds take their rows with them** — found by the edge
+        // **The items this session no longer holds take their rows with them** - found by the edge
         // the pass put on them, which is on the row whether it is quiet or loud.
         let before = half.len();
         half.retain(|t| {
@@ -368,7 +368,7 @@ impl TodoBoard {
                 .cloned()
                 .collect();
             match half.iter_mut().find(|t| t.content.trim() == want) {
-                // **Reused**: the words are the key, so this is the same row — the pass's edge and
+                // **Reused**: the words are the key, so this is the same row - the pass's edge and
                 // the row's state are what it has to say, and nothing else moves. Any other edge on
                 // the row (a `Row`, a `Job`, a question) is the model's or the operator's and stays.
                 Some(had) => {
@@ -425,7 +425,7 @@ impl TodoBoard {
                     content: content.to_string(),
                     status: *status,
                     by: by.clone(),
-                    // A condition is the OPERATOR's own act — a job-conditioned row fires on a
+                    // A condition is the OPERATOR's own act - a job-conditioned row fires on a
                     // clock the parent does not own, and `[p]`/`postponed` is the operator's own
                     // state besides. A parent's row is plain work, asked for now.
                     when: None,
@@ -484,7 +484,7 @@ impl TodoBoard {
         changed
     }
 
-    /// **The model's own half alone** — what a call STARTED with, which is what lets the tool name
+    /// **The model's own half alone** - what a call STARTED with, which is what lets the tool name
     /// the rows that call left out (and so did not remove).
     pub fn model_snapshot(&self) -> Vec<TodoItem> {
         self.todos.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -572,7 +572,7 @@ fn keep_answers(had: &[TodoNeed], sent: &[TodoNeed]) -> Vec<TodoNeed> {
     out
 }
 
-/// **A row's question, found** — the half of [`TodoBoard::answer_operator`] that says whether
+/// **A row's question, found** - the half of [`TodoBoard::answer_operator`] that says whether
 /// there is anything to answer, with the row's options so the answer can be checked against them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorAsk {
@@ -654,10 +654,10 @@ impl TodoBoard {
     }
 }
 
-/// **One `wait_on` entry, as the board applies it** — see [`TodoBoard::set_waits`].
+/// **One `wait_on` entry, as the board applies it** - see [`TodoBoard::set_waits`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wait {
-    /// Wait on this — a [`TodoNeed::Job`] or a [`TodoNeed::Child`], already resolved to the full
+    /// Wait on this - a [`TodoNeed::Job`] or a [`TodoNeed::Child`], already resolved to the full
     /// handle by the caller. Attaching one the row already has is not a change.
     On(TodoNeed),
     /// Take the row's job and child waits off, and leave its row edges where they are.
@@ -721,7 +721,7 @@ fn resolve_plan(
     Ok(plan)
 }
 
-/// Apply a resolved plan to one half. Returns how many rows actually CHANGED — a status set to what
+/// Apply a resolved plan to one half. Returns how many rows actually CHANGED - a status set to what
 /// it already said is not a move, which is what keeps a re-stated plan from being announced.
 fn apply_states(half: &mut [TodoItem], plan: Vec<(usize, TodoStatus)>) -> usize {
     let mut changed = 0usize;
@@ -767,7 +767,7 @@ pub const CHILD_QUIET_ENOUGH_TO_LOOK: Duration = Duration::from_secs(2 * 60);
 pub struct RunningChild {
     /// How long ago the daemon opened this child's session.
     pub age: Duration,
-    /// **How long since anything last happened in it** — the timestamp of the last event on the
+    /// **How long since anything last happened in it** - the timestamp of the last event on the
     /// child's OWN log, or `None` for a child that has published nothing at all yet.
     pub quiet_for: Option<Duration>,
     /// Whether a turn is in flight in it at this instant, read from the daemon's own record of the
@@ -785,7 +785,7 @@ pub struct ChildSessions {
 }
 
 impl ChildSessions {
-    /// Nothing running — a reading with no daemon behind it, and the honest one for every board
+    /// Nothing running - a reading with no daemon behind it, and the honest one for every board
     /// whose rows wait on rows.
     pub fn none() -> Self {
         Self::default()
@@ -798,7 +798,7 @@ impl ChildSessions {
         self
     }
 
-    /// **How long this child has been running**, or `None` when it is not running here — the one
+    /// **How long this child has been running**, or `None` when it is not running here - the one
     /// read [`unmet_needs`] and the check's narrowing both take.
     pub fn child(&self, id: &str) -> Option<&RunningChild> {
         self.live.get(id)
@@ -811,7 +811,7 @@ impl ChildSessions {
 #[derive(Debug, Clone, Default)]
 pub struct RunningJobs {
     live: BTreeSet<String>,
-    /// **Monitors still watching**, by name — what a `monitor` need waits on (`TodoNeed::Monitor`).
+    /// **Monitors still watching**, by name - what a `monitor` need waits on (`TodoNeed::Monitor`).
     watching: BTreeSet<String>,
     subagents: BTreeSet<String>,
     /// **What each one is about**, by handle: a job's slug and command, a child's prompt. Read only
@@ -825,7 +825,7 @@ pub struct RunningJobs {
 }
 
 impl RunningJobs {
-    /// Nothing running — a reading with no daemon behind it, and the honest one for every board
+    /// Nothing running - a reading with no daemon behind it, and the honest one for every board
     /// whose rows wait on rows.
     pub fn none() -> Self {
         Self::default()
@@ -839,13 +839,13 @@ impl RunningJobs {
         self
     }
 
-    /// **Whether this handle is running here** — the one read [`unmet_needs`] and the check's
+    /// **Whether this handle is running here** - the one read [`unmet_needs`] and the check's
     /// narrowing both take.
     pub fn is_running(&self, handle: &str) -> bool {
         self.live.contains(handle)
     }
 
-    /// **A monitor that is still watching here**, by its name — a builder, like [`Self::running`].
+    /// **A monitor that is still watching here**, by its name - a builder, like [`Self::running`].
     pub fn watching(mut self, name: impl Into<String>) -> Self {
         self.watching.insert(name.into());
         self
@@ -864,7 +864,7 @@ impl RunningJobs {
         self
     }
 
-    /// **The same snapshot with no ending graced** — for a reader that is a DELIVERY rather than a
+    /// **The same snapshot with no ending graced** - for a reader that is a DELIVERY rather than a
     /// nag: a row's `when: job` firing is the news itself, like the completion it rides in with,
     /// and must not wait for the model to have digested it.
     pub fn without_grace(mut self) -> Self {
@@ -872,13 +872,13 @@ impl RunningJobs {
         self
     }
 
-    /// **Whether this ended job or child is one the model has not digested yet** — the read
+    /// **Whether this ended job or child is one the model has not digested yet** - the read
     /// [`unmet_needs`] and [`waits_on_an_undigested_ending`] take.
     pub fn is_digesting(&self, handle: &str) -> bool {
         self.digesting.contains_key(handle)
     }
 
-    /// **A subagent THIS session spawned that is still running**, by its full session id — what
+    /// **A subagent THIS session spawned that is still running**, by its full session id - what
     /// `wait_on` could name as a `child`. See the type's doc for why it is here.
     pub fn subagent(mut self, id: impl Into<String>) -> Self {
         self.subagents.insert(id.into());
@@ -978,7 +978,7 @@ pub fn attach_now(ctx: &InvokeCtx<'_>, field: &str, handle: &str) -> String {
 /// Below it the offer still names the likeliest one, without claiming they are related.
 const LIKE_FLOOR: f64 = 0.15;
 
-/// A job's or child's description cut to one clause for the check's line — the line is folded by
+/// A job's or child's description cut to one clause for the check's line - the line is folded by
 /// the head as one, so it cannot grow a paragraph per running job.
 pub fn said_short(about: &str) -> String {
     let one: String = about.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1021,7 +1021,7 @@ pub fn waits_on_the_room(row: &TodoItem) -> bool {
         .any(|n| matches!(n, TodoNeed::Room { working: true, .. }))
 }
 
-/// **The room items a row is the pass's own record of** — every item number its room edges name,
+/// **The room items a row is the pass's own record of** - every item number its room edges name,
 /// loud or quiet. `TodoBoard::set_room_rows` retires by this, which is what lets a board rebuilt
 /// from a store still find the rows the pass wrote: the edge is on the row, so no memory is needed.
 pub fn room_items(row: &TodoItem) -> Vec<u64> {
@@ -1081,12 +1081,12 @@ pub fn queue_review_in_flight(row: &TodoItem, children: &ChildSessions) -> bool 
     }
 }
 
-/// **How long a running reviewer may be quiet before its queue row is asked about** — the same
+/// **How long a running reviewer may be quiet before its queue row is asked about** - the same
 /// thirty minutes a child gets to breathe ([`CHILD_ROOM_TO_BREATHE`]), measured from its last event
 /// rather than its start: a review is long by nature, and only silence says it may be stuck.
 pub const REVIEWER_QUIET_CAP: Duration = CHILD_ROOM_TO_BREATHE;
 
-/// **When a queue row quiet only because its reviewer is working becomes askable on its own** —
+/// **When a queue row quiet only because its reviewer is working becomes askable on its own**  -
 /// the clock half of [`queue_review_in_flight`], so a reviewer that wedges is asked about without
 /// waiting for somebody to do something. `None` when no row is in that state.
 pub fn when_a_queue_reviewer_goes_quiet(
@@ -1107,7 +1107,7 @@ pub fn when_a_queue_reviewer_goes_quiet(
         .min()
 }
 
-/// **Whose row this is, in the words every sentence about a row uses** — `yours`, `the
+/// **Whose row this is, in the words every sentence about a row uses** - `yours`, `the
 /// operator's`, the parent's own author string, or `the merge queue's`. One spelling for the
 /// check's question and for a completion naming the rows that wait on it.
 pub fn whose_row(by: &TodoBy) -> &str {
@@ -1256,7 +1256,7 @@ pub fn unfinished_plan_for(
         _ => String::new(),
     };
     // **AND WHAT CANNOT START IS SAID, not merely skipped.** A blocked row is invisible to the ask
-    // — that is the whole point — so the model would otherwise learn nothing about the rows it
+    // - that is the whole point - so the model would otherwise learn nothing about the rows it
     // cannot be asked for, and a plan whose edges have gone stale would look like a shorter plan.
     let waiting = if blocked.is_empty() {
         String::new()
@@ -1287,7 +1287,7 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
         return false;
     }
     // A fixed point over the blocked set: start from the rows waiting directly on the operator and
-    // add any row whose every unmet need is the operator or a row already known to be — so a cycle
+    // add any row whose every unmet need is the operator or a row already known to be - so a cycle
     // or a broken edge is never counted, and the loop ends when a pass adds nothing.
     let mut on: BTreeSet<&str> = BTreeSet::new();
     loop {
@@ -1344,13 +1344,13 @@ pub enum NeedFate {
     /// The row it names is one the operator struck off. Not `NotDone`: telling the reader to go and
     /// finish work nobody owes is the nag this check exists not to produce.
     StruckOff,
-    /// The name matches no row on the board — a re-worded row, a deleted one, or a name that was
+    /// The name matches no row on the board - a re-worded row, a deleted one, or a name that was
     /// never right. The common case, and the one the message has to make repairable.
     NoSuchRow,
-    /// The name matches more than one row, so which one is meant is not knowable — the house rule
+    /// The name matches more than one row, so which one is meant is not knowable - the house rule
     /// [`TodoBoard::set_operator_states`] already keeps for an ambiguous name.
     Ambiguous,
-    /// A [`TodoNeed`] kind this build cannot evaluate — see that enum's `Unknown` variant.
+    /// A [`TodoNeed`] kind this build cannot evaluate - see that enum's `Unknown` variant.
     UnknownKind,
     /// A child this daemon is running: the row cannot start until it finishes. It carries the
     /// child's facts and not a verdict - [`child_said`] makes the verdict - so a young child can
@@ -1360,7 +1360,7 @@ pub enum NeedFate {
     /// It carries no payload because a job needs no steering - the daemon delivers its settlement
     /// as a turn of its own.
     JobRunning,
-    /// **A monitor still watching** — [`NeedFate::JobRunning`]'s sibling: the row cannot start
+    /// **A monitor still watching** - [`NeedFate::JobRunning`]'s sibling: the row cannot start
     /// until it ends, and the check is silent about the row while it watches.
     MonitorWatching,
     /// A job or child that has ended and whose completion the model has not digested yet. Not met:
@@ -1374,7 +1374,7 @@ pub enum NeedFate {
     OperatorAsked,
 }
 
-/// **The rows the check may speak about, read as a graph** — split by whether they can start.
+/// **The rows the check may speak about, read as a graph** - split by whether they can start.
 struct PlanAsGraph<'a> {
     /// The READY rows, in [`open_priority`]'s order.
     ready: Vec<&'a TodoItem>,
@@ -1441,7 +1441,7 @@ fn unmet_needs(
                 if let Some(child) = children.child(id) {
                     out.push((id.clone(), NeedFate::ChildRunning(*child)));
                 } else if jobs.is_digesting(id) {
-                    // **Finished, and its completion not digested yet** — see
+                    // **Finished, and its completion not digested yet** - see
                     // [`waits_on_an_undigested_ending`].
                     out.push((id.clone(), NeedFate::EndedUnread));
                 }
@@ -1458,7 +1458,7 @@ fn unmet_needs(
                 if jobs.is_running(handle) {
                     out.push((handle.clone(), NeedFate::JobRunning));
                 } else if jobs.is_digesting(handle) {
-                    // **Ended, and its completion not digested yet** — not met until the model has
+                    // **Ended, and its completion not digested yet** - not met until the model has
                     // had a turn with it: see [`waits_on_an_undigested_ending`].
                     out.push((handle.clone(), NeedFate::EndedUnread));
                 }
@@ -1483,7 +1483,7 @@ fn unmet_needs(
     out
 }
 
-/// **One blocked row, as the message says it** — `` `deploy` waits on `run the tests` (still open) ``.
+/// **One blocked row, as the message says it** - `` `deploy` waits on `run the tests` (still open) ``.
 fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
     let waits: Vec<String> = unmet
         .iter()
@@ -1491,7 +1491,7 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             NeedFate::NotDone => format!("`{name}` (still open)"),
             // **Said as the OPERATOR's act and not as a plan state**, because that is what the
             // reader has to act on: nobody is going to finish this row, and the fix is the model's
-            // own — drop the need, or point it at work that can happen.
+            // own - drop the need, or point it at work that can happen.
             NeedFate::StruckOff => format!(
                 "`{name}` (struck off by the operator — this edge can never be met; re-word it with \
                  `todo_write`)"
@@ -1510,7 +1510,7 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             ),
             // **A job is named by its handle**, the one `job_list` and `job_output` are given, and
             // the sentence says the two things the reader needs and nothing else: the blocker is
-            // still there, and it is not theirs to move — the settlement is already on its way.
+            // still there, and it is not theirs to move - the settlement is already on its way.
             NeedFate::JobRunning => format!(
                 "the job `{name}`, still running — its completion reaches you as soon as it ends"
             ),
@@ -1550,7 +1550,7 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
 pub enum ChildDoing {
     /// A turn is in flight and the child's own log moved inside the window.
     Working,
-    /// **No turn is in flight and the child is still here** — parked, and reachable by a message.
+    /// **No turn is in flight and the child is still here** - parked, and reachable by a message.
     BetweenTurns,
     /// A turn is in flight and nothing has been published for longer than the window.
     Quiet,
@@ -1559,7 +1559,7 @@ pub enum ChildDoing {
 }
 
 impl ChildDoing {
-    /// **The state in the words both doors use** — one spelling, so a reader who has read the
+    /// **The state in the words both doors use** - one spelling, so a reader who has read the
     /// notice and then called `task_result` reads the same state and not two paraphrases of it.
     pub fn said(self) -> &'static str {
         match self {
@@ -1684,7 +1684,7 @@ fn lead_of(unmet: &[(String, NeedFate)]) -> &'static str {
     }
 }
 
-/// `1 row` / `2 rows` — the count the leads above open with.
+/// `1 row` / `2 rows` - the count the leads above open with.
 fn rows_count(n: usize) -> String {
     match n {
         1 => "1 row".to_string(),
@@ -1732,8 +1732,8 @@ fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String
 }
 
 // `MAX_PLAN_LINES` is gone with the list it capped: the message names ONE item now, so there is no
-// length of list to truncate. The operator's ruling — *"only one todo at a time, so a model will not
-// be defocused"* — removes the thing that constant existed for.
+// length of list to truncate. The operator's ruling - *"only one todo at a time, so a model will not
+// be defocused"* - removes the thing that constant existed for.
 
 /// The daemon-side half of `todo_write`'s `target`: reaching a child session's board. Built per
 /// session with the caller already bound, so it decides everything the safety turns on - that the
@@ -1762,7 +1762,7 @@ pub trait ChildTodos: Send + Sync {
 /// The write tool. Holds the board; the harness holds the same `Arc`.
 pub struct TodoWriteTool {
     board: Arc<TodoBoard>,
-    /// The daemon's child-board resolver — `None` in a runtime with no daemon behind it, in which
+    /// The daemon's child-board resolver - `None` in a runtime with no daemon behind it, in which
     /// case a `target` write is refused by name rather than quietly aimed at this session's board.
     children: Option<Arc<dyn ChildTodos>>,
 }
@@ -1775,7 +1775,7 @@ impl TodoWriteTool {
         }
     }
 
-    /// Seat the tool with a way to reach CHILDREN's boards — the daemon's half of `target`. The
+    /// Seat the tool with a way to reach CHILDREN's boards - the daemon's half of `target`. The
     /// board stays the session's own; nothing here can write it as anybody else.
     pub fn with_children(board: Arc<TodoBoard>, children: Arc<dyn ChildTodos>) -> Self {
         TodoWriteTool {
@@ -2067,14 +2067,14 @@ impl Tool for TodoWriteTool {
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
         // The session's job table, read once: `wait_on` checks a handle against it and a `job`
-        // need in `todos` is resolved through it (R92.14) — the same rule both ways.
+        // need in `todos` is resolved through it (R92.14) - the same rule both ways.
         let jobs = ctx.backend.processes().map(|host| host.jobs());
         self.write(args, jobs.as_deref())
     }
 }
 
 impl TodoWriteTool {
-    /// **The whole of `todo_write`, over a job table in hand** — `invoke` is this with the
+    /// **The whole of `todo_write`, over a job table in hand** - `invoke` is this with the
     /// session's own table. A parameter rather than a read, as [`Self::wait_on`]'s is, so the
     /// rules that read the table are assertable without a cgroup tree.
     pub(crate) fn write(&self, args: &Value, jobs: Option<&[crate::exec::JobView]>) -> Invocation {
@@ -2098,7 +2098,7 @@ impl TodoWriteTool {
             }
         }
         // **`wait_on` is a call of its own.** It attaches an edge to a row ALREADY on the board, so
-        // a `todos` beside it could add or restate that very row in the same breath — and which of
+        // a `todos` beside it could add or restate that very row in the same breath - and which of
         // the two edges then stands would be an accident of the order below. One call, one act.
         if let Some(waits) = args.get("wait_on") {
             for field in ["todos", "update", "operator", "target"] {
@@ -2116,7 +2116,7 @@ impl TodoWriteTool {
         }
         // **A MISSING `todos` IS NOT A MISSING ARGUMENT ANY MORE.** `update` and `operator` name a
         // row on their own, which is the whole point of `update`; what is refused is a call that
-        // names no row by ANY of the three — see the block below the target path.
+        // names no row by ANY of the three - see the block below the target path.
         let mut rows = match args.get("todos").and_then(|v| v.as_array()) {
             Some(list) => match parse_rows(list) {
                 Ok(rows) => rows,
@@ -2176,7 +2176,7 @@ impl TodoWriteTool {
             };
             return match children.upsert_child(target, &rows) {
                 // The resolver is built per session with the caller already bound, which is why
-                // the author never comes from the wire — see `ChildTodos::upsert_child`'s doc.
+                // the author never comes from the wire - see `ChildTodos::upsert_child`'s doc.
                 Ok(child_board) => Invocation::ok(format!(
                     "written onto {target}'s board as `Parent <your session id>` — your rows were \
                      added or state-updated as yours; the child's rows, the operator's rows and \
@@ -2254,7 +2254,7 @@ impl TodoWriteTool {
         } else {
             Vec::new()
         };
-        // The list back to the model, as it now stands — so the next call is written against what
+        // The list back to the model, as it now stands - so the next call is written against what
         // the pane shows, not against what the model believes it wrote.
         let mut out = render(&self.board.snapshot());
         if !updates.is_empty() {
@@ -2364,7 +2364,7 @@ impl TodoWriteTool {
                     }
                     Wait::Detach
                 }
-                // **The operator, asked** — no handle to resolve: the question is the wait, and it
+                // **The operator, asked** - no handle to resolve: the question is the wait, and it
                 // ends when they answer it (or when the model takes it off having worked it out).
                 "operator" => {
                     let o = obj.get("operator");
@@ -2415,7 +2415,7 @@ impl TodoWriteTool {
                     }
                     // **The full handle goes on the row**, whatever the call spelled: it is what
                     // `job_fate` and `RunningJobs` are asked about, and a name is the agent's word
-                    // for a job while it is in the table — not a key that survives a restart.
+                    // for a job while it is in the table - not a key that survives a restart.
                     Wait::On(TodoNeed::Job { handle: job.id.0 })
                 }
                 _ => {
@@ -2970,7 +2970,7 @@ fn render(todos: &[TodoItem]) -> String {
         // no field at all. Content is printed verbatim - it is the name to quote back.
         let author = match &t.by {
             TodoBy::Operator => "the operator's".to_string(),
-            // **The operator's own string, verbatim and in full** — `Parent s-…` — because a
+            // **The operator's own string, verbatim and in full** - `Parent s-…` - because a
             // child reading its own board has to be able to tell what it decided from what it
             // was told, and by whom.
             TodoBy::Parent(who) => who.clone(),
@@ -3002,18 +3002,18 @@ fn render(todos: &[TodoItem]) -> String {
                     .map(|need| match need {
                         TodoNeed::Row { content } => format!("`{}`", content.trim()),
                         // **The child, by its id**, because that is what the model has to hand to
-                        // `task_result` — the same rule the nag's own line keeps.
+                        // `task_result` - the same rule the nag's own line keeps.
                         TodoNeed::Child { id } => format!("the child `{id}`"),
                         // **The job, by its handle**, because that is what the model has to hand
-                        // `job_output` or `job_kill` — the same rule the child's id keeps, and the
+                        // `job_output` or `job_kill` - the same rule the child's id keeps, and the
                         // same rule the nag's own line keeps.
                         TodoNeed::Job { handle } => format!("the job `{handle}`"),
                         TodoNeed::Monitor { name } => format!("the monitor `{name}`"),
-                        // **The room's item, by the number `room`'s own verbs take** — the edge
+                        // **The room's item, by the number `room`'s own verbs take** - the edge
                         // the daemon's room pass puts on a `you hold …` row while the room is
                         // working on it, so a model reading its list sees why the row is quiet.
                         TodoNeed::Room { item, .. } => format!("the room item `#{item}`"),
-                        // **The operator, by the question** — the words they were asked, so the
+                        // **The operator, by the question** - the words they were asked, so the
                         // model can see what it is waiting for and try to work it out itself.
                         TodoNeed::Operator { question, .. } => {
                             format!("the OPERATOR — asked \"{}\"", question.trim())

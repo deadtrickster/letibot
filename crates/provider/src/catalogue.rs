@@ -19,7 +19,7 @@ pub struct ModelFacts {
     /// The most it will generate in one turn.
     pub output: u64,
     /// USD per million, as [`crate::presets::Prices`] wants them. `None` for a
-    /// model the catalogue prices nowhere — some are free, some are unlisted, and
+    /// model the catalogue prices nowhere - some are free, some are unlisted, and
     /// those are different from zero.
     pub prices: Option<crate::presets::Prices>,
     /// What it accepts as input, from models.dev's `modalities.input`. `None` when the row
@@ -73,7 +73,7 @@ struct RawCost {
     #[serde(default)]
     output: f64,
     /// models.dev's name for the cached-read rate. Absent means the provider does
-    /// not discount a cache hit, so it costs the full input rate — not zero.
+    /// not discount a cache hit, so it costs the full input rate - not zero.
     #[serde(default)]
     cache_read: Option<f64>,
 }
@@ -86,7 +86,7 @@ pub struct Catalogue {
     source: Option<Origin>,
 }
 
-/// Which of the four places a catalogue came from — the fact the disclosure names.
+/// Which of the four places a catalogue came from - the fact the disclosure names.
 #[derive(Debug)]
 enum Origin {
     File(PathBuf),

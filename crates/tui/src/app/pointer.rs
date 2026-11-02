@@ -76,7 +76,7 @@ pub(crate) fn pieces(row: &str) -> Vec<Piece<'_>> {
     out
 }
 
-/// **Cells `x0..x1` of a frame row, restyled** with `on` … `off` — escape-aware, and re-applied
+/// **Cells `x0..x1` of a frame row, restyled** with `on` … `off` - escape-aware, and re-applied
 /// after every style change inside the run, because a row resets its style between its spans and
 /// a reset would otherwise end the mark halfway along.
 pub(crate) fn restyle(row: &str, x0: usize, x1: usize, on: &str, off: &str) -> String {
@@ -159,7 +159,7 @@ pub(crate) fn brighten(row: &str, x0: usize, x1: usize) -> String {
     out
 }
 
-/// The first and one-past-last visible, non-blank cells of a row — `None` for a blank one.
+/// The first and one-past-last visible, non-blank cells of a row - `None` for a blank one.
 fn text_span(cs: &[char]) -> Option<(usize, usize)> {
     let blank = |c: &char| matches!(*c, ' ' | '\0');
     let a = cs.iter().position(|c| !blank(c))?;
@@ -203,7 +203,7 @@ fn content_span(cs: &[char], gutter: usize) -> Option<(usize, usize)> {
 }
 
 impl App {
-    /// **What a click at `(x, y)` would act on**, as cells to mark — `None` where a click does
+    /// **What a click at `(x, y)` would act on**, as cells to mark - `None` where a click does
     /// nothing. The same answers the click itself uses: a key hint, then the last frame's hit map.
     fn clickable_at(&self, x: u16, y: u16) -> Option<Hovered> {
         if let Some(k) = self.key_hint_at(x, y) {
@@ -225,7 +225,7 @@ impl App {
                 row,
                 Some((hit.rect.x, hit.rect.x + hit.rect.w)),
             )),
-            // An edit or a write in the conversation opens its change — every row of it, the
+            // An edit or a write in the conversation opens its change - every row of it, the
             // whole card; anything else in the conversation is text, selected and not clicked.
             // A run marker's clause lights alone: each opens its own kind.
             Target::Conversation if self.marker_at(x, y).is_some() => {
@@ -246,7 +246,7 @@ impl App {
                         .collect(),
                 })
             }
-            // **A finished child's line lights alone** — one row, one child. Unlike a notice,
+            // **A finished child's line lights alone** - one row, one child. Unlike a notice,
             // whose rows all open the same popup, each of these rows is a different session, so
             // lighting the block would say that two children are one door.
             Target::TaskAgent => Some(Hovered::one(row, None)),
@@ -371,7 +371,7 @@ impl App {
         }
     }
 
-    /// **The selection goes, and the hold it took with it** — Esc, or a press elsewhere. A hold
+    /// **The selection goes, and the hold it took with it** - Esc, or a press elsewhere. A hold
     /// the operator took with ctrl-p is theirs and stays.
     pub(crate) fn drop_selection(&mut self) -> bool {
         let had = self.selection.take().is_some();
@@ -381,7 +381,7 @@ impl App {
         had
     }
 
-    /// **The left button came up**: the end of a selection, which is copied — or, with no motion
+    /// **The left button came up**: the end of a selection, which is copied - or, with no motion
     /// since the press, a click at the press.
     pub(crate) fn release(&mut self) -> Option<Key> {
         let drag = std::mem::take(&mut self.drag);
@@ -413,7 +413,7 @@ impl App {
     }
 
     /// **The selected text, off the frame it was drawn on**: each row's selected cells, the
-    /// trailing blanks dropped and the head's own gutter taken off the front — what was read, not
+    /// trailing blanks dropped and the head's own gutter taken off the front - what was read, not
     /// the frame's padding.
     pub(crate) fn selected_text(&self) -> Option<String> {
         let ((x0, y0), (x1, y1)) = self.selection_span()?;
@@ -442,7 +442,7 @@ impl App {
         (!text.trim().is_empty()).then_some(text)
     }
 
-    /// **Put the selection on the clipboard** — through `/copy`'s door (`clipboard_out`, which
+    /// **Put the selection on the clipboard** - through `/copy`'s door (`clipboard_out`, which
     /// the driver writes as OSC 52), and said either way: a terminal not known to take OSC 52 is
     /// told so rather than left looking like a copy that worked.
     fn copy_selection(&mut self) {
@@ -470,18 +470,18 @@ impl App {
     }
 
     /// **The pointer shape the terminal should show**, when it changed: the hand over something
-    /// clickable, the default off it (OSC 22 — ignored by a terminal that does not speak it).
+    /// clickable, the default off it (OSC 22 - ignored by a terminal that does not speak it).
     pub fn take_pointer(&mut self) -> Option<bool> {
         self.pointer_hand.take()
     }
 
-    /// **The hover mark and the selection, painted onto the finished frame** — the last thing a
+    /// **The hover mark and the selection, painted onto the finished frame** - the last thing a
     /// frame does, so no renderer has to know about the pointer.
     pub(crate) fn paint_pointer(&self, frame: &mut [String]) {
         if let Some(((x0, y0), (x1, y1))) = self.selection_span() {
             let gutter = Self::gutter(self.term_cols);
             for y in y0..=y1.min(frame.len().saturating_sub(1)) {
-                // Only the row's content is marked — the frame is not selectable (see
+                // Only the row's content is marked - the frame is not selectable (see
                 // `content_span`), so the bars a selection crosses stay as they are drawn.
                 let Some((s, e)) = content_span(&keyhints::cells(&frame[y]), gutter) else {
                     continue;

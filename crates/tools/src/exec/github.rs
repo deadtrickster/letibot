@@ -21,7 +21,7 @@ pub const EVERY: Duration = Duration::from_secs(90);
 /// The shortest interval a call may ask for.
 pub const EVERY_MIN: Duration = Duration::from_secs(30);
 
-/// How long a GitHub watch may live — reviews take days, and a monitor's ordinary hour would
+/// How long a GitHub watch may live - reviews take days, and a monitor's ordinary hour would
 /// expire before most of them. Renewable like any monitor.
 pub const GITHUB_MAX_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
@@ -33,7 +33,7 @@ pub const GITHUB_DEFAULT_TTL: Duration = Duration::from_secs(24 * 3600);
 pub enum Until {
     /// Closed, merged or not.
     Closed,
-    /// Merged — a pull request closed without merging fires too, and says so.
+    /// Merged - a pull request closed without merging fires too, and says so.
     Merged,
     /// Every check on the pull request's head has finished.
     Checks,
@@ -100,7 +100,7 @@ pub struct Target {
 }
 
 impl Target {
-    /// A pull request or issue URL — `https://github.com/o/r/pull/12`, `…/issues/7`.
+    /// A pull request or issue URL - `https://github.com/o/r/pull/12`, `…/issues/7`.
     pub fn from_url(url: &str) -> Option<Target> {
         let rest = url
             .trim()
@@ -138,13 +138,13 @@ impl Target {
 struct Seen {
     state: String,
     head: String,
-    /// Every submitted review but CodeRabbit's — approving, asking for changes, or commenting,
+    /// Every submitted review but CodeRabbit's - approving, asking for changes, or commenting,
     /// the operator's own included: `(when, author, state, first line)`, oldest first.
     reviews: Vec<(String, String, String, String)>,
     /// Who a review is still requested from.
     requested: Vec<String>,
     /// Comments and review bodies by anyone but the operator: `(when, author, first line)`, in
-    /// the order they were written — two lists merged, so "the latest" is the latest.
+    /// the order they were written - two lists merged, so "the latest" is the latest.
     comments: Vec<(String, String, String)>,
     /// CodeRabbit's reviews: `(state, first line)`.
     rabbit: Vec<(String, String)>,
@@ -166,7 +166,7 @@ struct State {
     checks_told: Option<String>,
     /// The head whose conflict with the base was already reported.
     conflict_told: Option<String>,
-    /// The pull request is closed and that has been said — nothing more can happen on it, so
+    /// The pull request is closed and that has been said - nothing more can happen on it, so
     /// GitHub is not asked again for the rest of the watch's life.
     done: bool,
 }
@@ -181,7 +181,7 @@ enum Step {
 #[derive(Debug)]
 pub struct GithubCondition {
     target: Target,
-    /// What it waits for — one look serves them all: a pull request's checks, reviews,
+    /// What it waits for - one look serves them all: a pull request's checks, reviews,
     /// CodeRabbit, comments and closing are one `gh` call, not five (the operator: *"we can
     /// coalesce monitors sets like these"*).
     untils: Vec<Until>,
@@ -278,7 +278,7 @@ impl GithubCondition {
             .iter()
             .filter_map(|u| self.evaluate_one(*u, st, &seen, &base, first))
             .collect();
-        // A pull request that is no longer open is the end of every watch on it — said once,
+        // A pull request that is no longer open is the end of every watch on it - said once,
         // even to a watch that never asked about closing, and then nothing more is asked of
         // GitHub (`State::done`).
         if seen.state != "OPEN" && !st.done {
@@ -341,7 +341,7 @@ impl GithubCondition {
                     )
                 })
             }
-            // Any review, by whoever was asked — the operator: *"reviews can come via normal
+            // Any review, by whoever was asked - the operator: *"reviews can come via normal
             // reviewers route"*. A review submitted as a COMMENT, which is how review bots and
             // many people review, findings inline and maybe no text of its own, is a review too.
             Until::Review if !first && seen.reviews.len() > base.reviews.len() => {
@@ -452,7 +452,7 @@ fn is_rabbit(who: &str) -> bool {
     who.to_ascii_lowercase().starts_with("coderabbit")
 }
 
-/// One look, read — `gh pr view --json` or `gh issue view --json`.
+/// One look, read - `gh pr view --json` or `gh issue view --json`.
 fn parse(json: &str, viewer: Option<&str>) -> Option<Seen> {
     let v: Value = serde_json::from_str(json).ok()?;
     let arr = |k: &str| {
@@ -493,7 +493,7 @@ fn parse(json: &str, viewer: Option<&str>) -> Option<Seen> {
             seen.rabbit.push((how, first_line(body)));
             continue;
         }
-        // A review is a review's news, not "a new comment" — the `comment` watch is the
+        // A review is a review's news, not "a new comment" - the `comment` watch is the
         // conversation; a dismissed or pending review is not one anybody submitted.
         if matches!(how.as_str(), "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED") {
             let at = r.get("submittedAt").and_then(|t| t.as_str()).unwrap_or("");
@@ -761,7 +761,7 @@ mod tests {
         }
     }
 
-    /// A CodeRabbit review with no text of its own says where its findings are — the
+    /// A CodeRabbit review with no text of its own says where its findings are - the
     /// operator, on `pr206-coderabbit` firing with `: ""`: *"empty line looks suspicious"*.
     #[test]
     fn an_empty_rabbit_review_points_at_its_inline_comments() {
@@ -795,8 +795,8 @@ mod tests {
         );
     }
 
-    /// A pull request in conflict says so to a watch for its merging or its checks — once per
-    /// head, at arming too — and a watch for reviews is not told.
+    /// A pull request in conflict says so to a watch for its merging or its checks - once per
+    /// head, at arming too - and a watch for reviews is not told.
     #[test]
     fn a_conflicting_pull_request_is_said_once_per_head() {
         let t = Target::from_url("https://github.com/stroppy-io/stroppy/pull/206").unwrap();
@@ -927,7 +927,7 @@ mod tests {
         );
     }
 
-    /// Through a stub `gh`, end to end — spawned, polled, read: the watch fires on the look
+    /// Through a stub `gh`, end to end - spawned, polled, read: the watch fires on the look
     /// that shows the change, and a `gh` that is not logged in fires with that.
     #[test]
     fn a_stub_gh_is_asked_and_answers() {

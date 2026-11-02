@@ -20,7 +20,7 @@ pub const HOOK: &str = "on_tool_call";
 pub struct Session {
     /// The session's id, as the store names it.
     pub session: String,
-    /// The mode in force — `read-only`, `writes-allowed`, `allow-edits`, `allow-all`: the words
+    /// The mode in force - `read-only`, `writes-allowed`, `allow-edits`, `allow-all`: the words
     /// the gate and the status line already use.
     pub mode: String,
     /// Where the session's tree is, so a layer can be about one project.
@@ -78,7 +78,7 @@ impl ToolCallIn {
 pub enum Verdict<'a> {
     /// Run it exactly as the model proposed.
     Pass,
-    /// Run it with these arguments instead — **through the gate**.
+    /// Run it with these arguments instead - **through the gate**.
     Rewrite(&'a Value),
     /// Do not run it; the model reads this sentence as the result.
     Refuse(&'a str),
@@ -117,7 +117,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Any JSON value, present or null, as `Some` — so `{"arguments": null}` and `{}` are two
+/// Any JSON value, present or null, as `Some` - so `{"arguments": null}` and `{}` are two
 /// different answers. Absence is `#[serde(default)]`'s `None` and nothing else is.
 fn present<'de, D>(d: D) -> Result<Option<Value>, D::Error>
 where
@@ -213,7 +213,7 @@ mod tests {
         }
     }
 
-    /// The order is refuse, answer, rewrite, pass — the restrictive statement wins, and a layer
+    /// The order is refuse, answer, rewrite, pass - the restrictive statement wins, and a layer
     /// that says two things has one meaning.
     #[test]
     fn the_strongest_statement_is_the_one_that_speaks() {
@@ -255,7 +255,7 @@ mod tests {
         }
     }
 
-    /// A guest may answer a rewrite with `null` arguments — which is a call with no arguments,
+    /// A guest may answer a rewrite with `null` arguments - which is a call with no arguments,
     /// not a licence to run the model's. The distinction matters: a layer narrowing a call to
     /// nothing is narrowing it.
     #[test]

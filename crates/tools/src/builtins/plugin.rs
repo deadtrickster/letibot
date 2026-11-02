@@ -86,7 +86,7 @@ pub trait PluginDesk: Send + Sync {
     fn hooks(&self, hook: Option<&str>) -> Result<String, Refusal>;
 }
 
-/// **No plugin host behind the tool** — a session the daemon does not serve (a subagent), or a
+/// **No plugin host behind the tool** - a session the daemon does not serve (a subagent), or a
 /// test registry. Every verb says so by name rather than the tool being absent, which would read
 /// as a capability this build lacks.
 pub struct NoPlugins;
@@ -141,7 +141,7 @@ fn text<'a>(args: &'a Value, field: &str) -> Option<&'a str> {
 }
 
 /// **The pane's C3 input, handed to `test` when the caller gave none**: the first frame of any
-/// pane — nothing looked at, nothing pressed, no state. A plugin that cannot answer this one traps
+/// pane - nothing looked at, nothing pressed, no state. A plugin that cannot answer this one traps
 /// on its own first frame, which is the cheapest defect to find.
 pub fn synthetic_input() -> Value {
     serde_json::json!({
@@ -224,7 +224,7 @@ impl Tool for PluginTool {
                 format!("call `plugin` with `action` = {ACTIONS}."),
             );
         };
-        // A missing argument is refused here, naming what the argument builds — never passed on
+        // A missing argument is refused here, naming what the argument builds - never passed on
         // as an empty name, which would be a plugin directory called nothing. Boxed because an
         // `Invocation` is large and this is the rare arm (the shape `queue` uses).
         let need = |field: &str, why: &str| -> Result<String, Box<Invocation>> {
@@ -306,7 +306,7 @@ impl Tool for PluginTool {
     }
 }
 
-/// **`plugin_hooks`** — the contracts, from the host that enforces them.
+/// **`plugin_hooks`** - the contracts, from the host that enforces them.
 pub struct PluginHooksTool {
     desk: Arc<dyn PluginDesk>,
 }
@@ -359,8 +359,8 @@ mod tests {
     use letibot_transcript::{ToolCall, ToolOutcome};
     use std::sync::Mutex;
 
-    /// A desk that records what it was asked and answers a fixed line, so the tool's own half —
-    /// the arguments, the access class and the shape of a refusal — is what these tests measure.
+    /// A desk that records what it was asked and answers a fixed line, so the tool's own half  -
+    /// the arguments, the access class and the shape of a refusal - is what these tests measure.
     struct Recorder {
         said: Mutex<Vec<String>>,
         fail: bool,
@@ -431,7 +431,7 @@ mod tests {
         }
     }
 
-    /// **A runtime over one tool, with a gate that admits** — so a refusal in a test is the tool's
+    /// **A runtime over one tool, with a gate that admits** - so a refusal in a test is the tool's
     /// own and never the boundary's. The temp dir comes back with it: the backend holds a path
     /// into it, so the caller keeps it alive for the length of the test.
     fn runtime(tool: Box<dyn Tool>) -> (ToolRuntime, crate::backend::tempdir::TempDir) {
@@ -539,7 +539,7 @@ mod tests {
     }
 
     /// **A build's refusal is the compiler's own words**, verbatim, in the part of the result a
-    /// model edits — not a summary of them.
+    /// model edits - not a summary of them.
     #[test]
     fn a_failed_build_carries_the_compiler_output_verbatim() {
         let rec = Arc::new(Recorder {
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(*rec.said.lock().unwrap(), vec!["hooks ", "hooks pane"]);
     }
 
-    /// **A session with no daemon behind the tool says which** — never an absence that reads as a
+    /// **A session with no daemon behind the tool says which** - never an absence that reads as a
     /// missing capability of the build.
     #[test]
     fn no_plugin_host_behind_the_tool_refuses_by_name() {

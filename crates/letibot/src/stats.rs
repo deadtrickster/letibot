@@ -1,9 +1,9 @@
-//! **`letibot stats` and `letibot fb`** — the metrics file from a shell (TODO R81 phase 1,
+//! **`letibot stats` and `letibot fb`** - the metrics file from a shell (TODO R81 phase 1,
 //! `docs/metrics.md` §3.2 and §2.5).
 //!
 //! `stats` opens `metrics.db` read-only and prints one of §3's answers; it never writes and
-//! never starts a daemon. `fb` is the shell's door for an operator's mark — for leticl until its
-//! own frame lands, for a phone over ssh, for a session whose head is closed — and writes the
+//! never starts a daemon. `fb` is the shell's door for an operator's mark - for leticl until its
+//! own frame lands, for a phone over ssh, for a session whose head is closed - and writes the
 //! same `operator.feedback` row the daemon's connection thread writes, straight into the file:
 //! no daemon is needed, and none is asked.
 
@@ -98,7 +98,7 @@ pub fn run_stats(args: &[String]) -> ExitCode {
     say(stats_text(args).map(|t| print!("{t}")))
 }
 
-/// The text `letibot stats` prints — apart from the printing, so a test can read it.
+/// The text `letibot stats` prints - apart from the printing, so a test can read it.
 pub fn stats_text(args: &[String]) -> Result<String, String> {
     let a = parse(args)?;
     let c = stats::open(&a.db)?;

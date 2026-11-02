@@ -42,7 +42,7 @@ pub struct DecisionRow {
     pub session_id: String,
     pub turn_id: String,
     pub decided_ms: i64,
-    /// Layer A's normalised reading of the call — never the raw command text,
+    /// Layer A's normalised reading of the call - never the raw command text,
     /// for the same reason the oracle is not shown it.
     pub action: String,
     pub tool: String,
@@ -51,7 +51,7 @@ pub struct DecisionRow {
     pub mode: String,
     pub tier: String,
     pub effect: String,
-    /// `allow`, `deny`, `ask`, `unavailable` — as the corpus stores it.
+    /// `allow`, `deny`, `ask`, `unavailable` - as the corpus stores it.
     pub verdict: String,
     /// Who decided: `operator`, `oracle`, `boundary:…`, `gate:…`.
     pub verdict_by: String,
@@ -70,7 +70,7 @@ pub struct DecisionRow {
     pub operator_kind: String,
     pub operator_note: String,
     /// The exact bytes the oracle was shown. `None` when no oracle was consulted
-    /// — which is a fact about the row, not a missing value.
+    /// - which is a fact about the row, not a missing value.
     pub shown: Option<String>,
 }
 
@@ -96,7 +96,7 @@ pub struct DecisionQuery {
     pub tool: Option<String>,
     /// `allow`, `deny`, `ask`, `unavailable`.
     pub verdict: Option<String>,
-    /// `operator`, `oracle`, `boundary`, `gate` — matched as a prefix, because
+    /// `operator`, `oracle`, `boundary`, `gate` - matched as a prefix, because
     /// the stored value is `boundary:flow` and the question is about boundaries.
     pub by: Option<String>,
     /// `Some(true)`: only decisions a person was actually asked.
@@ -320,7 +320,7 @@ impl DecisionsTool {
     }
 }
 
-/// One decision, in full. Every field, and the two bases kept apart — which is
+/// One decision, in full. Every field, and the two bases kept apart - which is
 /// the distinction the whole tool was built around.
 fn render_full(r: &DecisionRow) -> String {
     let mut out = format!(
@@ -472,7 +472,7 @@ fn describe(q: &DecisionQuery) -> String {
 
 /// Clause 1: the miss names what IS in each field it filtered on, because the
 /// common miss is a word spelled the way an enum spells it rather than the way
-/// the corpus stores it — and a bare "no rows" sends a model back to sqlite.
+/// the corpus stores it - and a bare "no rows" sends a model back to sqlite.
 fn miss(q: &DecisionQuery, hits: &DecisionHits) -> String {
     let mut out = format!(
         "no decision matched{}. {} were searched in session {}, so the corpus was \
@@ -646,7 +646,7 @@ mod tests {
         )
     }
 
-    /// The call this tool replaced, as one argument — and it returns every field
+    /// The call this tool replaced, as one argument - and it returns every field
     /// that sqlite3 query selected by name, plus the brief it did not think to ask
     /// for.
     #[test]
@@ -669,7 +669,7 @@ mod tests {
     }
 
     /// A human decision has no brief, and that is a fact about it rather than a
-    /// missing value — the row says layer B never ran.
+    /// missing value - the row says layer B never ran.
     #[test]
     fn a_decision_with_no_oracle_says_so_rather_than_showing_an_empty_brief() {
         let out = ask(

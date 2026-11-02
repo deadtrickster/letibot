@@ -77,7 +77,7 @@ fn todo_answer(content: &str, question: &str, answer: QuestionAnswer) -> Option<
 }
 
 /// **Answer → the next waiting row's card opens; the last answer → the card closes and the line
-/// says nothing waits.** *"i answered what was asked by the todo, and it didnt hide"* — the answer
+/// says nothing waits.** *"i answered what was asked by the todo, and it didnt hide"* - the answer
 /// went, and nothing on the screen said so.
 #[test]
 fn an_answer_opens_the_next_waiting_row_and_the_last_one_closes_the_card() {
@@ -136,7 +136,7 @@ fn an_answer_opens_the_next_waiting_row_and_the_last_one_closes_the_card() {
     assert!(line(&a).is_empty());
 }
 
-/// **The stale `asks` settings row does not bring the line back after the last answer** — it was
+/// **The stale `asks` settings row does not bring the line back after the last answer** - it was
 /// written before the answer, and the line fell back to it whenever the board read empty.
 #[test]
 fn the_last_answer_is_not_undone_by_the_settings_row() {
@@ -209,7 +209,7 @@ fn esc_puts_a_todo_card_away_and_alt_a_brings_back_its_draft() {
 }
 
 /// **The model's question put away keeps waiting under its own deadline, and the line counts it
-/// down** — so the operator is not surprised when it lapses. alt-a brings it back with the draft.
+/// down** - so the operator is not surprised when it lapses. alt-a brings it back with the draft.
 #[test]
 fn esc_puts_the_models_question_away_and_the_line_shows_its_deadline() {
     let mut a = app();
@@ -250,7 +250,7 @@ fn esc_puts_the_models_question_away_and_the_line_shows_its_deadline() {
     );
 }
 
-/// **The question lapsing while away takes the line down** — it is settled, nothing is left to
+/// **The question lapsing while away takes the line down** - it is settled, nothing is left to
 /// bring back.
 #[test]
 fn a_question_settled_while_away_is_gone() {
@@ -301,7 +301,7 @@ fn the_put_away_esc_does_not_arm_the_interrupt() {
     );
 }
 
-/// **Abstain stays an explicit choice** — typed, and sent as one, from both kinds of card; Esc is
+/// **Abstain stays an explicit choice** - typed, and sent as one, from both kinds of card; Esc is
 /// never read as it.
 #[test]
 fn abstain_still_sends_abstain() {
@@ -335,7 +335,7 @@ fn abstain_still_sends_abstain() {
     );
 }
 
-/// **alt-a brings back the oldest pending question of either kind** — the model's first (the one
+/// **alt-a brings back the oldest pending question of either kind** - the model's first (the one
 /// with a clock and a call held on it), then a todo card that was put away (with its draft), and
 /// only then the first waiting row in board order.
 #[test]
@@ -381,8 +381,8 @@ fn alt_a_brings_back_the_models_question_first_then_a_put_away_row() {
     assert_eq!(a.editor.text(), "yes");
 }
 
-/// **A permission card is put away by Esc too** (R90.5) — its Esc used to fall through, close a
-/// pane behind it or arm the Esc-Esc interrupt — and alt-a brings it back.
+/// **A permission card is put away by Esc too** (R90.5) - its Esc used to fall through, close a
+/// pane behind it or arm the Esc-Esc interrupt - and alt-a brings it back.
 #[test]
 fn esc_puts_a_permission_card_away_and_alt_a_brings_it_back() {
     let mut a = app();
@@ -410,7 +410,7 @@ fn esc_puts_a_permission_card_away_and_alt_a_brings_it_back() {
     assert!(card.contains("esc puts it away"), "{card}");
 }
 
-/// **The cards and the hint bar say how to step away** — `esc puts it away — alt-a brings it back`.
+/// **The cards and the hint bar say how to step away** - `esc puts it away - alt-a brings it back`.
 #[test]
 fn the_question_card_and_its_bar_name_esc_and_alt_a() {
     let mut a = app();
@@ -458,7 +458,7 @@ fn alt_h_folds_the_waiting_line_into_a_count_on_the_edge_and_news_unfolds_it() {
     );
 }
 
-/// **`/asks` lists every question waiting, answering none** — *"a way for me to see all
+/// **`/asks` lists every question waiting, answering none** - *"a way for me to see all
 /// questions without answering them"*.
 #[test]
 fn slash_asks_lists_every_question_and_answers_none() {

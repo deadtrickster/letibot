@@ -1,4 +1,4 @@
-//! **The operator's marks** (TODO R81): `/fb`, `/fb+`, `/fb-`, alt-g and alt-b — what each one
+//! **The operator's marks** (TODO R81): `/fb`, `/fb+`, `/fb-`, alt-g and alt-b - what each one
 //! sends, and alt-b staying word-left wherever there is a line to move over.
 
 use super::*;

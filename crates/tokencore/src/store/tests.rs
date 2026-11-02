@@ -97,7 +97,7 @@ fn seeded(s: &Store) -> (String, String) {
     ("tr-1".into(), prefix_id)
 }
 
-/// **A listed session carries its current transcript's last row** — what the subagents
+/// **A listed session carries its current transcript's last row** - what the subagents
 /// pane reads to say how a child it did not watch ended.
 #[test]
 fn a_listed_session_carries_its_last_row() {
@@ -166,13 +166,13 @@ fn a_row_is_readable_by_ordinal_without_loading_its_transcript() {
         Some("tr-1")
     );
 
-    // The row by ordinal, read through the same serde form the wire carries — so
+    // The row by ordinal, read through the same serde form the wire carries - so
     // this asserts the shape `body_of` will be handed, not a private one.
     let json = s.row_json_at(&tr, 1).unwrap().expect("row 1 is there");
     let back: TranscriptItem = serde_json::from_str(&json).unwrap();
     assert_eq!(back, items[1]);
 
-    // **An ordinal the transcript does not have is `None`, not an empty string** —
+    // **An ordinal the transcript does not have is `None`, not an empty string**  -
     // the rule `RowFetched` states for the wire: "nobody has it" and "it is empty"
     // must not look alike.
     assert_eq!(s.row_json_at(&tr, 2).unwrap(), None);
@@ -414,7 +414,7 @@ fn store_round_trip_rebuilds_the_same_ledger() {
 fn kinds_are_denormalised_correctly() {
     let s = store();
     let (tr, _) = seeded(&s);
-    // The ledger's prefix is the STORE's — `seeded`'s four tokens — so the first row starts
+    // The ledger's prefix is the STORE's - `seeded`'s four tokens - so the first row starts
     // where they end. A ledger over an empty prefix would be a row the store refuses.
     let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
     let item = TranscriptItem::ToolResult {
@@ -594,7 +594,7 @@ fn a_v2_store_is_migrated_and_gains_a_todo_table() {
     }
     {
         // Reverse the v3 step (the table goes away) and the v4 step (the column
-        // goes away), and the version says 2 — so the migration has to put both
+        // goes away), and the version says 2 - so the migration has to put both
         // back.
         let c = rusqlite::Connection::open(&path).unwrap();
         c.execute("DROP TABLE todo", []).unwrap();
@@ -670,7 +670,7 @@ fn a_job_survives_the_daemon_that_ran_it() {
         assert_eq!(back[0], started, "the row came back changed");
 
         // **And the settlement is the SAME row.** A job has one state at a time, so the
-        // second write updates it — a table that appended would make `jobs()` a history of
+        // second write updates it - a table that appended would make `jobs()` a history of
         // states, when its caller wants one handle's fate.
         let settled = JobRecord {
             state: "exited 0".into(),
@@ -683,7 +683,7 @@ fn a_job_survives_the_daemon_that_ran_it() {
             vec![settled],
             "the settlement made a second row"
         );
-        // **And a session that never ran a job reads empty** — "no jobs" and "the table
+        // **And a session that never ran a job reads empty** - "no jobs" and "the table
         // is missing" have to be different answers or the second shows up as the first.
         assert!(s.jobs("s-other").expect("reads").is_empty());
     }
@@ -744,7 +744,7 @@ fn a_v14_store_is_migrated_and_gains_a_job_table() {
         );
     }
 
-    // Opening it runs the migration, and the table it added is a working one — not merely
+    // Opening it runs the migration, and the table it added is a working one - not merely
     // present: a `CREATE TABLE` that disagreed with `SCHEMA_SQL` would pass an existence check
     // and fail on the first insert.
     let s = Store::open(&path).unwrap();
@@ -796,7 +796,7 @@ fn a_board_without_needs_reads_back_and_an_unknown_kind_does_not_empty_the_plan(
         "and the row has no edges, which is what it was"
     );
 
-    // **And a need of a kind a NEWER build wrote** — a wasm predicate, which this one cannot
+    // **And a need of a kind a NEWER build wrote** - a wasm predicate, which this one cannot
     // evaluate (see `TodoNeed`'s own list of what is still only shaped for). The plan comes
     // back; the edge reads as unknown; nothing is satisfied.
     write_raw(
@@ -837,7 +837,7 @@ fn a_board_without_needs_reads_back_and_an_unknown_kind_does_not_empty_the_plan(
     );
 
     // **And the job edge is the same tagged shape under its own kind**, so the two facts a
-    // board cannot hold — a child session and a background job — are told apart by a reader of
+    // board cannot hold - a child session and a background job - are told apart by a reader of
     // the raw row rather than guessed at from the payload.
     write_raw(
         r#"[{"content":"deploy","status":"pending","by":"model","when":null,
@@ -1101,7 +1101,7 @@ fn a_parents_row_round_trips_with_the_authors_own_string() {
         "the author is the operator's string, in full, beside the other two words: {raw}"
     );
 
-    // **An unknown author is refused by name.** Not read back as the model's — a list whose
+    // **An unknown author is refused by name.** Not read back as the model's - a list whose
     // `by` this reader cannot parse is a list it says so about, taking nothing with it. (The
     // `at line … column …` tail is serde_json's own and not part of the sentence.)
     let bad = r#"[{"content":"x","status":"pending","by":"the cat"}]"#;
@@ -1178,7 +1178,7 @@ fn the_last_turns_context_lives_on_the_session_row() {
         s.session("sess-1").unwrap().unwrap().context_window,
         Some(262_144)
     );
-    // **A turn's write does not disturb it** — the two facts are measured at different
+    // **A turn's write does not disturb it** - the two facts are measured at different
     // times and folding them together would say they were measured together.
     s.set_context("sess-1", Some(9), Some(8), Some(7)).unwrap();
     assert_eq!(
@@ -1286,7 +1286,7 @@ fn a_v7_store_is_migrated_and_gains_the_context_columns() {
     // the pair. See the v12 arm.
     assert_eq!(got.context_ledger, None);
     // v14's column arrived with the same run, and is `None` on a pre-existing row:
-    // *nobody recorded one* — never the parent's window and never a guess. See the
+    // *nobody recorded one* - never the parent's window and never a guess. See the
     // v14 arm for why it is not backfilled.
     assert_eq!(got.context_window, None);
     s.set_window("s-ctx", Some(262_144)).unwrap();
@@ -1358,7 +1358,7 @@ fn a_v13_store_gains_the_context_window_column() {
         .unwrap();
     assert_eq!(v, SCHEMA_VERSION, "the migration stamped the new version");
 
-    // The column is there, and the row that predates it says *nobody recorded one* —
+    // The column is there, and the row that predates it says *nobody recorded one*  -
     // never the parent window, and never a catalogue guess. See the v14 arm.
     let got: Option<i64> = s
         .connection()
@@ -1448,7 +1448,7 @@ fn a_v18_store_gains_the_stood_down_pair() {
     assert_eq!(v, SCHEMA_VERSION, "the migration stamped the new version");
 
     // Both columns are there, and the row that predates them says *the
-    // guard has not fired* — which is not the same fact as `auto_compact`
+    // guard has not fired* - which is not the same fact as `auto_compact`
     // being on, and is deliberately not backfilled.
     let (resident, after): (Option<i64>, Option<i64>) = s
         .connection()
@@ -1567,7 +1567,7 @@ fn a_v20_store_gains_the_prefix_fingerprint_column() {
         .unwrap();
     assert_eq!(got.as_deref(), Some("0123456789abcdef"));
     // A session nobody has heard of is refused by name rather than silently doing
-    // nothing — the rule every setter in this file follows.
+    // nothing - the rule every setter in this file follows.
     assert!(s.set_prefix_fingerprint("s-nobody", "x").is_err());
 
     // Reopening is a no-op rather than a second migration.
@@ -1662,7 +1662,7 @@ fn a_stood_down_compaction_survives_the_daemon_that_decided_it() {
 fn the_provider_choice_round_trips_with_its_four_spellings() {
     let s = store();
     let _ = seeded(&s);
-    // Never switched: NULL, not the empty string — `set_title`'s own rule, so an
+    // Never switched: NULL, not the empty string - `set_title`'s own rule, so an
     // unset choice reads as an absence and not as a name that is blank.
     assert_eq!(s.provider_choice("sess-1").unwrap(), None);
     assert_eq!(s.session("sess-1").unwrap().unwrap().provider_choice, None);
@@ -1986,7 +1986,7 @@ fn a_run_takes_the_write_lock_once_per_chunk_not_once_per_row() {
     {
         let commits = commits.clone();
         // **A hook that did not install makes every count below zero**, which the assertions would
-        // read as *this batching beats that one* — so the failure is named here instead.
+        // read as *this batching beats that one* - so the failure is named here instead.
         s.connection()
             .commit_hook(Some(move || {
                 commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2073,7 +2073,7 @@ fn job_row(handle: &str, state: &str) -> JobRecord {
     }
 }
 
-/// **A job that ended and was never delivered is found again by the next daemon** (R91.5) — and
+/// **A job that ended and was never delivered is found again by the next daemon** (R91.5) - and
 /// one that was delivered, or is still `running`, is not. A settlement written AFTER the delivery
 /// (the watcher and the reader race) does not take the delivery back.
 #[test]
@@ -2113,7 +2113,7 @@ fn the_highest_job_number_is_read_across_sessions() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A v27 store gains `job.delivered`, and its existing rows read as delivered** — this build
+/// **A v27 store gains `job.delivered`, and its existing rows read as delivered** - this build
 /// cannot know which endings those daemons told, and re-announcing all of them would bury the one
 /// that matters. A row written after the migration starts undelivered.
 #[test]
@@ -2208,7 +2208,7 @@ fn a_first_row_that_does_not_start_after_the_prefix_is_refused() {
         assert_eq!(s.item_count(&tr).unwrap(), 0, "nothing was written");
     }
 
-    // The batched form is the same assertion once for the run — `Harness::persist`'s path.
+    // The batched form is the same assertion once for the run - `Harness::persist`'s path.
     let row = LedgerRow {
         item_id: "b".into(),
         tok_offset: 9,
@@ -2288,7 +2288,7 @@ fn a_transcript_is_reseated_only_while_it_holds_no_rows() {
     assert_eq!(s.transcript_prefix_id("no-such").unwrap(), None);
 }
 
-/// **The reader floor** — a build older than its store, kept working when the newer schema only
+/// **The reader floor** - a build older than its store, kept working when the newer schema only
 /// added things and refused by name when it did not. See `store/floor.rs`.
 mod reader_floor {
     use super::*;
@@ -2320,7 +2320,7 @@ mod reader_floor {
         }
     }
 
-    /// The version the file carries, read on a connection of its own — so what is asserted is what
+    /// The version the file carries, read on a connection of its own - so what is asserted is what
     /// is ON DISK, not what this build's `Store` believes.
     fn version_of(path: &std::path::Path) -> i64 {
         rusqlite::Connection::open(path)
@@ -2404,7 +2404,7 @@ mod reader_floor {
         }
         let declared: Vec<i64> = READER_ARMS.iter().map(|(v, _)| *v).collect();
         // **Sorted, because the arms are not written in order**: 19, 20 and 21 arrived out of
-        // sequence and stay where they landed (each says why), so the sequence is not the claim —
+        // sequence and stay where they landed (each says why), so the sequence is not the claim  -
         // the SET of arms is.
         let mut sorted_arms = arms.clone();
         sorted_arms.sort_unstable();
@@ -2558,7 +2558,7 @@ mod reader_floor {
     }
 
     /// **The two ordinary opens did not change**: a store at this build's version opens saying
-    /// nothing, and one behind it migrates up as it always did — and now gains a floor.
+    /// nothing, and one behind it migrates up as it always did - and now gains a floor.
     #[test]
     fn a_store_at_this_version_or_behind_is_opened_exactly_as_before() {
         let db = TempDb::new("same");
@@ -2573,7 +2573,7 @@ mod reader_floor {
         assert_eq!(version_of(&db.0), SCHEMA_VERSION);
 
         // Now the same store walked back to a version behind this build, the way every fixture in
-        // this file does it — a dropped column and a lowered version — and with the floor table
+        // this file does it - a dropped column and a lowered version - and with the floor table
         // gone, which is what a store from before this change looks like.
         {
             let c = rusqlite::Connection::open(&db.0).unwrap();
@@ -2682,8 +2682,8 @@ fn a_v33_store_gains_the_process_table() {
     assert_eq!(got.deadline_ms, Some(1_700_000_600_000));
     assert_eq!((got.check_ms, got.check_how), (None, None));
 
-    // **The one query the supervisor runs**: every open process, on every host. `lost` is open —
-    // a host that could not be reached is a job that may still run — and `done` is not.
+    // **The one query the supervisor runs**: every open process, on every host. `lost` is open  -
+    // a host that could not be reached is a job that may still run - and `done` is not.
     let open = s.open_processes().unwrap();
     let handles: Vec<&str> = open.iter().map(|p| p.handle.as_str()).collect();
     assert_eq!(

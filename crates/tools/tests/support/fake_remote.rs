@@ -229,7 +229,7 @@ pub fn until(within: Duration, mut what: impl FnMut() -> bool) -> bool {
     what()
 }
 
-/// One shell word, single-quoted — the paths in the fake's text are the test's temp directory.
+/// One shell word, single-quoted - the paths in the fake's text are the test's temp directory.
 fn sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }

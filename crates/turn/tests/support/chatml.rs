@@ -4,7 +4,7 @@
 //!
 //! The box serves `qwen-3.8-flash-next` on 8080 and GLM is not running. We have a
 //! verified GLM renderer and no Qwen renderer, and T1 settled that the real one
-//! will be template-driven (the model's shipped jinja through minijinja) — building
+//! will be template-driven (the model's shipped jinja through minijinja) - building
 //! a second hand-written renderer is explicitly *not* this strand's work.
 //!
 //! So this is the smallest thing that makes the engine's own pipeline exercisable

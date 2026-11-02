@@ -29,7 +29,7 @@ pub struct Posted {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatError {
-    /// No fabric is attached. **A configuration, not a fault** — and not a message
+    /// No fabric is attached. **A configuration, not a fault** - and not a message
     /// written somewhere else either.
     NotAttached(String),
     /// Attached and unreachable. Nothing was said.
@@ -251,7 +251,7 @@ impl Tool for Say {
 pub use fake::FakeChat;
 
 /// An in-memory fabric, for tests. **No test in this repository says anything in a
-/// real room** — other seats read those.
+/// real room** - other seats read those.
 #[cfg(any(test, feature = "testing"))]
 mod fake {
     use super::*;

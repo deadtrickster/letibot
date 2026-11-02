@@ -35,7 +35,7 @@ pub(crate) fn of_note(n: &Note) -> Option<(Event, &str)> {
     Some((e, w.detail.as_str()))
 }
 
-/// The event a transcript row says, its text, and whether it is a System row — or `None`.
+/// The event a transcript row says, its text, and whether it is a System row - or `None`.
 pub(crate) fn of_row(it: &SnapshotItem) -> Option<(Event, String, bool)> {
     if let Some((text, _)) = crate::app::diff_popup::system_row_text(it) {
         return text
@@ -66,7 +66,7 @@ pub(crate) fn of_row(it: &SnapshotItem) -> Option<(Event, String, bool)> {
     Some((e, text, false))
 }
 
-/// Whether a row's text and a warning's detail are about the same event — the same target and
+/// Whether a row's text and a warning's detail are about the same event - the same target and
 /// sha for a red tip, the same session for a stale prompt. A reseat and a restart have nothing
 /// to compare beyond their place, which [`WINDOW`] bounds.
 fn same_event(e: Event, detail: &str, text: &str) -> bool {
@@ -165,7 +165,7 @@ pub(crate) fn is_absorbed(
     })
 }
 
-/// **The texts of the rows a note's card stands for**, in transcript order — appended to its
+/// **The texts of the rows a note's card stands for**, in transcript order - appended to its
 /// popup under the warning's own text.
 pub(crate) fn absorbed_texts(
     absorbed: &std::collections::HashMap<String, String>,

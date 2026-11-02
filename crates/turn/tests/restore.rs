@@ -16,7 +16,7 @@
 //! # The real-store half is OPT IN, and the merge gate does not opt in
 //!
 //! `every_session_in_the_real_store_restores_with_its_chain_intact` is the canary that found
-//! real corruption in the operator's store — a row whose `tok_offset` did not continue its
+//! real corruption in the operator's store - a row whose `tok_offset` did not continue its
 //! predecessor (`s-gatekeeper#t0`). So it is kept working, and it is kept out of the gate:
 //! a red produced by the box's accumulated data is a red no change to this tree can fix, and
 //! the merge queue spent days red on exactly that until its result was ignored.
@@ -28,8 +28,8 @@
 //! ```
 //!
 //! Without that variable the three tests below print one line saying they were skipped and why,
-//! and return. `LETIBOT_REQUIRE_APPARATUS=1` — the queue's prefix, which makes an absent
-//! vocabulary GGUF or cgroup tree fail instead of skipping — deliberately does NOT apply here:
+//! and return. `LETIBOT_REQUIRE_APPARATUS=1` - the queue's prefix, which makes an absent
+//! vocabulary GGUF or cgroup tree fail instead of skipping - deliberately does NOT apply here:
 //! the store is the operator's data, not a prerequisite of the code under review. See
 //! `letibot_tokencore::apparatus::check_real_store`.
 //!
@@ -40,13 +40,13 @@
 //! 1. **Every restored row's `h_k` is the one the store recorded**, byte for byte,
 //!    and the restored ledger's head is the last stored `h_k`. This is checked
 //!    against the store's own bytes rather than against the value `restore` handed
-//!    back, because `TokenLedger::restore` keeps the persisted row on success — so
+//!    back, because `TokenLedger::restore` keeps the persisted row on success - so
 //!    comparing its output to its input would be a tautology.
 //! 2. **`verify_chain` passes on the rebuilt region.** A second, independent pass:
 //!    (1) checks the rows the restore produced, this one recomputes the chain from
 //!    the *tokens in the rebuilt memfd*. A restore that wrote the right rows over the
 //!    wrong bytes fails here and nowhere else.
-//! 3. **A tampered row is refused by name.** Not "restore returned Err" — the error
+//! 3. **A tampered row is refused by name.** Not "restore returned Err" - the error
 //!    has to say which row and both hashes, because the operator's next question is
 //!    always "which turn".
 //! 4. **The real store, not only fixtures.** The five sessions in
@@ -68,7 +68,7 @@ use letibot_turn::{Session, resume};
 /// database a daemon is checkpointing is not a snapshot of it, and a 5 GB store copied once per
 /// test filled a tmpfs. `LiveView` attaches `mode=ro` and copies one transcript per load.
 fn real_store() -> Option<LiveView> {
-    // **Opt in, and asked for separately from the apparatus** — see the module doc. A run that
+    // **Opt in, and asked for separately from the apparatus** - see the module doc. A run that
     // insists on its apparatus is insisting about the CODE's prerequisites; it cannot insist
     // that the operator's history be intact.
     if !letibot_tokencore::apparatus::check_real_store() {
@@ -100,7 +100,7 @@ fn process_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
-    // SAFETY: signal 0 is not delivered, so this asks the kernel only whether `pid` exists —
+    // SAFETY: signal 0 is not delivered, so this asks the kernel only whether `pid` exists  -
     // no memory is shared with it and no handler can run in response.
     if unsafe { libc::kill(pid, 0) } == 0 {
         return true;
@@ -282,7 +282,7 @@ fn a_row_whose_tokens_were_changed_is_refused_by_name() {
     };
     let mut loaded = a_transcript_with_rows(&view);
 
-    // Somebody edited the database — or a renderer changed under us, which produces
+    // Somebody edited the database - or a renderer changed under us, which produces
     // the same bytes and is the case this is really guarding.
     let victim = loaded.items[1].1.item_id.clone();
     loaded.items[1].2[0] = loaded.items[1].2[0].wrapping_add(1);

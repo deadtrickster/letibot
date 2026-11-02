@@ -1,4 +1,4 @@
-//! **The turn's status row**: what the model is doing — green while it goes, yellow when slow.
+//! **The turn's status row**: what the model is doing - green while it goes, yellow when slow.
 
 use crate::app::*;
 use crate::ui::render::{row, trim_to, visible_width};
@@ -43,7 +43,7 @@ impl App {
             slow: self.turn_slow(),
         };
         let mut line = status.line(w);
-        // **What this turn is holding, and a switch waiting for it to end** — the two facts
+        // **What this turn is holding, and a switch waiting for it to end** - the two facts
         // about NOW that are neither the phase nor the progress. Joined into ONE faint span so
         // a narrow row cuts the last word rather than losing a whole segment's separator.
         let mut extra: Vec<String> = Vec::new();
@@ -63,11 +63,11 @@ impl App {
         line
     }
 
-    /// **What this session is waiting on, one muted line** — `waiting on: job j8032 · monitor ci`.
+    /// **What this session is waiting on, one muted line** - `waiting on: job j8032 · monitor ci`.
     ///
     /// The daemon's own list (`PROTOCOL_VERSION` 52), drawn where a turn's state is drawn because it
     /// answers the same question: *is this session doing anything, and what*. The case it exists for
-    /// is the one no row of the transcript can say — a session whose turn has ended and which is
+    /// is the one no row of the transcript can say - a session whose turn has ended and which is
     /// nonetheless going to act again on its own, because a job the plan depends on is still running.
     ///
     /// **Only when no turn is running**, and that is not a layout detail: a turn's own row owns the
@@ -75,20 +75,20 @@ impl App {
     /// that says the same thing twice. What a running turn is waiting on is legible in the jobs and
     /// monitors panes; what an IDLE session is waiting on had nowhere to be said at all.
     ///
-    /// **Empty for a quiet session**, and empty for a daemon older than 52 — which is what makes
+    /// **Empty for a quiet session**, and empty for a daemon older than 52 - which is what makes
     /// this invisible to a head talking to one.
     ///
     /// # The words are the operator's report, measured 2026-10-27
     ///
-    /// The line was [`letibot_sessionlog::activity::Activity::line`]'s — the daemon's labels,
-    /// joined — and the operator's screen said:
+    /// The line was [`letibot_sessionlog::activity::Activity::line`]'s - the daemon's labels,
+    /// joined - and the operator's screen said:
     ///
     /// ```text
     /// waiting on: monitor letibot-gate-after-wired · child s-1793010881933039000-sub-1793225939092557000 · child s-1793010881933039000-sub-1793225939285082000 · child s-1793010881933039000-sub-1793225939482158000
     /// ```
     ///
     /// Every fact in it is right and the line is useless: a session id is not a name a person can
-    /// use — the subagents pane calls that child `fix-login · …14688401` — and the three of them
+    /// use - the subagents pane calls that child `fix-login · …14688401` - and the three of them
     /// push the monitor, the one thing the row was drawn for, off the end of a narrow screen. So
     /// [`App::waiting_words`] names a child the way the pane names it and counts a kind that
     /// repeats, and the singular forms (`job j8032`, `monitor ci`, `child …`) are unchanged.
@@ -121,7 +121,7 @@ impl App {
         if list.is_empty() {
             return String::new();
         }
-        // Grouped by KIND in first-seen order, which is the daemon's order — a run of one kind is
+        // Grouped by KIND in first-seen order, which is the daemon's order - a run of one kind is
         // what the count is about, and a `Waiting` the daemon sent out of order still groups.
         let mut groups: Vec<(&'static str, Vec<&Waiting>)> = Vec::new();
         for w in list {
@@ -275,7 +275,7 @@ impl App {
     }
 
     /// **The link is down and has been for less than [`LINK_IMPATIENT_MS`]**: the reason, for the
-    /// status row. `None` while attached, and `None` once the head is impatient — from then on
+    /// status row. `None` while attached, and `None` once the head is impatient - from then on
     /// [`App::link_line`] says it, with how long and what to do.
     pub(crate) fn link_blip(&self) -> Option<&str> {
         match &self.link {

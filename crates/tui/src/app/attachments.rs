@@ -7,7 +7,7 @@ use std::process::Command;
 
 use letibot_sessionlog::protocol::{Attachment, AttachmentKind};
 
-/// **One chip in the composer** — the text the operator sees and the attachment it stands for.
+/// **One chip in the composer** - the text the operator sees and the attachment it stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Chip {
     /// The exact string inserted into the editor, and the thing this chip is found by.
@@ -106,7 +106,7 @@ fn macos_image_in(dir: &Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 /// **Linux: `wl-paste` on Wayland, `xclip` on X11**, and a sentence naming what to install when
-/// neither is there — the only useful answer a head can give on a box that has neither.
+/// neither is there - the only useful answer a head can give on a box that has neither.
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(test, allow(dead_code))]
 fn linux_image() -> Result<Option<Vec<u8>>, String> {
@@ -289,7 +289,7 @@ fn split_escaped(text: &str) -> Vec<String> {
             }
         }
     }
-    // **An unterminated quote is not a path list** — a paste that started a `"` is prose that
+    // **An unterminated quote is not a path list** - a paste that started a `"` is prose that
     // happens to be shaped like one, and guessing at where it ends would swallow the rest.
     if quote.is_some() {
         return Vec::new();
@@ -331,7 +331,7 @@ pub(crate) fn attachment_of(path: &Path) -> Result<Attachment, String> {
     })
 }
 
-/// The first `n` bytes of a file, or nothing it could read — a chip is not refused for a header
+/// The first `n` bytes of a file, or nothing it could read - a chip is not refused for a header
 /// this cannot read, it is just called a file.
 fn read_head(path: &Path, n: usize) -> Vec<u8> {
     use std::io::Read;
@@ -348,7 +348,7 @@ fn read_head(path: &Path, n: usize) -> Vec<u8> {
     }
 }
 
-/// A text file's mime, from its name. Advisory only — the daemon reads the bytes — so a type
+/// A text file's mime, from its name. Advisory only - the daemon reads the bytes - so a type
 /// this does not know is `""` rather than an invented one.
 fn text_mime(name: &str) -> &'static str {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -383,7 +383,7 @@ pub(crate) fn chip_text(nth: usize, a: &Attachment) -> String {
     format!("[{kind} {nth} · {label} · {}]", size_said(a.bytes_len))
 }
 
-/// A byte count a person reads — `92 KiB`. The same shape the daemon's own sentences use.
+/// A byte count a person reads - `92 KiB`. The same shape the daemon's own sentences use.
 pub(crate) fn size_said(bytes: u64) -> String {
     const K: u64 = 1024;
     if bytes >= K * K {
@@ -424,7 +424,7 @@ pub(crate) fn save_clipboard_image(
     save_clipboard_image_under(&attachments_dir(), session_id, n, png)
 }
 
-/// **The same write, into a directory the caller names** — the seam `spill_sub_out_under` is, and
+/// **The same write, into a directory the caller names** - the seam `spill_sub_out_under` is, and
 /// for the same reason: a test must be able to put the file somewhere of its own, and there must be
 /// one implementation of the write for it to reach.
 pub(crate) fn save_clipboard_image_under(
@@ -461,13 +461,13 @@ impl Clipboard for FakeClipboard {
 }
 
 impl crate::app::App {
-    /// **A test's clipboard** — the one door, so no test can reach the operator's own.
+    /// **A test's clipboard** - the one door, so no test can reach the operator's own.
     #[cfg(test)]
     pub(crate) fn set_clipboard(&mut self, c: FakeClipboard) {
         self.clipboard = Box::new(c);
     }
 
-    /// **A test's directory for pasted pictures** — the other door, and the one that keeps a
+    /// **A test's directory for pasted pictures** - the other door, and the one that keeps a
     /// fixture's screenshot out of the operator's paste directory. See [`attachments_dir`].
     #[cfg(test)]
     pub(crate) fn set_attachments_dir(&mut self, dir: std::path::PathBuf) {
@@ -654,7 +654,7 @@ mod tests {
         d
     }
 
-    /// A **real** PNG — the shared fixture, so this module's tests cannot drift back into a header
+    /// A **real** PNG - the shared fixture, so this module's tests cannot drift back into a header
     /// that is not a picture. See `letibot_transcript::testing` for why that matters.
     fn png() -> Vec<u8> {
         letibot_transcript::testing::png(2, 2)
@@ -674,7 +674,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **The default this build resolves is not the operator's directory** — the guard, from the
+    /// **The default this build resolves is not the operator's directory** - the guard, from the
     /// module that owns the answer. `tests/paste.rs` holds the same rule as behaviour.
     #[test]
     fn a_test_build_resolves_a_directory_of_its_own() {
@@ -707,7 +707,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **A drag-and-drop pastes SEVERAL, space-separated with the spaces escaped** — the shape
+    /// **A drag-and-drop pastes SEVERAL, space-separated with the spaces escaped** - the shape
     /// every terminal on this box produces, and the one a naive `split_whitespace` breaks.
     #[test]
     fn several_names_and_an_escaped_space_are_all_paths() {
@@ -729,7 +729,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **Quoted paths, both kinds of quote** — Finder quotes a name with a space when the
+    /// **Quoted paths, both kinds of quote** - Finder quotes a name with a space when the
     /// terminal's setting says to.
     #[test]
     fn a_quoted_path_is_one_path() {
@@ -750,7 +750,7 @@ mod tests {
         assert!(dropped_paths("explain what README.md says about retries").is_empty());
         assert!(dropped_paths("").is_empty());
         assert!(dropped_paths("/definitely/not/here.png").is_empty());
-        // One path and one word is a sentence, not a list of files — no chip is minted from a
+        // One path and one word is a sentence, not a list of files - no chip is minted from a
         // half-recognised paste.
         let d = dir("mixed");
         let p = d.join("real.txt");
@@ -803,7 +803,7 @@ mod tests {
         assert_eq!(chip_text(2, &file), "[file 2 · report.csv · 12 KiB]");
     }
 
-    /// **`osascript`'s answer as bytes**, and every shape that is not one as `None` — measured
+    /// **`osascript`'s answer as bytes**, and every shape that is not one as `None` - measured
     /// against the string the real one prints.
     #[test]
     fn the_applescript_data_is_hex_between_the_guillemets() {

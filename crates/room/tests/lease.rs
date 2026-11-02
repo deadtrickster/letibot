@@ -1,4 +1,4 @@
-//! **The lease, and what happens when it runs out** — the boundary, a session the daemon reports
+//! **The lease, and what happens when it runs out** - the boundary, a session the daemon reports
 //! gone, the count that raises an item instead of cycling, and a late claimant's dispute.
 
 use letibot_room::{ABANDON_THRESHOLD, About, Decision, Event, Refused, Room, Speaker, State, Why};
@@ -179,7 +179,7 @@ fn a_ruling_retries_hands_or_drops() {
         (room, a)
     }
 
-    // Retry — back in the queue, the count kept, so the next loss raises at once.
+    // Retry - back in the queue, the count kept, so the next loss raises at once.
     let (mut room, a) = raised();
     room.rule(1, Decision::Retry, "s-tie", 2_000).unwrap();
     assert!(room.item(1).unwrap().claimable());
@@ -194,7 +194,7 @@ fn a_ruling_retries_hands_or_drops() {
         "a fourth loss raises it again without three more"
     );
 
-    // Hand — the claim is made for the named session, now.
+    // Hand - the claim is made for the named session, now.
     let (mut room, _) = raised();
     room.vouch(&Speaker::top_level("s-b")).unwrap();
     room.rule(
@@ -212,7 +212,7 @@ fn a_ruling_retries_hands_or_drops() {
     assert!(!item.claimable());
     assert_eq!(room.holding("s-b", 2_500).len(), 1);
 
-    // Drop — out of the queue for good, with the reason on the item.
+    // Drop - out of the queue for good, with the reason on the item.
     let (mut room, _) = raised();
     room.rule(
         1,
@@ -257,7 +257,7 @@ fn a_ruling_retries_hands_or_drops() {
     );
 }
 
-/// **A ruling may hand an item to a session the TREE holds**, and needs no separate vouch for it —
+/// **A ruling may hand an item to a session the TREE holds**, and needs no separate vouch for it  -
 /// which is what *the room holds what the tree holds* buys: the membership is the daemon's answer
 /// to *who is in this project*, and a hand to one of them is a hand to somebody real.
 #[test]
@@ -360,7 +360,7 @@ fn a_late_beat_is_refused_by_name_and_a_dispute_asks_the_arbiter() {
         other => panic!("a late beat is refused, and names who has it: {other:?}"),
     }
 
-    // Rather than fight for it, `s-a` says it is still on it — and the arbiter is asked.
+    // Rather than fight for it, `s-a` says it is still on it - and the arbiter is asked.
     let asked = room
         .dispute(
             &a,

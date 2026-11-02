@@ -19,7 +19,7 @@ pub const TOOL: &str = "host_changelog";
 /// The file's name, in the config dir beside `providers.toml`.
 pub const FILE: &str = "host-changelog.jsonl";
 
-/// How many changes `list` shows when it is not told — the operator's *"list recent changes"*.
+/// How many changes `list` shows when it is not told - the operator's *"list recent changes"*.
 pub const DEFAULT_LIMIT: usize = 20;
 
 /// Where the changelog is and who is writing, as the daemon that owns the config dir sees it.
@@ -32,7 +32,7 @@ pub trait ChangelogScope: Send + Sync {
     /// machine passes `host` explicitly; one made here names this box, so a reader a month later
     /// does not have to infer which machine a line is about.
     fn host(&self) -> String;
-    /// Who is recording, in the daemon's spelling — the session's id. It goes on every line,
+    /// Who is recording, in the daemon's spelling - the session's id. It goes on every line,
     /// because *which session wrote this* is the half of the answer a person can go and check.
     fn who(&self) -> String;
 }
@@ -43,25 +43,25 @@ pub trait ChangelogScope: Send + Sync {
 #[serde(default)]
 pub struct Change {
     pub at_ms: u64,
-    /// The host the setting is on — this box's name, or a declared machine's.
+    /// The host the setting is on - this box's name, or a declared machine's.
     pub host: String,
     /// The setting, in the words a person would search for.
     pub what: String,
-    /// What it was. Empty is a fact — *there was no such setting* — and not a gap.
+    /// What it was. Empty is a fact - *there was no such setting* - and not a gap.
     pub before: String,
-    /// What it is now — a measurement, or [`crate::builtins::host_config::UNREAD`] when the box did
+    /// What it is now - a measurement, or [`crate::builtins::host_config::UNREAD`] when the box did
     /// not answer the read-back. Never the value that was asked for.
     pub after: String,
     /// The problem the change solved.
     pub why: String,
-    /// Whose words it rests on, quoted — the operator's own sentence.
+    /// Whose words it rests on, quoted - the operator's own sentence.
     pub words: String,
     /// The session that recorded it.
     pub who: String,
 }
 
 /// **A change marked undone.** A second line, never an edit: the change keeps its own line, and
-/// the pair is what a reader a month later needs — *this was changed, and then put back*.
+/// the pair is what a reader a month later needs - *this was changed, and then put back*.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Revert {
@@ -74,7 +74,7 @@ pub struct Revert {
     /// The session that marked it.
     pub who: String,
     /// The operator's words for the revert, when there were any. Undoing your own change is not
-    /// a new decision, so this is optional — the line still says who asked.
+    /// a new decision, so this is optional - the line still says who asked.
     pub words: String,
 }
 
@@ -195,7 +195,7 @@ pub fn writable(path: &Path) -> std::io::Result<()> {
 
 /// The `host_changelog` tool.
 pub struct HostChangelogTool {
-    /// `None` is a registry with no daemon behind it — see [`HostChangelogTool::nowhere`].
+    /// `None` is a registry with no daemon behind it - see [`HostChangelogTool::nowhere`].
     scope: Option<Arc<dyn ChangelogScope>>,
 }
 
@@ -270,7 +270,7 @@ impl Tool for HostChangelogTool {
                 },
                 "required": ["verb"]
             }),
-            // It writes one file the operator owns, under the config dir — the same class `notes`
+            // It writes one file the operator owns, under the config dir - the same class `notes`
             // declares for the same reason, and `list` narrows to a read below.
             Access::Write,
         )
@@ -338,8 +338,8 @@ pub fn dispatch(
 
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn record(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String, Invocation> {
-    // **The five facts, and two of them are the whole feature.** `before` may be empty — *it was
-    // not set* is a fact and the one a revert needs — but the field itself is not optional.
+    // **The five facts, and two of them are the whole feature.** `before` may be empty - *it was
+    // not set* is a fact and the one a revert needs - but the field itself is not optional.
     let mut missing = Vec::new();
     for field in ["what", "after", "why", "words"] {
         if text(args, field).is_none_or(|v| v.is_empty()) {
@@ -385,7 +385,7 @@ fn record(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<Strin
         )
     })?;
     // **The number is read back, not guessed.** It is the line's position among the change
-    // lines, so the only way to know it is to fold the file after the append — and a second
+    // lines, so the only way to know it is to fold the file after the append - and a second
     // writer's line landing in between must not make this reply name the wrong number.
     let log = read(&path);
     let n = log
@@ -665,7 +665,7 @@ fn value(v: &str) -> String {
     }
 }
 
-/// Somebody's words, quoted. Left alone when they already carry quotes — a quote doubled reads as
+/// Somebody's words, quoted. Left alone when they already carry quotes - a quote doubled reads as
 /// a different sentence.
 fn quote(v: &str) -> String {
     let first = v.trim_start().chars().next();

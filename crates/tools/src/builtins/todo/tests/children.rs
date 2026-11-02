@@ -55,7 +55,7 @@ fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
         b.parent_snapshot()
     );
 
-    // **A re-send is a state update, not a duplicate** — and the SAME text under a different
+    // **A re-send is a state update, not a duplicate** - and the SAME text under a different
     // author's name would be a different row, which is the scoping, but one parent is one
     // author, so the second send moves what the first wrote.
     let changed = b
@@ -72,7 +72,7 @@ fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
     assert_eq!(b.parent_snapshot().len(), 2, "still two rows: no duplicate");
     assert_eq!(b.version(), 2);
 
-    // **Omission is not deletion.** The parent sends one row and leaves the other out —
+    // **Omission is not deletion.** The parent sends one row and leaves the other out  -
     // under the own-board contract that would delete it; here it must not.
     let changed = b
         .upsert_parent(
@@ -92,7 +92,7 @@ fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
         b.parent_snapshot()
     );
 
-    // **An unchanged re-send is not an event** — the version rule `set_operator_states` keeps.
+    // **An unchanged re-send is not an event** - the version rule `set_operator_states` keeps.
     let before = b.version();
     let changed = b
         .upsert_parent(
@@ -107,9 +107,9 @@ fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
     assert_eq!(changed, 0, "nothing changed");
     assert_eq!(b.version(), before, "and nothing was announced");
 
-    // **And the CHILD's own write cannot reach them either** — the other edge of the same rule.
+    // **And the CHILD's own write cannot reach them either** - the other edge of the same rule.
     // The child re-plans its own half and the parent's rows stay; and because a row left out is
-    // not a row removed, its own old row stays too — what it writes is what it ADDS or RESTATES.
+    // not a row removed, its own old row stays too - what it writes is what it ADDS or RESTATES.
     b.upsert_model(&[
         (
             "the child's own step".into(),
@@ -170,7 +170,7 @@ fn a_parent_row_is_nag_worthy_by_construction() {
         "the child is told who disposes of the row: {nag}"
     );
 
-    // And the queue serves the child's own open work first — the model's rows precede the
+    // And the queue serves the child's own open work first - the model's rows precede the
     // parent's in the union, and the stable sort keeps that order inside a band.
     let board = TodoBoard::new(vec![
         item("mine, pending", TodoStatus::Pending),
@@ -189,7 +189,7 @@ fn a_parent_row_is_nag_worthy_by_construction() {
     assert_eq!(served, vec!["mine, pending", "theirs, pending"]);
 }
 
-/// **The reply names all three authors** — the child reading its own board (its own
+/// **The reply names all three authors** - the child reading its own board (its own
 /// `todo_write` reply renders the union) has to be able to tell what it decided from what it
 /// was told, and by whom.
 #[test]
@@ -257,7 +257,7 @@ fn a_target_write_reaches_the_child_and_not_this_board() {
     assert!(own.snapshot().is_empty(), "nor replaced, nor cleared");
 }
 
-/// **The tool's own refusals on the target path, each BY NAME** — the daemon-side refusal
+/// **The tool's own refusals on the target path, each BY NAME** - the daemon-side refusal
 /// (not-a-child) is the resolver's and is tested with the daemon; these are the ones the
 /// tool owes itself.
 #[test]
@@ -291,7 +291,7 @@ fn the_target_paths_own_refusals_are_by_name() {
         "the child's board was not touched by the refusal"
     );
 
-    // An empty `todos` with a `target` is not a clear — there is no delete to mean by it.
+    // An empty `todos` with a `target` is not a clear - there is no delete to mean by it.
     let r = rt.invoke(
         "t1",
         &call(r#"{"target": "s-…908838", "todos": []}"#),
@@ -320,7 +320,7 @@ fn the_target_paths_own_refusals_are_by_name() {
     );
 }
 
-/// **A `target` with no resolver behind it is refused by name** — the standalone runtime's
+/// **A `target` with no resolver behind it is refused by name** - the standalone runtime's
 /// honest answer, rather than a write quietly aimed at this session's own board.
 #[test]
 fn a_target_with_no_children_behind_it_is_refused_by_name() {

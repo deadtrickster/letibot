@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// A ledger and its items, built row by row with tokens of a given count — the
+/// A ledger and its items, built row by row with tokens of a given count - the
 /// shape `Session::append_items` keeps (one row per item), with no vocabulary.
 struct Wall {
     ledger: letibot_tokencore::ledger::TokenLedger,
@@ -317,7 +317,7 @@ fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
     assert!(!super::wall_stops_round(0, 5_600, 5_443, 128, 512));
 }
 
-/// **A fresh provider is not a reason to refuse** — the wall on a count nothing has
+/// **A fresh provider is not a reason to refuse** - the wall on a count nothing has
 /// measured, and the ratio a switch carries.
 ///
 /// MEASURED 2026-10-25, `s-1791394076177451000`, on the way from deepseek to
@@ -328,8 +328,8 @@ fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
 ///               (unscaled: no round on glm-coding has measured yet)
 /// ```
 ///
-/// The ledger of a metered session is `Vocab::bytes` — one id per byte of the rendered
-/// history — so 2,708,271 of them is not a token count and comparing it with a token
+/// The ledger of a metered session is `Vocab::bytes` - one id per byte of the rendered
+/// history - so 2,708,271 of them is not a token count and comparing it with a token
 /// window says nothing. The session had measured the ratio minutes before, on the model
 /// it had just left: 2,704,409 ledger tokens for 792,991 prompt tokens. Carried, that
 /// same history is ~794,000 of glm's 1,000,000-token window, which fits.
@@ -338,7 +338,7 @@ fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
 ///
 ///   * a ratio measured on the model before the switch is an ESTIMATE that may decide;
 ///   * nothing measured anywhere is not a count at all, so round 0 is attempted and the
-///     provider's own refusal is what folds — the door that already compacts on evidence.
+///     provider's own refusal is what folds - the door that already compacts on evidence.
 #[test]
 fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
     // The session's own numbers.
@@ -361,7 +361,7 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
     );
 
     // **One `if` for the whole of it.** The arithmetic still says the prompt is past the
-    // window — that is the log line above — so the decision has to be about the count,
+    // window - that is the log line above - so the decision has to be about the count,
     // not about the arithmetic.
     let window = cfg.planning_window().expect("the provider's window");
     assert_eq!(
@@ -409,8 +409,8 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
         "an estimate may decide, and this one says the prompt fits"
     );
     // **And the pre-emptive door still stands down on it**: a fold nobody measured is not
-    // a fold an inherited ratio gets to order. The refused door — the provider's own
-    // answer — is untouched by this and compacts when it is refused.
+    // a fold an inherited ratio gets to order. The refused door - the provider's own
+    // answer - is untouched by this and compacts when it is refused.
     assert!(!cfg.pre_emptive_compact(ledger, true));
 
     // A measurement on the new model replaces the estimate, which is the whole design.
@@ -432,7 +432,7 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
 }
 
 /// A switch that fails says how to go back: the notice, its 4xx gate, and the command an operator can type. Measured
-/// on a session whose screen said `FAILED — http 400: messages.content.type is invalid`, where the way back was the
+/// on a session whose screen said `FAILED - http 400: messages.content.type is invalid`, where the way back was the
 /// operator's memory.
 #[test]
 fn a_switch_that_fails_names_the_model_before_it_and_the_command_back() {
@@ -500,7 +500,7 @@ fn a_job_window_names_the_next_offset_until_the_ring_runs_out() {
     // The window has taken everything still held: no further page.
     assert_eq!(next_job_offset(&slice(0, 40, 40, 0, 40)), None);
     // A ring that dropped its front: the end of what is *held* is the end, even
-    // though `produced` is past `to` — that part is gone, not waiting.
+    // though `produced` is past `to` - that part is gone, not waiting.
     assert_eq!(next_job_offset(&slice(992, 1000, 1000, 992, 8)), None);
     // And a window that stopped short of the retained tail still has a page.
     assert_eq!(next_job_offset(&slice(992, 996, 1000, 992, 8)), Some(996));

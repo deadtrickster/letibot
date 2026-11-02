@@ -1,4 +1,4 @@
-//! `letibot-render-qwen` — the Qwen renderer, as its own executable.
+//! `letibot-render-qwen` - the Qwen renderer, as its own executable.
 //!
 //! The work lives in `letibot_dialect_qwen::cli::run` so that this binary and the
 //! `letibot` multicall are the same implementation rather than two copies. This

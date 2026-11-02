@@ -22,13 +22,13 @@ pub fn hook(name: &str) -> String {
 pub enum Feed {
     /// The daemon's sessions: what the session picker is drawn from. Fed today.
     Sessions,
-    /// This session's monitors — armed, waiting, fired. Planned.
+    /// This session's monitors - armed, waiting, fired. Planned.
     Monitors,
     /// The session's background jobs, with their handles and their state. Planned.
     Jobs,
     /// The session's todo rows. Planned.
     Todos,
-    /// The repository the session stands in — branch, ahead/behind, what changed. Planned.
+    /// The repository the session stands in - branch, ahead/behind, what changed. Planned.
     Git,
     /// The merge queue in the words a person reads it in: reviews and landings with their state,
     /// reason and age, the targets' health, the leases with their heartbeats, the last moves, and
@@ -52,7 +52,7 @@ impl Feed {
         Feed::Room,
     ];
 
-    /// The wire's spelling — the same word in `plugin.toml` and in `Input::feeds`.
+    /// The wire's spelling - the same word in `plugin.toml` and in `Input::feeds`.
     pub fn name(self) -> &'static str {
         match self {
             Feed::Sessions => "sessions",
@@ -100,7 +100,7 @@ impl<'de> serde::Deserialize<'de> for Feed {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum Act {
-    /// Go to that session — what Enter means on a row of the session list.
+    /// Go to that session - what Enter means on a row of the session list.
     Switch {
         #[serde(rename = "switch")]
         session: String,
@@ -134,7 +134,7 @@ impl Act {
         Act::Event { event: word.into() }
     }
 
-    /// **A verb on one entry** — see [`Act::Verb`].
+    /// **A verb on one entry** - see [`Act::Verb`].
     pub fn verb_on(verb: impl Into<String>, id: impl Into<String>) -> Act {
         Act::Verb {
             verb: verb.into(),
@@ -154,7 +154,7 @@ impl Act {
         }
     }
 
-    /// **The entry this act names**, when it names one — what the queue pane's verb keys act on.
+    /// **The entry this act names**, when it names one - what the queue pane's verb keys act on.
     pub fn entry(&self) -> Option<&str> {
         match self {
             Act::Verb { id, .. } => Some(id),
@@ -253,7 +253,7 @@ impl Cell {
     }
 }
 
-/// **A string IS a cell** — the untagged spelling, in Rust as on the wire: a caller writing a
+/// **A string IS a cell** - the untagged spelling, in Rust as on the wire: a caller writing a
 /// row of plain text writes `vec!["one".into(), "two".into()]` and says nothing about roles.
 impl From<&str> for Cell {
     fn from(text: &str) -> Cell {
@@ -319,7 +319,7 @@ pub struct Event {
 /// **What a pane is asked with**, once per call.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Input {
-    /// The contract version this host speaks — [`V`].
+    /// The contract version this host speaks - [`V`].
     pub v: u32,
     /// What the pane returned last time, handed back to it: state belongs to the host
     /// (§1, principle 5).
@@ -341,7 +341,7 @@ pub struct Input {
     /// and a layer answers `Fold::Open`/`Fold::Closed` from it - not the other way round.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub folded: std::collections::BTreeMap<String, bool>,
-    /// The answer of the layer below, when this layer asked for it (§2.1) — absent otherwise, and
+    /// The answer of the layer below, when this layer asked for it (§2.1) - absent otherwise, and
     /// inserted by the stack rather than by a host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub below: Option<serde_json::Value>,
@@ -424,7 +424,7 @@ mod tests {
             serde_json::to_value(&one).unwrap(),
             json!({"verb": "approve", "id": "r-1f2"})
         );
-        // An act that names no entry answers none — `fold` and `switch` are not verbs on a row.
+        // An act that names no entry answers none - `fold` and `switch` are not verbs on a row.
         assert_eq!(Act::fold().entry(), None);
         assert_eq!(Act::switch("s-1").entry(), None);
         assert_eq!(Act::event("open").entry(), None);

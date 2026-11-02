@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::backend::tempdir::TempDir;
 
-/// A changelog in a temp directory, with a chosen writer and box name — the whole scope, since
+/// A changelog in a temp directory, with a chosen writer and box name - the whole scope, since
 /// the file is the subject.
 struct Fixture {
     dir: PathBuf,
@@ -29,7 +29,7 @@ impl Fixture {
         }
     }
 
-    /// A second writer over the **same file** — the shape two sessions on one box have.
+    /// A second writer over the **same file** - the shape two sessions on one box have.
     fn sibling(&self, who: &str) -> Self {
         Fixture {
             dir: self.dir.clone(),
@@ -114,7 +114,7 @@ fn a_record_round_trips_with_all_five_fields_and_an_age() {
         .expect("the record lands");
     assert!(said.contains("#1"), "the reply names the number: {said}");
 
-    // The file is one JSON object per line, and it parses back to the change itself — not to
+    // The file is one JSON object per line, and it parses back to the change itself - not to
     // something that merely looks like it.
     let lines = f.lines();
     assert_eq!(lines.len(), 1, "{lines:?}");
@@ -170,7 +170,7 @@ fn a_record_without_why_is_refused_by_name() {
     );
 }
 
-/// **And so is one without `words`** — whose words a change rests on is the half that makes it
+/// **And so is one without `words`** - whose words a change rests on is the half that makes it
 /// answerable.
 #[test]
 fn a_record_without_words_is_refused_by_name() {
@@ -239,7 +239,7 @@ fn a_revert_returns_the_before_and_marks_the_line() {
         "a revert is a record, not an action: {said}"
     );
 
-    // The change's own line is untouched — a record is evidence, and the mark is a second line.
+    // The change's own line is untouched - a record is evidence, and the mark is a second line.
     let after = f.lines();
     assert_eq!(after.len(), 2, "{after:?}");
     assert_eq!(after[0], before[0], "the change's line was not rewritten");
@@ -276,7 +276,7 @@ fn a_second_revert_of_the_same_change_is_refused() {
     assert_eq!(f.lines().len(), 2, "nothing was appended: {:?}", f.lines());
 }
 
-/// **A reverted change still lists** — with the revert's age and who asked for it.
+/// **A reverted change still lists** - with the revert's age and who asked for it.
 #[test]
 fn a_reverted_change_still_lists() {
     let f = Fixture::new("s-1");
@@ -321,7 +321,7 @@ fn a_reverted_change_still_lists() {
     );
 }
 
-/// A revert of a number the file does not have is refused with the numbers it does have — the
+/// A revert of a number the file does not have is refused with the numbers it does have - the
 /// miss a model can correct from.
 #[test]
 fn a_revert_of_a_change_the_file_does_not_have_lists_the_ones_it_does() {
@@ -416,7 +416,7 @@ fn two_writers_appending_at_once_keep_both_lines() {
         t.join().expect("no thread panicked");
     }
 
-    // Every line is intact — a half-written line is what an append-only file must not produce.
+    // Every line is intact - a half-written line is what an append-only file must not produce.
     let lines = owner.lines();
     assert_eq!(lines.len(), 2 * EACH, "both writers' lines are there");
     let log = read(&owner.path());
@@ -446,7 +446,7 @@ fn two_writers_appending_at_once_keep_both_lines() {
 }
 
 /// `list` on a file nobody has written says so, names the path, and names the verb that would
-/// start it — a miss is more output than a hit, not less.
+/// start it - a miss is more output than a hit, not less.
 #[test]
 fn an_empty_changelog_says_so_and_names_the_path() {
     let f = Fixture::new("s-1");
@@ -495,7 +495,7 @@ fn an_unknown_verb_names_the_verbs_there_are() {
 // through the runtime: the second gate, and a file nobody had to trust the tool about
 // ---------------------------------------------------------------------------
 
-/// **A record reaches the disk through the whole runtime** — the gate, the tool, the scope — and
+/// **A record reaches the disk through the whole runtime** - the gate, the tool, the scope - and
 /// the assertion reads the file itself rather than asking the tool what it did.
 #[test]
 fn a_record_reaches_the_file_through_the_runtime() {
@@ -517,7 +517,7 @@ fn a_record_reaches_the_file_through_the_runtime() {
 }
 
 /// **A read-only session cannot record, and can still read.** The write verbs are refused by the
-/// backend — the second, independent gate — and `list`, which narrows to `Read`, answers. That is
+/// backend - the second, independent gate - and `list`, which narrows to `Read`, answers. That is
 /// what makes seating the tool on the read-only default seat worth its entry.
 #[test]
 fn a_read_only_backend_refuses_to_record_and_still_lists() {

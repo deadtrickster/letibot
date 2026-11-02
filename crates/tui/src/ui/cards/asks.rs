@@ -1,5 +1,5 @@
 //! **The cards that ask the person for something typed**: a provider key, a terminal's
-//! answer, a prompt, a secret (masked) — drawn by `rano::agent::asks` from the ask this head
+//! answer, a prompt, a secret (masked) - drawn by `rano::agent::asks` from the ask this head
 //! holds.
 
 use crate::app::*;
@@ -78,7 +78,7 @@ fn unreadable_prompt_lines(ask: &PromptAsk, w: usize) -> Vec<rano::render::Line>
         out.push(l);
     }
     // **The honest half.** One sentence for the fact that there is no reading, and one for
-    // what the person can do about it — which is the same thing they would have done with a
+    // what the person can do about it - which is the same thing they would have done with a
     // card that had read the process.
     for l in wrapped(
         "  I cannot tell whether it is waiting for a line — part of it belongs to another user, \

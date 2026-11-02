@@ -9,14 +9,14 @@
 
 use std::path::{Path, PathBuf};
 
-// The one function that knows where the config dir is — see [`BoxDirs::for_this_box`].
+// The one function that knows where the config dir is - see [`BoxDirs::for_this_box`].
 use crate::user_path;
 
-/// The seat's own name for an instruction file — `leticode.md`, beside
+/// The seat's own name for an instruction file - `leticode.md`, beside
 /// `leticode.toml` at a project's root and in the config dir.
 pub const INSTRUCTION_FILE: &str = "leticode.md";
 
-/// The canonical name, the one other tools read — `CLAUDE.md`. Looked for in the
+/// The canonical name, the one other tools read - `CLAUDE.md`. Looked for in the
 /// same directory [`INSTRUCTION_FILE`] would be in, and on the box in
 /// `~/.claude/`.
 pub const CANONICAL_INSTRUCTION_FILE: &str = "CLAUDE.md";
@@ -29,9 +29,9 @@ const CANONICAL_DIR: &str = ".claude";
 /// Empty by default, which is a box with no instruction file of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoxDirs {
-    /// The seat's config dir — `~/.config/letibot/` in the default spelling.
+    /// The seat's config dir - `~/.config/letibot/` in the default spelling.
     pub config: PathBuf,
-    /// The box's home directory — `~/.claude/CLAUDE.md` hangs off it.
+    /// The box's home directory - `~/.claude/CLAUDE.md` hangs off it.
     pub home: PathBuf,
 }
 
@@ -119,7 +119,7 @@ fn in_path(dir: &Path, name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A scratch dir per CALL, not per name — twenty tests may ask for `"ws"` and
+    /// A scratch dir per CALL, not per name - twenty tests may ask for `"ws"` and
     /// a shared path would have them racing each other's writes. Temp files only:
     /// nothing is written inside the tree, and nothing is removed.
     fn dir(name: &str) -> PathBuf {
@@ -145,7 +145,7 @@ mod tests {
 
     /// **A box with no instruction file of its own.** Every test that is not about
     /// the box scope points here, so the box the test RUNS on cannot answer for
-    /// it — the difference between a rule and a fact about this machine.
+    /// it - the difference between a rule and a fact about this machine.
     fn no_box() -> BoxDirs {
         BoxDirs {
             config: dir("box-config"),
@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(instructions(&ws, &no_box()), vec![own]);
     }
 
-    /// **A project written for another tool still reaches this seat** — the
+    /// **A project written for another tool still reaches this seat** - the
     /// canonical name is the fallback, not a second-class citizen.
     #[test]
     fn a_workspace_with_only_the_canonical_name_uses_that() {
@@ -171,7 +171,7 @@ mod tests {
     }
 
     /// Both names in one directory: the seat's own wins, and the canonical file is
-    /// not read as well — one directory answers with one file.
+    /// not read as well - one directory answers with one file.
     #[test]
     fn both_names_in_one_directory_prefer_the_seats_own() {
         let ws = dir("both-names");
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(instructions(&ws, &no_box()), vec![own]);
     }
 
-    /// **A nearer file wins over a further one, in EITHER name** — the walk stops
+    /// **A nearer file wins over a further one, in EITHER name** - the walk stops
     /// at the first directory that answers, so a project's `CLAUDE.md` is not
     /// outranked by a parent's `leticode.md`.
     #[test]
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(instructions(&near2, &no_box()), vec![near2_file]);
     }
 
-    /// **Neither name anywhere is no files and no error** — the normal answer for
+    /// **Neither name anywhere is no files and no error** - the normal answer for
     /// a project that wrote neither, which is most of them.
     #[test]
     fn neither_name_is_no_file_and_no_error() {
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(instructions(&ws, &box_dirs), vec![own]);
     }
 
-    /// **The box's canonical file is the fallback** — `~/.claude/CLAUDE.md`, the
+    /// **The box's canonical file is the fallback** - `~/.claude/CLAUDE.md`, the
     /// one other tools write, which on the operator's box is a link to the same
     /// file as the config dir's.
     #[test]
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(instructions(&ws, &box_dirs), vec![canonical]);
     }
 
-    /// A box with neither is nothing added — not a heading, not a warning.
+    /// A box with neither is nothing added - not a heading, not a warning.
     #[test]
     fn a_box_with_neither_name_adds_nothing() {
         let ws = dir("box-nothing-ws");
@@ -272,7 +272,7 @@ mod tests {
         assert!(instructions(&ws, &box_dirs).is_empty());
     }
 
-    /// **An empty box dir is nothing, not the working directory** —
+    /// **An empty box dir is nothing, not the working directory**  -
     /// `BoxDirs::default()` means "this box has none", and a join onto an empty
     /// path is RELATIVE.
     #[test]
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(instructions(&ws, &box_dirs), vec![own, box_file]);
     }
 
-    /// One file reached by both scopes is listed once — a workspace that is the
+    /// One file reached by both scopes is listed once - a workspace that is the
     /// config dir is the only way to get here, and one instruction given twice is
     /// worse than one given once.
     #[test]

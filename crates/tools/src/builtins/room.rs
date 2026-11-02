@@ -24,7 +24,7 @@ pub trait RoomLink: Send + Sync {
     }
 }
 
-/// **No room behind this tool** — a registry built without a daemon, and the sentence it says.
+/// **No room behind this tool** - a registry built without a daemon, and the sentence it says.
 pub struct NoRoom;
 
 impl RoomLink for NoRoom {
@@ -132,7 +132,7 @@ impl Tool for RoomTool {
                 },
                 "required": ["verb"]
             }),
-            // It changes the host's shared state — who holds what — and nothing on the operator's
+            // It changes the host's shared state - who holds what - and nothing on the operator's
             // disk, no process and no network. `Session` is the class for that, and it is
             // unattended: a card per room verb would be a room nobody uses.
             Access::Session,
@@ -242,7 +242,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// A link that records what it was asked and answers in its own words — the tool's contract,
+    /// A link that records what it was asked and answers in its own words - the tool's contract,
     /// with no daemon and no socket.
     struct Recorder {
         seen: Mutex<Vec<(String, Value)>>,

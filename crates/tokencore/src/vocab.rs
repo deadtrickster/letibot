@@ -64,8 +64,8 @@ impl std::fmt::Display for VocabError {
 
 impl std::error::Error for VocabError {}
 
-/// **What answers a [`Vocab`].** The primitives only; the rules built on them —
-/// one id per control literal, no specials from text, bytes-then-decode — live in
+/// **What answers a [`Vocab`].** The primitives only; the rules built on them  -
+/// one id per control literal, no specials from text, bytes-then-decode - live in
 /// [`Vocab`] once, whichever backend is underneath.
 pub trait VocabBackend: Send + Sync {
     fn n_tokens(&self) -> u32;
@@ -90,7 +90,7 @@ pub struct Vocab {
 
 impl Vocab {
     /// A vocabulary answered by `backend`. `source` is what the store records as the
-    /// vocabulary a ledger's ids came out of — a GGUF's path, or [`BYTES_SOURCE`] — and
+    /// vocabulary a ledger's ids came out of - a GGUF's path, or [`BYTES_SOURCE`] - and
     /// what a resume compares (see [`Vocab::is_bytes`]).
     pub fn from_backend(backend: Box<dyn VocabBackend>, source: impl Into<String>) -> Vocab {
         Vocab {
@@ -138,7 +138,7 @@ impl Vocab {
         )
     }
 
-    /// Whether this is the byte vocabulary — whose ids a llama-server cannot read, so a
+    /// Whether this is the byte vocabulary - whose ids a llama-server cannot read, so a
     /// session on it must not be pointed at a local model.
     pub fn is_bytes(&self) -> bool {
         self.source.starts_with(BYTES_SOURCE)
@@ -330,7 +330,7 @@ impl VocabBackend for Bytes {
     fn gguf_would_add_eos(&self) -> bool {
         false
     }
-    /// Text is its bytes. With `parse_special` — which only `resolve_control` sets —
+    /// Text is its bytes. With `parse_special` - which only `resolve_control` sets  -
     /// a string that IS a reserved literal, whole, is that literal's one id; anything
     /// else is still bytes, so `"<|im_start|>x"` is not a control token here either.
     fn tokenize(&self, text: &str, parse_special: bool) -> Result<Vec<TokenId>, VocabError> {
@@ -362,7 +362,7 @@ impl VocabBackend for Bytes {
     fn is_eog(&self, id: TokenId) -> bool {
         self.eog.contains(&id)
     }
-    /// A reserved id renders as its literal only when specials are rendered — the same
+    /// A reserved id renders as its literal only when specials are rendered - the same
     /// contract `llama_token_to_piece` keeps for a control token.
     fn piece_bytes(&self, id: TokenId, render_special: bool) -> Result<Vec<u8>, VocabError> {
         match id {
@@ -420,8 +420,8 @@ mod bytes_tests {
         assert_eq!(v.token_text(end).unwrap(), "<|im_end|>");
     }
 
-    /// A whole dialect's table resolves — the check that refused every bundled GGUF on a
-    /// Mac with no model — and a literal the table never named is refused by name, so a
+    /// A whole dialect's table resolves - the check that refused every bundled GGUF on a
+    /// Mac with no model - and a literal the table never named is refused by name, so a
     /// dialect that grew a token is still a startup error and not a silent byte run.
     #[test]
     fn every_reserved_literal_resolves_and_an_unknown_one_does_not() {
@@ -462,7 +462,7 @@ mod bytes_tests {
     }
 
     /// The identity is the table: the same literals give the same `source`, another
-    /// table gives another — which is what a resume compares to refuse replaying ids
+    /// table gives another - which is what a resume compares to refuse replaying ids
     /// written under one meaning against another.
     #[test]
     fn the_source_names_the_table() {

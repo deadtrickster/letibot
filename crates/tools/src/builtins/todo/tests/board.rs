@@ -9,7 +9,7 @@ use super::*;
 fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
     let b = TodoBoard::new(Vec::new());
 
-    // 1. The file migrates whole — the operator's half, as `TODO.md` has it.
+    // 1. The file migrates whole - the operator's half, as `TODO.md` has it.
     let from_file = || {
         vec![
             TodoItem {
@@ -30,7 +30,7 @@ fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
     };
     b.set_operator(from_file());
 
-    // 2. The model does T1 and marks it — the mechanism that already exists for exactly this.
+    // 2. The model does T1 and marks it - the mechanism that already exists for exactly this.
     let changed = b
         .set_operator_states(&[("T1 vendor the deps".into(), TodoStatus::Completed)])
         .expect("the model marks the operator's row done");
@@ -45,7 +45,7 @@ fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
     // `[ ]` for T1 because the model's work was never written back to it.
     b.set_operator(from_file());
 
-    // **The assertion is that the wipe HAPPENED** — this test holds the hazard still while the
+    // **The assertion is that the wipe HAPPENED** - this test holds the hazard still while the
     // design answers it, so it fails the day `set_operator` learns to preserve state, and that
     // failure is the signal to rewrite it as the positive.
     assert_eq!(
@@ -203,7 +203,7 @@ fn a_set_aside_on_a_model_row_survives_the_models_rewrite() {
         "**the operator's silence outlives the plan's next revision**"
     );
 
-    // A row the model ANSWERS is answered — the set-aside has nothing left to do.
+    // A row the model ANSWERS is answered - the set-aside has nothing left to do.
     b.upsert_model(&[(
         "operator: paste the token".into(),
         TodoStatus::Completed,
@@ -217,7 +217,7 @@ fn a_set_aside_on_a_model_row_survives_the_models_rewrite() {
             .is_err(),
         "a name that matches no row of the model's is not a row to move"
     );
-    // And so is one that matches two — the board's one key can collide.
+    // And so is one that matches two - the board's one key can collide.
     let two = TodoBoard::new(vec![
         item("the same words", TodoStatus::Pending),
         item("the same words", TodoStatus::InProgress),
@@ -276,7 +276,7 @@ fn the_board_returns_the_operators_rows_alongside_the_models() {
         all.iter().any(|t| t.by == TodoBy::Operator),
         "and says who wrote each"
     );
-    // **`unfinished_plan` — what the nag asks — sees the operator's row with no change at all**
+    // **`unfinished_plan` - what the nag asks - sees the operator's row with no change at all**
     assert!(
         nag_for(&all).is_some(),
         "so the reminder can fire for work the OPERATOR queued"
@@ -293,7 +293,7 @@ fn the_board_returns_the_operators_rows_alongside_the_models() {
         "and the model's own row moved"
     );
     assert!(after.iter().any(|t| t.content == "the operator's"));
-    // **A RE-WORDED ROW IS A NEW ROW** — the text is the name — so the old row stays as well:
+    // **A RE-WORDED ROW IS A NEW ROW** - the text is the name - so the old row stays as well:
     // there is no write on this board that removes one.
     b.upsert_model(&[(
         "the model's, revised".into(),
@@ -405,7 +405,7 @@ fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
         "**the call is refused, not half-obeyed**: {:?}",
         r.outcome
     );
-    // **THE REFUSAL NAMES THE FIELD AND SAYS WHERE IT BELONGS** — a message that only said
+    // **THE REFUSAL NAMES THE FIELD AND SAYS WHERE IT BELONGS** - a message that only said
     // "unknown field" would leave the model to guess, and it already guessed once.
     let said = format!("{} {:?}", r.payload, r.outcome);
     assert!(
@@ -416,7 +416,7 @@ fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
         said.contains("TOP-LEVEL"),
         "**and says where it belongs**, because one level too deep is exactly the mistake: {said}"
     );
-    // **AND NOTHING MOVED** — not their row, and not the model's list either, which is the
+    // **AND NOTHING MOVED** - not their row, and not the model's list either, which is the
     // half-applied call the operator-rows-before-todos ordering exists to prevent.
     assert!(
         board
@@ -436,7 +436,7 @@ fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
     );
 }
 
-/// And the SAME argument, sent where it belongs, still works — the refusal is about the shape,
+/// And the SAME argument, sent where it belongs, still works - the refusal is about the shape,
 /// not about the model touching the operator's rows at all.
 #[test]
 fn an_unknown_field_other_than_operator_is_refused_too() {
@@ -530,7 +530,7 @@ fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
     );
     assert!(told.contains("— yours"), "{told}");
 
-    // **A NAME THAT FITS NOTHING IS REFUSED AND WRITES NOTHING** — not their row, and not the
+    // **A NAME THAT FITS NOTHING IS REFUSED AND WRITES NOTHING** - not their row, and not the
     // model's own list either, which is the half-applied call this ordering exists to prevent.
     let before = board.snapshot();
     let r = rt.invoke(
@@ -598,7 +598,7 @@ fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
 }
 
 /// **The version is what the harness watches**, so it decides whether the wire and the store
-/// hear about a move at all: a real change announces, and a no-op does not — otherwise every
+/// hear about a move at all: a real change announces, and a no-op does not - otherwise every
 /// call that re-states a status already set would publish the whole list again.
 #[test]
 fn moving_a_row_bumps_the_version_once_and_a_no_op_does_not() {
@@ -636,7 +636,7 @@ fn moving_a_row_bumps_the_version_once_and_a_no_op_does_not() {
 
 /// **AND THE NAG SAYS WHOSE ROW IT IS, because that is what chooses the mechanism.** A model
 /// told only *one item is not done* has to guess whether to rewrite its own list or quote the
-/// operator's row, and the guess it makes is the one it always makes — its own list.
+/// operator's row, and the guess it makes is the one it always makes - its own list.
 #[test]
 fn the_nag_says_whose_row_it_is_and_how_to_dispose_of_it() {
     let mine = nag_for(&[item("my step", TodoStatus::Pending)]).unwrap();
@@ -760,7 +760,7 @@ fn the_stores_union_is_split_back_into_its_two_halves() {
     );
     assert_eq!(theirs[0].content, "the operator's, from the store");
 
-    // the model's own write cannot take their row with it — the whole reason the halves are apart
+    // the model's own write cannot take their row with it - the whole reason the halves are apart
     b.upsert_model(&[("a fresh plan".into(), TodoStatus::Pending, Vec::new())]);
     assert_eq!(
         b.snapshot().len(),
@@ -853,7 +853,7 @@ fn the_whole_list_upserts_and_a_row_left_out_stays_on_the_board() {
         "**the reply names the rows it did NOT remove**: {}",
         r2.payload
     );
-    // And the version moved twice, which is what the harness flush reads — once per call that
+    // And the version moved twice, which is what the harness flush reads - once per call that
     // changed something.
     assert_eq!(board.version(), 2);
 }

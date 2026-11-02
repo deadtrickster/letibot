@@ -260,7 +260,7 @@ pub(crate) fn split_child_label(label: &str) -> (Option<&str>, &str) {
 pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     // **The renderer sanitises its own input** (§3.1), so a caller cannot forget: rano's
     // block cleans the text before it is wrapped. The operator's own keystrokes cannot carry a
-    // control byte — the decoder hands back `Key::Char` — but a *paste* can.
+    // control byte - the decoder hands back `Key::Char` - but a *paste* can.
     let folded = fold_cells(text);
     let block = UserBlock {
         text: folded.unwrap_or_else(|| text.to_string()),
@@ -302,8 +302,8 @@ pub(crate) fn fold_cells(text: &str) -> Option<String> {
 ///   ▌ queued · also bump the retry budget
 /// ```
 ///
-/// The block sits at the tail of the body — the place its row will occupy the
-/// moment the step boundary appends it — so a message typed mid-turn never leaves
+/// The block sits at the tail of the body - the place its row will occupy the
+/// moment the step boundary appends it - so a message typed mid-turn never leaves
 /// the screen: it changes from `queued` to a timestamped row in place. Dim text
 /// rather than the raised block, because the raised block says "this is in the
 /// conversation" and until the boundary it is not; the tag is what says what is
@@ -313,17 +313,17 @@ pub(crate) fn fold_cells(text: &str) -> Option<String> {
 ///
 /// R2, and the operator's own order: *"my message | your line | and only then unqueued."* The reply
 /// streams (`Delta` carries its text) while the prompt's row is announced in a frame that carries
-/// **no** text, its body following later — so a surface that waits for the body to stop saying
+/// **no** text, its body following later - so a surface that waits for the body to stop saying
 /// `queued` is showing the answer to a question it has not drawn yet.
 ///
 /// **`unconfirmed` is the honest word for that window, and it is not a weakening.** The words are on
-/// the screen — a row is drawing them — and what the head still owes is the BODY: whether the row's
+/// the screen - a row is drawing them - and what the head still owes is the BODY: whether the row's
 /// own text will match what was bound. So the three states stay three: `queued` (nothing has it),
 /// `unconfirmed` (a row has it and the body is coming), unmarked (it landed).
 ///
 /// **One function because this was two spellings and they disagreed.** The tail asked
 /// `claimed_by.is_some() || unconfirmed` while the WALK drew every bound row as `QUEUED` outright,
-/// so fixing one left the other drawing the stale mark — and it was the row's own line the operator
+/// so fixing one left the other drawing the stale mark - and it was the row's own line the operator
 /// saw under a streaming reply. MEASURED in
 /// `a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced`.
 ///

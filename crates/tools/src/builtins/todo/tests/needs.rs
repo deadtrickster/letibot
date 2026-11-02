@@ -32,7 +32,7 @@ fn a_plan_writes_its_edges_and_the_reply_shows_them() {
         "and the reply shows it, so the model can maintain it: {}",
         r.payload
     );
-    // **And the check then asks about the row that can start** — the whole point of the edge.
+    // **And the check then asks about the row that can start** - the whole point of the edge.
     let msg = nag_for(&snap).expect("the plan is unfinished");
     assert!(msg.contains("  - run the tests"), "{msg}");
     assert!(
@@ -42,7 +42,7 @@ fn a_plan_writes_its_edges_and_the_reply_shows_them() {
 }
 
 /// **The tagged form is accepted as well as the plain name**, so the shape the store and the
-/// wire carry is one a model can write too — which is what keeps the tool's vocabulary and the
+/// wire carry is one a model can write too - which is what keeps the tool's vocabulary and the
 /// store's from being two spellings a reader has to know.
 #[test]
 fn a_need_may_be_written_in_the_tagged_form() {
@@ -135,7 +135,7 @@ fn a_plan_can_wait_on_a_child_by_its_session_id() {
         r.payload
     );
     // **And with no daemon behind this board the child is not running**, which is the honest
-    // reading rather than a guess — `ChildSessions::none()` is what a caller with no children
+    // reading rather than a guess - `ChildSessions::none()` is what a caller with no children
     // hands in, and the row is then ordinary open work.
     assert!(
         nag_for(&board.snapshot()).is_some(),
@@ -192,7 +192,7 @@ fn a_plan_can_wait_on_a_job_by_its_handle() {
         r.payload
     );
     // **And with no daemon behind this board the job is not running**, which is the honest
-    // reading rather than a guess — `RunningJobs::none()` is what a caller with no process host
+    // reading rather than a guess - `RunningJobs::none()` is what a caller with no process host
     // hands in, and the row is then ordinary open work.
     assert!(
         nag_for(&board.snapshot()).is_some(),
@@ -242,7 +242,7 @@ fn a_plan_can_wait_on_a_job_by_its_handle() {
     );
 }
 
-/// **An empty name and a `needs` that is not a list are refused by name too** — the same rule,
+/// **An empty name and a `needs` that is not a list are refused by name too** - the same rule,
 /// one level down: an edge that names nothing is not an edge.
 #[test]
 fn an_empty_need_and_a_malformed_needs_are_refused_by_name() {
@@ -296,8 +296,8 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
         item("wire the check", TodoStatus::InProgress),
         item("test it", TodoStatus::Pending),
     ];
-    // R93.B1–B3: the sentence changed deliberately — no count, no restating suffix, one line of
-    // advice — and it is pinned byte for byte here as the old one was.
+    // R93.B1–B3: the sentence changed deliberately - no count, no restating suffix, one line of
+    // advice - and it is pinned byte for byte here as the old one was.
     assert_eq!(
         nag_for(&plan).expect("open work"),
         "[todo check] Not done:\n  - wire the check — yours (in progress)\nDo it, or mark it done \
@@ -369,7 +369,7 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
 }
 
 /// **An edge that is MET is inert.** The same board with a satisfied need is read exactly as
-/// the same board with no need at all — which is the general form of the compatibility claim,
+/// the same board with no need at all - which is the general form of the compatibility claim,
 /// and the reason a plan that adopts the field gradually cannot change under itself.
 #[test]
 fn a_satisfied_need_is_inert() {
@@ -421,7 +421,7 @@ fn a_need_on_a_row_the_operator_struck_off_says_the_edge_can_never_be_met() {
         needs: Vec::new(),
     };
     // The cancelled row is not one the check may ask about, so the plan it is handed is the
-    // narrowed one — exactly what `harnessd`'s `the_plan_as_checked` builds.
+    // narrowed one - exactly what `harnessd`'s `the_plan_as_checked` builds.
     let rows = vec![needs("deploy", TodoStatus::Pending, &["run the tests"])];
     let board = vec![
         struck_off,
@@ -505,7 +505,7 @@ fn a_need_that_names_nothing_blocks_the_row_and_says_so() {
     assert_eq!(named, "");
 }
 
-/// **A name that matches two rows is unresolvable** — the house rule for an ambiguous name,
+/// **A name that matches two rows is unresolvable** - the house rule for an ambiguous name,
 /// read one step earlier: the guess this refuses to make is a row silently starting on the
 /// strength of a name that meant something else.
 #[test]
@@ -548,7 +548,7 @@ fn a_child_that_is_still_young_keeps_the_row_silent_and_an_old_one_is_spoken_abo
     )];
 
     // **Five minutes old: the row is untalkable.** The predicate the caller narrows with says
-    // so — and the child is at its most alive, generating four seconds ago.
+    // so - and the child is at its most alive, generating four seconds ago.
     let young = ChildSessions::none().running("s-1-sub-2", child(5 * 60, Some(4), true));
     assert!(
         waits_on_a_child_with_room_to_breathe(&plan[0], &young),
@@ -642,7 +642,7 @@ fn a_child_between_turns_is_told_to_be_asked_and_not_killed() {
     );
 
     // **And the state is the reading's own**, so the same child with a turn in flight keeps the
-    // check sentence — the two states cannot be told apart by anything but the fact.
+    // check sentence - the two states cannot be told apart by anything but the fact.
     let working = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
     let other = nag_with(&plan, &working, &no_jobs()).expect("a stuck plan speaks");
     assert_ne!(msg, other, "idle and wedged must not read the same");
@@ -686,13 +686,13 @@ fn a_running_job_keeps_the_row_silent_and_the_end_of_it_asks_again() {
         "a row waiting on a running job is one the check may not speak about"
     );
     // **And a caller that did NOT narrow still gets the truth rather than a silence**: the edge
-    // is unmet, and the handle is what it is named by — it is what `job_output` is given.
+    // is unmet, and the handle is what it is named by - it is what `job_output` is given.
     assert_eq!(
         unmet_needs(&plan, &plan[0], &ChildSessions::none(), &running),
         vec![("j2070".to_string(), NeedFate::JobRunning)],
         "the edge is unmet while the job runs"
     );
-    // R93.B5: and a plan blocked ONLY on a running job is silent even unnarrowed — the
+    // R93.B5: and a plan blocked ONLY on a running job is silent even unnarrowed - the
     // *"NOTHING can start … a plan to fix"* notice fired on exactly this, which `todo_write`
     // promises is silent.
     assert_eq!(
@@ -835,7 +835,7 @@ fn the_silence_a_young_child_buys_ends_when_that_child_grows_up() {
         "the EARLIER child's remaining breath, which is when the first row becomes talkable"
     );
 
-    // **A child that is already past it is not a deadline** — that row is talkable now, and
+    // **A child that is already past it is not a deadline** - that row is talkable now, and
     // `nag_should_arm` is what says so; this function answers only about the silence.
     let grown = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(60), false));
     assert_eq!(when_a_young_child_grows_up(&two[..1], &grown), None);
@@ -903,8 +903,8 @@ fn finishing_a_row_makes_what_waited_on_it_ready() {
     );
 }
 
-/// **The sticky choice is held only while the row is READY** — the composition of the two
-/// halves. A row that has left the ready set — done, set aside, or BLOCKED — is no longer a
+/// **The sticky choice is held only while the row is READY** - the composition of the two
+/// halves. A row that has left the ready set - done, set aside, or BLOCKED - is no longer a
 /// choice, and the head of the ready set is.
 #[test]
 fn the_sticky_choice_moves_on_when_the_named_row_becomes_blocked() {

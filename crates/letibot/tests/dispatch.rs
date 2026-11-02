@@ -7,7 +7,7 @@
 //! The distinction between "wired" and "not a role of this binary yet" is the MESSAGE, not the
 //! exit code: `Role::RenderQwen` exits 2 with no arguments, the same code an unported stub gave.
 
-/// The sentence a thing that is not a role prints. One producer now — the launcher.
+/// The sentence a thing that is not a role prints. One producer now - the launcher.
 const NOT_A_ROLE: &str = "not a role of this binary yet";
 
 /// **Safe invocations only, and that is a constraint rather than tidiness.** `letibot daemon`
@@ -72,7 +72,7 @@ fn the_launcher_is_the_only_thing_that_is_not_a_role() {
 }
 
 /// **`letibot` answers for itself**, and a typo is refused by name rather than resolving
-/// to a role — the dispatcher's own name is not in the table, which is what stops
+/// to a role - the dispatcher's own name is not in the table, which is what stops
 /// `letibot` from becoming the daemon by substring.
 #[test]
 fn the_dispatcher_answers_for_itself_and_refuses_a_typo() {

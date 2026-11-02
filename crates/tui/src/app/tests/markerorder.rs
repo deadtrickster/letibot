@@ -1,4 +1,4 @@
-//! **A round's counts are drawn after its reply** — the operator: *"we still have problems with
+//! **A round's counts are drawn after its reply** - the operator: *"we still have problems with
 //! [n tools called, m thinking lines] they often appear above the current reply or backfilled"*,
 //! and their ruling on where they go: *all of it after the reply*.
 
@@ -185,7 +185,7 @@ fn a_row_landing_later_in_a_run_recounts_its_marker_at_once() {
         .unwrap()
         .clone();
     assert!(line.contains("[2 tool calls]"), "the premise: {line}");
-    // A later round's thinking lands — no turn is live, so nothing but the row can move it.
+    // A later round's thinking lands - no turn is live, so nothing but the row can move it.
     row(&mut a, "s.4", "assistant", assistant(""));
     row(
         &mut a,

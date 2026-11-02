@@ -19,11 +19,11 @@ use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind};
 
 /// What every restart notice opens with.
 const OPENS: &str = "[restart] the daemon ";
-/// A known down time: `… was down for 4m12s (stopped at …; back at …) — …`.
+/// A known down time: `… was down for 4m12s (stopped at …; back at …) - …`.
 const DOWN_FOR: &str = "[restart] the daemon was down for ";
 /// **A restart with nothing to restore**: `… came back at 21:28:20 (down 1s, stopped at …):
 /// nothing was running`. Its return time leads it, so the down time is a clause rather than the
-/// opening — see `restart::nothing_running`.
+/// opening - see `restart::nothing_running`.
 const CAME_BACK: &str = "[restart] the daemon came back at ";
 /// An unknown one: `… restarted at …; when the previous one stopped is unknown …`.
 const UNKNOWN: &str = "when the previous one stopped is unknown";
@@ -126,7 +126,7 @@ impl Restart {
     }
 }
 
-/// **The header line, read** — `None` for an opening this head does not know.
+/// **The header line, read** - `None` for an opening this head does not know.
 fn down_of(header: &str) -> Option<Down> {
     // **The empty restart**, whose down time is a clause after the return time: `(down 1s,
     // stopped at …)` or `(down unknown, and no record says …)`.
@@ -208,12 +208,12 @@ pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
     (any || head.starts_with(CAME_BACK)).then_some(r)
 }
 
-/// **A session's `[restart] …` notice, read** — the model's words for the same counts.
+/// **A session's `[restart] …` notice, read** - the model's words for the same counts.
 pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
     let mut lines = text.lines();
     let mut r = empty(down_of(lines.next()?)?);
     // **Inside a `[task]` group the restart carries** (`SESSION.carries`): the children it handed
-    // over, one bullet each — what the warning says as `had finished … delivering it`.
+    // over, one bullet each - what the warning says as `had finished … delivering it`.
     let mut handed_over = false;
     for l in lines {
         if l.starts_with("[task] ") {

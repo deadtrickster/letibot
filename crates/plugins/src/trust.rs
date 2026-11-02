@@ -33,7 +33,7 @@ pub struct Pin {
     pub at_ms: u64,
 }
 
-/// **One write of a plugin artifact by a tool** — provenance, recorded where it happened.
+/// **One write of a plugin artifact by a tool** - provenance, recorded where it happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
     pub path: String,
@@ -50,7 +50,7 @@ pub struct Written {
 pub struct Standing {
     /// True when the layer's bytes are pinned (or it is a built-in, which never asks this).
     pub free: bool,
-    /// The pin for this layer's directory — the one it matches, or the one it has broken. `None`
+    /// The pin for this layer's directory - the one it matches, or the one it has broken. `None`
     /// for a layer nothing was ever pinned for.
     pub pin: Option<Pin>,
 }
@@ -213,7 +213,7 @@ impl Book {
         out
     }
 
-    /// **The time this book's next statement carries** — strictly later than every statement in it,
+    /// **The time this book's next statement carries** - strictly later than every statement in it,
     /// so two acts in one millisecond are still ordered. A clock that goes backwards cannot make a
     /// new pin look older than the revocation it replaces.
     fn next_ms(&self) -> u64 {
@@ -287,7 +287,7 @@ impl Book {
 /// Held behind an `Arc` by a [`crate::Stack`]: the stack is shared and a call takes `&self`, so the
 /// book is a `Mutex` inside and every method takes `&self`.
 pub struct Trust {
-    /// `None` for a book that lives only in memory — a test, or a box with no config directory.
+    /// `None` for a book that lives only in memory - a test, or a box with no config directory.
     /// Nothing is written anywhere and nothing survives the process.
     file: Option<PathBuf>,
     /// What the file said when it was last read, so a pin taken in another process is noticed
@@ -306,7 +306,7 @@ impl std::fmt::Debug for Trust {
 }
 
 impl Trust {
-    /// **A book that is never written** — for a test, and for a host that could not resolve a
+    /// **A book that is never written** - for a test, and for a host that could not resolve a
     /// config directory. Nothing is pinned, so every placed layer is adjudicated.
     pub fn in_memory() -> Arc<Trust> {
         Arc::new(Trust {
@@ -328,7 +328,7 @@ impl Trust {
         Arc::new(trust)
     }
 
-    /// **This box's book** — `$XDG_CONFIG_HOME/letibot/plugin-trust.json`, else
+    /// **This box's book** - `$XDG_CONFIG_HOME/letibot/plugin-trust.json`, else
     /// `~/.config/letibot/plugin-trust.json`, and an in-memory one when neither resolves.
     pub fn open_default() -> Arc<Trust> {
         match Trust::default_path() {
@@ -369,7 +369,7 @@ impl Trust {
         *self.stamp.lock().unwrap_or_else(|e| e.into_inner()) = Some(stamp);
     }
 
-    /// **Re-read the file when it moved on disk** — a pin taken by the HEAD, or by another daemon,
+    /// **Re-read the file when it moved on disk** - a pin taken by the HEAD, or by another daemon,
     /// reaching this process. `true` when the book changed, which is the caller's cue to re-decide
     /// every layer's [`Standing`].
     pub fn refresh(&self) -> bool {
@@ -419,7 +419,7 @@ impl Trust {
             .unwrap_or_default();
         let merged = Book::merge(on_disk, self.lock().clone());
         *self.lock() = merged;
-        // The window a second writer could land in — a test stands in it, and only a test.
+        // The window a second writer could land in - a test stands in it, and only a test.
         #[cfg(test)]
         test_seam::run();
         let text = self.lock().to_json();
@@ -440,12 +440,12 @@ impl Trust {
     }
 
     /// **What the book says about these bytes.** The comparison is the two hashes and nothing
-    /// else — a pin is a statement about bytes, so a rebuild is a different layer.
+    /// else - a pin is a statement about bytes, so a rebuild is a different layer.
     pub fn standing(&self, dir: &Path, module: &str, manifest: &str) -> Standing {
         let key = key_of(dir);
         let book = self.lock();
         // **A revoked pin is not a pin at all.** The sentence a revoked layer is refused with is
-        // *not pinned*, not *not pinned any more* — a person took it back, so there is nothing to
+        // *not pinned*, not *not pinned any more* - a person took it back, so there is nothing to
         // compare the bytes with and nothing for them to have changed away from.
         let Some(pin) = book.in_force(&key) else {
             return Standing {
@@ -495,7 +495,7 @@ impl Trust {
         Ok(pin)
     }
 
-    /// **Take a pin back** — by the layer's directory, or by the name it was pinned under. The
+    /// **Take a pin back** - by the layer's directory, or by the name it was pinned under. The
     /// pin that was removed is answered so the caller can say which one it was.
     pub fn unpin(&self, what: &str) -> Option<Pin> {
         let key = key_of(Path::new(what));
@@ -520,7 +520,7 @@ impl Trust {
         Some(taken)
     }
 
-    /// **Every pin IN FORCE**, newest last — a revoked one is not listed, because the question this
+    /// **Every pin IN FORCE**, newest last - a revoked one is not listed, because the question this
     /// answers is *what is pinned*.
     pub fn pins(&self) -> Vec<Pin> {
         let book = self.lock();
@@ -561,7 +561,7 @@ impl Trust {
         self.lock().writes.clone()
     }
 
-    /// **Who wrote the bytes in this layer's directory** — the records for anything under it: its
+    /// **Who wrote the bytes in this layer's directory** - the records for anything under it: its
     /// module, its manifest, and the source they were built from. What `/plugin trust` reports
     /// beside the hash it pinned.
     pub fn writes_for(&self, dir: &Path) -> Vec<Written> {
@@ -586,7 +586,7 @@ pub(crate) mod test_seam {
     pub type Hook = Box<dyn FnOnce() + Send>;
 
     /// **The installing THREAD, not just the hook.** Libtest runs a file's tests in parallel, so a
-    /// process-wide hook would fire inside somebody else's save — MEASURED: it did, and took a
+    /// process-wide hook would fire inside somebody else's save - MEASURED: it did, and took a
     /// second test down with it. A seam that only its own thread can trip is a seam that cannot.
     static HOOK: Mutex<Option<(ThreadId, Hook)>> = Mutex::new(None);
 
@@ -627,7 +627,7 @@ fn key_of(path: &Path) -> String {
         .to_string()
 }
 
-/// `(mtime, len)` — cheap enough to take on every poll, and enough to notice a rewrite of the same
+/// `(mtime, len)` - cheap enough to take on every poll, and enough to notice a rewrite of the same
 /// length.
 fn stamp_of(path: &Path) -> (u64, u64) {
     match std::fs::metadata(path) {
@@ -671,7 +671,7 @@ fn is_plugin_artifact(path: &Path) -> bool {
 /// The book's file name in the config directory.
 const FILE: &str = "plugin-trust.json";
 
-/// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` — the same directory the user plugin scope
+/// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` - the same directory the user plugin scope
 /// is read from (`crates/harnessd/src/plugins.rs`), so a person finds the book beside the layers
 /// it is about.
 fn config_dir() -> Option<PathBuf> {
@@ -882,7 +882,7 @@ mod tests {
                 .standing(&dir, &pin.module, &pin.manifest)
                 .free
         );
-        // **The daemon's copy is taken after the pin and never refreshed again** — it holds P1 and
+        // **The daemon's copy is taken after the pin and never refreshed again** - it holds P1 and
         // knows nothing of the revocation, which is the worst case and the reviewer's exact one.
         let daemon = Trust::open(&file);
 
@@ -993,7 +993,7 @@ mod tests {
             "different bytes, different pin"
         );
 
-        // The stale peer saves a write record — its own news, about the old pin's world.
+        // The stale peer saves a write record - its own news, about the old pin's world.
         daemon.note_write(&dir.join(WASM), b"module v2", "s-1");
 
         let seen = Trust::open(&file);

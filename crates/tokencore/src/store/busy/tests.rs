@@ -1,4 +1,4 @@
-//! The failure mode, its remedy, the retry ladder and the long copy — each against a real WAL
+//! The failure mode, its remedy, the retry ladder and the long copy - each against a real WAL
 //! file with two connections, because an in-memory store has no second connection to lose a
 //! race to.
 //!
@@ -72,7 +72,7 @@ fn seed(s: &Store) -> String {
     "tr-busy".into()
 }
 
-/// Another connection to the same file, holding the write lock until told to let go —
+/// Another connection to the same file, holding the write lock until told to let go  -
 /// another daemon mid-commit.
 fn hold_write_lock(path: &std::path::Path) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
     let (go, wait) = mpsc::channel::<()>();

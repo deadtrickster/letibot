@@ -3,7 +3,7 @@
 //! # Why this file exists now, and did not need to before
 //!
 //! While `letibot` was only a dispatcher over `sessionlog` and two renderer crates,
-//! it linked no llama and needed no runpath — and it was checked. **Wiring `Role::M1`
+//! it linked no llama and needed no runpath - and it was checked. **Wiring `Role::M1`
 //! changed that**: `m1::run` lives in `letibot-harnessd`, so this binary now links
 //! `letibot-harnessd`, which links `letibot-tokencore`, which links `libllama`. The
 //! first run of the wired role said so plainly:
@@ -13,8 +13,8 @@
 //! shared object file
 //! ```
 //!
-//! That is the same failure the arm64 leg hit in `letibot-tui` — a dependency
-//! arriving through a crate nobody thought of as linked to llama — and it is worse
+//! That is the same failure the arm64 leg hit in `letibot-tui` - a dependency
+//! arriving through a crate nobody thought of as linked to llama - and it is worse
 //! here, because `letibot` is the binary an install puts on `PATH`. Without a
 //! runpath it runs only where `LD_LIBRARY_PATH` happens to point at a llama build,
 //! which is no machine but the author's.
@@ -28,13 +28,13 @@
 //!
 //! Measured with the packager: `scripts/make-dist.sh` refuses to ship a library
 //! whose own runpath is not `$ORIGIN`, and CI runs the extracted package from a bare
-//! directory with `LD_LIBRARY_PATH` unset — which is the check that would have
+//! directory with `LD_LIBRARY_PATH` unset - which is the check that would have
 //! caught this without anybody running it by hand.
 //!
 //! # The rpath does not travel with a library
 //!
 //! `rustc-link-arg` applies to the targets of the package whose build script emitted
-//! it and to **nothing downstream** — `crates/harnessd/build.rs` says so at length
+//! it and to **nothing downstream** - `crates/harnessd/build.rs` says so at length
 //! because it cost an hour once. So every package whose binaries end up linking
 //! llama needs its own copy of this file: `harnessd`, now `letibot`, and
 //! `crates/tui` (which needed one for a reason that only appears on aarch64).

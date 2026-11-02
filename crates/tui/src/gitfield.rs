@@ -33,7 +33,7 @@ pub struct GitState {
     pub behind: Option<usize>,
     pub ahead: Option<usize>,
     pub stash: Option<usize>,
-    /// rebase / merge / cherry-pick / revert / bisect — from the marker files, not from
+    /// rebase / merge / cherry-pick / revert / bisect - from the marker files, not from
     /// `git status`, which does not report one in porcelain at all.
     pub action: Option<&'static str>,
     pub conflict: Option<usize>,
@@ -59,7 +59,7 @@ pub enum GitRole {
     Untracked,
 }
 
-/// **`git status --porcelain=v2 --branch --show-stash` as the facts** — leticl's `%git-parts`.
+/// **`git status --porcelain=v2 --branch --show-stash` as the facts** - leticl's `%git-parts`.
 ///
 /// The v2 shape this reads, measured on this checkout:
 ///
@@ -76,13 +76,13 @@ pub enum GitRole {
 ///
 /// Every `1 XY`/`2 XY` line is one changed path: **X is index-vs-HEAD and Y is
 /// workdir-vs-index**, so a `.` in X with an `M` in Y is unstaged work and the reverse is staged
-/// — which is how `%+` and `%!` come apart, the count letibot's first field collapsed into one
+/// - which is how `%+` and `%!` come apart, the count letibot's first field collapsed into one
 /// `*`. `u` lines are unmerged paths and `?` lines untracked ones. `branch.ab` and
-/// `branch.upstream` are ABSENT on a branch with no upstream — which is a fact about the branch,
+/// `branch.upstream` are ABSENT on a branch with no upstream - which is a fact about the branch,
 /// not about the repository, so their absence is not an error either. `# stash N` is only printed
 /// under `--show-stash`, which is why the reader's argv carries it.
 ///
-/// `None` when the text names no branch at all — an empty reading, or git's own complaint, both
+/// `None` when the text names no branch at all - an empty reading, or git's own complaint, both
 /// of which are *this is not a repository I can read* rather than *a repository with nothing in
 /// it*.
 pub fn git_parts(porcelain: &str, action: Option<&'static str>) -> Option<GitState> {
@@ -134,7 +134,7 @@ pub fn git_parts(porcelain: &str, action: Option<&'static str>) -> Option<GitSta
     let head = head?;
     let (branch, detached) = if head == "(detached)" {
         // **A detached HEAD is not branch-less.** gitstatus shows the commit and not the
-        // branch, `@` plus the first eight of the oid — the width its own README prints.
+        // branch, `@` plus the first eight of the oid - the width its own README prints.
         let at = oid
             .as_deref()
             .map(|o| o.chars().take(8).collect::<String>());
@@ -157,7 +157,7 @@ pub fn git_parts(porcelain: &str, action: Option<&'static str>) -> Option<GitSta
     })
 }
 
-/// **One segment's `(text, role)`** — leticl's `%git-segment`. Glyphs are gitstatus's own.
+/// **One segment's `(text, role)`** - leticl's `%git-segment`. Glyphs are gitstatus's own.
 fn git_segment(state: &GitState, slot: GitSlot) -> Option<(String, GitRole)> {
     let dirty = state.staged.is_some()
         || state.unstaged.is_some()
@@ -185,7 +185,7 @@ fn git_segment(state: &GitState, slot: GitSlot) -> Option<(String, GitRole)> {
     }
 }
 
-/// The format's placeholders — leticl's `+git-slots+`, in the order the default spells them.
+/// The format's placeholders - leticl's `+git-slots+`, in the order the default spells them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitSlot {
     Branch,
@@ -313,7 +313,7 @@ pub fn project_dir(ws: &str) -> std::path::PathBuf {
     {
         return dir.join(name);
     }
-    // Then a single repository child — and only one. Two is a choice this function does not make.
+    // Then a single repository child - and only one. Two is a choice this function does not make.
     let repos: Vec<std::path::PathBuf> = dir
         .read_dir()
         .into_iter()
@@ -373,7 +373,7 @@ pub fn read_state(workspace: &str) -> Option<GitState> {
     if workspace.is_empty() {
         return None;
     }
-    // **Resolved, not assumed** — the workspace may be the parent of the repository rather than
+    // **Resolved, not assumed** - the workspace may be the parent of the repository rather than
     // the repository (`repo_dir`), which is the nested layout both this field and the todos
     // pane were drawing nothing over.
     read_state_at(&repo_dir(workspace))
@@ -404,7 +404,7 @@ pub fn repos_in(ws: &str) -> Vec<std::path::PathBuf> {
     repos
 }
 
-/// **The repository of `path`** among a workspace's — `path` relative to the workspace or
+/// **The repository of `path`** among a workspace's - `path` relative to the workspace or
 /// absolute: the repository that holds it, when it is one of [`repos_in`]'s.
 pub fn repo_holding(ws: &str, path: &str) -> Option<std::path::PathBuf> {
     let p = std::path::Path::new(path);
@@ -419,7 +419,7 @@ pub fn repo_holding(ws: &str, path: &str) -> Option<std::path::PathBuf> {
         .max_by_key(|r| r.as_os_str().len())
 }
 
-/// **One reading of the repository at `dir`**, or `None` — see [`read_state`].
+/// **One reading of the repository at `dir`**, or `None` - see [`read_state`].
 pub fn read_state_at(dir: &std::path::Path) -> Option<GitState> {
     let mut git = Command::new("git");
     git.arg("-C")
@@ -459,7 +459,7 @@ pub fn run_with_deadline(mut cmd: Command, limit: std::time::Duration) -> Option
             }
             _ => {
                 // Killed, and the reader is NOT joined: what git started (a submodule's own
-                // status) can hold the pipe open past git, and joining would wait for it — the
+                // status) can hold the pipe open past git, and joining would wait for it - the
                 // very wait the deadline exists to bound. The thread ends when the pipe does.
                 let _ = child.kill();
                 let _ = child.wait();
@@ -530,7 +530,7 @@ mod deadline_tests {
     }
 }
 
-/// **The path a tool call is about, from its arguments** — `path`, `file_path` or `file` (what
+/// **The path a tool call is about, from its arguments** - `path`, `file_path` or `file` (what
 /// `display_target` reads first), else a `cwd`/`workdir`, else the directory a shell command
 /// starts with `cd` into. What the git field follows in a workspace of several repositories.
 pub fn call_path(arguments: &str) -> Option<String> {
@@ -553,7 +553,7 @@ pub fn call_path(arguments: &str) -> Option<String> {
     (!dir.is_empty()).then(|| dir.to_string())
 }
 
-/// **The field as one plain string through the DEFAULT format** — what the tests assert, and the
+/// **The field as one plain string through the DEFAULT format** - what the tests assert, and the
 /// shape the first cut of this field drew. No colours, no fitting: the text and nothing else.
 pub fn git_text(state: &GitState) -> String {
     git_pieces(state, GIT_FORMAT_DEFAULT)
@@ -567,7 +567,7 @@ mod tests {
     use super::*;
 
     /// The README's own example state, one fixture every reader of a segment shares: the
-    /// gitstatus table itself — one of everything, so a missing glyph is a wrong line, not a
+    /// gitstatus table itself - one of everything, so a missing glyph is a wrong line, not a
     /// quiet row.
     fn everything() -> GitState {
         GitState {
@@ -621,7 +621,7 @@ mod tests {
     }
 
     /// **A detached HEAD says which commit**, because `(detached)` alone is a name with no content
-    /// — `@` plus the first eight of the oid, the width gitstatus itself prints.
+    /// - `@` plus the first eight of the oid, the width gitstatus itself prints.
     #[test]
     fn a_detached_head_is_the_commit_at_gitstatuses_width() {
         let detached = "# branch.oid 31f30adfa3266f3ee47186ae4a33f22a43af50ce\n\
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(state.branch, "@31f30adf");
     }
 
-    /// **An action in progress is a segment, from the marker files** — `%m`, magenta and bold,
+    /// **An action in progress is a segment, from the marker files** - `%m`, magenta and bold,
     /// between the stash and the conflicts: gitstatus's own order.
     #[test]
     fn an_action_is_a_segment_between_the_stash_and_the_conflicts() {
@@ -640,14 +640,14 @@ mod tests {
         assert_eq!(git_text(&state), "main*1rebase!1");
     }
 
-    /// **The template decides the text** — the port's own point. Segments the template does not
+    /// **The template decides the text** - the port's own point. Segments the template does not
     /// name are not drawn; literals travel with the piece they precede; `%%` is a per cent; an
     /// unknown `%x` is a literal per cent; a literal before an ABSENT segment is dropped with it.
     #[test]
     fn the_format_decides_the_text() {
         let state = everything();
         // A spaced format: the space travels with the mark that follows it. leticl's preset
-        // verbatim — `%b %!%+` — whose space sits before `%!` only, so `+7` follows unspaced.
+        // verbatim - `%b %!%+` - whose space sits before `%!` only, so `+7` follows unspaced.
         let pieces = git_pieces(&state, "%b %!%+");
         assert_eq!(
             pieces.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
@@ -676,7 +676,7 @@ mod tests {
             vec!["master", ") ~6"],
             "the literal before the absent stash went with it; the one after did not"
         );
-        // `%%` and an unknown slot — both are a literal per cent, and the unknown slot's
+        // `%%` and an unknown slot - both are a literal per cent, and the unknown slot's
         // letter is CONSUMED with it (leticl skips two, the `%` and the letter).
         assert_eq!(
             git_pieces(&state, "%% %z%b")
@@ -685,7 +685,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["% %master"]
         );
-        // A trailing literal attaches to the last piece — the same rule, read from the other end.
+        // A trailing literal attaches to the last piece - the same rule, read from the other end.
         assert_eq!(
             git_pieces(&state, "%b!")
                 .iter()
@@ -695,7 +695,7 @@ mod tests {
         );
     }
 
-    /// **The branch is the floor** — fitting drops whole pieces from the right, so a narrow
+    /// **The branch is the floor** - fitting drops whole pieces from the right, so a narrow
     /// screen loses `?9` and not the branch.
     #[test]
     fn fitting_drops_whole_pieces_and_keeps_the_branch() {
@@ -712,8 +712,8 @@ mod tests {
         assert!(git_fit(&pieces, 8).is_empty());
     }
 
-    /// **The branch's colour is the one fact a person reads at a glance** — clean green, dirty
-    /// yellow — and it is dirty on ANY of the four work counts, untracked included.
+    /// **The branch's colour is the one fact a person reads at a glance** - clean green, dirty
+    /// yellow - and it is dirty on ANY of the four work counts, untracked included.
     #[test]
     fn the_branch_role_says_whether_the_tree_is_clean() {
         let clean = git_parts(

@@ -95,7 +95,7 @@ fn the_notice_fold_refuses_anything_it_cannot_account_for() {
     }
 }
 
-/// **And the row on the glass is the compact card** — the complaint was about what the operator
+/// **And the row on the glass is the compact card** - the complaint was about what the operator
 /// was reading, so the assertion is on a frame and not only on the function.
 #[test]
 fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
@@ -128,7 +128,7 @@ fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
     )));
     let screen = a.screen(120, 30).join("\n");
     // **Two lines since the compact card** (`job_card`): the job, how it ended and what it ran,
-    // then what it wrote — the operator's *"first line is j<id> - slug - truncated cmd and
+    // then what it wrote - the operator's *"first line is j<id> - slug - truncated cmd and
     // second line is truncated output"*.
     assert!(
         screen.contains("j57 · exited 0 3.0s · sleep 3; echo done"),
@@ -274,7 +274,7 @@ fn the_jobs_pane_names_the_file_a_redirected_job_writes_to() {
 #[test]
 fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
     let mut a = app();
-    // Attached, because a `Jobs` frame for another session is dropped — the answer is about the
+    // Attached, because a `Jobs` frame for another session is dropped - the answer is about the
     // session this head is in, and the guard is what stops a switch showing the old session's.
     a.apply(hello(
         "s",
@@ -304,7 +304,7 @@ fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
             produced: 0,
             elapsed_ms: 10,
         };
-    // Zero jobs is no line at all — a count that is always there is furniture.
+    // Zero jobs is no line at all - a count that is always there is furniture.
     a.apply(jobs(vec![job("j1", false, None)]));
     assert_eq!(a.jobs_line(), None, "a settled job is not a running one");
     // One job, pluralised and singular, and the redirect clause only when it applies.
@@ -481,7 +481,7 @@ fn the_jobs_pane_joins_the_command_and_marks_a_running_job() {
             daemon_job("j2", "sleep 30", false),
         ],
     ));
-    // **Both jobs, so the settled one is unfolded to be drawn** — it lives under the
+    // **Both jobs, so the settled one is unfolded to be drawn** - it lives under the
     // `finished` group by default (the operator's ask), and this test is about the ROW.
     a.jobs_finished_open = true;
     let lines = a.jobs_lines(100).join("\n");
@@ -669,7 +669,7 @@ fn a_job_that_never_ran_does_not_read_as_one_that_wrote_nothing() {
             vec![daemon_job("j3", "cargo build", false)],
         ));
         a.key(Key::CtrlQ);
-        // Unfold the `finished` group, then take the job row — see the sibling tests.
+        // Unfold the `finished` group, then take the job row - see the sibling tests.
         a.key(Key::Enter);
         a.key(Key::Down);
         a.key(Key::Enter);
@@ -756,7 +756,7 @@ fn the_job_output_event_fills_the_overlay_and_it_pages() {
         })
     );
     assert_eq!(a.job_out.as_ref().unwrap().back, vec![0]);
-    // ← walks back the way → came, by the offset it was given — the head never
+    // ← walks back the way → came, by the offset it was given - the head never
     // computes a page size, because the size is the daemon's.
     assert_eq!(
         a.key(Key::Left),

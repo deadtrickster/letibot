@@ -25,7 +25,7 @@ pub fn bytes_head(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
-/// The first `max` characters, then `…` — so the answer is one character over the cap, and a
+/// The first `max` characters, then `…` - so the answer is one character over the cap, and a
 /// caller that needs the ellipsis inside its width wants [`clip_chars_within`].
 pub fn clip_chars(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {

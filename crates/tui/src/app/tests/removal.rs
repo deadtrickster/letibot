@@ -28,7 +28,7 @@ fn a_head(sessions: Vec<SessionBrief>) -> App {
     a_head_at("s-habr", sessions)
 }
 
-/// The same, standing somewhere else — the fixture for *the session you are in*.
+/// The same, standing somewhere else - the fixture for *the session you are in*.
 fn a_head_at(here: &str, sessions: Vec<SessionBrief>) -> App {
     let mut a = app();
     a.home = "/home/dead".into();
@@ -58,7 +58,7 @@ fn with_the_layer(a: &mut App) {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// The ids of the session rows the list draws, in order — the drawn list, whichever of the two
+/// The ids of the session rows the list draws, in order - the drawn list, whichever of the two
 /// drawings answered.
 fn drawn_ids(a: &App) -> Vec<String> {
     a.picker_rows()
@@ -75,7 +75,7 @@ fn row_of(a: &App, id: &str) -> usize {
         .unwrap_or_else(|| panic!("`{id}` is drawn: {:?}", drawn_ids(a)))
 }
 
-/// What the status line says — the one sentence `say` keeps.
+/// What the status line says - the one sentence `say` keeps.
 fn said(a: &App) -> String {
     a.notice.clone().unwrap_or_default()
 }
@@ -181,7 +181,7 @@ fn a_typed_name_is_never_a_removal() {
     }
 }
 
-/// **The row this head is standing in cannot be removed** — the list is the whole answer to
+/// **The row this head is standing in cannot be removed** - the list is the whole answer to
 /// *where am I*, and a list that removes where you are standing has none.
 #[test]
 fn the_session_you_are_in_cannot_be_removed() {
@@ -204,7 +204,7 @@ fn the_session_you_are_in_cannot_be_removed() {
 }
 
 /// **A session ABOVE the one this head is in cannot be removed either.** The row you are standing
-/// in is drawn through its chain, so removing a parent takes the row with it — the same defect as
+/// in is drawn through its chain, so removing a parent takes the row with it - the same defect as
 /// removing the row itself, one step out, and it was reachable before this test.
 #[test]
 fn an_ancestor_of_the_session_you_are_in_cannot_be_removed() {
@@ -255,7 +255,7 @@ fn an_ancestor_of_the_session_you_are_in_cannot_be_removed() {
     assert_eq!(deep.removed.len(), 0);
 }
 
-/// **A removed parent takes its subtree with it** — a child whose parent is not on a tree has no
+/// **A removed parent takes its subtree with it** - a child whose parent is not on a tree has no
 /// place on it, and the sentence says how many rows go.
 #[test]
 fn removing_a_parent_takes_its_children_off_the_list() {
@@ -305,14 +305,14 @@ fn landing_on_a_removed_row_brings_it_back() {
         child("s-sub-1", "read the repo", "s-habr"),
     ];
     let mut a = a_head(sessions.clone());
-    // The child is folded under `here` until the row is opened — the collapsed default inside a
+    // The child is folded under `here` until the row is opened - the collapsed default inside a
     // tree, which is where this fixture has to stand for the child to be removable at all.
     a.set_row_fold("s-habr", true);
     a.picker_sel = row_of(&a, "s-sub-1");
     a.key(Key::Delete);
     a.key(Key::Delete);
     assert_eq!(drawn_ids(&a), vec!["s-habr"], "the child's row is gone");
-    // The head is moved onto it — the daemon seats it, which is one `Hello`.
+    // The head is moved onto it - the daemon seats it, which is one `Hello`.
     a.apply(hello("s-sub-1", sessions, Hub::new("s-sub-1").snapshot()));
     assert_eq!(a.removed.len(), 0, "the removal went with the seating");
     assert_eq!(
@@ -372,7 +372,7 @@ fn the_heads_list_and_the_layers_list_both_drop_the_removed_row() {
         .filter_map(|r| r.idx.map(|i| a.sessions[i].session_id.clone()))
         .collect();
     assert_eq!(head, vec!["s-habr"], "the head's own walk");
-    // **The layer's answer, not the fallback's** — `sessions_list` is `Some` above, so these rows
+    // **The layer's answer, not the fallback's** - `sessions_list` is `Some` above, so these rows
     // came through the guest, the feed and the tree block it answers.
     let layer: Vec<String> = a
         .sessions_list(100)
@@ -436,7 +436,7 @@ fn forget_refuses_a_live_session_by_name() {
     assert_eq!(a.removed.len(), 0, "and nothing was hidden either");
 }
 
-/// **A dead session that holds rows cannot be forgotten by anybody** — `transcript_item` carries a
+/// **A dead session that holds rows cannot be forgotten by anybody** - `transcript_item` carries a
 /// `BEFORE DELETE` trigger, so `letibot --delete` refuses it too, and the sentence says which rule
 /// it is rather than blaming this head.
 #[test]
@@ -456,7 +456,7 @@ fn forget_names_the_append_only_rule_for_a_session_that_holds_rows() {
     assert!(first.contains("letibot --delete s-old"), "{first}");
 }
 
-/// **The empty case is the one the store CAN forget — and the door is not this head's.** This is
+/// **The empty case is the one the store CAN forget - and the door is not this head's.** This is
 /// the finding, as a sentence: `Store::delete_empty_session` exists, no frame reaches it, and the
 /// one-shot on the store file is the only way in.
 #[test]
@@ -500,7 +500,7 @@ fn forget_resolves_the_id_it_is_given() {
     assert!(said(&a).contains("will not guess"), "{}", said(&a));
     a.command("forget nothing-like-this");
     assert!(said(&a).contains("no session matches"), "{}", said(&a));
-    // **A unique one resolves and is then refused for the real reason** — which is the point: the
+    // **A unique one resolves and is then refused for the real reason** - which is the point: the
     // resolution works and the answer is still no, with the sentence that says why.
     a.command("forget s-rust-1");
     assert!(
@@ -527,7 +527,7 @@ fn del_on_a_group_line_says_what_the_key_is_for() {
     assert_eq!(a.removal_armed, None);
 }
 
-/// **Any other key on the pane disarms** — the second press has to be a press, not a coincidence
+/// **Any other key on the pane disarms** - the second press has to be a press, not a coincidence
 /// minutes later.
 #[test]
 fn another_key_disarms_the_removal() {
@@ -549,7 +549,7 @@ fn another_key_disarms_the_removal() {
     );
 }
 
-/// **The bar offers the keys, and the destructive sense as the verb it is** — a bar that promised
+/// **The bar offers the keys, and the destructive sense as the verb it is** - a bar that promised
 /// one press would be a bar that removed something on the first one.
 #[test]
 fn the_bar_offers_the_removal_keys() {
@@ -560,7 +560,7 @@ fn the_bar_offers_the_removal_keys() {
         "{bar}"
     );
     assert!(bar.contains("ctrl-z brings the last removed back"), "{bar}");
-    // **And nothing on the bar is a bare letter** — the picker's typed line is a name.
+    // **And nothing on the bar is a bare letter** - the picker's typed line is a name.
     assert!(
         !bar.contains(" f ") && !bar.contains(" x ") && !bar.contains(" u "),
         "no letter of the alphabet is a key here: {bar}"

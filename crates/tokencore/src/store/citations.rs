@@ -5,7 +5,7 @@
 //! the reply: rewriting a message the model already generated would make the next request's
 //! prefix differ from the cached one from that message on. The rows are keyed by the reply's own
 //! text, not by its row id, because a fork (`/reseat`, a compaction) carries the reply under a new
-//! id and the citation must come with it — what was cited is a fact about the words, not the row.
+//! id and the citation must come with it - what was cited is a fact about the words, not the row.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -34,7 +34,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **Keep a reply's citations** — the first snapshot wins: a reply is cited once, when it
+    /// **Keep a reply's citations** - the first snapshot wins: a reply is cited once, when it
     /// lands, and a later write for the same words is the same reply carried, not a new reading.
     pub fn put_citations(
         &self,

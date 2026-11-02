@@ -1,4 +1,4 @@
-//! **The config pane**: the head's own settings and the session's — drawn by
+//! **The config pane**: the head's own settings and the session's - drawn by
 //! `rano::agent::config` from the rows this head assembles.
 
 use crate::app::*;
@@ -10,7 +10,7 @@ impl App {
         row_strings(&self.config_pane().lines(w), self.cfg.palette())
     }
 
-    /// **The pane as rano draws it** — the rows this head assembles, the cursor, and the
+    /// **The pane as rano draws it** - the rows this head assembles, the cursor, and the
     /// session's sentence while it has nothing to list. The lines and the click map's stop
     /// rows are both read from this one value.
     pub(crate) fn config_pane(&self) -> ConfigPane {

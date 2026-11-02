@@ -12,18 +12,18 @@ use letibot_plugin::pane::{Act, Cell, Input, Role};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// **The narrowest column worth drawing** — at this width a row is a mark, a name of twelve and a
+/// **The narrowest column worth drawing** - at this width a row is a mark, a name of twelve and a
 /// three-letter fact, which is the least that still answers *who* and *is it stuck*.
 const MIN_W: usize = 20;
 
-/// **The column a person gets before they say otherwise** — the width a name and a three-letter
+/// **The column a person gets before they say otherwise** - the width a name and a three-letter
 /// fact fit in, and less than a third of a screen so that `w` still has somewhere to go.
 const DEFAULT_W: usize = 30;
 
 /// One press of `w` or `n`.
 const STEP: usize = 4;
 
-/// **The widest the column may be** — about a third of the rectangle, because a nick list that
+/// **The widest the column may be** - about a third of the rectangle, because a nick list that
 /// takes half the screen is a conversation you cannot read. The floor is [`MIN_W`]: a rect too
 /// narrow to hold even the minimum still gets the minimum and the host clips it.
 const THIRD: usize = 3;
@@ -31,25 +31,25 @@ const THIRD: usize = 3;
 /// The name is never cut below this: a list of four-letter stumps is not a list of sessions.
 const MIN_NAME: usize = 4;
 
-/// **How long a running session may go without a row before its age is drawn as news** — ten
+/// **How long a running session may go without a row before its age is drawn as news** - ten
 /// minutes. Below it a turn is just slow; above it, something is wrong and the operator is the one
 /// who has to decide.
 const STALE_MS: u64 = 10 * 60 * 1000;
 
 /// The pane's state, which is the whole of its memory: a plugin is stateless between calls
-/// (`docs/plugins-plan.md` §1, principle 5 — state belongs to the host, and the host hands it
+/// (`docs/plugins-plan.md` §1, principle 5 - state belongs to the host, and the host hands it
 /// back), so the width, the hidden flag, the scope and the roster all ride here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct State {
-    /// The column's width, or `None` for [`DEFAULT_W`] — `None` rather than the number so a later
+    /// The column's width, or `None` for [`DEFAULT_W`] - `None` rather than the number so a later
     /// change to the default reaches everybody who never chose.
     w: Option<usize>,
     /// The list is folded to its strip; `h` brings it back, and the width and roster are kept.
     hidden: bool,
     /// Which sessions are shown. `None` is [`Scope::Path`], the workspace you are in.
     scope: Option<Scope>,
-    /// **The roster, pinned** — the ids in drawn order. Recomputed when the set changes, and
+    /// **The roster, pinned** - the ids in drawn order. Recomputed when the set changes, and
     /// never while it does not, because the host's cursor is an index into these rows.
     order: Vec<String>,
 }
@@ -60,7 +60,7 @@ impl State {
         self.scope.unwrap_or_default()
     }
 
-    /// **The width this rect allows** — the chosen one, clamped to the rectangle's third and to
+    /// **The width this rect allows** - the chosen one, clamped to the rectangle's third and to
     /// the minimum, so a pane in a 24-column rect still draws a readable column.
     fn width(&self, rect: usize) -> usize {
         let most = if rect == 0 {
@@ -71,7 +71,7 @@ impl State {
         self.w.unwrap_or(DEFAULT_W).clamp(MIN_W, most.max(MIN_W))
     }
 
-    /// **What one key did** — the four letters a row carries, and nothing else. An `event` word
+    /// **What one key did** - the four letters a row carries, and nothing else. An `event` word
     /// this layer does not know is ignored rather than guessed: a key nobody wrote a meaning for
     /// must not move the pane.
     fn apply(&mut self, action: &str, rect: usize) {
@@ -99,12 +99,12 @@ impl State {
     }
 }
 
-/// **Which sessions the list is narrowed to**, cycled by `s` — the vocabulary the merge queue's
+/// **Which sessions the list is narrowed to**, cycled by `s` - the vocabulary the merge queue's
 /// own pane uses (`Filter::Every`/`Repo`/`Path`), so one word means one thing in this head.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Scope {
-    /// The workspace this session is wired to — one folder, one conversation.
+    /// The workspace this session is wired to - one folder, one conversation.
     #[default]
     Path,
     /// **The project**: the repository the workspace is a worktree of. The useful one, because a
@@ -125,7 +125,7 @@ impl Scope {
     }
 }
 
-/// The feed, as this layer reads it — the host's session list, plus the two facts only a host
+/// The feed, as this layer reads it - the host's session list, plus the two facts only a host
 /// can know: `now` (a wasm guest has no clock) and `repo` (a repository root is a question for
 /// git, not for a string).
 #[derive(Debug, Default, Deserialize)]
@@ -137,7 +137,7 @@ struct Feed {
     /// The host's home, so a path can be drawn as `~/…`.
     home: String,
     /// **The host's clock**, ms since the epoch. A guest on `wasm32-unknown-unknown` has no
-    /// `SystemTime` — asking for one is a panic, not a zero — so the age of a row is the host's
+    /// `SystemTime` - asking for one is a panic, not a zero - so the age of a row is the host's
     /// fact and not this layer's arithmetic.
     now: u64,
 }
@@ -160,7 +160,7 @@ struct Session {
     workspace: String,
     waits_on: usize,
     nags_paused: bool,
-    /// **When this session last moved** — the last row appended, ms since the epoch. `0` is
+    /// **When this session last moved** - the last row appended, ms since the epoch. `0` is
     /// *the host did not say*, which is drawn as `?` rather than as *now*.
     moved_ms: u64,
     /// **The repository the workspace is in**, when the host asked git. Empty is *the host did
@@ -222,7 +222,7 @@ fn strip(feed: &Feed, st: &State, rect: usize) -> Value {
         },
         counts.working,
     );
-    // **The strip is drawn at the RECTANGLE's width, not the column's** — it is the whole of what
+    // **The strip is drawn at the RECTANGLE's width, not the column's** - it is the whole of what
     // a hidden pane says, so it spends the room it has.
     let said = if rect > 0 { fit(&said, rect) } else { said };
     json!({
@@ -244,7 +244,7 @@ fn strip(feed: &Feed, st: &State, rect: usize) -> Value {
 }
 
 /// The hidden strip's row id. A row with an id is a stop, and a stop is what a key can be pressed
-/// on — the reason the strip is a row and not a sentence.
+/// on - the reason the strip is a row and not a sentence.
 const STRIP: &str = "·hidden";
 
 /// What the header and the strip count.
@@ -286,7 +286,7 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
         .copied()
         .filter(|s| keeps(s, scope, here))
         .collect();
-    // **A session the scope hides but that is WORKING keeps a place** — a narrowed list that
+    // **A session the scope hides but that is WORKING keeps a place** - a narrowed list that
     // hides the one agent doing something is how a person loses an agent. It is drawn under a
     // divider that says how many were left out, and its rows are real stops: Enter switches there.
     let outside: Vec<&Session> = top
@@ -331,7 +331,7 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     let elsewhere = top.len() - shown;
     if !outside.is_empty() {
         // **The divider is fitted like every other line**: at the minimum width it keeps the count
-        // that matters — how many sessions the scope hid — and gives up the word *working*, which
+        // that matters - how many sessions the scope hid - and gives up the word *working*, which
         // the header already counts.
         let long = format!("· {elsewhere} elsewhere · {} working", outside.len());
         let said = if cells(&long) <= width {
@@ -363,7 +363,7 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     })
 }
 
-/// The empty scope's row id — a stop, so the keys stay reachable when there is nothing to switch to.
+/// The empty scope's row id - a stop, so the keys stay reachable when there is nothing to switch to.
 const EMPTY: &str = "·empty";
 
 /// One session's row: a mark, a name, and one fact pinned to the column's right edge.
@@ -409,7 +409,7 @@ fn actions(hidden: bool) -> Value {
     ])
 }
 
-/// **What every mark and every fact means** — the `l` view, and the text that answers on hover.
+/// **What every mark and every fact means** - the `l` view, and the text that answers on hover.
 fn legend() -> Value {
     json!({
         "»": "the session you are in",
@@ -489,7 +489,7 @@ fn keeps(s: &Session, scope: Scope, here: Option<&Session>) -> bool {
     }
 }
 
-/// **The repository a session's workspace is in** — the feed's `repo` when the host asked git, and
+/// **The repository a session's workspace is in** - the feed's `repo` when the host asked git, and
 /// otherwise this tree's own worktree convention (`<repo>/worktrees/<name>`,
 /// `<repo>/.claude/worktrees/<name>`), which is where every worktree of this repository lives.
 fn repo_of(s: &Session) -> String {
@@ -537,7 +537,7 @@ fn key_of(id: &str, feed: &Feed, here: &str) -> (u8, std::cmp::Reverse<u64>, Str
     (rank, std::cmp::Reverse(s.moved_ms), id.to_string())
 }
 
-/// The mark and the role it is drawn in — one column, the most significant fact first.
+/// The mark and the role it is drawn in - one column, the most significant fact first.
 fn mark_of(s: &Session, here: &str) -> (&'static str, Role) {
     if s.id == here {
         ("»", Role::Strong)
@@ -552,7 +552,7 @@ fn mark_of(s: &Session, here: &str) -> (&'static str, Role) {
     }
 }
 
-/// A session's name — its title, or the tail of its id when it has none — with the two things that
+/// A session's name - its title, or the tail of its id when it has none - with the two things that
 /// must not be missed: `!` for *it is waiting on you*, and the paused-nag mark.
 fn name_of(s: &Session) -> String {
     let name = if s.title.trim().is_empty() {
@@ -574,7 +574,7 @@ fn name_of(s: &Session) -> String {
 }
 
 /// **The one fact**: how long since this session last moved, and its role says whether that is
-/// news. See this module's note — this is the question *is that one stuck?*, answered per row.
+/// news. See this module's note - this is the question *is that one stuck?*, answered per row.
 fn fact_of(s: &Session, now: u64) -> (String, Role) {
     let age = age_of(s, now);
     let text = match age {
@@ -602,7 +602,7 @@ fn age_of(s: &Session, now: u64) -> Option<u64> {
     Some(now - s.moved_ms)
 }
 
-/// An age in the fewest characters that stay honest — a fact column is three characters wide.
+/// An age in the fewest characters that stay honest - a fact column is three characters wide.
 fn ago(ms: u64) -> String {
     let minutes = ms / 60_000;
     if minutes == 0 {
@@ -616,7 +616,7 @@ fn ago(ms: u64) -> String {
     }
 }
 
-/// The prose a row answers on Enter — the whole of what the one fact cannot say.
+/// The prose a row answers on Enter - the whole of what the one fact cannot say.
 fn detail_of(s: &Session, here: &str, home: &str) -> String {
     let mut out = vec![format!("`{}`", s.id)];
     if s.id == here {
@@ -655,7 +655,7 @@ fn detail_of(s: &Session, here: &str, home: &str) -> String {
     out.join(" · ")
 }
 
-/// `$HOME` written as `~` — the head's own shortening, done here because the row's text is this
+/// `$HOME` written as `~` - the head's own shortening, done here because the row's text is this
 /// layer's to decide.
 fn tilde(path: &str, home: &str) -> String {
     if home.is_empty() {
@@ -667,7 +667,7 @@ fn tilde(path: &str, home: &str) -> String {
     }
 }
 
-/// A session's id, cut to the tail a person recognises — the head's own `short_id` rule.
+/// A session's id, cut to the tail a person recognises - the head's own `short_id` rule.
 fn short_id(id: &str) -> &str {
     let tail = id.rsplit(['-', ':']).next().unwrap_or(id);
     if tail.len() >= 6 { tail } else { id }
@@ -681,7 +681,7 @@ fn clean(text: &str) -> String {
         .collect()
 }
 
-/// `text`, cut to `room` columns with an ellipsis — the name column's arithmetic, and the one place
+/// `text`, cut to `room` columns with an ellipsis - the name column's arithmetic, and the one place
 /// a narrow column degrades: the mark and the fact never go, the name does.
 fn fit(text: &str, room: usize) -> String {
     if cells(text) <= room {
@@ -725,11 +725,11 @@ fn char_cells(c: char) -> usize {
     if wide { 2 } else { 1 }
 }
 
-/// The layer's policy, tested natively — see `tests.rs`.
+/// The layer's policy, tested natively - see `tests.rs`.
 #[cfg(test)]
 mod tests;
 
-/// The pane hook — `pane_<name>`, the name a head opens by (`irc/nicks`).
+/// The pane hook - `pane_<name>`, the name a head opens by (`irc/nicks`).
 #[unsafe(no_mangle)]
 pub extern "C" fn pane_nicks(ptr: i32, len: i32) -> i32 {
     abi::hook(ptr, len, answer)

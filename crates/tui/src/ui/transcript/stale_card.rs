@@ -1,7 +1,7 @@
-//! **A stale prompt's note, drawn as ONE line** — what changed, and the daemon's whole sentence
+//! **A stale prompt's note, drawn as ONE line** - what changed, and the daemon's whole sentence
 //! one click away.
 //!
-//! The operator, pasting what pg-noop's head drew after its restart — the `prefix_stale` note
+//! The operator, pasting what pg-noop's head drew after its restart - the `prefix_stale` note
 //! as three wrapped rows and a `… +1 lines · /notes` seam: *"these gray walls are hilarious …
 //! make them the usual one liners"*.
 //!
@@ -11,7 +11,7 @@
 //! ```
 //!
 //! **The line is a pointer, not the decision.** The reseat card (`app::reseat`) is where the
-//! operator chooses — `alt-r` reseats, `alt-p` shows the card — and it stays on the screen while
+//! operator chooses - `alt-r` reseats, `alt-p` shows the card - and it stays on the screen while
 //! the prompt is stale. The note is the record that it was said, so it says what changed and
 //! where to decide, and a click opens the sentence whole.
 //!
@@ -25,7 +25,7 @@ use rano::style::Role;
 use crate::ui::transcript::line_cards::{Card, WarningKind};
 
 /// What the line ends with: the one hint every notice line carries (R89). The reseat card's own
-/// keys are on its strip — `alt-r` reseats, `alt-p` shows the card — and the popup holds the
+/// keys are on its strip - `alt-r` reseats, `alt-p` shows the card - and the popup holds the
 /// daemon's whole sentence.
 use crate::ui::transcript::line_cards::CLICK as POINTER;
 
@@ -46,7 +46,7 @@ pub(crate) struct Stale {
     pub(crate) instructions: bool,
     /// The tool schemas changed.
     pub(crate) schemas: bool,
-    /// Neither moved — the seat itself is what differs.
+    /// Neither moved - the seat itself is what differs.
     pub(crate) seat: bool,
     pub(crate) new: Vec<String>,
     pub(crate) gone: Vec<String>,
@@ -108,7 +108,7 @@ fn list_after(text: &str, lead: &str) -> Vec<String> {
         .collect()
 }
 
-/// **A `prefix_stale` warning's detail, read** — `None` for a shape this head does not know.
+/// **A `prefix_stale` warning's detail, read** - `None` for a shape this head does not know.
 pub(crate) fn stale_of(detail: &str) -> Option<Stale> {
     let r = detail.strip_prefix("session ")?;
     let (session, r) = r.split_once(SEATED)?;

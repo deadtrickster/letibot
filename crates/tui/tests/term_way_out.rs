@@ -55,7 +55,7 @@ fn scripted_daemon(path: PathBuf) -> Receiver<ClientFrame> {
         while let Ok(f) = r.read::<ClientFrame>() {
             match &f {
                 ClientFrame::TermOpen { line, .. } => {
-                    // The verb's argument, as the daemon names it in its own status answer —
+                    // The verb's argument, as the daemon names it in its own status answer  -
                     // `!term nano` runs `nano`, and the pane is the session's from then on.
                     running = Some(
                         line.strip_prefix("!term ")
@@ -78,7 +78,7 @@ fn scripted_daemon(path: PathBuf) -> Receiver<ClientFrame> {
                 }
                 ClientFrame::TermClose { .. } => {
                     running = None;
-                    // The ending the daemon composes for the operator's own act — the same
+                    // The ending the daemon composes for the operator's own act - the same
                     // sentence `Terminals::CLOSED` uses since protocol 34.
                     w.write(&ServerFrame::TermEnded {
                         pane: Some(1),
@@ -160,7 +160,7 @@ fn settle_until(link: &mut Link, a: &mut App, what: &str, mut ready: impl FnMut(
     }
 }
 
-/// **Everything the daemon read, up to the frame `ready` names** — so *this reached the daemon*
+/// **Everything the daemon read, up to the frame `ready` names** - so *this reached the daemon*
 /// waits for the frame instead of for a pause. Returns what it collected, so a failure prints the
 /// frames rather than an empty list.
 fn frames_until(
@@ -200,7 +200,7 @@ fn frames_until_and_after(
     out
 }
 
-/// **What the daemon read while the head wrote nothing** — see [`ABSENCE_WINDOW`].
+/// **What the daemon read while the head wrote nothing** - see [`ABSENCE_WINDOW`].
 fn arrived_meanwhile(frames: &Receiver<ClientFrame>) -> Vec<ClientFrame> {
     let deadline = Instant::now() + ABSENCE_WINDOW;
     let mut out: Vec<ClientFrame> = Vec::new();
@@ -216,7 +216,7 @@ fn arrived_meanwhile(frames: &Receiver<ClientFrame>) -> Vec<ClientFrame> {
     out
 }
 
-/// Whatever is already in the channel, without waiting — for the places a test clears the board.
+/// Whatever is already in the channel, without waiting - for the places a test clears the board.
 fn clear(frames: &Receiver<ClientFrame>) -> Vec<ClientFrame> {
     let mut out = Vec::new();
     while let Ok(f) = frames.try_recv() {
@@ -284,7 +284,7 @@ fn ctrl_backslash_detaches_through_the_drivers_loop() {
     });
 
     // **The absence, and it is the one claim here that needs a window**: a detach writes nothing,
-    // so there is no frame to wait for — see [`ABSENCE_WINDOW`].
+    // so there is no frame to wait for - see [`ABSENCE_WINDOW`].
     let meanwhile = arrived_meanwhile(&frames);
     assert!(
         !meanwhile
@@ -378,7 +378,7 @@ fn a_way_out_byte_in_a_read_the_composer_consumed_is_not_a_way_out_of_anything()
     attach(&mut link, &mut a, &frames);
 
     // The operator is at the composer: no pane, none opening. A paste of text that
-    // contains a literal `0x1c` — one read, one `Key::Paste`, nothing submitted.
+    // contains a literal `0x1c` - one read, one `Key::Paste`, nothing submitted.
     step(&mut link, &mut a, b"\x1b[200~notes\x1c\x1b[201~");
     settle_until(&mut link, &mut a, "the paste in the composer", |a| {
         a.input().contains("notes")
@@ -409,7 +409,7 @@ fn a_way_out_byte_in_a_read_the_composer_consumed_is_not_a_way_out_of_anything()
     );
     assert!(!a.pane_open(), "submitting the paste opened no pane");
 
-    // Only now does the operator open one — and the poisoned latch spends itself on it.
+    // Only now does the operator open one - and the poisoned latch spends itself on it.
     step(&mut link, &mut a, b"!term nano\r");
     settle_until(&mut link, &mut a, "the pane's screen", |a| {
         a.screen(100, 30)
@@ -561,7 +561,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
         a.screen(100, 30).iter().any(|r| r.contains("end the pane"))
     });
     // **A verb that asks writes nothing**, so the absence is the only claim here and a window is
-    // its only instrument — see [`ABSENCE_WINDOW`].
+    // its only instrument - see [`ABSENCE_WINDOW`].
     let asked = arrived_meanwhile(&frames);
     assert!(
         !asked
@@ -581,7 +581,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
         "and says both keys, and which is the default: {card:?}"
     );
 
-    // Esc is the cancel — the safe default — and it sends nothing.
+    // Esc is the cancel - the safe default - and it sends nothing.
     step(&mut link, &mut a, b"\x1b");
     settle_until(&mut link, &mut a, "the card to be gone", |a| {
         !a.screen(100, 30).iter().any(|r| r.contains("end the pane"))
@@ -641,7 +641,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
 }
 
 /// **And the way-out byte is still not a key.** The control for the three above: with no
-/// pane and no pane opening, the same byte is nothing at all — it is not typed, it does not
+/// pane and no pane opening, the same byte is nothing at all - it is not typed, it does not
 /// submit, and it does not leave the composer.
 #[test]
 fn with_no_pane_the_way_out_byte_is_still_nothing() {

@@ -1,4 +1,4 @@
-//! **The quit card**: what leaving would stop, and the choices for it — drawn by
+//! **The quit card**: what leaving would stop, and the choices for it - drawn by
 //! `rano::agent::quit` from the counts this head keeps.
 
 use crate::app::*;

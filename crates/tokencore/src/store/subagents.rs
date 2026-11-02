@@ -83,7 +83,7 @@ pub struct StoredMonitor {
     pub updated_ms: u64,
 }
 
-/// **A background job's context** — see the `job_context` table.
+/// **A background job's context** - see the `job_context` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobContext {
     pub handle: String,
@@ -97,7 +97,7 @@ pub struct JobContext {
 /// and the reason the window exists at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoRecord {
-    /// **Created at or after this store's first `subagent_run` row** — the store was recording
+    /// **Created at or after this store's first `subagent_run` row** - the store was recording
     /// children by then, so this child's row was due and is missing.
     Due,
     /// Created before it: no build was recording children then, so having no row is the ordinary
@@ -115,16 +115,16 @@ pub struct UnrecordedChild {
     /// Where it worked: its worktree, or its parent's tree.
     pub workspace_root: String,
     pub created_ms: i64,
-    /// **Which of the two classes this child is in** — see [`NoRecord`]. A sentence a model reads
+    /// **Which of the two classes this child is in** - see [`NoRecord`]. A sentence a model reads
     /// may say *why* the row is missing only for [`NoRecord::Due`].
     pub why: NoRecord,
-    /// **The current transcript's last row**, by [`StoredSession::last_item`]'s rule — an
+    /// **The current transcript's last row**, by [`StoredSession::last_item`]'s rule - an
     /// `Assistant` with no calls after it is a finished turn, anything else is a turn that was
     /// still going when the rows stopped. `None` for a child that wrote no row at all.
     pub last_item: Option<letibot_transcript::TranscriptItem>,
 }
 
-/// **One daemon's life** — see the `daemon_life` table.
+/// **One daemon's life** - see the `daemon_life` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonLife {
     pub instance: String,
@@ -133,13 +133,13 @@ pub struct DaemonLife {
     pub stopped_ms: Option<u64>,
 }
 
-/// **One child, as the store remembers it** — see the module docs for each field's meaning.
+/// **One child, as the store remembers it** - see the module docs for each field's meaning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentRun {
     pub child_id: String,
     pub parent_id: String,
     pub state: String,
-    /// The subtask, verbatim — what the child was asked, which a respawn needs and which the
+    /// The subtask, verbatim - what the child was asked, which a respawn needs and which the
     /// child's own transcript holds too.
     pub prompt: String,
     pub spec_json: String,
@@ -180,7 +180,7 @@ impl Store {
         Ok(())
     }
 
-    /// **A child's state moved**: `state` and `outcome`, and `delivered` back to false — a
+    /// **A child's state moved**: `state` and `outcome`, and `delivered` back to false - a
     /// settlement written now is one nobody has been handed yet. A handle with no row is a
     /// child this store never recorded, and nothing is written.
     pub fn settle_subagent_run(
@@ -198,7 +198,7 @@ impl Store {
     }
 
     /// **An orderly stop interrupted this child**: it stays `running`, so the next open
-    /// resumes it, and its crash count goes back to zero — an orderly stop is not a crash.
+    /// resumes it, and its crash count goes back to zero - an orderly stop is not a crash.
     pub fn interrupt_subagent_run(&self, child_id: &str) -> Result<()> {
         self.exec(
             "UPDATE subagent_run SET state = 'running', resumes = 0, updated_ms = ?2
@@ -227,7 +227,7 @@ impl Store {
 
     /// **A later turn of a settled child ended on its own** (not by the daemon stopping): the row
     /// goes back to the state it had before [`Store::reopen_subagent_run`] moved it. Only a row
-    /// still `running` is touched — one a stop, a kill or a restart has moved since is theirs.
+    /// still `running` is touched - one a stop, a kill or a restart has moved since is theirs.
     pub fn rest_subagent_run(&self, child_id: &str, state: &str) -> Result<()> {
         self.exec(
             "UPDATE subagent_run SET state = ?2, updated_ms = ?3
@@ -258,7 +258,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **Every child any session started**, oldest first — what the daemon's session list reads
+    /// **Every child any session started**, oldest first - what the daemon's session list reads
     /// the children's names from (their slugs are in `spec_json`, the spawn's own description).
     pub fn subagent_runs(&self) -> Result<Vec<SubagentRun>> {
         let conn = self.conn();
@@ -271,7 +271,7 @@ impl Store {
         Ok(out)
     }
 
-    /// **Every child this session started**, oldest first — what a parent reads when it is
+    /// **Every child this session started**, oldest first - what a parent reads when it is
     /// opened.
     pub fn subagent_runs_of(&self, parent_id: &str) -> Result<Vec<SubagentRun>> {
         let conn = self.conn();
@@ -402,7 +402,7 @@ impl Store {
         Ok(())
     }
 
-    /// **A monitor is no longer live** — retired, settled, expired, or reported after a restart.
+    /// **A monitor is no longer live** - retired, settled, expired, or reported after a restart.
     pub fn end_monitor(&self, session_id: &str, name: &str) -> Result<()> {
         self.exec(
             "UPDATE session_monitor SET live = 0, updated_ms = ?3
@@ -607,7 +607,7 @@ mod tests {
             })
             .unwrap();
         // A child the record holds, two the record does not, and one that is older than the
-        // record itself — this store began recording children at 5 000.
+        // record itself - this store began recording children at 5 000.
         let mut kept = run("s-1-sub-kept", "s-1");
         kept.started_ms = 5_000;
         store.put_subagent_run(&kept).unwrap();
@@ -634,7 +634,7 @@ mod tests {
                 .unwrap();
         }
         // **`put_session` stamps `created_at` with the clock**, and this child is from before the
-        // store recorded anything at all — the state 517 of one session's 573 children are in.
+        // store recorded anything at all - the state 517 of one session's 573 children are in.
         store
             .connection()
             .execute(
@@ -706,7 +706,7 @@ mod tests {
         );
 
         // **A store that has never recorded a child has no window, and that means NOTHING is
-        // due** — not that every child it holds is lost. Read the other way it turned a fresh
+        // due** - not that every child it holds is lost. Read the other way it turned a fresh
         // box's whole history into a wall of children carrying a cause nobody measured.
         let fresh = Store::open_in_memory().unwrap();
         assert_eq!(fresh.first_subagent_run_ms().unwrap(), None);
@@ -736,7 +736,7 @@ mod tests {
         );
     }
 
-    /// The record's whole life: started, settled, delivered — and an orderly stop that leaves a
+    /// The record's whole life: started, settled, delivered - and an orderly stop that leaves a
     /// running child running with its crash count reset, but never revives a settled one.
     #[test]
     fn a_child_row_is_started_settled_and_delivered() {
@@ -772,7 +772,7 @@ mod tests {
         assert!(store.subagent_run("nobody").unwrap().is_none());
     }
 
-    /// **A later turn of a settled child is in flight, and the row says so** — and puts the
+    /// **A later turn of a settled child is in flight, and the row says so** - and puts the
     /// settlement back when the turn ends, with the first answer and its delivery untouched. A row
     /// that is not settled is never moved.
     #[test]

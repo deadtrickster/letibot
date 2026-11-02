@@ -1,8 +1,8 @@
-//! **Claude Code's store, read the way this layer reads it — tested where the reading lives.**
+//! **Claude Code's store, read the way this layer reads it - tested where the reading lives.**
 //!
 //! These run natively (`cargo test` in this directory): the crate is a `cdylib` for the host and an
 //! `rlib` for these, and nothing here knows that a wasm ABI exists. What they cover is the half the
-//! host cannot check for it — how one of Claude Code's own lines becomes an ask or a conclusion,
+//! host cannot check for it - how one of Claude Code's own lines becomes an ask or a conclusion,
 //! how a path becomes a project directory's name, and that every answer says what it left out.
 
 use super::*;
@@ -190,7 +190,7 @@ fn a_project_path_becomes_the_directory_claude_code_gave_it() {
         slug("/Users/dead/Projects/letibot", "/Users/dead"),
         "-Users-dead-Projects-letibot"
     );
-    // A dot is a separator too — this box has `-Users-dead--emacs-d` for `~/.emacs.d`.
+    // A dot is a separator too - this box has `-Users-dead--emacs-d` for `~/.emacs.d`.
     assert_eq!(
         slug("/Users/dead/.emacs.d", "/Users/dead"),
         "-Users-dead--emacs-d"

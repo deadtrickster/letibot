@@ -16,7 +16,7 @@ use crate::HttpError;
 /// get through this time; a `429` naming money is [`Policy::states_a_refusal`]'s.
 pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504];
 
-/// **The default number of retries** — calls after the first. See [`Policy::standard`].
+/// **The default number of retries** - calls after the first. See [`Policy::standard`].
 pub const STANDARD_RETRIES: u32 = 5;
 
 /// What one failure is, in the only terms a retry can use.
@@ -36,7 +36,7 @@ impl Class {
         !matches!(self, Class::Refused)
     }
 
-    /// The class in the words a sentence reads with — `transport`, `try again`, `refused`.
+    /// The class in the words a sentence reads with - `transport`, `try again`, `refused`.
     pub fn name(self) -> &'static str {
         match self {
             Class::Transport => "transport",
@@ -61,7 +61,7 @@ impl Policy {
         Policy { retries }
     }
 
-    /// **No retry at all** — a caller that already knows the endpoint is not there.
+    /// **No retry at all** - a caller that already knows the endpoint is not there.
     pub const fn none() -> Self {
         Policy::new(0)
     }
@@ -176,7 +176,7 @@ impl Policy {
                     }
                 }
             }
-            // A 2xx whose body did not arrive whole — the likeliest cause is a server going down
+            // A 2xx whose body did not arrive whole - the likeliest cause is a server going down
             // mid-answer, which is the same story as a reset.
             HttpError::Malformed(_) => "the answer did not arrive whole",
             HttpError::Status { code, body } => {
@@ -267,7 +267,7 @@ fn plural(n: u32) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// `0s`, `31s`, `2m 03s` — the same words `harnessd`'s outage row uses, for the same reason.
+/// `0s`, `31s`, `2m 03s` - the same words `harnessd`'s outage row uses, for the same reason.
 fn span(d: Duration) -> String {
     let secs = d.as_secs();
     match secs {
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(p.class(&status(501)), Class::Refused);
     }
 
-    /// **`408` waits and does not move a session** — the one that looks like a 5xx and is not.
+    /// **`408` waits and does not move a session** - the one that looks like a 5xx and is not.
     #[test]
     fn a_server_that_waited_too_long_for_us_is_waited_for() {
         let p = Policy::standard();
@@ -392,7 +392,7 @@ mod tests {
             "the cap is a cap: {} calls and no more",
             p.retries() + 1
         );
-        // `0` is none, and `1` is one — the field is named for RETRIES, and the arithmetic has
+        // `0` is none, and `1` is one - the field is named for RETRIES, and the arithmetic has
         // to agree with the name.
         assert!(Policy::none().after(&status(503), 0).is_none());
         assert!(Policy::new(1).after(&status(503), 0).is_some());
@@ -425,7 +425,7 @@ mod tests {
         assert!(Policy::new(3).after(&e, 3).is_none());
     }
 
-    /// **A turn that never reached the network is tried before it is called a failure** — the
+    /// **A turn that never reached the network is tried before it is called a failure** - the
     /// report this module opens with.
     #[test]
     fn a_name_that_did_not_resolve_is_tried_again() {

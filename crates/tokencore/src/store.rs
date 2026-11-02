@@ -23,7 +23,7 @@ pub use floor::{Arm, FIRST_SCHEMA, NewerStore, READER_ARMS, READER_FLOOR_SQL, re
 pub mod live_view;
 mod transfer;
 
-/// **Who may append to a session's transcript** (schema 32) — the row and its compare-and-swap.
+/// **Who may append to a session's transcript** (schema 32) - the row and its compare-and-swap.
 /// See [`writers`] for the daemon-shared store this exists in and the two writers it stops.
 pub mod writers;
 pub use transfer::{ImportInto, ImportReport, SessionTransfer, TRANSFER_FORMAT, TableExport};
@@ -75,7 +75,7 @@ pub struct StoredAdjudication {
     pub oracle_model: Option<String>,
     pub brief_sha: Option<String>,
     /// **Whether an oracle was consulted** (R11, v10). `None` on rows written before the
-    /// column existed — "not recorded" — which is a different statement from
+    /// column existed - "not recorded" - which is a different statement from
     /// `Some(false)`, "recorded, and nobody asked a model".
     pub consulted: Option<bool>,
     /// Which of the four `Unsure`s the answer was, verbatim as stored. `None` means an answered
@@ -83,7 +83,7 @@ pub struct StoredAdjudication {
     /// token this build does not know rather than guessing.
     pub oracle_reading: Option<String>,
     /// **What the oracle answered, verbatim** (R11, v9). `None` means either that
-    /// no oracle was consulted — `verdict_by` says which — or that one was asked and
+    /// no oracle was consulted - `verdict_by` says which - or that one was asked and
     /// nothing came back inside its budget.
     pub reply: Option<String>,
     pub effect: String,
@@ -103,7 +103,7 @@ pub const ASKED_SQL: &str = "asked = 1";
 /// `ModelAdvice::consulted`, which is the flag the distinction exists for.
 pub const MEASURED_SQL: &str = "consulted = 1";
 /// **The rows a fine-tune is for**: the operator ruled *against* what the model would
-/// have done. `granted` and `revoked` only — `upheld` is the operator agreeing, and
+/// have done. `granted` and `revoked` only - `upheld` is the operator agreeing, and
 /// counting it here made the number mean "ruled on" while wearing the name of "differ".
 pub const DISAGREEMENT_SQL: &str = "operator_kind IN ('granted', 'revoked')";
 /// **A model decided the call itself**, which is neither of the two above and had no
@@ -123,9 +123,9 @@ pub struct CorpusCounts {
     /// the column existed, so those rows read `0` and `model_decided` is the count that
     /// speaks for them.
     pub measured: u64,
-    /// The operator ruled against what the model would have done — [`DISAGREEMENT_SQL`].
+    /// The operator ruled against what the model would have done - [`DISAGREEMENT_SQL`].
     pub disagreements: u64,
-    /// A model decided the call — [`MODEL_DECIDED_SQL`]. The one count that is exact on
+    /// A model decided the call - [`MODEL_DECIDED_SQL`]. The one count that is exact on
     /// rows written before v10.
     pub model_decided: u64,
 }
@@ -163,13 +163,13 @@ pub struct NewAdjudication {
     /// verdict. `CorpusRow::oracle_reading`, which is `UnsureKind::as_str`.
     pub oracle_reading: Option<String>,
     /// **What the oracle answered, verbatim** (R11). `None` when none was consulted,
-    /// or when the one that was did not answer inside its budget — `verdict_by`
+    /// or when the one that was did not answer inside its budget - `verdict_by`
     /// tells those apart, and these are the bytes the verdict was read out of.
     pub reply: Option<String>,
     pub effect: String,
     /// Whether the operator was actually put in front of this decision.
     pub asked: bool,
-    /// The command's shape — the parse with its literals holed. `None` for a
+    /// The command's shape - the parse with its literals holed. `None` for a
     /// call that is not a command. See `letibot_code::shell::shape`.
     pub shape: Option<String>,
     /// The effect class the decision was taken at, as `ActionClass`'s Display.
@@ -182,7 +182,7 @@ pub struct NewAdjudication {
 pub struct ShapelessAdmit {
     pub request_id: String,
     /// The workspace of the session this decision was taken in, from the `session`
-    /// row — so a recomputed shape is filed under the project it was approved in.
+    /// row - so a recomputed shape is filed under the project it was approved in.
     pub workspace_root: String,
     pub tool: String,
     pub arguments_json: String,
@@ -767,7 +767,7 @@ pub struct StoredSession {
 pub struct JobRecord {
     /// The handle `bash background: true` handed back, and the one `job_list` prints.
     pub handle: String,
-    /// What was run, verbatim — the row the model asked for and the operator reads.
+    /// What was run, verbatim - the row the model asked for and the operator reads.
     pub command: String,
     /// Who backgrounded it, in the listing's own phrase. Empty means not recorded here, which is
     /// why a write that does not know it does not overwrite it: see [`Store::put_job`].
@@ -842,7 +842,7 @@ pub struct MergeGateStep {
     /// When the step started, Unix ms. `0` on a step that never ran.
     pub started_ms: u64,
     /// How long it took, ms. `0` on a step that never ran, and a real `0` for a command that
-    /// took under a millisecond — the outcome is what tells the two apart, not this number.
+    /// took under a millisecond - the outcome is what tells the two apart, not this number.
     pub elapsed_ms: u64,
 }
 
@@ -865,7 +865,7 @@ pub enum MergeGateOutcome {
     /// the row's word for *the gate has not run on this entry*.
     NoGate,
     /// **It was still running at the gate's deadline and was killed** with its whole process
-    /// group (R61 decision 9: thirty minutes, then `timed out` — an outcome of its own).
+    /// group (R61 decision 9: thirty minutes, then `timed out` - an outcome of its own).
     TimedOut,
     /// It was killed before it finished, because the daemon was stopping or lost the lease, or
     /// because the kernel killed it at the gate's memory cap (its `output` ends saying so, with
@@ -973,7 +973,7 @@ pub enum TodoNeed {
     /// as the reply, so a submitted row becomes unblocked with its answer attached.
     Answered { question: String, reply: String },
     /// A kind this build does not know: a need written by a newer build. It is a variant because
-    /// the alternative is worse — a resumed session's board would lose the row — and a need
+    /// the alternative is worse - a resumed session's board would lose the row - and a need
     /// nobody can evaluate must never read as met.
     #[serde(other)]
     Unknown,
@@ -999,7 +999,7 @@ pub enum TodoBy {
     #[default]
     Model,
     /// **The operator wrote it in the pane.** It is the same list, the same statuses and the same
-    /// tool — the model can mark the operator's item done, and the nag in `harness.rs` picks it up
+    /// tool - the model can mark the operator's item done, and the nag in `harness.rs` picks it up
     /// like any other, because it reads the board and the board no longer cares who wrote a row.
     Operator,
     /// A PARENT session wrote it on a CHILD's board: the author is `Parent <full parent session
@@ -1107,7 +1107,7 @@ struct Shared {
     /// and its descriptors open with nobody told.
     conn: std::sync::Mutex<std::mem::ManuallyDrop<Connection>>,
     /// **Where this store lives**, so a second caller can be handed this connection instead of
-    /// opening a new one — see [`Store::path`]. `None` for `open_in_memory`, which is a store
+    /// opening a new one - see [`Store::path`]. `None` for `open_in_memory`, which is a store
     /// with no file to reach and so nothing to share.
     path: Option<std::path::PathBuf>,
     /// **`(device, inode)` of the file this connection is open on.** A store file removed and
@@ -1115,7 +1115,7 @@ struct Shared {
     /// must not be handed the connection to the one that is gone.
     file: Option<(u64, u64)>,
     /// **The store is written by a build newer than this one, and this build opened it anyway**
-    /// — see [`floor`]. A `Mutex` rather than the `Cell` this was: a `Shared` is reached from
+    /// - see [`floor`]. A `Mutex` rather than the `Cell` this was: a `Shared` is reached from
     /// every thread in the daemon, and a `Cell` is not `Sync`.
     newer: std::sync::Mutex<Option<NewerStore>>,
 }
@@ -1137,7 +1137,7 @@ impl std::ops::Deref for Conn<'_> {
 }
 
 /// How many connections to a store file this process holds open: [`Store::live`]'s counter, and a
-/// daemon's own question — does this grow with the number of sessions? Process-wide because one
+/// daemon's own question - does this grow with the number of sessions? Process-wide because one
 /// file is one connection.
 static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -1177,7 +1177,7 @@ impl Shared {
 
     /// **Is the file this connection is open on still the file at this path?** See [`Shared::file`].
     /// A path that cannot be stat'ed, or one that did not exist when the connection was made, says
-    /// nothing — and refusing to share over that would open a second connection on every call.
+    /// nothing - and refusing to share over that would open a second connection on every call.
     fn still_the_same_file(&self) -> bool {
         match (self.file, self.path.as_deref().and_then(file_id)) {
             (Some(open), Some(now)) => open == now,
@@ -1186,7 +1186,7 @@ impl Shared {
     }
 }
 
-/// **The lock, taken without minding a poison** — see [`Shared::conn`] for why a poisoned lock is
+/// **The lock, taken without minding a poison** - see [`Shared::conn`] for why a poisoned lock is
 /// taken back rather than propagated.
 fn lock_shared(
     conn: &std::sync::Mutex<std::mem::ManuallyDrop<Connection>>,
@@ -1206,7 +1206,7 @@ fn shared_stores()
     OPEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// **The key a store file is shared under** — the path with its directory resolved, so two
+/// **The key a store file is shared under** - the path with its directory resolved, so two
 /// spellings of one file (`./x/sessions.db` and `x/sessions.db`) meet. The FILE itself is not
 /// canonicalised: on the first open it does not exist yet.
 fn canonical_key(path: &Path) -> std::path::PathBuf {
@@ -1242,7 +1242,7 @@ impl Store {
         Self::open_sharing(path, true)
     }
 
-    /// **A connection of its own to a store file, never shared** — for the tests that measure two
+    /// **A connection of its own to a store file, never shared** - for the tests that measure two
     /// connections to one file (WAL, `BEGIN IMMEDIATE`, the busy handler). Production code wants
     /// [`Store::open`]: a second connection here is a descriptor the process cannot give back.
     pub fn open_private(path: &Path) -> Result<Self> {
@@ -1281,7 +1281,7 @@ impl Store {
         self.shared.path.as_deref()
     }
 
-    /// **The connection, held for the duration of one statement or one transaction** — the
+    /// **The connection, held for the duration of one statement or one transaction** - the
     /// private door every method of this type goes through. Public callers get the same thing
     /// through [`Store::connection`].
     fn conn(&self) -> Conn<'_> {
@@ -1303,8 +1303,8 @@ impl Store {
     /// **The one place a `Shared` is built**, and therefore the one place [`LIVE`] is counted:
     /// every `Store` is a handle onto a `Shared`, so this is the count of connections.
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
-        // WAL lets readers and the writer run at once, but two WRITERS still serialise — this
-        // process's behind the store's lock, another daemon's inside SQLite — and rusqlite's
+        // WAL lets readers and the writer run at once, but two WRITERS still serialise - this
+        // process's behind the store's lock, another daemon's inside SQLite - and rusqlite's
         // default is to fail at once rather than wait.
         conn.busy_timeout(Self::BUSY_TIMEOUT)?;
         busy::retry_sql(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
@@ -1396,7 +1396,7 @@ impl Store {
         )?;
         // A fresh store's floor is what its migrations WOULD have raised: it was created by this
         // build, so it holds everything this build knows, and *nothing older than the newest
-        // breaking migration is a reader of it* — see [`reader_floor_for`].
+        // breaking migration is a reader of it* - see [`reader_floor_for`].
         self.ensure_reader_floor(SCHEMA_VERSION)?;
         Ok(())
     }
@@ -1414,7 +1414,7 @@ impl Store {
         }
         if from < 3 {
             // v3: the session todo list. A migrated store never runs `SCHEMA_SQL`
-            // — `migrate` returns early — so the table is created here, and
+            // - `migrate` returns early - so the table is created here, and
             // `IF NOT EXISTS` keeps a store that somehow already has one honest.
             self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS todo (
@@ -1474,7 +1474,7 @@ impl Store {
             )?;
         }
         if from < 6 {
-            // v6: the SHAPE of the command a decision was about — the parse with its literals
+            // v6: the SHAPE of the command a decision was about - the parse with its literals
             // replaced by holes, so two `grep`s differing only in pattern and range are one row.
             let has: bool = self
                 .conn()
@@ -1847,7 +1847,7 @@ impl Store {
             self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
         }
         if from < 27 {
-            // v27: **the permission modes, as rows** — see [`modes`]. Two new tables, both
+            // v27: **the permission modes, as rows** - see [`modes`]. Two new tables, both
             // `IF NOT EXISTS`; nothing existing is read or rewritten. The rows `modes.tsv` held
             // are imported by the daemon (`harnessd::modes`), which is the one that knows the file.
             self.conn().execute_batch(modes::MODES_SQL)?;
@@ -1876,7 +1876,7 @@ impl Store {
             self.conn().execute_batch(told::TOLD_SQL)?;
         }
         if from < 30 {
-            // v30: **the lines a reply cited** — see [`citations`]. One new table, `IF NOT
+            // v30: **the lines a reply cited** - see [`citations`]. One new table, `IF NOT
             // EXISTS`; a reply from before it has no snapshot, and one is taken the first time
             // it is shown.
             self.conn().execute_batch(citations::CITATIONS_SQL)?;
@@ -1972,7 +1972,7 @@ impl Store {
         Self::stable_prefix_on(&self.conn(), id)
     }
 
-    /// [`Store::get_stable_prefix`] on a connection the caller already holds — see
+    /// [`Store::get_stable_prefix`] on a connection the caller already holds - see
     /// [`Store::load_transcript_on`].
     fn stable_prefix_on(conn: &Connection, id: &str) -> Result<(Vec<TokenId>, [u8; 32])> {
         let (blob, hash): (Vec<u8>, Vec<u8>) = conn
@@ -2343,7 +2343,7 @@ impl Store {
         Self::load_transcript_on(&conn, transcript_id)
     }
 
-    /// [`Store::load_transcript`] on a connection the caller already holds — the form
+    /// [`Store::load_transcript`] on a connection the caller already holds - the form
     /// [`live_view`] needs, because it reads one transcript out of a file it has ATTACHed and
     /// holds that connection for the whole copy.
     fn load_transcript_on(conn: &Connection, transcript_id: &str) -> Result<LoadedTranscript> {
@@ -2605,7 +2605,7 @@ impl Store {
             .optional()?)
     }
 
-    /// **A session's workspace, and nothing else** — `None` for an id this store does not
+    /// **A session's workspace, and nothing else** - `None` for an id this store does not
     /// hold. The same reasoning as [`Store::session_parent`], for the caller that only asks
     /// which folder a session belongs to.
     pub fn session_workspace(&self, id: &str) -> Result<Option<String>> {
@@ -2802,7 +2802,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Replace the session's todo list wholesale. The whole list every time —
+    /// Replace the session's todo list wholesale. The whole list every time  -
     /// there is no append, no reorder-by-id, no delta: the model writes what the
     /// list now is, and that is what the store holds.
     pub fn put_todos(&self, session_id: &str, todos: &[TodoItem]) -> Result<()> {
@@ -2892,7 +2892,7 @@ impl Store {
         self.jobs_where(session_id, "AND state <> 'running' AND delivered = 0")
     }
 
-    /// **The highest `jN` handle any job in this store was given**, across every session — what a
+    /// **The highest `jN` handle any job in this store was given**, across every session - what a
     /// daemon seeds its handle counter above at start, so a handle is never minted twice for one
     /// session across restarts (TODO.md R91.3). `0` for a store with no `jN` handle.
     pub fn max_job_number(&self) -> Result<u64> {
@@ -3277,7 +3277,7 @@ mod corpus_tests {
             s.record_adjudication(&a).expect("write"),
             "the first write lands"
         );
-        // The same id again — a restarted daemon's first decision.
+        // The same id again - a restarted daemon's first decision.
         a.tool = "a different call entirely".into();
         assert!(
             !s.record_adjudication(&a).expect("write"),
@@ -3393,7 +3393,7 @@ mod corpus_tests {
             d.oracle_reading = Some(kind.into());
             assert!(s.record_adjudication(&d).unwrap());
         }
-        // An answered verdict: consulted, and no reading — which is what a row looks like
+        // An answered verdict: consulted, and no reading - which is what a row looks like
         // when the oracle did its job.
         let mut answered = a_decision("adj-r12-answered", &session);
         answered.consulted = Some(true);
@@ -3450,7 +3450,7 @@ mod corpus_tests {
             ]
         );
 
-        // And a row written before the column — `NULL`, which is not any of the four. A
+        // And a row written before the column - `NULL`, which is not any of the four. A
         // reader of the old ones goes to `model_verdict`/`verdict_basis`, and `corpus_version`
         // is what says the row is older than the question.
         s.conn()
@@ -3487,7 +3487,7 @@ mod corpus_tests {
 
         // **Set once.** How a session came to exist does not change, and a second write
         // overwriting the first would be a picker that re-groups a conversation under the person
-        // using it — the row-renames-itself defect in a new column.
+        // using it - the row-renames-itself defect in a new column.
         s.set_session_origin(&id, "one_shot").expect("a no-op");
         assert_eq!(row(&s).origin.as_deref(), Some("package"));
 
@@ -3603,7 +3603,7 @@ mod corpus_tests {
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
 
-        // The column is there, the old row survived, and its reading is `NULL` — which is
+        // The column is there, the old row survived, and its reading is `NULL` - which is
         // what *"this row is older than the question"* looks like. It is still readable as
         // a row; what it cannot say is which of the four it was.
         let row = s.corpus(false, 10).unwrap().remove(0);
@@ -3631,7 +3631,7 @@ mod corpus_tests {
         let s = store();
         let here = a_session(&s);
 
-        // A second project, same store — a shape approved there is not approved here.
+        // A second project, same store - a shape approved there is not approved here.
         let elsewhere = "s-corpus-elsewhere".to_string();
         s.put_session(&SessionRecord {
             id: elsewhere.clone(),

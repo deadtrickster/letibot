@@ -12,7 +12,7 @@ use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
 /// Bytes `job_output` returns by default. It is the recovery path for a capped
-/// `bash`, so this is generous — and it is excluded from the spill budget by name
+/// `bash`, so this is generous - and it is excluded from the spill budget by name
 /// ([`crate::exec::exec_budget`]) for the same reason.
 const DEFAULT_OUTPUT_BYTES: usize = 60_000;
 /// The longest a wait may be asked for. Past this the honest thing is to let the
@@ -112,7 +112,7 @@ fn resolve_job(host: &dyn ProcessHost, asked: &str) -> Result<JobView, Invocatio
     resolve_job_in(&host.jobs(), asked)
 }
 
-/// [`resolve_job`] over a table already in hand — the one rule, for a caller that is not a job
+/// [`resolve_job`] over a table already in hand - the one rule, for a caller that is not a job
 /// tool: `todo_write`'s `wait_on` names a job the same way `job_output` does, and a second
 /// spelling of *which job did the caller mean* would be the one that disagreed.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
@@ -560,7 +560,7 @@ impl Tool for JobOutput {
         }
         if slice.dropped > 0 && from < slice.dropped {
             inv = inv.with_note(match &view.output_file {
-                // The bytes are not gone, they are in the file — and saying *gone* over a job
+                // The bytes are not gone, they are in the file - and saying *gone* over a job
                 // that was promoted is the lie this whole note exists to stop.
                 Some(f) => format!(
                     "offset {from} is behind what is still retained, so this window starts at \
@@ -651,7 +651,7 @@ fn wait_on_job(
     id: &str,
     timeout: Duration,
 ) -> Invocation {
-    // What an ended job's memory did, as one more line of its result — TODO.md R65's *"every
+    // What an ended job's memory did, as one more line of its result - TODO.md R65's *"every
     // result reports its peak"*, which a wait is the result of.
     fn memory_line(v: Option<&JobView>) -> String {
         v.and_then(JobView::memory_clause)
@@ -686,7 +686,7 @@ fn wait_on_job(
     if ctx.completion_delivered(&jid.0) {
         // **And asking is wanting** (R79): a result nothing in the plan waits on is held for the
         // next break, and a wait is the model saying this one is not that. So the daemon is told
-        // to hand it over the moment it ends — which is what the sentence below promises.
+        // to hand it over the moment it ends - which is what the sentence below promises.
         ctx.want_completion(&jid.0, crate::runtime::WantedNow::Awaited);
         return Invocation::ok(format!(
             "nothing to wait for: `{label}`'s completion reaches you on its own when it \
@@ -1008,7 +1008,7 @@ impl Tool for JobKill {
         let mut killed: Option<String> = None;
         let reaping = match (job, scope) {
             (Some(id), _) => {
-                // **The id or the name the agent stated** — see [`resolve_job`].
+                // **The id or the name the agent stated** - see [`resolve_job`].
                 let view = match resolve_job(host, id) {
                     Ok(v) => v,
                     Err(inv) => return inv,
@@ -1198,7 +1198,7 @@ mod tests {
         }
     }
 
-    /// **A job, as the table holds it** — every field a resolver does not read filled with
+    /// **A job, as the table holds it** - every field a resolver does not read filled with
     /// something obvious, so a test says which facts it is about.
     fn view(id: &str, slug: Option<&str>) -> JobView {
         let scope = || ScopeId {
@@ -1351,7 +1351,7 @@ mod tests {
             "something IS running, so that clause is false here: {head}"
         );
 
-        // With `all`, nothing is hidden and no note is owed — the count is the old one.
+        // With `all`, nothing is hidden and no note is owed - the count is the old one.
         let every = job_list_summary(None, true, 44, 44, 1);
         assert!(
             every.contains("44 job(s) this session has started"),
@@ -1362,7 +1362,7 @@ mod tests {
             "`all` must not claim a hidden count or offer a way back: {every}"
         );
 
-        // **Nothing running is an answer**, not an empty listing — and it leads, because the live
+        // **Nothing running is an answer**, not an empty listing - and it leads, because the live
         // run of this default printed the same fact twice, one line apart (see the function).
         let idle = job_list_summary(None, false, 44, 44, 0);
         assert!(
@@ -1421,7 +1421,7 @@ mod tests {
         }
 
         // No runner: refused by name, and the refusal is about the runner rather than
-        // about a job id — a model that read the other sentence would go looking for a
+        // about a job id - a model that read the other sentence would go looking for a
         // typo in a handle that is correct.
         let said = super::JobKill::new()
             .kill_subagent("s-1-sub-9")
@@ -1469,7 +1469,7 @@ mod tests {
     }
 
     /// **`job_kill` takes a subagent's slug as it takes a job's name**, and refuses a name two
-    /// children share — or a child and a job share — without stopping anything. The runner must
+    /// children share - or a child and a job share - without stopping anything. The runner must
     /// be asked about the HANDLE the name stands for.
     #[test]
     fn job_kill_stops_a_subagent_named_by_its_slug_and_refuses_a_shared_name() {
@@ -1490,7 +1490,7 @@ mod tests {
                     ("s-1-sub-1", "fix-login"),
                     ("s-1-sub-2", "bench"),
                     ("s-1-sub-3", "bench"),
-                    // A child this runner knows and will not stop — see `kill`.
+                    // A child this runner knows and will not stop - see `kill`.
                     ("s-1-sub-4", "settled"),
                 ]
                 .into_iter()
@@ -1544,7 +1544,7 @@ mod tests {
         );
         // A name no child carries goes on to the host's jobs.
         assert!(kill.route_subagent("release-build", &[]).is_none());
-        // **A handle this runner knows, refused, is the refusal** — not the host's job table.
+        // **A handle this runner knows, refused, is the refusal** - not the host's job table.
         // MEASURED 2026-11-01: `job_kill` on a child whose record was never written answered
         // *"this session has started 0 jobs"*, about a child `task_result` was listing.
         let refused_handle = kill

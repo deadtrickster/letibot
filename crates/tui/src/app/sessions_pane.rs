@@ -20,7 +20,7 @@ use crate::app::*;
 /// The hook this pane answers under.
 pub(crate) const HOOK: &str = "pane_sessions";
 
-/// **The list's frame, in the head's own words** — the tree the head draws without a layer
+/// **The list's frame, in the head's own words** - the tree the head draws without a layer
 /// ([`App::session_list`]) carries exactly this title, and a plugin's list that looked different
 /// because a layer answered it would make *which layer drew this* a guess.
 const TITLE: &str = "sessions in this daemon";
@@ -38,7 +38,7 @@ const HINT: [&str; 5] = [
 const NOTE: &str = "switching does not stop anything: a turn keeps running in the session you \
                     left, and it is still there when you come back.";
 
-/// What the list says when the daemon holds nothing — the same sentence the built-in layer answers
+/// What the list says when the daemon holds nothing - the same sentence the built-in layer answers
 /// with, so an empty list is one picture whichever of the two drew it.
 const EMPTY: &str = "none listed yet — the daemon has not answered, or this head is replaying a \
                      recorded log and has no daemon to ask.";
@@ -100,13 +100,13 @@ pub(crate) struct Host {
     next_poll: u64,
 }
 
-/// **How often the head looks for a rebuilt layer** — the daemon's own `POLL_EVERY`, for the same
+/// **How often the head looks for a rebuilt layer** - the daemon's own `POLL_EVERY`, for the same
 /// reason: a stat per layer is free, and two seconds is the longest a person waits after saving.
 const POLL_MS: u64 = 2_000;
 
 #[derive(Default)]
 struct Cached {
-    /// `"<hook>\n<the input's JSON>"` — the hook is part of the key because one host answers two
+    /// `"<hook>\n<the input's JSON>"` - the hook is part of the key because one host answers two
     /// panes, and two panes' inputs can be byte-identical while their answers are not.
     key: String,
     answer: Option<Value>,
@@ -282,7 +282,7 @@ impl Host {
         })?;
         let pin = trust.pin(&layer.manifest.name, &layer.dir)?;
         self.stack.refresh_trust();
-        // **Who wrote them**, when a tool did — the third arm, reported beside the hash so the
+        // **Who wrote them**, when a tool did - the third arm, reported beside the hash so the
         // person pinning knows whether these bytes are the model's or their own.
         let wrote = trust
             .writes_for(&layer.dir)
@@ -292,7 +292,7 @@ impl Host {
         Ok((pin, wrote.join("; ")))
     }
 
-    /// **Take a pin back** — `/plugin untrust NAME`.
+    /// **Take a pin back** - `/plugin untrust NAME`.
     pub(crate) fn unpin(&mut self, name: &str) -> Result<letibot_plugins::Pin, String> {
         let trust = self
             .stack
@@ -323,7 +323,7 @@ impl Host {
         })
     }
 
-    /// The acts the layer answering `hook` declared — what a view may ask the head to perform.
+    /// The acts the layer answering `hook` declared - what a view may ask the head to perform.
     pub(crate) fn declared(&self, hook: &str, feed: Feed) -> Vec<String> {
         self.reader(hook, feed)
             .map(|l| l.manifest.actions.clone())
@@ -369,7 +369,7 @@ impl Host {
         Answered { view }
     }
 
-    /// **The state a hook's layer answered with last time** — per hook, because two panes share
+    /// **The state a hook's layer answered with last time** - per hook, because two panes share
     /// this host and handing one pane's `state` back to the other would be handing it an answer to
     /// a question it never asked.
     pub(crate) fn state_of(&self, hook: &str) -> Option<Value> {
@@ -455,7 +455,7 @@ impl App {
             if stale {
                 *slot = Some(Host::build(&self.session_id, &workspace));
             } else if let Some(host) = slot.as_mut() {
-                // **A layer rebuilt on disk is a pane that redraws** — the live loop, and the
+                // **A layer rebuilt on disk is a pane that redraws** - the live loop, and the
                 // reason this pane is a plugin at all. See [`Host::reload_if_due`].
                 host.reload_if_due(self.now_ms);
             }
@@ -463,7 +463,7 @@ impl App {
         self.sessions_host.borrow()
     }
 
-    /// **The session list, from the plugin** — `None` when there is no layer to ask, when its
+    /// **The session list, from the plugin** - `None` when there is no layer to ask, when its
     /// answer is not a list this head can draw, or when it could not be trusted enough to draw it.
     /// Each of those is the head's own list's cue.
     pub(crate) fn sessions_list(&self, w: usize) -> Option<List> {
@@ -510,7 +510,7 @@ impl App {
         slot.problem.lock().ok().and_then(|mut p| p.take())
     }
 
-    /// The folder a session's layers are found under — the one it is wired to, or this process's
+    /// The folder a session's layers are found under - the one it is wired to, or this process's
     /// own directory when the daemon has not said yet. Public in the crate because a test stands
     /// a host in for this one, and has to build it for the folder the head will ask about.
     pub(crate) fn workspace_path(&self) -> PathBuf {
@@ -520,7 +520,7 @@ impl App {
         }
     }
 
-    /// **What the pane is asked with** — the one feed it declared, the fold state, and the size.
+    /// **What the pane is asked with** - the one feed it declared, the fold state, and the size.
     fn sessions_input(&self, state: Option<Value>) -> Input {
         let mut feeds = BTreeMap::new();
         feeds.insert(Feed::Sessions.name().to_string(), self.sessions_feed());
@@ -566,7 +566,7 @@ impl App {
                     "title": s.title,
                     "slug": s.slug,
                     "parent": s.parent_session_id,
-                    // The origin's wire word — the same one the store holds.
+                    // The origin's wire word - the same one the store holds.
                     "origin": s.origin.as_str(),
                     "live": s.live,
                     "running": s.status.running,
@@ -577,7 +577,7 @@ impl App {
                     "workspace": s.wiring.workspace,
                     "waits_on": s.waits_on_operator,
                     "nags_paused": s.nags_paused.is_some(),
-                    // **When it last moved**, so a pane can say *is that one stuck?* — the one fact
+                    // **When it last moved**, so a pane can say *is that one stuck?* - the one fact
                     // a row of a session list is read for. Off the daemon's own brief, which reads
                     // the store's row (`SessionBrief::moved_ms`).
                     "moved_ms": s.moved_ms,
@@ -592,7 +592,7 @@ impl App {
         json!({
             "sessions": sessions,
             "here": self.session_id,
-            // **The one home the head shortens against** — the same value its own list uses, so
+            // **The one home the head shortens against** - the same value its own list uses, so
             // a plugin's rows and the head's rows cannot disagree about what `~` means.
             "home": self.home,
             // The host's clock: a guest compiled for wasm has no `SystemTime`, so an age is the
@@ -602,7 +602,7 @@ impl App {
         })
     }
 
-    /// **What Enter does on a row, in the head's words** — `switch` and `fold` are the head's own
+    /// **What Enter does on a row, in the head's words** - `switch` and `fold` are the head's own
     /// verbs, so the bar reads them here rather than being told them.
     pub(crate) fn list_says(&self, row: &Listed) -> Option<&'static str> {
         match &row.enter {
@@ -611,7 +611,7 @@ impl App {
             Some(RowAct::Event { .. }) => Some("acts on it"),
             // **A queue verb is not this list's to perform.** The queue pane's keys are the ones
             // that act on an entry, and a session list row carrying `approve` is a layer reaching
-            // for a key this pane does not have — said, not silently done.
+            // for a key this pane does not have - said, not silently done.
             Some(RowAct::Verb { .. }) => {
                 Some("asks for a queue verb, which this list has no key for")
             }
@@ -659,13 +659,13 @@ impl App {
         }
     }
 
-    /// **The list's rows, for the keys** — the plugin's when there is one, the head's own
+    /// **The list's rows, for the keys** - the plugin's when there is one, the head's own
     /// otherwise, as one shape.
     pub(crate) fn picker_rows(&self) -> Vec<Listed> {
         self.picker_list(self.picker_width()).rows
     }
 
-    /// **The list being drawn** — the layer's answer when there is one, the head's own tree when
+    /// **The list being drawn** - the layer's answer when there is one, the head's own tree when
     /// there is not. One door, because the drawing, the keys, the click map and `/switch N` must
     /// all be reading the same list.
     pub(crate) fn picker_list(&self, w: usize) -> List {
@@ -673,7 +673,7 @@ impl App {
             .unwrap_or_else(|| self.session_list(w))
     }
 
-    /// **The head's own list, drawn from [`App::session_rows`]** — the way out when no layer
+    /// **The head's own list, drawn from [`App::session_rows`]** - the way out when no layer
     /// answers, and the same rano primitive the layer's answer is drawn through, so the two
     /// pictures cannot come to differ.
     pub(crate) fn session_list(&self, w: usize) -> List {
@@ -686,7 +686,7 @@ impl App {
             match r.idx {
                 Some(i) => {
                     // **A number is the n-th SESSION**, which is what the drawn list writes beside
-                    // the row and what `/switch N` reads — one enumeration, here.
+                    // the row and what `/switch N` reads - one enumeration, here.
                     number += 1;
                     let id = self.sessions[i].session_id.clone();
                     tree.push(TreeRow {
@@ -717,7 +717,7 @@ impl App {
                     });
                 }
                 None => {
-                    // **A node's line is a stop with an act of its own** — `enter` folds it — and
+                    // **A node's line is a stop with an act of its own** - `enter` folds it - and
                     // it carries no number, because a number is somewhere to go.
                     let key = r.node.key().to_string();
                     let words = if r.open == Some(true) {
@@ -836,7 +836,7 @@ impl App {
         )]
     }
 
-    /// The faint line under a session's row: the full id, and the workspace when there is one —
+    /// The faint line under a session's row: the full id, and the workspace when there is one  -
     /// for a stored session the only thing on the row that says what the conversation was about.
     fn row_under(&self, i: usize) -> String {
         let s = &self.sessions[i];
@@ -848,7 +848,7 @@ impl App {
         clean(&under)
     }
 
-    /// **The width the list is measured at when it is not being drawn** — the frame's own, so a
+    /// **The width the list is measured at when it is not being drawn** - the frame's own, so a
     /// key and the picture it moves are one list rather than two renderings of one.
     pub(crate) fn picker_width(&self) -> usize {
         self.cfg.width.max(20)
@@ -863,7 +863,7 @@ impl App {
         rows.get(self.picker_sel.min(rows.len() - 1)).cloned()
     }
 
-    /// **How a row of the drawn list stands** — `Some(Fold::Open)`/`Closed` for a row that folds,
+    /// **How a row of the drawn list stands** - `Some(Fold::Open)`/`Closed` for a row that folds,
     /// `None` for one that does not. Read by [`App::perform`] so a fold flips what the screen says
     /// rather than what the map happens to hold.
     fn drawn_open(&self, id: &str) -> Option<Fold> {
@@ -940,13 +940,13 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
     Some((rows, tree.empty.clone()))
 }
 
-/// The Enter action a row carries, in the words the head's own list uses — so a plugin's list and
+/// The Enter action a row carries, in the words the head's own list uses - so a plugin's list and
 /// the head's read alike.
 fn enter_action(act: &RowAct, open: Option<Fold>) -> Option<TreeAction> {
     let words = match act {
         RowAct::Switch { .. } => "switches",
         RowAct::Event { .. } => "acts on it",
-        // A row asking for a queue verb draws no Enter key in this list — see `list_says`.
+        // A row asking for a queue verb draws no Enter key in this list - see `list_says`.
         RowAct::Verb { .. } => return None,
         RowAct::Fold { .. } => match open {
             Some(Fold::Open) => "folds it away",
@@ -1085,7 +1085,7 @@ impl Module for RanoModule {
 mod tests {
     use super::*;
 
-    /// **The built-in layer answers through rano's engine, in this process** — the head's half of
+    /// **The built-in layer answers through rano's engine, in this process** - the head's half of
     /// `docs/plugins-plan.md` §7 step 10: the same module the daemon carries, loaded by the same
     /// engine, asked by the head that draws it.
     #[test]

@@ -99,7 +99,7 @@ fn edited(a: &mut App, id: &str, path: &str) {
     );
 }
 
-/// The header once the reading the loop started has been collected — `refresh_git` reads on a
+/// The header once the reading the loop started has been collected - `refresh_git` reads on a
 /// thread and picks the answer up on a later tick.
 fn header(a: &mut App) -> String {
     a.git_read.1 = 0;
@@ -278,7 +278,7 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
         "the corner drew no repository: {drawn}"
     );
     // The path is the FOLDER (what the operator sees) and the field beside it is the repository
-    // one level down — the two resolutions of one layout, each answering its own question.
+    // one level down - the two resolutions of one layout, each answering its own question.
     assert!(
         drawn.contains(&f.0.display().to_string()),
         "the path is not the session's workspace: {drawn}"
@@ -286,7 +286,7 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
 
     // **The field is a target, and its FIRST column is inside it.** The record was made two
     // columns left of the drawing (no `+ gutter`), which a click in the middle of a six-column
-    // field survived and a click on its edge did not — so this clicks the edge.
+    // field survived and a click on its edge did not - so this clicks the edge.
     let hit = a
         .hits
         .iter()

@@ -15,12 +15,12 @@ pub(crate) const BODY_PATIENCE: u64 = 5_000;
 /// an ordinary turn and below the smallest carry, and gates the bar only, never the sentence.
 pub(crate) const MIN_FILLING: u64 = 256;
 
-/// How long an attach may go unanswered before the waiting screen says how to get out —
+/// How long an attach may go unanswered before the waiting screen says how to get out  -
 /// rano's (`rano::agent::screens`), named here for the tests that drive the clock past it.
 #[cfg(test)]
 pub(crate) use rano::agent::screens::ATTACH_IMPATIENT;
 
-/// The cat's frames — rano's (`rano::agent::loading`), one copy for the attach screen and the
-/// fill and compaction rows — named here for the tests that pin their width and their walk.
+/// The cat's frames - rano's (`rano::agent::loading`), one copy for the attach screen and the
+/// fill and compaction rows - named here for the tests that pin their width and their walk.
 #[cfg(test)]
 pub(crate) use rano::agent::loading::{CAT_FRAMES, CAT_SLOT};

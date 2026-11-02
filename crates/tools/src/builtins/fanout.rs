@@ -31,7 +31,7 @@ pub const MAX_DEADLINE: Duration = Duration::from_secs(3600);
 /// a number past this is a typo that would empty the host's upper range for everybody else.
 pub const MAX_LEASE_PORTS: u16 = 256;
 
-/// `fanout` — one command per host, in parallel, one row per host.
+/// `fanout` - one command per host, in parallel, one row per host.
 pub struct Fanout {
     /// A test's doors, in [`crate::builtins::hosts::HostsTool`]'s shape: the file to read, this
     /// box's ssh material, and the program to run instead of `ssh`.
@@ -40,7 +40,7 @@ pub struct Fanout {
     ssh: Option<PathBuf>,
     bound: Option<Duration>,
     book: Arc<dyn ProcessBook>,
-    /// **The session's leases** (RH9) — what a `lease` argument takes its blocks from.
+    /// **The session's leases** (RH9) - what a `lease` argument takes its blocks from.
     blocks: Option<Arc<Blocks>>,
 }
 
@@ -73,7 +73,7 @@ impl Fanout {
         self
     }
 
-    /// Run this program instead of `ssh` — a test's fake, which never touches a network.
+    /// Run this program instead of `ssh` - a test's fake, which never touches a network.
     pub fn with_ssh(mut self, program: impl Into<PathBuf>) -> Fanout {
         self.ssh = Some(program.into());
         self
@@ -84,7 +84,7 @@ impl Fanout {
         self
     }
 
-    /// **Where the started processes are written down** — the daemon binds this to its own session
+    /// **Where the started processes are written down** - the daemon binds this to its own session
     /// ([`crate::fleet::ProcessBook`]). Everywhere else nothing is written, which is the truth for
     /// a run with no store.
     pub fn with_book(mut self, book: Arc<dyn ProcessBook>) -> Fanout {
@@ -92,7 +92,7 @@ impl Fanout {
         self
     }
 
-    /// **The session's leases** (RH9) — what `lease: true` takes a block from, one per branch.
+    /// **The session's leases** (RH9) - what `lease: true` takes a block from, one per branch.
     pub fn with_leases(mut self, blocks: Arc<Blocks>) -> Fanout {
         self.blocks = Some(blocks);
         self
@@ -149,7 +149,7 @@ impl Tool for Fanout {
                 },
                 "required": ["hosts"]
             }),
-            // Runs commands on other machines under the session's own gate — one card for the
+            // Runs commands on other machines under the session's own gate - one card for the
             // whole call, whose arguments name every host it reaches and every command it runs.
             Access::Exec,
         )
@@ -177,7 +177,7 @@ impl Fanout {
         };
         // **A block per branch, when the call asked for one** (RH9). A fanout's branches usually
         // land on DIFFERENT machines and often several on one, so the block is taken per leg and
-        // per host — and every block goes back when the call answers, whether it worked or not.
+        // per host - and every block goes back when the call answers, whether it worked or not.
         let ports = match lease_ports(args) {
             Ok(p) => p,
             Err(why) => return Invocation::failed(why.reason, why.body),
@@ -210,7 +210,7 @@ impl Fanout {
             }
         }
         let fleet = self.fleet(work.to_string()).with_local(local.clone());
-        // **The blocking form is the default and its answer does not change** — `background` is
+        // **The blocking form is the default and its answer does not change** - `background` is
         // the caller saying it will take the table as a settlement instead of as a result.
         if args.get("background").and_then(Value::as_bool) == Some(true) {
             return super::fanout_bg::start(fleet, plan, held, self.blocks.clone(), local, work);
@@ -219,7 +219,7 @@ impl Fanout {
     }
 }
 
-/// A refusal that names what to fix — clause 1 in the same call.
+/// A refusal that names what to fix - clause 1 in the same call.
 struct Refusal {
     reason: String,
     body: String,
@@ -390,7 +390,7 @@ impl Fanout {
         }
         // **One pass over the unsettled legs, then a breath.** Each pass asks every host that has
         // not answered yet, so one slow machine costs its own round trip and not the whole
-        // fanout's — and the loop is bounded by the plan's own deadline, which every leg carries.
+        // fanout's - and the loop is bounded by the plan's own deadline, which every leg carries.
         let mut fates: Vec<(String, Fate)> = Vec::new();
         loop {
             let mut waiting = false;
@@ -511,7 +511,7 @@ pub(super) fn table(
         }
         s.push('\n');
     }
-    // **What went back, and what could not be touched** — a block held for ever is a block the
+    // **What went back, and what could not be touched** - a block held for ever is a block the
     // next session on that machine cannot have, so the answer says what it released.
     for line in released {
         s.push_str(&format!("  lease: {line}\n"));
@@ -565,7 +565,7 @@ mod tests {
     use crate::exec::JobState;
     use crate::fleet::cells;
 
-    /// The plan, or the refusal's two halves — the shape the tool answers with.
+    /// The plan, or the refusal's two halves - the shape the tool answers with.
     fn plan(args: Value) -> Result<Vec<Leg>, (String, String)> {
         Fanout::new().plan(&args).map_err(|r| (r.reason, r.body))
     }
@@ -580,7 +580,7 @@ mod tests {
         assert!(body.contains("Name at least one host"), "{body}");
     }
 
-    /// **A host listed twice** is one row and two commands — refused, with the reason.
+    /// **A host listed twice** is one row and two commands - refused, with the reason.
     #[test]
     fn a_host_listed_twice_is_refused() {
         let (reason, _) =
@@ -608,7 +608,7 @@ mod tests {
     }
 
     /// **Both spellings produce one leg per host**, each carrying the command it will run and the
-    /// deadline the call decided — which is what the record's `deadline_ms` is computed from.
+    /// deadline the call decided - which is what the record's `deadline_ms` is computed from.
     #[test]
     fn both_spellings_name_a_host_and_a_command_for_every_leg() {
         let listed = plan(serde_json::json!({"hosts": ["a", "b"], "command": "cargo test"}))
@@ -632,7 +632,7 @@ mod tests {
         );
     }
 
-    /// **Every planned cell has a row, by construction** — including the one whose leg never
+    /// **Every planned cell has a row, by construction** - including the one whose leg never
     /// produced a result. This is the audit the Stroppy fleet runner lacked, as a type.
     #[test]
     fn every_planned_cell_has_a_row() {
@@ -663,7 +663,7 @@ mod tests {
     }
 
     /// **The description is prompt, and the lint is the rule.** A path, an endpoint, a content
-    /// claim or a version in it is a claim the model acts on after it stops being true — and
+    /// claim or a version in it is a claim the model acts on after it stops being true - and
     /// `Registry::register` REFUSES such a tool, so this is also the test that a session can open.
     #[test]
     fn the_description_passes_the_lint() {

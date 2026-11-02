@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 /// The name a notice hook is exported under: `notice_<kind>`.
 pub const PREFIX: &str = "notice_";
 
-/// A monitor firing or expiry — the plan's own example of a sentence worth patching.
+/// A monitor firing or expiry - the plan's own example of a sentence worth patching.
 pub const MONITOR: &str = "monitor";
 /// A background job settling.
 pub const JOB: &str = "job";
@@ -24,7 +24,7 @@ pub const NUDGE: &str = "nudge";
 pub const RESEAT: &str = "reseat";
 /// The merge queue's words about a branch: a verdict, a handover, a target's emergency.
 pub const MERGE_QUEUE: &str = "merge_queue";
-/// A plugin layer's own failure — the sentence that tells the model to fix its fix.
+/// A plugin layer's own failure - the sentence that tells the model to fix its fix.
 pub const PLUGIN: &str = "plugin";
 /// The session's workspace, or another fact about the ground it stands on.
 pub const WORKSPACE: &str = "workspace";
@@ -55,7 +55,7 @@ pub const KINDS: &[&str] = &[
     ROOM,
 ];
 
-/// **The kinds whose notice may not be dropped**, only reworded — the host's set, not the
+/// **The kinds whose notice may not be dropped**, only reworded - the host's set, not the
 /// plugin's (`docs/plugins-plan.md` §4.3).
 pub const MUST_SEE: &[&str] = &[
     JOB,
@@ -92,7 +92,7 @@ pub fn droppable(kind: &str) -> bool {
 pub struct Notice {
     /// [`V`](crate::V).
     pub v: u32,
-    /// The notice's kind — [`KINDS`] — and the same word the hook's own name ends in.
+    /// The notice's kind - [`KINDS`] - and the same word the hook's own name ends in.
     pub kind: String,
     /// The sentence as the harness composed it, which is what the model reads if this hook
     /// answers nothing.
@@ -100,7 +100,7 @@ pub struct Notice {
     /// What the sentence was built from. Shape is the site's: nobody but that site reads it.
     #[serde(default)]
     pub facts: Value,
-    /// Whether this kind may be dropped at all — [`droppable`]'s answer, carried so that a layer
+    /// Whether this kind may be dropped at all - [`droppable`]'s answer, carried so that a layer
     /// can see the rule it is under instead of discovering it from a refusal.
     pub must_see: bool,
     /// The lower layer's answer, when this call is the second half of a `{"below": …}`.
@@ -152,7 +152,7 @@ pub enum Said<'a> {
     Unchanged,
     /// Say this instead.
     Text(&'a str),
-    /// Do not say it — only for a kind that may be dropped.
+    /// Do not say it - only for a kind that may be dropped.
     Drop,
 }
 
@@ -165,7 +165,7 @@ impl NoticeOut {
         }
     }
 
-    /// The notice, dropped — a request the host honours only for a droppable kind.
+    /// The notice, dropped - a request the host honours only for a droppable kind.
     pub fn dropped() -> NoticeOut {
         NoticeOut {
             text: None,
@@ -206,7 +206,7 @@ mod tests {
         );
     }
 
-    /// A guest that leaves everything out said nothing — which is `Unchanged`, not an empty
+    /// A guest that leaves everything out said nothing - which is `Unchanged`, not an empty
     /// sentence.
     #[test]
     fn an_empty_answer_leaves_the_sentence_alone() {

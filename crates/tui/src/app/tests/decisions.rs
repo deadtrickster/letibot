@@ -10,7 +10,7 @@ fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
     use letibot_sessionlog::event::OptionKind;
     let a = app();
 
-    // Nothing to say, so nothing said: §13.2b in both directions — a `because:`
+    // Nothing to say, so nothing said: §13.2b in both directions - a `because:`
     // row with an empty string is a row of nothing, and the card is not entitled
     // to it.
     let bare = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
@@ -37,7 +37,7 @@ fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
         .find(|l| l.contains("because:"))
         .expect("the row");
     assert!(line.contains(sgr::DIM), "not in the dim register: {line:?}");
-    // And it sits with the rest of the evidence, above the ladder — read before
+    // And it sits with the rest of the evidence, above the ladder - read before
     // the choice is made, which is the only time it can inform one.
     let because_at = drawn.find("because:").unwrap();
     let ladder_at = drawn.find("allow_once").unwrap();
@@ -199,7 +199,7 @@ fn an_ambiguous_option_prefix_is_refused_with_the_candidates_named() {
             ]
         }
     );
-    // One character further and it is an answer again — and the case fold does not
+    // One character further and it is an answer again - and the case fold does not
     // decide which of these is ambiguous.
     assert_eq!(
         match_option(&d, "allow_a"),
@@ -395,7 +395,7 @@ fn the_command_being_approved_gets_its_own_line() {
     d.detail = "ask — intents [execute_code] over [host_other]".into();
     let lines = a.decision_lines(&d, 100);
 
-    // The command, alone on its line, indented — not embedded in the question.
+    // The command, alone on its line, indented - not embedded in the question.
     let own = lines
         .iter()
         .find(|l| l.contains(cmd))
@@ -468,7 +468,7 @@ fn the_card_says_the_declared_access_is_what_asks() {
         .expect("the row");
     assert!(line.contains(sgr::DIM), "not in the dim register: {line:?}");
 
-    // **Absent where the access is not what asks** — a read call, a write call, a
+    // **Absent where the access is not what asks** - a read call, a write call, a
     // network call, and a daemon that did not say.
     for other in ["read", "write", "network", ""] {
         let drawn = says(other);
@@ -675,7 +675,7 @@ fn a_permission_settles_on_the_call_it_gated() {
     );
     let open = call_card(c, &plain_cfg(120), 0, Fold::Open, true).join("\n");
     assert!(open.contains("asked: run rm -rf"), "{open}");
-    // The basis is labelled by whoever DECIDED — here a model — and never as
+    // The basis is labelled by whoever DECIDED - here a model - and never as
     // the oracle's, which it is not. No oracle advised this one, and the card
     // says so rather than leaving a blank that reads like silence.
     assert!(
@@ -906,7 +906,7 @@ fn a_settled_card_keeps_the_decision_that_gated_it() {
     a.invalidate_history();
     let screen = a.screen(120, 30).join("\n");
     assert!(screen.contains("asked: run rm -rf"), "{screen}");
-    // Labelled by the decider — a model chose this one — and never as the
+    // Labelled by the decider - a model chose this one - and never as the
     // oracle's, which nothing here was.
     assert!(
         screen.contains("model: the operator asked for this"),
@@ -956,7 +956,7 @@ fn a_decision_is_answered_with_the_arrows_and_enter() {
     );
 
     // Up from the top wraps to the bottom rather than sticking, so the last option
-    // — which is usually the one that denies — is one keypress away.
+    // - which is usually the one that denies - is one keypress away.
     let mut c = app();
     c.apply(ServerFrame::Event(env(1, testing::requested("r3", "rm"))));
     assert_eq!(c.key(Key::Up), None);
@@ -989,7 +989,7 @@ fn an_open_decision_is_answered_by_typing_the_option() {
 }
 
 /// A digit typed into a line that has already started is part of the line,
-/// not an answer — the same empty-composer guard the arrows have.
+/// not an answer - the same empty-composer guard the arrows have.
 #[test]
 fn a_digit_inside_a_half_typed_line_is_not_an_answer() {
     let mut a = app();
@@ -1017,7 +1017,7 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
         "the hint is the fourth thing the loop used to eat:\n{screen}"
     );
     // **And the wall is where it belongs: above, with a seam.** The count is the
-    // disclosure — how much is out of view, not that there is more.
+    // disclosure - how much is out of view, not that there is more.
     let has_seam = screen
         .lines()
         .any(|l| l.contains("line(s) out of view") && l.contains("pgdn scrolls"));
@@ -1116,8 +1116,8 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
         "a countdown below zero is a rendering fault: {expired}"
     );
 
-    // **No deadline, nothing drawn.** `null` is §11.5's *wait forever* — a policy,
-    // not missing information — so there is no silence for a clause to describe and
+    // **No deadline, nothing drawn.** `null` is §11.5's *wait forever* - a policy,
+    // not missing information - so there is no silence for a clause to describe and
     // no countdown to draw. §13.2b, answered the other way round from `unreadable 0`.
     let a = app();
     let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
@@ -1273,7 +1273,7 @@ fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
     let from_live = live.decision_lines(&d, 200).join("\n");
     assert!(from_live.contains("expires in 5 min"), "{from_live}");
 
-    // **The snapshot arm** — the half that goes wrong in this family: the same card,
+    // **The snapshot arm** - the half that goes wrong in this family: the same card,
     // arriving in a view rather than as an event.
     let mut snap = app();
     snap.clock(NOW);

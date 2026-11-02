@@ -9,7 +9,7 @@ use crate::restart::{
 use crate::subagent_record::{parent_reminded_line, parent_resumed_line};
 use letibot_tokencore::store::{JobRecord, StoredMonitor};
 
-/// 2026-10-12 08:10:56 UTC — when pg-noop's daemon came back.
+/// 2026-10-12 08:10:56 UTC - when pg-noop's daemon came back.
 const BACK: u64 = 1_791_792_656_000;
 
 /// The operator's job: the command as their paste shows it, its elisions filled in.
@@ -64,7 +64,7 @@ fn pin(name: &str, text: &str) {
 #[test]
 fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
     // **The operator's restart**: the first start on a new build, whose old daemon kept no
-    // record — and one job.
+    // record - and one job.
     let unknown = Stopped::Unknown { seen_ms: 0 };
     let lines = vec![job_line(&running("j46", ACCEPTANCE), None, None, None, &[])];
     let text = notice(
@@ -185,7 +185,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         &warning_detail(&text, &[said::job("j46", 0)]),
     );
 
-    // **A restart with nothing to restore** — the operator, 2026-10-30: *"mb always tell agent
+    // **A restart with nothing to restore** - the operator, 2026-10-30: *"mb always tell agent
     // about restart? with the current time lol"*. One sentence, no list, and its own code.
     let text = notice(
         &header(&quick, BACK, BACK, RESTORE_WITHIN, Outcome::Nothing),
@@ -196,7 +196,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
     pin("restart_nothing_warning.txt", &warning_detail(&text, &[]));
 }
 
-/// **The `prefix_stale` sentence pg-noop's head drew as a wall** — seated 09-20 17:51, a tool
+/// **The `prefix_stale` sentence pg-noop's head drew as a wall** - seated 09-20 17:51, a tool
 /// (`task_resume`) seated since.
 #[test]
 fn the_tuis_stale_card_fixture_is_what_the_daemon_writes() {

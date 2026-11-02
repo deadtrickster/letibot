@@ -20,7 +20,7 @@ fn a_door_verb_is_typed_with_hyphens() {
     a.key(Key::Tab);
     assert_eq!(a.input(), "/web-search");
 
-    // **And the underscore form is accepted rather than refused** — an operator who
+    // **And the underscore form is accepted rather than refused** - an operator who
     // types what the daemon calls it should not be told they are wrong.
     assert_eq!(
         a.command("web-search blabla"),
@@ -120,7 +120,7 @@ fn the_bare_form_is_built_from_the_row_and_nothing_else() {
         why, "`pair` needs 2 fields (a, b)",
         "the daemon's own sentence"
     );
-    // And a bare verb with nothing after it is refused by name, with the field named —
+    // And a bare verb with nothing after it is refused by name, with the field named  -
     // a call to a tool that needs a query, with no query, is a call nobody meant.
     let read = letibot_sessionlog::HeadRunTool {
         name: "read".into(),
@@ -261,7 +261,7 @@ fn every_verb_the_dispatcher_acts_on_is_offered_by_tab() {
             .map(str::to_string)
             .collect()
     };
-    // `verb_arg(cmd, "x")` — the leading-position verbs that take arguments.
+    // `verb_arg(cmd, "x")` - the leading-position verbs that take arguments.
     for (i, _) in body.match_indices("verb_arg(cmd, \"") {
         let rest = &body[i + "verb_arg(cmd, \"".len()..];
         if let Some(q) = rest.find('"') {
@@ -329,7 +329,7 @@ fn the_facts_and_the_keys_are_on_their_own_rows_not_in_the_field() {
     let (row, _) = a.cursor().unwrap();
     let joined = screen.join("\n");
     // The top edge closes the box and says nothing: the legend that lived
-    // there — model, dialect, endpoint, verbosity — was a row of attention
+    // there - model, dialect, endpoint, verbosity - was a row of attention
     // the eye paid on every return to the field for facts read once.
     assert!(screen[row - 1].contains('╭'), "{:?}", screen[row - 1]);
     assert!(!screen[row - 1].contains("normal"), "{:?}", screen[row - 1]);
@@ -381,10 +381,10 @@ fn every_listed_slash_command_is_one_this_head_answers() {
                 a.pick == Some(Pick::Mode),
                 a.pick == Some(Pick::Model),
                 // **R38 added two settings to the same card**, so a verb that opens one
-                // is a verb that did something — and this closure is where "something"
+                // is a verb that did something - and this closure is where "something"
                 // is defined for the self-documentation check.
                 a.pick == Some(Pick::Verbosity),
-                // And the repo card, which `/repo` and a click on the git field open — one
+                // And the repo card, which `/repo` and a click on the git field open - one
                 // entry with the diff card's, both the head's own, because a tuple compares only
                 // up to twelve.
                 matches!(a.pick, Some(Pick::Diff | Pick::Repo)),
@@ -453,7 +453,7 @@ fn a_path_is_shortened_at_a_separator_and_a_pattern_is_not() {
     assert!(rano::width::text::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
 }
 
-/// With a name after it the line goes over as typed — `--once` and `--key`
+/// With a name after it the line goes over as typed - `--once` and `--key`
 /// have to survive, and they are the reason bare-vs-argument is the split.
 #[test]
 fn models_with_an_argument_still_goes_straight_to_the_daemon() {
@@ -472,7 +472,7 @@ fn models_with_an_argument_still_goes_straight_to_the_daemon() {
 }
 
 /// **The shell path leaves plain and `/` lines alone, and the slash path
-/// leaves `!` lines alone** — each completes only its own sigil, so a line
+/// leaves `!` lines alone** - each completes only its own sigil, so a line
 /// is never completed by the wrong one.
 #[test]
 fn the_shell_path_leaves_plain_and_slash_lines_alone_and_vice_versa() {

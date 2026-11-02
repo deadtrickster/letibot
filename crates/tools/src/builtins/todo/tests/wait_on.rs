@@ -4,7 +4,7 @@ use super::*;
 
 use crate::exec::{JobId, JobState, JobView, MemoryCap, ScopeId, ScopeKind};
 
-/// **A job, as this session's table holds it** — the fields `wait_on` reads (the handle, the name,
+/// **A job, as this session's table holds it** - the fields `wait_on` reads (the handle, the name,
 /// the state) and the rest filled with something obvious.
 fn job(id: &str, slug: Option<&str>, state: JobState) -> JobView {
     let scope = || ScopeId {
@@ -65,7 +65,7 @@ fn a_wait_on_the_models_own_row_quiets_it_while_the_job_runs_and_not_after() {
     )]));
     let tool = TodoWriteTool::new(board.clone());
     let before = board.version();
-    // By its NAME — the full handle is what goes on the row.
+    // By its NAME - the full handle is what goes on the row.
     let r = tool.wait_on(
         &json!([{"content": CRITERION, "job": "gate"}]),
         Some(&running_gate()),
@@ -180,7 +180,7 @@ fn a_wait_on_the_operators_row_leaves_their_words_and_status_alone() {
     assert!(refusal(&r).contains("s-9-sub-9"), "{}", refusal(&r));
 }
 
-/// **A handle this session does not hold is refused by name, and nothing is written** — and so is
+/// **A handle this session does not hold is refused by name, and nothing is written** - and so is
 /// one that has already ended, which nothing would quiet anyway.
 #[test]
 fn an_unknown_or_ended_job_is_refused_by_name() {
@@ -260,7 +260,7 @@ fn detach_restores_the_row() {
 }
 
 /// **The shape is refused by name**: two waits in one entry, an unknown field, and `wait_on` beside
-/// `todos` — through the real runtime, so the top-level door is the one under test.
+/// `todos` - through the real runtime, so the top-level door is the one under test.
 #[test]
 fn a_malformed_wait_on_is_refused_and_writes_nothing() {
     let (rt, board) = runtime_with(vec![item(CRITERION, TodoStatus::InProgress)]);
@@ -320,7 +320,7 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
         "{busy}"
     );
     // **On the advice's own line**, so the head's notice fold still folds it: the notice keeps
-    // its three lines — head, bullet, advice.
+    // its three lines - head, bullet, advice.
     assert_eq!(busy.lines().count(), 3, "{busy}");
 
     let child = nag_with(
@@ -417,7 +417,7 @@ fn an_ending_the_model_has_not_digested_keeps_the_row_quiet() {
         "{said}"
     );
 
-    // **Digested** — the harness stops reporting it — and the row is the check's to name again.
+    // **Digested** - the harness stops reporting it - and the row is the check's to name again.
     assert!(!waits_on_an_undigested_ending(&row, &RunningJobs::none()));
     assert_eq!(
         when_an_ending_is_digested(std::slice::from_ref(&row), &RunningJobs::none()),
@@ -432,7 +432,7 @@ fn an_ending_the_model_has_not_digested_keeps_the_row_quiet() {
     assert!(said.contains(&format!("  - {CRITERION}")), "{said}");
 }
 
-/// **The same grace for a SUBAGENT a row waits on** — a child that has finished is absent from
+/// **The same grace for a SUBAGENT a row waits on** - a child that has finished is absent from
 /// `ChildSessions`, which used to make its row askable at once; its undigested completion now keeps
 /// the row quiet the way a job's does. pg-noop, 2026-10-11, the subagent half of the same ask.
 #[test]
@@ -502,7 +502,7 @@ fn a_job_named_in_needs_is_stored_as_its_handle() {
     );
 }
 
-/// **A name no job has is refused, and so is one two jobs share** — a wait on a name nothing will
+/// **A name no job has is refused, and so is one two jobs share** - a wait on a name nothing will
 /// ever end is a wait that reads as already over.
 #[test]
 fn a_job_need_naming_no_job_or_two_is_refused_and_nothing_is_written() {
@@ -548,7 +548,7 @@ fn a_job_need_naming_no_job_or_two_is_refused_and_nothing_is_written() {
     assert!(ok(&r), "{}", refusal(&r));
 }
 
-/// **A row waits on ALL of what it names** — the operator: *"i think we can allow waiting on
+/// **A row waits on ALL of what it names** - the operator: *"i think we can allow waiting on
 /// multiple things - so AND"*. Two entries for one row put two edges on it, and the row stays
 /// quiet until both jobs have ended; one ending is not enough.
 #[test]

@@ -55,7 +55,7 @@ impl HostsTool {
         HostsTool::default()
     }
 
-    /// Read this file instead of the operator's — a test's door.
+    /// Read this file instead of the operator's - a test's door.
     pub fn with_file(mut self, file: impl Into<PathBuf>) -> HostsTool {
         self.file = Some(file.into());
         self
@@ -67,7 +67,7 @@ impl HostsTool {
         self
     }
 
-    /// Run this program instead of `ssh` — a test's fake, which never touches a network.
+    /// Run this program instead of `ssh` - a test's fake, which never touches a network.
     pub fn with_ssh(mut self, program: impl Into<PathBuf>) -> HostsTool {
         self.ssh = Some(program.into());
         self
@@ -151,7 +151,7 @@ impl HostsTool {
         let paths = self.paths();
 
         // **The names asked for**, or all of them. A name that is not in the file is refused with
-        // the ones that are, the same sentence a `where: "host:…"` gives — one refusal, in one
+        // the ones that are, the same sentence a `where: "host:…"` gives - one refusal, in one
         // shape, so a model reads one thing twice rather than two things once.
         let wanted: Option<Vec<String>> = args
             .get("names")
@@ -248,7 +248,7 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
                 )
             },
         ));
-        // **What the operator said about this machine's sharing** (RH9) — the three keys that are
+        // **What the operator said about this machine's sharing** (RH9) - the three keys that are
         // not about reaching it. Reported with no connection, because they are facts of the FILE
         // and a session deciding where to put work should not pay four ssh calls to read them.
         out.push_str(&format!(
@@ -468,7 +468,7 @@ fn spare_line(host: &Host, f: &Facts) -> String {
     )
 }
 
-/// The first of the three load numbers, as the host printed it — the one a placement is about.
+/// The first of the three load numbers, as the host printed it - the one a placement is about.
 fn one_load(load: &str) -> String {
     load.split_whitespace().next().unwrap_or(load).to_string()
 }
@@ -493,7 +493,7 @@ mod tests {
     }
 
     /// A test's own home, config directory and hosts file, with a key for the hosts that have one
-    /// and both host keys accepted — or not, per `known`.
+    /// and both host keys accepted - or not, per `known`.
     fn fixture(tag: &str, file: &str, keys: &[&str], known: &[&str]) -> (PathBuf, Paths) {
         let dir = std::env::temp_dir().join(format!(
             "letibot-hosts-tool-{tag}-{}-{}",
@@ -586,7 +586,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 
-    /// **No host declared is an answer, not a failure** — and it names the shape that would fix it.
+    /// **No host declared is an answer, not a failure** - and it names the shape that would fix it.
     #[test]
     fn an_empty_file_says_the_file_is_the_place_a_host_is_declared() {
         let (file, paths) = fixture("empty", "", &[], &[]);
@@ -624,7 +624,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 
-    /// **A name that is not declared is refused with the ones that are** — the same sentence a
+    /// **A name that is not declared is refused with the ones that are** - the same sentence a
     /// `where: "host:…"` gives.
     #[test]
     fn a_name_that_is_not_declared_is_refused_with_the_ones_that_are() {
@@ -641,7 +641,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().expect("a directory"));
     }
 
-    /// The facts, as the host prints them — and a host that answers half of them.
+    /// The facts, as the host prints them - and a host that answers half of them.
     #[test]
     fn the_facts_are_read_from_key_value_lines() {
         let said = "uname=lab2x1\ncores=16\nload=0.42 0.31 0.22\nmem_total_kb=65793512\n\
@@ -668,7 +668,7 @@ mod tests {
     }
 
     /// **A host with mise reports the version and what it pins**, and a host without falls back
-    /// to `PATH` — because on that machine `PATH` is the only door there is.
+    /// to `PATH` - because on that machine `PATH` is the only door there is.
     #[test]
     fn the_toolchain_line_is_mise_when_there_is_mise() {
         let said = crate::remote::facts_of(

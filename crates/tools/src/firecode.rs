@@ -82,7 +82,7 @@ pub fn down_all() {
         .map(|(bin, project)| {
             std::thread::spawn(move || {
                 // Bounded: this runs at the daemon's last act, and a `down` whose client never
-                // answers would hold the stop for ever — which is the whole reason they are run
+                // answers would hold the stop for ever - which is the whole reason they are run
                 // at once.
                 let _ = crate::rpc::run_bounded(
                     &bin,
@@ -109,7 +109,7 @@ pub struct Probe {
 }
 
 /// Ask `bin` what it can do. The verbs are read off its own `layer` usage line, which
-/// names every subcommand it has — no version number to keep in step with.
+/// names every subcommand it has - no version number to keep in step with.
 pub fn probe(bin: &Path) -> Probe {
     // Bounded ([`CLIENT_TIMEOUT`]): a client call asked once at start, and the banner it feeds
     // must not be what holds a daemon's startup.
@@ -237,7 +237,7 @@ pub struct FirecodeBackend {
     landed: std::sync::Mutex<Option<PathBuf>>,
     /// The run id, from `firecode info --json`, for a listing.
     run: String,
-    /// Why the copy has none of its source's layers, when it has none — a `layer inherit`
+    /// Why the copy has none of its source's layers, when it has none - a `layer inherit`
     /// this firecode does not have, or one that refused. Said in [`ExecBackend::describe`].
     layers: Option<String>,
     /// [`FirecodeSpec::verify`], kept to name the check beside its verdict.
@@ -289,7 +289,7 @@ pub fn mounts(source: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Where the VM of a session placed on `source` holds its project — the source itself when it
+/// Where the VM of a session placed on `source` holds its project - the source itself when it
 /// is mounted ([`mounts`]), the session's copy under the cache otherwise. What a child attaching
 /// to that VM names it by.
 pub fn project_for(source: &Path, session_id: &str) -> PathBuf {
@@ -339,7 +339,7 @@ pub struct FirecodeSpec {
     /// started in when the two are different, because the copy is the guest's whole world. Filled
     /// by `Config::vm_copy_source`, the one resolution of what this session's VM copies.
     pub source: PathBuf,
-    /// Copies live under here — `~/.cache/letibot/firecode` by default.
+    /// Copies live under here - `~/.cache/letibot/firecode` by default.
     pub cache: PathBuf,
     /// A name for the copy: the child session's id.
     pub name: String,
@@ -528,8 +528,8 @@ impl FirecodeBackend {
             crate::rpc::Ended::Answered(out) => out,
             crate::rpc::Ended::TimedOut => {
                 // A boot nobody can see the end of is not a VM to hand to a session. The run
-                // may exist, so the unwind below is told to bring one down — bounded since
-                // [`CLIENT_TIMEOUT`] is what `down` is given — and the copy goes with it.
+                // may exist, so the unwind below is told to bring one down - bounded since
+                // [`CLIENT_TIMEOUT`] is what `down` is given - and the copy goes with it.
                 unwind.vm = true;
                 return Err(BackendError::Io(format!(
                     "`firecode up` did not answer within {} s: it was killed together with \
@@ -647,14 +647,14 @@ impl FirecodeBackend {
         Ok(b)
     }
 
-    /// Where a session's own VM's copy lives — the project `up` names after it.
+    /// Where a session's own VM's copy lives - the project `up` names after it.
     pub fn project_of(session_id: &str) -> PathBuf {
         FirecodeSpec::new(PathBuf::new(), session_id)
             .cache
             .join(session_id)
     }
 
-    /// Whether this backend brought its VM up — `false` when attached to an ancestor's.
+    /// Whether this backend brought its VM up - `false` when attached to an ancestor's.
     pub fn owns_vm(&self) -> bool {
         self.owns
     }
@@ -673,7 +673,7 @@ impl FirecodeBackend {
     }
 
     /// The deadline this backend gives one control command in the guest, as a test may set
-    /// it — production never calls this, which is why the default is the constant rather than a
+    /// it - production never calls this, which is why the default is the constant rather than a
     /// field a caller has to fill in (the same shape as [`crate::remote::Ssh::with_bound`]).
     #[cfg(test)]
     fn with_guest_timeout(mut self, within: Duration) -> Self {
@@ -690,7 +690,7 @@ impl FirecodeBackend {
     }
 
     /// One command in the guest, at the project root: stdout+stderr merged, and
-    /// the exit status. Not through the job machinery — a file read is not a job.
+    /// the exit status. Not through the job machinery - a file read is not a job.
     fn guest(&self, command: &str) -> Result<(Vec<u8>, i32), BackendError> {
         self.guest_in(&self.project, command)
     }
@@ -1350,12 +1350,12 @@ pub const GUEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The wall clock on `layer inherit`, which may carry a toolchain layer across: five minutes, and
-/// a timeout is not fatal — a copy with no inherited layer still boots on its base image, and
+/// a timeout is not fatal - a copy with no inherited layer still boots on its base image, and
 /// [`ExecBackend::describe`] says so.
 const LAYER_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The wall clock on `firecode up`: it installs a layer and boots a kernel, which is minutes when
-/// the layer is cold. Ten, and a timeout is a failed placement rather than a slow one — the copy
+/// the layer is cold. Ten, and a timeout is a failed placement rather than a slow one - the copy
 /// goes with it, because a boot nobody can see the end of is not a VM to hand to a session.
 const UP_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -1775,7 +1775,7 @@ mod tests {
         spec
     }
 
-    /// A child in its parent's VM never brings it down — the operator: *"children live in
+    /// A child in its parent's VM never brings it down - the operator: *"children live in
     /// the _same_ vm"*. An attached backend runs in the parent's project and reports that it
     /// does not own the VM; dropping it calls no `down`, and the parent's own drop still does.
     #[test]
@@ -1809,7 +1809,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A placement that fails leaves no copy behind — FIRECODE-NOTES: *"A failed spawn leaks
+    /// A placement that fails leaves no copy behind - FIRECODE-NOTES: *"A failed spawn leaks
     /// its copy. The very first attempt left 286 MB in ~/.cache/letibot/firecode/; the error
     /// path remove_dir_alls on a refused status but not on a spawn error."*
     #[test]
@@ -1871,7 +1871,7 @@ mod tests {
         );
     }
 
-    /// No `layer inherit` is a missing convenience, not a missing VM — FIRECODE-NOTES item 4:
+    /// No `layer inherit` is a missing convenience, not a missing VM - FIRECODE-NOTES item 4:
     /// *"degrade where only a convenience is missing ("no layer inheritance; the guest builds on
     /// base-image toolchains") and refuse only what is genuinely required."*
     #[test]
@@ -2207,7 +2207,7 @@ mod tests {
         drop(b);
     }
 
-    /// What the installed firecode can do, asked once — for the daemon's start-up banner.
+    /// What the installed firecode can do, asked once - for the daemon's start-up banner.
     #[test]
     fn the_probe_says_whether_layer_inherit_is_there() {
         let root = tmp("probe");
@@ -2283,7 +2283,7 @@ mod tests {
     }
 
     /// The measurement counts what the copy would carry, not what the excludes
-    /// leave behind — otherwise the ceiling would refuse the very copies the
+    /// leave behind - otherwise the ceiling would refuse the very copies the
     /// excludes made small.
     #[test]
     fn the_measurement_honours_the_excludes() {

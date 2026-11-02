@@ -31,7 +31,7 @@ use rano::style::Role;
 
 use letibot_ui::text::without_control_lines;
 
-// The compact numbers the head prints — rano's, where letibot's `progress` went.
+// The compact numbers the head prints - rano's, where letibot's `progress` went.
 use rano::agent::card;
 use rano::agent::header as progress;
 use rano::width::text as width;
@@ -44,7 +44,7 @@ pub(crate) fn app() -> App {
     })
 }
 
-/// **The newest notice, read whole** — every notice is one line now (R89), so a test that reads
+/// **The newest notice, read whole** - every notice is one line now (R89), so a test that reads
 /// a notice's words opens it the way the operator does (`alt-n`), reads the popup and closes it.
 fn newest_notice(a: &mut App) -> String {
     a.screen(120, 30);
@@ -87,7 +87,7 @@ fn decision_with(kinds: &[letibot_sessionlog::event::OptionKind]) -> OpenDecisio
         choices: vec![],
         because: String::new(),
         advice: None,
-        // The fixture is this session's own call — see `SubagentAsk` for the card a
+        // The fixture is this session's own call - see `SubagentAsk` for the card a
         // child's gate posts here instead.
         subagent: None,
         deadline: None,
@@ -160,7 +160,7 @@ fn feed(app: &mut App, hub: &Hub, head_id: &str) -> (u64, u64) {
     (r, f)
 }
 
-/// A parent with two subagents, plus a second conversation with a child of its own —
+/// A parent with two subagents, plus a second conversation with a child of its own  -
 /// the list the daemon sends on every `Hello`, which is the durable half of the tree.
 fn a_family() -> Vec<SessionBrief> {
     let mut one = brief("s-sub-1", "find the bug in the reader", true);
@@ -178,7 +178,7 @@ fn a_family() -> Vec<SessionBrief> {
     ]
 }
 
-/// **The head in the child's session, with the daemon's list in hand** — the state Enter
+/// **The head in the child's session, with the daemon's list in hand** - the state Enter
 /// leaves it in when the `Switch` is answered.
 fn inside_a_subagent() -> App {
     let mut a = app();
@@ -187,7 +187,7 @@ fn inside_a_subagent() -> App {
     a
 }
 
-/// The parse, as the pane would draw it with no colour — so a test asserts
+/// The parse, as the pane would draw it with no colour - so a test asserts
 /// the rows and not the escape codes.
 fn todo_plain(body: &str) -> String {
     render_todo_md(body)
@@ -265,7 +265,7 @@ fn bang_rows(a: &mut App, seq: u64, id: &str, line: &str, payload: &str) {
 }
 
 /// **The control for the operator-act ruling**: the same row with no `origin`, which is a
-/// call the MODEL proposed — and also every row written before `CallOrigin` existed, since
+/// call the MODEL proposed - and also every row written before `CallOrigin` existed, since
 /// a missing key reads as `None`. No `User` row goes with it: nobody at the keyboard acted.
 fn model_bash_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
     a.apply(ServerFrame::Event(env(
@@ -421,7 +421,7 @@ fn item_rendered(
     let targets = std::collections::HashMap::new();
     let answered = std::collections::HashSet::new();
     // A file whose bytes carry the sequence, because the diff is the one surface
-    // where the content is neither the model's nor the daemon's — it is whatever
+    // where the content is neither the model's nor the daemon's - it is whatever
     // is on disk.
     let excerpt = ToolEditExcerpt {
         path: format!("src/{EVIL}thing.rs"),
@@ -501,7 +501,7 @@ const NEVER_IN_A_FRAME: &[(&str, &str)] = &[
 ];
 
 /// The first thing in these rows a terminal would act on and this head did not
-/// write — or `None` when the rows are clean.
+/// write - or `None` when the rows are clean.
 fn unauthored(rows: &[String]) -> Option<String> {
     for r in rows {
         for (what, seq) in NEVER_IN_A_FRAME {
@@ -776,7 +776,7 @@ fn child_event(id: &str, state: &str, answer: Option<&str>) -> SessionEvent {
     }
 }
 
-/// **The footer's `N subagents running` line, off the glass** — read from the frame rather
+/// **The footer's `N subagents running` line, off the glass** - read from the frame rather
 /// than recomputed, so the assertion is about what the operator sees.
 fn count_row(a: &mut App) -> String {
     let screen = a.screen(100, 24);
@@ -869,7 +869,7 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
         "the counts were painted faint: {screen:?}"
     );
 
-    // **Alone, after the operator's message** — the other placement, same registers.
+    // **Alone, after the operator's message** - the other placement, same registers.
     let mut b = app();
     b.cfg.color = true;
     b.apply(hello(
@@ -965,7 +965,7 @@ fn a_turn_mid_run(a: &mut App) {
             truncated: false,
         },
     );
-    // ROUND 1, carrying the prompt's own stamp — see `TurnPane::turn_rows`.
+    // ROUND 1, carrying the prompt's own stamp - see `TurnPane::turn_rows`.
     a.apply(ServerFrame::Event(env_at(
         2,
         1_000,
@@ -992,7 +992,7 @@ fn a_turn_mid_run(a: &mut App) {
             media: None,
         },
     );
-    // The work in flight: thinking, and no row of its own — the pane's half of the counts.
+    // The work in flight: thinking, and no row of its own - the pane's half of the counts.
     a.apply(ServerFrame::Event(env(
         4,
         SessionEvent::Delta {
@@ -1088,7 +1088,7 @@ fn edit_row(edit: Option<letibot_sessionlog::event::ToolEdit>) -> CallRow {
 }
 
 /// Flip the diff view the way the operator does now: the config pane's
-/// first row. `/diff` is gone — one place to change a setting, not two.
+/// first row. `/diff` is gone - one place to change a setting, not two.
 fn flip_diff_view(a: &mut App) {
     let was = a.is_open(Surface::Config);
     a.push_surface(Surface::Config);
@@ -1121,7 +1121,7 @@ fn plain_cfg(width: usize) -> RenderConfig {
     }
 }
 
-/// A **real** PNG, `w`×`h` — `letibot_transcript::testing`'s, because a fixture that only *looks*
+/// A **real** PNG, `w`×`h` - `letibot_transcript::testing`'s, because a fixture that only *looks*
 /// like an image is what let a 33-byte header be stored as a picture and wedge a session. A test
 /// that needs the bytes that are NOT a picture asks for `png_header_only` by name.
 fn png_header(w: u32, h: u32) -> Vec<u8> {

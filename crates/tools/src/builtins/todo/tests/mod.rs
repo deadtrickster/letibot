@@ -14,13 +14,13 @@ use crate::runtime::{Registry, ToolRuntime};
 use letibot_transcript::{ToolCall, ToolOutcome};
 
 /// The tool behind a real runtime, because the call goes through the gate on
-/// its way past — and `Access::Session` must pass it unattended, which this
+/// its way past - and `Access::Session` must pass it unattended, which this
 /// doubles as a check of.
 fn runtime() -> (ToolRuntime, Arc<TodoBoard>) {
     runtime_with(Vec::new())
 }
 
-/// The same runtime, on a board that already holds rows — the shape a RESUMED session gets from
+/// The same runtime, on a board that already holds rows - the shape a RESUMED session gets from
 /// its store, and the only way two rows can share a name (this tool never writes a second row
 /// under a name the half already holds).
 fn runtime_with(initial: Vec<TodoItem>) -> (ToolRuntime, Arc<TodoBoard>) {
@@ -57,7 +57,7 @@ fn nag_with(todos: &[TodoItem], children: &ChildSessions, jobs: &RunningJobs) ->
     unfinished_plan(todos, todos, children, jobs)
 }
 
-/// **Nothing running outside the board** — no job this session holds, which is the reading every
+/// **Nothing running outside the board** - no job this session holds, which is the reading every
 /// test here that is not about a job passes, and the one a daemon with no process host hands in.
 fn no_jobs() -> RunningJobs {
     RunningJobs::none()
@@ -72,7 +72,7 @@ fn child(age_secs: u64, quiet_secs: Option<u64>, working: bool) -> RunningChild 
     }
 }
 
-/// **A row that waits on a CHILD** — the dispatch case, as these tests write one.
+/// **A row that waits on a CHILD** - the dispatch case, as these tests write one.
 fn waiting_on_a_child(content: &str, id: &str) -> TodoItem {
     TodoItem {
         needs: vec![TodoNeed::Child { id: id.to_string() }],
@@ -80,7 +80,7 @@ fn waiting_on_a_child(content: &str, id: &str) -> TodoItem {
     }
 }
 
-/// **A row that waits on a JOB** — the case this feature was asked for: work that cannot start
+/// **A row that waits on a JOB** - the case this feature was asked for: work that cannot start
 /// until something the daemon is running has ended.
 fn waiting_on_a_job(content: &str, handle: &str) -> TodoItem {
     TodoItem {
@@ -101,7 +101,7 @@ fn item(content: &str, status: TodoStatus) -> TodoItem {
     }
 }
 
-/// **A row that waits on the rows it names** — the DAG's edge, as these tests write one.
+/// **A row that waits on the rows it names** - the DAG's edge, as these tests write one.
 fn needs(content: &str, status: TodoStatus, on: &[&str]) -> TodoItem {
     TodoItem {
         needs: on
@@ -116,7 +116,7 @@ fn needs(content: &str, status: TodoStatus, on: &[&str]) -> TodoItem {
 
 // -- a parent writing a child's board ---------------------------------
 
-/// The fake daemon half: one child id, one board — everything the tool needs to be tested
+/// The fake daemon half: one child id, one board - everything the tool needs to be tested
 /// against, and nothing the real resolver does that the tool relies on (the parentage check and
 /// the author stamp are the daemon's, and are tested where the daemon is).
 struct FakeChildren {
@@ -138,10 +138,10 @@ impl super::ChildTodos for FakeChildren {
         Ok(self.board.snapshot())
     }
 
-    /// One child of this session, `s-1-sub-2`, and nothing else — the parentage the real
+    /// One child of this session, `s-1-sub-2`, and nothing else - the parentage the real
     /// resolver checks, reduced to the one answer each test needs.
     fn own_child(&self, asked: &str) -> Result<String, String> {
-        // The child's name resolves to it too — the real resolver's slug arm, reduced.
+        // The child's name resolves to it too - the real resolver's slug arm, reduced.
         if asked == "s-1-sub-2" || asked == "fix-login" {
             Ok("s-1-sub-2".to_string())
         } else {

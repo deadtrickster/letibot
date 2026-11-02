@@ -29,7 +29,7 @@ pub mod sgr {
     pub const MAGENTA: &str = "\x1b[35m";
     pub const GREY: &str = "\x1b[90m";
     /// Inverse video. Used for the highlighted row of a choice, where the point is
-    /// "this is the one Enter takes" rather than a category — a second hue would read
+    /// "this is the one Enter takes" rather than a category - a second hue would read
     /// as a second kind of thing.
     pub const REVERSE: &str = "\x1b[7m";
 }
@@ -62,7 +62,7 @@ pub struct RenderConfig {
     /// closes with a plain reset. `Some(..)` is the whole reason the field exists: a reset is not a
     /// restore, so a heading or a code span in a themed block would close to the terminal default.
     pub base: Option<Role>,
-    /// **Hyperlinks (OSC 8) are on, and relative paths resolve against this** — the session's
+    /// **Hyperlinks (OSC 8) are on, and relative paths resolve against this** - the session's
     /// workspace. `None` is a terminal that does not speak them, and every pipe, replay and
     /// test: the output is then byte-for-byte what it always was.
     pub links: Option<String>,
@@ -87,7 +87,7 @@ impl Default for RenderConfig {
     }
 }
 
-/// **The images a reply's markdown names** — `![alt](target)` — as `(alt, target)`, in order,
+/// **The images a reply's markdown names** - `![alt](target)` - as `(alt, target)`, in order,
 /// local targets only: a URL is a picture this head would have to fetch, and it does not reach
 /// the network.
 pub fn markdown_images(text: &str) -> Vec<(String, String)> {
@@ -253,7 +253,7 @@ pub fn md_options(cfg: &RenderConfig, limit: usize) -> RenderOptions {
     }
 }
 
-/// **rano's markdown lines as the head's rows**: each one ANSI under the config's palette —
+/// **rano's markdown lines as the head's rows**: each one ANSI under the config's palette  -
 /// the plain text and nothing else, byte for byte, under [`Palette::None`], which is what
 /// `--replay`, a pipe and CI compare.
 pub fn rows(lines: &[Line], p: Palette) -> Vec<String> {
@@ -292,7 +292,7 @@ pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
 }
 
 /// Render a block, summarising it if it exceeds `limit` lines: title, elision count, tail.
-/// Never a silent truncation — the count is the disclosure, the same rule the log applies
+/// Never a silent truncation - the count is the disclosure, the same rule the log applies
 /// to `dropped`.
 pub fn render_bounded(b: &Block, cfg: &RenderConfig, limit: usize) -> Vec<String> {
     rows(
@@ -340,8 +340,8 @@ pub struct BlockCache {
     view: MarkdownView,
     decor: Decor,
     /// What `stable_rows` were converted under: width, palette, register, bound. The view
-    /// re-renders on the first, third and fourth itself; the palette is the head's alone —
-    /// rano's lines hold no colour — so a `color` flip must drop the strings here.
+    /// re-renders on the first, third and fourth itself; the palette is the head's alone  -
+    /// rano's lines hold no colour - so a `color` flip must drop the strings here.
     key: Option<(usize, Palette, Option<Role>, usize, bool)>,
     /// The document these rows were drawn from, as far as a frame can afford to check: its head
     /// bytes and its length. A hash would be O(document) per frame, so a replacement that shares
@@ -408,7 +408,7 @@ impl BlockCache {
         limit: usize,
     ) -> (&[String], &[String]) {
         let p = cfg.palette();
-        // **Whether a link may be written** — a markdown link's label carries its URL (rano's
+        // **Whether a link may be written** - a markdown link's label carries its URL (rano's
         // `Run::link`), and a terminal that does not speak OSC 8 is given the label alone.
         let links = cfg.links.is_some();
         let key = Some((cfg.width, p, cfg.base, limit, links));
@@ -475,7 +475,7 @@ impl BlockCache {
         self.view.blocks_rendered()
     }
 
-    /// Parses performed over this cache's life, summed over every live code block — the
+    /// Parses performed over this cache's life, summed over every live code block - the
     /// §13.3 instrument one layer down from `IncrementalMarkdown::bytes_lexed`. A frame
     /// that draws a settled fence must not add to this.
     pub fn parses(&self) -> u64 {
@@ -507,7 +507,7 @@ pub fn dur_human(ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! The glue's own tests. The painter's — fences, tabs, the bound, tables, inline styles —
+    //! The glue's own tests. The painter's - fences, tabs, the bound, tables, inline styles  -
     //! moved to `rano::markdown` with the painter, under the same names.
     use super::*;
     use letibot_sessionlog::testing::MARKDOWN;
@@ -585,7 +585,7 @@ mod tests {
             !joined.contains("fn one"),
             "a row of a document nobody wrote survived:\n{joined}"
         );
-        // **And a document that only GREW keeps its rows** — the restart is for another
+        // **And a document that only GREW keeps its rows** - the restart is for another
         // document, not for growth. One more paragraph, the same cache: the text above it is
         // still on the frame and the new paragraph is drawn under it.
         let before = cache.lines(&other, &cfg, 40);
@@ -603,7 +603,7 @@ mod tests {
         );
     }
 
-    /// **A printed path becomes a span the terminal can open** (OSC 8) — and a span that is
+    /// **A printed path becomes a span the terminal can open** (OSC 8) - and a span that is
     /// not a path is left exactly as it was.
     #[test]
     fn a_paths_span_carries_the_link_the_terminal_opens() {
@@ -624,7 +624,7 @@ mod tests {
             "{abs:?}"
         );
         // A terminal that does not speak links, and a target that is not one path, are the
-        // same span they were before — no sequence, no guess.
+        // same span they were before - no sequence, no guess.
         for (root, text) in [
             (None, "a/b.rs"),
             (Some("/w"), "cargo test --workspace"),

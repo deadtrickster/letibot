@@ -28,7 +28,7 @@ fn the_project_with_the_override() -> PathBuf {
     project
 }
 
-/// A daemon with a conversation of the operator's, a one-shot's leftovers and a package's — the
+/// A daemon with a conversation of the operator's, a one-shot's leftovers and a package's - the
 /// kinds the tree draws as top-level sessions, beside the `system` branch the override hides.
 fn a_head_with_a_one_shot() -> App {
     let mut a = app();
@@ -65,7 +65,7 @@ fn a_head_with_a_one_shot() -> App {
     a
 }
 
-/// **The project's layer answers, above the built-in, and the drawing is the project's** — the
+/// **The project's layer answers, above the built-in, and the drawing is the project's** - the
 /// `system` branch is renamed, its rows are gone, and every other row is the built-in's.
 #[test]
 fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
@@ -104,7 +104,7 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
         stack, workspace,
     ));
 
-    // **The branch the project hid is not drawn** — and its legend is the project's own words,
+    // **The branch the project hid is not drawn** - and its legend is the project's own words,
     // which is how a reader can tell the layer answered rather than the built-in.
     let text = a.picker_lines(100).join("\n");
     assert!(
@@ -148,7 +148,7 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
 }
 
 /// **A project layer that names a verb it did not declare is refused, and the head's own list is
-/// drawn** — the manifest is what a reviewer reads, and a view that reaches past it is not drawn.
+/// drawn** - the manifest is what a reviewer reads, and a view that reaches past it is not drawn.
 #[test]
 fn a_layer_that_uses_an_undeclared_act_falls_back() {
     let project = the_project_with_the_override();

@@ -1,8 +1,8 @@
-//! **What a fence that cites code looks like** — the one rule both halves of a citation read.
+//! **What a fence that cites code looks like** - the one rule both halves of a citation read.
 //!
 //! A model is told: *"an empty code fence labelled with the path and the line range is filled
 //! with those lines, numbered as the file numbers them"*. Two spellings of that fence are in
-//! use, and both are citations — the empty block:
+//! use, and both are citations - the empty block:
 //!
 //! ````text
 //! ```flow/connectors/postgres/pgdump_schema.go:242-248
@@ -15,7 +15,7 @@
 //! ```flow/connectors/postgres/pgdump_schema.go:242-248```
 //! ````
 //!
-//! **The daemon reads the lines and the head fills the fence, and neither can see the other** —
+//! **The daemon reads the lines and the head fills the fence, and neither can see the other**  -
 //! this module is read by `harnessd::citations` and by `tui::ui::transcript::cite`.
 //! So the two spellings, the label, and where a block ends live here, once, rather than in two
 //! scanners that drift apart. The drift was measured: a one-liner used to be read as an *opening*
@@ -35,7 +35,7 @@ fn begins(line: &str) -> bool {
 /// inside, and where the block ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fence<'a> {
-    /// The run that opened it — and the run that closes it.
+    /// The run that opened it - and the run that closes it.
     pub run: &'a str,
     /// The text between the runs, trimmed: the label. Empty for a bare fence.
     pub label: &'a str,
@@ -43,8 +43,8 @@ pub struct Fence<'a> {
     pub empty: bool,
     /// The closing run was found. On the same line, for a one-liner.
     pub closed: bool,
-    /// The block's last line: the closer's, the one-liner's own line, or — for a fence that was
-    /// never closed — the last line before the next fence began.
+    /// The block's last line: the closer's, the one-liner's own line, or - for a fence that was
+    /// never closed - the last line before the next fence began.
     pub end: usize,
 }
 
@@ -59,14 +59,14 @@ impl Fence<'_> {
 /// **The fence that opens at `lines[i]`, if one does.**
 ///
 /// A line opens a fence when, trimmed, it starts with a run. It is a **one-liner** when that
-/// same run closes on the line it opened, with something between them — the label is what is
+/// same run closes on the line it opened, with something between them - the label is what is
 /// between them, and the block is that one line. Otherwise the block runs to the next line that
 /// is exactly the run.
 ///
 /// **A fence that is never closed stops at the next line that begins a fence**, or at the end of
 /// the text, and says `closed: false`. That is the rule that keeps a reply's remainder from being
 /// swallowed: an unclosed fence cannot take a later block's closer for its own, and the block
-/// that later opener begins is still there to be read — which matters most in the case that
+/// that later opener begins is still there to be read - which matters most in the case that
 /// found it, an unclosed fence directly above a well-formed citation.
 pub fn fence_at<'a>(lines: &[&'a str], i: usize) -> Option<Fence<'a>> {
     let line: &'a str = lines.get(i)?.trim();
@@ -122,7 +122,7 @@ pub fn fence_at<'a>(lines: &[&'a str], i: usize) -> Option<Fence<'a>> {
 /// **A fence label's range**, split: the label's first word and the lines it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Range<'a> {
-    /// The word the label starts with — the label a citation is keyed by, since a label may say
+    /// The word the label starts with - the label a citation is keyed by, since a label may say
     /// more than the range (`src/main.rs:7 the entry point`).
     pub label: &'a str,
     /// The path, relative to the session's workspace or absolute.
@@ -134,8 +134,8 @@ pub struct Range<'a> {
 
 /// **The range a fence label names**, or `None` for an ordinary fence (`rust`, `sql`, empty).
 ///
-/// `path:N` or `path:N-M`, the label's first word; the path must look like one — it has a `/` or
-/// a `.` in it — so a label like `rust:2` is not read as a file. `M < N` is not a range.
+/// `path:N` or `path:N-M`, the label's first word; the path must look like one - it has a `/` or
+/// a `.` in it - so a label like `rust:2` is not read as a file. `M < N` is not a range.
 pub fn range(label: &str) -> Option<Range<'_>> {
     let word = label.split_whitespace().next()?;
     let (path, lines) = word.rsplit_once(':')?;
@@ -226,7 +226,7 @@ mod tests {
     }
 
     /// **The rule for a fence that is never closed**: it ends on the line before the next fence
-    /// begins, so the block below it is read on its own terms — closer included.
+    /// begins, so the block below it is read on its own terms - closer included.
     #[test]
     fn an_unclosed_fence_stops_at_the_next_fence_and_keeps_no_closer() {
         let text = "```a/b.go:1-2\nnever closed\n\n```c/d.go:3-4\n```\n";

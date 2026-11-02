@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-/// This process's CPU time so far, user and system together — `getrusage(RUSAGE_SELF)`.
+/// This process's CPU time so far, user and system together - `getrusage(RUSAGE_SELF)`.
 pub fn this_process() -> Duration {
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: `getrusage` writes into a `rusage` this frame owns, and `RUSAGE_SELF` cannot fail
@@ -27,7 +27,7 @@ pub fn this_process() -> Duration {
 pub fn of_pid(pid: u32) -> Option<Duration> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // `comm` (field 2) is parenthesised and may itself contain spaces and parentheses, so the
-    // fields are counted from AFTER the closing parenthesis — the standard way to parse this file.
+    // fields are counted from AFTER the closing parenthesis - the standard way to parse this file.
     let rest = stat.rsplit_once(')')?.1;
     let mut fields = rest.split_whitespace();
     // After `)` the first field is 3 (`state`), so 14 and 15 are the 12th and 13th here.
@@ -38,7 +38,7 @@ pub fn of_pid(pid: u32) -> Option<Duration> {
     Some(Duration::from_micros(ticks.saturating_mul(1_000_000) / hz))
 }
 
-/// The same quantity for THIS process, read the other way — so a test can show the two agree.
+/// The same quantity for THIS process, read the other way - so a test can show the two agree.
 pub fn procs_reading() -> Option<Duration> {
     of_pid(std::process::id())
 }
@@ -85,7 +85,7 @@ pub fn wait_until_idle_within(what: &str, ceiling: Duration) -> Duration {
     }
 }
 
-/// **How much CPU this process spends over `span`** — the one reading every window here is built
+/// **How much CPU this process spends over `span`** - the one reading every window here is built
 /// from.
 pub fn over(span: Duration) -> Duration {
     let before = this_process();

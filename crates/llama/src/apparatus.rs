@@ -37,7 +37,7 @@ pub fn present_file(path: &Path) -> Option<()> {
     )
 }
 
-/// **The load, once per version of the file** — and the loader's own words the first time it
+/// **The load, once per version of the file** - and the loader's own words the first time it
 /// fails, so a reader learns which half was missing rather than only that something was.
 fn loadable(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {

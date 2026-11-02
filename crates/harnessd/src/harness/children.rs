@@ -227,7 +227,7 @@ impl TaskSlot {
         }
     }
 
-    /// **The status as the slot holds it**, for a test that has to assert a settlement happened —
+    /// **The status as the slot holds it**, for a test that has to assert a settlement happened  -
     /// or did not overwrite an earlier one. `collect` is the real reader.
     #[cfg(test)]
     pub(crate) fn status(&self) -> letibot_tools::builtins::task::TaskStatus {
@@ -250,7 +250,7 @@ impl TaskSlot {
     pub(crate) fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
         let status = self.as_settled(status);
         // **The record moves with the slot**, from this one place every settlement passes
-        // through — see `SubagentRecord::settled` for the one judgement it makes (a stop during
+        // through - see `SubagentRecord::settled` for the one judgement it makes (a stop during
         // an orderly shutdown is the daemon's ending, not the child's).
         if let Some(record) = &self.record {
             record.settled(
@@ -326,8 +326,8 @@ impl<'a> AnswerOnce<'a> {
         self.slot.settle(self.with_the_line(status));
     }
 
-    /// The settlement as the parent will read it: the kill rule first, then — for a worktree
-    /// child whose tree is dirty — the line naming what its branch does not hold.
+    /// The settlement as the parent will read it: the kill rule first, then - for a worktree
+    /// child whose tree is dirty - the line naming what its branch does not hold.
     pub(crate) fn with_the_line(
         &self,
         status: letibot_tools::builtins::task::TaskStatus,
@@ -383,7 +383,7 @@ pub(crate) enum ChildCommand {
     /// Answer it: this is the operator or a head asking the child something, and a child is an agent with
     /// a session of its own, so the answer is a turn whether it lands mid-turn or between.
     Answer,
-    /// **The operator answered a row's question on this child's board** — applied here, where the
+    /// **The operator answered a row's question on this child's board** - applied here, where the
     /// board lives, and the line it makes is a turn (see [`crate::operator_ask`]).
     AnswerTodo,
     /// Hear it: a parent's message with no turn to steer it into, so the child's own turn is STARTED for
@@ -395,10 +395,10 @@ pub(crate) enum ChildCommand {
     /// [`HarnessTaskRunner`]: a parent owns its children's lifecycle, so the last thing this
     /// session does is stop what it started, and then it goes.
     Stop,
-    /// **`/clear`, answered on the thread that owns this child's harness** — a fresh
+    /// **`/clear`, answered on the thread that owns this child's harness** - a fresh
     /// conversation for the child, with its board, jobs, children and parent kept. No turn runs.
     Clear,
-    /// **`/nag` — the other slash verb a child answers itself**, because the clock it moves lives
+    /// **`/nag` - the other slash verb a child answers itself**, because the clock it moves lives
     /// on this thread (`ChildTurns::nag`) and nowhere else. A child is a session, and the
     /// operator's pause is per session: see [`crate::nag_pause`].
     Nag,
@@ -408,7 +408,7 @@ pub(crate) fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildComm
     use letibot_sessionlog::CommandKind as K;
     match kind {
         K::Prompt { .. } => ChildCommand::Answer,
-        // **The operator answered a question on this child's board** — the child's board is
+        // **The operator answered a question on this child's board** - the child's board is
         // this thread's, so the answer is applied here and the turn it makes runs here.
         K::AnswerTodo { .. } => ChildCommand::AnswerTodo,
         // An interrupt IS this child's stop, whether or not a turn is running: a running turn takes its own
@@ -438,13 +438,13 @@ pub(crate) fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildComm
         {
             ChildCommand::Nag
         }
-        // The rest is a session's own machinery — a compaction, a re-seat, a mode, the operator's
-        // door — and a child inherits all of it from its parent rather than owning a copy.
+        // The rest is a session's own machinery - a compaction, a re-seat, a mode, the operator's
+        // door - and a child inherits all of it from its parent rather than owning a copy.
         _ => ChildCommand::Leave("a door a child does not own"),
     }
 }
 
-/// **What a subagent's head is told about a command the child does not run** — pure, for the
+/// **What a subagent's head is told about a command the child does not run** - pure, for the
 /// reason [`child_command`] is: what it says is asserted without a daemon.
 pub(crate) fn child_leave_said(
     sub_id: &str,
@@ -574,7 +574,7 @@ impl Drop for SpawnAnnounced {
     }
 }
 
-/// **Why a child's serving loop ended** — the three exits of [`serve_child_under`], told apart
+/// **Why a child's serving loop ended** - the three exits of [`serve_child_under`], told apart
 /// because one of them is not an end: a PARKED child is in the store and comes back on the next
 /// prompt (`Config::child_park_after`), while a stopped or closed one is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -583,15 +583,15 @@ pub enum ChildExit {
     Closed,
     /// A stop reached it between turns; its children were stopped first.
     Stopped,
-    /// **Idle past the park window with nothing alive under it** — parked as store-only. See
+    /// **Idle past the park window with nothing alive under it** - parked as store-only. See
     /// `Config::child_park_after` for the policy and what reopens it.
     Parked,
-    /// **Held for its children, and none is left unsettled** — the hold's own end
+    /// **Held for its children, and none is left unsettled** - the hold's own end
     /// (`serve_child_with`'s `hold`): the caller now gives the child's newest answer.
     Settled,
 }
 
-/// [`serve_child`] with the clock handed in — the tests' door, and the only difference between
+/// [`serve_child`] with the clock handed in - the tests' door, and the only difference between
 /// a child this daemon parks and one a test parks: the WINDOW is injected so the schedule can
 /// be driven without sleeping through `TODO_NAG_AFTER`, and nothing else varies.
 pub fn serve_child_under(
@@ -610,17 +610,17 @@ pub fn serve_child_under(
 pub struct ChildTurns {
     registry: Arc<letibot_sessionlog::registry::Registry>,
     id: String,
-    /// The idle plan-check — the same [`crate::sessions::TodoNagClock`] the daemon keeps for its
+    /// The idle plan-check - the same [`crate::sessions::TodoNagClock`] the daemon keeps for its
     /// own sessions, kept here because this thread is the only one that may drive the harness.
     nag: crate::sessions::TodoNagClock,
     /// The board's version is how this loop sees a write that ran no turn: a parent's `todo_write
     /// target=` moves the board from the parent's thread and wakes this reader, and only one of that and
     /// a wake that found nothing should re-arm the clock.
     board_version: u64,
-    /// When this child's abandoned-call sweep is due — the child's own copy of the daemon's
+    /// When this child's abandoned-call sweep is due - the child's own copy of the daemon's
     /// `sweep_at`, armed by every turn and run on this thread when it comes due.
     sweep_at: Option<std::time::Instant>,
-    /// Whether this child's monitor waiter is running — one per session, `Sessions::armed`'s
+    /// Whether this child's monitor waiter is running - one per session, `Sessions::armed`'s
     /// rule.
     wake_armed: bool,
     /// The child's row in the store, which every turn AFTER its first moves back to `running` for its
@@ -645,7 +645,7 @@ impl ChildTurns {
         }
     }
 
-    /// The child's record, for its later turns to move — see the field.
+    /// The child's record, for its later turns to move - see the field.
     fn with_record(mut self, record: Option<crate::subagent_record::SubagentRecord>) -> Self {
         self.record = record;
         self
@@ -659,7 +659,7 @@ impl ChildTurns {
         let moved = v != self.board_version;
         self.board_version = v;
         self.nag.hold(sub.nag_hold());
-        // **The queue's census too, read the same way and for the same reason** — and empty for a
+        // **The queue's census too, read the same way and for the same reason** - and empty for a
         // child, because a child is not the project of its repository (`Harness::stuck_census`),
         // so a subagent's clock speaks about its plan and nothing else.
         self.nag.queue(sub.queue_news());
@@ -682,7 +682,7 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
         self.sweep_at = Some(self.sweep_at.map_or(at, |prev| prev.min(at)));
     }
 
-    /// **The parent or a head has spoken: the check is earned back** —
+    /// **The parent or a head has spoken: the check is earned back**  -
     /// `Sessions::note_operator_prompt`'s rule, for the session whose operator is whoever
     /// prompts it.
     fn spoken_to(&mut self, _h: &mut Harness) {
@@ -718,7 +718,7 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
     }
 
     fn turn_ended(&mut self, h: &mut Harness, door: &crate::turn_tail::Door) {
-        // **Said even when the turn failed** — the metronome rule: a check the model never
+        // **Said even when the turn failed** - the metronome rule: a check the model never
         // answered must not come back every window, it is the same notice and the plan has not
         // moved. Recorded BEFORE the re-arm, which reads it.
         match door {
@@ -739,7 +739,7 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
     }
 }
 
-/// [`serve_child`]'s loop, with the owner's state — built by the caller so a child's FIRST turn
+/// [`serve_child`]'s loop, with the owner's state - built by the caller so a child's FIRST turn
 /// (its task, run in `run_to_completion`) goes through the same owner as every later one.
 pub(crate) fn serve_child_with(
     sub: &mut Harness,
@@ -752,7 +752,7 @@ pub(crate) fn serve_child_with(
     use letibot_sessionlog::hub::OwnWork;
     // **The park clock** (R68's idle-child policy, `Config::child_park_after`): restarted by
     // every piece of work this loop takes, so it measures idleness and not age. `None` is the
-    // old loop — a child that waits for its hub to close, however long that is.
+    // old loop - a child that waits for its hub to close, however long that is.
     let park_after = sub.config().child_park_after;
     let mut park_at = park_after.map(|d| std::time::Instant::now() + d);
     // The first turn just ended on this thread, so the clock starts from its end: the same arm the daemon
@@ -772,7 +772,7 @@ pub(crate) fn serve_child_with(
             .min();
         let work = hub.take_own_work_until(deadline);
         let now_after = std::time::Instant::now();
-        // **The sweep, on the thread that owns the harness** — `Sessions::sweep_abandoned_calls`
+        // **The sweep, on the thread that owns the harness** - `Sessions::sweep_abandoned_calls`
         // for a session the daemon holds, here for a child, which the daemon's sweep never
         // reached. It is not activity: nothing was asked of the child.
         if matches!(work, OwnWork::TimedOut) && turns.sweep_at.is_some_and(|at| at <= now_after) {
@@ -788,7 +788,7 @@ pub(crate) fn serve_child_with(
             && at <= now_after
         {
             // Nothing armed, the window spent: park unless something the harness owns, or a head
-            // watching it, says the session is still in use — then look again a window later.
+            // watching it, says the session is still in use - then look again a window later.
             if turns.nag.due_at().is_none()
                 && hub.attached_heads() == 0
                 && sub.park_refusal().is_none()
@@ -924,12 +924,12 @@ pub(crate) fn serve_child_with(
                     detail,
                     compaction: None,
                 });
-                // No turn ran and the board did not move — `Leave`'s reading of the clock.
+                // No turn ran and the board did not move - `Leave`'s reading of the clock.
                 turns.rearm(sub, false);
             }
             // **`/nag` on this child**, answered here and published as the worker publishes every
             // verb's reply (`slash` / `slash_refused`, the line echoed first), then the clock
-            // re-armed with whatever the verb left — the pause's end, or the plan's own check.
+            // re-armed with whatever the verb left - the pause's end, or the plan's own check.
             ChildCommand::Nag => {
                 let line = match &kind {
                     letibot_sessionlog::CommandKind::Slash { line } => line.clone(),
@@ -1020,7 +1020,7 @@ pub(crate) struct HarnessTaskRunner {
     /// queue that asked it.
     pub(crate) reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
     /// The subagents this session has started, in the order it started them.
-    /// Shared with every clone of this runner — the thread that runs a child
+    /// Shared with every clone of this runner - the thread that runs a child
     /// holds one, and so does the tool that collects it.
     pub(crate) slots: TaskSlots,
     /// The watcher set a child of THIS session joins (R58). A slot because the runner is built before the
@@ -1180,7 +1180,7 @@ pub fn subagent_model_in(
             label: "local".into(),
             provider: None,
             // The daemon's own server window: the number the parent remembered on its way
-            // out to a provider, or whatever `None` means — *nobody measured one* — rather
+            // out to a provider, or whatever `None` means - *nobody measured one* - rather
             // than the cloud model's number wearing the local child's name.
             window: local_window.flatten(),
             // `local` names a DECLARED model; bare `local` is the daemon's own server,
@@ -1215,7 +1215,7 @@ pub fn subagent_model_in(
             });
         }
         // `local` is handled above by name, so reaching here means the store spelled a
-        // local switch some other way — a resolver bug, refused rather than guessed.
+        // local switch some other way - a resolver bug, refused rather than guessed.
         crate::slash::ModelChoice::OwnServer => {
             return Err(vec![format!(
                 "`{want}` resolved to no provider and no model"
@@ -1226,7 +1226,7 @@ pub fn subagent_model_in(
 }
 
 /// A child seated on a provider configuration already in hand: the label and window the
-/// catalogue gives it, and the configuration — key included — as it is.
+/// catalogue gives it, and the configuration - key included - as it is.
 pub(crate) fn provider_model(
     pc: crate::config::ProviderConfig,
 ) -> Result<SubagentModel, Vec<String>> {
@@ -1308,7 +1308,7 @@ pub(crate) fn repos_under(root: &std::path::Path, depth: usize) -> Vec<std::path
 }
 
 /// The repositories a refusal names, relative to the session root: ` Repositories here: `a`,
-/// `b/c`.` — or nothing when there are none.
+/// `b/c`.` - or nothing when there are none.
 pub(crate) fn name_repos(root: &str, repos: &[std::path::PathBuf]) -> String {
     if repos.is_empty() {
         return String::new();
@@ -1427,7 +1427,7 @@ impl HarnessTaskRunner {
             .map(|(_, s)| s.clone())
     }
 
-    /// **This runner's store, for the children's records** — the same lazily opened connection
+    /// **This runner's store, for the children's records** - the same lazily opened connection
     /// the merge queue's enqueue uses (`merge_store`), so a runner holds one. `None` without a
     /// store: nothing is recorded and nothing can be brought back.
     fn run_store(&self) -> Option<crate::subagent_record::RunStore> {
@@ -1456,7 +1456,7 @@ impl HarnessTaskRunner {
             .unwrap_or_default()
     }
 
-    /// [`Self::unrecorded_children`] for one handle — the same gatekeeper rule and the same store,
+    /// [`Self::unrecorded_children`] for one handle - the same gatekeeper rule and the same store,
     /// and the same window (the store's own): the keyed read answers for a child from before the
     /// store recorded any, and says which class it is in rather than dropping it.
     fn unrecorded_child(&self, handle: &str) -> Option<letibot_tokencore::store::UnrecordedChild> {
@@ -1532,7 +1532,7 @@ impl HarnessTaskRunner {
         record: Option<crate::subagent_record::SubagentRecord>,
         restart: Option<String>,
     ) -> Result<String, String> {
-        // **The child's name** — the spec's (a fresh spawn's, made unique by `start`), else the one
+        // **The child's name** - the spec's (a fresh spawn's, made unique by `start`), else the one
         // its record would give it (`recorded_slug`'s rule: the worktree branch, then the prompt).
         let slug = spec
             .slug
@@ -1585,7 +1585,7 @@ impl HarnessTaskRunner {
                     restart.as_deref(),
                 );
                 finish_child_thread(&slot, ran);
-                // **And this is where the child's thread ends — the fact stopping needs.** See
+                // **And this is where the child's thread ends - the fact stopping needs.** See
                 // [`TaskSlot::exited`]: a child that answered is still alive (it parks and can be
                 // asked more), so `stop_all` cannot read "has an answer" as "is gone".
                 slot.mark_exited();
@@ -1612,7 +1612,7 @@ impl HarnessTaskRunner {
         run: &letibot_tokencore::store::SubagentRun,
         mut spec: letibot_tools::builtins::task::TaskSpec,
     ) -> Result<(), String> {
-        // **A record from before names comes back under the name its listing gives it** — unique
+        // **A record from before names comes back under the name its listing gives it** - unique
         // among its parent's children (`recorded_slugs`), not the bare derivation two siblings
         // may share.
         if spec.slug.is_none() {
@@ -1850,8 +1850,8 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
             return Err(why);
         }
-        // **The id is minted here rather than inside the body** — it is what this call returns
-        // and the body has not run yet — **and it is minted UNIQUELY, which is the half that
+        // **The id is minted here rather than inside the body** - it is what this call returns
+        // and the body has not run yet - **and it is minted UNIQUELY, which is the half that
         // was missing.** See [`mint_sub_id`] for the three-children-one-id defect.
         let sub_id = mint_sub_id(&self.registry, &self.base.session_id, |id| {
             self.slots
@@ -1893,7 +1893,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         self.spawn_child(sub_id, prompt, &spec, record, None)
     }
 
-    /// **Bring back the children a daemon that is gone left mid-task** — see
+    /// **Bring back the children a daemon that is gone left mid-task** - see
     /// `crate::subagent_record` and [`HarnessTaskRunner::bring_back_recorded`].
     fn resume_recorded(
         &self,
@@ -1902,7 +1902,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         self.bring_back_recorded(mode)
     }
 
-    /// **`task_resume`: bring back ONE child a daemon that is gone left unfinished** — and the
+    /// **`task_resume`: bring back ONE child a daemon that is gone left unfinished** - and the
     /// door the automatic restore goes through too ([`HarnessTaskRunner::resume_run`]). The
     /// rule for what may come back is `crate::subagent_record::resumable`.
     fn resume(&self, handle: &str) -> Result<String, String> {
@@ -1961,7 +1961,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         use letibot_tools::builtins::task::{
             WorktreeHandle, WorktreePlacement, slug_from_prompt, worktree_branch, worktree_path,
         };
-        // **The depth cap, refused by name before any tree is arranged** — the same
+        // **The depth cap, refused by name before any tree is arranged** - the same
         // check [`Self::start`] makes, done here first so a child that cannot be
         // spawned does not get a worktree created for it.
         if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
@@ -2031,7 +2031,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             let base_sha = git_in(&workspace, &["rev-parse", &base])
                 .map_err(|e| format!("the base `{base}` could not be resolved: {e}"))?;
             // **The worktree, created before the child is spawned.** A failure here is
-            // a spawn that fails, named — never a child run in the parent's tree and
+            // a spawn that fails, named - never a child run in the parent's tree and
             // called placed.
             git_in(
                 &workspace,
@@ -2407,7 +2407,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             match out.iter_mut().find(|c| c.handle == run.child_id) {
                 Some(c) if c.slug.is_none() => c.slug = Some(slug),
                 Some(_) => {}
-                // **A tool's helper is not listed from its record** — it was never the model's
+                // **A tool's helper is not listed from its record** - it was never the model's
                 // child (`TaskSpec::helper`), and twelve `digest` readers listed after a restart
                 // were twelve rows the model had never heard of.
                 None if crate::subagent_record::is_helper(&run) => {}
@@ -2430,7 +2430,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             out.push(ChildName {
                 handle: child.id,
                 // **No name**: a child with no record was never given one that anything wrote
-                // down — its session's `title` is the first line of its brief, not a slug — so it
+                // down - its session's `title` is the first line of its brief, not a slug - so it
                 // answers to its handle, which is what the model was handed when it started it.
                 slug: None,
                 own: true,
@@ -2626,7 +2626,7 @@ impl HarnessTaskRunner {
         ))
     }
 
-    /// **This session's point, as it stands now** — see the field.
+    /// **This session's point, as it stands now** - see the field.
     fn point(&self) -> letibot_tools::mode::Mode {
         *self.point.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -2637,7 +2637,7 @@ impl HarnessTaskRunner {
     pub(crate) fn enqueue_finished(&self, sub_id: &str) {
         match self.enqueue_entry(sub_id) {
             Ok(Some(entry)) => {
-                // **The pane's move**, for every session — see the doc above for why this one is
+                // **The pane's move**, for every session - see the doc above for why this one is
                 // broadcast and the sentence below is not.
                 self.registry
                     .broadcast(letibot_sessionlog::SessionEvent::QueueMoved {
@@ -2715,7 +2715,7 @@ impl HarnessTaskRunner {
             );
         }
         let store = cell.as_ref().expect("just opened");
-        // **The row, built by the queue's own function** — the repository the worktree is in,
+        // **The row, built by the queue's own function** - the repository the worktree is in,
         // the project's target (decision 12), and the head as it is now.
         crate::mergequeue::review::enqueue_finished(
             store,
@@ -2727,7 +2727,7 @@ impl HarnessTaskRunner {
         )
     }
 
-    /// **Where the child's tools run, and the tree a VM copies** — the two answers a `task`
+    /// **Where the child's tools run, and the tree a VM copies** - the two answers a `task`
     /// gives before anything is minted or opened.
     fn child_placement(
         &self,
@@ -2973,7 +2973,7 @@ impl HarnessTaskRunner {
         // Built, not registered: nothing can switch into it, and the worker is not
         // told to open it, until `open_with_registry` below has succeeded.
         let sub_hub = self.registry.new_hub(sub_id.clone());
-        // **This thread is the session's one reader** (R68.1) — marked before the hub can be
+        // **This thread is the session's one reader** (R68.1) - marked before the hub can be
         // adopted, so there is no instant in which the daemon's worker can see the child and take
         // a command off its queue. See `letibot_sessionlog::hub::Owner`.
         sub_hub.owned_by_its_own_thread();
@@ -2983,7 +2983,7 @@ impl HarnessTaskRunner {
             session_id: sub_id.clone(),
             title: title.clone(),
             seat,
-            // **The caller's word** — the only source that exists before the child does (it is
+            // **The caller's word** - the only source that exists before the child does (it is
             // minted, configured and opened before anything registers it). The rule itself is
             // `Registry::parent_for`, applied at the child's open.
             parent_session_id: Some(parent.clone()),
@@ -3003,7 +3003,7 @@ impl HarnessTaskRunner {
             provider: sub_provider,
             ..self.base.clone()
         };
-        // **The skills this child was started with**, when the call named any — the child's own
+        // **The skills this child was started with**, when the call named any - the child's own
         // list REPLACES the one it inherited through `..self.base.clone()`, so a parent that was
         // started with three does not hand all three to a child asked for one.
         if !spec.skills.is_empty() {
@@ -3177,7 +3177,7 @@ impl HarnessTaskRunner {
         let sub_adjudicator = crate::answers::SubagentAdjudicator::new(
             letibot_sessionlog::event::SubagentAsk {
                 handle: sub_id.clone(),
-                // The task's first line — the same title the picker row and the parent's
+                // The task's first line - the same title the picker row and the parent's
                 // `Subagent` event carry, so the card names the child the way every other
                 // surface does.
                 task: title.clone(),
@@ -3200,7 +3200,7 @@ impl HarnessTaskRunner {
         // no harness for it, and the daemon serves it by handing the wake to the thread that owns it.
         self.registry
             // **Cloned, because the serving loop below needs it back**: this hub is the child's
-            // queue, and `serve_child` blocks on it until the daemon closes it — so the same
+            // queue, and `serve_child` blocks on it until the daemon closes it - so the same
             // `Arc` the registry was given is the one the child serves from.
             .adopt(sub_hub.clone(), title.clone(), wiring, Some(parent.clone()))
             // A taken id here is a MINTING bug, and it says so: `mint_sub_id` is supposed to make this
@@ -3268,7 +3268,7 @@ impl HarnessTaskRunner {
         // its session was reopened from the store under the same id, so the conversation it continues is its own.
         // A child whose daemon died before its first row has nothing to continue and is asked its task.
         if restart.is_some() {
-            // **And a child of a child comes back with its parent** — this session's own records
+            // **And a child of a child comes back with its parent** - this session's own records
             // are read the way a root's are when the daemon opens it.
             sub.restore_after_restart();
         }
@@ -3294,7 +3294,7 @@ impl HarnessTaskRunner {
                 // running with nobody to report to, and a VM child keeps its VM up while it runs, so orphaned
                 // grandchildren held VM slots for a day. Stopped before the backend is closed, as a stop does.
                 a_child_that_ends_stops_its_own(Some(&sub.subagents), &sub.hub);
-                // The backend is closed on this exit too — the other two close it below — so a
+                // The backend is closed on this exit too - the other two close it below - so a
                 // child whose first turn failed does not leave its watchers and cgroups behind.
                 sub.close_backend();
                 return Err(fail(e.to_string()));
@@ -3536,7 +3536,7 @@ mod subagent_model_tests {
     }
     use super::*;
 
-    /// **`local` is the daemon's own server and needs no key** — the deepseek→local half of
+    /// **`local` is the daemon's own server and needs no key** - the deepseek→local half of
     /// the operator's ask, and the half that could never fail for a missing credential.
     #[test]
     fn local_resolves_to_no_provider_and_the_servers_own_window() {
@@ -3556,7 +3556,7 @@ mod subagent_model_tests {
     }
 
     /// **A name neither `/models` nor the catalogue knows is refused, and nothing is
-    /// spawned** — with the sentence naming `local` and the verb that lists providers, so
+    /// spawned** - with the sentence naming `local` and the verb that lists providers, so
     /// the model can correct itself rather than guess.
     #[test]
     fn an_unknown_provider_is_refused_by_name_with_the_fix() {
@@ -3590,7 +3590,7 @@ mod subagent_model_tests {
             Some("deepseek-flash")
         );
         // **A bare provider takes the preset's default model**, the same rule `/models
-        // PROVIDER` follows — one resolver, so the child and the session cannot disagree
+        // PROVIDER` follows - one resolver, so the child and the session cannot disagree
         // about what a bare name means.
         let bare = subagent_model("deepseek", None).expect("the key is held");
         assert!(bare.label.starts_with("deepseek/"), "{}", bare.label);

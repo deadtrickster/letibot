@@ -18,7 +18,7 @@ fn the_scratch_dir_is_per_user_and_never_the_flat_tmp_spelling() {
             .is_some_and(|n| n.to_string_lossy().starts_with("scratch-")),
         "the last component is the process's own: {said}"
     );
-    // Under the runtime dir when there is one — both components of it.
+    // Under the runtime dir when there is one - both components of it.
     if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
         assert!(
             s.starts_with(std::path::Path::new(&rt).join("letibot")),
@@ -55,13 +55,13 @@ fn the_depth_cap_refuses_the_spawn_one_past_it_by_name() {
         why.contains("Nothing was started"),
         "a refusal is not a maybe: {why}"
     );
-    // A cap of 0 refuses even a root — *no nesting*, read honestly rather than as
+    // A cap of 0 refuses even a root - *no nesting*, read honestly rather than as
     // *unlimited*.
     assert!(super::subagent_depth_refusal(0, 0).is_some());
 }
 
 /// A port is not optional and the refusal says so, because the alternative is
-/// guessing 8080 — which is the port the three LOCAL units share, so the guess
+/// guessing 8080 - which is the port the three LOCAL units share, so the guess
 /// would land on this box while the operator was naming another one.
 #[test]
 fn a_fleet_url_without_a_port_is_refused_by_name() {
@@ -252,7 +252,7 @@ fn a_vm_child_of_a_folder_of_repositories_copies_the_one_it_names() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **What a held answer waits on: this session's children still on their task** — not one that
+/// **What a held answer waits on: this session's children still on their task** - not one that
 /// has answered and sits idle (it would hold for ever), not one whose thread has ended, and not
 /// a child of another session.
 #[test]
@@ -277,7 +277,7 @@ fn the_hold_waits_on_children_still_on_their_task_and_no_others() {
     assert_eq!(unsettled_children(&slots, "me"), vec!["a".to_string()]);
 }
 
-/// **A re-seat names what changed inside a tool**, not only that it did — the two changes of
+/// **A re-seat names what changed inside a tool**, not only that it did - the two changes of
 /// 2026-10-15: `monitor` gained `github`, and `todo_write`'s needs gained the `monitor` kind and its
 /// `name`. Only wording moved: `wording`.
 #[test]

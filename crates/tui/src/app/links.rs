@@ -29,7 +29,7 @@ pub(crate) fn osc8_spans(row: &str) -> Vec<(usize, usize, String)> {
             pointer::Piece::Cell(_, w) => col += w,
         }
     }
-    // An opener whose closer the row never got — a cut row, which `rano::width::text::truncate`
+    // An opener whose closer the row never got - a cut row, which `rano::width::text::truncate`
     // closes, so this is the belt under that pair of braces. The span is the rest of the row.
     if let Some((url, from)) = open
         && col > from
@@ -125,7 +125,7 @@ fn line_suffix(ps: &[pointer::Piece<'_>], j: usize) -> Option<(usize, String)> {
     (!digits.is_empty()).then(|| (k - j, digits))
 }
 
-/// The characters a path in prose is made of — rano's `link_words` word without `#`, and without
+/// The characters a path in prose is made of - rano's `link_words` word without `#`, and without
 /// `:`: the colon is the line's, which is the whole of what this pass is for.
 fn path_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | '+')
@@ -147,7 +147,7 @@ fn render(ps: &[pointer::Piece<'_>]) -> String {
 /// compared: the head that drew the link is this process, so the path is this machine's.
 pub(crate) fn file_target(url: &str) -> Option<(String, usize)> {
     let rest = url.strip_prefix("file://")?;
-    // `file://host/path` — the host has no `/` in it, so the first one starts the path.
+    // `file://host/path` - the host has no `/` in it, so the first one starts the path.
     let path = &rest[rest.find('/')?..];
     let (path, line) = match path.rsplit_once(':') {
         Some((p, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {

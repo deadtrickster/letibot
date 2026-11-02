@@ -22,7 +22,7 @@ fn a_save_keeps_a_key_this_head_never_loaded() {
     .unwrap();
 
     // This one loaded the file BEFORE that key existed, then saves for its own
-    // reasons — a config row toggled, say.
+    // reasons - a config row toggled, say.
     let mut a = app();
     a.prefs_path = Some(path.clone());
     a.dismissed = vec!["w|promote_idle|2|bbbb".into()];
@@ -125,7 +125,7 @@ fn the_config_pane_edits_head_rows_in_place_and_persists_them() {
     for _ in 0..7 {
         a.key(Key::Down);
     }
-    // The next name after `writes allowed` in the DAEMON's list — the head
+    // The next name after `writes allowed` in the DAEMON's list - the head
     // has no list of its own any more.
     assert_eq!(
         a.key(Key::Enter),
@@ -190,7 +190,7 @@ fn prefs_on_disk_are_applied_at_start() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The format is the operator's, and changing it re-renders the SAME reading** — the
+/// **The format is the operator's, and changing it re-renders the SAME reading** - the
 /// `/config` cycle through its three stops, each persisted, none of them re-reading the
 /// repository.
 #[test]
@@ -262,7 +262,7 @@ fn a_row_number_marks_the_ask_and_the_quit_card_and_enter_answers() {
         1,
         testing::requested("r1", "`bash` wants exec access"),
     )));
-    // **R90.2: on a decision the row number MARKS the row** — the numbers are drawn — and
+    // **R90.2: on a decision the row number MARKS the row** - the numbers are drawn - and
     // Enter answers it; the quit card's digits mark too (R90.6).
     assert_eq!(a.key(Key::Char('2')), None, "the digit is a move");
     assert_eq!(a.sel, 1);
@@ -288,7 +288,7 @@ fn a_row_number_marks_the_ask_and_the_quit_card_and_enter_answers() {
     assert!(b.quit_card && !b.quit, "nothing left yet");
     assert_eq!(b.key(Key::Enter), Some(Action::StopDaemon));
 
-    // Out of range does nothing — it is not an answer and not a keystroke
+    // Out of range does nothing - it is not an answer and not a keystroke
     // the card invents a meaning for.
     let mut c = app();
     c.clock(1_000);
@@ -460,7 +460,7 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
         name: "allow-all".into(),
         asked_by: "mcp".into(),
     });
-    // The same warning, and the asking head named — a card a machine raised must not read as
+    // The same warning, and the asking head named - a card a machine raised must not read as
     // the person's own keystroke.
     let screen = a.screen(120, 40).join("\n");
     assert!(screen.contains("privilege escalation"), "{screen}");
@@ -554,7 +554,7 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
 }
 
 /// **An older daemon greens what it always greened.** No `models.keyless` row means
-/// a daemon from before it existed, and the fallback is `local` alone — which is
+/// a daemon from before it existed, and the fallback is `local` alone - which is
 /// precisely the behaviour this head had before, so nothing reads as newly broken.
 #[test]
 fn without_the_keyless_row_local_is_still_ready_and_nothing_else_new_is() {
@@ -586,7 +586,7 @@ fn every_named_mode_opens_with_its_own_row_highlighted() {
         r#"["read-only","always-ask","writes allowed","automode","automode-edits","allow-all"]"#;
     let choices: Vec<String> = serde_json::from_str(CHOICES).unwrap();
     // `(value, the row it must land on)`. The last is the consented spelling of `allow-all`,
-    // whose value carries a parenthesised note — the other shape of *not a choice verbatim*.
+    // whose value carries a parenthesised note - the other shape of *not a choice verbatim*.
     for (value, at) in [
         ("read-only", 0usize),
         ("always-ask", 1),
@@ -622,7 +622,7 @@ fn every_named_mode_opens_with_its_own_row_highlighted() {
             .iter()
             .find(|l| l.contains('\u{25b8}') && l.contains("  "))
             .expect("a marked row");
-        // **The two facts together, on ONE row** — where am I, and what does Enter take. The
+        // **The two facts together, on ONE row** - where am I, and what does Enter take. The
         // defect broke both, and asserting either alone would have passed for one of them.
         assert!(
             row.contains('\u{2190}') && row.contains("now"),
@@ -652,7 +652,7 @@ fn a_mode_whose_name_extends_another_does_not_seed_on_the_shorter_one() {
         named_choice("automode (this box, consented)", &choices),
         Some("automode")
     );
-    // A value that names nothing is nothing — the render then marks no row at all, which is
+    // A value that names nothing is nothing - the render then marks no row at all, which is
     // the honest answer for a current value the daemon did not offer as a choice.
     assert_eq!(named_choice("something-else", &choices), None);
 }
@@ -740,7 +740,7 @@ fn the_mode_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     assert_eq!(a.mode_sel, 5);
     // `allow-all` is the one point the head holds for a confirmation, so Enter
     // closes the list and puts the question up instead of sending it. `y` is
-    // what sends it — see `allow_all_asks_before_it_is_sent_and_nothing_else_does`.
+    // what sends it - see `allow_all_asks_before_it_is_sent_and_nothing_else_does`.
     assert_eq!(a.key(Key::Enter), None);
     assert!(a.pick.is_none(), "taking a mode closes the list");
     assert_eq!(
@@ -753,7 +753,7 @@ fn the_mode_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
 }
 
 /// The screen row a setting card's value `n` (1-based, as the card numbers it) was drawn on,
-/// found on the frame — never counted, which is how the click arithmetic went wrong.
+/// found on the frame - never counted, which is how the click arithmetic went wrong.
 fn value_row(frame: &[String], n: usize, name: &str) -> u16 {
     let label = format!("{n}  {name}");
     frame
@@ -812,7 +812,7 @@ fn a_click_on_the_mode_card_picks_the_row_under_the_pointer() {
 
 /// **A click on the setting card is measured from where the card was drawn** (R67 item 3).
 /// The card's first row was taken from the top of the whole chrome, so every line pushed above
-/// it — the daemon link line here — shifted every click by that many rows.
+/// it - the daemon link line here - shifted every click by that many rows.
 #[test]
 fn a_click_on_the_mode_card_lands_under_a_link_line() {
     let mut a = app();
@@ -839,7 +839,7 @@ fn a_click_on_the_mode_card_lands_under_a_link_line() {
 }
 
 /// **Every value of every setting card is clickable, its wrapped meaning included** (R67 item 3).
-/// `/verbosity` carries a `why` under each value, wrapped, so one row is not one value — and the
+/// `/verbosity` carries a `why` under each value, wrapped, so one row is not one value - and the
 /// count of clickable rows was the MODE row's choices whatever the card was about.
 #[test]
 fn a_click_on_the_verbosity_card_picks_the_value_drawn_there() {
@@ -881,7 +881,7 @@ fn the_mode_card_steps_aside_while_a_decision_is_up() {
             .any(|l| l.contains("the mode this session runs under"))
     );
     // A permission ask arrives: it takes the card slot and the ladder
-    // keys — a second cursor under it would be a cursor nothing moves —
+    // keys - a second cursor under it would be a cursor nothing moves  -
     // and the mode card waits, then comes back once it is answered.
     a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
     assert!(
@@ -911,7 +911,7 @@ fn the_mode_picker_takes_a_row_number_a_name_and_refuses_an_ambiguous_prefix() {
     ));
     a.apply(mode_settings("read-only", MODES));
     assert_eq!(a.command("mode"), Some(Action::Settings));
-    // A row number takes that row **on the keypress** — it is focus and
+    // A row number takes that row **on the keypress** - it is focus and
     // enter in one, which is what a numbered list means. See `digit_row`.
     assert_eq!(
         a.key(Key::Char('5')),
@@ -931,7 +931,7 @@ fn the_mode_picker_takes_a_row_number_a_name_and_refuses_an_ambiguous_prefix() {
             consented: false
         })
     );
-    // Reopened: the daemon's spelling is not the only one accepted — the
+    // Reopened: the daemon's spelling is not the only one accepted - the
     // fold is `Mode::parse`'s own, so what `/mode NAME` takes the list takes.
     assert_eq!(a.command("mode"), Some(Action::Settings));
     typed(&mut a, "automode_edits");
@@ -996,7 +996,7 @@ fn a_mode_picker_without_choices_says_so() {
     let screen = a.screen(110, 24).join("\n");
     assert!(screen.contains("has not named its modes"), "{screen}");
     // Enter says so rather than falling through to the composer, and a
-    // typed name is refused the same way — `/mode NAME` is still the door.
+    // typed name is refused the same way - `/mode NAME` is still the door.
     assert_eq!(a.key(Key::Enter), None);
     let notice = a.notice.clone().unwrap();
     assert!(notice.contains("does not send the mode list"), "{notice}");
@@ -1092,7 +1092,7 @@ fn the_stood_down_row_sets_and_clears_the_resident_line() {
         choices: Vec::new(),
         tools: Vec::new(),
     };
-    // The guard's finding, as the daemon renders it: the `off —` spelling,
+    // The guard's finding, as the daemon renders it: the `off  - ` spelling,
     // with the pair.
     a.apply(ServerFrame::Settings {
         rows: vec![stood_row(
@@ -1108,7 +1108,7 @@ fn the_stood_down_row_sets_and_clears_the_resident_line() {
         line.contains("no room"),
         "the line carries the daemon's own why, not a paraphrase: {line}"
     );
-    // A bare `off` — the operator's own flag — is not the guard's finding and
+    // A bare `off` - the operator's own flag - is not the guard's finding and
     // must not draw the line.
     a.apply(ServerFrame::Settings {
         rows: vec![stood_row("off")],
@@ -1184,7 +1184,7 @@ fn a_paused_plan_check_draws_a_resident_line_until_it_is_resumed() {
     a.apply(ServerFrame::Event(e));
     assert!(a.nags_paused.is_none(), "a resume takes the line away");
 
-    // And `nags_paused` draws it before the settings name its end — and asks for them.
+    // And `nags_paused` draws it before the settings name its end - and asks for them.
     let e = hub.publish(letibot_sessionlog::SessionEvent::Warning {
         code: "nags_paused".into(),
         detail: "nags PAUSED by the operator until you resume them".into(),
@@ -1199,7 +1199,7 @@ fn a_paused_plan_check_draws_a_resident_line_until_it_is_resumed() {
     );
 }
 
-/// **A paused session is marked in the picker**, from its brief's `nags_paused` — the session
+/// **A paused session is marked in the picker**, from its brief's `nags_paused` - the session
 /// list is where a silent board on ANOTHER session would otherwise be read as a broken one.
 #[test]
 fn the_picker_marks_a_paused_session() {
@@ -1224,7 +1224,7 @@ fn the_picker_marks_a_paused_session() {
     );
 }
 
-/// **The todos pane's `n` is `/nag pause`, and `/nag resume` while paused** — declared in the
+/// **The todos pane's `n` is `/nag pause`, and `/nag resume` while paused** - declared in the
 /// binding table, so the hint bar names it.
 #[test]
 fn n_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
@@ -1251,7 +1251,7 @@ fn n_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
     );
 }
 
-/// **The todos pane's `d` is a row here too** — every switch this head keeps is on `/config`, and
+/// **The todos pane's `d` is a row here too** - every switch this head keeps is on `/config`, and
 /// the row and the pane's bar read the same flag, so the two cannot disagree about which way it
 /// stands. Enter goes through the pane's own toggle, which is what writes the file.
 #[test]

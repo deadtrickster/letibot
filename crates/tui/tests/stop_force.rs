@@ -22,7 +22,7 @@ const FIXTURE_SOCKET: &str = "LETIBOT_TEST_STOP_FORCE_SOCKET";
 const OLDER: u32 = PROTOCOL_VERSION - 2;
 
 // ---------------------------------------------------------------------------
-// The fixture daemon — this executable, run again
+// The fixture daemon - this executable, run again
 // ---------------------------------------------------------------------------
 
 /// **The daemon process.** A no-op in an ordinary test run; the daemon when this executable is
@@ -231,7 +231,7 @@ fn step(link: &mut Link, a: &mut App) {
 }
 
 /// Attach exactly as the binary does: open, take the `Hello`, and seed the head's pid from
-/// `SO_PEERCRED` on this very connection — the fixture's pid, read off the socket.
+/// `SO_PEERCRED` on this very connection - the fixture's pid, read off the socket.
 fn attach(socket: &Path) -> (Link, App) {
     let mut link = Link::open(socket, SESSION, 0, "tui", "test").expect("attach");
     let mut a = app();

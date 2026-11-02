@@ -1,4 +1,4 @@
-//! **R93's todo items** — what the model is told: a plan blocked only on running work is silent
+//! **R93's todo items** - what the model is told: a plan blocked only on running work is silent
 //! (B5), the `wait_on` offer only where a row could take it (B6), and a `needs` schema a
 //! constrained model can emit the tagged forms under (B10).
 
@@ -57,7 +57,7 @@ fn probe_in(rows: Option<Vec<TodoItem>>) -> String {
     r.payload
 }
 
-/// **B6: the `wait_on` offer is said only where it can be taken** — `todo_write` seated and a row
+/// **B6: the `wait_on` offer is said only where it can be taken** - `todo_write` seated and a row
 /// open. It was on every background start, to seats with no plan and seats with no `todo_write`.
 #[test]
 fn the_wait_on_offer_needs_a_seated_todo_write_and_an_open_row() {
@@ -85,7 +85,7 @@ fn the_needs_schema_admits_the_tagged_forms() {
     assert!(any.iter().any(|a| a["type"] == "object"), "{items}");
 }
 
-/// **B3: a merge queue's row is not nagged while its review is in flight** — waiting in the queue
+/// **B3: a merge queue's row is not nagged while its review is in flight** - waiting in the queue
 /// for a reviewer, or under a reviewer that is running and moving. It is asked about once the
 /// reviewer has finished (no longer running) or has been quiet past the cap.
 #[test]
@@ -124,8 +124,8 @@ fn a_queue_row_is_quiet_while_its_review_is_in_flight() {
 }
 
 /// **B11: one rule for an abstention.** `ask_user_question` and an operator wait on a
-/// `todo_write` row say the same thing — an abstention is an answer, and the model proceeds on
-/// an assumption it states — where one used to call it "not permission to proceed".
+/// `todo_write` row say the same thing - an abstention is an answer, and the model proceeds on
+/// an assumption it states - where one used to call it "not permission to proceed".
 #[test]
 fn an_abstention_means_the_same_in_ask_and_in_a_todo_wait() {
     let rule = "proceed and state the assumption you proceed on";

@@ -137,7 +137,7 @@ fn a_wait_is_drawn_with_the_jobs_slug_and_the_childs_short_name() {
     assert!(!line_with(&lines, "plain row").contains("waits on"));
 }
 
-/// **The detail view says the same, and keeps the child's whole id** — the one place the id the
+/// **The detail view says the same, and keeps the child's whole id** - the one place the id the
 /// row shortened can still be read.
 #[test]
 fn the_detail_view_names_the_slug_and_keeps_the_childs_id() {
@@ -158,8 +158,8 @@ fn the_detail_view_names_the_slug_and_keeps_the_childs_id() {
     );
 }
 
-/// **A click on the link opens the real job's output** — the view Enter on that job in the jobs
-/// pane opens — and on a child's link reads the child, as the subagents pane's `p` does. The
+/// **A click on the link opens the real job's output** - the view Enter on that job in the jobs
+/// pane opens - and on a child's link reads the child, as the subagents pane's `p` does. The
 /// cursor goes to the clicked row. Esc comes back to the todos.
 #[test]
 fn a_click_on_the_link_opens_the_job_and_the_child() {
@@ -203,7 +203,7 @@ fn a_click_on_the_link_opens_the_job_and_the_child() {
 }
 
 /// **A click elsewhere on the row keeps today's behaviour**: it selects the row and opens
-/// nothing — and so does a click on the ` · ` before `waits on`, and one just past the link.
+/// nothing - and so does a click on the ` · ` before `waits on`, and one just past the link.
 #[test]
 fn a_click_beside_the_link_only_selects_the_row() {
     let mut a = board();
@@ -276,7 +276,7 @@ fn w_on_the_selected_row_opens_what_it_waits_on() {
     assert_eq!(a.editor.text(), "w", "declined, so the letter was typed");
 }
 
-/// **A job the head does not know opens nothing and says so** — no crash, and no other job in
+/// **A job the head does not know opens nothing and says so** - no crash, and no other job in
 /// its place; a job only a completion notice still names opens that notice whole.
 #[test]
 fn an_unknown_job_is_safe() {
@@ -400,7 +400,7 @@ fn at_row(frame: &[String], needle: &str) -> u16 {
         .unwrap_or_else(|| panic!("{needle:?} is drawn: {frame:#?}")) as u16
 }
 
-/// The PANE row (content row, not screen row) `needle` was drawn on — the frame's first pane row
+/// The PANE row (content row, not screen row) `needle` was drawn on - the frame's first pane row
 /// is the pane's title.
 fn placed_row_of(frame: &[String], needle: &str) -> usize {
     let title = at_row(frame, "todos — ") as usize;

@@ -90,11 +90,11 @@ impl App {
     /// question: it quotes the first, counts the rest and names the key. A question card put away with
     /// Esc is said first, because it holds a running call that lapses at its deadline.
     pub(crate) fn waiting_line(&self, w: usize) -> Vec<String> {
-        // **Folded away with alt-h** — the bottom edge counts them instead (`app/waiting.rs`).
+        // **Folded away with alt-h** - the bottom edge counts them instead (`app/waiting.rs`).
         if self.asks_folded() {
             return Vec::new();
         }
-        // **The operator's own command, its card put away** (R90.5) — the run is blocked on a
+        // **The operator's own command, its card put away** (R90.5) - the run is blocked on a
         // line and nothing on the screen said so once Esc had taken the card down.
         if let Some(p) = self.prompt.as_ref().filter(|_| self.prompt_away) {
             let asks = p
@@ -130,7 +130,7 @@ impl App {
                 ),
                 None => String::new(),
             };
-            // **Every other card put away here is counted too** (R90.26) — the line named one
+            // **Every other card put away here is counted too** (R90.26) - the line named one
             // and counted only the todo questions.
             let others = self
                 .away
@@ -221,7 +221,7 @@ impl App {
         )
     }
 
-    /// The alarm line for the **unboxed** composer — the degenerate short-screen
+    /// The alarm line for the **unboxed** composer - the degenerate short-screen
     /// path, where there is no border to pin a triangle to. The boxed path says
     /// it with a `⚠` in the bottom edge's right corner and leaves the numbers to
     /// `/status`; this names them, because on a screen this small the triangle
@@ -238,7 +238,7 @@ impl App {
     /// Every one of those was added because something was measured going wrong,
     /// and none of that is an argument for keeping them resident. §13.2b's rule is
     /// that *an absent field and a zero field must not look the same when the
-    /// field is the disclosure* — which is a rule about the moment the field is
+    /// field is the disclosure* - which is a rule about the moment the field is
     /// **read**, not about where it lives the rest of the time. `/status` is where
     /// it is read, it says `dropped 0` explicitly, and it says what the counter
     /// means, which the border never had room to.
@@ -246,14 +246,14 @@ impl App {
     /// What stays here is the case a person must not have to go looking for: a
     /// counter that has moved. In [`Role::Attention`], not the border's grey,
     /// because a second colour inside a border reads as damage and this *is*
-    /// damage — that was the argument for painting it grey and it was the wrong
+    /// damage - that was the argument for painting it grey and it was the wrong
     /// way round.
     /// The disclosure line: the read mark, what this head suppressed, what the
     /// daemon will never send, and what it stripped on the way.
     ///
     /// Ordered by how likely it is to matter, and truncated from the right, because
     /// on an 80-column terminal the old line lost `dropped`, `scrubbed` and
-    /// `resync` to the ellipsis — the three numbers whose whole purpose is to be
+    /// `resync` to the ellipsis - the three numbers whose whole purpose is to be
     /// impossible to miss. Anything nonzero is promoted to the front.
     pub(crate) fn status_line(&self, w: usize) -> String {
         if !self.alarmed() {
@@ -547,7 +547,7 @@ impl App {
     }
 }
 
-/// **Time left on a question's clock, in whole seconds** — `45s`, `4m12s`, `1h05m`. Whole seconds
+/// **Time left on a question's clock, in whole seconds** - `45s`, `4m12s`, `1h05m`. Whole seconds
 /// rather than [`dur_human`]'s tenths, because this is a countdown a person reads at a glance and
 /// a figure that changes ten times a second is one nobody can read.
 pub(crate) fn time_left(ms: u64) -> String {

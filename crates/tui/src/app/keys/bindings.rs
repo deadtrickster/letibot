@@ -19,13 +19,13 @@ pub(crate) enum On {
     /// means. It is also the one spelling a typed line can never be, so it cannot eat the first
     /// letter of the picker's typed filter the way a letter bound there would.
     Delete,
-    /// **Ctrl+Z, or ⌘Z** — both decode to [`Key::Undo`]. The undo of a removal, spelled as the
+    /// **Ctrl+Z, or ⌘Z** - both decode to [`Key::Undo`]. The undo of a removal, spelled as the
     /// chord everybody's hands already know, and never as a letter for the same reason as
     /// [`On::Delete`].
     Undo,
     /// PageUp and PageDown.
     Page,
-    /// A wheel notch with no position — what the chords hand a surface.
+    /// A wheel notch with no position - what the chords hand a surface.
     Wheel,
     /// Every key but Esc and ctrl-c, which are the stack's: a surface with no field on it that
     /// lets nothing reach the composer behind it.
@@ -84,7 +84,7 @@ pub(crate) enum Guard {
 pub(crate) enum Act {
     /// ↑↓ move the cursor through the list's stops.
     Cursor,
-    /// Move the surface's window — a line for an arrow, a page for a page key, a notch.
+    /// Move the surface's window - a line for an arrow, a page for a page key, a notch.
     Scroll,
     /// The row's act: switch, open, read, change.
     Open,
@@ -103,10 +103,10 @@ pub(crate) enum Act {
     View,
     /// One of the person's queue verbs on the entry under the cursor.
     Verb(Verb),
-    /// The todos pane's `n`: pause this session's plan-checks, or resume them — `/nag pause` or
+    /// The todos pane's `n`: pause this session's plan-checks, or resume them - `/nag pause` or
     /// `/nag resume`, by which one holds now.
     NagToggle,
-    /// The todos pane's `w`: open the job or the child the selected row waits on — the keyboard's
+    /// The todos pane's `w`: open the job or the child the selected row waits on - the keyboard's
     /// half of a click on the row's `waits on …` link.
     WaitsOn,
     /// The monitors pane's `x`: retire the monitor under the cursor (`/monitor retire NAME`).
@@ -117,16 +117,16 @@ pub(crate) enum Act {
     /// A plugin pane's keys are its document's, so the table hands the alphabet over and the pane
     /// decides ([`App::plugin_key`]); a letter that is none of those falls through to the composer.
     PluginKey,
-    /// Take the key and do nothing — it is not the composer's while this surface is up.
+    /// Take the key and do nothing - it is not the composer's while this surface is up.
     Swallow,
-    /// **The todos pane's `d`: fold the done group away, or open it** —
+    /// **The todos pane's `d`: fold the done group away, or open it**  -
     /// [`App::toggle_todos_fold_done`], and the switch it flips is remembered in `head.toml`.
     FoldDone,
-    /// **The session list's `del`: take the row under the cursor off this list** —
+    /// **The session list's `del`: take the row under the cursor off this list**  -
     /// [`App::remove_selected`], asked twice: the first press names what would go, the second does
     /// it. See `app::removal` for the three senses of *remove* and which one this is.
     Remove,
-    /// **The session list's `ctrl-z`: put the last removed row back** — [`App::restore_removed`],
+    /// **The session list's `ctrl-z`: put the last removed row back** - [`App::restore_removed`],
     /// the undo a removal has to have if it is to be the sense worth building.
     Undo,
 }
@@ -237,7 +237,7 @@ const TODOS: &[Binding] = &[
 ];
 
 /// **The words `d` carries now**: what it would DO, which is the half of the switch the bar must
-/// not get wrong — a bar that went on saying `folds done` over a group that is already shut names
+/// not get wrong - a bar that went on saying `folds done` over a group that is already shut names
 /// a key whose press does the opposite of what it says.
 fn fold_done_says(folded: bool) -> &'static str {
     if folded { "shows done" } else { "folds done" }
@@ -312,7 +312,7 @@ const STANDING: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
-/// **The skills: a list whose Enter HANDS the row over** — `Act::Open` is the same key path the
+/// **The skills: a list whose Enter HANDS the row over** - `Act::Open` is the same key path the
 /// standing pane's Enter takes, and the pane's own arm is what decides what opening means here
 /// (the body goes to the session, not into the editor).
 const SKILLS: &[Binding] = &[
@@ -383,7 +383,7 @@ const PLUGIN: &[Binding] = &[
     b(&[On::Any], Empty, Act::PluginKey, Nothing),
 ];
 // A detail is one stop read whole: it scrolls, and it says what Esc does. There is no field on
-// it, so a draft must not grow in the composer under it — the same rule the todo row keeps.
+// it, so a draft must not grow in the composer under it - the same rule the todo row keeps.
 const PLUGIN_DETAIL: &[Binding] = &[
     b(UPDOWN, Always, Act::Scroll, Text("scroll")),
     PAGE,
@@ -392,7 +392,7 @@ const PLUGIN_DETAIL: &[Binding] = &[
 ];
 
 impl Surface {
-    /// **The surface's keys** — the one table its dispatch, its bar and its help read.
+    /// **The surface's keys** - the one table its dispatch, its bar and its help read.
     pub(crate) fn bindings(self) -> &'static [Binding] {
         match self {
             Surface::Help | Surface::Stats => READING,
@@ -462,7 +462,7 @@ impl Surface {
     }
 
     /// **The chord that opens it**, read by `key_chords` to dispatch and by the bar and the help
-    /// to say — one entry, so a chord cannot be advertised and do nothing.
+    /// to say - one entry, so a chord cannot be advertised and do nothing.
     pub(crate) fn chord(self) -> Option<(&'static str, Key)> {
         match self {
             Surface::Picker => Some(("ctrl-s", Key::CtrlS)),
@@ -554,7 +554,7 @@ impl Surface {
 }
 
 impl App {
-    /// **The binding a key reaches on surface `s`**, guard and all — the dispatch's question.
+    /// **The binding a key reaches on surface `s`**, guard and all - the dispatch's question.
     pub(crate) fn binding_for(&self, s: Surface, k: &Key) -> Option<Binding> {
         let empty = self.editor.text().is_empty();
         s.bindings()
@@ -574,7 +574,7 @@ impl App {
                 .selected(self.picker_sel)
                 .and_then(|row| self.list_says(row))
                 .map(str::to_string),
-            // **Said only on a row that waits on something** — `w` is not on the bar over a
+            // **Said only on a row that waits on something** - `w` is not on the bar over a
             // row it would do nothing on.
             (Surface::Todos, Act::WaitsOn) => self.selected_wait().map(|w| match w {
                 WaitOn::Job(_) => "opens the job it waits on".to_string(),
@@ -589,7 +589,7 @@ impl App {
                     match (stops.get(at), act) {
                         (Some(TodoStop::Add), _) => "opens the card",
                         // **A row waiting on you opens its question** (`todos_read`), and the bar
-                        // says so (R90.8) — it said "reads it whole".
+                        // says so (R90.8) - it said "reads it whole".
                         (Some(TodoStop::Mine(c) | TodoStop::Theirs(c)), Act::Open)
                             if waits_on_you(c) =>
                         {
@@ -618,7 +618,7 @@ impl App {
                 .to_string(),
             ),
             // **Enter on the queue opens a row or the history's fold**, and the bar says which of
-            // the two this row is — the same question the key answers (`App::queue_fold`).
+            // the two this row is - the same question the key answers (`App::queue_fold`).
             (Surface::Queue, Act::Open) => Some(
                 match self.queue_row_folds() {
                     Some(true) => "closes the history",
@@ -631,7 +631,7 @@ impl App {
         }
     }
 
-    /// **The words for a SWITCH binding**, from the head — see [`Says::Switch`]. `None` for an act
+    /// **The words for a SWITCH binding**, from the head - see [`Says::Switch`]. `None` for an act
     /// this table has no words for, and the bar then says nothing rather than guessing.
     pub(crate) fn switch_says(&self, b: &Binding) -> Option<String> {
         match b.act {
@@ -678,7 +678,7 @@ impl App {
         let mut out: Vec<String> = parts.into_iter().map(|(l, s)| format!("{l} {s}")).collect();
         out.extend(s.typed_says().map(str::to_string));
         // **Esc goes back to whatever is under this surface**, and a job's output or a child's
-        // read can be opened from the todos pane's `waits on` link as well as from its own list —
+        // read can be opened from the todos pane's `waits on` link as well as from its own list  -
         // so when the surface below is the todos pane, the bar says so instead of the fixed words.
         out.push(self.esc_hint(s));
         out.join(" · ")
@@ -698,7 +698,7 @@ impl App {
         }
     }
 
-    /// **The help's row for surface `s`**: how it is opened, and what it is and its keys —
+    /// **The help's row for surface `s`**: how it is opened, and what it is and its keys  -
     /// generated, so the help cannot name a key the surface does not take. `None` for a surface
     /// nothing opens by name (an overlay its list opens).
     pub(crate) fn surface_help(s: Surface) -> Option<(String, String)> {

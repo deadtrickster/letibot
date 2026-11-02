@@ -6,7 +6,7 @@
 //! implementation attaches through. This crate is one implementation.
 //!
 //! It lives in its own crate rather than in `letibot-tools` because that crate is
-//! deliberately *a function of a call and a filesystem* — no sockets, no TLS. The
+//! deliberately *a function of a call and a filesystem* - no sockets, no TLS. The
 //! trait is the seam that keeps it that way; putting rustls behind the seam rather
 //! than in front of it is the whole point of the seam existing.
 //!
@@ -20,7 +20,7 @@
 //! ```
 //!
 //! A missing key **refuses at attach**, naming all three, rather than three
-//! seconds into the first search as a 401 that names none of them — the same rule
+//! seconds into the first search as a 401 that names none of them - the same rule
 //! `letibot-provider` follows for a model key, and for the same reason.
 //!
 //! # What this does not do
@@ -28,7 +28,7 @@
 //! It does not fetch pages: `web_fetch` is a different seam with a different
 //! backend, and a search provider that quietly also fetched would be a second
 //! egress path nobody declared. It does not cache: a cached search result that
-//! looks live is §8.2's failure wearing a timestamp. And it never invents a hit —
+//! looks live is §8.2's failure wearing a timestamp. And it never invents a hit  -
 //! Brave's `web.results` is the only thing read, so a query that matched nothing
 //! comes back as nothing rather than as the "did you mean" Brave also returns.
 
@@ -63,7 +63,7 @@ impl std::fmt::Display for KeySource {
     }
 }
 
-/// `~/.config/letibot/providers.toml` — the file the model keys already live in.
+/// `~/.config/letibot/providers.toml` - the file the model keys already live in.
 fn providers_file() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
@@ -102,7 +102,7 @@ fn key_from_file(path: &std::path::Path) -> Option<String> {
 }
 
 /// A key the operator gave on the command line, held here rather than in
-/// `Config` — which derives `Debug`, and a secret in a struct that can be
+/// `Config` - which derives `Debug`, and a secret in a struct that can be
 /// `{:?}`-printed is a secret one `eprintln!` away from a log.
 static FLAG_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -169,7 +169,7 @@ impl Brave {
         Ok(Brave::with_key(key, from, ENDPOINT))
     }
 
-    /// The pieces given outright — for a test against a local stand-in.
+    /// The pieces given outright - for a test against a local stand-in.
     pub fn with_key(key: String, from: KeySource, endpoint: &str) -> Brave {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))
@@ -244,7 +244,7 @@ impl SearchProvider for Brave {
             .iter()
             .filter_map(|r| {
                 let url = r.get("url").and_then(|v| v.as_str())?.to_string();
-                // A hit with no URL is not reportable — `SearchHit::url` is not
+                // A hit with no URL is not reportable - `SearchHit::url` is not
                 // optional, and `web.rs` says why.
                 if url.is_empty() {
                     return None;
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn the_key_is_refused_by_naming_all_three_places() {
-        // No variable set and a providers file that is not there — handed in, not arranged in
+        // No variable set and a providers file that is not there - handed in, not arranged in
         // the process environment (see `resolve_key_from`).
         let nowhere = std::env::temp_dir()
             .join("letibot-no-brave")

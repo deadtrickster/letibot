@@ -60,7 +60,7 @@ fn engine(endpoint: Endpoint) -> TurnEngine {
     engine_with(ChatMlRenderer::default(), endpoint)
 }
 
-/// The same engine over a caller-supplied renderer — the one test that tunes the
+/// The same engine over a caller-supplied renderer - the one test that tunes the
 /// guards builds its own, and the constructor must not quietly substitute the
 /// default for it.
 fn engine_with(renderer: ChatMlRenderer, endpoint: Endpoint) -> TurnEngine {
@@ -158,7 +158,7 @@ fn a_thinking_turn(thought: &[u32], answer: &[u32]) -> Vec<Frame> {
 }
 
 // --------------------------------------------------------------------------
-// §5.7 — the nine unnoticed rows, end to end through the engine
+// §5.7 - the nine unnoticed rows, end to end through the engine
 // --------------------------------------------------------------------------
 
 /// A turn that spends its whole budget thinking and hits the limit is a **failed**
@@ -255,7 +255,7 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     });
     let thought = ids_of("mid-parenthetical, the think block never closed, so no");
     frames.extend(token_frames(&thought));
-    // No `</think>` — and the stop is `eos`, not `limit`. That is the whole
+    // No `</think>` - and the stop is `eos`, not `limit`. That is the whole
     // difference from the test above, and it is what made the live finding
     // invisible to §5.7: the classifier only speaks on `length`.
     frames.push(Frame::Final {
@@ -295,7 +295,7 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     )));
 
     // The check names itself: the warning is the disclosure a log reader gets,
-    // and `TurnFinished` still fires — the terminal value is a `stop`, rendered
+    // and `TurnFinished` still fires - the terminal value is a `stop`, rendered
     // as what it was, with the failure carried by the outcome, not the reason.
     assert!(
         sink.warnings()
@@ -510,7 +510,7 @@ fn the_same_content_succeeds_when_it_was_not_truncated() {
 }
 
 // --------------------------------------------------------------------------
-// §8.5 — the guards
+// §8.5 - the guards
 // --------------------------------------------------------------------------
 
 /// GLM's `@@@@…` failure mode: the turn is aborted, named, and not committed.
@@ -581,7 +581,7 @@ fn repetition_collapse_aborts_the_turn_and_raises_a_named_warning() {
 }
 
 // --------------------------------------------------------------------------
-// §5.8 — steering
+// §5.8 - steering
 // --------------------------------------------------------------------------
 
 struct Once(Vec<SteeringMessage>);
@@ -611,7 +611,7 @@ fn a_rounds_tail_is_in_the_prompt_and_not_in_the_log() {
         return;
     };
     let answer = ids_of("Blue.");
-    // The lead already opened `<think>`, so a turn that answers has to close it —
+    // The lead already opened `<think>`, so a turn that answers has to close it  -
     // otherwise this is the `UnfinishedReasoning` case and there is no answer to
     // measure a prompt against.
     let frames = || {
@@ -825,7 +825,7 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
         ok.steering_before
     );
     assert_eq!(ok.steering_applied.len(), 1);
-    // It is a plain user item carrying exactly its own text — §18.1-I11.
+    // It is a plain user item carrying exactly its own text - §18.1-I11.
     let TranscriptItem::User { parts, .. } = session.items.last().unwrap() else {
         panic!("the steering message must be the last item")
     };
@@ -982,7 +982,7 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
 }
 
 // --------------------------------------------------------------------------
-// §18.1-I1 — the check catches a violation rather than only reporting one
+// §18.1-I1 - the check catches a violation rather than only reporting one
 // --------------------------------------------------------------------------
 
 /// Two turns whose second prompt genuinely extends the first: the invariant holds
@@ -1292,7 +1292,7 @@ fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
 }
 
 // --------------------------------------------------------------------------
-// T23 — a frame that does not account for its own advance
+// T23 - a frame that does not account for its own advance
 // --------------------------------------------------------------------------
 
 /// Build the script for a turn the server drops one token out of the middle of.
@@ -1466,7 +1466,7 @@ fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
     );
 }
 
-/// Urgent, but not until `after` polls — so the interrupt lands mid-thought
+/// Urgent, but not until `after` polls - so the interrupt lands mid-thought
 /// rather than before the model has said anything.
 struct After {
     left: usize,
@@ -1560,7 +1560,7 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
         );
     }
 
-    // And the ledger — the thing the next turn is prefilled from — does not.
+    // And the ledger - the thing the next turn is prefilled from - does not.
     let grew = session.ledger.len() - before;
     assert!(
         grew < 60,
@@ -1696,7 +1696,7 @@ fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
 }
 
 // --------------------------------------------------------------------------
-// R91.14 — an interrupt taken at the end of a successful round
+// R91.14 - an interrupt taken at the end of a successful round
 // --------------------------------------------------------------------------
 
 /// A provider that speaks one line and finishes cleanly.

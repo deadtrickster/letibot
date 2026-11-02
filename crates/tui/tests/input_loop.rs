@@ -116,7 +116,7 @@ fn press(x: usize, y: usize) -> String {
 
 /// **Two chords in one read are two acts, in order, and the second pane is the one in front.**
 /// `ctrl-q` then `ctrl-t` arriving as one read asks the daemon for both lists, and the frame the
-/// tick draws is the todos pane — the pane the keys now reach — with the jobs pane behind it.
+/// tick draws is the todos pane - the pane the keys now reach - with the jobs pane behind it.
 #[test]
 fn two_chords_in_one_read_ask_for_both_and_leave_the_second_in_front() {
     let path = socket_path("chords");

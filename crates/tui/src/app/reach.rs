@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// **What answers whether the local model is up** — `/health` on an address, in production
+/// **What answers whether the local model is up** - `/health` on an address, in production
 /// [`health`]; a test puts a function here that answers without a network.
 pub(crate) type ReachProbe = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
@@ -13,7 +13,7 @@ pub(crate) type ReachProbe = std::sync::Arc<dyn Fn(&str) -> Result<(), String> +
 pub(crate) struct Reach {
     pub(crate) job: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     pub(crate) held: Option<String>,
-    /// The one line the chooser carries while it is up because of this check — `None` when the
+    /// The one line the chooser carries while it is up because of this check - `None` when the
     /// operator opened it themselves.
     pub(crate) reason: Option<String>,
     pub(crate) probe: ReachProbe,
@@ -132,8 +132,8 @@ impl App {
                 }
             }
         }
-        // **Every way the chooser closes without taking a cloud row lands here** — esc on the
-        // card or the key card, a local row, a surface that closed it — so the words go back
+        // **Every way the chooser closes without taking a cloud row lands here** - esc on the
+        // card or the key card, a local row, a surface that closed it - so the words go back
         // where they were typed rather than being lost behind a card that is gone.
         if self.reach.reason.is_some()
             && self.reach.job.is_none()
@@ -149,7 +149,7 @@ impl App {
         }
     }
 
-    /// The held message, sent — the same echo [`App::submit`] gives a line it sends.
+    /// The held message, sent - the same echo [`App::submit`] gives a line it sends.
     fn send_held(&mut self) {
         self.reach.reason = None;
         if let Some(text) = self.reach.held.take() {

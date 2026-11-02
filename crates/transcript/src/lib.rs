@@ -7,15 +7,15 @@
 
 use serde::{Deserialize, Serialize};
 
-/// **Text a head did not author, made safe for a terminal** (§3.1) — here because both
+/// **Text a head did not author, made safe for a terminal** (§3.1) - here because both
 /// sides of the log/wire boundary need it and neither can see the other.
 pub mod media;
 pub mod sanitize;
-/// **Fixtures that are real images** — public for the reason `letibot_sessionlog::testing` is: the
+/// **Fixtures that are real images** - public for the reason `letibot_sessionlog::testing` is: the
 /// crates that need a picture in a test are not this one. See the module for what it replaced.
 pub mod testing;
 
-/// **What a fence that cites code looks like** — the daemon reads the lines and the head fills
+/// **What a fence that cites code looks like** - the daemon reads the lines and the head fills
 /// the fence, so the two spellings of that fence (an empty block, and the one-liner) and the
 /// rule for a block that is never closed live here, once. Same reason as `media` above.
 pub mod citation;
@@ -46,7 +46,7 @@ pub enum Speaker {
     /// this, which is what a head already drew for them.
     #[default]
     Operator,
-    /// **This session appended it** — a job completion, a salvage notice, a steering line,
+    /// **This session appended it** - a job completion, a salvage notice, a steering line,
     /// the intent check. Never an authorisation, and never to be drawn as the operator's
     /// words.
     Agent,
@@ -202,7 +202,7 @@ pub enum SystemOrigin {
     /// The system prompt the session opened with; part of the stable prefix.
     Bootstrap,
     /// A later change. Appended after the cached history rather than rewriting
-    /// message 0 — rewriting cost a full cold re-prefill of a 179k conversation
+    /// message 0 - rewriting cost a full cold re-prefill of a 179k conversation
     /// when measured. See `SystemUpdateMode` in the dialect crate.
     Update,
 }
@@ -540,7 +540,7 @@ mod tests {
         let TranscriptItem::User { speaker, .. } = item else {
             panic!("a user row");
         };
-        // **The word is the authorisation trail's own** — `agent` — so the row and the record
+        // **The word is the authorisation trail's own** - `agent` - so the row and the record
         // the oracle reads cannot spell the same speaker two ways.
         assert_eq!(speaker, Speaker::Agent);
         assert_eq!(speaker.as_str(), "agent");

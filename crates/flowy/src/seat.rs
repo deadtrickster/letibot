@@ -50,7 +50,7 @@ use crate::spool::Spool;
 use crate::subs::{EntityChange, EntityWatch, Subscription};
 use crate::waiter::{ClaimError, WaiterClaim};
 
-/// Retry pacing for a node that went away — flowy's own numbers.
+/// Retry pacing for a node that went away - flowy's own numbers.
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// How much arrives while nobody is attached before the oldest is dropped. The
@@ -290,7 +290,7 @@ impl Seat {
         self.attach_as(session, "", attention)
     }
 
-    /// [`Seat::attach`] with an alias — the session's title — so the session can
+    /// [`Seat::attach`] with an alias - the session's title - so the session can
     /// be addressed as `@seat/title` as well as `@seat/id`.
     pub fn attach_as(
         &self,
@@ -357,7 +357,7 @@ impl Seat {
 
     /// Ask the loop to renew a monitor by name each cycle, for as long as the
     /// registry lives. This is the explicit renewal T24 requires, made by the
-    /// declarer — the daemon — which is alive for exactly as long as the seat.
+    /// declarer - the daemon - which is alive for exactly as long as the seat.
     pub fn keep_renewing(&self, monitors: &Arc<Monitors>, name: &str) {
         self.shared
             .renew
@@ -454,7 +454,7 @@ impl Seat {
     }
 
     /// The fabric block for this seat: live, cached with its age, or
-    /// unreachable — see [`crate::context`]. `None` in the first slot means no
+    /// unreachable - see [`crate::context`]. `None` in the first slot means no
     /// copy at all; the source says why.
     pub fn fabric(
         &self,
@@ -629,7 +629,7 @@ impl Seat {
 
     fn focus(&self) -> Option<String> {
         // Every attached session's focus is the same seat's home project unless
-        // one widened it to nothing — in which case the wire is widened too.
+        // one widened it to nothing - in which case the wire is widened too.
         let conds = self.attached_conditions();
         if conds.is_empty() {
             return self.identity_focus();

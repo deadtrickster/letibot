@@ -26,7 +26,7 @@ pub mod handover;
 #[derive(Debug)]
 pub enum ImportError {
     /// **The transcript directory is not there, or is not a directory.** Reported as
-    /// *this* and not as "no such session", because the two are different facts — the
+    /// *this* and not as "no such session", because the two are different facts - the
     /// same pair `letibot-opencode` tells apart, for the same reason.
     NoDirectory { path: PathBuf, err: String },
     /// The directory is there and no transcript has that id.
@@ -63,7 +63,7 @@ impl std::error::Error for ImportError {}
 
 pub type Result<T> = std::result::Result<T, ImportError>;
 
-/// Token counts, in whatever provider's units they were recorded — Claude Code's here.
+/// Token counts, in whatever provider's units they were recorded - Claude Code's here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tokens {
     pub input: u64,
@@ -79,7 +79,7 @@ impl Tokens {
     }
 }
 
-/// One transcript's own metadata — what rule 1 needs, what a picker row shows, and the
+/// One transcript's own metadata - what rule 1 needs, what a picker row shows, and the
 /// progress denominator.
 #[derive(Debug, Clone, Default)]
 pub struct SessionMeta {
@@ -92,14 +92,14 @@ pub struct SessionMeta {
     /// The `cwd` the session ran in, from the first line that carries one.
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
-    /// `message.model` from the first assistant line — `claude-opus-5-5`, not this box's
+    /// `message.model` from the first assistant line - `claude-opus-5-5`, not this box's
     /// alias.
     pub model: Option<String>,
     /// Claude Code's own version string.
     pub version: Option<String>,
     /// Claude Code's generated title (`ai-title`), when it wrote one.
     pub title: Option<String>,
-    /// **The first thing the operator said** — the line a picker row shows.
+    /// **The first thing the operator said** - the line a picker row shows.
     pub first: String,
     pub bytes: u64,
     /// The file's own mtime, in ms since the epoch. Taken from the filesystem, never
@@ -135,7 +135,7 @@ impl SessionMeta {
         let when = if self.mtime_ms == 0 {
             "never".to_string()
         } else {
-            // The file's own mtime, as a UTC civil date — the same conversion the writer uses
+            // The file's own mtime, as a UTC civil date - the same conversion the writer uses
             // to stamp a backup, because a number of seconds is exact and unreadable and a
             // second copy of the calendar arithmetic is how two answers to one question begin.
             let (y, mo, d, h, mi, _, _) = crate::handover::civil_of(self.mtime_ms);
@@ -185,7 +185,7 @@ fn bytes_human(n: u64) -> String {
 #[derive(Debug, Clone)]
 pub struct Tree {
     pub root: SessionMeta,
-    /// Subagent transcripts sitting beside this one (`<uuid>/subagents/agent-*.jsonl`) —
+    /// Subagent transcripts sitting beside this one (`<uuid>/subagents/agent-*.jsonl`)  -
     /// counted so the report can say what was deliberately not walked.
     pub subagents: u64,
 }
@@ -197,7 +197,7 @@ pub struct Row {
     /// The transcript's uuid (rule 1's *whose*), so a row read out of a sibling file
     /// would still name its source.
     pub source_session: String,
-    /// The 1-based line number in the source file — how a reader finds it again.
+    /// The 1-based line number in the source file - how a reader finds it again.
     pub line: u64,
     /// The line's own `uuid`, when it has one.
     pub uuid: String,
@@ -205,7 +205,7 @@ pub struct Row {
     pub item: TranscriptItem,
 }
 
-/// **A line that is real but is not a transcript row** — an unknown type, a picture, a
+/// **A line that is real but is not a transcript row** - an unknown type, a picture, a
 /// redacted thought, a sidechain branch's first line. Counted and said, never dropped.
 #[derive(Debug, Clone)]
 pub struct Scrap {
@@ -240,7 +240,7 @@ pub struct Spend {
     pub tokens: Tokens,
 }
 
-/// What a whole read produced — the numbers the finish line and `/status` keep.
+/// What a whole read produced - the numbers the finish line and `/status` keep.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     /// The file's size (the denominator).
@@ -256,7 +256,7 @@ pub struct Report {
     /// **Line types this build does not read**, counted individually. Non-empty is a fact
     /// to report, not a silence.
     pub unknown_types: BTreeMap<String, u64>,
-    /// `attachment` lines by their own `type` — Claude Code's context, counted by kind.
+    /// `attachment` lines by their own `type` - Claude Code's context, counted by kind.
     pub attachments: BTreeMap<String, u64>,
     /// Subagent transcripts beside this one, which were not walked.
     pub subagents: u64,
@@ -426,7 +426,7 @@ impl Source {
     }
 
     /// **Read the transcript, line by line, in the order it was written.** One callback
-    /// per event, so the caller can publish as it goes and keep the screen live — a
+    /// per event, so the caller can publish as it goes and keep the screen live - a
     /// function that returned a `Vec` would have read 116 MB before drawing anything.
     pub fn read(&self, id: &str, sink: &mut dyn FnMut(Event)) -> Result<Report> {
         let path = self.find(id)?;
@@ -549,7 +549,7 @@ struct State {
     said_unknown: BTreeSet<String>,
 }
 
-/// What the head of a transcript says — read without walking the whole file.
+/// What the head of a transcript says - read without walking the whole file.
 #[derive(Default)]
 struct Head {
     first: String,
@@ -651,7 +651,7 @@ fn head_scan(path: &Path) -> Head {
     head
 }
 
-/// The first line of a message, bounded — a picker row is one line.
+/// The first line of a message, bounded - a picker row is one line.
 fn first_line_of(text: &str) -> String {
     let first = text.lines().next().unwrap_or("").trim();
     const CAP: usize = 160;
@@ -697,7 +697,7 @@ fn user_texts(v: &Value) -> Vec<String> {
     }
 }
 
-/// A frame Claude Code wraps a message in — `<bash-input>`, `<pasted_content id="17da">`,
+/// A frame Claude Code wraps a message in - `<bash-input>`, `<pasted_content id="17da">`,
 /// `<task-notification>`, `<local-command-caveat>`, …
 struct Frame<'a> {
     tag: &'a str,
@@ -707,8 +707,8 @@ struct Frame<'a> {
 }
 
 /// **A frame, when the text is exactly one element.** The closing tag may carry attributes
-/// of its own — `<pasted_content id="17da">…</pasted_content id="17da">` is the real
-/// spelling — so the close is matched by name and whatever follows the `>` must be blank.
+/// of its own - `<pasted_content id="17da">…</pasted_content id="17da">` is the real
+/// spelling - so the close is matched by name and whatever follows the `>` must be blank.
 fn frame(text: &str) -> Option<Frame<'_>> {
     let f = leading_frame(text)?;
     if text.trim()[f.end..].trim().is_empty() {
@@ -755,7 +755,7 @@ enum Said {
         text: String,
         speaker: Speaker,
     },
-    /// Claude Code's own plumbing — a slash command's caveat, a command's stdout, a
+    /// Claude Code's own plumbing - a slash command's caveat, a command's stdout, a
     /// system reminder. Nothing anybody said.
     Machinery(String),
     /// A frame this build does not read. Said, never invented into a row.
@@ -891,7 +891,7 @@ fn interpret(
     let uuid = str_field(&v, "uuid");
 
     // **The sidechain rule, said at the point of the skip.** One sentence per branch, at
-    // the branch's first line — not one per line, which for a subagent's transcript would
+    // the branch's first line - not one per line, which for a subagent's transcript would
     // be thousands of notices about the same skip.
     let side = v
         .get("isSidechain")
@@ -1039,7 +1039,7 @@ fn interpret(
     }
 }
 
-/// Say a fact about a line *type* once, at its first line — see the module doc.
+/// Say a fact about a line *type* once, at its first line - see the module doc.
 #[allow(clippy::too_many_arguments)]
 fn say_once(
     st: &mut State,
@@ -1242,7 +1242,7 @@ fn tool_result_line(
             edit: None,
             origin: None,
             // An imported row carries no media, and that is a fact about the importer
-            // rather than a gap left by accident — the same sentence opencode's importer
+            // rather than a gap left by accident - the same sentence opencode's importer
             // makes about its own attachments.
             media: None,
         },
@@ -1455,7 +1455,7 @@ fn system_line(
                 sink,
             );
         }
-        // A notice from the tool — a usage limit, a reset — shown to the operator. It is
+        // A notice from the tool - a usage limit, a reset - shown to the operator. It is
         // machinery, not conversation: said once per kind, counted.
         "informational" => {
             let text = v
@@ -1501,7 +1501,7 @@ fn system_line(
 }
 
 /// A tool result's content is a string, or a list of blocks (text, images, tool
-/// references). Flattened in order, with the parts this head cannot carry named in place —
+/// references). Flattened in order, with the parts this head cannot carry named in place  -
 /// a picture is `[an image]`, never nothing.
 fn flatten_result(content: Option<&Value>) -> String {
     match content {

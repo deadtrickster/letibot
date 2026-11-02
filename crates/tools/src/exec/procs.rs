@@ -12,7 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// One process, as `/proc` describes it. `start` is `starttime` from `stat`
-/// in clock ticks since boot — the half of the handle that survives pid reuse.
+/// in clock ticks since boot - the half of the handle that survives pid reuse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcInfo {
     pub pid: u32,
@@ -23,7 +23,7 @@ pub struct ProcInfo {
     /// How long ago it started.
     pub age: Duration,
     /// `/proc/<pid>/stat`'s state letter. `Z` is a zombie: dead, and still in
-    /// `/proc` until its parent reaps it — which, after a kill from here, may
+    /// `/proc` until its parent reaps it - which, after a kill from here, may
     /// be never soon. [`alive`] treats it as gone.
     pub state: char,
     /// CPU time consumed so far, user plus system, in clock ticks.
@@ -45,7 +45,7 @@ impl ProcInfo {
 }
 
 impl ProcInfo {
-    /// `12345  2h03m  sleep 300` — for a listing.
+    /// `12345  2h03m  sleep 300` - for a listing.
     pub fn line(&self) -> String {
         format!(
             "{:>7}  {:>8}  {}",
@@ -107,7 +107,7 @@ pub fn read(pid: u32) -> Option<ProcInfo> {
 pub fn read(pid: u32) -> Option<ProcInfo> {
     let dir = Path::new("/proc").join(pid.to_string());
     let stat = std::fs::read_to_string(dir.join("stat")).ok()?;
-    // `pid (comm) state ppid …` — comm may hold spaces and parens, so split at
+    // `pid (comm) state ppid …` - comm may hold spaces and parens, so split at
     // the LAST `)`.
     let close = stat.rfind(')')?;
     let comm = stat[stat.find('(')? + 1..close].to_string();
@@ -166,8 +166,8 @@ fn clock_ticks() -> u64 {
     if hz <= 0 { 100 } else { hz as u64 }
 }
 
-// `_SC_CLK_TCK` is 2 on Linux and 3 on macOS — the hard-coded 2 this used to pass
-// was `_SC_CHILD_MAX` there — so the constant comes from `libc`, which is now a
+// `_SC_CLK_TCK` is 2 on Linux and 3 on macOS - the hard-coded 2 this used to pass
+// was `_SC_CHILD_MAX` there - so the constant comes from `libc`, which is now a
 // dependency of this crate (for the pty).
 unsafe fn libc_sysconf_clk_tck() -> i64 {
     unsafe { libc::sysconf(libc::_SC_CLK_TCK) as i64 }
@@ -204,7 +204,7 @@ pub fn self_and_ancestors() -> Vec<u32> {
 }
 
 /// Every process of this user whose command line (or comm) contains `pattern`
-/// as a substring — minus this process, its ancestors, pid 1 and `exclude`.
+/// as a substring - minus this process, its ancestors, pid 1 and `exclude`.
 /// Case-sensitive: a pattern is a name, and `Sleep` is not `sleep`.
 pub fn find(pattern: &str, exclude: &[u32]) -> Vec<ProcInfo> {
     let pattern = pattern.trim();
@@ -256,7 +256,7 @@ unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
-/// Is this exact process — pid AND start time — still there and not a zombie?
+/// Is this exact process - pid AND start time - still there and not a zombie?
 pub fn alive(pid: u32, start: u64) -> bool {
     read(pid).is_some_and(|p| p.start == start && p.state != 'Z')
 }
