@@ -1,6 +1,6 @@
-//! R113: a skill offers itself in the request's tail, the way a note does. Two turns are driven
-//! through the whole production path with the model replaced by a stub, and the assertion is on the
-//! bytes the model was handed: an offer never becomes a row, so only the wire can show it.
+//! A skill offers itself in the request's tail, the way a note does. The turns are driven through
+//! the whole production path with the model replaced by a stub, and the assertion is on the bytes the
+//! model was handed: an offer never becomes a row, so only the wire can show it.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};

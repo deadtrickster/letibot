@@ -742,7 +742,8 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
         "{s}"
     );
     assert!(!s.contains("THE BODY NOBODY IS GIVEN UNASKED"), "{s}");
-    // The unpinned skill is a count and never a row: an index of every source is what R113 removed.
+    // The unpinned skill is a count and never a row: an index of every source spends the prompt's
+    // first screen on names nobody asked to pin.
     assert!(
         !s.contains("- review"),
         "an unpinned skill is not listed: {s}"

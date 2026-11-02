@@ -1,6 +1,6 @@
-//! R113 item 3: `[skills] pin` in a `leticode.toml`, read by the real loader, honoured by the
-//! prompt's index, and a pin that answers to nothing said at open by name. The two facts are the
-//! entry's: a pin is listed, and a pin nothing holds is not silently dropped.
+//! `[skills] pin` in a `leticode.toml`, read by the real loader: a pin is listed in the prompt, both
+//! levels' pins apply, and a pin that answers to nothing is said at open by name rather than silently
+//! dropped.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
