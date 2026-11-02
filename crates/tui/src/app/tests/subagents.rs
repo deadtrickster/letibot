@@ -983,6 +983,56 @@ fn the_stop_row_names_the_jobs_and_subagents_that_die_with_the_daemon() {
     );
 }
 
+/// **The quit card says what else a stop kills**: another session's running turn, a reviewer
+/// mid-verdict and a gate on a target. The card's own counts are this session's jobs and subagents,
+/// so on a daemon with four busy sessions the cheap row and the killing row read alike.
+#[test]
+fn the_quit_card_says_which_other_work_a_stop_kills() {
+    let mut a = app();
+    a.apply(ServerFrame::Sessions {
+        sessions: vec![
+            brief("s-1", "the other one", true),
+            brief("s-2", "quiet", false),
+        ],
+        current: "s-1".into(),
+        created: None,
+    });
+    a.apply(queue_frame(queues(
+        vec![queue_review_row("r-1", "reviewing")],
+        vec![queue_merge_row("m-1", "gating")],
+    )));
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card, "two presses open the card");
+    // The rows, with the card's own indent folded out of the comparison: the sentence wraps at the
+    // card's width, and what it says is the assertion.
+    let said = said_on_the_card(&a);
+    assert!(
+        said.contains(
+            "stopping also kills 1 other session's turn, the reviewer's judgement and the gate \
+             on `main`."
+        ),
+        "the card names the work that dies outside this session:\n{said}"
+    );
+
+    // And a daemon with nothing else running says nothing about it.
+    let mut quiet = app();
+    quiet.key(Key::CtrlC);
+    quiet.key(Key::CtrlC);
+    let said = said_on_the_card(&quiet);
+    assert!(!said.contains("stopping also kills"), "{said}");
+}
+
+/// The quit card's rows as one sentence: whitespace folded, so a row the card wrapped reads the same
+/// as one it did not.
+fn said_on_the_card(a: &App) -> String {
+    a.quit_card_lines(120)
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[test]
 fn a_running_subagent_is_counted_on_the_top_border_and_a_done_one_is_not() {
     let mut a = app();
