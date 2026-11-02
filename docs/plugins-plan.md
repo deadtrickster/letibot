@@ -1,344 +1,222 @@
-# Plugins: a polymorphic harness — plan
+# Plugins: a polymorphic harness
 
-Written 2026-10-25. The operator: *"why i want plugins - so i can move faster without release and
-that models in session can adapt their environment to projects. I want polymorphic harness"*, and
-*"yes we want to write letibot plugins in jitted wasm"*. And the immediate goal: *"if during
-session i hit harness bug, limitation or other need for improvement i can do it right away with
-plugins. yes it is messy but i can iterate and session discovery works pretty good so i can always
-consolidate easily. which means plugins overrides are layered like firecode layers or dotenv. And
-it also means we have to support hot reloading"*.
+letibot is a small trusted core plus policy that is wasm. The core is what must never be wrong: the turn
+loop, dialects, the store, the gate and the adjudicator, the sandbox and VMs, the merge queue, the plugin
+host. The policy is what changes per project and per week: what is watched and how a firing reads, what
+happens after a tool call, how output is digested, what a word on the screen links to, later the tools
+themselves. The built-in policy is written as default plugins embedded in the binary, and a project or a
+session overrides one by name.
 
-**The one-paragraph version**: letibot becomes a small trusted core plus policy that is wasm.
-The core is what must never be wrong — the turn loop, dialects, the store, the gate and the
-adjudicator, the sandbox and VMs, the merge queue, the plugin host. The policy is what changes
-per project and per week — what is watched and how a firing reads, what happens after a tool
-call, how output is digested, what a word on the screen links to, later the tools themselves.
-Today's built-in policy is rewritten as **default plugins** embedded in the binary; a project or
-a session overrides one by name. Plugins are written **by the model, in the session**, built and
-loaded hot, and promoted to the project by committing them — where the merge queue's reviewers
-review them like any other code. Moving faster is then a commit to the project, not a letibot
-release.
-
-**The first use is a fix in the middle of a session.** The operator hits a harness bug or a
-limitation, says so, and the session's model writes a layer that patches it — built, loaded and
-answering within the same turn, without a release and without a restart. It is allowed to be
-messy: layers pile up, and because sessions are discoverable, the pile is consolidated later —
-squashed into one layer, promoted to the project, or turned into a proper core change. Three
-things follow and shape the rest of this plan: overrides are **layered** (§2), loading is **hot**
-(§2.3), and the hooks reach the places bugs actually are — before a tool runs, not only after
-(§4).
+The first use is a fix in the middle of a session: the operator hits a harness bug or a limitation, the
+session's model writes a layer that patches it, and the layer is built, loaded and answering within the
+same turn, without a release and without a restart. It is allowed to be messy, because sessions are
+discoverable and the pile is consolidated later: squashed into one layer, promoted to the project, or
+turned into a core change. So overrides are layered (§2), loading is hot (§2.3), and the hooks reach the
+places bugs actually are, before a tool runs and not only after (§4).
 
 ## 0. What exists
 
 | thing | where | state |
 |---|---|---|
-| wasm host | rano `src/plugin.rs` (728 lines), `plans/S10-wasm-hooks.md` | wasmtime + cranelift (JIT). ABI v1: `rano_abi() -> 1`, `rano_alloc(n)`, hooks found by export name (`on_*`, `provider_*`), bytes in → 8-byte result block out, `-1` = unchanged. No imports unless a capability grants one (only `read-dir` exists). Per call: `HOOK_FUEL` 50M, `HOOK_MEMORY` 64 MiB, `MAX_HOOK_BYTES` 16 MiB each way. |
+| wasm host | rano `src/plugin.rs` | wasmtime + cranelift. ABI v1: `rano_abi() -> 1`, `rano_alloc(n)`, hooks by export name, bytes in and an 8-byte result block out, `-1` = unchanged. No imports unless a capability grants one. Per call: `HOOK_FUEL` 50M, `HOOK_MEMORY` 64 MiB, `MAX_HOOK_BYTES` 16 MiB each way. |
 | guest SDKs | rano `sdks/rust` (`rano-plugin`), `sdks/assemblyscript` | `rano::abi!()` + `rano::hook(ptr, len, \|text\| …)`. |
-| toolchain | this Mac | `wasm32-unknown-unknown` installed 2026-10-25; rano's `examples/plugin-upper` builds offline in seconds to a 20 KB module. lab2x1 / lubuntu1 not checked yet. |
-| GitHub watches | `crates/tools/src/exec/github.rs` (984 lines) | `GithubCondition`: spawns `gh` at most once per interval, polls the child with `try_wait`, `parse(json, viewer) -> Seen`, baseline-then-news, `Until::{Closed, Merged, Checks, Review, Comment, CodeRabbit}`, `is_rabbit`. |
-| auto-watch | `crates/harnessd/src/pr_watch.rs`, hooked at `harness.rs` (`pr_watch::opened` on each successful tool result) | `gh pr create` → one coalesced `pr-N` watch on `WATCHED`, and a sentence appended to the call's result. |
+| the stack, the gate, the trust book | `crates/plugins` (`letibot-plugins`) | §2. Wasmtime is behind a `Loader` trait, so a fake stands in for the engine in tests. |
+| the host's half | `crates/harnessd/src/plugins.rs` + `plugins/` | the rano `Loader`, the per-session stack, looks through the gate, `PluginPane` frames, hot reload behind the gate, the `room` and `sessions` feeds. |
+| GitHub watches | `crates/tools/src/exec/github.rs` | `GithubCondition`: spawns `gh` at most once per interval, polls with `try_wait`, `parse(json, viewer) -> Seen`, baseline-then-news, `Until::{Closed, Merged, Checks, Review, Comment, CodeRabbit}`. |
+| auto-watch | `crates/harnessd/src/pr_watch.rs`, hooked in `harness.rs` | `gh pr create` becomes one coalesced `pr-N` watch, and a sentence appended to the call's result. |
 | repository links | `crates/tui/src/app/ghlinks.rs` | `GitRefs::url_of(word)`, fed refs read in the background. |
 | monitors | `crates/tools/src/exec/monitor.rs` `Condition` | `met()`, `wait()`, `rearm()`, `describe()`, `max_ttl()`, `github()`; the poller, owners, restart rules, the monitors pane, todo waits. |
-| extension traits | `tools::runtime::{Tool, Gate}`, `adjudicate::Adjudicator`, `external::web::{SearchProvider, Fetcher}`, `registry::ShellSuggester` | Rust-only seams; each is a candidate hook (§4). |
+| extension traits | `tools::runtime::{Tool, Gate}`, `adjudicate::Adjudicator`, `external::web::{SearchProvider, Fetcher}`, `registry::ShellSuggester` | Rust-only seams; each is a candidate hook. |
 
 ## 1. Principles
 
-1. **Plugins never do I/O themselves.** A hook is a pure function: JSON in, JSON out. When a
-   plugin needs the world (run `gh`, read a file, fetch a URL), it *declares* the look and the host
-   does it — asynchronously, under the gate — and calls the plugin again with the answer. A wasm
-   call therefore never blocks on the network, fuel stays a measure of work, and the same input
-   gives the same output (replay, tests).
-2. **A plugin can do nothing the model could not.** Every look a plugin declares goes through the
-   same gate and session mode as the model's own tool calls: under allow-edits a plugin's `gh` is
-   adjudicated exactly as the model's `bash` running `gh` would be. Capabilities (§3) say which
-   kinds of look a plugin may declare at all.
-3. **Tighten only.** A hook on adjudication or on the merge gate can add a refusal, an ask or a
-   failing check; never remove one. The allow side of the adjudicator, sudo, VMs, the merge queue's
-   landing and the store stay Rust.
-4. **Fail down, loudly.** A plugin that traps, runs out of fuel, returns malformed JSON or is
-   refused a capability is skipped for that call and the next one down the precedence (§2) answers
-   — ultimately the built-in default. The failure is told to the session's model (it can fix it)
-   and shown in the monitors pane.
-5. **State belongs to the host.** A plugin is stateless between calls; state it needs (a watch's
-   baseline) is an opaque JSON blob it returns and the host stores with the monitor, so restarts,
-   reloads and a newer build of the plugin keep it.
-6. **Contracts are versioned like the ABI.** Plugins outlive releases. Each hook kind has a
-   versioned JSON schema (`"v": 1` in every input); a host that changes a contract keeps answering
-   the old version or refuses the plugin by name. Additive fields are not a version.
+1. Plugins never do I/O themselves. A hook is a pure function: JSON in, JSON out. When a plugin needs the
+   world it *declares* the look and the host does it, asynchronously, under the gate, then calls the plugin
+   again with the answer. A wasm call never blocks on the network, fuel stays a measure of work, and the
+   same input gives the same output.
+2. A plugin can do nothing the model could not. Every look it declares goes through the same gate and
+   session mode as the model's own tool calls; capabilities (§3) say which kinds of look it may declare.
+3. Tighten only. A hook on adjudication or on the merge gate can add a refusal, an ask or a failing check;
+   never remove one. The allow side of the adjudicator, sudo, VMs, the merge queue's landing and the store
+   stay Rust.
+4. Fail down, loudly. A plugin that traps, runs out of fuel, returns malformed JSON or is refused a
+   capability is skipped for that call and the next one down answers, ultimately the built-in default. The
+   failure is told to the session's model and shown in the stack view.
+5. State belongs to the host. A plugin is stateless between calls; state it needs is an opaque JSON blob it
+   returns and the host stores, so restarts, reloads and a newer build keep it.
+6. Contracts are versioned like the ABI. Each hook kind has a versioned schema (`"v"` in every input); a host
+   that changes a contract keeps answering the old version or refuses the plugin by name. An added field is
+   not a version.
 
 ## 2. Layers
 
 ### 2.1 The stack
 
-Plugins form a **stack of layers**, like firecode's image layers or a chain of dotenv files: each
-layer may override any hook, the topmost answer wins, and everything a layer does not mention falls
-through to the layer below.
+Plugins form a stack of layers, like firecode's image layers or a chain of dotenv files: each layer may
+override any hook, the topmost answer wins, and everything a layer does not mention falls through.
 
 ```
-session layers   s3  "fix: CodeRabbit firing quotes an empty body"     ← newest, on top
+session layers   s3  "fix: CodeRabbit firing quotes an empty body"     <- newest, on top
                  s2  "watch buildkite on stroppy PRs"
                  s1  "digest: shorten ydb test logs"
 project layers   p1  .letibot/plugins/…  (committed, reviewed)
 user layers      u1  ~/.config/letibot/plugins/…
-built-in         github-pr, coderabbit, pr-create, links             ← embedded defaults
+built-in         sessions, queue, room, todo, irc, claude-transcript   (the GitHub family is step 3)
 ```
 
-- **The unit of override is a hook, not a plugin.** A layer that exports only
-  `condition_coderabbit` overrides that one hook; `condition_github_pr` still comes from below. A
-  layer is small because a fix is small.
-- **Order within a scope is creation order**, newest on top, so the stack reads as the history of
-  the fixes. Scopes stack session over project over user over built-in.
-- **A layer can call down.** Asking for the layer below's answer is a *look below* (§1, principle 1):
-  the hook returns `{"below": <input, possibly modified>}` — a top-level marker, not `look`, which
-  the pane contract of `docs/plugins-slice1.md` C3 already uses for *run this for me* — and is
-  called again with the original input plus the lower layer's output under `below`. A fix that only
-  changes one field of the answer asks below and edits it, instead of re-implementing the hook — the
-  dotenv `${VAR}` of this design.
-- **A layer can mask.** `{"mask": true}` from a hook means *no answer here and none below* — the
-  hook is switched off from this layer down (the built-in auto-watch, say). Masking is visible in
-  the stack view, so a hook that does nothing is never a mystery.
-- **A layer can be disabled without being deleted** (`plugin disable s2`): the stack is re-resolved
-  as if it were not there. That is the bisect for *"which of my fixes broke this"*.
+- The unit of override is a hook, not a plugin: a layer exporting only `condition_coderabbit` overrides that
+  hook, and `condition_github_pr` still comes from below.
+- Order within a scope is creation order, newest on top; scopes stack session over project over user over
+  built-in.
+- A layer can call down with `{"below": <input>}` and is called again with the original input plus the lower
+  layer's answer under `below`. The marker is `below` and not `look`, because a pane's own document has a
+  top-level `look` meaning *run this for me* (`docs/plugins-slice1.md` C3).
+- A layer can mask: `{"mask": true}` means no answer here and none below, and the stack view shows it.
+- A layer can be disabled without being deleted (`plugin disable s2`), which is the bisect for *which of my
+  fixes broke this*.
 
-A plugin directory (any scope) holds `plugin.toml` (name, one-line purpose, the hooks it exports,
-capabilities, contract versions), the source, and the built `plugin.wasm`. The source is what is
-reviewed; the `.wasm` is rebuilt when stale.
+A layer directory holds `plugin.toml` (name, purpose, hooks, capabilities, contract versions, feeds, actions,
+tools), the source and the built module. The source is what is reviewed.
 
 ### 2.2 Consolidation
 
-Messy is fine because cleaning up is cheap:
+- `plugin squash s1..s3` merges session layers into one, and the shadow gate replays the recorded inputs
+  against the old stack and the new one, refusing the squash while they differ.
+- Promotion is a commit: a layer moved to `.letibot/plugins/` on the session's branch goes through the merge
+  queue, and the reviewers see the source and the capability list in the diff.
+- Session layers are kept with the session, so session discovery finds them and a later session can lift one
+  into the project or into a core change.
 
-- **`plugin squash s1..s3`** merges session layers into one, in the session, keeping the stack's
-  answers the same (the model writes the merged source; the shadow gate, §2.4, replays the recorded
-  hook inputs against old stack and new, and the squash is refused while they differ).
-- **Promotion is a commit**: a layer moved to `.letibot/plugins/` on the session's branch goes
-  through the merge queue, and the reviewers see the source and the capability list in the diff.
-  Nothing else promotes.
-- **Across sessions**: session layers are kept with the session, so session discovery finds them —
-  *"which sessions patched the GitHub watch, and how"* — and a later session can lift one into the
-  project, or into a core change when the fix belongs in Rust.
-
-The transcript records `(layer, scope, sha256 of the .wasm)` the first time a layer answers in a
-session and on every reload, so a replay or a review knows which policy was in force at each point.
+The transcript records `(layer, scope, sha256 of the module)` the first time a layer answers and on every
+reload, so a review knows which policy was in force.
 
 ### 2.3 Hot reload
 
-A layer's change takes effect on the next hook call, with no restart:
-
-- **Detected by the host, applied after the shadow gate**: the plugin directories are watched (the
-  build writes `plugin.wasm`; `plugin load` asks explicitly). A changed module is a *candidate*: it
-  goes through the dry run of §2.4, and only a candidate that passes is swapped in, atomically.
-  Cranelift compiles a small module in milliseconds, so the gate, not the compile, is the wait.
-- **In-flight calls finish on the version they started on.** The swap replaces the module for the
-  next call; nothing is interrupted.
-- **State survives the swap**: host-held state (§1, principle 5) is keyed by layer and hook, not by module, so
-  a reloaded condition keeps its watch's baseline.
-- **A bad candidate never replaces the good one.** One that fails the gate is refused with the
-  gate's report, and the previous version keeps answering. The model is told either way.
-- **Tools are the exception**: a plugin tool's schema is in the cached prompt prefix, so a change to
-  a tool's *schema* waits for a reseat (which already announces tool changes); a change to its
-  *behaviour* is hot like any other hook.
+A layer's change takes effect on the next hook call, with no restart: the directories are watched (and
+`plugin load` asks explicitly), a changed module goes through §2.4, and only a candidate that passes is
+swapped in atomically. In-flight calls finish on the version they started on, host-held state survives the
+swap because it is keyed by layer and hook, and a bad candidate never replaces the good one. Tools are the
+exception: a tool's schema is prompt bytes in the cached prefix, so a schema change waits for a reseat.
 
 ### 2.4 The shadow gate: a dry run on a copy of the session
 
-The operator: *"and then mechanical thing - before applying we must check compilation etc on a
-shadow session - do a dry run when a temporary session copy has changes applied"*.
+Before any change to a stack takes effect (a new layer, a rebuilt one, a disable, a squash) the daemon runs it
+on a shadow: a temporary copy of the session with the change applied, beside the live session, which is not
+touched. It is the merge gate's role for layers: mechanical, run by the daemon, not by an agent. The steps,
+first failure stops:
 
-Before any change to a stack takes effect — a new layer, a rebuilt one, a disable, a squash — the
-daemon runs it on a **shadow**: a temporary copy of the session with the change applied, beside
-the live session, which is not touched. It is the merge gate's role for layers: **mechanical, run
-by the daemon, not by an agent**, and the butler's reviewer reads its report rather than redoing
-it. The steps, first failure stops:
+1. Build: `cargo build --offline --release --target wasm32-unknown-unknown` from the layer's source, so what
+   is applied is what the source says. A module that does not match its source is refused.
+2. Load: compile, the ABI check (`rano_abi`), every export a known hook with a contract version this host
+   speaks, and the capabilities granted with no import beyond them.
+3. Shadow: fork the session's state into a hidden copy and apply the change there. It has no effects: no
+   model is called, no notice reaches anyone, no monitor is armed, and a look is answered from the recorded
+   look results or run only if it is a *reading* one. Reading is not a list this step keeps: it is the gate's
+   own answer to *would this run without putting a question to anybody* (`Gate::admit_unasked`, the ladder
+   §4.4's `exec` look goes through), so the shadow and the live stack cannot disagree about which command is
+   a read. (The gate runs no look at all today, so there is no allowlist to retire yet.)
+4. Replay: every recorded input of every hook the change touches, through both stacks. Traps, exhausted fuel,
+   malformed output and contract violations fail; outputs are diffed.
+5. Report: the build log, the load result, the fuel per hook, and the diff. A change meant to alter behaviour
+   has a diff and the diff is the point; a squash or a refactor must have none, and the gate refuses it
+   otherwise.
 
-1. **Build** — `cargo build --offline --release --target wasm32-unknown-unknown` from the layer's
-   source, so what is applied is what the source says (a committed or hand-copied `.wasm` that
-   does not match its source is refused).
-2. **Load** — compile, the ABI check (`rano_abi`), every export a known hook with a contract
-   version this host speaks, the capabilities in `plugin.toml` granted and no import beyond them.
-3. **Shadow** — fork the session's state into a hidden copy (its stack, its host-held hook state,
-   its recorded hook inputs, its monitors as data) and apply the change there. The shadow has **no
-   effects**: no model is called, no notice reaches anyone, no monitor is armed for real, and a
-   look a hook declares is answered from the recorded look results where they exist and otherwise
-   run only if it is a **reading** one. *Reading* is not a list this step keeps: it is the gate's
-   own answer to *would this run without putting a question to anybody* —
-   `letibot_tools::Gate::admit_unasked`, the ladder §4.4's `exec` look goes through — so the shadow
-   and the live stack cannot disagree about which command is a read. A look it refuses is answered
-   *skipped*. (Built? No: `crates/plugins`'s gate runs **no** look at all today — its step 3 says
-   so — so there is no allowlist to retire yet, and the day a shadow runs looks it calls that same
-   entry rather than inventing a second rule.)
-4. **Replay** — every recorded input of every hook the change touches, through the live stack and
-   the shadow stack. Traps, fuel exhausted, malformed output and contract violations fail; outputs
-   are diffed.
-5. **Report** — the build log, the load result, the fuel per hook, and the diff: *these inputs now
-   answer differently, like this*. A change meant to alter behaviour has a diff and the diff is the
-   point; a squash or a refactor must have none, and the gate refuses it otherwise.
+### 2.5 Trust: a built-in runs freely, and a placed layer needs a pin
 
-Then the butler's reviewer reads the source with the report, and on a pass the daemon applies the
-change to the live session, hot. On a box with a session VM the build and the shadow can run in
-it; the shadow is discarded either way. Layers the session's model writes itself take the same
-path — there is no way to apply a change that skips the gate.
+D17, the operator's rule: *only the builtins run freely; anything I place later needs a pin.*
 
-### 2.5 Trust: a built-in runs freely, and a placed layer needs a pin — **built 2026-10-31**
+1. A built-in runs freely, `exec` included: it is the binary's own bytes, nobody placed them at run time
+   (`Stack::register_builtin_shared` marks it free).
+2. A placed layer needs a pin: the SHA-256 of the layer's module AND of its `plugin.toml`, taken by a person
+   (`/plugin trust NAME`). A layer whose bytes match a pin is free. Every other layer a person or a model put
+   on disk is adjudicated on every call: its tool calls and its `exec` looks go through
+   `Gate::admit_unasked`, which admits by the session's own rules or refuses, and never raises a card,
+   because a layer cannot put a question to a person.
+3. A byte change after the pin un-pins it: a layer rebuilt or edited after it was pinned is adjudicated
+   again, and the sentence names the layer and both hashes, once, as the `plugin_untrusted` warning.
 
-The operator, restating D17 on 2026-10-31: *"Only the builtins run freely; anything I place later
-needs a pin."* Three arms, and the second is the one that costs a person something:
-
-1. **A built-in runs freely**, `exec` included. It is the binary's own bytes; nobody placed them at
-   run time, so there is nothing to decide (`Stack::register_builtin_shared` marks it free).
-2. **A placed layer needs a pin.** A pin is the SHA-256 of the layer's module AND of its
-   `plugin.toml`, taken by a person (`/plugin trust NAME`). A layer whose bytes match a pin is free.
-   **Every other layer a person or a model put on disk is adjudicated on every call** — its tool
-   calls and its `exec` looks go through `Gate::admit_unasked`, which admits by the session's own
-   rules or refuses, and never raises a card: a layer cannot put a question to a person.
-3. **A byte change after the pin un-pins it.** The pin is a statement about bytes, so a layer
-   rebuilt or edited after it was pinned is adjudicated again, and the sentence names the layer and
-   BOTH hashes (what was pinned, what is on disk now). It is said once, by name, as the
-   `plugin_untrusted` warning.
-
-**Provenance is recorded, not inferred.** `write` and `edit` report the bytes they landed
-(`letibot_tools::provenance::Sink`), and the daemon appends a record for anything that is about a
-layer — a `plugin.toml`, a module, or a file beside one — so *who wrote these bytes* is a fact on
-disk rather than a guess from a path. **The ladder never consults it**: an unpinned layer is
-adjudicated whatever wrote it, so the weaker fact can never widen what runs. `/plugin trust`
-reports the records beside the hash it pinned.
+Provenance is recorded, not inferred: `write` and `edit` report the bytes they landed and the daemon appends
+a record for anything about a layer, so *who wrote these bytes* is a fact on disk. The ladder never consults
+it, so the weaker fact can never widen what runs.
 
 | piece | where |
 |---|---|
-| the book (pins + write records), one JSON file in the config dir — written under a lock, merged by time | `letibot_plugins::Trust` (`crates/plugins/src/trust.rs`) |
-| the decision, per layer | `Layer::trusted` / `Layer::pin`, filled by `Stack::set_trust` and re-decided on every poll (`Stack::refresh_trust`) |
+| the book (pins + write records), one JSON file in the config dir, written under a lock and merged by time | `letibot_plugins::Trust` (`crates/plugins/src/trust.rs`) |
+| the decision, per layer | `Layer::trusted` / `Layer::pin`, from `Stack::set_trust`, re-decided by `Stack::refresh_trust` |
 | a tool call of an unpinned layer | `crates/harnessd/src/plugins/tool.rs` (`PluginTool::admit`) |
 | an `exec` look of an unpinned layer | `crates/harnessd/src/plugins/conditions.rs` (`StackOver::adjudicate`) |
 | the write records | `crates/tools/src/provenance.rs` + `crates/harnessd/src/plugins.rs`'s `Provenance` |
-| the operator's door | `crates/tui` — `/plugin`, `/plugin trust NAME`, `/plugin untrust NAME` |
+| the operator's door | `crates/tui`'s `/plugin`, `/plugin trust NAME`, `/plugin untrust NAME` |
 
-**The book has two writers in two processes** — the daemon records a write, the head takes or takes
-back a pin — so a save is a read-modify-write under an exclusive lock on `<book>.lock`, merging with
-the file **by time** (`Book::merge`): a pin only stands if it is newer than the revocation of the
-same layer, so a peer's stale copy can neither undo a revocation nor undo a re-pin, and the lock is
-what stops two saves interleaving inside that window. A revocation is a row with a time on it, not
-an absence — an absence cannot be told from *never mentioned*.
+The book has two writers in two processes, so a save is a read-modify-write under an exclusive lock on
+`<book>.lock`, merging with the file by time: a pin only stands if it is newer than the revocation of the same
+layer. A revocation is a row with a time on it, not an absence, because an absence cannot be told from *never
+mentioned*. The `plugin` tool has no `trust` verb, and the book lives in
+`$XDG_CONFIG_HOME/letibot/plugin-trust.json` and not beside the layer it is about: a pin written where a model
+can write is not a pin.
 
-**The door is the operator's and not a model's.** The `plugin` tool has no `trust` verb: a layer
-that could pin itself would run freely because it said so, which is the one thing the ladder cannot
-survive. The book lives in `$XDG_CONFIG_HOME/letibot/plugin-trust.json` and not beside the layer it
-is about, for the same reason — a pin written where a model can write is not a pin.
-
-**What is NOT adjudicated, and why**: a `pane_`, `notice_`, `command_` or `digest_` answer. Those
-hooks reach nothing — they answer JSON, the host validates it against the contract, and a look they
-ask for is capability-checked against the manifest. The ladder decides what a layer can *do*, and a
-layer that answers words does nothing.
+What is NOT adjudicated, and why: a `pane_`, `notice_`, `command_` or `digest_` answer. Those hooks reach
+nothing; they answer JSON, the host validates it, and a look they ask for is capability-checked.
 
 ## 3. Capabilities
 
 Declared in `plugin.toml`, enforced by the host at the moment a plugin declares a look:
 
-- `exec:<program>` — a look may run `<program>` (e.g. `exec:gh`, `exec:git`) with arguments the
-  plugin chooses, in the workspace, through the gate. No shell, no other program.
-- `read` — a look may read files under the workspace (the same confinement `read` has).
-- `read:<path>` — a look may read **one tree outside the workspace**, named as a person wrote it
-  down (`read:~/.claude/projects`). §4.8.1 is the whole of it: absolute or `~/…`, strictly deeper
-  than the root or a home directory, no `..`, and the manifest's line is the approval — a layer
-  reads what somebody wrote down and nothing else.
-- `http:<host>` — a look may GET from `<host>` (later; network egress is the operator's call).
+- `exec:<program>`: a look may run `<program>` (e.g. `exec:gh`) with arguments the plugin chooses, in the
+  workspace, through the gate. No shell, no other program.
+- `read`: a look may read files under the workspace.
+- `read:<path>`: a look may read one tree outside the workspace, named as a person wrote it down
+  (`read:~/.claude/projects`). §4.8.1 is the whole of it.
+- `http:<host>`: a look may GET from `<host>` (later; network egress is the operator's call).
 
-**Granting.** Built-in and user plugins: granted by being installed. Project plugins: granted by
-the merge — the capability list is part of the reviewed diff. Session plugins: the first time a
-session plugin is loaded with a capability, the operator gets one question (an ask card naming the
-plugin, the capability, and the plugin's one-line purpose); allow-all answers it yes.
+Built-in and user plugins are granted by being installed. Project plugins are granted by the merge, because
+the capability list is part of the reviewed diff. Session plugins: the first time one is loaded with a
+capability the operator gets one ask card naming the plugin, the capability and its one-line purpose;
+allow-all answers it yes.
 
-**A capability says what a layer MAY do; §2.5's ladder says whether it does it freely.** A
-capability is still enforced either way — a look outside the manifest's lines is refused whatever
-the layer's trust — but an unpinned layer's `exec` look also meets the gate, and a built-in's or a
-pinned one's does not.
+A capability says what a layer MAY do; §2.5's ladder says whether it does it freely. A capability is enforced
+either way, but an unpinned layer's `exec` look also meets the gate and a built-in's or a pinned one's does
+not.
 
 ### 3.1 Two ABIs: rano's, and WASI
 
-The operator: *"we can look at wasi actually"* — and the crates are fetched (`wasmtime-wasi`,
-`wasmtime-wasi-http`, `wasmtime-wasi-io` 49.0.3, matching the `wasmtime` rano pins, are in the
-offline cache since 2026-10-25).
-
-**Beside rano's ABI, not instead of it.** rano's ABI v1 (bytes in, a result block out, no imports
-unless granted) stays what editor hooks and slice 1 speak. WASI is added because the toolchains
-already target it: `GOOS=wasip1` (so shfmt), C, Rust, Python (componentize-py) and JavaScript (jco)
-build WASI modules and components without a custom ABI, so off-the-shelf tools run as plugins.
-
-**A second `Loader`.** `letibot-plugins` talks to modules through `Loader`/`Module` (C2), so the
-WASI engine is a second implementation and rano does not change. A manifest says which:
-`abi = "rano-1"` (the default) or `abi = "wasi-p2"` (a component; a preview-1 module is accepted
-through wasmtime's adapter).
-
-**Two worlds, by what may block:**
-
-- **`hook`** — panes, conditions, notices, digests, links. A component exporting
-  `handle: func(hook: string, input: string) -> result<option<string>, string>` and importing
-  **nothing**: not WASI's clocks, random, filesystem or network. Hooks stay pure, so the shadow
-  gate's replay (§2.4) stays exact. JSON at the boundary first, so the contracts of
-  `docs/plugins-slice1.md` hold unchanged; typed WIT records can replace the strings later without
-  changing what a hook means.
-- **`script`** — script tools (§4.11) and the gate's own tools. `wasi:cli` (`run`, args, stdin,
-  stdout and stderr captured), plus one letibot import, `letibot:host/exec`: a synchronous, gated
-  exec, each call adjudicated like `bash`.
-
-**Capabilities are WASI's own shape:**
-
-| capability | in WASI |
-|---|---|
-| `read` | the workspace pre-opened read-only |
-| `read:<path>` | that one tree pre-opened read-only, and no other |
-| `write` (new, scripts only) | the workspace pre-opened read-write |
-| `http:<host>` | `wasi:http` outgoing, refused for any other authority |
-| `exec:<prog>` | `letibot:host/exec`, refused for any other program |
-| none | no pre-opens, no sockets, no environment beyond what the host sets |
-
-**Deterministic where the gate needs it.** In the shadow gate a script sees a fixed clock, seeded
-random, a snapshot of the workspace and no network, so its replay compares like a hook's.
-
-**The first WASI tools are the gate's**: shfmt built with `GOOS=wasip1`, then the shellcheck port,
-then `jaq` (jq in Rust) for scripts that reshape JSON.
-
-**To measure before committing to it**: harnessd's build time and binary size with
-`wasmtime-wasi` in, and the cost of instantiating a component per call against rano's per-call
-store.
+rano's ABI v1 stays what editor hooks and slice 1 speak. WASI is to be added beside it, not instead of it,
+because the toolchains already target it (`GOOS=wasip1`, C, Rust, Python, JavaScript), as a second `Loader`
+behind the `Loader`/`Module` trait (C2), chosen by `abi = "rano-1"` (the default) or `abi = "wasi-p2"`. Two
+worlds, by what may block: `hook` (panes, conditions, notices, digests, links) exports
+`handle: func(hook: string, input: string) -> result<option<string>, string>` and imports nothing, not even
+WASI's clocks, so the gate's replay stays exact; `script` (script tools, §4.11) gets `wasi:cli` plus one
+letibot import, `letibot:host/exec`, a synchronous gated exec adjudicated like `bash`. Capabilities are
+WASI's own shape: `read` pre-opens the workspace read-only, `read:<path>` that one tree, `write` (scripts
+only) read-write, `http:<host>` and `exec:<prog>` for that authority or program only, and none means no
+pre-opens and no sockets. In the shadow gate a script sees a fixed clock, seeded random, a snapshot of the
+workspace and no network. Not built: `wasmtime-wasi` is not in `Cargo.toml`.
 
 ## 4. Hooks
 
-Each hook kind is a wasm export `<kind>_<name>` (rano's convention: the export enumerates what a
-module answers) taking the JSON input and returning the JSON output through the ABI v1 result
-block. Every hook is layered (§2.1): answered by the topmost layer that exports it, able to call
-below, able to mask.
+Each hook kind is a wasm export `<kind>_<name>` taking the JSON input and returning the JSON output through
+the ABI v1 result block; every hook is layered (§2.1). `crates/plugins::HOOK_PREFIXES` is the list of prefixes
+the host recognises, and an export outside it is refused at the gate, so a typo is a refusal the model can
+read.
 
-**The hooks go where the bugs are.** The bugs and limitations of the last weeks were nearly all at
-four places: what a tool call is allowed to do and with which arguments (the monitor duplicates,
-the coalescing), what happens after it (the missed PR watch), what the harness says to the model
-(the empty `""` in a CodeRabbit firing, the conflict nobody was told about), and what a monitor
-sees. Those four are the first hooks (§4.1–4.4), so a session can patch any of them in place.
-
-### 4.1 `on_tool_call` — before a call runs
+### 4.1 `on_tool_call`: before a call runs
 
 ```jsonc
 // in
 {"v":1, "call":{"name":"monitor","arguments":{…}}, "session":{"mode":"allow-edits", …}}
-// out — one of
+// out, one of
 {"pass":true}                                     // run it as it is (the default)
 {"arguments":{…}}                                 // run it with these arguments instead
 {"refuse":"already watched as pr-24; use that"}   // do not run it; the model reads why
 {"answer":"…"}                                    // do not run it; this is its result
 ```
 
-Runs after the model proposes a call and **before the gate**, so whatever it rewrites is still
-adjudicated: a layer can narrow a call or refuse it, and a rewritten call that needs permission
-still asks. This is the hook that patches *"the model armed nine monitors for three PRs"* the
-same afternoon it happens.
+Runs after the model proposes a call and before the gate, so a rewritten call is still adjudicated. The
+tool's NAME is not a field of the answer, and no verdict says *allow*. An `answer` carries one line above its
+payload, `[note] answered by plugin <name> (<scope>); the tool did not run`, because a model that cannot tell
+a layer's answer from a tool's has been told something untrue.
 
-**An `answer` says who answered it.** It is the one verdict whose payload is the layer's own
-sentence standing in for a result — the tool never ran — so the result the model reads carries one
-line above it: `[note] answered by plugin <name> (<scope>); the tool did not run`. A model that
-cannot tell a layer's answer from a tool's has been told something untrue about the world (a
-`monitor` that never armed, a `read` that never looked), and the line is in the same `[note]`
-channel every other harness sentence on a result uses. A `refuse` needs none — its outcome already
-names the layer.
-
-### 4.2 `on_tool_result` — what happens after a call
+### 4.2 `on_tool_result`: what happens after a call
 
 ```jsonc
 // in
@@ -349,23 +227,22 @@ names the layer.
 }
 ```
 
-Run for every successful tool result, through the stack, at the site `pr_watch::opened` hooks
-today. Arming goes through the same door the operator's calls use, so coalescing and the
-already-watched refusal apply.
+Run for every successful tool result, at the site `pr_watch::opened` hooks today. Arming goes through the
+operator's own door, so coalescing and the already-watched refusal apply.
 
-### 4.3 `notice` — what the harness says to the model
+### 4.3 `notice`: what the harness says to the model
 
 ```jsonc
 {"v":1, "kind":"monitor_fired", "text":"[monitor] `pr206-coderabbit` fired: …", "facts":{…}}
 → {"text":"…"}   // or unchanged; or {"drop":true} for a notice this project never wants
 ```
 
-Every message the harness injects — monitor firings, reminders, restart and reseat cards, the
-merge queue's verdicts — passes through here with the structured facts it was made from, so a
-layer can fix a misleading wording or add what the model was not told (*the PR is in conflict*).
-A notice the operator must see cannot be dropped, only reworded; the set is the host's.
+The hook is resolved per notice kind (`notice_monitor`, `notice_job`, …), so a fix to one firing's wording
+does not make a layer the answerer for the queue's verdicts. A notice the model is owed (a settlement, a due
+row, a reseat, a queue verdict, the workspace's state, a salvage) may be reworded and not dropped; a firing
+and a nudge may be dropped. A layer's own failure notice never passes through the hook.
 
-### 4.4 `condition` — what a monitor watches
+### 4.4 `condition`: what a monitor watches
 
 ```jsonc
 // in
@@ -381,86 +258,63 @@ A notice the operator must see cannot be dropped, only reworded; the set is the 
 }
 ```
 
-The host side is a `PluginCondition: Condition` that runs the declared look the way
-`GithubCondition` runs `gh` today (spawn at most once per interval, `try_wait`, never stall the
-poller), calls the plugin with the result, and fires on `fired`. The model arms one with the
-existing `monitor` tool: `{"plugin":"coderabbit","args":{"pr":"o/r#24"}}`.
+The host side is a `PluginCondition: Condition` that runs the declared look the way `GithubCondition` runs
+`gh` (spawn at most once per interval, `try_wait`, never stall the poller) and fires on `fired`. The model
+arms one with the existing `monitor` tool: `{"plugin":"coderabbit","args":{"pr":"o/r#24"}}`.
 
-### 4.5 `digest` — tool output before the model reads it
+An `exec` look runs under the layer's `exec:<program>` capability (checked first: a program the layer did not
+declare is not a call anybody adjudicates) and, for a layer nobody pinned, through `Gate::admit_unasked`
+without asking, because the look runs on the session's monitor thread and a card would park that thread and
+the watch with it. It is `admit` stopped at the card: admitted by a `permission` rule, a standing grant, the
+point the session sits at or a measured boundary (D16) it runs; a gate busy with somebody else's call
+*defers* it to the next tick; a call that would have gone to a person does not run and the layer is told
+*would need your approval* with the card's reason, once per (layer, program, reason); a rule the operator
+wrote says *denied*, which is a different fact from *would ask*; and a session with no gate at all runs
+nothing, because *no gate* is not *every gate open*. A look consults no guard model, writes no grant and leaves the consecutive-refusal breaker where it was, so a
+watch polling a refused program cannot close the session's own gate.
+
+### 4.5 `digest`: tool output before the model reads it
 
 ```jsonc
 {"v":1, "call":{…}, "payload":"…"}  →  {"payload":"…shorter…"}  // or unchanged
 ```
 
-For a project's test runner, build tool, log format. Runs before spill, so the digest is what is
-budgeted.
+Runs before spill, so the digest is what is budgeted.
 
-### 4.6 `link` — what a word on the screen links to (TUI)
+### 4.6 `link`: what a word on the screen links to (TUI)
 
 ```jsonc
 {"v":1, "word":"#212", "repo":{"slug":"o/r","branches":[…]}}  →  {"url":"https://…"}  // or null
 ```
 
-Called per candidate word, so it is batched per frame (`{"words":[…]}` → `{"urls":[…]}`) and
-cached by word. The refs keep being read by the host (`ghlinks::read_refs`).
+Called per candidate word, so it is batched per frame (`{"words":[…]}` → `{"urls":[…]}`) and cached by word.
 
-### 4.7 `command` — slash commands
-
-`/<name> args` → `{"say": "…to the model…"} | {"show": "…to the operator…"}`.
-
-**As built (2026-10-28): `command_todo`, and the split it settles.** The first command a layer owns
-is the operator's `/todo`, and building it answered the question this section had left open — *what
-is a command's answer, and who performs it?* The answer is the pane's, one hook over: **the guest
-reads the line and answers an ACT, the host performs it.** So a command's answer is
+### 4.7 `command`: slash commands
 
 ```jsonc
-// command_<verb>: out — an act the head performs, or nothing at all
-{"act": {"name": "add_todo", "args": {"content": "a — b"}}}
+// command_<verb>: out
+{"act": {"name": "add_todo", "args": {"content": "a - b"}}}
 ```
 
-and `say`/`show` above stay unbuilt: the first command needed a row added, not a line delivered.
-When one does need to speak, `{"say": "…"}` is one more arm in the head and one more word in the
-manifest — not a second protocol.
-
-**Who owns which line.** The head keeps the verbs that MOVE a row (`done`, `rm`, `postpone`,
-`resume`, `when`) and offers every other line to the layer (`command_todo`). The list is one
-constant (`OWN_VERBS`, `crates/tui/src/app/commands.rs`) and the match that answers them is
-beside it, because the first cut had the two as separate lists and `when` was missing from one of
-them — with a layer installed, `/todo when 1 j7` became a row called `when 1 j7`. A verb added to
-one without the other is that defect again, so a test drives every word in the list at a recording
-layer and asserts none of them is ever asked.
-
-**What the four answers mean**, and the difference between the middle two is the whole design:
+The guest reads the line and answers an act, the host performs it. The head keeps the verbs that MOVE a row
+(`done`, `rm`, `postpone`, `resume`, `when`) and offers every other line to the layer (`command_todo`); the
+list is one constant (`OWN_VERBS`, `crates/tui/src/app/commands.rs`) beside the match that answers it,
+because two lists had `when` missing from one of them.
 
 | the layer | the head |
 |---|---|
 | `-1` (pass) | answers the line exactly as it did before there was a layer |
-| an act it has heard of | performs it — `add_todo` is the only name today |
+| an act it has heard of | performs it; `add_todo` is the only name today |
 | any other answer | performs nothing, and says which act it refused |
-| a trap, a fuel exhaustion | says so, and the layer below answers (fail down, loudly) |
+| a trap, a fuel exhaustion | says so, and the layer below answers |
 
-**The trust boundary is the manifest pair, not the answer.** `capabilities = []` is what the layer
-cannot DO (no `read`, no `exec:`, no `http:` — the words it answers with are all it can produce),
-and `actions = ["add_todo"]` is what the HOST will do for it. A layer may answer any JSON it likes;
-the head performs exactly the names it knows, so the manifest is the whole of what an answer can
-cause — and it is a manifest field rather than a constant in the head because it is what a reviewer
-reads before a session layer is consented to.
+The trust boundary is the manifest pair, not the answer: `capabilities = []` is what the layer cannot DO and
+`actions = ["add_todo"]` is what the HOST will do for it, which is what a reviewer reads.
 
-**One stack, two questions.** A command asks the stack the session list is drawn from
-(`Host::command`), so a layer approved for the pane is the layer that answers a typed line. That is
-also the bug this build found and fixed: the host was built by the first DRAW of the list, so a
-head that had never opened the picker had no stack at all and `/todo` answered in the head's own
-words — the built-in `todo` layer installed in every binary and never asked. `App::plugin_host` is
-the one door now, and both callers go through it.
+### 4.8 `tool`: tools the model calls (last)
 
-### 4.8 `tool` — tools the model calls (last)
-
-A plugin tool's schema is prompt bytes in the cached prefix, so plugin tools load only at session
-start and at a reseat — which already announces tool changes. Calls go through the gate as the
-built-ins do; a tool that needs the world declares looks like a condition does.
-
-**Built, 2026-10-27 (package B).** A layer declares the tool in its manifest and answers it in
-`tool_<name>`:
+A plugin tool's schema is prompt bytes in the cached prefix, so plugin tools load only at session start and
+at a reseat; calls go through the gate as the built-ins do.
 
 ```toml
 # plugin.toml
@@ -478,225 +332,195 @@ type = "object"
 ```jsonc
 // in
 {"v":1, "name":"claude_transcript", "args":{…}, "feeds":{…}, "looks":[…], "state":…}
-// out — a result, in the tree's own vocabulary
+// out, a result in the tree's own vocabulary
 {"outcome":"ok",       "payload":"…"}
 {"outcome":"failed",   "reason":"…", "payload":"…"}
 {"outcome":"abstained","reason":"…", "payload":"…"}
 {"outcome":"refused",  "reason":"…", "payload":"…"}   // `not_run`: nothing ran
-// — or a question, when the layer needs data the host has
+// or a question, when the layer needs data the host has
 {"looks":[{"read":"/abs/path","from":12,"lines":40}], "state":{…}}
 ```
 
-**`feeds` is the host's own facts** — `home`, `workspace`, `session`, `now_ms` — read once per call
-and adjudicated by nothing, the same rule a pane's feeds follow. **`state` is the host's to keep**
-(§1 principle 5): it is handed back unchanged on the next round, and a layer is stateless between
-calls.
+`feeds` is the host's own facts (`home`, `workspace`, `session`, `now_ms`); `state` is the host's to keep
+(§1.5). The three looks stream: `read` (a line range, or a list of line numbers), `list` (a directory's
+entries with size and mtime), `grep` (every line containing a substring, with its line index, byte offset and
+bounded context). The host runs them in order against the layer's capabilities and asks again, up to four
+rounds, and every truncation is in the answer (`cut`, `more`, `scanned`).
 
-**A hook does no I/O, so a tool asks for it.** The three looks are the ones a filesystem tool
-needs, and all three stream: `read` (a line range, or a list of line numbers), `list` (a
-directory's entries with size and mtime), `grep` (every line containing a substring, with its line
-index, byte offset and bounded context). The host runs them, in order, against the layer's
-capabilities, and asks the hook again with the results — up to four rounds. Every look is bounded
-and every truncation is in the answer (`cut` on a line, `more` on a page, `scanned` on a sweep),
-because a tool whose whole reason for existing is *do not put 100 MB into a context* cannot answer
-a big file with silence about the part it left out.
+The prompt is composed in `Harness::open`, before the daemon has a hub, so declarations are read from
+`plugin.toml`s alone (`declared_tools`) and the tool is registered after the role is resolved, because
+`resolve_role` would refuse a role listing a tool the registry does not hold. A session whose slot is never
+filled (a subagent) answers `not_run`. A tool is seated when a layer IN FORCE declares it, and never because
+the binary carries it, which is the rule `crates/harnessd/tests/wired.rs` asserts.
 
-**Where it is seated, and why there.** The prompt is composed in `Harness::open`, before the daemon
-has a hub to build a plugin host with, so the declarations are read from `plugin.toml`s alone
-(`crate::plugins::declared_tools`) and the tool is registered **after** the role is resolved — a
-layer's tool is not one a role names, and `resolve_role` would refuse a role listing a tool it does
-not hold. The tool then answers through the same slot the `plugin` tool holds, filled by
-`Sessions::open_plugins`. A session whose slot is never filled (a subagent) answers `not_run` and
-says which of the two facts is missing.
-
-**A tool is seated when a layer IN FORCE declares it, and never because the binary carries it.**
-`declared_tools` reads the three disk scopes — the session's own, the project's, the user's — and
-not the built-in table. That is the same rule `crates/harnessd/tests/wired.rs` has always asserted
-about the default session: *"the next addition is not a decision until it is written down here
-too"*, and a tool that reads `~/.claude` arriving in a session that passed no flag is exactly the
-addition that rule refuses. MEASURED 2026-10-28: the first cut appended the built-in declarations
-to every session's, and `wired`'s default-set assertion went red with `claude_transcript` in it.
-
-**Installing a built-in's tool is therefore one file.** A project (or the operator, in
-`~/.config/letibot/plugins/`, or a session, in its own plugin directory) writes the built-in's own
-`plugin.toml` into its scope with **no `plugin.wasm`**:
+Installing a built-in's tool is therefore one file:
 
 ```sh
 mkdir -p .letibot/plugins/claude-transcript
 cp plugins/builtin/claude-transcript/plugin.toml .letibot/plugins/claude-transcript/
 ```
 
-The manifest is the ask and what the model is offered; the module that answers it is the one the
-binary already carries, which `PluginHost::production` puts at the bottom of the session's stack
-**for a tool the session declared, and for no other reason** — a session that asked for nothing
-installs nothing, and so pays no compile (1.97 s of CPU a session in a debug host, MEASURED
-2026-10-28, which is what made `letibot-bridge`'s `no_spin` window all compile and left the idle
-exit's 800 ms window already gone when `Sessions::open_first` returned). The compile itself is kept
-for the whole process (`Loader::load_builtin`, `crates/harnessd/src/plugins/rano.rs`), so the
-sessions that did ask for it pay it once.
+The module is the one the binary already carries, which `PluginHost::production` puts at the bottom of the
+stack for a tool the session declared and for no other reason. A manifest and no module is a DECLARATION and
+discovery is silent about it: the layer is on the stack with `sha -` and the module below answers the hook. A
+module that is there and will not load is a failure, and so is a manifest that does not parse. A broken layer
+costs a tool call, never a session: a trap falls to the layer below, and nonsense, an undefined outcome, a
+look for a path it may not read or a fifth round is a `failed` result naming the layer. The class is the
+layer's most consequential capability (`exec:` -> `Exec`, `http:` -> `Network`, read-only -> `Read`, which
+never reaches the gate), because `access_for` can only narrow.
 
-**A manifest and no module is a DECLARATION, and discovery is silent about it.** The layer is on
-the stack — it is the declaration the prompt is built from, listed with `sha —` because there are
-no bytes to hash — it answers nothing itself, and the module below answers the hook. Nothing is
-recorded as a failure and no `plugin_layer` warning goes out: before this, the missing module was
-recorded twice and announced on every session in the project, so the one code that means *this
-layer is installed and exploding* fired for a correct install (`Stack::discover`,
-`crates/plugins/src/stack.rs`). A `plugin.wasm` that is there and will not load is still a
-failure; so is a `plugin.toml` that does not parse.
+The first user is `plugins/builtin/claude-transcript` (Claude Code's own store, with `sessions`, `search`,
+`read`, `outline`): its layer is `claude-transcript` and its tool `claude_transcript`, because a layer is a
+package and this tree spells a package with hyphens while a tool is an identifier the model calls.
 
-**What a broken layer costs is a tool call, never a session.** A trap falls to the layer below
-(the stack's own rule); a layer that answers nonsense, an outcome nobody defined, a look for a
-path it may not read, or a fifth round of questions is a `failed` result that names the layer, says
-what the contract is and what fixes it. A tool that could not be seated at all — a name the seat
-already has, a class this session's downgrade denies, or more than four tools from layers — is one
-`plugin_layer` warning naming each.
-
-**The class is the layer's most consequential capability**: `exec:` makes its tool `Exec`, `http:`
-makes it `Network`, and a layer that only reads is `Read` and never reaches the gate. `access_for`
-can only narrow, so a schema that carried the least would be the hole that note is about.
-
-**The first user is `plugins/builtin/claude-transcript/`** — Claude Code's own store
-(`~/.claude/projects/<project>/<uuid>.jsonl`), modelled on the tree's `transcript` tool: `sessions`,
-`search`, `read`, `outline`. It reads `~/.claude/history.jsonl` not at all, and that is the point
-of the next section. Its layer is named `claude-transcript` and its tool `claude_transcript`: a
-layer is a package and this tree spells a package with hyphens (`b-sessions`, `letibot-builtin-
-claude-transcript`), while a tool is an identifier the model calls and its export is
-`tool_claude_transcript`.
-
-### 4.8.1 `read:<path>` — one tree outside the workspace
-
-`read` means *the workspace and nothing above it*, which is the right default and stays unchanged.
-`read:<path>` names **one tree outside it**, as a person wrote it down:
+### 4.8.1 `read:<path>`: one tree outside the workspace
 
 ```toml
 capabilities = ["read:~/.claude/projects"]
 ```
 
-* absolute (`/…`) or home-relative (`~/…`) — a relative path names a different tree on every
-  machine, which is not something a reviewer can approve;
-* strictly deeper than the root or a home directory: `read:/` and `read:~` are refused, because
-  *everything* spelled as one word is not a declaration a person can check;
-* no `..` segment. A path that climbs out of the tree it names is a path whose declaration is not
-  what it reads.
+`read` means *the workspace and nothing above it*. `read:<path>` names one tree outside it, as a person wrote
+it down: absolute or home-relative (a relative path names a different tree on every machine), strictly deeper
+than the root or a home directory (`read:/` and `read:~` are refused), and no `..` segment.
 
-**The declaration is the approval.** A layer can only read what a person wrote down, `admit` is
-what checks the module against it, and the check at the moment of a look is on the **resolved**
-path — so a symlink inside a declared tree that points out of it (`~/.claude/projects` holds one,
-`memory` → a folder under `~/Projects`) is refused for where it points. `~/.ssh` is not under a
-declared tree and no spelling of a path makes it so. The same rule is enforced for a pane's look
-(`crates/harnessd/src/plugins/look.rs`) and for a tool's (`crates/harnessd/src/plugins/tool.rs`):
-one expansion of `~/`, in one place.
+The declaration is the approval, and the check at the moment of a look is on the **resolved** path, so a
+symlink inside a declared tree that points out of it (`~/.claude/projects` holds one, `memory` -> a folder
+under `~/Projects`) is refused for where it points. A directory of secrets is not under a declared tree, and
+no spelling of a path makes it so. One rule, one expansion of `~/`, for a pane's look and a tool's.
 
-### 4.9 `pane` — the UI language
+### 4.9 `pane`: the UI language
 
-*The exact contract, in serenedash's dashboard language (panels with views behind keys, one
-grid, denominators, findings, legend), is C3 in `docs/plugins-slice1.md`; the sketch below is the
-first draft.*
+Plugins describe, the host draws: a plugin never paints cells or reads keys, and its document is rendered
+with the same rano widgets as the head's own panes. The language is serenedash's: an overview of panels, each
+a summary with a full view behind its key; every row through one grid so the numbers line up; every bar says
+its denominator; findings collect what tripped and Enter reads one whole; a legend documents every label and
+answers on hover; a panel that cannot get its data says why; Esc leaves what you navigated into.
 
-The operator: *"and we have to give plugins the ui language - so panes, keys, markdown itemized
-navigation, esc, enter - all templated"*.
-
-**Plugins describe, the host draws.** A plugin never paints cells or reads keys. It returns a
-*view*: a document in a small vocabulary of the pieces the head already has. The head renders it
-with the same rano widgets and the same conventions as its own panes, so a plugin pane cannot
-look or behave differently from the built-in ones.
+Input (`letibot_plugin::pane::Input`, whose `v` is `V`):
 
 ```jsonc
-// pane_<name>: in
-{"v":1, "state":{…}, "look":{…}, "event":null,       // or {"item":"tier1/jstests","action":"open"}
- "size":{"w":120,"h":40}}
-// out
-{"title":"stroppy-conformity · v0.2.0",
- "badge":{"text":"3 running","role":"attention"},     // the pane's counter in the corner
- "body":[
-   {"table":{"columns":["item","status"],"rows":[
-     {"id":"tier1/jstests","cells":["Mongo jstests","not started"],"role":"muted",
-      "detail":"…markdown, shown on Enter…",
-      "actions":[{"key":"s","label":"start","say":"start the jstests work"}]}]}},
-   {"progress":{"label":"campaign A","done":41,"of":96,"role":"working"}},
-   {"markdown":"…"}],
- "look":{"exec":["…"]}, "every_s":30,                 // refresh, as a condition does
- "state":{…}}
+{"v":3,
+ "state": null | {…},                                  // what this pane returned last time
+ "look":  null | {"exit":0,"stdout":"…","stderr":"…"}, // the result of the look it asked for
+ "event": null | {"item":"<row id>","action":"<event>"},
+ "feeds": {"sessions":{…}},                            // only the feeds the answering layer declared
+ "folded": {"<row id>": true},                         // the host's fold state, by row id
+ "below": null | {…},                                  // the layer below's answer, when this layer asked
+ "size":  {"w":120,"h":40}}
 ```
 
-- **The pieces**: `markdown` (itemized: each list item and heading is a stop, ↑/↓ move between
-  them as in the transcript's markers), `list`, `table`, `tree` (collapsible), `progress`, `kv`
-  (label/value rows), `badge`. Each row can carry an `id`, a `role` (the palette's: muted,
-  working, attention, success, failure), a `detail` and `actions`.
-- **The keys are templated, not chosen**: ↑/↓/PgUp/PgDn/wheel move, **Enter** opens the row's
-  `detail` (itself itemized markdown, Enter again into its items), **Esc** goes back one level and
-  closes at the top — and only that, the Esc rule of every other pane, so a plugin cannot bind it
-  to anything else. A plugin's own `actions` take letters, are shown in the hint bar, and are
-  refused by the host if they collide with a reserved key.
-- **What an action may do**: `say` (a line to the session's model, as if typed — subject to the
-  ordinary queue rules), `look` (re-run the pane's look now), `arm` (a monitor), or `event` (call
-  the pane again with `{"item","action"}` to change its own state — expand, filter, page). It
-  cannot run anything the stack's capabilities do not allow.
-- **Where panes live**: a plugin pane joins the pane list (alt-letter or the panes menu) beside
-  todos, monitors and jobs, with the same scroll guard, wheel router and click arithmetic. A pane
-  with a `badge` shows it in the status row, like the waits-on-you counter.
-- **Hot and gated like any hook**: a pane's change goes through the shadow gate, where the view it
-  returns for the recorded inputs is rendered to text and diffed — the gate's diff for a pane is
-  what the pane looks like. *(Built: slice 1 draws panes and gates a change; the text diff of a
-  rendered view is not yet reported — the gate reports diffs of the JSON answers, which is the same
-  fact before it is drawn.)*
+Output (`View`):
 
-#### Feeds: where a pane's data comes from (built 2026-10-27)
+```jsonc
+{"title":"…",
+ "badge": null | {"text":"…","role":"<role>"},        // shown in the status row
+ "panels":[ <Panel>… ],                                 // the overview, in order
+ "findings":[ <Finding>… ],                             // the `f` view; counted in a summary line
+ "legend": {"<label>":"<what it means>", …},            // the `l` view and the hover text
+ "look": null | {"exec":["prog","arg",…]} | {"read":"path"},
+ "every_s": 0 | <seconds, >= 5>,
+ "state": null | {…}}
+```
 
-A pane never runs a program for its data. What it needs, the host already has — the daemon's session
-list, this session's monitors, its jobs, its todos, the repository's state — so a pane **declares**
-which of those it reads and is handed exactly those, under their names:
+`Panel`:
+
+```jsonc
+{"id":"tiers", "key":"t", "title":"tiers",
+ "denominator":"rows in the tier",                      // what every bar in it is a share of
+ "summary":[ <Block>… ],                                // drawn on the overview (a few lines)
+ "view":[ <Block>… ],                                   // drawn when its key is pressed; absent = summary
+ "unavailable": null | {"why":"cannot connect to lab2x1","fix":"ssh lab2x1 true"}}
+```
+
+`Block` is one of:
+
+```jsonc
+{"lines":[ <Line>… ]}                                   // the grid
+{"table":{"columns":["…"],"rows":[<Row>…]}}
+{"tree":{"rows":[<Row with "children":[<Row>…]>…]}}
+{"markdown":"…"}                                        // itemized: list items and headings are stops
+{"kv":{"rows":[["label","value"],…]}}
+```
+
+`Line` is the one grid, laid out by the host (label column, right-aligned value column, glyph column, tail;
+a label too long is truncated with `…`, never clipped):
+
+```jsonc
+{"label":"tier 1", "value":"14/22",
+ "bar": null | {"frac":0.64},                           // a share of the panel's denominator
+ "spark": null | [0.1, 0.4, …],                         // history, each a share of the same denominator
+ "tail":"3 in progress", "role":"<role>",
+ "id": null | "tier1", "detail": null | "…markdown…", "actions":[<Action>…]}
+```
+
+`Row` (tables, trees):
+
+```jsonc
+{"id":"tier1/jstests", "cells":["Mongo jstests","not started"], "role":"<role>",
+ "detail":"…markdown…", "actions":[<Action>…], "children":[…]}
+```
+
+`Finding`:
+
+```jsonc
+{"id":"stale-status", "what":"status file is 3 days old", "panel":"tiers",
+ "severity":"tripped" | "missing" | "passed",
+ "detail":"…prose…", "evidence":{"updated":"2026-10-22T…","age_h":74},
+ "fix":"…what to do…", "verify":"…a command or query to check it yourself…",
+ "actions":[<Action>…]}
+```
+
+`Action`: `{"key":"s","label":"start","say":"…"}` (a line to the session's model), `{"key":"r","label":
+"refresh","look":true}`, or `{"key":"x","label":"expand","event":"expand"}` (call the pane again with
+`{"item","action"}`). `role` is one of `muted`, `working`, `attention`, `success`, `failure`, `plain`.
+
+Keys are the host's, templated: each panel's `key` toggles its view, `f` findings, `l` legend; up/down and
+the wheel move between stops; Enter opens the selected stop's `detail`; Esc leaves what you navigated into and
+closes the pane at the overview, and a plugin cannot bind it to anything else.
+
+What `View::validate` and `View::validate_for` refuse, each with a sentence naming the offender
+(`crates/sessionlog/src/pane.rs`):
+
+- a panel that has a view and no one-lowercase-letter key;
+- a panel key that is one of the host's (`q`, `j`, `k`, `f`, `l`) or that another panel already took;
+- an action key that is not one lowercase letter, is one of the host's, is a panel's, or is taken by another
+  action of the same stop;
+- an action that is not exactly one of `say`, `look`, `event`;
+- `every_s` that is neither 0 (never) nor at least 5 seconds;
+- a finding with neither an `id` nor a `what`;
+- a row's `enter`, or an action's `verb`, that the layer's `plugin.toml` does not list in `actions`.
+
+An unknown block kind is not a refusal: it renders as one muted line naming the kind, and unknown fields are
+ignored. The view is also data: the same JSON is what an agent reads.
+
+#### Feeds: where a pane's data comes from
+
+A pane never runs a program for its data; it declares which of the host's facts it reads and is handed
+exactly those:
 
 ```toml
-feeds = ["sessions"]        # sessions · queue · room (fed) · monitors · jobs · todos · git (planned)
+feeds = ["sessions"]        # sessions | queue | room | monitors | jobs | todos | git
 ```
 
-```jsonc
-// pane_<name>: in  — `feeds` holds only what the answering layer declared
-{"v":2, "state":{…}, "look":{…}, "event":null, "folded":{"<row id>":true},
- "feeds":{"sessions":{…}}, "size":{"w":120,"h":40}}
-```
+| feed | is |
+|---|---|
+| `sessions` | the daemon's sessions: id, title, slug, parent, origin, live/running, rows, heads, model, workspace, waits-on-you, paused nags, `project`/`project_name` and `system`, plus `here` and `home` |
+| `queue` | the merge queue as the head holds it: `reviews` and `merges` with state, reason and age, `targets` with the branches' health, `leases` with heartbeat and `stale`, `recent`, `not_queued`, `archived`, plus `scope`, `view`, `cursor`, `counts` and `now_ms` |
+| `room` | one host's agents' queues per tag: each item with its tag, state, claimant, the age of that claim's beat, its abandonment count and whether it is frozen; the open questions; the arbiter and who is connected; the room's `identity` |
+| `monitors` | this session's monitors: armed, last look, fired, what each is watching |
+| `jobs` | the session's background jobs: handle, command, state, bytes, tail |
+| `todos` | the session's todo rows, with their waits and their questions |
+| `git` | the head's reading of the repository: branch, detached, ahead/behind, stash, the action in progress, changed-file counts |
 
-**The planned feeds, and what each will carry** — one more entry in that map each, and no format
-change:
+`sessions`, `queue` and `room` are fed; the rest are named, and each is one more feed, not a format change.
+Two things a feed says so a plugin need not infer them, both in `queue`: `live` per row (the in-flight states
+are the daemon's `review_open`/`merge_open`) and `verbs` per row (which of `approve`/`veto`/`restart`/`rm`
+would MOVE it, and why each that would not). Every age is milliseconds against the host's `now_ms`, never a
+timestamp, because a guest has no `SystemTime`. A feed adjudicates nothing; declaring it is the whole of the
+grant, and a feed a host cannot answer yet is absent from the map rather than empty. A pane gets no `exec`
+look today (`look::EXEC_REFUSED`), so a layer that may exec from a condition may not yet exec from a pane.
 
-| feed | is | first wanted by |
-|---|---|---|
-| `sessions` | the daemon's sessions: id, title, slug, parent, origin, live/running, rows, heads, model, workspace, waits-on-you, paused nags, `project`/`project_name` and `system` (where the row sits in the tree), plus `here` and `home` | the session list (built) |
-| `monitors` | this session's monitors: armed, last look, fired, what each is watching | a monitors pane |
-| `jobs` | the session's background jobs: handle, command, state, bytes, tail | a jobs pane |
-| `todos` | the session's todo rows, with their waits and their questions | a todo board |
-| `git` | the head's own reading of the repository — `GitState` in `crates/tui/src/gitfield.rs`: branch, detached, ahead/behind, stash, the action in progress, conflict/staged/unstaged/untracked counts — plus the changed-file list a pane would show | a repo/status pane |
-| `queue` | the merge queue as the head holds it: `reviews` and `merges` with their state, their reason and their age, `targets` with the target branches' health, `leases` with the heartbeat and a `stale` flag, `recent` moves, `not_queued`, `archived` — plus `scope` (whose queues these are, in words), `view` (`review`/`merge`), `cursor` (the entry the person's cursor is on), `counts`, and the host's own `now_ms` | the queue pane (built) |
-| `room` | one host's agents' queues per tag: every item with its tag, state, claimant, the age of that claim's beat, its abandonment count and whether it is frozen; the open questions; the arbiter and who is connected; and the room's own `identity` sentence | the room pane (built, 2026-10-31) |
-
-**Two things a feed says so a plugin does not have to infer them**, and both are in `queue` because
-both were measured as the ways a pane gets the queue wrong:
-
-* **`live`**, per row — is the queue WORKING on this row or finished with it. The states that mean
-  in-flight are the daemon's (`review_open`/`merge_open`), and a plugin grepping them out of a state
-  word would be a second copy of that rule. A pane that ignores `live` draws the past tense over the
-  present, which is what *"illegible mess"* was.
-* **`verbs`**, per row — which of `approve`/`veto`/`restart`/`rm` would MOVE it, and for each that
-  would not, the reason. That is `mergequeue::verbs`' rule, so the answer comes from the host; a row
-  can then say the one verb that would do something instead of printing four and leaving the person
-  to find out.
-
-**Every age in the feed is milliseconds against the host's `now_ms`, never a timestamp.** A guest
-cannot read a clock — `std::time::SystemTime::now()` panics on `wasm32-unknown-unknown`, and a panic
-in a guest is a trap (`.letibot/notes/the-pane-contracts-two-look-keys.md`) — so `now_ms` is handed
-over and an age is one subtraction.
-
-A feed is read-only data the host is already showing; it adjudicates nothing, and declaring it is
-the whole of the grant. **A pane gets no `exec` look today**: `look::EXEC_REFUSED`
-(`crates/harnessd/src/plugins/look.rs`) refuses one. D17 is built (§2.5) and it decides what a
-layer's `exec` looks are worth — a built-in's and a pinned layer's run freely, an unpinned one's
-meet the gate — but the pane's own look runner still refuses `exec` outright, so a layer that may
-exec from a condition may not yet exec from a pane. That is a change of one refusal, not of the
-ladder.
-
-**Acts.** What a row's Enter does is a verb the HOST performs, declared in the same manifest so a
-reviewer reads it:
+#### Acts: what a row's Enter does
 
 ```toml
 actions = ["switch", "fold"]          # switch to a session, fold a row
@@ -707,34 +531,18 @@ actions = ["switch", "fold"]          # switch to a session, fold a row
       | {"verb":"approve","id":"r-1f2…"}
 ```
 
-A view carrying an undeclared act is refused (`View::validate_for`) and the head draws what is
-below it. The next verb (`disarm`, `fire`, `open`) is one more word in that list and one more arm in
-the head — not a new mechanism.
+A view carrying an undeclared act is refused (`View::validate_for`). `{"verb", "id"}` exists because a row
+must say WHICH entry it means: the queue pane's keys are the head's (`a` approve, `v` veto, `r` restart, `d`
+rm), and before this act a plugin row could draw one entry while the keys acted on whichever entry the host's
+cursor was over. Fold state is the host's, by row id, so a fold survives the next answer. The row also
+carries `facts` (the right-hand column), `under` (the faint line beneath it), `number` (what `/switch N`
+types), `depth` (a flat list that has already walked its own tree) and `open` (`true`/`false`/`"fixed"`, a
+row no key can fold).
 
-**`{"verb", "id"}` is the fourth act, and it exists because a row must be able to say WHICH entry it
-means.** The queue pane's keys are `a` approve, `v` veto, `r` restart, `d` rm — the head's own keys,
-not a plugin's action letters — and before this act a plugin row could draw one entry while the keys
-acted on whichever entry the HOST's cursor happened to be over. So a row carries the entry, and the
-keys act on it (`App::queue_verb_on`). **The verb word is what the manifest gates**: a layer whose
-rows ask for `rm` must declare `rm` in `actions`, and a row asking for a verb the manifest does not
-name is refused by the same `validate_for` that gates `switch`.
+#### The answer's shape is versioned
 
-**As built (2026-10-27)**: `crates/plugin-sdk/src/pane.rs` (the input, `Feed`, `Act`, `Fold`,
-`Cell`), `crates/sessionlog/src/pane.rs` (C3's `Row`/`Tree` grown to match), `crates/plugins`'s
-`Manifest` (`feeds`, `actions`). The first pane to use all of it is the session list below.
-
-**And the second (2026-10-29): `plugins/builtin/queue`.** Two things about it are worth a reader's
-attention. It is run by the HEAD, not by the daemon — `App::queue_feed` builds its feed out of the
-`QueueSnapshot` the head already holds and has already cut to this session's repository, so a
-daemon-side layer would have to be handed the snapshot back. And it is the first pane to use
-`{"verb", "id"}`, because the queue's keys are the head's and a row has to name its own entry.
-
-#### The answer's shape is versioned (built 2026-11-01)
-
-A shape the wire cannot see needs a witness. When the session list stopped being five groups and
-became a project's tree, no field changed type: a group header and a branch line are both rows, so
-a layer written for the groups drew a plausible list and nobody was told. So a hook kind whose
-answer has moved is declared in the manifest:
+A shape the wire cannot see needs a witness: when the session list became a project's tree no field changed
+type, so a layer written for the groups drew a plausible list and nobody was told.
 
 ```toml
 contract = 1          # the manifest's own version, unchanged
@@ -742,86 +550,36 @@ contract = 1          # the manifest's own version, unchanged
 pane_sessions = 3     # the shape of the answer this layer draws
 ```
 
-`crates/plugins::MOVED` holds the kinds that moved and the version each moved at, and
-`Manifest::admit` refuses a layer that declares another version, or none at all (which is the shape
-before the move), at load: the sentence names the layer, the version it expects and the one this
-host speaks. The stack then falls down to the builtin and the head says that sentence once.
-`plugin-sdk`'s pane `V` is 3 for this same move, because it is the same numbering: a layer that
-reads `v` and a manifest that declares a contract cannot disagree about which shape they mean.
+`crates/plugins::MOVED` holds the kinds that moved and the version each moved at, and `Manifest::admit`
+refuses a layer that declares another version, or none at all, naming the version this host speaks.
 
-#### The feeds a DAEMON-drawn pane is handed (built 2026-10-30)
+#### The feeds a DAEMON-drawn pane is handed
 
-Feeds were built for the head's in-process session list, and **the daemon did not honour them**: its
-C3 input carried `v`, `state`, `look`, `event` and `size`, so a layer on disk that declared
-`feeds = ["sessions"]` was handed nothing and drew an empty pane. A declaration the host does not
-honour is worse than no declaration — on a screen it reads as a broken plugin.
+The daemon did not honour feeds: a layer on disk that declared `feeds = ["sessions"]` was handed nothing and
+drew an empty pane, which reads on a screen as a broken plugin. `crates/harnessd/src/plugins/feed.rs` is its
+half: `PluginHost::with_sessions` takes a `SessionFeed` and `render` builds the feeds the answering layer
+declared and only those. Three fields only a host can fill: `now` (the host's clock, unix millis);
+`moved_ms` per session, when it last appended a row, because `created_ms` never changes and a turn running
+for twenty minutes with nothing appended is stuck; and `repo` per session, the folder of the workspace's git
+**common** directory, so a session in a worktree is grouped with the checkout it was cut from.
 
-`crates/harnessd/src/plugins/feed.rs` is the daemon's half. `PluginHost::with_sessions` takes a
-`SessionFeed`, `Sessions::open_plugins` hands it the registry (the one holder of *every* session,
-live and on disk), and `render` builds the feeds the answering layer declared — and only those.
-`plugin test`'s synthetic first frame is handed them too, so testing a pane tests it with the data
-it will really see.
+#### A row's `enter` is performed, and the pane leaves with a `switch`
 
-| feed | built by the daemon | is |
-|---|---|---|
-| `sessions` | yes | the registry's briefs: id, title, slug, parent, origin, live/running/heads/items/stored, model, workspace, waits-on, paused nags, `moved_ms`, `repo` — plus `here`, `home`, `now` |
-| `room` | yes (2026-10-31) | the box's room, read over this session's own connection to the coordinator (`crates/harnessd/src/plugins/room_feed.rs`): the queues per tag with each item's claimant, the age of that claim's beat and its abandonment count; the open questions; the arbiter and who is connected; and `identity` — the sentence that keeps *restarted clean* and *restarted empty* apart |
-| `monitors`, `jobs`, `todos`, `git` | **no** | still planned. A layer that declares one is handed **no key at all**: `[]` would tell it *there are none*, and *this host cannot answer that yet* is a different fact, which only the layer can draw |
+`App::plugin_enter` reads a row's act first: `switch` goes to that session and the pane closes (a plugin pane
+is a screen, not a column beside the conversation), `event` comes back as a `PaneAction`, and a `fold` falls
+through to the detail.
 
-**The three fields only a host can fill, and why each is the host's:**
+#### A pane's own column: hide and resize are the LAYER's
 
-* **`now`** — the host's clock, unix millis. A guest compiled for `wasm32-unknown-unknown` has no
-  `SystemTime`; asking for one is a **panic**, not a zero
-  (`.letibot/notes/the-pane-contracts-two-look-keys.md`). So an age is the host's arithmetic.
-* **`moved_ms`** (per session) — when it last appended a row, off the store's own row, which the
-  store computes from the transcript's last item. `created_ms` is when the daemon made the session
-  and never changes; `moved_ms` is the fact a list of agents is read for, because *a turn that has
-  been running for twenty minutes with nothing appended* is stuck and one that appended a row a
-  minute ago is not. It rides the wire too (`SessionBrief::moved_ms`, defaulted — an added field is
-  not a version).
-* **`repo`** (per session) — the folder of the workspace's git **common** directory, so a session in
-  `…/letibot/worktrees/agent-x` is grouped with the checkout it was cut from. `--git-common-dir`
-  rather than `--show-toplevel`, because inside a worktree the top level IS the worktree; cached per
-  workspace, because a workspace's repository does not change while a daemon runs. A plugin cannot
-  work this out from a path — a worktree may live anywhere — so the host that can ask git does.
+The host hands a pane one rectangle and draws what the view says in it: there is no hide-a-pane key, no
+divider and no per-pane width. A pane that wants to be a column keeps a width and a hidden flag in its own
+`state` and draws a narrow column or a one-line strip inside its rectangle, which is what
+`plugins/builtin/irc` does. The conversation does not reflow, because the host is not laying the column out.
 
-`PANE_V` is now `letibot_plugin::pane::V` rather than a copy: it said `1` while the contract had
-grown to 2, so a layer that read `v` to decide whether it would be handed a feed was told *no* by a
-host that was about to hand it one.
+#### The feeds a `command_` hook is handed
 
-#### A row's `enter` is performed, and the pane leaves with a `switch` (built 2026-10-30)
-
-C3 has always said a row's `enter` is *what Enter does on it, performed by the host*, and the
-session picker performed it — but the plugin-pane surface did not: every Enter opened the row's
-**detail**. A pane whose rows are a list to switch between (`plugins/builtin/irc`) therefore had a
-switch gesture that did nothing but read the row's prose.
-
-`App::plugin_enter` (`crates/tui/src/app/plugin.rs`) now reads the stop's act first: `switch` goes
-to that session **and the pane closes** (a plugin pane is a screen, not a column beside the
-conversation — leaving it open would show the list of the session you just left, over the one you
-just arrived in), `event` is sent back as a `PaneAction`, and a `fold` — which this surface has no
-fold state to move — falls through to the detail. A row with no act is unchanged: the detail.
-
-#### A pane's own column: hide and resize are the LAYER's (built 2026-10-30)
-
-The host hands a plugin pane one rectangle and draws what the view says in it. There is **no
-hide-a-pane key, no divider and no per-pane width** in the head — the diff/payload split is a
-different mechanism, and the panes that are narrow (the queue's standings) are drawn on a row the
-composer owns.
-
-So a pane that wants to be a column beside a conversation owns that itself, and the vocabulary is
-already enough: a row's `actions` are letters the host sends back as `PaneAction`, so a layer can
-keep a width and a hidden flag in its own `state` (which the host hands back on every call) and
-draw a narrow column, or a one-line strip, inside whatever rectangle it is given. That is what
-`plugins/builtin/irc` does: `w`/`n` for the width (clamped by the layer to a minimum and a third of
-the rect), `h` for a strip that says how to come back, `s` for the scope. **The conversation does
-not reflow**, because the host is not laying the column out — which is the honest limit of a pane
-that owns only its own drawing.
-
-#### The feeds a `command_` hook is handed (built 2026-10-28)
-
-The same idea, one hook kind over, and **not the same list**: a slash command's layer is handed what
-the head is holding at the moment the line is typed, in a `feeds` object beside the `line`:
+Not the same list as a pane's: a command's layer is handed what the head holds at the moment the line is
+typed.
 
 ```jsonc
 // command_todo: in
@@ -829,72 +587,42 @@ the head is holding at the moment the line is typed, in a `feeds` object beside 
  "feeds": {
    "todos":      [{"content": "…", "status": "pending", "by": "operator"}],
    "session":    {"id": "s-1793…", "workspace": "/home/dead/Projects/x"},
-   "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}}
+   "repo_todos": [{"text":"T1 git init","mark":"[x]","indent":4,"item":true}]}}
 ```
 
 | feed | is |
 |---|---|
-| `todos` | the session's whole board — both halves, in board order — as `content`, `status` (`pending`, `in_progress`, `completed`, `postponed`, `cancelled`) and `by` (`model`, `operator`, `queue`, `Parent s-…`) |
+| `todos` | the session's whole board, both halves, in board order, as `content`, `status` and `by` |
 | `session` | where the head is standing: `id` and `workspace` |
-| `repo_todos` | the workspace's `TODO.md` as the todos pane parsed it: `text`, `mark` (`[ ]`, `[~]`, `[x]`, `[p]` or null), `indent`, `item` (an item rather than a section heading) — **absent, not empty, when the head has not read the file** |
+| `repo_todos` | the workspace's `TODO.md` as the todos pane parsed it: `text`, `mark`, `indent`, `item`, and **absent, not empty, when the head has not read the file** |
 
-Three things about that shape are decisions rather than defaults:
-
-- **A row's `when` and `needs` are NOT in it.** They are the board's edges, no act in `actions` can
-  move one, and a word a layer cannot act on is a contract somebody keeps for nobody's benefit. An
-  act that moves an edge (`when_todo`) adds the field and the word together.
-- **`repo_todos` is absent when the head has not read the file**, because the pane reads `TODO.md`
-  at DRAW time: a head that never opened the todos pane holds no outline, and `[]` would tell a
-  layer the project's list is empty — a lie a layer checking *is this already in the project's list*
-  would act on.
-- **It is handed whole, not declared.** A pane's `feeds = [...]` is a manifest key whose vocabulary
-  is `Feed`'s five names, and a command's set is not that set (`session` is not `sessions`, and a
-  command has no `size`, no `folded`, no `state`). So this build hands the command feeds to the
-  layer it asks, and says here that the declaration is what a model-written layer will need before
-  it may be handed the operator's board: **the missing piece is a `command`-scoped feed list in
-  `crates/plugins`'s `Manifest`**, whose words are the ones above. Until then the honest reading is
-  that these feeds are the head's own screen — the board the model already reads through
-  `todo_write`, and the folder and id it is already wired to — so handing them to a `command_`
-  layer grants nothing the layer did not already have a way to be told.
-
-Nothing is adjudicated by any of it, which is why a feed is a field and not a capability: the
-`command_todo` layer that reads these today reads none of them (its act needs only the line), and
-the shapes are here for the first policy that does.
+Three decisions: a row's `when` and `needs` are NOT in it, because no act in `actions` can move an edge;
+`repo_todos` is absent when the head has not read the file, because `[]` would tell a layer the project's list
+is empty; and it is handed whole, not declared, because a pane's `feeds` vocabulary is not a command's. The
+missing piece is a command-scoped feed list in `Manifest`.
 
 ### Not hooks
 
-Dialect parsers and tokencore (per-token hot path), the store and transcript, the allow side of
-adjudication, the merge queue's landing, sudo and VMs.
+Dialect parsers and tokencore (per-token hot path), the store and transcript, the allow side of adjudication,
+the merge queue's landing, sudo and VMs.
 
 ### 4.10 The second goal: project dashboards
 
-The operator: *"a huge tiered plan with multiple stages across 6 hosts. I want to have a dashboard
-for it"* — of a project's long-running session, given as an example of the kind of thing a project
-needs to see at once: a tiered plan with stages, the agents working it, the hosts it runs on. Today
-such state is spread over plan files and whatever the agent re-types on request.
-
-A **project dashboard is a project-scope `pane` layer** whose look reads the project's own sources
-of truth (a status file the agents keep as data rather than prose, the session's agents and
-branches, whatever scheduler the project runs). The first one is a generic example in this
-repository, `plugins/examples/plan-dashboard` (C5 in `docs/plugins-slice1.md`), reading
-`<project>/.letibot/status.json`; a project with a richer source writes its own.
+A project dashboard is a project-scope `pane` layer whose look reads the project's own sources of truth. The
+first one is `plugins/examples/plan-dashboard` (C5 in `docs/plugins-slice1.md`), reading
+`<project>/.letibot/status.json`.
 
 ### 4.11 Scripts that accrete, promoted to tools
 
-The operator: *"per project/session scripts. those little things that accrete - maybe they should
-be promoted to session/project local tools - maybe there must be similarity checks"*.
+Every long session grows them: the `ssh … remote.sh state` typed for the tenth time, the five-line `jq` over a
+report. They live in the model's memory or in a `bin/` nobody indexes, and the harness can see them, because
+every one passed through `bash`.
 
-Every long session grows them: the `ssh … remote.sh state` typed for the tenth time, the
-`for h in …; do …; done` that checks every host, the five-line `jq` over a report, the
-`bin/fleet.sh` a project ends up owning. They live in the model's memory of the session, in a
-`bin/` nobody indexes, or nowhere — retyped, slightly differently, each time. They are tools in all
-but name, and the harness can see them, because every one passed through `bash`.
-
-**A script tool is not wasm.** It is a descriptor around a command the harness already knows how
-to run, through the same gate as `bash`:
+A script tool is not wasm. It is a descriptor around a command the harness already knows how to run, through
+the same gate as `bash`:
 
 ```toml
-# .letibot/scripts/host-state.toml   (project)  — or the session's scripts/ dir (session)
+# .letibot/scripts/host-state.toml   (project) - or the session's scripts/ dir (session)
 name = "host_state"
 purpose = "the state of every campaign host's newest fleet job"
 args = { host = "optional; one host instead of all" }
@@ -902,458 +630,123 @@ run = ["bin/remote.sh", "-H", "{host}", "state"]   # argv, no shell; or script =
 replaces = ["ssh * remote.sh * state", "bin/remote.sh -n * state"]   # the shapes it absorbed
 ```
 
-The same scopes and layering as plugins (§2): session, project, user; promotion is a commit and
-the merge queue reviews it; the same name in a higher layer overrides.
+The same scopes and layering as plugins, and promotion is a commit the queue reviews. One tool for all of
+them, so the prompt cache never moves: `script {name, args}`, with the catalog (name, purpose, args) as a
+resident notice refreshed when it changes.
 
-**One tool for all of them, so the prompt cache never moves.** Each script is not its own tool
-schema — that would re-prefill the conversation every time one is added (§4.8). The model gets one
-stable tool, `script {name, args}`, and the catalog (name, purpose, args, one line each) travels as
-a resident notice that is refreshed when it changes, the way standing notes are. Adding a script
-costs a notice, not a prefix.
-
-**Finding them: similarity over what `bash` ran.** The store already has every command. The
-harness normalises each one into a shape (argv tokens, with paths, numbers, hashes, hostnames and
-quoted strings replaced by typed holes: `ssh <host> <path>/remote.sh -n <id> state`) and clusters
-shapes within the session and across the project's sessions:
-
-- **Repetition** — the same shape run N times (default 3) in a session, or in M sessions of the
-  project, is a *candidate*. The holes that varied become the script's args; the ones that never
-  varied stay literal.
-- **Near-duplicates** — shapes that differ by a flag or an argument order, or token-level
-  similarity above a threshold (shingled tokens, Jaccard), cluster together; the candidate is the
-  cluster, with its variants listed, not five scripts.
-- **Against what exists** — a candidate is compared with the existing scripts' `run` and
-  `replaces` shapes and with the files in the project's `bin/` and `scripts/`. A match is reported
-  as *"this is `host_state` again"* (the model is pointed at the script it is reinventing), not
-  offered as a new one. The same check runs when a script is *written*: a new script whose shape
-  matches an existing one is refused with the name of the one it duplicates, unless it says what it
-  does differently.
-- **Drift** — a script whose calls keep being followed by the same hand-typed fix-up (`| jq …`, a
-  retry) is a candidate for a new version, not a new script.
-
-**Who promotes.** The butler (§6) owns it: friction it watches for includes *"the same shape
-again"*. It writes the descriptor into the session's scripts, tells the model *"`host_state` now
-does what you typed four times"*, and at the end of the session proposes the ones worth promoting
-to the project — with the sessions that used them as the evidence. The shadow gate (§2.4) applies:
-a script is built (its `run` resolves, the file exists, it is executable), loaded (the descriptor
-parses, its name and args are unique, its shape does not duplicate another's), and replayed against
-the recorded commands it claims to replace (each one must map onto the script with some args).
-
-**Scripts can be wasm too.** A hook runs on the harness's hot path and never blocks, which is why
-it declares its looks (§1). A script is a *tool call*, which already blocks, so a script module gets
-a **synchronous `exec` import**: it runs a program, reads the answer, and goes on — and every
-`exec` is gated on its own. A script is then a module exporting `script_<name>` with its args
-schema, and its logic (the loop over hosts, the parsing, the `jq`) is compiled code rather than
-bash; the descriptor above becomes optional. The similarity checks are unchanged: they compare the
-commands a script *runs*.
-
-A shell script can stay a shell script and still run in wasm: **a shell interpreter compiled to
-wasm** whose every external command is a gated `exec`, which gives a script per-command permission
-— something bash on the host cannot have.
-
-**Shell tooling as wasm, for the gate.** A shell script tool is built and checked in the shadow gate
-(§2.4) like a layer: formatted and linted, in the sandbox, the same answer on every machine, nothing
-installed — which matters in VMs and on the campaign hosts.
-
-- **shfmt** is Go, and Go compiles to WASI (`GOOS=wasip1`); rano's host speaks its own ABI rather
-  than WASI, so it takes a small WASI shim in the host, or a Go wrapper exporting the hook.
-- **shellcheck** is Haskell; GHC's wasm backend is unproven for it here. The other way is a port:
-  a Rust linter over `tree-sitter-bash` (already a rano dependency), starting with the checks that
-  catch most real defects — SC2086 and SC2046 (unquoted expansion and substitution), `cd` without
-  `|| exit`, unused and unassigned variables, `[ ]` against `[[ ]]` pitfalls, useless `cat` — each
-  ported with shellcheck's own test cases. About 400 checks exist; the first 20–30 carry most of
-  the value, and porting them one by one is leticode work.
-
-**A script that outgrows its descriptor becomes a plugin.** When it needs state, a look loop or a
-pane, the butler turns it into a wasm layer; the descriptor's `replaces` shapes carry over, so the
-similarity check keeps pointing at it.
+Finding them is similarity over what `bash` ran: the harness normalises each command into a shape (argv tokens
+with paths, numbers, hashes, hostnames and quoted strings replaced by typed holes), clusters shapes that
+repeat (3 times in a session, or in several sessions of a project) and near-duplicates, compares a candidate
+with the existing scripts' `replaces` shapes and the project's `bin/`, and treats a call followed by the same
+hand-typed fix-up as a candidate for a new version. The butler (§6) owns the promotion, and the shadow gate
+applies: the `run` resolves, the descriptor parses, and the recorded commands it claims to replace replay
+through it. A script module can be wasm instead, with a synchronous `exec` import gated per call, and a script
+that outgrows its descriptor becomes a plugin.
 
 ## 5. What the model gets
 
-**Built, for `pane`** (as of P2, 2026-10-26 — see "As built" below): `scaffold`, `build`, `load`,
-`stack`, `disable`, `enable`, `test`, `plugin_hooks` and the skill. **Built, for the four patch
-points** (as of 2b, the same day — see "As built (2b)"): the same loop, over the kinds `notice`,
-`on_tool_call`, `on_tool_result` and `condition`, with the hooks wired where the host does each
-thing. The list is the plan's, and the entries marked *not yet* are the ones no package has
-shipped: `squash` and `promote` (§7 step 5), and `test`'s replay of the whole session's recorded
-inputs (§7 step 2's recorded-input store is per-hook already; the replay verb is not).
-
-- **`plugin` tool** with actions:
-  - `scaffold` — a new session plugin from a template for a hook kind (a crate depending on the
-    letibot plugin SDK, `plugin.toml`, a test).
-  - `build` — `cargo build --offline --release --target wasm32-unknown-unknown` in the plugin's
-    directory, through the gate like any `bash` call; errors come back verbatim.
-  - `load` — submit to the shadow gate (§2.4) and apply on a pass (a rebuilt `plugin.wasm` is
-    submitted by itself too, §2.3).
-  - `stack` — the layers, newest first, with each hook's answering layer, masks, disabled layers,
-    recent answers and recent failures.
-  - `disable` / `enable` — a layer, without deleting it (the bisect).
-  - `test` — call a hook with a given input through the whole stack or one layer, and show the
-    output, which layer answered, fuel used and any trap; or replay the session's recorded inputs
-    (*not yet*: the recorded inputs are what `load` replays).
-  - `squash` — merge session layers into one, through the gate, refused while the replay differs
-    (§2.2). *Not yet.*
-  - `promote` — move a layer into `.letibot/plugins/` on the session's branch. *Not yet*; today it
-    is a copy and a commit.
-- **`plugin_hooks`** — the contracts of §4 with a worked example each, read from the host itself so
-  it cannot drift from what the host accepts. It documents `pane` (C3) and, since 2b, the four
-  patch points, each from `crates/plugin-sdk`'s own types.
-- **A skill** walking through the main loop end to end: the operator reports a harness problem, the
-  model finds the hook it lives at, writes a layer, tests it against the input that misbehaved,
-  and loads it. `skills/plugin-pane/SKILL.md` (a pane) and `skills/plugin-hooks/SKILL.md` (one of
-  the four patch points), both compiled into the binary so a box needs no setup.
-- **Recorded inputs**: the host keeps the last inputs of each hook per session, so a layer is
-  written and tested against the very call or firing that went wrong.
-
-The SDK is `letibot-plugin`, in this repository (`crates/plugin-sdk`): rano's `rano-plugin` ABI
-plus serde types for each hook's input and answer, so a plugin is
-`fn answer(i: ConditionIn) -> ConditionOut`. It is compiled into the daemon *and* into the guest,
-from one crate, so a renamed field breaks a compilation on both sides rather than leaving a module
-that answers a document the host refuses. Its dependency list is serde and nothing else, which is
-what lets a `wasm32-unknown-unknown` guest link it.
-
-### As built (P2), 2026-10-26: the pane
-
-One package built §5 for the **`pane`** hook, end to end and hot. What a session can do now, from
-the model's side:
-
 | call | what it answers |
 |---|---|
-| `plugin {"action":"scaffold","name","purpose","hook":"pane"}` | three files under `<data>/sessions/<id>/plugins/<name>/`: `Cargo.toml` (cdylib + rlib, rano's SDK by path, the release profile), `plugin.toml` (`capabilities = []`), `src/lib.rs` (one pure `view`, a native test of it, and the two rakes a guest meets first written down in it: no I/O, no clock) |
-| `plugin {"action":"build","name"}` | `cargo build --offline --release --target wasm32-unknown-unknown`, artifact → `plugin.wasm`; the compiler's words verbatim on a failure. `Access::Exec` — it runs a build, and a build runs build scripts |
-| `plugin {"action":"test","name","input"?}` | one hook called with the input (default: a synthetic C3 first frame), the view, the answering layer, the fuel, any trap, and whether `View::validate` would refuse the answer |
-| `plugin {"action":"load","name"}` | the shadow gate (§2.4: build, load, shadow, replay, report) **plus** a call of every pane hook on the SHADOW with the recorded inputs and a synthetic one — because a NEW layer has no recorded inputs, and a first-time pane applied without running once is the rake of this slice. A pass applies it hot and the pane is announced; a refusal keeps the old version and says why |
-| `plugin {"action":"stack"}` | the layers newest first, the topmost layer per hook, capabilities, `sha256` prefix, disabled layers, recorded inputs per hook, and discovery/apply failures |
-| `plugin {"action":"disable"/"enable","name"}` | a layer off or on without deleting it; every open pane is re-resolved (asked again with its look), gone panes are published as `PluginPaneGone` |
-| `plugin_hooks [{"hook":"pane"}]` | the C3 input and output, the host's keys and the refusal rules, and a worked example **built from `crates/sessionlog/src/pane.rs`'s own types** (a renamed field breaks compilation, not a sentence) |
-| `skill plugin-pane` | the loop as a procedure, compiled in from `skills/plugin-pane/SKILL.md` |
+| `plugin {"action":"scaffold","name","purpose","hook"}` | a new session layer from a template for a hook kind (a crate depending on the SDK, `plugin.toml`, a test) |
+| `plugin {"action":"build","name"}` | `cargo build --offline --release --target wasm32-unknown-unknown` in the layer's directory, through the gate; the compiler's words verbatim on a failure. `Access::Exec`, because a build runs build scripts |
+| `plugin {"action":"load","name"}` | the shadow gate (§2.4) plus a call of every hook the layer exports on the shadow, with its recorded inputs and a synthetic one. A pass applies it hot; a refusal keeps the old version and says why |
+| `plugin {"action":"test","name","input"?}` | one hook called with the input (default: a synthetic first frame of that kind), the answer, the answering layer, the fuel, any trap, and whether the host would accept the answer |
+| `plugin {"action":"stack"}` | the layers newest first, the topmost layer per hook, capabilities, `sha256` prefix, disabled layers, recorded inputs per hook, discovery and apply failures |
+| `plugin {"action":"disable"/"enable","name"}` | a layer off or on without deleting it; every open pane is re-resolved, gone panes published as `PluginPaneGone` |
+| `plugin_hooks [{"hook":"pane"}]` | one kind's input, answer, rules and a worked example **built from the SDK's own types**, so a renamed field breaks compilation rather than a sentence |
+| `skill plugin-pane`, `skill plugin-hooks` | the loop as a procedure, compiled in from `skills/` |
 
-Where a session layer lives, and why: **`<data>/sessions/<id>/plugins/<name>/`** — slice 1's C2
-already declares a session scope, and `PluginHost::for_session` discovers exactly that directory, so
-the scaffold writes where discovery reads. It is `<data>/sessions/<id>` (`$XDG_DATA_HOME/letibot`,
-else `~/.local/share/letibot`) and not a scratch or `.letibot/plugins/session/` because a session
-layer belongs to the session: session discovery (§2.2) finds it, no repository holds it, and no
-other session sees it. Two consequences worth knowing:
+The SDK is `letibot-plugin` (`crates/plugin-sdk`): rano's ABI plus serde types for each hook's input and
+answer, compiled into the daemon and into the guest from one crate, so a renamed field breaks a compilation on
+both sides. Not built: `squash` and `promote` (a copy and a commit today), and `test`'s replay of the whole
+session's recorded inputs.
 
-* **A scaffolded plugin is not in force until `plugin load`.** The stack lists what is ANSWERING;
-a fresh directory with no module is a source, and `plugin stack` says `no layers at all` until the
-loop has been through `load`. At the next session open it *is* discovered — as a DECLARATION: it
-is listed with `sha —`, nothing answers it, and nothing is recorded as a failure (§4.8's rule is
-the same state, and a correct install of a built-in's tool is exactly this shape). The missing
-build is what `plugin stack` shows, not a `plugin_layer` warning.
-* **A layer that is loaded persists across a restart**, because discovery finds it: the loop needs
-`load` once per change, not once per session.
-
-Capabilities are slice 1's, unchanged (§3): `read` is the one a look may use and an `exec` look is
-refused with `exit 126` and a sentence. A session plugin reaches nothing outside its session, and a
-capability is declared in its `plugin.toml` and checked by the host when the look runs.
-
-**Two defects found while building it, both fixed here.** `CargoBuilder` inherited
-`CARGO_TARGET_DIR`, so a guest built from a daemon that had one landed outside the layer and a
-successful build was reported as *"cargo succeeded but there is no built module"* — a plugin's build
-is its own crate and its own target directory, and the variable is now removed for it. And hot
-reload re-rendered an open pane WITHOUT its look, which put a look-asking dashboard back on its
-loading frame with `every_s: 0` — stuck until reopened; `PluginHost::refresh_panes` asks an open pane
-again with its look and announces only the panes nobody has opened.
-
-### As built (2b), 2026-10-26: the four patch points
-
-§7 step 2's remainder, minus the GitHub family (§7 step 3) and the butler (§7 step 4): the four
-hooks of §4.1–4.4, each wired where the host actually does that thing, each with a typed contract
-in `crates/plugin-sdk`, and all of it reachable from the `plugin` tool a session already has.
-
-**Where each one plugs in** — the site is the design, so here it is exactly:
-
-| kind | export | the site | what a layer may say |
-|---|---|---|---|
-| `notice` | `notice_<kind>` | `Harness::append_notice` (every sentence the harness injects) and each source `Harness::wake` joins | the sentence, reworded; dropped, for a firing or a nudge only |
-| `on_tool_result` | `on_tool_result` | `Harness`'s round loop, at the site `pr_watch` grew in — on `ok` and `backgrounded` only | a replaced result, a suffix, monitors to arm |
-| `on_tool_call` | `on_tool_call` | `ToolRuntime::run`, after the arguments are read and **before the gate** — on the gated path only | run it, run it with these arguments, refuse it, answer it |
-| `condition` | `condition_<name>` | a `PluginCondition: Condition` armed by `monitor {"plugin": …}`, polled by the session's one monitor thread | what to look at next, how often, how long it may live, and whether it fired |
-
-**The gate stays authoritative, and it is not a promise — it is where the code is.** `on_tool_call`
-runs before the `GateCall` is built, so a rewritten call is the call the gate adjudicates; the
-rewritten arguments go through the same `salvage` the model's did; the tool's NAME is not a field
-of the answer, so a rewrite cannot turn one tool into another; and the answer has no marker by
-which a layer could say *allow* — `ToolCallOut` is `pass`, `arguments`, `refuse`, `answer` and
-nothing else. A test asserts both halves: that the type has no such field, and that the gate was
-asked about the rewritten path rather than the model's. What a layer CAN do is make a call
-smaller, which is §4.1's whole point (the third watch on a pull request something already watches).
-
-**What a session can do now, from the model's side:**
-
-| call | what it answers |
-|---|---|
-| `plugin {"action":"scaffold","hook":"on_tool_call"}` | a template for that kind, linking `crates/plugin-sdk` by path so the guest parses the host's own types |
-| `plugin {"action":"test","name"}` | the hook the layer answers, called with a synthetic input **of that kind**, and whether the host would accept the answer |
-| `plugin {"action":"load","name"}` | the shadow gate, then every hook the layer exports asked on the shadow with its recorded inputs plus one of its kind |
-| `plugin_hooks [{"hook":"condition"}]` | that kind's input, answer, rules and a worked example built from the SDK's types |
-| `monitor {"name":"coderabbit","plugin":"coderabbit","args":{…}}` | a watch armed by a layer: its look, its interval, its cap and its firing are the layer's |
-
-**Two decisions worth knowing.** A notice hook is resolved **per notice kind** (`notice_monitor`,
-`notice_job`, …) rather than per plugin, so a fix to one firing's wording does not make a layer the
-answerer for the queue's verdicts; and a notice the model is owed — a settlement, a due row, a
-reseat, a queue verdict, the workspace's state, a salvage — may be reworded and **not dropped**,
-while a firing and a nudge may be dropped. A layer's own failure notice never passes through the
-hook: a layer that traps must not be able to trap again about its own trap.
-
-**What is decided about an `exec` look.** An `exec` look runs under the answering layer's
-`exec:<program>` capability (the capability is checked first: a program the layer did not declare
-is not a call anybody adjudicates) **and — for a layer nobody pinned — through the adjudicator**,
-§1 principle 2, so a plugin can do nothing the model could not. **A built-in's and a pinned
-layer's look does not meet the gate at all** (D17, §2.5: *"only the builtins run freely"*), which
-is the operator's own rule about who placed the bytes. For an unpinned layer it goes through it
-**without asking**: the look runs on the session's monitor thread, so a card would park that
-thread — and the watch with it — until a person answered. `letibot_tools::Gate::admit_unasked` is
-therefore the entry, and it is the same ladder as `admit` stopped at the card:
-
-* **admitted** by a `permission` rule, a standing grant, the point the session sits at, or a
-  measured boundary (D16) → the look runs, as it always did;
-* **the gate is busy with somebody else's call** → nothing runs and nothing is owed: the look is
-  *deferred* and the watch asks again on the poller's next tick. The gate's mutex is held across the
-  model's own decision, card and all, so a look that waited on it would park the session's monitor
-  thread behind that card;
-* **a call that would have been put to a person** → it does not run; the layer is handed a look
-  result saying *would need your approval* and the card's own reason, and the session is told
-  **once** per (layer, program, reason) — not once per firing;
-* **denied by a rule the operator wrote** → it does not run, and the layer is told *denied* rather
-  than *would ask*, because those are two different facts;
-* and a session with no gate at all runs nothing: *no gate* is not *every gate open*.
-
-A look moves nothing on the gate itself: it consults no guard model, writes no grant, and leaves
-the consecutive-refusal breaker exactly where it was — a watch polling a refused program must not
-be able to close the session's own gate. `crates/harnessd/src/plugins/conditions.rs` is where that
-is, and `docs/plugins-plan.md` §2.4 step 3 reads *reading command* as this same entry rather than
-a list of its own. `github` in a condition's answer still takes part in the one-watch-per-pull-
-request rule, and the GitHub family itself is still built in (§7 step 3).
+A session layer lives in `<data>/sessions/<id>/plugins/<name>/` (`$XDG_DATA_HOME/letibot`, else
+`~/.local/share/letibot`), because `PluginHost::for_session` discovers exactly that directory. It belongs to
+the session, so no repository holds it and no other session sees it: a scaffolded plugin is not in force
+until `plugin load`, and a loaded layer persists across a restart.
 
 ## 6. The harness butler
 
-The operator: *"which means harness core should help its agents to modify itself, maybe we can have
-a new role - harness butler - the thing that sits in the background of every session, created
-automatically with configured (and default) model and orchestrates and reviews the changes"*.
-
-**Why a separate agent.** The session's model is there for the project. Every turn it spends
-patching the harness is a turn off the task and context spent on the harness's internals; and a
-model reviewing the layer it just wrote reviews nothing. The butler owns the harness side, so the
-session asks for a fix and gets back to work while the fix happens beside it.
-
-And: *"not dissimilar to reviewers in queue"*.
-
-**What it is: the gatekeeper's shape, for the harness.** The review queue already has the
-structure (`crates/harnessd/src/sessions/gatekeeper.rs`): one hard-coded session the daemon starts
-on the default or a configured model, a normal self-driving session whose **todo board is the
-queue** (so nags and all), whose reviews are its own `task` children, and which the operator can
-attach to and steer through its prompt. The butler is the same thing, for the harness instead of
-for branches:
+The harness core should help its agents modify it, through a separate agent: every turn the session's model
+spends patching the harness is a turn off the task, and a model reviewing the layer it just wrote reviews
+nothing. It is the gatekeeper's shape for the harness
+(`crates/harnessd/src/sessions/gatekeeper.rs`): one session the daemon starts, a self-driving session whose
+board is the queue, whose reviews are its own `task` children, and which the operator can attach to and steer.
 
 | | review queue | harness butler |
 |---|---|---|
 | the session | `s-gatekeeper-<workspace key>`, one per daemon, a root | `s-butler-<workspace key>`, one per daemon, a root |
 | its board | one row per branch waiting for a verdict | one row per harness request, naming the session it is for |
-| its children | reviewers (`Gatekeeper` role) | a **fitter** that writes the layer into the requesting session's stack, and a **reviewer** that passes or refuses it — never the same child |
-| its model | default, or configured | default, or `butler.model` |
-| the daemon's part | fills the queue, worktrees, gates, landing — does not review | records hook inputs, runs the shadow gate, applies layers, enforces capabilities — does not write layers |
+| its children | reviewers (`Gatekeeper` role) | a fitter that writes the layer into the requesting session's stack, and a reviewer that passes or refuses it, never the same child |
+| the daemon's part | fills the queue, worktrees, gates, landing, does not review | records hook inputs, runs the shadow gate, applies layers, enforces capabilities, does not write layers |
 
-One butler, not one per session: like the gatekeeper it is a **peer** of the working sessions,
-with no tree edge, and it sits behind every session by serving all of their requests from one
-board. That sees friction across sessions at once (three sessions hitting the same bug is one row
-with three requesters) and costs one context, not one per session. The working session's head
-shows its requests' rows, and opening one goes into the butler's child, as the queue's `o` does.
-
-New roles beside `Gatekeeper` and the notes keeper: **`Fitter`** (`plugin`, `read` over the
-session's recorded hook inputs and over letibot's own source and docs, no tool that edits the
-project) and **`Butler`** for the session itself (the board, `task`, `plugin stack`/`disable`, no
-authoring). Never seats a person picks; the daemon starts them.
-
-**What wakes it.** It costs nothing while asleep. It wakes on:
-
-- **the operator** — `/butler <what is wrong>`, or a harness complaint in the conversation that
-  the session's model hands over with a `butler` call (*"the monitor pane doesn't show X"*);
-- **the session's model** — asking for a change it needs (*"watch this project's Buildkite"*);
-- **friction the harness sees itself** — a layer that traps or keeps failing, the same tool refused
-  several times in a row, a monitor armed twice for the same thing, a notice the model answers with
-  confusion. These are suggestions, not orders: the butler says what it saw and what it would do.
-
-**What it does.**
-
-1. **Writes the layer** (through a fitter child). Finds the hook the problem lives at, writes the
-   layer, tests it against the recorded input that misbehaved (`plugin test`), and submits it to
-   the shadow gate (§2.4). The session's model and the
-   operator get one line saying what changed and how to undo it (`plugin disable s4`).
-2. **Reviews every layer** (through a reviewer child, never the fitter that wrote it) — the
-   fitter's, and any the session's model writes itself — after the gate passes it: the source
-   against the claimed purpose, the capabilities against what the purpose needs, and the gate's
-   diff against what the change was for. A refusal says why; the operator can override the
-   review, never the gate.
-3. **Keeps the stack healthy.** Disables a layer that keeps failing and says so; offers a
-   `squash` when the session's layers pile up; and at the end of a session proposes what is worth
-   promoting to the project.
-4. **Remembers across sessions.** Through session discovery it sees that three sessions wrote the
-   same fix, and proposes the project layer — or, when the fix belongs in Rust, writes up the core
-   change for us, with the layer as the reproduction.
-
-**What it may not do.** Everything §1 says of a plugin holds of the butler's layers, whoever asked
-for them: tighten only, capabilities through the gate, fail down. A capability on a session layer
-still asks the operator once, unless allow-all. The butler never promotes on its own — promotion
-is a commit through the merge queue, reviewed by the queue's reviewers, not by the butler that
-wrote it.
-
-**The cost to watch.** On a box with one local model server, a butler on the same model competes
-with the session for the GPU. That is why it sleeps until woken, why its model is a setting, and
-why its work runs between the session's turns when the two share a server.
+One butler, not one per session: it is a peer of the working sessions, so three sessions hitting the same bug
+is one row with three requesters. New roles beside `Gatekeeper` and the notes keeper: `Fitter` (`plugin`,
+`read` over the recorded hook inputs and letibot's own source, no tool that edits the project) and `Butler`
+(the board, `task`, `plugin stack`/`disable`, no authoring). It wakes on the operator's `/butler <what is
+wrong>`, on the session's model asking for a change, and on friction the harness sees itself; it writes the
+layer through a fitter, submits it to the gate, tells the session one line saying what changed and how to
+undo it, reviews every layer through a reviewer child, and proposes what to promote. It never promotes on its
+own, and it sleeps until woken, because on a box with one local model server a butler on the same model
+competes with the session for the GPU.
 
 ## 7. Build order
 
-1. **Host in harnessd.** The layer stack (scopes, per-hook resolution, call-below, mask,
-   disable), `plugin.toml`, capability checks, fail-down, recorded inputs, the transcript record,
-   **the shadow gate** (build, load, shadow copy with no effects, replay and diff, report) and
-   **hot reload** behind it (watch, gate, swap, keep state, keep the good version). Engine: `rano::plugin` (ABI v1; letibot-side hook
-   kinds and JSON contracts). Tests with WAT fixtures, as rano's are, so no test needs a wasm
-   toolchain.
-2. **The four patch points — `on_tool_call`, `on_tool_result`, `notice`, `condition`** — the
-   `letibot-plugin` SDK, and the `plugin` tool (`scaffold`, `build`, `load`, `stack`, `disable`,
-   `test`) plus `plugin_hooks` and the skill. From here the operator can fix things in a session.
-   **Split, 2026-10-26:** the `plugin` tool, `plugin_hooks` and the skill landed first for `pane`
-   (P2, §5's "As built") — the loop works today, against the one hook kind the host ran then — and
-   **the four patch points, the four kinds and the SDK's typed contracts landed the same day as
-   2b** (§5's "As built (2b)"): each hook wired where the host does that thing, `crates/plugin-sdk`
-   as the one place its types live, and the tool, `plugin_hooks` and a second skill covering them.
-3. **The GitHub family as built-in plugins**: `github-pr` (checks, review, comment, closed,
-   merged, conflict) and `coderabbit` as conditions, `pr-create` as `on_tool_result`. Delete
-   `GithubCondition`'s decision half and `pr_watch`'s; keep the host's `gh` look runner and the
-   coalescing. The existing GitHub tests move to the plugins and must pass unchanged in meaning.
-4. **The butler**: the role, its creation with the session, `/butler`, the `butler` call, the
-   review gate on layers it did not write, and the friction signals.
-   **Scripts** (§4.11) with it: the `script` tool and its resident catalog, command shapes and the
-   similarity clustering over the store's `bash` history, candidates, duplicate refusal, promotion;
-   wasm scripts with a synchronous gated `exec`; shfmt (WASI) and a tree-sitter-bash shellcheck port
-   as the gate's shell steps.
-5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
-6. **`pane`** (§4.9) and **the example plan dashboard** (§4.10).
-   *Built:* the pane contract (C3), the daemon's pane host and `plugin` loop (§5's "As built"),
-   the head's pane, and the example dashboard. *Left:* the gate's rendered-text diff, and the
-   example's promotion to a project layer by the queue.
-   **WASI** (§3.1) beside it: the second `Loader` (`abi = "wasi-p2"`), the `hook` and `script`
-   worlds, `letibot:host/exec`, the capability mapping, and shfmt as the first WASI gate tool.
-7. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
-   or bot), with the operator watching where it gets stuck. What it trips on is the next work.
-8. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
-9. `tool`, at reseat.
-10. **Built-ins compiled in, and the session list as the first one** (decided 2026-10-27). One
-    binary is shipped, never a binary and a directory of modules: a `build.rs` builds
-    `plugins/builtin/*` for `wasm32-unknown-unknown` into `OUT_DIR` (its own target directory,
-    `--offline`, with the outer `CARGO_TARGET_DIR` and `RUSTFLAGS` removed, the trap P2 hit), and
-    the modules and their `plugin.toml`s are `include_bytes!`/`include_str!` constants. The
-    `Loader` gains a bytes path (rano already has `Plugin::from_bytes`), and a **`builtin` scope**
-    at the bottom of the stack reads its layers from that table instead of from disk. The price
-    is the wasm target on every machine that builds letibot.
-    The first built-in is the **session list**. rano draws it through one data-driven tree-list
-    primitive (rano's `SessionPicker`, its subagents tree and the head's C3 `Tree` renderer were
-    three copies of one list, each with a hard-coded footer), and the plugin decides everything
-    else: the groups, the names, `WAITING ON YOU`, the actions, and so the hint line. C3 gains
-    what this needs: a pane input the host feeds (the daemon's session list), a `switch` action
-    the head performs, and fold state kept by the host per row id so a fold is instant. Then
-    overriding the list is one `sessions` layer in a project or a session, and a small one, since
-    it can call below and edit the built-in's tree. The session picker is the way out of a broken
-    session, so it must not depend on a plugin: past the built-in, the head draws a plain list
-    through the same rano primitive.
+| step | what | state |
+|---|---|---|
+| step 1 | the host in harnessd: layer stack, `plugin.toml`, capability checks, fail-down, recorded inputs, the transcript record, the shadow gate, hot reload behind it | built |
+| step 2 | the four patch points, the SDK and the `plugin` tool | built, `pane` first |
+| step 3 | the GitHub family as built-in plugins: `github-pr` and `coderabbit` as conditions, `pr-create` as `on_tool_result`, deleting `GithubCondition`'s decision half and `pr_watch`'s | left |
+| step 4 | the butler and scripts (§4.11) | left |
+| step 5 | consolidation: `squash`, `promote`, session discovery over layers | left |
+| step 6 | `pane` (§4.9), the example dashboard (§4.10) and WASI (§3.1) | pane built; the gate's rendered-text diff, the example's promotion and WASI left |
+| step 7 | a real trial: a stroppy session writes a project plugin, with the operator watching where it gets stuck | |
+| step 8 | `digest`, `link` in the TUI, `command` | `command` built for `/todo`; the other two left |
+| step 9 | `tool`, at reseat | built |
+| step 10 | built-ins compiled in, and the session list as the first one | built |
+| step 11 | script layers: a layer that is source text, with no toolchain | not built |
 
-    **Built? Yes — 2026-10-27.** *(The plan's one change from what was written: the C3 input a
-    pane is handed is a set of **FEEDS** rather than one sessions-shaped input, and the acts a
-    row's key performs are declared beside them — the session list needed both, and the operator's
-    next panes (monitors, jobs, todos, a repository's own state) are then one feed each rather
-    than a second contract. §4.9's "Feeds" is the contract.)*
+Step 10 decides what a built-in is: one binary is shipped, never a binary and a directory of modules.
+`crates/builtins/build.rs` builds `plugins/builtin/*` for `wasm32-unknown-unknown` into `OUT_DIR` (its own
+target directory, `--offline`, with the outer `CARGO_TARGET_DIR` and `RUSTFLAGS` removed) and the modules
+and manifests become `include_bytes!` / `include_str!` constants; the `Loader` gained a bytes path and a
+`builtin` scope sits at the bottom of the stack. The price is the wasm target on every machine that builds
+letibot. The session list was the first, and the plan changed in one way: the input a pane is handed is a set
+of FEEDS rather than one sessions-shaped input, with the acts declared beside them.
 
-    | piece | where |
-    |---|---|
-    | the table, the build script, `install` | `crates/builtins` (`build.rs` compiles `plugins/builtin/*`; `lib.rs` is `table()` and `Stack::register_builtin_bytes`) |
-    | the guest's ABI half | `plugins/builtin/abi` — `rano_abi`, `rano_alloc`, the answer arena, the result block |
-    | **the session list** | `plugins/builtin/sessions` — the groups, the names, the counts, the acts and so the hint line; its own native tests are `src/tests.rs` |
-    | the bytes path | `letibot_plugins::Loader::load_bytes` / `Loader::load_builtin` (the same bytes, compiled once per process), `Stack::register_builtin_bytes` / `register_builtin_shared`, and `letibot_plugins::Layer::trusted` / `Layer::pin` — D17's ladder, §2.5, built 2026-10-31 |
-    | the head's host | `crates/tui/src/app/sessions_pane.rs` — its own stack (the session's, the project's, the user's, then the built-ins), the feed, the acts, the fold state, and the way out |
-    | the C3 additions | `crates/plugin-sdk/src/pane.rs` (`Input`, `Feed`, `Act`, `Fold`, `Cell`), `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `Tree::empty`, `View::validate_for`) |
-    | the example | `plugins/examples/sessions-override` — a project layer that calls below, renames a group and hides its rows |
-    | **the first plugin TOOL** | `plugins/builtin/claude-transcript` — Claude Code's own store as a tool (§4.8), and the first user of `read:<path>` (§4.8.1): `sessions`, `search`, `read`, `outline`, every answer bounded. The daemon's stack installs the built-ins that declare a tool and no others, and of those only the ones a session DECLARED a tool from (`PluginHost::production`) — a pane belongs to the head's stack and installing one here would announce it twice, and a tool nobody asked for is a tool every session pays a compile for |
+| piece | where |
+|---|---|
+| the table, the build script | `crates/builtins` (`build.rs`, `table()`, `Stack::register_builtin_bytes`) |
+| the guest's ABI half | `plugins/builtin/abi` |
+| the built-in layers | `plugins/builtin/*` (sessions, queue, room, todo, irc, claude-transcript) |
+| the bytes path | `Loader::load_bytes` / `load_builtin`, `Layer::trusted` / `Layer::pin` |
+| the head's host | `crates/tui/src/app/sessions_pane.rs`: its own stack, the feed, the acts, the fold state, the way out |
+| the C3 additions | `crates/plugin-sdk/src/pane.rs`, `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `View::validate_for`) |
+| the example | `plugins/examples/sessions-override`, a project layer that calls below, renames a group and hides its rows |
 
-    Four things differed from the plan as written, and each is a decision a reader should see:
+Three decisions a reader should see. The session list's pane is answered by the HEAD, not the daemon, because
+the list is the way out of a broken session. The way out is the head's own list (`App::session_list`),
+unchanged, because the code that draws it today is the code that must keep working the day a layer breaks.
+And a built-in is a layer, so a project's `sessions` may `mask` the hook as any layer may; a built-in whose
+manifest declares `[[tools]]` is also installed into the daemon's stack, because `tool_` is a hook only the
+daemon dispatches.
 
-    * **The pane is answered by the HEAD, not by the daemon.** Every other pane is the daemon's
-      (`crates/harnessd/src/plugins.rs`), and this one could not be: the list is how a person gets
-      out of a broken session, and a picker that waits on the daemon is a picker that is
-      unavailable exactly when it is wanted. The head already holds every fact the list is drawn
-      from (the `Sessions` frame) and, through `rano`, already links the engine — so it builds the
-      same stack from the same scopes and answers in-process. `rano.rs`'s *the head links no JIT*
-      was already untrue in practice (rano is a hard dependency of the head), and this makes it
-      useful.
-    * **The way out is the head's OWN list**, unchanged — `App::session_picker` — rather than a new
-      plainer renderer: the code that draws it today is the code that must keep working the day a
-      layer breaks, so it is the code that was already there. *(2026-10-31: the function is
-      `App::session_list` now — the list is a tree of projects, and the way out draws that same
-      tree through the same primitive rather than a plainer one. It is still the head's own code
-      and still the thing that must work when a layer does not.)*
-    * **The drawing was pinned before the port**: `crates/tui/src/app/tests/data/sessions-list-*.txt`
-      (two pictures of one daemon, taken from the head's list before the port) plus
-      `the_heads_list_and_the_plugins_list_draw_the_same_rows`, which renders both paths at one
-      width and requires them identical. The port's only drawing change is the numbers column, and
-      that was a bug found by the pin, not a decision.
-    * **A built-in is a layer, so it can be masked by name** — a project's `sessions` sits above it
-      in the stack and may `mask` the hook as any layer may.
-
-    **And a built-in can be a TOOL, which is the second thing the built-in table had to answer**
-    (2026-10-27): a built-in whose manifest declares `[[tools]]` is installed into the *daemon's*
-    stack as well as the head's, because `tool_` is a hook only the daemon dispatches. The split
-    is by what a hook needs: a pane needs a head to draw it, a tool needs the model's registry,
-    and the layer's own module is the same bytes either way.
-11. **Script layers: a layer that is source text, with no toolchain.** A layer today is a Rust
-    crate compiled to wasm, so writing one needs cargo and the wasm target, which most boxes and
-    most operators do not have. A JavaScript engine compiled to wasm (QuickJS, as Javy embeds
-    it) becomes one more built-in, and a `.js` layer (`sessions.js` beside a project's
-    `plugin.toml`) is text that engine runs: still one binary, still a sandboxed layer under the
-    same capabilities, fuel, shadow gate and fail-down as a compiled one. `.ts` is the same plus
-    type stripping, which is a fast transform but code to embed or write, so it comes second.
-    This is also the shape §4.11's scripts and the butler's small fixes want, a fix written and
-    loaded in one call, so the script world should be designed with them rather than beside them.
-
-    **Not built, 2026-10-31, and it stops on two decisions this plan does not make.** They are
-    written here because the next session will otherwise re-derive them:
-
-    1. **Where the engine artifact comes from.** No JavaScript engine is available offline on this
-       box — `Cargo.lock` has none and the offline registry cache holds no `quickjs`/`rquickjs`/
-       `boa`/`javy` — and `crates/builtins/build.rs` compiles Rust guests with cargo, not C. So it
-       is a vendored prebuilt module or a crate the boxes cannot fetch. **And that is a decision
-       about the ladder, not about packaging**: a vendored blob compiled into the binary is a
-       BUILT-IN, so §2.5 runs it freely, `exec` included, and the model's `.js` text becomes the
-       only untrusted thing in the path. Nobody should discover that by reading a `build.rs`.
-    2. **What a script layer's module IS: decided and built, 2026-11-01.** `plugin.toml` carries
-       `module = "<file>"` (default `plugin.wasm`): one relative path inside the layer's own
-       directory, refused at admit if it leaves it. `Trust::pin`, `Layer::sha256`, `has_module`,
-       `poll_changes`, the gate's build and the declaration rule all read that field, so a `.js`
-       layer pins on the script text and an edit to it un-pins the layer like any rebuild. A module
-       that is not wasm is admitted to the ladder (pinned, hashed, polled) and refused at load with
-       a sentence naming the file, which is where the engine for it will have to go: until (1) is
-       answered there is none.
-    3. **The JS-side contract, and the shadow gate's determinism.** Which functions a `.js` layer
-       exports per hook, how it asks for a look, what a trap and a fuel exhaustion mean for the
-       engine, and how §2.4's replay stays exact with a clock and `Math.random` inside it.
-
-    (1) is the one that blocks: it is a trust decision about what may run freely, and the manifest
-    field that lets a script layer sit on the ladder at all is now in place under it.
+Step 11 stops on two decisions this plan does not make. Where the engine artifact comes from: no JavaScript
+engine is available offline on this box (`Cargo.lock` has none and the offline registry cache holds no
+`quickjs`/`rquickjs`/`boa`/`javy`), and `crates/builtins/build.rs` compiles Rust guests with cargo, not C. A
+vendored blob compiled into the binary is a BUILT-IN, so §2.5 runs it freely, `exec` included, and the
+model's `.js` text becomes the only untrusted thing in the path. And the JS-side contract, including how the
+shadow gate's replay stays exact with a clock and `Math.random` inside it. What a script layer's module IS was
+decided and built: `plugin.toml` carries `module = "<file>"` (default `plugin.wasm`), one relative path
+inside the layer's own directory, refused at admit if it leaves it, so a `.js` layer pins on the script text
+and an edit to it un-pins the layer like any rebuild.
 
 ## 8. Open questions
 
-- **Toolchain on the other machines**: `wasm32-unknown-unknown` on lab2x1 and lubuntu1, and inside
-  firecode VMs if plugin builds run there.
-- **Where `build` runs**: on the host like `bash`, or in the session's VM when it has one. A build
-  runs build scripts, which is the same trust as `cargo build` by the model today.
-- **Session layers across a restart**: kept with the session and re-loaded, with the model told
-  which layers are active, as it is told about scoped monitors.
-- **Recorded inputs and privacy**: how many inputs per hook are kept, and for how long — they hold
-  tool output.
-- **A child session** (`task_start`) inherits the parent's session layers, or only the project's.
-- **Per daemon or per box**: the gatekeeper is per daemon; a butler per box would share one
-  board across folders, but a layer is about a project, and the daemon is per folder.
-- **The butler's default model** when the session runs on the local server: the same model (free,
-  contends for the GPU) or a remote one (no contention, network egress, the operator's call).
-- **The TUI's plugins** (`link`) load from the same scopes, read by the head from the session's
-  workspace — or the daemon sends them.
+- Toolchain on the other machines: `wasm32-unknown-unknown` on lab2x1 and lubuntu1, and inside firecode VMs
+  if plugin builds run there.
+- Where `build` runs: on the host like `bash`, or in the session's VM when it has one. A build runs build
+  scripts, which is the same trust as `cargo build` by the model today.
+- Recorded inputs and privacy: how many inputs per hook are kept, and for how long. They hold tool output.
+- A child session (`task_start`) inherits the parent's session layers, or only the project's.

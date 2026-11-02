@@ -124,7 +124,7 @@ of them cannot be.
 |---|---|---|---|
 | **a leticode session** (`crates/harnessd`) | yes, one `SessionRoom` per top-level session | **yes** | the reader turns the `Event` into a sentence (`room::wake::sentence`), queues it and rings `Bell::ring_wake`; `Harness::wake` runs a turn with it as a `Speaker::Agent` row. `crates/harnessd/tests/room_bell_turn.rs` proves both halves |
 | **the head** (`letibot-tui`) | **no** | no: the daemon wakes it | no `letibot-room` dependency and no socket; its pane comes from the daemon's feed (`crates/harnessd/src/plugins/room_feed.rs`). A room note draws a notice row, never a card |
-| **the bridge** (`crates/bridge`) | **no** | no: `Head::wait` answers on an ask, a failure, a turn that ended, or the deadline | no `letibot-room` dependency; a room event reaches it only through a turn, so it can never be the `Ask` that exits 10 |
+| **the bridge** (`letibot-bridge`, `Head::wait`) | **no** | no: `Head::wait` answers on an ask, a failure, a turn that ended, or the deadline | no `letibot-room` dependency; a room event reaches it only through a turn, so it can never be the `Ask` that exits 10 |
 | **a firecode VM agent** | **no** | no: a subagent is refused at the door (`Refused::Subagent`) | `Harness::open` gives a session with a parent no link at all, and a VM agent's door is `firecode in`, an exec channel with no message verb |
 
 A head and a bridge head are clients of the daemon, so they cannot see a room event the daemon chose not
