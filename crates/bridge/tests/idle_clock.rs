@@ -16,7 +16,9 @@
 //!    what the gate's three reds had in common. So a real burner is started BESIDE this process,
 //!    and this process's own reading must not move: measured with a child at a full core,
 //!    **4–10 µs of a one-second span**. The burner's own reading is taken too, so the test cannot
-//!    pass by the burner having failed to start.
+//!    pass by the burner having failed to start — **where this box can take it**: `/proc/<pid>/stat`
+//!    is a facility macOS can never be given, and there the burner is unproved rather than
+//!    proved-not-burning, which part 2 says out loud (the same `else` part 1 takes).
 //! 3. **The settle waits for a burn to end.** [`cpu::wait_until_idle`] is the half that was
 //!    missing on 2026-11-01: a fixed `sleep(500 ms)` after a daemon's start opened the measured
 //!    window on the daemon's opening, so the number was a function of how fast the box got
@@ -70,16 +72,25 @@ impl Drop for Burner {
 
 /// **Wait until a pid's own reading has advanced by `at_least`** — so a claim about a burner is
 /// measured on the burner, and a burner that never ran cannot make a test pass.
-fn has_burned(pid: u32, at_least: Duration, within: Duration) -> bool {
+///
+/// Three answers, because a pid's reading has three fates and only one of them is a defect:
+/// `Some(true)` it burned, `Some(false)` the reading exists and moved by less than `at_least`
+/// (a burner that never got going, which is the fixture failing), and **`None` where this box has
+/// no `/proc/<pid>/stat` at all** — macOS. [`cpu::of_pid`]'s contract is that a caller says the
+/// reading is not available rather than failing on it, so the absence is answered here and judged
+/// at the call site, where the platform is known.
+fn has_burned(pid: u32, at_least: Duration, within: Duration) -> Option<bool> {
     let started = Instant::now();
-    let first = cpu::of_pid(pid).unwrap_or_default();
+    let first = cpu::of_pid(pid)?;
     while started.elapsed() < within {
-        if cpu::of_pid(pid).unwrap_or_default().saturating_sub(first) >= at_least {
-            return true;
+        // A pid that goes away mid-wait answers `None`, and a burner that is not there burned
+        // nothing: a vanished reading is `false`, not an absence of the facility.
+        if cpu::of_pid(pid).unwrap_or(first).saturating_sub(first) >= at_least {
+            return Some(true);
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    false
+    Some(false)
 }
 
 #[test]
@@ -106,14 +117,35 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
 
     // --- 2. a neighbour's CPU is not this process's CPU --------------------
     let burner = Burner::start();
-    assert!(
-        has_burned(
-            burner.pid(),
-            Duration::from_millis(300),
-            Duration::from_secs(30)
+    // **The burner's own reading, where this box can take it.** `cpu::of_pid` answers `None` where
+    // there is no `/proc` — macOS — and `unwrap_or_default()` here used to turn that into a burner
+    // that read 0 for ever, so thirty seconds later a Darwin run failed with *the burner never got
+    // going*: a red that reads as a defect in the instrument and is the platform. **This is the
+    // line the `else` below covers**, and a Darwin run takes it because `/proc/<pid>/stat` does
+    // not exist there at all, so the first read is the `None`.
+    //
+    // `apparatus::present` is deliberately NOT the door: `/proc` is a facility macOS can never be
+    // given, `present` panics under `LETIBOT_REQUIRE_APPARATUS=1` — the gate's own test step — so
+    // a Mac would be red for its OS, and `apparatus::applies` is for a test with nothing left to
+    // test here, while the window below still measures this process's own `getrusage`, which
+    // every box has.
+    match has_burned(burner.pid(), Duration::from_millis(300), Duration::from_secs(30)) {
+        Some(true) => {}
+        Some(false) => panic!(
+            "the burner never got going, so nothing below would have been proved either way"
         ),
-        "the burner never got going, so nothing below would have been proved either way"
-    );
+        None if !cfg!(target_os = "linux") => println!(
+            "  no /proc/<pid>/stat on {}: the burner's own reading is not available, so that it \
+             burned is unproved here — what follows is this process's own getrusage",
+            std::env::consts::OS
+        ),
+        // And on a box that HAS `/proc`, a pid with no reading is a shell that is already gone,
+        // which is the fixture failing and not the platform: it stays a red.
+        None => panic!(
+            "the burner's own reading was not available on a box that has /proc/<pid>/stat, so its \
+             shell was gone before it burned anything"
+        ),
+    }
     let mine = cpu::over(cpu::SPAN);
     println!(
         "  beside a child at a full core: this process spent {mine:?} over a {:?} span",
