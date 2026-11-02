@@ -883,6 +883,18 @@ impl Boundary {
         outside
     }
 
+    /// The host path a missing-program line is about, when this host has that program and the
+    /// view does not. A name that resolves nowhere is a typo, and a typo must not become a
+    /// claim about the boundary.
+    fn missing_program(&self, line: &str) -> Option<PathBuf> {
+        let name = missing_program_name(line)?;
+        let dirs = std::env::var_os("PATH")?;
+        let hit = std::env::split_paths(&dirs)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())?;
+        self.view.outside(&hit).then_some(hit)
+    }
+
     /// The words in a command's output that mean the boundary refused this: `ENOENT` for an
     /// absent path, `EPERM` under a policy, and a shell's missing-binary words on both,
     /// because a note written for one mechanism says nothing on the other.
@@ -936,6 +948,13 @@ impl Boundary {
                     _ => {}
                 }
             }
+            // A missing program names no path, so the scan above finds nothing in it, and a
+            // toolchain the view has not got is the one absence read as a broken box.
+            if let Some(p) = self.missing_program(line)
+                && !outside.contains(&p)
+            {
+                outside.push(p);
+            }
             if outside.len() >= MAX_ABSENCE_PATHS && replaced.len() >= MAX_ABSENCE_PATHS {
                 break;
             }
@@ -950,7 +969,7 @@ impl Boundary {
                 .map(|p| format!("`{}`", p.display()))
                 .collect::<Vec<_>>()
                 .join(", ");
-            notes.push(format!(
+            let mut note = format!(
                 "{list} {} not in this session's filesystem view, so the command saw \
                  {} as absent. That failure is the boundary, NOT an answer about \
                  whether anything is there: this session's view is {}. Nothing \
@@ -962,7 +981,19 @@ impl Boundary {
                 if outside.len() == 1 { "it" } else { "them" },
                 self.view.summary().lines().next().unwrap_or("the project"),
                 self.refusal_clause(),
-            ));
+            );
+            // The grant is the only thing that changes the answer, so the note names it and
+            // the consequence the operator weighs: a path readable in the view is readable
+            // into the transcript.
+            for p in &outside {
+                note.push_str(&format!(
+                    " A grant would change that for `{}`: `ReadOnly` on it is the grant that \
+                     binds the path into the view, and its consequence is that the contents \
+                     can reach the transcript, which is why the operator decides it.",
+                    p.display()
+                ));
+            }
+            notes.push(note);
         }
         if !replaced.is_empty() {
             let list = replaced
@@ -1016,6 +1047,19 @@ fn absolute_paths(line: &str) -> Vec<PathBuf> {
             }
         })
         .collect()
+}
+
+/// The program name in a shell's missing-binary line: `cargo: command not found`, and the same
+/// line behind the shell's own prefix (`/bin/sh: 1: cargo: not found`). A name carrying a `/`
+/// is a path, and [`absolute_paths`] has those.
+fn missing_program_name(line: &str) -> Option<&str> {
+    let line = line.trim_end();
+    let before = line
+        .strip_suffix("command not found")
+        .or_else(|| line.strip_suffix("not found"))?;
+    let name = before.trim_end().strip_suffix(':')?.trim_end();
+    let name = name.rsplit(": ").next().unwrap_or(name);
+    (!name.is_empty() && !name.contains('/') && !name.contains(char::is_whitespace)).then_some(name)
 }
 
 /// What a spawn needs from the confinement, so that the confinement decides how
@@ -2526,8 +2570,111 @@ mod tests {
         }
         let notes = b.absence_notes(&text);
         assert_eq!(notes.len(), 1);
-        let listed = notes[0].matches("/opt/secret").count();
-        assert!(listed <= MAX_ABSENCE_PATHS, "listed {listed}");
+        // Each path is named in the list and once more by its own grant sentence.
+        let named: std::collections::BTreeSet<&str> = notes[0]
+            .split('`')
+            .filter(|t| t.starts_with("/opt/secret"))
+            .collect();
+        assert!(named.len() <= MAX_ABSENCE_PATHS, "named {}", named.len());
+        assert!(
+            notes[0].matches("/opt/secret").count() <= 2 * MAX_ABSENCE_PATHS,
+            "{}",
+            notes[0]
+        );
+    }
+
+    /// A boundary over a real project directory, so the view's roots are paths a `stat` agrees
+    /// with rather than `/proj`.
+    fn a_boundary_over(project: &Path) -> Boundary {
+        Boundary {
+            view: ViewSpec::project_only(project),
+            ..boundary_with(vec![])
+        }
+    }
+
+    /// A real directory on this box that `view` does not contain: the note is about a path that
+    /// exists outside, and a path that is nowhere would prove nothing.
+    fn outside_dir(view: &ViewSpec) -> Option<PathBuf> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let under_home = home
+            .into_iter()
+            .flat_map(|h| [".cargo", ".rustup", ".cache"].map(|n| h.join(n)));
+        under_home
+            .chain(std::env::current_dir().ok())
+            .chain([PathBuf::from("/opt"), PathBuf::from("/var/lib")])
+            .find(|p| p.is_dir() && view.outside(p))
+    }
+
+    /// The first hit for `name` on this process's `PATH`, resolved the way the note resolves it.
+    fn on_path(name: &str) -> Option<PathBuf> {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    }
+
+    #[test]
+    fn an_absence_note_names_the_grant_that_would_allow_the_path_in() {
+        // The grant is the only thing that changes the answer, so a note that stops at "absent"
+        // leaves the model with no move but to ask again.
+        let project = std::env::temp_dir().join(format!("letibot-view-{}", std::process::id()));
+        std::fs::create_dir_all(&project).expect("fixture project");
+        let b = a_boundary_over(&project);
+        let Some(real) = outside_dir(&b.view) else {
+            eprintln!("no directory outside the fixture's view; nothing to assert");
+            return;
+        };
+        let file = real.join("config.toml");
+        let said = format!("cat: {}: No such file or directory", file.display());
+
+        let notes = b.absence_notes(&said);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let n = &notes[0];
+        assert!(n.contains(&file.display().to_string()), "{n}");
+        assert!(n.contains("`ReadOnly` on it"), "{n}");
+        assert!(n.contains("reach the transcript"), "{n}");
+
+        // A granted path is in the view, so there is nothing absent to report about it.
+        let granted = Boundary {
+            view: ViewSpec::project_only(&project).granting(Grant::ReadOnly {
+                path: real.clone(),
+                why: "the fixture's own directory".into(),
+            }),
+            ..boundary_with(vec![])
+        };
+        assert!(granted.absence_notes(&said).is_empty());
+    }
+
+    #[test]
+    fn a_missing_program_is_named_as_the_path_the_view_does_not_contain() {
+        // `cargo: command not found` names no path at all, so the scan found nothing and the
+        // model was left reading the boundary as a broken toolchain.
+        let project = std::env::temp_dir().join(format!("letibot-view-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&project).expect("fixture project");
+        let b = a_boundary_over(&project);
+        match on_path("cargo").filter(|p| b.view.outside(p)) {
+            Some(cargo) => {
+                for said in [
+                    "cargo: command not found",
+                    // What this box's `/bin/sh` really prints, measured rather than assumed.
+                    "/bin/sh: 1: cargo: not found",
+                ] {
+                    let notes = b.absence_notes(said);
+                    assert_eq!(notes.len(), 1, "{said}: {notes:?}");
+                    let n = &notes[0];
+                    assert!(n.contains(&cargo.display().to_string()), "{said}: {n}");
+                    assert!(n.contains("`ReadOnly` on it"), "{said}: {n}");
+                    assert!(n.contains("reach the transcript"), "{said}: {n}");
+                }
+            }
+            None => eprintln!("no cargo outside the fixture's view; nothing to assert"),
+        }
+        // A name this host does not have is a typo, and a typo must not become a claim about
+        // the boundary.
+        assert!(
+            b.absence_notes("nosuchtool_xyz: command not found")
+                .is_empty()
+        );
     }
 
     #[test]
