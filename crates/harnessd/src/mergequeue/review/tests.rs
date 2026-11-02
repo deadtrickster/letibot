@@ -699,6 +699,14 @@ fn an_owed_refusal_expires_and_one_whose_row_moved_on_is_forgotten() {
         store.told(&key).unwrap().is_none(),
         "and the row that said it was owed is gone with it"
     );
+    // A key under this prefix that is not one this function wrote is forgotten too, rather than
+    // kept for ever by a reader that cannot pay it.
+    assert!(store.tell_once("refusal:no-colon", 1).unwrap());
+    a_pass(&store, &takes_it, &everyone_live, heard.clone());
+    assert!(
+        store.told("refusal:no-colon").unwrap().is_none(),
+        "a malformed key is dropped"
+    );
 
     // A row a person put back in line: the verdict it was rejected with is not the row's any more.
     let (_dir2, store2) = the_queue("owed-moved");

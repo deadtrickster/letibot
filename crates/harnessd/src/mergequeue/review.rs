@@ -941,7 +941,9 @@ pub fn redeliver_refusals(p: &Pool) -> Result<usize, StoreError> {
     let now = now_ms();
     for (key, told) in p.store.told_with_prefix(REFUSAL_OWED)? {
         let Some((head, id)) = key.trim_start_matches(REFUSAL_OWED).split_once(':') else {
-            // Not a key this function wrote: leave it, rather than guess what it meant.
+            // Not a key this function wrote, and not one it can pay: forgotten, so a malformed
+            // key cannot live here for ever.
+            p.store.untell_prefix(&key)?;
             continue;
         };
         let Some(r) = p.store.review_row(id)? else {
