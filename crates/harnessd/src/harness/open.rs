@@ -28,10 +28,9 @@ pub fn verbatim_fit(carried: u64, window: u64, headroom: u64) -> VerbatimFit {
     }
 }
 
-/// What a VM-placed child copies, or why it cannot be placed: `Ok(None)` is the session's own copy
-/// source (`Config::vm_copy_source`). A `task_start` child copies its own worktree and names
-/// nothing; a plain VM child of a session holding several repositories is refused, because a VM
-/// holds one.
+/// What a VM-placed child copies, or why it cannot be placed: `Ok(None)` is the session's own copy source
+/// (`Config::vm_copy_source`). A `task_start` child copies its own worktree; a plain VM child of a session holding
+/// several repositories is refused, because a VM holds one.
 pub fn vm_copy_for(
     in_vm: bool,
     has_worktree: bool,
@@ -1451,10 +1450,8 @@ impl Harness {
             // The downgrade, applied to what is SEATED: a denied class's tools leave
             // the prompt, so the model is not told it has what the gate would refuse.
             .without_access(&cfg.downgrade.deny);
-        // **And a skill that declares `allowed-tools` may only NARROW this seat** (D17: a skill
-        // is tighten-only, never a pre-approval). Read over the skills this session was STARTED
-        // with: a skill loaded mid-conversation narrows nothing, because a session's tool list is
-        // its prompt and message zero is frozen.
+        // And a skill that declares `allowed-tools` may only NARROW this seat: read over the skills this session was
+        // STARTED with, since a session's tool list is its prompt and message zero is frozen.
         let ceiling = parts.skills.tool_ceiling(&cfg.skills);
         let mut registry = match &ceiling {
             Some(allowed) => {
@@ -1475,25 +1472,9 @@ impl Harness {
             }
             None => registry,
         };
-        // **And the tools this session's PLUGIN LAYERS declare** (`docs/plugins-plan.md` §4.8).
-        //
-        // After the role, because a layer's tool is not one the role names — it is a seat the
-        // project added, and `resolve_role` would refuse a role naming a tool the role's list does
-        // not carry. The declarations are read from `plugin.toml`s only (`crate::plugins::
-        // declared_tools`): the prompt is composed here and the plugin host is built later by the
-        // daemon, so the tool holds the same slot the `plugin` tool does and answers through it
-        // once it is filled.
-        //
-        // **A layer IN FORCE, and not the binary's own table** — a built-in's `[[tools]]` is what a
-        // project installs (a `plugin.toml` copied into `.letibot/plugins/`, no `plugin.wasm`), not
-        // a tool every session is handed. That is `declared_tools`'s decision and the reason it
-        // reads three scopes; `crates/harnessd/tests/wired.rs` is where the default set it must not
-        // move is written down, and `a_layer_in_force_seats_its_tool_and_no_layer_seats_none`
-        // beside it is the other half.
-        //
-        // A tool that cannot be seated says why, once, in a `plugin_layer` warning — the class the
-        // plugin host already uses for a layer whose answer was refused. Silence would be a model
-        // that does not know a project offered it something.
+        // And the tools this session's PLUGIN LAYERS declare: after the role, since a layer's tool is a seat the
+        // project added and `resolve_role` would refuse a role naming it. Only a layer IN FORCE counts, not a built-in's
+        // own table, and a tool that cannot be seated says why once in a `plugin_layer` warning.
         let mut not_seated: Vec<String> = Vec::new();
         let declared = crate::plugins::declared_tools(&cfg.session_id, &cfg.workspace);
         let mut plugin_tools = 0usize;
@@ -1523,11 +1504,9 @@ impl Harness {
                 ));
                 continue;
             }
-            // **Somebody else's prose, so `register_foreign`** — the lint's findings are recorded
-            // on the registry rather than refusing the tool. A layer's description is a file a
-            // person wrote, and refusing a project's own tool over its wording would be the
-            // harness making a policy nobody asked for; `plugin test` is where the wording is
-            // reported back to the model that can fix it.
+            // Somebody else's prose, so `register_foreign`: the lint's findings are recorded on the registry rather
+            // than refusing the tool, since a layer's description is a file a person wrote and `plugin test` is where
+            // the wording is reported back to the model that can fix it.
             registry
                 .register_foreign(Box::new(crate::plugins::tool::PluginTool::new(
                     decl,
@@ -1629,10 +1608,9 @@ impl Harness {
             if has_exec_tools && backend_confined {
                 have.push(Prereq::Confinement);
             }
-            // The guard model, by the same fact the advisor is built from: `cfg.oracle` is `Some`
-            // when an endpoint is known. Nothing used to push this, so `automode` could not open
-            // however the box was configured, and the refusal named a line the file already had.
-            // Reachability is not tested here: a TCP probe at open would wait on another box.
+            // The guard model, by the same fact the advisor is built from: `cfg.oracle` is `Some` when an endpoint is
+            // known. Nothing used to push this, so `automode` could not open however the box was configured. Reachability
+            // is not tested here, since a probe at open would wait on another box.
             if cfg.oracle.is_some() {
                 have.push(Prereq::Oracle);
             }
@@ -1824,10 +1802,9 @@ impl Harness {
                     Some(sink) => g.with_corpus_sink(sink),
                     None => g,
                 };
-                // The shape cache, warm: it lived on the gate and died with the process, and the
-                // operator restarts a session exactly when one has gone wrong. Seeded from the
-                // store, bounded in SQL, and re-checked at every lookup. A store that cannot
-                // answer is a note rather than a refusal to start: being asked is the safe side.
+                // The shape cache, warm: it lived on the gate and died with the process, and the operator restarts a
+                // session exactly when one has gone wrong. Seeded from the store and re-checked at every lookup; a store
+                // that cannot answer is a note rather than a refusal to start.
                 let mut g = g;
                 // A narrowing in force is disclosed, like every other one: an operator who forgot
                 // they set it would read the cards as a regression. Silence is the default because
@@ -1865,88 +1842,40 @@ impl Harness {
             }
         };
 
-        // The encoder, attached once for the life of the session: constructing `IntentSink` is what
-        // tells the ledger an encoder exists, and it lives on the harness rather than per round so
-        // it is attached before the banner is read and its call_id map spans a whole turn.
-        // The background-job watcher: a job backgrounded this session settles
-        // between turns, when nobody else is publishing, so the daemon watches
-        // each one and publishes the settlement. `None` when the backend cannot
-        // start processes — no host, no jobs, no threads. The sink is the hook
-        // because the `Backgrounded` result is where a job id first exists.
-        //
-        // **And it is given the worker's bell (R7).** A settlement was reaching the
-        // heads and nobody else: the model that could act on it had no route to a
-        // background job's result but `job_wait`. The watcher now also queues a
-        // completion and rings this bell, so the settlement arrives as an unprompted
-        // turn of its own — the same route a fired monitor takes.
-        // **Built whether or not this session can start a process.** `task` needs no
-        // process host, so keying the watcher set on one would leave a read-only seat that
-        // hands work to a child with no way to be told the child finished — the same
-        // defect surviving in the sessions least able to notice it.
+        // The encoder, attached once for the life of the session, since constructing `IntentSink` is what tells the
+        // ledger an encoder exists. And the background-job watcher, which rings the bell so a settlement arrives as an
+        // unprompted turn, built whether or not this session can start a process: `task` needs no host.
         let bell = Some(Arc::clone(session_registry.bell()));
         let processes = backend.processes_arc();
         let job_watch = match &processes {
             Some(h) => JobWatchers::new(h, &hub, bell),
             None => JobWatchers::watching_tasks(&hub, bell),
         };
-        // **And the session's subagents settle through it too.** `task` returns the
-        // same `Backgrounded` outcome `bash --background` does, so the sink below
-        // already arms a watcher for it — and that watcher asked the host about a name
-        // the host has never heard, answered `NeverStarted`, and spun on it until the
-        // session closed: the completion never queued, the bell never rung, and a
-        // thread leaked per `task` call. Giving the watchers the runner is what makes
-        // the handle route to its own wait (R7's hop, for a subagent).
+        // And the session's subagents settle through it too: `task` returns the same `Backgrounded` outcome `bash`
+        // does, and a watcher without the runner asked the host about a name it had never heard, spun on it until the
+        // session closed and leaked a thread per call.
         let job_watch = Some(job_watch.with_tasks(&subagent_runner));
-        // **And a child joins its PARENT's set** (R58, and the tree read as a supervision tree
-        // in 2026-10-06). What joining gives it is three facts, and none of them is a ring
-        // target any more:
-        //
-        //   * the `watching`/`settled` bookkeeping, so a tree does not watch or settle one
-        //     handle twice;
-        //   * **the level above** — whose queue what this session can no longer drain goes to,
-        //     and whose id the ring for it names;
-        //   * **the ROOT**, which the ask route posts a permission card to (`tree_root`), because
-        //     that is the one session in a tree a head can be attached to.
-        //
-        // The RING is not among them: it names the session that OWNS a settlement — this one,
-        // for what this session starts — and the daemon serves a session it does not hold by
-        // handing the wake to the thread that does. Ringing the root instead is what put a
-        // grandchild's notice somewhere nobody was looking; see `jobwatch`'s module header.
-        // A root has no tree to join (`tree_watch` is `None` from `Parts::load`) and keeps its
-        // own set, whose ring names itself.
-        //
-        // **The queue is NOT joined with it** (2026-10-05). A child's set keeps its own
-        // completions, so what it backgrounds is drained by the child — and a settlement
-        // that arrives after the child's turn is over is handed up one level by
-        // `JobWatchers::stop` rather than read by the main session as its own.
+        // And a child joins its PARENT's set: the watching bookkeeping, the level above, and the ROOT where a
+        // permission card is posted. The RING is not among them, since it names the session that OWNS a settlement, and
+        // the queue is not joined either: a child drains its own, and one that arrives after its turn is handed up.
         let job_watch = match (&parts.tree_watch, job_watch) {
             (Some(tree), Some(w)) => Some(w.shares_tree(tree)),
             (_, other) => other,
         };
-        // **And this session's own set is what ITS children will join** (R58). Filled
-        // here, after the join above, so the value a child reads is already the joined
-        // one — which is how the ROOT (the session a permission card can be drawn by)
-        // stays the tree's root at every depth without anything walking a parent chain.
+        // And this session's own set is what ITS children will join, filled after the join above so the value a
+        // child reads is already the joined one: that is how the ROOT stays the tree's root at every depth.
         if let Some(w) = &job_watch {
             *tree_watch_slot.lock().expect("tree watch") = Some(Arc::clone(w));
-            // **Where a settlement gets written down.** The watcher threads settle jobs on
-            // their own thread and cannot be handed this harness's `Store` — a
-            // `rusqlite::Connection` is `Send` and not `Sync` — so they are given the store's
-            // PATH and open a handle onto the process's one connection; `Store::path` says why
-            // that is ordinary and why it answers `None` for an in-memory store. A run with no
-            // store records nothing, which is the same answer it gives for todos.
-            //
-            // **This session's own id, not the tree's**, for the reason the queue is per
-            // session: a job a child backgrounded is the child's row, in the child's session.
+            // Where a settlement gets written down: the watcher threads cannot be handed this harness's `Store`, so
+            // they get its PATH and open a handle onto the process's one connection. This session's own id and not the
+            // tree's, since a job a child backgrounded is the child's row.
             if let Some(path) = store.as_ref().and_then(|s| s.path()) {
                 w.record_jobs_into(
                     path.to_path_buf(),
                     cfg.session_id.clone(),
                     session_registry.instance(),
-                    // **Where this session's jobs run**, which is what the supervisor's record
-                    // says in its `host` column — `None` for this box, a `hosts.toml` name
-                    // otherwise. It is also what decides how a job's identity is spelled: a
-                    // pid on this box, a command marker on another machine.
+                    // Where this session's jobs run, which is what the record's `host` column says, and what decides
+                    // how a job's identity is spelled: a pid on this box, a command marker on another machine.
                     match &cfg.placement {
                         letibot_tools::builtins::task::Placement::Remote(name) => {
                             Some(name.clone())
@@ -1956,18 +1885,9 @@ impl Harness {
                 );
             }
         }
-        // **And the jobs a daemon that died was still running** — RH7's supervisor, schema 34.
-        //
-        // The record is what outlived that daemon. Adopting it puts the job back in this host's
-        // own table, and then every reader above this layer — `jobs`, `job_output`, `job_kill`,
-        // `job_wait`, the pane, the settlement that wakes this session — works exactly as it did
-        // before the restart, which is the whole reason the record exists. A job whose process is
-        // already gone settles as [`letibot_tools::exec::JobState::Dead`] — *gone, and no exit was
-        // recorded* — never as an exit of zero.
-        //
-        // A record this backend cannot adopt (a remote host's, in this slice) is left alone: it
-        // stays open for [`crate::supervise`] to check, rather than being dropped or, worse,
-        // settled as ended by a daemon that cannot see the process.
+        // And the jobs a daemon that died was still running: the record is what outlived it, and adopting it puts
+        // the job back in this host's table so every reader works as before. A job whose process is already gone
+        // settles as `Dead`, never as an exit of zero. A record this backend cannot adopt is left alone.
         if let (Some(procs), Some(store)) = (processes.as_ref(), store.as_ref()) {
             for rec in store.processes_of(&cfg.session_id).unwrap_or_default() {
                 if !rec.state.is_open() {
@@ -1994,11 +1914,8 @@ impl Harness {
             job_watch.clone(),
         );
 
-        // Read, never asserted. `is_writable` is the backend's own answer,
-        // `describe` is the backend's own words, `Gate::describe` is the gate's, and
-        // the access-class questions are answered by the schemas that were actually
-        // seated a few lines above — not by which role was requested. Four instances
-        // of one defect were paid for to learn that distinction.
+        // Read, never asserted: the backend's own answers and the schemas that were actually seated, not which role
+        // was requested. Four instances of one defect were paid for to learn that distinction.
         let firecode = seated
             .iter()
             .any(|n| n == "task" || n == "task_start")
@@ -2019,17 +1936,12 @@ impl Harness {
             // The ledger's own answer, not the fact that a line above meant to
             // attach one.
             intent_encoder: intent.encoder(),
-            // A wake needs three things and this reads all three: a monitor
-            // registry (so there is something to watch), the `monitor` tool seated
-            // (so something can declare a watch), and `Sessions::watch` having
-            // armed the waiter. The third is the daemon's and is stamped by
-            // [`Harness::declare_monitor_wake`] when it arms — a harness driven
-            // directly by a test has no daemon and honestly says `false`.
+            // A wake needs three things and this reads all three: a monitor registry, the `monitor` tool seated, and
+            // `Sessions::watch` having armed the waiter, which the daemon stamps and a harness a test drives honestly
+            // answers `false`.
             monitor_wake: false,
-            // **Read from the sink, not from the config.** `--store` being set is
-            // not the same fact as a corpus connection having opened, and the
-            // counts come from the table rather than from a count this process
-            // kept — which would read as zero on a store full of earlier runs.
+            // Read from the sink, not from the config: `--store` being set is not the same fact as a corpus
+            // connection having opened, and the counts come from the table rather than from a count this process kept.
             corpus: corpus_counts,
             // **Asked once, here, and only where a subagent can be started** — FIRECODE-NOTES
             // item 4: a VM placement's preconditions were found out at spawn, one refusal per
@@ -2038,21 +1950,13 @@ impl Harness {
         };
 
         let spiller = build_spiller(&cfg)?;
-        // **The question a long tool asks before spending another minute.**
-        //
-        // `digest` folds two dozen parts and `job_wait` holds a deadline; for the
-        // whole of either, this call is all the session is doing and nothing polls
-        // the head. So the hub's own answer goes down into the tool runtime, and a
-        // tool that is about to spend real time can find out that the operator is
-        // waiting and stop. See `InvokeCtx::operator_waiting`.
+        // The question a long tool asks before spending another minute: for the whole of a `digest` or a `job_wait`
+        // nothing polls the head, so the hub's answer goes down into the runtime and a tool about to spend real time can
+        // find out the operator is waiting and stop.
         let waiting_hub = hub.clone();
-        // **And the fact that closes R23.** `job_wait` on a job the daemon is already
-        // watching returns at once rather than blocking on an answer that is in
-        // flight — see `InvokeCtx::completion_delivered`. Wire to the same watcher
-        // set the sink feeds, so "there is a watcher" and "the wait must not block"
-        // are one fact read in two places rather than two facts that can disagree.
-        // `None` when the backend cannot start processes: no host, no jobs, no
-        // watcher, and every wait keeps its old behaviour.
+        // And the fact that closes R23: `job_wait` on a job the daemon is already watching returns at once rather
+        // than blocking on an answer in flight. Wired to the same watcher set the sink feeds, so there is one fact read
+        // in two places. `None` when the backend cannot start processes.
         let delivering = job_watch.clone();
         // **And the other half of that fact (R79)**: a wait, a promoted call or `wake: "now"`
         // tells the same set the result is wanted the moment it ends, so it is not held for the
@@ -2061,11 +1965,9 @@ impl Harness {
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_gate(gate)
-            // **And the plugin layer that sees a call before the gate** (`docs/plugins-plan.md`
-            // §4.1), and the one a `monitor` call can arm a condition from (§4.4). Both are backed
-            // by the same slot the `plugin` tool asks through: the runtime is built here and the
-            // host when the DAEMON opens the session, so a session nobody fills the slot for — a
-            // subagent — runs its calls and its monitors exactly as it always did.
+            // And the plugin layer that sees a call before the gate, and the one a `monitor` call can arm a condition
+            // from: both backed by the slot the `plugin` tool asks through, so a session nobody fills the slot for runs
+            // its calls exactly as it always did.
             .with_call_hook(std::sync::Arc::new(crate::plugins::CallHooks::new(
                 plugin_slot.clone(),
                 hub.clone(),
@@ -2074,11 +1976,8 @@ impl Harness {
             // `background: true`: there is no later head and no daemon left watching when that
             // job's result arrives. See `InvokeCtx::one_shot`.
             .with_one_shot(cfg.one_shot)
-            // **Who wrote a layer's bytes, recorded at the write** — D17's third arm. A `write` or
-            // an `edit` that lands a `plugin.toml`, a module or a file beside one appends to the
-            // trust book, so *who put this here* is a fact on disk rather than a guess from a path.
-            // The book is the file the plugin host's stack also reads, so a record taken here is
-            // visible to the layer's own trust decision at its next poll.
+            // Who wrote a layer's bytes, recorded at the write: a `write` or an `edit` landing a `plugin.toml` appends
+            // to the trust book, so who put this here is a fact on disk rather than a guess from a path.
             .with_provenance(std::sync::Arc::new(crate::plugins::Provenance::new(
                 cfg.session_id.clone(),
             )))
@@ -2093,17 +1992,9 @@ impl Harness {
                     }
                 },
             ))
-            // **The operator's own run can be ANSWERED** — see `crate::prompt`.
-            //
-            // Three reports and one object, and the object is installed on the registry
-            // here because **this is the half that has the pipe**: the exec host was built
-            // a few lines above, and the write end of the operator's stdin came out of the
-            // job the tool spawned. The server's reader thread is the half that needs it,
-            // and it cannot ask the run — the run's own thread (see `crate::bangrun`) is
-            // blocked inside the very command that is asking.
-            //
-            // Keyed by session: a pipe belongs to one session's run, and a `!send` in one
-            // session must never write into another's command.
+            // The operator's own run can be ANSWERED: the object is installed on the registry here because this is
+            // the half that has the pipe, the write end of the operator's stdin having come out of the job the tool
+            // spawned. Keyed by session, since a pipe belongs to one session's run.
             .with_operator_runs({
                 let prompts = crate::prompt::Prompts::new(&cfg.session_id, hub.clone());
                 session_registry.set_prompt(&cfg.session_id, prompts.clone());
@@ -2126,16 +2017,9 @@ impl Harness {
                 )
             });
 
-        // **And the plugin conditions this session's monitors may arm** (`docs/plugins-plan.md`
-        // §4.4). Installed on the process host's own `Monitors`, because that is what the `monitor`
-        // tool asks for everything else it needs — and a session whose host cannot start processes
-        // has no monitors to install into, which is the same sentence a `monitor` call already gets.
-        //
-        // **The runtime is shared from here on**, because the gate inside it is what a look is now
-        // adjudicated by the ladder of — without asking (`Gate::admit_unasked`), so a watch can
-        // neither park its own thread on a card nor do what the model could not. Wrapping it here,
-        // rather than at the `Harness` literal below, is what lets the monitors hold the same gate
-        // the session's calls do: two gates would be two answers to *what may run*.
+        // And the plugin conditions this session's monitors may arm, installed on the process host's own `Monitors`,
+        // because that is what the `monitor` tool asks for everything else. The runtime is shared from here on, so the
+        // monitors hold the same gate the session's calls do: two gates would be two answers to what may run.
         let runtime = std::sync::Arc::new(runtime);
         if let Some(processes) = runtime.backend.processes()
             && let Some(monitors) = processes.monitors()
@@ -2172,26 +2056,9 @@ impl Harness {
         // And this endpoint's media marker — see `engine_for`, whose construction this duplicates.
         engine.media_marker = cfg.media_marker.clone();
 
-        // **The standing notes are composed HERE, at open, and not only at a base rebuild.**
-        //
-        // `reseat_target` re-reads them on every fork — the schedule the operator asked for,
-        // *"make sure AGENTS.md reread after each compaction"* — but a fork was the ONLY thing
-        // that ran it, so a FRESH session's message zero carried no notes at all: they arrived
-        // at the first compaction, which for a long session is hours in. Measured 2026-10-10
-        // by a child chasing an unrelated red: in a workspace with a note, a fresh harness's
-        // `reseat_target` returned `Some` (its `next` differed from its seated prefix), which
-        // is also why `wired.rs::reingest_writes_no_summary_and_says_so_in_the_note` failed in
-        // any worktree that had one.
-        //
-        // A RESUMED session is unaffected: its prefix comes from the store, and this only
-        // decides what a NEW conversation's message zero says.
-        // **Named `standing` and not `notes`**: there is a `let mut notes: Vec<String>` alive in
-        // this function from the resume-report path, and a local called `notes` here shadows it
-        // for every later use in the body.
-        // **And the skills this session was STARTED with**, whole: `task {skills}` put them on
-        // the spec, a declared seat read them from its config, and a session started by a parent
-        // inherited its list. The bodies land inside the same section as the index they are named
-        // in, so a fork re-reads both together.
+        // The standing notes are composed HERE, at open, and not only at a base rebuild: `reseat_target` re-reads
+        // them on every fork, and a fork was the only thing that ran it, so a FRESH session's message zero carried
+        // none. A resumed session is unaffected. And the skills this session was STARTED with, in the same section.
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
         let standing = crate::standing_notes::section_with_skills(
             &cfg.workspace,
@@ -2201,10 +2068,9 @@ impl Harness {
             Some(parts.skills.as_ref()),
             declared.as_deref(),
         );
-        // **And the base prompt is composed HERE when the session asked for it**
-        // (`Config::seat_prompt`): for the tools just seated, with the notes, the
-        // session's own paragraph and its fabric block in that order. A config without
-        // it keeps the `system` it was given — a test's fixture, `--system`.
+        // And the base prompt is composed here when the session asked for it: for the tools just seated, with the
+        // notes, the session's own paragraph and its fabric block in that order. A config without it keeps the `system`
+        // it was given.
         match cfg.seat_prompt.clone() {
             Some(prompt) => cfg.compose_for_seat(&seat_facts, &prompt, standing.as_deref()),
             None => cfg.system = crate::standing_notes::replace(&cfg.system, standing.as_deref()),
@@ -2216,13 +2082,9 @@ impl Harness {
         };
         let dialect_sha = hex32(&parts.wiring.spec().template_sha);
 
-        // A session already in the store is **resumed**, not opened a second time.
-        //
-        // Deciding it here rather than on a flag is what makes the two entry points
-        // agree: `harnessd --session X` on a restart, and a head asking a running
-        // daemon to resume X, are the same act and used to be two — the first of
-        // which failed with a UNIQUE constraint on `session.id` after doing the
-        // whole vocabulary load.
+        // A session already in the store is RESUMED, not opened a second time. Deciding it here rather than on a flag
+        // is what makes the two entry points agree, since a restart and a head asking a running daemon are the same act
+        // and used to be two.
         let resumed = match (&store, &stored) {
             (Some(s), Some(st)) if st.items > 0 => {
                 let transcript_id = st.transcript_id.clone().ok_or_else(|| {
@@ -2243,11 +2105,9 @@ impl Harness {
                     .load_transcript(&transcript_id)
                     .map_err(|e| HarnessError::Store(e.to_string()))?;
 
-                // **The refusal that has to stay.** The tokens in this transcript
-                // were produced by one renderer against one vocabulary. Appending to
-                // them with a different dialect would put two templates' bytes in
-                // one prompt, and nothing downstream can see it: the chain still
-                // verifies, because every row was hashed by whoever wrote it.
+                // The refusal that has to stay: the tokens were produced by one renderer against one vocabulary, and
+                // appending with another dialect would put two templates' bytes in one prompt with nothing downstream
+                // able to see it, since the chain still verifies.
                 let stored_meta = s
                     .stable_prefix_meta(&loaded.stable_prefix_id)
                     .map_err(|e| HarnessError::Store(e.to_string()))?;
@@ -2255,12 +2115,9 @@ impl Harness {
                     .as_ref()
                     .map(|m| m.dialect_sha.clone())
                     .unwrap_or_default();
-                // **And the vocabulary that cut the stored ids.** A resume replays them as
-                // numbers, so ids from the byte vocabulary under a GGUF — or the reverse, or
-                // under another dialect's byte table — are valid numbers that mean other
-                // text. Same remedy as a dialect change, from the same record. Two GGUFs are
-                // compared nowhere here, as before: a local model's file is the operator's
-                // binding, refused at the switch rather than guessed at by path.
+                // And the vocabulary that cut the stored ids: a resume replays them as numbers, so ids from another
+                // vocabulary are valid numbers that mean other text. Same remedy as a dialect change, from the same
+                // record; two GGUFs are compared nowhere here.
                 let stored_vocab = stored_meta
                     .as_ref()
                     .map(|m| m.vocab_source.clone())
@@ -2465,11 +2322,9 @@ impl Harness {
                             .map_err(|e| HarnessError::Store(e.to_string()))?;
                     }
 
-                    // Message 0 is frozen, and this is where that is held up against what this
-                    // daemon would seat now: a build that changed the instructions, the schemas or
-                    // the seat composes a prompt the session will never speak, and says nothing.
-                    // The comparison is a hash of both sides, computed by `prefix_fingerprint`; a
-                    // session seated before the column existed falls back to the stored prefix row.
+                    // Message 0 is frozen, held up here against what this daemon would seat now: a build that changed
+                    // the instructions, the schemas or the seat composes a prompt the session will never speak, and says
+                    // nothing. The comparison is `prefix_fingerprint`'s, with the stored row as the fallback.
                     let seated = match repaired {
                         true => own_fingerprint.clone(),
                         false => stored
@@ -2484,10 +2339,9 @@ impl Harness {
                         );
                         let mut added: Vec<String> = Vec::new();
                         let mut gone: Vec<String> = Vec::new();
-                        // **A schema that GREW is named as one**, and it is not the same
-                        // finding as a tool that arrived: it is in both lists, so the
-                        // added/gone pair is silent about it — and a grown schema is exactly
-                        // the case that started this (`todo_write`'s `target`).
+                        // A schema that GREW is named as one, and it is not the same finding as a tool that arrived:
+                        // it is in both lists, so the added/gone pair is silent about it, and a grown schema is exactly
+                        // the case that started this.
                         let mut grew: Vec<String> = Vec::new();
                         for (name, schema) in &is {
                             match was.get(name) {
@@ -2518,10 +2372,9 @@ impl Harness {
                             &gone,
                             &grew,
                         );
-                        // On the session's own log, and said AT ATTACH rather than here: a warning
-                        // published before a head attaches is filed `Placed::Before` and not drawn.
-                        // So it goes into the registry, where the attach path publishes it, and the
-                        // registry also tells a head that is already watching (the restart case).
+                        // On the session's own log, and said AT ATTACH rather than here: a warning published before a
+                        // head attaches is filed `Placed::Before` and not drawn. So it goes into the registry, which also
+                        // tells a head already watching.
                         stale = Some(say);
                     }
 
@@ -2563,23 +2416,15 @@ impl Harness {
                     prefix_id = s
                         .put_stable_prefix(&rec)
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    // `INSERT OR IGNORE`-shaped by hand: a session row may already be
-                    // here with no rows behind it — the daemon that made it never got
-                    // a prompt — and re-opening it is a resume of an empty
-                    // conversation, not a collision.
+                    // `INSERT OR IGNORE`-shaped by hand: a session row may already be here with no rows behind it, so
+                    // re-opening it is a resume of an empty conversation rather than a collision.
                     if stored.is_none() {
                         s.put_session(&SessionRecord {
                             id: cfg.session_id.clone(),
                             title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
-                            // **Who answers, not what the vocabulary binds.** `cfg.model` is the
-                            // local alias whose tokenizer renders the prompt; on a box whose
-                            // `providers.toml` names `[default] provider = "deepseek"` the turns
-                            // go to deepseek and the row said qwen. This row is what
-                            // `letibot --sessions` and the ctrl-s picker draw, so the wrong one
-                            // made a deepseek session look like a local one — the operator's
-                            // *"with --new it started with qwen, not default model"*.
-                            // `Sessions::wiring` is the same fact for the live registry, and the
-                            // two are written from one expression so they cannot disagree again.
+                            // Who answers, not what the vocabulary binds: `cfg.model` is the local alias whose tokenizer renders
+                            // the prompt, while the turns may go to a provider. This row is what the picker draws. `Sessions::wiring`
+                            // is the same fact from one expression.
                             model_id: cfg.prompt_model_name(),
                             dialect_sha,
                             workspace_root: cfg.workspace.display().to_string(),
@@ -2596,10 +2441,9 @@ impl Harness {
                     if !transcript_exists(s, &transcript_id) {
                         s.put_transcript(&transcript_id, &cfg.session_id, &prefix_id)
                             .map_err(|e| HarnessError::Store(e.to_string()))?;
-                        // **The fingerprint of what this session was seated with**, written
-                        // where its transcript row is written — the one rule the column has,
-                        // and the reason it is not a field on `SessionRecord` above: a fork
-                        // re-seats a session long after its creation and rewrites this.
+                        // The fingerprint of what this session was seated with, written where its transcript row is: a
+                        // fork re-seats a session long after its creation and rewrites this, which is why it is not a field
+                        // on the record above.
                         s.set_prefix_fingerprint(
                             &cfg.session_id,
                             &prefix_fingerprint(cfg.seat, &prefix),
@@ -2614,37 +2458,13 @@ impl Harness {
                             .as_deref()
                             != Some(prefix_id.as_str())
                     {
-                        // **An empty transcript on ANOTHER prompt is re-seated onto the one this
-                        // daemon composes, and this is the defect that made it necessary.**
-                        //
-                        // MEASURED 2026-10-26 in the operator's store: `s-gatekeeper#t0` was
-                        // seated 2026-10-11 under a 24,407-token prompt with no rows, a daemon
-                        // running newer binaries opened it on 2026-10-25 on its own 32,162-token
-                        // prompt, and the rows it appended started at 32162 — in a transcript
-                        // whose prefix is 24,407 tokens, so no resume has been able to rebuild it
-                        // since (`row 0 starts at 32162, should start at 24407`). The open went
-                        // through here: the transcript row already existed, so nothing rewrote
-                        // it, and the ledger was seated on the new prompt.
-                        //
-                        // **(a), re-seat, and not (b), keep the stored prefix.** The frozen-prefix
-                        // rule (`prefix_stale`) exists because every row was tokenized under
-                        // message 0 and a resume rebuilds the chain from it. With no rows there
-                        // is no chain to rebuild and no server cache to keep: the first turn
-                        // prefills cold whichever prompt is used. So keeping the old prefix would
-                        // buy nothing and cost a brand-new conversation a message 0 that cannot
-                        // call the tools seated since — a `prefix_stale` sentence for a
-                        // conversation nobody has had yet.
-                        //
-                        // A transcript that already HOLDS rows is not touched here: those rows
-                        // speak the prefix the row names, and moving it would make them
-                        // unreadable. `set_transcript_prefix` refuses that case itself — the
-                        // `item_count` above is what keeps this arm from reaching it.
+                        // An empty transcript on ANOTHER prompt is re-seated onto the one this daemon composes: with no rows
+                        // there is no chain to rebuild and no cache to keep, so the old prefix would cost a new conversation a
+                        // message 0 that cannot call the tools seated since. A transcript that HOLDS rows is untouched.
                         s.set_transcript_prefix(&transcript_id, &prefix_id)
                             .map_err(|e| HarnessError::Store(e.to_string()))?;
-                        // **And the fingerprint follows**, for the reason its column exists: a
-                        // session whose fingerprint still describes the old prompt would report
-                        // itself stale on the next resume, having just been re-seated onto the one
-                        // this daemon composes.
+                        // And the fingerprint follows, for the reason its column exists: a session still describing the
+                        // old prompt would report itself stale on the next resume, having just been re-seated.
                         s.set_prefix_fingerprint(
                             &cfg.session_id,
                             &prefix_fingerprint(cfg.seat, &prefix),
@@ -2668,14 +2488,9 @@ impl Harness {
         // The sentence is left in the registry at the END of `open`, after the stored
         // conversation has been republished — see the comment there.
 
-        // **The window this session plans its compaction against, written down.** See
-        // `StoredSession::context_window`: the number was otherwise knowable only at the
-        // moment it was used, and a child that ran past its wall left nothing behind saying
-        // which wall it had. Written for a root and a child alike — `cfg.context_window` is
-        // the resolved number either way, and for a child it is the one the spawn chose for
-        // the model that answers IT rather than its parent's.
-        //
-        // After the match above, because the row it updates is created inside it.
+        // The window this session plans its compaction against, written down: otherwise the number was knowable
+        // only at the moment it was used, and a child that ran past its wall left nothing saying which wall it had.
+        // Written for a root and a child alike. After the match above, because the row it updates is created there.
         if let Some(store) = &store
             && let Err(e) = store.set_window(&cfg.session_id, cfg.context_window)
         {
@@ -2689,15 +2504,9 @@ impl Harness {
             ));
         }
 
-        // **The trail is seeded from what was restored, and it says what it lost.**
-        //
-        // A resumed session's `User` rows are indistinguishable in the store: the
-        // operator's prompts, a head's steering and this harness's own notices are
-        // all `TranscriptItem::User`, and nothing recorded which was which. Seeding
-        // them as the operator's words is the permissive direction for
-        // authorisation, so it is a resume note rather than a silent property — the
-        // operator can see that this session's adjudications are reading a trail
-        // whose speakers were inferred, and start a fresh session if that matters.
+        // The trail is seeded from what was restored, and it says what it lost: a resumed session's `User` rows are
+        // indistinguishable, since the operator's prompts, a head's steering and this harness's own notices are all
+        // the same item. Seeding them as the operator's is the permissive direction for authorisation, so it is a note.
         let mut resume = resume;
         if resume.is_some() {
             trail.seed(&session.items);
@@ -2720,22 +2529,9 @@ impl Harness {
             }
         }
 
-        // **The standing choice is resolved by the DAEMON, not here.**
-        //
-        // This used to read `providers.toml` itself, which made opening a harness
-        // depend on a file outside the config it was handed — and every test that
-        // opens one inherited the operator's live standing choice. Caught by two
-        // `compact` tests that assert a DEAD endpoint and got real answers from
-        // deepseek instead: four turns and ~22k prompt tokens, billed to the
-        // operator, by `cargo test`.
-        //
-        // `harnessd`'s own startup resolves it into `cfg.provider` before any
-        // session exists, and `Sessions` clones that config for every session it
-        // opens — so a real daemon behaves exactly as before and a `Config` built
-        // in a test carries only what the test put in it.
-        // **A key that does not resolve is asked for, not refused** — see `key_wanted`.
-        // Any other failure (an unknown preset, an unreadable providers.toml) still
-        // refuses here: those are not something a pasted key fixes.
+        // The standing choice is resolved by the DAEMON, not here: reading `providers.toml` made opening a harness
+        // depend on a file outside its config, and every test inherited the operator's live choice — two `compact` tests
+        // billed four turns to a real provider. A key that does not resolve is asked for; any other failure refuses.
         let mut key_wanted = None;
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
@@ -2748,61 +2544,9 @@ impl Harness {
                 Err(e) => return Err(HarnessError::Setup(e)),
             },
         };
-        // **The ledger-to-provider ratio survives a restart, because it is already
-        // in the store.**
-        //
-        // `Config::ledger_scale` is measured at the end of each metered turn and
-        // lives in memory, so a restart threw it away and everything that plans
-        // against the window — `should_compact`, `room_for_next_turn`, the
-        // `/reseat` carry check — fell back to comparing ledger tokens against a
-        // provider window until the next turn measured it again.
-        //
-        // That window is not a rare one: it is exactly the sequence this daemon
-        // asks for. Restart to pick up new tools, `/reseat` to get them into
-        // message zero — and the re-seat is the first thing that runs, before any
-        // turn. The operator hit it within minutes of the restart:
-        // *"reseat_unchecked — this session has not taken a metered turn yet"*.
-        //
-        // Nothing has to be re-measured. `context_tokens` on the session row IS
-        // the provider's count for the last prompt, written by `persist_context`
-        // at the end of the turn that measured it, and `context_ledger` beside it
-        // is this box's count for that SAME prompt (v12) — so the pair is
-        // recovered rather than recomputed, and no model is asked anything.
-        //
-        // **Both halves, or neither.** The paragraph that used to stand here said
-        // the ledger "is the one just rebuilt — the conversation has not changed
-        // since", and that was an assumption rather than a measurement: it holds
-        // only when nothing was appended between the last turn and this restart.
-        // The gate below asks the row instead of assuming.
-        // **And only when the pair measures THIS conversation.**
-        //
-        // A ratio needs both counts from the same prompt, and the row now records
-        // them together. Without this check the pair was reconstructed from
-        // `session.ledger.len()` — TODAY's ledger — which is the same conversation
-        // only if nothing was appended since the measurement. At a resume it
-        // usually is not, and the error lands the dangerous way: a count from a
-        // SMALLER conversation divided into a BIGGER ledger overstates the ratio,
-        // so the window grows and the session compacts too late rather than too
-        // early.
-        //
-        // Measured 2026-10-02, on the session this check would have saved: a store
-        // holding 940,211, measured on a ~950k-token conversation, was paired with
-        // a rebuilt ledger of 1,486,369 — 0.63 where the truth was 1.016. The
-        // window came out 1,580,888 for a session already 1.46M tokens deep, so it
-        // never compacted and died at the provider's 400 on every attempt.
-        //
-        // A row with no `context_ledger` was written before the column existed and
-        // is REFUSED rather than guessed at. Unverifiable is not the same as wrong,
-        // but the two are the same as unmeasured, and the unscaled window is the
-        // honest answer for both — it compacts early, which is the direction nobody
-        // loses a session to. See `Config::tokens_are_unscaled`.
-        //
-        // **And the pair is an ANCHOR now, not a ratio (R72).** The equality test that
-        // stood here refused the pair whenever anything had been appended after the last
-        // round — a notice was enough — and the unscaled window it fell back to compacted
-        // a session the provider counted at ~740k down to 75k on its first idle pass. See
-        // `recovered_scale` for both measurements and `Harness::measure_resident` for the
-        // roll forward, which runs once the harness exists, at the end of `open`.
+        // The ledger-to-provider pair survives a restart because it is already in the store: `context_tokens` is the
+        // provider's count for the last prompt and `context_ledger` this box's count for the SAME prompt, so the pair is
+        // recovered rather than recomputed. A row written before the column existed is refused rather than guessed at.
         let mut wall_anchor = None;
         if cfg.provider.is_some()
             && cfg.ledger_scale.is_none()
@@ -2820,20 +2564,16 @@ impl Harness {
                 scale: sent_scale(&session.ledger, &session.items, ledger, provider, true),
             });
         }
-        // **Fill the harness view's slot, now that there is something to disclose.**
-        // The tool was registered before the gate and the backend existed — it had
-        // to be, to be in the prompt — and this is the first point where the
-        // disclosures it reports can be computed.
+        // Fill the harness view's slot, now that there is something to disclose: the tool was registered before the
+        // gate and the backend existed, to be in the prompt, and this is the first point where its disclosures exist.
         *disclosure_slot.lock().unwrap_or_else(|e| e.into_inner()) = cfg
             .disclosures(&wiring)
             .into_iter()
             .map(|d| (d.subject, d.state, d.detail))
             .collect();
-        // **What `/models local` returns to**, captured from the pre-move `cfg` and
-        // `parts` before the struct expression below takes `cfg` by value: the
-        // daemon's own server, vocabulary and dialect. A switch to other weights
-        // replaces the engine wholesale, so "back to local" is a re-seat of this
-        // pair and a re-render of the conversation under it, not a field flip.
+        // What `/models local` returns to, captured from the pre-move `cfg` and `parts`: the daemon's own server,
+        // vocabulary and dialect. A switch to other weights replaces the engine wholesale, so back to local is a re-seat
+        // of this pair and a re-render, not a field flip.
         let own_server = OwnServer {
             endpoint: cfg.endpoint.clone(),
             model: cfg.model.clone(),
@@ -2922,10 +2662,8 @@ impl Harness {
             local_window: None,
             local_window_cell: local_window_cell.clone(),
             point_cell: point_cell.clone(),
-            // Captured from the pre-move `cfg` and `parts` above: everything
-            // `/models local` returns to, held before the first switch can
-            // overwrite it. See the field's own doc for why a return needs a
-            // record and cannot re-derive.
+            // Captured from the pre-move `cfg` and `parts` above: everything `/models local` returns to, held before
+            // the first switch can overwrite it. A return needs a record and cannot re-derive.
             own_server,
             // Nothing to go back to until a switch has been made.
             switch_back: None,
@@ -2947,10 +2685,9 @@ impl Harness {
         Ok(h)
     }
 
-    /// **Say that the session is open, once everything it is made of exists**: the board's
-    /// first settings, the activity and footprint sources, the reads a head attaches for,
-    /// and the resume's own republish. Split out of `open_with_registry` so its last step is
-    /// a sentence rather than a hundred lines between the struct literal and `Ok`.
+    /// Say that the session is open, once everything it is made of exists: the board's first settings, the activity
+    /// and footprint sources, the reads a head attaches for, and the resume's own republish. Split out so the last step
+    /// is a sentence rather than a hundred lines between the struct literal and `Ok`.
     fn announce_the_open(&mut self, stale: Option<String>) {
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
@@ -2964,14 +2701,9 @@ impl Harness {
         self.asks_said = crate::operator_ask::waiting(&self.todos.snapshot());
         self.publish_settings();
         self.publish_jobs();
-        // **What this session is waiting on** (`PROTOCOL_VERSION` 52), and how to work it out again.
-        //
-        // Registered here rather than at the hub's construction because this is the first point at
-        // which the three halves exist together: the hub (the turn, its calls, the open cards), the
-        // watcher set (the jobs and children), the monitor table, and the board the job rule is read
-        // against. From here on the hub re-derives the value after any event that can have moved it
-        // (`Hub::publish`) and drops an unchanged one, so what the daemon has to say explicitly is
-        // only the changes no event announces — see `crate::activity`.
+        // What this session is waiting on, and how to work it out again: registered here because this is the first
+        // point where the hub, the watcher set, the monitor table and the board exist together. From here on the hub
+        // re-derives after any event that can have moved it, so only the changes no event announces are said.
         self.hub.set_activity_source(crate::activity::source(
             self.job_watch.clone(),
             self.monitors.clone(),
@@ -2999,29 +2731,15 @@ impl Harness {
         // `Harness::install_job_output_source`.
         self.install_job_output_source();
         if self.resumed.is_some() {
-            // **The RESUME's own sentence, and it is not the carry's.** The operator read the
-            // carry's wording here and asked the obvious question — *"why it was decided to carry
-            // the conversation to the new prompt?"* — about an operation that rebuilds no prompt:
-            // a resume re-announces stored rows so the head can draw the conversation it already
-            // had. Naming the wrong operation is the same defect the `Filling` event was written
-            // to end, one layer up: an indicator must be the fact, not a rendering of the fact.
-            // ...and it restores the CONVERSATION, which a compaction splits across
-            // transcripts: the tail of the ones before comes back too, up to the view's bound.
+            // The RESUME's own sentence, and it is not the carry's: a resume re-announces stored rows so a head can draw
+            // the conversation it already had, while the carry's wording was read here and asked why a prompt was rebuilt.
+            // It also restores the CONVERSATION, which a compaction splits across transcripts.
             let before = self.ancestor_tail();
             self.republish_after(letibot_sessionlog::RESTORING_ROWS, before);
         }
-        // **What a head attaching to this session should be told**, left in the registry for
-        // `seat_in` — see the comment in the resume arm for why it is not said there. A
-        // session no harness has opened has no entry, and this is then a no-op.
-        //
-        // **HERE, after the republish, and not beside the comparison.** The daemon binds its
-        // socket before it opens the session, so a head that reconnected across a restart is
-        // already attached while this runs — it was handed an empty snapshot and is being sent
-        // every restored row live. `set_stale_prefix` tells such a head at once (the
-        // operator's *"ok reseat came … but later"*: it used to wait for the next attach), and
-        // it must tell it AFTER the rows, because a live note is filed at the seam it arrives
-        // at: said before the republish, it would be drawn above the whole restored
-        // conversation, which on a long session is a screen nobody scrolls to.
+        // What a head attaching to this session should be told, left in the registry for `seat_in`: a session no
+        // harness has opened has no entry, and this is a no-op. HERE, after the republish, because a live note is filed
+        // at the seam it arrives at, and said before the rows it would be drawn above the whole conversation.
         self.session_registry
             .set_stale_prefix(&self.cfg.session_id, stale);
     }
@@ -3029,24 +2747,16 @@ impl Harness {
     /// **A session whose id marks somebody else's conversation reads it in** — an opencode
     /// one (R6) or a Claude Code transcript (Package H), never a resume of either.
     fn import_the_foreign_conversation(&mut self) {
-        // **R6: a session whose id marks an opencode conversation reads it in.**
-        //
-        // `oc-` is the namespace mark and the rest is opencode's opaque id
-        // (`ses_f68f5d…`). Only for a session that is **not** a resume: re-running the
-        // same `--session oc-<id>` finds the stored session and resumes it rather than
-        // importing a second copy, which is the idempotency rule. The import never
-        // fails the session — a missing database or id is a sentence on the log and
-        // the head stays up, because by the time it is read the head is already a
-        // working head with a screen.
+        // A session whose id marks an opencode conversation reads it in: `oc-` is the namespace mark and the rest is
+        // opencode's id. Only for a session that is not a resume, which is the idempotency rule. The import never fails
+        // the session, since by the time it is read the head is already a working head with a screen.
         if self.resumed.is_none()
             && let Some(oc_id) = self.cfg.session_id.strip_prefix("oc-").map(str::to_string)
         {
             self.import_opencode(&oc_id);
         }
-        // **And a `cc-` session reads a Claude Code transcript in** (Package H). The rule is
-        // the same one and it lives in one place — `letibot_claude::import_target` — so a
-        // resumed session imports nothing and a re-run of the same `--session cc-<uuid>`
-        // finds the stored conversation instead of appending a second copy of it.
+        // And a `cc-` session reads a Claude Code transcript in, by the same rule in one place
+        // (`letibot_claude::import_target`), so a resumed session imports nothing and a re-run finds the stored one.
         if let Some(cc_id) =
             letibot_claude::import_target(self.resumed.is_some(), &self.cfg.session_id)
                 .map(str::to_string)
@@ -3055,23 +2765,9 @@ impl Harness {
         }
     }
 
-    /// **Read an opencode conversation into this session (R6).**
-    ///
-    /// The reading is `letibot-opencode`'s; this is the half that turns its rows into
-    /// **this** session's rows and keeps the screen live while it does. It is
-    /// deliberately not allowed to fail the session: a missing database or a missing id
-    /// is a sentence on the log, and the head stays up.
-    ///
-    /// # Why the read is on the worker and the screen is still up first
-    ///
-    /// `Session::append_items` is the one writer and it is the worker's, so the reading
-    /// happens here. What makes that *"the UI is up before anything is read"* rather
-    /// than a startup dependency is that the **head attaches to the registry's hub, not
-    /// to this harness**: the session is registered — and attachable — before the worker
-    /// opens it, so a head joining now gets an empty snapshot and every row as a live
-    /// event. Rows land as they are read because each is appended and published as the
-    /// reader reaches it, and `ImportProgress` reports the reader's own count so the bar
-    /// is the fact and not a rendering of it.
+    /// Read an opencode conversation into this session (R6): the half that turns the source's rows into THIS
+    /// session's rows and keeps the screen live, never failing the session. The read is on the worker because
+    /// `append_items` is the worker's, and the screen is up first because a head attaches to the registry's hub.
     fn import_opencode(&mut self, oc_id: &str) {
         let Some(path) = letibot_opencode::default_db_path() else {
             self.import_note(
@@ -3106,10 +2802,8 @@ impl Harness {
             }
         };
 
-        // **Rule 1, said where a reader will see it.** These are another agent's rows,
-        // under another provider; a reader who cannot tell whose they are cannot weigh
-        // them. The origin — the id, the directory, the provider/model — goes on the log
-        // the head reads.
+        // Rule 1, said where a reader will see it: these are another agent's rows, under another provider, and a
+        // reader who cannot tell whose they are cannot weigh them. The origin goes on the log the head reads.
         self.import_note("imported", tree.root.origin());
         let total = tree.parts;
         const WHAT: &str = "importing an opencode conversation";
@@ -3169,22 +2863,9 @@ impl Harness {
         }
     }
 
-    /// **Read a Claude Code conversation into this session (Package H).**
-    ///
-    /// The reading is `letibot-claude`'s; this is the half that turns its rows into **this**
-    /// session's rows and keeps the screen live while it does — the same split, the same
-    /// rules and the same refusal to fail the session as [`Harness::import_opencode`] beside
-    /// it. A missing transcript directory, or an id no transcript has, is a sentence on the
-    /// log and the head stays up: by the time it is read the head is already a working head
-    /// with a screen.
-    ///
-    /// # The counter is BYTES here, and that is the source's shape
-    ///
-    /// opencode counts parts because its database can count them before the first row. A
-    /// transcript is a 111 MB file on this box, and counting its lines first would be a whole
-    /// second pass over it; its length is known from `stat` before anything is read. So the
-    /// bar is bytes consumed against bytes on disk — a fact about the file rather than a
-    /// rendering of the wait.
+    /// Read a Claude Code conversation into this session (Package H): the same split and the same refusal to fail
+    /// the session as `import_opencode`. The counter is BYTES here, because a transcript is a file whose length is
+    /// known from `stat`, and counting its lines first would be a second pass over it: the bar is a fact about the file.
     fn import_claude(&mut self, cc_id: &str) {
         let Some(dir) = letibot_claude::default_projects_dir() else {
             self.import_note(
@@ -3279,11 +2960,8 @@ impl Harness {
         }
     }
 
-    /// One progress tick for a named operation, from the daemon's own counter.
-    ///
-    /// The head draws a bar from this and from nothing else: it does not derive one
-    /// from body-less rows, because that would mean *inferring* the operation from
-    /// the symptom, which is the defect this event exists to end.
+    /// One progress tick for a named operation, from the daemon's own counter. The head draws a bar from this and
+    /// from nothing else, since deriving one from body-less rows would mean inferring the operation from the symptom.
     pub(crate) fn filling(&self, what: &str, unit: &str, done: u64, total: u64) {
         self.hub.publish(letibot_sessionlog::SessionEvent::Filling {
             what: what.to_string(),
@@ -3293,45 +2971,11 @@ impl Harness {
         });
     }
 
-    /// Put the restored conversation back on the session's log.
-    ///
-    /// A resumed harness holds the transcript; the **hub** does not, and a head
-    /// attaching to it would be told it had joined an empty session with a 39,384-token
-    /// prompt. So each restored row is announced exactly as a live one is —
-    /// `TranscriptAppended`, then the body through `Hub::record_item` — and both the
-    /// snapshot path and the already-attached path get it for free, because they are
-    /// the paths a live append already takes.
-    ///
-    /// These are **not** re-renders and not re-runs: no turn events, no metrics, no
-    /// `TurnFinished`. What a head shows after a resume is the conversation, not a
-    /// replay of the turns that produced it, and inventing turn boundaries here would
-    /// put timings on the screen that no clock measured.
-    ///
-    /// **And it says what it is doing** — in the caller's words, because the callers are
-    /// different operations. A resume re-announces stored rows so an attaching head can draw
-    /// the conversation; a re-seat carries that conversation onto a rebuilt prompt. Both
-    /// announce thousands of rows and both are a real wait on a real session, but only one of
-    /// them rebuilds a prompt, and a single sentence for the two told the operator they were
-    /// watching the other one. That is why `what` is a parameter: **the layer that owns the
-    /// fact states it**, which is this event's own rule.
-    ///
-    /// One `Filling` per row is the counter; the head draws it whenever the total is large
-    /// enough to be worth a bar.
-    /// **The rows a compaction put behind the current transcript, as many as the view holds.**
-    ///
-    /// The operator, after a restart: *"conversation was gone — only a small recent portion was
-    /// displayed"*. A resume republished `self.session.ledger` — the CURRENT transcript — and a
-    /// compaction makes the current transcript a new one: the summary and what came after it. So
-    /// a session compacted twenty times came back as its last 791 rows, `items_dropped` said
-    /// nothing came before them, and no head could scroll above them. Before the restart it
-    /// could: the hub had lived through the compaction and still held the older rows.
-    ///
-    /// So a resume walks the chain, newest parent first, and takes rows from the END of each
-    /// until the view's own bound is met — the same bound the view trims to, so this never
-    /// publishes a row the view would drop. The ledger and the model's prompt are untouched:
-    /// this is what the SCREEN is given, which is the conversation, not what the model reads,
-    /// which is the summary. The first row of the current transcript is the compaction's own
-    /// system row, so the seam between the two says what it is without a mark of ours.
+    /// Put the restored conversation back on the session's log: a resumed harness holds the transcript and the hub
+    /// does not, so each row is announced as a live one is and both the snapshot and attached paths get it free. Not
+    /// re-renders and not re-runs, so no turn events and no timings no clock measured. And the rows a compaction put
+    /// behind the current transcript, since a session compacted many times came back as its last rows with nothing
+    /// above them. `what` is the caller's words: the layer that owns the fact states it.
     fn ancestor_tail(&self) -> Vec<(String, TranscriptItem, [u8; 32])> {
         let Some(store) = self.store.as_ref() else {
             return Vec::new();
@@ -3378,33 +3022,9 @@ impl Harness {
             before.into_iter().chain(current).collect();
         let total = rows.len() as u64;
         for (i, (item_id, item, h_k)) in rows.iter().enumerate() {
-            // **ONE PROGRESS TICK PER ROW IS A FLOOD, AND THE FLOOD IS WHAT BREAKS THE BAR.**
-            //
-            // This published ~2000 `Filling` events as fast as a loop can go — on top of a
-            // `TranscriptAppended` and a `record_item` for every row — and a head's queue has a
-            // cap. Over the cap the hub DEMOTES the head rather than blocking
-            // (`hub.rs:1369`): the queue is cleared, `needs_resync` is set, and from then on
-            // *"Already demoted; its queue is going to be thrown away"* — so the ticks stop
-            // arriving. MEASURED: the operator watched the bar freeze and then vanish —
-            // *"it was back and kinda frozen at 44 — the bar wasn't moving for seconds and then
-            // disappeared"* — on a head that finished holding all 2039 items, i.e. one that was
-            // demoted and handed a snapshot mid-restore.
-            //
-            // So the bar froze at the last tick it heard and never saw the rest, because the
-            // event stream carrying it had been dropped. **The thing that feeds the progress
-            // indicator was killing the progress.** A bar is read as a fraction, not as a row
-            // count, so a tick every `FILLING_STRIDE` rows loses the reader nothing and costs
-            // the head's queue ~30 events instead of ~2000.
-            //
-            // The first and last rows always tick, so a bar appears promptly and — with the
-            // completion below — ends by fact.
-            //
-            // **The stride is on the TICK, never on the row.** `7614785` put a `continue` here,
-            // ahead of the publish, so it skipped the row as well as the tick: a restore of 791
-            // rows announced 13 of them — row 0, every 64th, and the last. The operator after
-            // the next restart: *"conversation was gone — only a small recent portion was
-            // displayed"*. The head held 13 restored rows plus the live turns since, and nothing
-            // said anything was missing, because nothing had been dropped: it was never sent.
+            // One progress tick per row is a flood, and the flood is what breaks the bar: ~2000 events over a head's
+            // capped queue demotes it and the bar freezes at its last tick. So a tick every `FILLING_STRIDE` rows, with
+            // the first and last always ticking, and the stride on the TICK only: skipping the row lost the conversation.
             if i % FILLING_STRIDE == 0 || (i as u64 + 1) == total {
                 self.filling(what, "rows", i as u64 + 1, total);
             }
@@ -3417,37 +3037,15 @@ impl Harness {
             self.hub.record_item(item_id, item.clone());
             self.publish_citations(item_id, item);
         }
-        // **THE WALK ENDING IS THE OPERATION ENDING, SO SAY SO.**
-        //
-        // The operator watched this bar freeze and then vanish: *"it was back and kinda frozen at
-        // 44 — the bar wasn't moving for seconds and then disappeared."* Both halves have a cause,
-        // and only one of them is the head's.
-        //
-        // `continue` above skips a ledger row with no matching item, so when the two disagree the
-        // walk ends on an index BELOW `total` and the last tick anybody receives is short of it.
-        // The head then holds a bar that says `44 of N` with no completing tick to clear it —
-        // `note-filling` clears on `done == total` and on nothing else — until its 15-second
-        // no-news window expires and the line disappears. That expiry is a good guard against a
-        // daemon that has DIED and a bad way to end an operation that has finished: the bar
-        // vanishes because a timer ran out, not because the work completed.
-        //
-        // So the completion is published unconditionally, after the walk. It costs one event and
-        // it makes the bar end by FACT rather than by silence — which is the rule the head's own
-        // docstring states (*"a bar that cannot end is worse than no bar"*) and the reason
-        // `done == total` is the clear.
-        //
-        // This is the second time this exact shape has been measured; leticl's `filling-active-p`
-        // records the first (`57 of 1790 rows` for three and a half minutes). A head-side timer
-        // hid it that time, which is why it came back.
+        // The walk ending is the operation ending, so say so: a row with no matching item ends the walk below
+        // `total`, and a bar with no completing tick vanishes because a timer ran out rather than because the work
+        // finished. Published unconditionally, so it ends by fact. This is the second time this shape has been measured.
         self.filling(what, "rows", total, total);
     }
 
-    /// The last `n` rows of this session's STORED transcript, as compact text.
-    ///
-    /// The durable record rather than the in-memory one: the store is what survives a restart, and
-    /// it is where a reader would go looking afterwards. `None` when there is no store or no
-    /// transcript — said as itself rather than as an empty tail, because "I could not look" and
-    /// "there was nothing there" are different facts (`DISCLOSURE`).
+    /// The last `n` rows of this session's STORED transcript, as compact text: the durable record, since the store is
+    /// what survives a restart. `None` when there is no store or no transcript, said as itself rather than as an empty
+    /// tail, because I could not look and there was nothing there are different facts.
     pub(crate) fn stored_tail(&self, n: usize) -> String {
         let Some(store) = self.store.as_ref() else {
             return "The store is not open, so the logs could not be read.".into();
@@ -3496,11 +3094,8 @@ impl Harness {
                     ..
                 } => format!("  {name} -> {outcome:?}: {}", one_line(payload, 70)),
                 TranscriptItem::System { text, .. } => format!("  system: {}", one_line(text, 80)),
-                // **The two that carry no facts about the RUN.** Reasoning is the model thinking
-                // and a segment mark is the head's own boundary between runs; a log tail looking
-                // for *what happened to this call* names neither, and inventing a rendering for
-                // them here would put two rows of the model's thoughts into a sentence about a
-                // missing result.
+                // The two that carry no facts about the RUN: reasoning is the model thinking and a segment mark is
+                // the head's boundary between runs. A log tail looking for what happened to this call names neither.
                 TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. } => continue,
             };
             out.push_str(&line);
@@ -3541,13 +3136,9 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
         .join(" ")
 }
 
-/// A provider backend from its config: the preset, the key (a missing one is a
-/// refusal naming the variable and the file), the model, the switches.
-///
-/// `notes` is where a provider says something a person has to read — a model refusing a
-/// picture, today. Passed in rather than found, because this crate's session log is one
-/// level above the provider and the provider must stay below it; see
-/// [`provider_notes`], which is the only caller with a hub.
+/// A provider backend from its config: the preset, the key (a missing one is a refusal naming the variable and the
+/// file), the model and the switches. `notes` is where a provider says something a person has to read, passed in
+/// rather than found, because the provider must stay below this crate's session log.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,
@@ -3563,11 +3154,8 @@ pub fn build_provider(
     Ok(Box::new(p))
 }
 
-/// **Where a provider's own note reaches the operator** — the session's hub, one crate up.
-///
-/// One closure, so the fact a provider learns ("this model refused an image") arrives as
-/// the warning a head already draws, and `letibot_provider` keeps needing no session log.
-/// The code is the one a grep for this behaviour looks for.
+/// Where a provider's own note reaches the operator: the session's hub, one crate up. One closure, so a fact the
+/// provider learns arrives as the warning a head already draws, and the provider keeps needing no session log.
 pub(crate) fn provider_notes(
     hub: &std::sync::Arc<letibot_sessionlog::Hub>,
 ) -> letibot_provider::openai::Notes {
@@ -3603,17 +3191,9 @@ fn provider_sampling(sampling: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
-/// The parent's ruleset plus a `deny` per tool of a denied class. The tools are
-/// not seated either (see `without_access`), so this is the third reader of the
-/// same fact and the one that holds if a name reaches the gate anyway: last
-/// rule wins in opencode's `evaluate`, and these are last.
-///
-/// Two sources of names. The seated schemas, by their declared class — after
-/// `without_access` that set is empty, which is the point. And the well-known
-/// names of each class whether seated or not, so a tool registered outside the
-/// role later (an `extra_tool`) that carries a denied class is refused by name
-/// rather than admitted because nobody wrote a rule for it. A rule about an
-/// unseated name costs nothing.
+/// The parent's ruleset plus a `deny` per tool of a denied class: the tools are not seated either, so this holds if
+/// a name reaches the gate anyway, since last rule wins and these are last. The seated schemas by class, plus the
+/// well-known names of each class whether seated or not, so a tool registered later is refused by name.
 pub(crate) fn downgraded_ruleset(
     parent: &letibot_tools::permission::Ruleset,
     downgrade: &letibot_tools::schema::Downgrade,
@@ -3626,11 +3206,9 @@ pub(crate) fn downgraded_ruleset(
         return rules;
     }
     let well_known: &[(Access, &[&str])] = &[
-        // `notes` is in the `Write` arm on purpose: a standing note is written
-        // to the operator's tree and read into every later session's prompt,
-        // which makes it a MORE persistent write than a file edit, not a
-        // session-state one — a subagent denied `write` must not be able to
-        // plant one either.
+        // `notes` is in the `Write` arm on purpose: a standing note is written to the operator's tree and read into
+        // every later session's prompt, which makes it a more persistent write than a file edit, so a subagent denied
+        // `write` must not be able to plant one either.
         (Access::Write, &["write", "edit", "exit_plan_mode", "notes"]),
         (Access::Exec, &["bash", "monitor", "job_kill", "lsp"]),
         (
@@ -3658,29 +3236,9 @@ pub(crate) fn downgraded_ruleset(
     rules
 }
 
-/// **Did this session inherit a whole-host standing from an ancestor?**
-///
-/// [`Config::unconfined`] is set for [`Seat::Leticode`] and **inherited by its subagents**
-/// (`sub_cfg` builds a child from `..self.base.clone()`), which is the only way a `coder`
-/// subagent is ever unconfined — its own seat does not say so and neither does anything
-/// else on its row. So the rule the spawn applies is applied *again* here, from the rows
-/// it left: a session stands where its ancestors stand, and an ancestor that recorded
-/// `leticode` is one whose whole tree is unconfined.
-///
-/// # Why the walk instead of a recorded flag
-///
-/// The store's `session` row records the SEAT (`role`, v2) and not the standing, and the
-/// two are not the same fact for exactly the sessions this is about: a subagent's row says
-/// `coder` whether its parent was a leticode session or a coder one. So it is read back the
-/// way it was handed down — up the `parent_session_id` chain the row already carries (v4).
-/// A top-level session has no parent and is off this path entirely: its own seat is the
-/// whole answer, which is the line above this call.
-///
-/// **A row this walk cannot read is not an answer and not an error.** A vanished ancestor,
-/// a role the build cannot parse, or a chain longer than `MAX_ANCESTORS` all leave the
-/// standing unproven, and an unproven standing is the confined one — which is what every
-/// session that predates this had, and a refusal to open over an ancestor's bad row would
-/// cost a conversation for a fact about somebody else.
+/// Did this session inherit a whole-host standing from an ancestor? The store records only the SEAT, which is not
+/// the same fact for these sessions, so it is read back up the parent chain the row carries. A row the walk cannot
+/// read is not an answer and not an error: an unproven standing is the confined one.
 fn unconfined_by_inheritance(store: &Store, from: &StoredSession) -> bool {
     // The cap is [`Config::max_subagent_depth`]'s order of magnitude and not its value: the
     // chain is a real parent tree, so this only bounds a cycle a corrupted store could have.
@@ -3744,10 +3302,8 @@ mod unconfined_by_inheritance_tests {
         unconfined_by_inheritance(store, &row)
     }
 
-    /// **A subagent's standing is its ancestors', and the row says only the seat.** A
-    /// `coder` child of a leticode session is unconfined, and so is ITS child — that is
-    /// what `sub_cfg`'s `..self.base.clone()` hands down at every spawn, and what a
-    /// reopened session has to be given back.
+    /// A subagent's standing is its ancestors', and the row says only the seat: a `coder` child of a leticode
+    /// session is unconfined, and so is ITS child, which is what a reopened session has to be given back.
     #[test]
     fn a_coder_child_of_a_leticode_session_stands_where_its_root_stood() {
         let (store, child) = chain(
@@ -3806,48 +3362,28 @@ mod unconfined_by_inheritance_tests {
     }
 }
 
-/// The role a seat resolves to, with `bash` removed when it was not asked for.
-///
-/// The removal is here rather than in `letibot_tools::roles` because it is a
-/// *session* decision and not a change to what the runner role is: `m2_runner` is
-/// nine tools and says so, and a session that took eight of them is a session, not
-/// a different role. `Registry::resolve_role` refuses a role naming a tool the
-/// build does not have, so dropping the name is the only way to seat a runner
-/// without a shell — leaving it in and hoping the tool refuses would put `bash` in
-/// the prompt, which is the model being told it has a capability it does not.
+/// The role a seat resolves to, with `bash` removed when it was not asked for: a SESSION decision, since `m2_runner`
+/// is nine tools and a session that took eight is still that role. Dropping the name is the only way to seat a runner
+/// without a shell, since leaving it in would put `bash` in the prompt.
 pub(crate) fn role_for(cfg: &Config) -> Role {
     role_for_seat(cfg.seat, cfg)
 }
 
-/// The same table, reached from a seat the store named rather than from `cfg`.
-///
-/// `cfg` is still needed for [`Config::allow_bash`], which is a daemon-wide flag and
-/// deliberately not per session: a shell is the one capability that is not the
-/// session's to record.
+/// The same table, reached from a seat the store named rather than from `cfg`. `cfg` is still needed for `allow_bash`,
+/// which is a daemon-wide flag and deliberately not per session: a shell is not the session's to record.
 pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     let mut r = base_role_for_seat(seat, cfg);
-    // **The room.** The `flowy` tool is registered by `Sessions` for every root
-    // session, and the role names it under exactly the same condition —
-    // `Registry::resolve_role` refuses a role naming a tool the session does not
-    // have. The runner has no spare seat (`m2_runner` is nine and says so).
-    // Always a door for a root session, seat or no seat: without one the tool
-    // says so and names `/flowy login`. That is what lets a seat arrive while
-    // the session is open. A subagent hears through its parent.
+    // The room: the `flowy` tool is registered by `Sessions` for every root session, and the role names it under the
+    // same condition, since `resolve_role` refuses a role naming a tool the session does not have. Always a door for a
+    // root, seat or no seat: without one the tool says so and names `/flowy login`.
     if cfg.parent_session_id.is_none()
         && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper)
     {
         r.tools.push("flowy".into());
     }
-    // **`web_search` is seated only when something is behind it**, and a subagent
-    // inherits that, because a survey is the errand most worth handing one.
-    //
-    // Conditional for the reason `external/mod.rs` gives: a tool schema is prompt
-    // bytes in the stable prefix, so seating it unconditionally would re-prefill
-    // every stored conversation on this box to add a tool that refuses. A session
-    // started without `--web-search` is byte-identical to yesterday's.
-    // **A reviewer reads the references** (the operator, 2026-10-26: *"reviewers should be able
-    // (and actually encouraged) to read mans, docs and so on"*), so the gatekeeper seats the two
-    // web tools under the same conditions as every other seat; `flowy` above stays off it.
+    // `web_search` is seated only when something is behind it, and a subagent inherits that. Conditional because a
+    // tool schema is prompt bytes, so seating it unconditionally would re-prefill every stored conversation to add a
+    // tool that refuses. A reviewer reads the references, so the gatekeeper seats the two web tools; `flowy` stays off.
     if cfg.web_search.is_some() && !matches!(seat, Seat::Runner | Seat::NotesKeeper) {
         r.tools.push("web_search".into());
         r.max_tools += 1;
@@ -3891,21 +3427,15 @@ pub(crate) fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
             }
             r
         }
-        // **The notes keeper**: the read tools and `notes`, and no exec path at all, so there is
-        // no flag to strip. A repair goes through `notes` — the one writer that keeps a note a
-        // note (a bare NAME, `.letibot/notes/` only, the author's abstract, the historical
-        // caveat) — and nothing on this seat can touch code.
+        // The notes keeper: the read tools and `notes`, and no exec path at all, so there is no flag to strip. A repair
+        // goes through `notes`, the one writer that keeps a note a note, and nothing on this seat can touch code.
         Seat::NotesKeeper => roles::notes_keeper(),
         Seat::Leticode => {
             let mut r = roles::leticode();
             if !cfg.allow_bash {
-                // **The whole exec surface is behind the flag**: `bash` and the job
-                // verbs it feeds, `monitor` which watches processes a shell
-                // starts, and — since RH8 — `fanout` and `scenario`, which start
-                // commands on other machines. A session with no shell has nothing to wait on,
-                // read, kill or watch, and nothing it may start elsewhere either: a verb that
-                // could run a command on a host while its own seat cannot run one here would be
-                // the flag's whole point walked around.
+                // The whole exec surface is behind the flag: `bash` and the job verbs it feeds, `monitor`, and `fanout`
+                // and `scenario`, which start commands on other machines. A session with no shell has nothing to wait on and
+                // nothing it may start elsewhere either.
                 r.tools.retain(|t| {
                     !matches!(
                         t.as_str(),
@@ -3927,56 +3457,13 @@ pub(crate) fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
     }
 }
 
-/// **Where layer A is standing**, and what this daemon can honestly claim about it.
-///
-/// `docs/boundary-and-adjudication.md` §5 states the requirement rather than
-/// assuming it, *"because a requirement crosses a merge where an assumption does
-/// not"*: `Surroundings::with_pinned_shell` is honest only where the spawn path
-/// `env_clear()`s before its explicit pairs so `PATH` is pinned rather than
-/// inherited, and unsets `BASH_ENV`, `ENV`, `SHELLOPTS` and `BASHOPTS` —
-/// `BASH_ENV` **is** sourced by bash for non-interactive shells, so a
-/// distribution where `/bin/sh` is bash has a real injection point.
-///
-/// Since R10 the host spawn does exactly that — `HostProcesses` pins the `PATH`
-/// it was constructed with, clears the rest, filters the four by name, and the
-/// test `a_bash_env_planted_in_the_parent_never_reaches_the_child` holds the
-/// claim — so a seat with an exec backend declares the pin. A seat without one
-/// spawns no shell at all, so there is nothing to claim and `Unknown` stays,
-/// under which a **bare** command name is unresolved and the call is `not_run` —
-/// the fail-closed direction. A resolved parse is not a resolved meaning, and a
-/// shell resolves a bare name through aliases, functions and `PATH`, none of
-/// which are in the text.
-///
-/// What is filled in either way is the part this daemon **does** know: the
-/// workspace root and `$HOME`, both of which layer A needs to place a path.
-/// [`letibot_tools::Surroundings::from_env`] is the constructor that says
-/// reading the environment is a decision at a call site.
-/// **Where this daemon's sessions put working artifacts.**
-///
-/// One function so the backend that hands it to tools and the gate that decides
-/// about paths inside it cannot disagree about where it is — a gate pointed at a
-/// different directory than the one the tools use is a gate that permits deletion
-/// in a place nothing writes, and asks about the place everything does.
-///
-/// Per daemon process rather than per session: a pid is stable for the daemon's
-/// life, which is what "this box is running letibot right now" means, and a
-/// session id in the path would make the directory unfindable from the one place
-/// that has to clean it up.
+/// Where layer A is standing, and what this daemon can claim about it: the pin is honest only where the spawn
+/// `env_clear()`s and filters `BASH_ENV` and its three companions, which `HostProcesses` does. A seat with no exec
+/// backend spawns no shell, so `Unknown` stays and a bare command is unresolved. The root and `$HOME` are filled in.
 pub fn scratch_dir() -> std::path::PathBuf {
-    // **THE HEAD'S OWN RULE, APPLIED TO THE DAEMON'S HALF.** This used to be
-    // `/tmp/letibot-scratch-<pid>` — `temp_dir()` at a predictable name, world-readable
-    // — and it holds what the jobs write, the web pages fetch spills, the peek logs:
-    // anything the model read. The TUI's `head_runtime_dir` already ruled that shape
-    // wrong for its own spills ("a world-readable file at a name anyone can predict is
-    // both a disclosure and the classic symlink target"), and the operator's ask,
-    // 2026-10-05, was the same ruling one layer down: *"job output should go to your
-    // scratch directory."* `$XDG_RUNTIME_DIR` is per-user, mode 0700 and tmpfs by
-    // construction; the fallback creates its per-user directory at 0700 rather than
-    // inheriting `/tmp`'s 0755 (the creation site sets the mode — `create_dir_all`
-    // cannot).
-    //
-    // Still per daemon process, and still no session id in the path, for the reason
-    // above: findable from the one place that has to clean it up.
+    // The head's own rule, applied to the daemon's half: this used to be a world-readable name in `temp_dir()`, and
+    // it holds what the jobs write and the model read. `$XDG_RUNTIME_DIR` is per-user, 0700 and tmpfs, and the fallback
+    // creates its directory at 0700. Still per daemon process, so the one place that cleans it up can find it.
     let pid = std::process::id();
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => std::path::PathBuf::from(d)
@@ -3988,32 +3475,10 @@ pub fn scratch_dir() -> std::path::PathBuf {
     }
 }
 
-/// **What a confined session's view holds beyond its project** — the operator's `--grant-ro`
-/// paths, and, added by the daemon, the merge queue's landing tree of the repository this
-/// workspace is (under `landing_root`), READ-ONLY.
-///
-/// The landing tree is where this project's gate runs. The firecode session, 2026-10-11, on the
-/// old `.git/letibot-landing`: *"`.git` is on the never-write list — I can't inspect the landing
-/// worktree, and no grant reaches it. So I'll reproduce it instead: a fresh clone"*. A model told
-/// its target is red should be able to read the tree the red was measured in; it must not be
-/// able to write there, because the next gate runs in it. The directory is created (empty) when
-/// the queue has not made it yet, so the bind has something to bind: `bwrap --ro-bind` of a
-/// missing path fails every command.
-/// **The environment a `task_start` worktree child's commands carry for the shared build
-/// cache**: `CARGO_TARGET_DIR` = the main tree's `target/`. `None` for the main-tree exception
-/// (it is the main tree), and for a worktree git cannot place (nothing to share then, and a guess
-/// would point a build somewhere nobody chose).
-///
-/// The main tree is found from the worktree: `git rev-parse --git-common-dir` inside a linked
-/// worktree is the main checkout's `.git`, and its parent is the main tree.
-///
-/// **Reaches the commands of an unconfined child** (leticode's `/` backend, the seat the operator's
-/// children run under), through the exec host's standing environment. A CONFINED child's commands
-/// do not get it: the bwrap view is the worktree and nothing else, so the main tree's `target/` is
-/// absent inside the namespace, and pointing cargo at it would fail a build that otherwise works
-/// cold. Granting that directory read-write into a child's view would let a confined child write
-/// the binaries the operator runs from it — a decision for the operator, not a side effect of a
-/// build-cache optimisation.
+/// What a confined session's view holds beyond its project: the operator's `--grant-ro` paths and the merge queue's
+/// landing tree, READ-ONLY, since the next gate runs in it. The directory is created empty when the queue has not
+/// made it, because a `--ro-bind` of a missing path fails every command. The build cache is the main tree's `target/`
+/// for an UNCONFINED child only: pointing a confined cargo at a tree the bwrap view does not hold would fail a build.
 pub fn worktree_build_env(
     placement: &letibot_tools::builtins::task::WorktreePlacement,
 ) -> Option<(String, String)> {
@@ -4078,11 +3543,9 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     // `Region::Scratch`. Without this it reads as shared `/tmp`, and destruction
     // there is an ask.
     env.scratch = Some(scratch_dir().display().to_string());
-    // The shell is pinned whenever the backend can start a process. Both the
-    // confined backend (coder/runner) and the unconfined leticode one (`--bash`)
-    // spawn through `HostProcesses`, which `env_clear`s and fixes `PATH` — so a
-    // bare command name resolves through a pinned PATH either way, and the
-    // `Unknown` that refused `echo` was the wrong claim for an unconfined seat.
+    // The shell is pinned whenever the backend can start a process: both the confined and the unconfined backend spawn
+    // through `HostProcesses`, which `env_clear`s and fixes `PATH`, so a bare command resolves through a pinned PATH and
+    // the `Unknown` that refused `echo` was the wrong claim for an unconfined seat.
     let may_exec = !cfg.downgrade.denies(letibot_tools::schema::Access::Exec);
     let pinned = (cfg.seat.needs_exec_backend() || (cfg.unconfined && cfg.allow_bash)) && may_exec;
     if pinned {
@@ -4092,18 +3555,9 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
              seat time and BASH_ENV, ENV, SHELLOPTS, BASHOPTS are never set",
         );
     }
-    // **The environment every command of this session really gets** — D14/R95. It is read
-    // from the same two places `HostProcesses::spawn` reads them: the `PATH` this process
-    // pins on every child after `env_clear()`, and the pairs the daemon puts beside it
-    // (`HOME`, and `Config::build_env`'s `CARGO_TARGET_DIR`). Nothing here is inferred from a
-    // command's text, which is what makes a reading that rests on it true of the real spawn.
-    //
-    // **And what this gate can see of the disk** — D15/R96's second half. `Host` only where
-    // the command runs in this process's own filesystem view: a `firecode` VM and a remote
-    // placement are different disks, and a *confined* session is a different view of this one
-    // (`/tmp` inside the boundary is the session's, not the box's), so naming a file there
-    // would be naming the wrong file. `None` leaves a `PATH` the command sets unresolved,
-    // which is exactly what it was before this existed.
+    // The environment every command of this session really gets, read from the same two places `spawn` reads them,
+    // so nothing is inferred from a command's text. And what this gate can see of the disk: `Host` only where the
+    // command runs in this process's view, since a VM, a remote host and a confined session are different disks.
     if pinned {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
         let mut pairs: Vec<(String, String)> = vec![("PATH".to_string(), path.clone())];
@@ -4111,11 +3565,9 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
             pairs.push(("HOME".to_string(), home.clone()));
         }
         pairs.extend(cfg.build_env.iter().cloned());
-        // **And the keep-list a boundary passes through.** `exec::confine::KEEP_ENV` is what
-        // a bwrap'd command keeps from THIS process (`--clearenv` then `--setenv` each), so
-        // those values are what the command really starts with — for a local placement. A
-        // remote or VM placement reads its keep-list on the FAR side (`EnvSource::Remote`),
-        // and seeding this box's `LANG` for it would be a claim about another machine.
+        // And the keep-list a boundary passes through: `KEEP_ENV` is what a bwrap'd command keeps from THIS process, so
+        // those values are what it really starts with, for a local placement. A remote or VM placement reads its
+        // keep-list on the far side, and seeding this box's `LANG` would be a claim about another machine.
         if matches!(
             cfg.placement,
             letibot_tools::builtins::task::Placement::Host
@@ -4173,13 +3625,10 @@ mod prefix_fingerprint_tests {
         }
     }
 
-    /// **The three inputs are all in the address, and the one that must not be is not.**
-    ///
-    /// The four assertions are the whole contract of the hash, and each is a different way
-    /// the comparison could be wrong: a seat ignored would call two differently-seated
-    /// sessions identical, an instruction ignored would miss `--system`, a schema ignored
-    /// would miss the operator's own case, and a note counted would report every session
-    /// stale the moment anybody wrote one down.
+    /// The three inputs are all in the address, and the one that must not be is not: each assertion is a different
+    /// way the comparison could be wrong — a seat ignored calls two differently-seated sessions identical, an
+    /// instruction ignored misses `--system`, a schema ignored misses the operator's own case, and a note counted would
+    /// report every session stale the moment anybody wrote one.
     #[test]
     fn the_frozen_three_are_in_the_address_and_the_live_one_is_not() {
         let one = prefix("instructions", &["{\"name\":\"read\"}"]);
@@ -4252,10 +3701,8 @@ mod prefix_fingerprint_tests {
         );
     }
 
-    /// **The seated time is a time, and a missing clock is not the epoch.**
-    ///
-    /// `0` is *nobody recorded when*, and a sentence reading *seated 01-01 00:00* about a
-    /// session nobody dated is the class of lie the whole notice exists to avoid.
+    /// The seated time is a time, and a missing clock is not the epoch: `0` is nobody recorded when, and a sentence
+    /// reading seated 01-01 00:00 about a session nobody dated is the class of lie the notice exists to avoid.
     #[test]
     fn an_unrecorded_time_is_said_and_a_recorded_one_is_the_launchers_spelling() {
         assert_eq!(seated_at(0), "an unrecorded time");
