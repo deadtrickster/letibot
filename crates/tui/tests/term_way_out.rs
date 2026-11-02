@@ -38,8 +38,19 @@
 //! shape — three hundred busy processes and `TMPDIR` on a real disk, `/var/tmp/letibot-gate` —
 //! the 200 ms drain these tests settled with saw **nothing at all** after a frame the head had
 //! written, and two of them failed with `the pane opened: []` and `the Enter is the program's …:
-//! []`. An absence cannot be waited for, so the three claims that nothing was sent use a window
+//! []`. An absence cannot be waited for, so every claim that nothing was sent uses a window
 //! ([`ABSENCE_WINDOW`]), and the comment at each says why that one has to be a window.
+//!
+//! # A barrier frame is not a window, and two of these claims used to think it was
+//!
+//! A positive frame makes an absence exact only for what was written **before** it — a unix socket
+//! is read in order, so a `TermClose` in front of the `TermOpen` would be in the same collection.
+//! The defect is the other way round: one tick builds one `actions` vector, the Enter's `TermOpen`
+//! first and the way-out's actions appended after it, so the frame a way-out would emit is always
+//! the NEXT one and [`frames_until`] — which returns the moment its predicate holds — stops in
+//! front of it. MEASURED 2026-11-01 with the defect mutated back into `App::pane_keys`: both of
+//! those assertions passed. They now collect through the barrier and over the window after it
+//! ([`frames_until_and_after`]).
 
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -184,11 +195,15 @@ const PATIENCE: Duration = Duration::from_secs(60);
 
 /// **How long the daemon is given to read a frame the head did NOT write.**
 ///
-/// An absence cannot be waited for — only watched for — so this is the one wait in the file that
-/// is a window rather than a condition, and it is a window on the *witness*: the head's own write
-/// is synchronous (`HeadClient::term_close` puts the frame on the socket before it returns), so
-/// whether anything left the head is decided by the time `step` returns. What the window buys is
-/// the daemon thread's chance to read it, which is what the channel below can see.
+/// An absence cannot be waited for — only watched for — so this is the one KIND of wait in the
+/// file that is a window rather than a condition, and it is a window on the *witness*: the head's
+/// own write is synchronous (`HeadClient::term_close` puts the frame on the socket before it
+/// returns), so whether anything left the head is decided by the time `step` returns. What the
+/// window buys is the daemon thread's chance to read it, which is what the channel below can see.
+///
+/// **It is used two ways**: where nothing was written at all there is no frame to wait for, and
+/// where something WAS written the frame is a barrier and the window is what follows it — see
+/// [`frames_until_and_after`], which is why a barrier does not on its own make an absence exact.
 ///
 /// MEASURED 2026-11-01, and this is the whole of the fix: with the gate's own shape — three
 /// hundred busy processes and `TMPDIR` on a real disk, `/var/tmp/letibot-gate` — a **200 ms**
@@ -244,6 +259,31 @@ fn frames_until(
             "waited {PATIENCE:?} for {what}; the daemon read {out:?}"
         );
     }
+}
+
+/// **The frames up to the barrier `ready` names, AND whatever arrives after it** — the instrument
+/// for a claim about something that did not happen, made on the back of a frame that did.
+///
+/// [`frames_until`] returns the moment its predicate holds. That is exactly right for *this
+/// reached the daemon*, and wrong for *and nothing else did*: the defect these two claims are
+/// written against emits its frame **after** the barrier. `Link::tick` builds one `actions` vector
+/// in tick order — the Enter's `Action::TermOpen` is pushed by `App::key`, then `App::pane_keys`
+/// appends the way-out's actions to it — so a `TermClose` the way-out produced is always the next
+/// frame, and a collection that stopped at the `TermOpen` (or at the `TermInput` before it) never
+/// sees it. MEASURED 2026-11-01 with the defect mutated back into `App::pane_keys`: both
+/// assertions passed, which is the coverage they had lost.
+///
+/// So the absence is claimed over the barrier's own collection **plus** the window after it —
+/// [`arrived_meanwhile`], the same instrument the claims with no frame at all use. The collection
+/// still matters: it is what catches a frame written in front of the barrier.
+fn frames_until_and_after(
+    frames: &Receiver<ClientFrame>,
+    what: &str,
+    ready: impl Fn(&[ClientFrame]) -> bool,
+) -> Vec<ClientFrame> {
+    let mut out = frames_until(frames, what, ready);
+    out.extend(arrived_meanwhile(frames));
+    out
 }
 
 /// **What the daemon read while the head wrote nothing** — see [`ABSENCE_WINDOW`].
@@ -410,8 +450,11 @@ fn enter_and_the_way_out_in_one_read_forward_the_enter_and_detach() {
     // **Both halves of the claim come out of one collection**, and the positive one is what makes
     // it exact: the Enter is a frame the daemon reads, so waiting for it gives the daemon its
     // chance to read anything else this read wrote — and a unix socket is read in order, so a
-    // `TermClose` written before that `TermInput` would be in front of it here.
-    let frames = frames_until(&frames, "the Enter to reach the program", |fs| {
+    // `TermClose` written before that `TermInput` would be in front of it here. **And a
+    // `TermClose` written AFTER it is the shape the defect actually has** — one tick, one
+    // `actions` vector, the Enter first and the way-out's actions appended — so the collection is
+    // taken through the barrier and over the window after it. See [`frames_until_and_after`].
+    let frames = frames_until_and_after(&frames, "the Enter to reach the program", |fs| {
         fs.iter()
             .any(|f| matches!(f, ClientFrame::TermInput { .. }))
     });
@@ -543,10 +586,12 @@ fn the_way_out_is_not_eaten_by_the_read_that_opens_the_pane() {
         !a.pane_open()
     });
 
-    // **The positive frame is what makes the absence exact**: the `TermOpen` is a frame the
-    // daemon reads, so a `TermClose` written before it would be in front of it in this collection
-    // — a unix socket is read in order.
-    let frames = frames_until(&frames, "the pane to open", |fs| {
+    // **The positive frame is what makes the absence exact — for what came BEFORE it**: the
+    // `TermOpen` is a frame the daemon reads, so a `TermClose` written before it would be in front
+    // of it in this collection, a unix socket being read in order. The way out's own frame would
+    // be written AFTER it (one tick, one `actions` vector, the open first), so the collection is
+    // taken through the barrier and over the window after it. See [`frames_until_and_after`].
+    let frames = frames_until_and_after(&frames, "the pane to open", |fs| {
         fs.iter().any(|f| matches!(f, ClientFrame::TermOpen { .. }))
     });
     assert!(
