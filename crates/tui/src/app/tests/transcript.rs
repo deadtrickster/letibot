@@ -2,11 +2,8 @@
 
 use super::*;
 
-/// **`/cells` sends the rows this head drew, with the operator's message.**
-///
-/// The model can ask for a screen (`harness what=screen`); this is the other
-/// direction, and it is captured at Enter rather than when the turn gets round
-/// to it — by then the screen has moved.
+/// `/cells` sends the rows this head drew with the person's message: captured at Enter, because
+/// by the time the turn gets to it the screen has moved.
 #[test]
 fn cells_sends_the_screen_with_the_message() {
     let mut a = app();
@@ -53,10 +50,7 @@ fn cells_sends_the_screen_with_the_message() {
     // transcript's user item will match when it lands.
     let echo = a.pending_prompts.last().expect("the message is echoed");
     assert_eq!(echo, &text.text);
-    // And it is DRAWN folded: the operator's words and one line, never a copy
-    // of the screen inside the screen.
-    // **Unfolded**, because this test is about what the words ARE — the fold's own
-    // behaviour is pinned by `an_echo_is_one_elided_headline…` below.
+    // Drawn folded: the person's words and one line, never a copy of the screen inside the screen.
     let drawn = queued_lines(echo, &a.cfg, QUEUED, true);
     assert!(
         drawn.iter().any(|l| l.contains("look at this")),
@@ -264,12 +258,8 @@ fn a_short_echo_has_no_seam() {
     );
 }
 
-/// **An echo queued AFTER the snapshot keeps saying `queued`.**
-///
-/// The mark is not a property of the session or of the text — it is a property of one
-/// echo's history, and a prompt typed after the snapshot has a row coming that no
-/// snapshot has replaced. Marking by time-of-load rather than per echo would take the
-/// honest word away from every prompt the operator sends next.
+/// An echo queued after the snapshot keeps saying `queued`: the mark belongs to one echo's history,
+/// and a prompt typed since has a row coming that no snapshot replaced.
 #[test]
 fn an_echo_queued_after_the_snapshot_still_says_queued() {
     let mut a = app();
@@ -339,13 +329,8 @@ fn an_unconfirmed_echo_retires_when_its_row_lands_inside_a_merged_item() {
     );
 }
 
-/// **The live path and the snapshot path retire the same things.**
-///
-/// `App::record_item` read only the FIRST text part while `App::load` read every one,
-/// so the same row could stand down one echo on one path and not the other — leticl
-/// measured exactly this on its own head (*"the live arm read only the FIRST text part
-/// where the snapshot path reads every part"*). Two ways into one rule is two rules;
-/// this is the assertion that they are one.
+/// The live path and the snapshot path retire the same things: `record_item` read only the first
+/// text part where `load` read every one, and two ways into one rule is two rules.
 #[test]
 fn the_live_and_snapshot_paths_retire_the_same_echoes() {
     // Two echoes, so the two paths can differ about one without the whole thing
@@ -527,12 +512,8 @@ fn a_queued_echo_waits_below_the_working_until_the_daemon_takes_it() {
         "the row is drawn in the echo's place, from the words the head already had: \
              {after_text}"
     );
-    // **And it no longer claims to be queued.** This assertion used to be `before == after` —
-    // *not one row changes across the announcement* — and that was true only while the bound
-    // row wore the same `queued` mark as the echo, which is the very thing R2 forbids: the
-    // daemon had the words and the model could already be answering them. The rows beneath do
-    // not move; the mark does, because the row has landed. The operator's own order, which is
-    // what this test now pins: *"my message | your line | and only then unqueued."*
+    // And it no longer claims to be queued: the mark moves when the row lands, and the person's own
+    // order is their message, then the reply, and only then unqueued.
     assert!(
         // The MARK, not the word: this fixture's own message text contains *queued*, so a
         // bare `contains("queued")` would pass on the words and say nothing about the label.
@@ -688,13 +669,8 @@ fn a_notice_announced_while_a_prompt_is_queued_does_not_retire_its_echo() {
     assert_eq!(screen.matches("also fix the parser").count(), 1, "{screen}");
 }
 
-/// **Two prompts in the air bind two rows, in the order they were sent.**
-///
-/// Oldest-first, and never an echo already bound: two rows announced while both
-/// are queued must not both wear the first prompt's words. Idle submits land each
-/// as their own entry (`queued_prompts_behind_a_running_turn_are_one_message`
-/// covers the coalesced case), and both rows are in flight until their bodies
-/// arrive.
+/// Two prompts in the air bind two rows, oldest first, and never one already bound, so two rows
+/// announced while both are queued cannot both wear the first prompt's words.
 #[test]
 fn two_queued_prompts_bind_the_two_announcements_in_order() {
     let mut a = app();
@@ -729,10 +705,8 @@ fn two_queued_prompts_bind_the_two_announcements_in_order() {
         Some("second")
     );
     let screen = a.screen(100, 24).join("\n");
-    // **Both rows are on the screen and neither claims to be queued** — they were announced, so
-    // what the head owes is their bodies, not their rows. See [`echo_mark`]. The assertion this
-    // replaces counted `queued · first` and `queued · second`, which was true only while a bound
-    // row wore the echo's own mark.
+    // Both rows are on the screen and neither claims to be queued: they were announced, so what the
+    // head owes is their bodies. See [`echo_mark`].
     assert_eq!(screen.matches("▌ first").count(), 1, "{screen}");
     assert_eq!(screen.matches("▌ second").count(), 1, "{screen}");
     assert!(
@@ -745,10 +719,8 @@ fn two_queued_prompts_bind_the_two_announcements_in_order() {
     );
 }
 
-/// **A binding dies with the row it was for.** A snapshot replaces every row, and
-/// a binding whose row is gone has nothing left to stand for — otherwise the echo
-/// would be suppressed at the tail for ever, on the strength of a row nobody has
-/// any more.
+/// A binding dies with the row it was for: a snapshot replaces every row, and a binding whose row is
+/// gone would suppress the echo at the tail for ever.
 #[test]
 fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
     let mut a = app();
@@ -933,13 +905,8 @@ fn the_conversation_rung_shows_the_conversation_and_nothing_else() {
         quiet.contains("conversation"),
         "the rung must be named on the screen: {quiet}"
     );
-    // **It is a view.** Switching back draws every row again, including the span it was
-    // on, and nothing was dropped from the head's own copy.
-    // **And the reasoning under the new rung is hidden by the RUNGS, not by the fold.**
-    // Two different mechanisms want it off the screen — `thinking: folded` folds the
-    // block, and this rung removes it — so the assertion above is only worth anything if
-    // the fold is open. Otherwise it passes for the wrong reason, which is the defect
-    // this test exists against.
+    // The reasoning under the new rung is hidden by the RUNGS and not by the fold, so the assertion
+    // above is worth something only with the fold open; otherwise it passes for the wrong reason.
     a.visibility = Visibility::of(Profile::LOUD);
     a.reasoning = Fold::Open;
     a.invalidate_history();
@@ -966,26 +933,16 @@ fn the_conversation_rung_shows_the_conversation_and_nothing_else() {
         back.contains("MAGIC-TOOL-PAYLOAD") && back.contains("I should look at the file first"),
         "a rung is a view: switching back must restore every row\n{back}"
     );
-    // **Four ITEMS**: the operator's message, the reasoning, the answer and the result.
-    // A `HeadAttached` is a note rather than a row, which is why the assertion is four —
-    // the first draft said five and the failure named the miscount rather than the
-    // mechanism, which is the useful direction.
+    // Four ITEMS: the message, the reasoning, the answer and the result. A `HeadAttached` is a note
+    // rather than a row, which is why the count is four.
     assert_eq!(a.items.len(), 4, "nothing left the head's copy");
-    // **And an arrival is a fact the head holds, not a row it draws.** `HeadAttached` is
-    // counted on every rung and drawn only at `Loud`, which is what the rung's own doc
-    // says — so the assertion is the COUNT, because a rung that dropped the fact rather
-    // than the row would make the header wrong about how many heads are on the session.
-    // The seat's own snapshot carries no heads, so the one that is counted here is the
-    // arrival the fixture sent — held where it is not drawn, which is what this asserts.
+    // An arrival is a fact the head holds and not a row it draws: `HeadAttached` is counted on every
+    // rung and drawn only at `Loud`, so this asserts the count the header would otherwise get wrong.
     assert_eq!(a.heads, 1, "the arrival is held even where it is not drawn");
 }
 
-/// **What this rung may NOT hide, and each for its own reason** (R37).
-///
-/// Three, and only one of them is about this head's taste: warnings were ruled by
-/// `Verbosity::Terse`'s own docstring, decision cards make the session unanswerable if
-/// they go, and liveness is this rung's specific risk — *a ten-minute tool-heavy turn
-/// draws nothing at all*.
+/// What this rung may not hide: warnings, decision cards, and liveness, which is a ten-minute
+/// tool-heavy turn that draws nothing at all.
 #[test]
 fn the_conversation_rung_hides_no_warning_no_card_and_no_liveness() {
     let mut a = app();
@@ -1052,10 +1009,8 @@ fn the_conversation_rung_hides_no_warning_no_card_and_no_liveness() {
         all.contains("?") && all.contains("permission"),
         "the decision card is the question the session is waiting on: {all}"
     );
-    // **Liveness.** With the tool rows hidden, the only thing on screen that says a turn
-    // is running is the composer's border — so it must still say so, and the elapsed
-    // time with it. R13: a reader who cannot tell working from wedged is the confusion
-    // this document has spent the day correcting in its own instruments.
+    // Liveness: with the tool rows hidden the composer's border is the only thing saying a turn runs,
+    // so it must still say so.
     assert!(
         all.contains("Responding"),
         "the turn's own status line must survive the rung: {all}"
@@ -1104,10 +1059,8 @@ fn a_rung_that_hides_the_held_row_moves_the_view_and_says_so() {
         )));
     }
     a.screen(100, 30);
-    // **The anchor is put on a TOOL row deliberately**, because that is the case being
-    // tested and a wheel notch lands wherever the arithmetic takes it — the first draft
-    // scrolled and happened to stop on an assistant row, so the re-anchor never fired and
-    // the test asserted that a thing which had not happened had not said anything.
+    // The anchor is put on a tool row deliberately: a wheel notch lands wherever the arithmetic takes
+    // it, and starting on an assistant row would let the re-anchor never fire.
     let tool_row = a
         .items
         .iter()
@@ -1120,11 +1073,8 @@ fn a_rung_that_hides_the_held_row_moves_the_view_and_says_so() {
     });
     let held = a.anchor.clone().expect("a held row");
 
-    // Switch to the rung, which hides every other row here — and the assertion that the
-    // held row IS one of them comes after the switch, because `hidden_by_rung` is a
-    // question about the rung and asking it under `Normal` answers `false` for
-    // everything. (The first draft asked it before the switch and passed on the wrong
-    // side of the same mistake.)
+    // The assertion that the held row is one the rung hides comes after the switch, because
+    // `hidden_by_rung` is a question about the rung.
     a.visibility = Visibility::of(Profile::CONVERSATION);
     assert!(
         a.hidden_by_rung(held.ordinal),
@@ -1222,11 +1172,8 @@ fn a_compaction_resolves_the_echoes_it_supersedes() {
     let queued = a.screen(100, 24).join("\n");
     assert!(queued.contains("queued · also fix the parser"), "{queued}");
 
-    // **The fork, in the order the daemon publishes it.** `auto_compact` says the
-    // conversation is about to be replaced; `compacted` says it has been; and the
-    // new base arrives as rows. The prompt's own row was in the transcript that
-    // was summarised away, so no `TranscriptContent` for it ever comes — which is
-    // the defect, and it is this test's own premise.
+    // The fork in the order the daemon publishes it: `auto_compact`, `compacted`, then the new rows.
+    // The prompt's own row was summarised away, so its `TranscriptContent` never comes.
     hub.publish(SessionEvent::Warning {
         code: "auto_compact".into(),
         detail: "938065 of 999999 tokens resident — compacting now".into(),
@@ -1349,12 +1296,8 @@ fn a_reason_that_is_a_document_folds_to_its_first_sentence() {
     assert_eq!(first_sentence(one), one);
 }
 
-/// **The chord is the head's, is named where it is advertised, and moves nothing else.**
-///
-/// Three separate things a chord has to get right, and each has already been got wrong
-/// somewhere in this file: it must not type into the composer, it must be on the hint bar
-/// where the operator can actually see it (the bar is longer than a terminal and trimmed),
-/// and it must not move a fold or open a pane.
+/// The chord is the head's, is named where it is advertised, and moves nothing else: it must not type
+/// into the composer, must be on the bar where it can be seen, and must not move a fold or a pane.
 #[test]
 fn the_notes_chord_is_advertised_where_it_can_be_seen_and_reaches_nothing_else() {
     let mut a = app();
@@ -1391,10 +1334,8 @@ fn the_notes_chord_is_advertised_where_it_can_be_seen_and_reaches_nothing_else()
     );
 }
 
-/// The person's own sentence, as the head draws it: the warning is not one of the codes counted on
-/// the edge and never drawn, and not filtered as a duplicate of something the turn says.
-/// The text is the real sentence at its real length, since a long note folds to its head and a fold
-/// that lost the code would leave a paragraph with no name for it.
+/// The person's own sentence as the head draws it: the code is not edge-bound and not filtered as a
+/// duplicate, and the text is the real sentence at its real length, since a long note folds to its head.
 #[test]
 fn the_sentence_for_a_run_the_daemon_may_not_look_at_is_drawn() {
     let sentence = "`sudo apt install mc` has been quiet for a beat and this daemon cannot \
@@ -1434,13 +1375,8 @@ fn the_sentence_for_a_run_the_daemon_may_not_look_at_is_drawn() {
     );
 }
 
-/// **A note that is a document folds to ONE line, and the popup and `/notes` have all of it.**
-///
-/// The other half of R10: the operator's wall was *two* gate timeouts at about
-/// thirteen lines each — *"how to remove this red wall?"*. The instrument is the one
-/// every other long thing on this screen already uses (a card's diff rows, an
-/// elision row naming where the rest is), and the fold must not be a cap on the
-/// record: the whole sentence is one verb away.
+/// A note that is a document folds to one line, and the popup and `/notes` have all of it: the fold is
+/// not a cap on the record, since the whole sentence is one verb away.
 #[test]
 fn a_note_that_is_a_document_folds_to_its_head_and_the_verb_has_the_rest() {
     let mut a = app();
@@ -1485,13 +1421,8 @@ fn a_note_that_is_a_document_folds_to_its_head_and_the_verb_has_the_rest() {
     assert!(listed.contains("line 1 of the rule it cites"), "{listed}");
 }
 
-/// **R10's ruling on `ctrl-v`: one row, not the conversation.**
-///
-/// The chord flips the tool fold for the **whole** conversation while the pager's
-/// own seam advertises it as `… +N lines · ctrl-v`, which reads per-row. The
-/// operator was surprised *"that ctrl-t triggered the wall AT ALL"*, and the fix is
-/// to keep the meaning a per-row seam can honestly name: the chord opens one row's
-/// window, and the conversation-wide unfold keeps the verb it already had.
+/// `ctrl-v` opens one row's window, not the conversation: the chord flipped the whole tool fold while
+/// the pager's seam read per-row, so the conversation-wide unfold keeps `/t`.
 #[test]
 fn ctrl_v_opens_one_rows_window_and_the_whole_folds_are_the_verb() {
     let mut a = app();
@@ -1584,10 +1515,8 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
         "`/t` is the conversation-wide fold and it opened a row's window"
     );
 
-    // **Tab gave up its space, and gets to keep its fact.** The bar no longer names it —
-    // it is the entry that answers before it is named — and `/help` still does, on the row
-    // a reader is looking at when they go there. Dropping it from both would have been a
-    // different change.
+    // Tab gave up its space on the bar and kept its fact: `/help` still names it, which is the row a
+    // reader is looking at when they go there.
     assert!(
         !bar.contains("tab completes"),
         "the bar still spends 23 columns on the one entry that needs no advertisement: {bar}"
@@ -1691,13 +1620,8 @@ fn a_sessions_reply_re_folds_the_rows_and_the_count() {
     );
 }
 
-/// **The family view draws the fold glyph its own rule implies.**
-///
-/// The rows are on the list because this head is standing among them ([`App::family_open`]),
-/// not because the operator pressed `→` — and the glyph beside the parent came from the
-/// collapse list alone, so a family view drew `▸` directly above the three rows it was
-/// claiming to hide. One rule, read by the enumeration and by the glyph: what the tree draws
-/// and what the tree lists are the same fact.
+/// The family view draws the fold glyph its own rule implies: the rows are on the list because this
+/// head stands among them, so the parent must not be drawn collapsed over visible children.
 #[test]
 fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
     let mut a = inside_a_subagent();
@@ -1765,11 +1689,8 @@ fn tab_unfolds_an_item_and_still_completes_a_command() {
     a.wiring.workspace = dir.display().to_string();
     a.key(Key::CtrlT);
     assert!(!a.screen(110, 30).join("\n").contains("the body line"));
-    // **The cursor starts on the ADD CONTROL**, which is the head of `todos_stops` and
-    // leticl's own starting position — so one Down is what puts it on the first repo item. The
-    // row under the cursor is the row Enter and Tab act on, which is the whole point of one
-    // enumeration; before this change the cursor had nowhere else to be and these keys were
-    // reading a different list from the one the pane drew.
+    // The cursor starts on the add control, which is the head of `todos_stops`, so one Down reaches the
+    // first item, and the row Enter and Tab act on is the row the pane drew.
     a.key(Key::Down);
     a.key(Key::Tab);
     assert!(
@@ -1855,11 +1776,8 @@ fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
         "folded hides it: {screen}"
     );
 
-    // **The cursor starts on the `[+]` control**, which is the head of the one enumeration —
-    // leticl's `todos-stops` — and NOT on the first item. It was on the first item while the
-    // cursor's position came from an index into the repo's rows; the operator's two reports,
-    // *"arrows dont go here"* and *"mouse doesnt click"*, were both that one defect, because
-    // the pane drew the mark from one list and the keys acted on another. There is one list.
+    // The cursor starts on the `[+]` control, the head of the one enumeration, and not on the first
+    // item: the pane draws the mark and the keys act on the same list.
     let screen = a.screen(110, 40).join("\n");
     let on = |s: &str, what: &str| {
         s.lines()
@@ -1974,12 +1892,8 @@ fn a_bang_line_is_a_shell_command_and_an_ordinary_line_is_still_a_prompt() {
     assert_eq!(a.key(Key::Enter), Some(Action::Prompt("  ! ls .".into())));
 }
 
-/// **A bang with nothing after it is refused here, and the words are kept.**
-///
-/// `!` and `!   ` carry no command; sending one would make the daemon answer a
-/// refusal for something this head could see was empty. The refusal is local and
-/// the line goes back to the composer, which is the same courtesy a held prompt
-/// gets — nothing is sent, so nothing can be shown as queued and then evaporate.
+/// A bang with nothing after it is refused here and the words are kept: the daemon would answer a
+/// refusal for something this head could see was empty.
 #[test]
 fn a_bang_with_nothing_after_it_is_refused_and_the_words_are_kept() {
     let mut a = app();
@@ -1992,13 +1906,8 @@ fn a_bang_with_nothing_after_it_is_refused_and_the_words_are_kept() {
     }
 }
 
-/// **The operator's command gets the tool-output treatment, the whole of it.**
-///
-/// A long output is *collapsed with an honest count* — `… +N lines` naming N as the
-/// rows that are not shown — and the seam names the key that opens the row's own
-/// window (`ctrl-v`), with `/t` the verb that unfolds every tool row. Opening it
-/// pages through the payload without unfolding the conversation. And the operator's
-/// own line is drawn as THEIR row — `speaker: Operator`, the block a prompt gets.
+/// The person's own command gets the tool-output treatment: folded with an honest count, the seam
+/// naming the window's own key and `/t` the whole unfold, drawn as their row.
 #[test]
 fn a_bang_rows_output_is_collapsed_with_an_honest_count_and_opens_one_row() {
     let mut a = app();
@@ -2088,13 +1997,8 @@ fn no_control_byte_from_a_bang_rows_output_reaches_the_frame() {
     );
 }
 
-/// **The fold counts the TEXT, not the escape bytes.**
-///
-/// The seam's number is the whole reason a long row is readable at all — *"the count must
-/// state what is hidden, not round it away"* — and a head that counted a payload line by its
-/// bytes would report a different number for a coloured `ls` than for a plain one of the same
-/// length. So the two are rendered and their seams compared: same payload, same count, with
-/// and without the SGR.
+/// The fold counts the text, not the escape bytes: a payload counted by bytes would report a different
+/// number for a coloured `ls` than for a plain one, so both are rendered and their seams compared.
 #[test]
 fn the_fold_counts_a_coloured_payload_exactly_as_it_counts_a_plain_one() {
     let plain: String = (0..60).map(|i| format!("line {i}\n")).collect();
@@ -2130,21 +2034,9 @@ fn the_fold_counts_a_coloured_payload_exactly_as_it_counts_a_plain_one() {
     );
 }
 
-/// **An act of the person at the keyboard is never hidden by verbosity.**
-///
-/// MEASURED on a live head, and this is the whole of the report: the operator typed `! ls`,
-/// the store held the right two rows — their own `User` line and the `bash` result with
-/// `origin: CallOrigin::Operator` — the turn started correctly, and **the operator never saw
-/// the result on the screen**. Their own guess was the right one: *"i guess it was eaten by
-/// verbosity level"*, and their verbosity is `read-edits`, whose rung is the bottom of the
-/// ladder.
-///
-/// So both rows are drawn at every rung of [`Verbosity::ALL`], and at `read-edits` — the
-/// profile the report came from, which is `conversation`'s set with `edits` turned up and so
-/// the same rung — and the ruling is about the FILTER only: the result is still a folded
-/// tool row, elided with an honest count, and the payload is not dumped whole. The rungs are
-/// taken by name through the verb, so what is pinned is the ladder a reader has and not a set
-/// built by hand.
+/// An act of the person at the keyboard is never hidden by verbosity: both their line and the result
+/// are drawn at every rung, the result still folded with an honest count. The rungs are taken by name
+/// through the verb, so what is pinned is the ladder a reader has and not a set built by hand.
 #[test]
 fn the_operators_own_act_is_drawn_at_every_rung() {
     // Long enough to fold: the row shows a line or two and counts the rest, so the last line
@@ -2192,12 +2084,8 @@ fn the_operators_own_act_is_drawn_at_every_rung() {
     }
 }
 
-/// **The three rows an answered question leaves on the log**, in the order the session writes
-/// them — the call's result as the person's act, the question as the session's, and the answer
-/// as the operator's own words.
-///
-/// Written from the shapes `Harness::settle_asked` produces, so the drawing these tests are
-/// about is the drawing the daemon's own rows get.
+/// The three rows an answered question leaves on the log, in the order the session writes them: the
+/// result as the person's act, the question as the session's, the answer as their own words.
 fn asked_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
     a.apply(ServerFrame::Event(env(
         seq,
@@ -2245,19 +2133,9 @@ fn asked_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
     }
 }
 
-/// **An answered question leaves something on the screen, at every rung.**
-///
-/// The operator's report, verbatim: *"by the way i dont see my answer to the selector"*. The
-/// selector is a live overlay — `DecisionRequested` opens it and `DecisionAnswered` closes it —
-/// so once the card goes, the only thing that can hold the exchange is the transcript. The
-/// answer used to be a tool payload and nothing else, and at `read-edits` — the operator's own
-/// profile, whose rung is the bottom of the ladder — the tool rows are not drawn at all.
-///
-/// So all three rows are drawn at every rung: the question as a `User` row of the session's (a
-/// `User` row is the conversation and is kept everywhere), the answer as the operator's own,
-/// and the result because `origin: CallOrigin::Operator` is the mark that says a person acted —
-/// which [`the_operators_own_act_is_drawn_at_every_rung`] already holds for the `!` line, and
-/// which this pins for the other way a person acts.
+/// An answered question leaves something on the screen at every rung: the selector is a live overlay, so
+/// the transcript is the only place the exchange survives, and at the bottom rung tool rows are not
+/// drawn at all. The person's own row and result are, because a person acted.
 #[test]
 fn an_answered_question_is_on_the_screen_at_every_rung() {
     // Long enough to fold: the row shows a line or two and counts the rest, so the last line of
@@ -2305,13 +2183,9 @@ fn an_answered_question_is_on_the_screen_at_every_rung() {
     }
 }
 
-/// **The control that makes the ruling mean *who acted* and not *tool rows are drawn*.**
-///
-/// A `ToolResult` the MODEL proposed — `origin: None`, which is also every row written before
-/// the field existed — is the head's working and follows the ladder exactly as it always did:
-/// hidden at the bottom rung, where the screen carries the run marker and the count instead,
-/// and drawn (folded) above it. Beside the test above, this pair is what says the clause reads
-/// the operator's `origin` rather than widening the filter for tool rows in general.
+/// A `ToolResult` the model proposed follows the ladder as it always did: hidden at the bottom rung,
+/// where the run marker and its count stand in. Beside the test above, this is what says the clause
+/// reads the person's `origin` and does not widen the filter for tool rows.
 #[test]
 fn a_models_tool_row_still_obeys_the_rung() {
     let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
@@ -2349,12 +2223,8 @@ fn a_models_tool_row_still_obeys_the_rung() {
     }
 }
 
-/// **Two prompts typed behind a running CALL are ONE echo** (R51 item 14, the preamble's second
-/// gate).
-///
-/// The daemon merges everything typed during a round into one held user item, so the head must
-/// join them the same way. This gate read the state name, so during a tool call it did not join
-/// — and the operator got two `queued` rows for one message, where the engine produced one row.
+/// Two prompts typed behind a running call are one echo: the daemon merges everything typed during a
+/// round into one held item, so a gate that read the state name gave two `queued` rows for one message.
 #[test]
 fn two_prompts_behind_a_running_call_are_one_echo() {
     let mut a = app();
@@ -2385,10 +2255,8 @@ fn a_long_payload_can_be_paged_to_its_end() {
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     a_result_row(&mut a, 2, "i1", &body);
 
-    // Folded: the head, a count, and the chord that is supposed to reveal the rest.
-    // **The newest long row names the chord; this is that row.** R10 moved the
-    // conversation-wide unfold to `/t`, so the seam says `opens it` — the window,
-    // not the whole conversation.
+    // Folded: the head, a count, and the chord that reveals the rest. The newest long row names the
+    // window, and the conversation-wide unfold is `/t`.
     let folded = a.screen(100, 60).join("\n");
     assert!(folded.contains("line 0"), "{folded:?}");
     assert!(folded.contains("ctrl-v opens it"), "{folded:?}");
@@ -2441,14 +2309,9 @@ fn a_long_payload_can_be_paged_to_its_end() {
     );
 }
 
-/// **Every chord in the table is reachable from a press, and a press IS a `/verbosity`.**
-///
-/// `Show::chord` is the one entry that advertises a key AND binds it, and this is what keeps it
-/// that way: `Key::show` is the lookup the dispatch uses, so a chord added to the table that no
-/// key press reaches — or a key bound by hand with nothing in the table — fails here. The two
-/// hand-written arms this replaces are the reason: each named its key twice, and one of them
-/// moved the MIRROR the drawing reads (`self.reasoning`) instead of the set, so the picture
-/// changed while the status row, `head.toml`, `keeps` and `rung()` went on saying the old set.
+/// Every chord in the table is reachable from a press, and a press is a `/verbosity`: `Key::show` is
+/// the lookup the dispatch uses, so a chord no press reaches, or a key bound by hand with nothing in
+/// the table, fails here.
 #[test]
 fn a_chords_key_is_found_from_the_table_and_a_press_moves_the_set() {
     for s in Show::ALL {
@@ -2488,13 +2351,9 @@ fn a_chords_key_is_found_from_the_table_and_a_press_moves_the_set() {
     assert_eq!(a.reasoning, Fold::Folded);
 }
 
-/// **The card names the set in force when no profile is it.**
-///
-/// The fixture is `loud` with the edit cards off, and it is chosen because the assertion needs a
-/// set that is no profile: every switch is on except `edits`, which no row of `Profile::ALL`
-/// has. The row the card must grow for it is the set's own `custom …` name — which is also what
-/// `pick_current` reads, so it is the row the marker and the cursor land on rather than
-/// matching nothing.
+/// The card names the set in force when no profile is it: `loud` with the edit cards off is no profile,
+/// so the card grows a `custom …` row, and that is also what `pick_current` reads for the marker and
+/// the cursor.
 #[test]
 fn the_card_names_the_set_in_force_a_reader_typed() {
     let mut a = app();
@@ -2557,11 +2416,8 @@ fn thinking_is_folded_by_default_and_the_fold_says_which_key_opens_it() {
 
 #[test]
 fn the_log_alone_is_enough_to_render_the_conversation() {
-    // T13.1's other half: *"the log should be a sufficient record of a
-    // session"*. It was not. `letibot-tui --replay` reads exactly these
-    // envelopes and nothing else, and before the body travelled on the log it
-    // showed a placeholder for every row — the transcript existed only inside a
-    // snapshot nobody had written down.
+    // The log is enough to render the conversation: `--replay` reads these envelopes and nothing else,
+    // and a session's transcript used to exist only inside a snapshot nobody had written down.
     let hub = Hub::new("s");
     hub.publish(testing::turn_started("t1"));
     hub.publish(testing::appended("s.0", "user"));
@@ -2604,10 +2460,8 @@ fn the_log_alone_is_enough_to_render_the_conversation() {
 
 #[test]
 fn a_tool_call_the_head_never_saw_proposed_still_names_its_target() {
-    // The reattach case, which is the common one: a head that joins after a
-    // turn has no proposal event to have learned the target from, and the
-    // arguments on the settled row are the only place it survives. It uses the
-    // *same* function the wire does, so both renderings agree.
+    // The reattach case: a head joining after a turn has no proposal event, so the arguments on the
+    // settled row are the only place the target survives, read by the same function the wire uses.
     let mut a = app();
     a.apply(ServerFrame::Event(env(
         1,
@@ -2636,19 +2490,9 @@ fn a_tool_call_the_head_never_saw_proposed_still_names_its_target() {
     );
 }
 
-/// Two rounds of one turn, both numbering their calls from `call_0`, which is
-/// what `letibot_turn::items` does whenever the wire format carries no id.
-///
-/// Taken from the operator's own session (`s-1788987496351498881`, fourteen
-/// rounds of `call_0`/`call_1`/`call_2`) and reduced to the two rows that make
-/// the defect: the head kept one session-wide table keyed on the call id, so
-/// the later round's paths overwrote the earlier round's and every settled card
-/// read back the survivor. On screen that was `▸ Read TODO.md · ok · 143 lines`
-/// above a body beginning `# rano` — the payload of `README.md`.
-///
-/// It is a correctness test, not a layout one. A card that names a file the
-/// tool did not open is the head telling the operator something false about
-/// what a tool returned.
+/// Two rounds of one turn, both numbering their calls from `call_0`: the head kept one session-wide
+/// table keyed on the call id, so the later round's paths overwrote the earlier ones and every settled
+/// card named a file the tool never opened. A correctness test, not a layout one.
 #[test]
 fn a_second_round_of_calls_does_not_relabel_the_first_rounds_results() {
     fn call(id: &str, name: &str, arguments: &str) -> letibot_transcript::ToolCall {
@@ -2759,16 +2603,8 @@ fn a_second_round_of_calls_does_not_relabel_the_first_rounds_results() {
     );
 }
 
-/// The same claim, with a row above the round so the narrowed invalidation
-/// cannot fall back on "rewind to zero".
-///
-/// `a_settled_call_is_one_row_…` starts at the assistant row, so its round
-/// head is index 0 and every invalidation in it is a full rebuild — which is
-/// exactly the path that was never narrowed. Put a user row in front and the
-/// rewind is a real one. Found by diffing the byte stream of a replay against
-/// the same replay with the narrowing switched off: 59 frames of 1028 showed
-/// a different screen, and the first of them had `→ Listed * · no result`
-/// sitting above `▸ Listed * · ok`.
+/// The same claim with a row above the round, so the narrowed invalidation cannot fall back on
+/// "rewind to zero": put a user row in front and the rewind is a real one.
 #[test]
 fn a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero() {
     let mut a = app();
@@ -2785,10 +2621,8 @@ fn a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero() {
             }),
         },
     )));
-    // A pane, because `drawn_live` and `superseded` are inputs to the walk and
-    // a test without a turn exercises neither. The daemon's order, from
-    // `docs/tui-testing.md`: the round's own rows, then the terminal event,
-    // then the result rows.
+    // A pane, because `drawn_live` and `superseded` are inputs to the walk and a test without a turn
+    // exercises neither. The daemon's order: the round's rows, the terminal event, then the results.
     a.apply(ServerFrame::Event(env(3, testing::turn_started("t1"))));
     a.apply(ServerFrame::Event(env(
         4,
@@ -2847,13 +2681,9 @@ fn a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero() {
     );
 }
 
-/// A message the operator sends while the calls run lands BETWEEN the calls
-/// and their results. It is not the end of the round.
-///
-/// Measured in the store 2026-09-17: `assistant (5 calls), user, user,
-/// tool_result ×10`. The results after the user rows still answer the calls
-/// above them — a user cannot produce a tool result — and stopping at the
-/// user row left every call `→ no result` after the model had moved on.
+/// A message the person sends while the calls run lands between the calls and their results, and it is
+/// not the end of the round: a person cannot produce a tool result, so the results after it still answer
+/// the calls above.
 #[test]
 fn a_message_sent_mid_round_does_not_orphan_the_rounds_results() {
     let mut a = app();
@@ -2917,12 +2747,8 @@ fn a_message_sent_mid_round_does_not_orphan_the_rounds_results() {
     assert_eq!(after.matches("TODO.md").count(), 1, "{after}");
 }
 
-/// One turn, with all four of its levels on the screen at once.
-///
-/// The operator's report was that a turn has no shape: *"user message, then a
-/// flat wall of cards"*. What answers it is a step, not a glyph — the
-/// question and the answer at the body's own column, the working one step in
-/// under them.
+/// One turn with all four of its levels on the screen: what answers a flat wall of cards is a step, not
+/// a glyph, so the question and the answer share a column and the working sits one step in.
 #[test]
 fn a_turn_is_a_question_a_step_of_working_and_an_answer_back_at_the_margin() {
     let mut a = app();
@@ -2998,10 +2824,8 @@ fn a_turn_is_a_question_a_step_of_working_and_an_answer_back_at_the_margin() {
 
 #[test]
 fn a_prompt_typed_mid_turn_stays_on_screen_marked_queued() {
-    // The complaint this whole queue answers: enter pressed while a turn runs,
-    // the hub accepts the prompt as a follow-up user item, and until the step
-    // boundary appends it the words were on no part of the screen. Now they
-    // wait at the tail of the body, marked, where their row will land.
+    // The complaint this queue answers: enter pressed while a turn runs, and until the step boundary
+    // appends the item the words are on no part of the screen. Now they wait at the tail, marked.
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     for c in "also bump the retry budget".chars() {
@@ -3104,12 +2928,8 @@ fn a_row_with_no_timestamp_shows_none_rather_than_the_epoch() {
     assert!(!row.contains(':'), "a fabricated timestamp: {row:?}");
 }
 
-/// **Rendering the same state twice must produce the same frame** — the invariant that
-/// catches a render path that mutates the state it is drawing.
-///
-/// The operator's report: *"empty space increases"*. A frame is a pure function of the head's
-/// state on a given tick; if drawing twice with no event in between differs, the draw is
-/// writing back into what it reads, and every later frame inherits it.
+/// Rendering the same state twice must produce the same frame. A frame is a pure function of the head's
+/// state on a tick, so a draw that writes back into what it reads makes every later frame inherit it.
 #[test]
 fn two_renders_of_one_state_are_the_same_frame() {
     let mut a = app();
@@ -3158,26 +2978,12 @@ fn two_renders_of_one_state_are_the_same_frame() {
     assert_eq!(second, third, "the third differs from the second");
 }
 
-// **R38: a setting with more than one value is CHOSEN from a card, never cycled.**
-//
-// The operator's own shape: `/verbosity` bare used to walk the rung, so the reader learnt
-// the list by changing it and discovered the current value the same way. With R37's fourth
-// rung that was up to three presses and three repaints to learn four words that fit on one
-// card. The card states every value **and what it means** — `conversation`, `terse`,
-// `normal`, `loud` are names, and a reader choosing between them is choosing between *what
-// will be on my screen*, which the name does not say.
-//
-// The card and its tests are `ui::panes::picker`'s (R38).
+// A setting with more than one value is chosen from a card, never cycled: a bare `/verbosity` made the
+// reader learn the list by changing it, and four names on one card say what each one means. The card
+// and its tests are `ui::panes::picker`'s.
 
-/// **R37 AMENDED: a run of hidden rows is ONE line, and it is the sentence's
-/// continuation.**
-///
-/// The operator, reading a real screen where the model's prose ended in a colon:
-/// *"if toolcalls and thinking are just hidden completely the narrative breaks."*
-/// The colon pointed at work that was not there. So a contiguous run of hidden rows
-/// collapses to one line carrying **how much** (`N tool calls`, `N thinking lines`) and
-/// **what it touched** (the verbs and targets the head already computed), drawn at the
-/// prose's own column with no blank in front of it.
+/// A run of hidden rows is one line and it continues the sentence: prose that ends in a colon pointed at
+/// work that was not there, so a contiguous run collapses to the counts drawn at the prose's column.
 #[test]
 fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
     let mut a = app();
@@ -3197,11 +3003,9 @@ fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
             ledger_head: String::new(),
         },
     )));
-    // **The row carries the calls as well as the prose**, which is the shape the daemon
-    // writes and the only place a row's *target* survives: `targets_before` reads the
-    // nearest assistant row's `tool_calls` arguments, so a fixture that published only
-    // proposals would leave every target empty — and this test would then be asserting
-    // that a marker with no target is a marker with the right target.
+    // The row carries the calls as well as the prose, and that is the only place a row's target
+    // survives: a fixture publishing only proposals would leave every target empty, and the assertion
+    // would pass on nothing.
     let calls: Vec<(&str, &str, &str)> = vec![
         ("c0", "read", "crates/tui/src/app.rs"),
         ("c1", "grep", "ctrl-t"),
@@ -3282,10 +3086,8 @@ fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
         "the run must draw exactly one marker:\n{quiet}"
     );
     assert!(quiet.contains("3 thinking lines"), "{quiet}");
-    // **The counts and nothing else** — the operator's final shape. The verbs and the
-    // distinct targets were built, measured and superseded: with prose on both sides of
-    // the marker, the counts are the only fact the two neighbours do not already carry.
-    // Asserted as the *absence* of the superseded half, so it cannot creep back in.
+    // The counts and nothing else: the verbs and distinct targets were superseded, since with prose on
+    // both sides the counts are the only fact the neighbours do not already give. Asserted as absence.
     for gone in ["Read", "Edited", "Searched", "Ran"] {
         assert!(
             !quiet.contains(gone),
@@ -3301,11 +3103,8 @@ fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
         );
     }
 
-    // **It is the continuation of the sentence, not a row underneath it.** The prose ends
-    // in a colon and the marker is the very next line.
-    // **It is punctuation inside the sentence, not a row underneath it.** The marker is
-    // on the prose's OWN line, after the colon — which is the operator's exemplar:
-    // `…has to give: [11 tool calls, 246 thinking lines]`.
+    // It is punctuation inside the sentence, not a row underneath: the marker sits on the prose's own
+    // line, after the colon.
     let line = quiet
         .lines()
         .find(|l| l.contains("here is what I am about to do:"))
@@ -3468,12 +3267,8 @@ fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
         screen.contains("[7 tool calls") && screen.contains("1 thinking line"),
         "the counts aggregate over the whole run:\n{screen}"
     );
-    // The positive control, and the reason the number above means anything: **prose
-    // ends a run.** A second visible sentence in the middle makes it two.
-    //
-    // **Applied in transcript order.** The events go through `apply` in the order they
-    // are written and `env`'s seq is only a stamp, so a control written out of order
-    // puts the rows in the wrong order and counts one marker for the wrong reason.
+    // The positive control: prose ends a run, so a second visible sentence makes it two. The events go
+    // through `apply` in the order written, since `env`'s seq is only a stamp.
     let mut b = app();
     b.apply(hello(
         "s",
@@ -3540,10 +3335,8 @@ fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
     );
 }
 
-/// **The marker the walk could not reach.** A run longer than the line budget used to
-/// lose its marker entirely when it was filled from the bottom: the marker is drawn at
-/// the run's FIRST row and the backward walk renders the newest first, so stopping on
-/// the budget left the rows it had passed showing nothing at all.
+/// The marker the walk could not reach: a run longer than the line budget lost its marker, because
+/// the marker is drawn at the run's first row and the backward walk renders the newest first.
 #[test]
 fn a_run_longer_than_the_window_still_draws_its_marker() {
     let mut a = app();
@@ -3592,13 +3385,8 @@ fn a_run_longer_than_the_window_still_draws_its_marker() {
     );
 }
 
-/// **The rung survives a head restart** — the operator's *"make versbosity a config option
-/// so it persists headrestarts."*
-///
-/// Asserted through `load_prefs` **and nothing else** — the loader is the thing a fresh
-/// head runs, so driving it is the whole of what "persists a restart" means. A test that
-/// set `a.verbosity` by hand after loading would be asserting that a field can be
-/// assigned, which is the shape of test that passes while the file says nothing.
+/// The rung survives a head restart, asserted through `load_prefs` and nothing else: the loader is
+/// what a fresh head runs, and setting the field by hand would assert only that it can be assigned.
 #[test]
 fn the_rung_is_written_down_and_comes_back_on_the_next_head() {
     let dir = std::env::temp_dir().join(format!("letibot-rung-persist-{}", std::process::id()));
@@ -3654,22 +3442,9 @@ fn the_rung_is_written_down_and_comes_back_on_the_next_head() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A set the card can show is a set the file keeps** — the operator's report, and both halves
-/// of it: *"it is not saved - when i do /verbosity there is no custom"*.
-///
-/// Two faults, and they compounded into one symptom:
-///
-///  * the card's rows came from a hand-written table of **four** profiles, so `read-edits` —
-///    *conversation plus the edit cards* — had no row at all, and neither had a set off the
-///    ladder. A rung `/v` cycles onto was a rung the card could not show;
-///  * `prefs::load` validated the saved word against that same four-name list, so `read-edits`
-///    and every `custom …` set were written by this head and then **refused when the file was
-///    read back** — the reader chose a set, the file kept it, and the next start fell back to
-///    `normal` in silence.
-///
-/// The assertion is the round trip the operator was making: choose it, write it, read it with a
-/// fresh head. Both spellings, because they fail in the same place — one is a profile the table
-/// never had and the other is no profile at all.
+/// A set the card can show is a set the file keeps: the card's rows came from a four-name table and
+/// `prefs::load` validated against that same list, so `read-edits` and every custom set were written
+/// and then refused on the next read. The assertion is the round trip a person makes.
 #[test]
 fn a_set_the_card_can_choose_is_a_set_the_file_keeps() {
     let dir = std::env::temp_dir().join(format!(
@@ -3726,14 +3501,8 @@ fn a_set_the_card_can_choose_is_a_set_the_file_keeps() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A completion notice is folded to one line per settlement, and R7's promise to the    /// **A completion notice is folded to one line per settlement, and R7's promise to the
-/// model is not drawn.**
-///
-/// The operator's ask, and leticl's half of it: *"i dont want to see that message to you
-/// 'This is the completion…'"*. The two strings below are the daemon's own text, copied out
-/// of the store, so this asserts against what is actually on the wire and not against a
-/// paraphrase — the trailing paragraph is the part being dropped, and it is dropped because
-/// it is addressed to the model.
+/// A completion notice folds to one line per settlement, and the paragraph addressed to the model is
+/// not drawn. The strings are the daemon's own text, copied from the store and not paraphrased.
 #[test]
 fn a_completion_notice_folds_to_one_line_per_settlement() {
     const JOB: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done\nOutput: `job_output` job=\"j57\".";
@@ -3771,13 +3540,8 @@ fn a_completion_notice_folds_to_one_line_per_settlement() {
     );
 }
 
-/// **A named job folds to the same line, with the name in it.**
-///
-/// The label is `release-build · j65` — spaces and all — and the fold took the bullet's first
-/// word for the handle, closed the backtick on it and failed, which dropped the WHOLE row to raw
-/// prose: the operator's line would have lost its fold, and the paragraph R7 addresses to the
-/// model would have come back, on exactly the notice the name was asked for. So the handle is
-/// the whole span between the backticks, and this is the test that says so.
+/// A named job folds to the same line with the name in it: the handle is the whole span between the
+/// backticks, since taking the bullet's first word closed the backtick and dropped the row to prose.
 #[test]
 fn a_named_jobs_settlement_folds_with_its_name() {
     const NAMED: &str = "[job] a job you backgrounded has ended:\n  - `release-build · j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test --workspace\nOutput: `job_output` job=\"j65\".";
@@ -3793,16 +3557,8 @@ fn a_named_jobs_settlement_folds_with_its_name() {
     );
 }
 
-/// **The plan's nudge is the same shape — and the operator asked for its HEAD alone.**
-///
-/// Their words, on the row they have been reading all evening: *"in read verbosity todo nag
-/// shouldnt show me model prompt only todo head."* The row is `[todo check] …` and its closing
-/// paragraph is advice **addressed to the model** — *do this one, or mark it done with
-/// `todo_write`* — so it folds like a completion notice does, to the item and whose row it is.
-///
-/// **Both closings are named**, because the operator's row and the model's own are different
-/// sentences (`unfinished_plan`), and a nag the fold cannot account for is drawn whole rather
-/// than halved.
+/// The plan's nag folds to its head alone, so the advice addressed to the model is not drawn. Both
+/// closings are named, and a nag the fold cannot account for is drawn whole rather than halved.
 #[test]
 fn the_todo_nag_folds_to_the_item_and_not_to_the_advice() {
     const MINE: &str = "[todo check] this turn is finished and one item is not done (1 more open):\n  - T2 · the launcher — yours\ndo this one, or mark it done with `todo_write`'s `update` field, quoting the text above exactly — a row left out of `todo_write` STAYS on the board, so a line of work you are dropping is something you say in your reply, not something a call does. If you are stopping here deliberately, say why in your reply.";
@@ -3854,14 +3610,9 @@ fn a_notice_holding_a_job_and_a_child_folds_to_both() {
     assert_eq!(lines[1], "Agent s-p-sub-1 · done: 3529");
 }
 
-/// **A child's own task rides the folded line** — the piece leticl has and this head did
-/// not, and it is LOOKED UP rather than parsed.
-///
-/// The notice carries only what the child answered; what it was asked is on the subagent
-/// row, so this is `subagent_asked`'s own words and not a second reading of the notice. The
-/// two fallbacks are asserted with it, because both are real: a child this head never
-/// watched spawn (a head that attached after the spawn), and a daemon older than the `task`
-/// field, whose `prompt` still holds the row.
+/// A child's own task rides the folded line, looked up on the subagent row rather than parsed out of
+/// the notice. A child this head never watched spawn, and a daemon older than the `task` field, both
+/// fall back to the row's `prompt`.
 #[test]
 fn the_folded_agent_line_names_the_task_it_was_asked() {
     const TASK: &str = "[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nFull answer: `task_result` task=\"s-p-sub-1\".";
@@ -3906,17 +3657,9 @@ fn the_folded_agent_line_names_the_task_it_was_asked() {
     );
 }
 
-/// **A call in flight is counted before its row exists** — the operator's *"display looks
-/// frozen, while in fact it is just say cargo testing with yellow dot."*
-///
-/// The structural reason is in `harnessd::harness`: a round's result rows are appended
-/// **after every call in it has run**, so between the narration and the first result the
-/// transcript holds no work at all. A marker built from rows therefore counted nothing and
-/// said nothing, while the reader watched a `cargo test` that had been running for a
-/// minute — a screen that reads as a head which has stopped.
-///
-/// The turn is what knows. This drives a turn whose call is proposed and running with no
-/// result yet, and asks for the counts.
+/// A call in flight is counted before its row exists: a round's result rows are appended only after
+/// every call has run, so a marker built from rows said nothing while the reader watched a minute of
+/// `cargo test`. The turn is what knows, so this drives one whose call is still running.
 #[test]
 fn a_call_in_flight_is_counted_before_its_row_exists() {
     let mut a = app();
@@ -3981,33 +3724,9 @@ fn a_call_in_flight_is_counted_before_its_row_exists() {
     );
 }
 
-/// **The counts are plain and the seam is faint** — the operator's split, ruled across
-/// the two heads.
-///
-/// This head painted the whole marker faint and leticl painted only the seam; **leticl's
-/// reading is the one that stands.** The counts are *punctuation inside a sentence* — the
-/// marker sits on the end of the prose the colon points at — and nothing in prose is dimmed
-/// mid-sentence except an aside, which the counts are not: they are the only content the
-/// marker carries. The seam is the aside, and R29's register rule says so: **dim is for a
-/// sentence you could delete with the reader no worse off.**
-///
-/// Asserted on the escapes at both ends, because the words are identical either way and
-/// the register is the whole of what changed: the `[` must NOT be preceded by the faint
-/// code, and the dot must be inside the faint run with the seam.
-///
-/// **The earlier ruling still stands and is the other half of this**: the seam is gray,
-/// dot included. This test is where it is kept.
-/// **An entry that GREW after a row was bound to it is not drawn twice** — R51 item 15.
-///
-/// The shape that defeats a whole-string comparison: the operator types `A`, and it is bound to
-/// the body-less row the daemon announced. Then they keep typing (behind a running turn, so item
-/// 14's coalescing puts `B` and `C` into the SAME entry), and the entry is now `"A\nB\nC"` while
-/// the row is still drawing `"A"`. The tail's question used to be *is this entry already on
-/// screen* — answered NO for every such entry — so the WHOLE thing was drawn again and `A`
-/// appeared twice.
-///
-/// The rule is that the unit of DRAWING is the entry and the unit of CLAIMING is the piece: the
-/// line the row is drawing is spent, and what is left of the entry is drawn as one block.
+/// The counts are plain and the seam is faint: the counts are content the marker carries, and dim is
+/// for a sentence you could delete with the reader no worse off. Asserted on the escapes, because the
+/// words are identical either way.
 #[test]
 fn an_echo_that_grew_after_it_was_bound_is_not_drawn_twice() {
     let mut a = app();
@@ -4045,13 +3764,8 @@ fn an_echo_that_grew_after_it_was_bound_is_not_drawn_twice() {
         "the premise: one entry, three lines"
     );
     let screen = a.screen(100, 30).join("\n");
-    // **The claim, and it is the whole of this item.** The bound row draws `A`; the tail must
-    // draw only what that does not — not the whole entry a second time.
-    //
-    // **The bound row carries no mark and the remainder does** — see the tail's own comment
-    // for why those are two questions rather than one spelling. This assertion used to count
-    // `queued · A`, which was true only while a landed row wore the echo's mark: the defect
-    // R2 names, visible here as `A` reading `queued` under a reply that was already streaming.
+    // The claim, and the whole of this item: the bound row draws `A`, and the tail draws only what it
+    // does not. The bound row carries no mark and the remainder does.
     assert_eq!(
         screen.matches("▌ A").count(),
         1,
@@ -4077,12 +3791,8 @@ fn an_echo_that_grew_after_it_was_bound_is_not_drawn_twice() {
     );
 }
 
-/// **An entry that grew is `unconfirmed` still, by its ORIGINAL text** — the mark rides on the
-/// entry.
-///
-/// The near-miss shape of item 15: the piece-claiming walk hands back a REMAINDER, and asking
-/// `unconfirmed` about the remainder rather than about the entry would silently drop the mark for
-/// exactly the case that item is about — a snapshot marked the echo, and then it grew.
+/// An entry that grew is `unconfirmed` still, by its ORIGINAL text: the mark rides the entry, and
+/// asking about the remainder would drop it in exactly the case item 15 is about.
 #[test]
 fn a_grown_entry_keeps_the_mark_its_original_text_carried() {
     let mut a = app();
@@ -4310,11 +4020,8 @@ fn the_work_in_flight_is_counted_by_one_marker_not_two() {
             }),
         },
     )));
-    // **AND THE OPERATOR'S OWN MESSAGE IS THE LAST ROW** — which is the half that matters, and
-    // the operator named it: *"again it happens when we have my queued messages."* The pane's
-    // marker only joins the sentence above it when that sentence is the MODEL's prose; an
-    // operator row is not, so the pane must draw its marker on its own line — and that is the
-    // second marker, beside the walk's.
+    // The person's own message is the last row, so the pane must draw its marker on its own line: a
+    // marker joins only the model's prose above it.
     a.apply(ServerFrame::Event(env(8, testing::appended("s.2", "user"))));
     a.apply(ServerFrame::Event(env(
         9,
@@ -4346,30 +4053,17 @@ fn the_work_in_flight_is_counted_by_one_marker_not_two() {
         "the work in flight is drawn by {markers} markers — the walk's and the pane's, for one \
              run:\n{text}"
     );
-    // **And the one marker carries BOTH numbers**, which is the operator's *"when it is just
-    // thinking doesnt advance the counter"*: the run's finished call and the thinking still
-    // arriving, in the same brackets.
-    //
-    // Asserted as the two counts rather than as one exact spelling, because WHICH rung of the
-    // ladder a marker wears is a function of the room the line had — see
-    // `the_marker_steps_down_its_ladders_instead_of_growing` for the ladder itself. What must
-    // not vary is that both facts are there and there is one marker.
+    // The one marker carries both numbers: the run's finished call and the thinking still arriving.
+    // Asserted as the two counts rather than one spelling, because the rung follows the room.
     assert!(
         text.contains("1 tool") && text.contains("1 thinking"),
         "the single marker does not carry both counts:\n{text}"
     );
 }
 
-/// **A FACT THE MARKER DRAWS IS A FACT THE CACHE KEY HOLDS** — the property the two
-/// omissions were missing made checkable, and the reason [`MarkerFacts`] exists at all.
-///
-/// It is what [`hidden_run_marker`] reads *and* what `App::marker_facts` compares, so the
-/// table below is the whole of the marker's dependence on NOW: three fields it draws, and
-/// `run`, which it does not draw but the rebuild needs — the run the work has LEFT has to be
-/// rebuilt without the colour. **Two assertions per row, because the two halves must not come
-/// apart:** a fact that moves the painting but not the key is a stale row (the colour, then
-/// the run — both shipped), and a fact that moves the key but not the painting is a rebuild
-/// for nothing.
+/// A fact the marker draws is a fact the cache key holds: this table is the marker's whole dependence
+/// on now, and each row asserts both halves, since a fact moving the painting but not the key is a
+/// stale row and one moving the key but not the painting is a rebuild for nothing.
 #[test]
 fn every_fact_the_marker_draws_is_a_fact_the_key_holds() {
     let cfg = RenderConfig {
@@ -4426,19 +4120,9 @@ fn every_fact_the_marker_draws_is_a_fact_the_key_holds() {
     }
 }
 
-/// **ONE TURN OF MANY ROUNDS WEARS ONE YELLOW MARKER, NOT FORTY** — the operator,
-/// on this session's own screen while a long turn ran: *"old tool calls stayed yellow
-/// for some reason."*
-///
-/// The `live_here` question was *does this run hold a row of THIS TURN*, and a turn of
-/// forty rounds is forty runs, every one of them holding this turn's rows — so every
-/// marker folded the in-flight counts (inflating each, so the numbers were wrong as
-/// well as the colour) and every marker was painted pending. The work in flight happens
-/// after every committed row, so it continues the NEWEST run and no other; the turn
-/// clause stays, because a run of an EARLIER turn is still not this turn's.
-///
-/// Both directions are asserted here: two rounds of one turn, a call in flight, exactly
-/// one yellow marker with the in-flight count folded in and the other run plain.
+/// One turn of many rounds wears one yellow marker, not forty: `live_here` asked whether the run held
+/// a row of this turn, so every round's marker folded the in-flight counts. The work in flight
+/// continues the newest run and no other.
 #[test]
 fn only_the_newest_runs_marker_is_yellow_in_a_turn_of_many_rounds() {
     let mut a = App::new(RenderConfig {
@@ -4452,10 +4136,8 @@ fn only_the_newest_runs_marker_is_yellow_in_a_turn_of_many_rounds() {
     ));
     a.visibility = Visibility::of(Profile::CONVERSATION);
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-    // **Two rounds, each: the model's prose, then a call and its result row.** At the
-    // conversation rung the prose is drawn and the result row is hidden, so each round
-    // is its own run of hidden rows with its own marker — which is the shape the defect
-    // needed and the shape a long turn has.
+    // Two rounds, each the model's prose then a call and its result: at the conversation rung each
+    // round is its own run of hidden rows with its own marker.
     for (i, (seq, row_id, text, call_id)) in [
         (2u64, "s.0", "round one says a thing", "c1"),
         (8, "s.2", "round two says a thing", "c2"),
@@ -4574,23 +4256,9 @@ fn only_the_newest_runs_marker_is_yellow_in_a_turn_of_many_rounds() {
     );
 }
 
-/// **A YELLOW THAT STAYS ON A RUN THE WORK HAS LEFT** — the operator's own screen, read back to
-/// me: *"look how many tools are yellow"*, with **five** markers lit at once on one turn.
-///
-/// The invariant is that ONE marker carries the yellow: it says *a call of THIS number is
-/// executing*, so it belongs to the run the work is in, and every other run is settled history
-/// that draws plain. `only_the_newest_runs_marker_is_yellow_in_a_turn_of_many_rounds` asserts
-/// exactly that and passes — because it renders the FINISHED state in one walk, where the
-/// decision is consistent by construction.
-///
-/// **What breaks it is the frames in between.** A marker is painted into `hist_lines`, the cache
-/// of RENDERED rows, and the yellow is a fact about NOW rather than about the row — so each run
-/// is yellow while it IS the newest, and the invalidation that should take the colour away keys
-/// on the COUNTS, which can be identical between two rounds (the operator's screen carried
-/// `[2 tool calls, 6 thinking lines]` five times) and only ever rebuilds the newest run's row.
-/// The runs above keep the yellow for the rest of the turn.
-///
-/// So this drives the turn a frame at a time, which is what a person watches.
+/// A yellow that stays on a run the work has left: the colour is a fact about now but it is painted
+/// into the cache of rendered rows, and the invalidation keys on counts two rounds can share. So this
+/// drives the turn a frame at a time, which is what a person watches.
 #[test]
 fn the_yellow_does_not_stay_on_a_run_the_work_has_left() {
     let mut a = App::new(RenderConfig {
@@ -4709,10 +4377,8 @@ fn the_yellow_does_not_stay_on_a_run_the_work_has_left() {
     );
 
     let screen = a.screen(110, 40);
-    // **Counted by the words, not by `is_marker`** — that helper reads a digit straight after the
-    // `[`, which is true only of a frame drawn with no colour: a pending count has an escape
-    // where the digit is (`[\u{1b}[33m2\u{1b}[0m tool calls]`), which is the very thing this test
-    // is about. `tool call` is on a marker and nowhere else on this screen.
+    // Counted by the words, not by `is_marker`: a pending count has an escape where the digit is, and
+    // `tool call` is on a marker and nowhere else on this screen.
     let drawn = screen.iter().filter(|l| l.contains("tool call")).count();
     let lit = screen
         .iter()
@@ -4819,19 +4485,8 @@ fn the_reply_is_never_drawn_above_the_queued_message_it_answers() {
     );
 }
 
-/// **The waiting words are the only row that moves when the daemon takes them** — R51 item 13's
-/// third *must not differ*, as it now stands, and the clause most able to rot quietly.
-///
-/// An echo is words plus the air a landed row has, and a committed row is words plus the
-/// separator's blank — so the two occupy the same rows and **no other row of the frame changes**
-/// when the announcement arrives. Get it wrong — put the air before the echo, or let the wait
-/// carry furniture of its own — and every row between the echo and the composer shifts at the
-/// moment the operator's own message lands, which is exactly when they are looking at it.
-///
-/// **The words themselves DO move, by the ruling in `body_window`**: while nothing has taken
-/// them they wait below the live pane, and the announcement is the daemon taking them, so they
-/// go up into their row's own place. Both halves are asserted here — the move, and that it is
-/// the only thing that moves — because either one alone is satisfied by a frame that is wrong.
+/// The waiting words are the only row that moves when the daemon takes them: they wait below the live
+/// pane, and the announcement moves them into their row's own place while no other row changes.
 #[test]
 fn the_waiting_words_are_the_only_row_that_moves_when_the_daemon_takes_them() {
     let mut a = app();
@@ -4851,11 +4506,8 @@ fn the_waiting_words_are_the_only_row_that_moves_when_the_daemon_takes_them() {
         before.iter().any(|l| l.contains("queued ·")),
         "the premise: the echo is drawn as a queued block"
     );
-    // **Whose row to measure, and this is the whole of the measurement.** The live pane is
-    // pinned to the bottom of the frame — measured first, it cannot move whatever the echo
-    // does, so asserting on it proves nothing. What moves is the WORDS: with the air in front
-    // of the echo, they sit one row lower than the row that replaces them, so every committed
-    // row between them shifts when the announcement lands.
+    // Whose row to measure: the live pane is pinned to the bottom and cannot move, so what is measured
+    // is the words, which sit one row lower while they wait.
     let words_row = |screen: &[String]| {
         screen
             .iter()
@@ -4886,10 +4538,8 @@ fn the_waiting_words_are_the_only_row_that_moves_when_the_daemon_takes_them() {
         after.iter().any(|l| l.contains("a queued line")),
         "and the words are still on the screen, as a settled row: {after:?}"
     );
-    // **Every other row, in order and in content.** Blank rows are dropped, and that is a
-    // deliberate weakening: the wait's leading air and the landed row's separator are blanks in
-    // different places, the subject here is whether a ROW moved, and a comparison that counted
-    // blanks would be measuring the padding a tall screen adds.
+    // Every other row, in order and content. Blank rows are dropped deliberately: the wait's air and
+    // the landed row's separator are blanks in different places, and the subject is whether a row moved.
     let others = |screen: &[String]| -> Vec<String> {
         screen
             .iter()
@@ -4913,14 +4563,9 @@ fn the_waiting_words_are_the_only_row_that_moves_when_the_daemon_takes_them() {
     );
 }
 
-/// **Only the CALLS number goes yellow, and only on the marker that carries the live work** —
-/// R51 items 7 and 8, the two halves of one colour.
-///
-/// Two operator corrections are baked in here. The first: *"you should yellow only tool call
-/// number, not the whole [] thing"* — so the thinking count and both brackets are asserted
-/// PLAIN, not merely unasserted. The second: this colour has been wrong in three directions,
-/// and the direction this test exists for is the third — a marker for a PREVIOUS turn's run
-/// must not light up because the current turn has a call in flight.
+/// Only the calls number goes yellow, and only on the marker carrying the live work: the thinking
+/// count and both brackets are asserted plain, and a marker for a previous turn's run must not light
+/// up because this turn has a call in flight.
 #[test]
 fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
     let mut a = app();
@@ -5001,10 +4646,8 @@ fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
         10,
         testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
     )));
-    // **And the daemon STARTS it**, which is what makes it executing rather than merely
-    // proposed. This is the distinction the colour turns on: a call the model has written and
-    // the daemon has not begun is work the marker COUNTS and is not work that is happening, so
-    // the number is there and the yellow is not.
+    // And the daemon starts it, which is what makes it executing: a call written but not begun is work
+    // the marker counts and not work that is happening, so the number is there and the yellow is not.
     a.apply(ServerFrame::Event(env(
         11,
         SessionEvent::ToolStarted {
@@ -5051,23 +4694,9 @@ fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
     );
 }
 
-/// **A marker whose work is a THOUGHT alone colours nothing** — the other half of item 7.
-///
-/// The styled thing is the CALLS count, so a marker carrying only thinking lines has nothing to
-/// colour even while the model is plainly working. This is the case that would tempt a reader to
-/// colour the brackets or the whole marker, and the operator ruled against both.
-/// **A call that has FINISHED keeps its number and loses the yellow** — the stuck counter.
-///
-/// The operator: *"one of your yellow tool calls stuck at yellow."* leticl has the rule and its
-/// words are the diagnosis: *"`:calls` is now the calls with no result row yet, which includes a
-/// call that has FINISHED and whose row is a frame away. That one keeps the number (it is still
-/// work the marker counts) and must not keep the colour — the yellow says EXECUTING, and nothing
-/// is."*
-///
-/// **The two facts come apart in a one-frame window**, which is why this is a test about a
-/// window rather than about a state: `ToolFinished` arrives, and the row that takes the call over
-/// is announced and filled on later frames. In between, the count must hold — a number that is a
-/// count of work done cannot go down — and the colour must go.
+/// A marker whose work is a thought alone colours nothing, since the styled thing is the calls count;
+/// and a call that has finished keeps its number and loses the yellow, because the colour says
+/// executing and nothing is.
 #[test]
 fn a_finished_call_keeps_its_number_and_loses_the_yellow() {
     let mut a = app();
@@ -5155,23 +4784,9 @@ fn a_finished_call_keeps_its_number_and_loses_the_yellow() {
     );
 }
 
-/// **A call whose result ROW this head holds is not executing, whatever the pane says.**
-///
-/// The operator, on a long round: *"yellow tool calls are not resolved unfortunately"* — a marker
-/// whose digits stay pending on a turn whose calls have all finished and whose daemon has published
-/// every row, and it never clears. The pane says `Running` and only a `ToolFinished` corrects it, so
-/// a finish this head never received leaves one call pending **for the rest of the session**: no
-/// later event clears it, `App::turn_busy` goes on saying `Responding` over it, and the daemon's own
-/// view holds the same `running` because the finish it never published is the finish nobody heard.
-///
-/// **What this head does hold is the result row** — and a result row for a call is the call being
-/// over. This is the half `live_work`'s `running` was missing: the NUMBER already counts only the
-/// calls the transcript has not taken over, so the colour must be counted over those same calls or
-/// it goes on colouring a number that has stopped counting them.
-///
-/// **The state is deliberately NOT fixed up here**, and the assertion in the middle says so: the
-/// pane is the daemon's to correct. This is the colour reading the head's own record of the same
-/// fact, not a head inventing a `ToolFinished` it never received.
+/// A call whose result row this head holds is not executing, whatever the pane says: a finish it never
+/// received leaves one call pending for the rest of the session, and the result row is the record this
+/// head does have. The pane is the daemon's to correct, so this reads the colour, not the state.
 #[test]
 fn a_call_the_transcript_has_answered_is_not_drawn_executing() {
     const PENDING: &str = "\u{1b}[33m1\u{1b}[0m tool call";
