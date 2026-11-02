@@ -54,7 +54,7 @@ operator's own credential; and `https://`, because the client has no TLS.
 | lifetime | the daemon's | a conversation's | one `task` call's |
 | holds | the reader, the waiter claim, the presence, the spool, the entity watcher | an `Attention` table and an `InboxCondition` | nothing flowy |
 | hears | everything the node delivers at the loosest level any session wants | what passes its own table | through its parent |
-| speaks as | — | the seat | through its parent |
+| speaks as | - | the seat | through its parent |
 
 `Seat::attach(session, attention)` returns the condition the session's monitor watches. Two
 sessions on one seat can want different things, so the seat polls at the loosest and each table
