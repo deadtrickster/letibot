@@ -1,10 +1,6 @@
 //! The TUI head's state machine: frames in, a screen out.
-//!
-//! [`App`] touches no file descriptor, so the head is testable by feeding it frames and
-//! reading `screen()`; the terminal is [`crate::term`].
-//!
-//! The driver acks only after the screen is drawn and acks what it read, and [`Verbosity`]
-//! counts everything it suppresses, so a filter that hides everything is not an idle session.
+//! [`App`] touches no file descriptor, so feeding it frames and reading `screen()` is a test;
+//! [`Verbosity`] counts what it suppresses, so a hidden screen is not an idle session.
 
 use letibot_sessionlog::event::{Timings, Usage};
 use letibot_sessionlog::registry::{SessionBrief, SessionWiring};
@@ -496,10 +492,9 @@ pub struct App {
     /// openers each clearing the other three is a hand-kept invariant, and `Option` makes it
     /// structural. One renderer for all of them, because a second copy of a list drifts.
     pub(crate) pick: Option<Pick>,
-    /// `allow-all`, held one keystroke short of sent. It admits the always-ask list, which is the
-    /// person's own machine, so it asks instead of refusing. Asked for every `allow-all`, a VM
-    /// included where the daemon ignores the answer: a head that decided when to ask would have to
-    /// know whether the session is confined, and a wrong guess asks nothing where it matters.
+    /// `allow-all`, held one keystroke short of sent: it admits the always-ask list, so it asks
+    /// rather than refuses. Asked on every `allow-all`, a VM included where the daemon ignores the
+    /// answer, because deciding otherwise would mean knowing whether the session is confined.
     pub(crate) mode_confirm: Option<String>,
     /// A confirmation the daemon put up because another head asked for it, where the bridge wants
     /// `allow-all` and cannot be the person whose box is the boundary. It rides the same card as
@@ -624,10 +619,9 @@ pub struct App {
     /// [`App::subagents`]: arrows move it, Enter switches into the child it names or folds the
     /// `finished` group.
     pub(crate) subagents_sel: usize,
-    /// Whether the `finished` group is unfolded. Collapsed by default, because eighteen finished
-    /// children would push the running ones off the screen.
-    /// Nothing else writes it, and climbing out of a child must not unfold a group to land the
-    /// cursor: it is the head's own state, handed to the pane each frame ([`App::subagents_view`]).
+    /// Whether the `finished` group is unfolded; collapsed by default so finished children cannot
+    /// push the running ones off the screen. Climbing out of a child must not unfold it to land the
+    /// cursor: it is the head's own state, handed to the pane each frame.
     pub(crate) subagents_finished_open: bool,
     /// The pane row each stop was drawn on, the same record [`App::todos_stop_rows`] keeps for its
     /// own pane and for the same reason: the arrows scroll by what the pane wrote, never by
@@ -775,10 +769,9 @@ pub struct App {
     /// list with nothing open still draws where you are: the project holding this session and its
     /// chain of parents, which keeps twenty subagents from burying the conversations.
     pub(crate) expanded: Vec<String>,
-    /// Wall clock, fed in by the driver, and when this head last had anything from the daemon.
-    ///
-    /// Received-at and not the event's `ts`, because the daemon's opinion of how long it has been
-    /// quiet is exactly the number missing when it stopped talking. Zero says nothing about stalls.
+    /// Wall clock fed in by the driver, and when this head last had anything from the daemon.
+    /// Received-at rather than the event's `ts`, because the daemon's opinion of how long it has
+    /// been quiet is exactly the number missing when it stopped talking. Zero says nothing.
     pub(crate) now_ms: u64,
     pub(crate) last_event_at: u64,
     /// The workspace's git field, as the pieces the format in force asks for: `(text, role)` pairs
@@ -795,10 +788,9 @@ pub struct App {
     /// Which workspace that reading was of, and when. A switch to another session carries another
     /// path, and a field left over from the previous tree would be drawn as this one's branch.
     pub(crate) git_read: (String, u64),
-    /// The git reading in flight, if one is: the workspace it is of and the channel its answer
-    /// arrives on. `git status` is a process and can take seconds, so the loop starts it and
-    /// collects it and never waits. One at a time: a reading that outlives the interval is not
-    /// joined by a second.
+    /// The git reading in flight: the workspace it is of and the channel its answer arrives on.
+    /// `git status` is a process and can take seconds, so the loop starts it and collects it and
+    /// never waits. One at a time: a reading that outlives the interval is not joined by a second.
     pub(crate) git_job: Option<(
         String,
         std::sync::mpsc::Receiver<Option<crate::gitfield::GitState>>,
@@ -860,13 +852,9 @@ pub struct App {
     /// which is not the same as speaking zero. Kept because `/status` must answer which build is on
     /// the other end long after the handshake. The comparison is [`letibot_sessionlog::protocol_skew`].
     pub(crate) daemon_protocol: Option<u32>,
-    /// Which daemon this head is drawing: the process at the other end of the socket, from
-    /// `SO_PEERCRED`, and the `PROTOCOL_VERSION` that rides the `Hello`. The pid is the kernel's
-    /// answer for this socket, which makes it an identity and not a guess.
-    ///
-    /// A head outlives the daemon that gave it its facts, so a daemon that comes back is not the
-    /// one whose answers are on the screen. The dying socket makes the driver reconnect; what was
-    /// missing was noticing.
+    /// Which daemon this head is drawing: the socket's peer pid (`SO_PEERCRED`, so an identity and
+    /// not a guess) and the `PROTOCOL_VERSION` from the `Hello`. A head outlives its daemon, and a
+    /// daemon that comes back is not the one whose answers are on the screen.
     pub(crate) daemon_seat: Option<DaemonSeat>,
     /// The seat a person has already said *attach anyway* for: refusing is half the ruling and this
     /// is the other half's memory, set by [`App::attach_anyway`] and read by [`App::skew_locked`].
@@ -884,10 +872,9 @@ pub struct App {
     /// picker's resume are two steps, and the `Hello` for the first is not the answer: while this
     /// is set, a `Hello` for another session leaves [`Self::attaching`] up.
     pub(crate) fetching: Option<String>,
-    /// How many rows this session's store row holds, while the head holds none of them: the daemon
-    /// is restoring the conversation. The count comes from the store and the rows from the
-    /// snapshot, so a session registered but not yet opened has an empty one; a head told a session
-    /// holds 166 rows must never draw it as one that has said nothing.
+    /// How many rows the store holds while this head holds none of them: the daemon is restoring.
+    /// The count is the store's and the rows are the snapshot's, so a session registered but not
+    /// yet opened has an empty one and must never be drawn as one that has said nothing.
     pub(crate) restoring: Option<u32>,
     /// When the attach began, on the clock `App::clock` is given. The cat's frame comes from the
     /// elapsed time rather than a counter, so `screen()` stays a pure function of the clock and
@@ -921,10 +908,9 @@ pub struct App {
     /// Where each rendered row's lines are, ascending by `at`. Rebuilt as the history is walked,
     /// prepended to, and cleared whenever that buffer is thrown away.
     pub(crate) spans: Vec<Span>,
-    /// The body line at the top of the last frame's window, and how many lines it had.
-    ///
-    /// The key handler runs between frames and has to answer *where is the reader looking* from
-    /// what the last frame drew, or it would be a second opinion about the person's screen.
+    /// The body line at the top of the last frame's window, and how many lines it had. The key
+    /// handler runs between frames, so it answers where the reader is looking from what the last
+    /// frame drew rather than forming a second opinion about the person's screen.
     pub(crate) view_top: usize,
     pub(crate) view_room: usize,
     /// Names this head's door calls so the daemon can tell them apart: the `call_id` is
@@ -938,10 +924,9 @@ pub struct App {
     /// Whether an echo is drawn in full or as its elided headline. Folded by default and flipped
     /// by `/t`: one key for one idea, so a reader who wants the long rows shown whole asks once.
     pub(crate) echo_open: bool,
-    /// A stop this head asked for and has not finished: `Some` from the moment the frame goes out
-    /// until the daemon is gone or the deadline has passed. While it is `Some` and unresolved,
-    /// [`App::should_quit`] is false, which is the whole requirement: the head does not exit until
-    /// the daemon has gone or it can say it has not.
+    /// A stop this head asked for and has not finished: `Some` from the frame going out until the
+    /// daemon is gone or the deadline passes. While it is set and unresolved [`App::should_quit`]
+    /// is false - the head does not exit until it can say the daemon has gone.
     pub(crate) stopping: Option<Stopping>,
     /// A bulk announcement the daemon has not filled yet, recorded only when a snapshot is
     /// ingested and never by a live `TranscriptAppended`: a live row is body-less for the window of
@@ -951,22 +936,17 @@ pub struct App {
     /// once `done >= total`, because the finish is a note and not a line that stays. The daemon's
     /// count and not a count of body-less rows: four things produce those and only some are a carry.
     pub(crate) filling: Option<(String, String, u64, u64)>,
-    /// When the fill in [`App::filling`] started, on this head's clock: the first tick of an
-    /// operation, re-armed when the daemon names a different one. The status row's clock reads
-    /// from it, and when two progresses are live the one that started last is the one shown
-    /// ([`App::progresses`]).
+    /// When the fill in [`App::filling`] started, on this head's clock: re-armed when the daemon
+    /// names a different operation. The status row's clock reads from it, and with two progresses
+    /// live the one that started last is the one shown ([`App::progresses`]).
     pub(crate) filling_since: u64,
-    /// The daemon is still starting: the last `daemon_starting` step it named, until
-    /// `daemon_started`. The socket listens before the worker runs, so a head can be attached to a
-    /// session that cannot run anything yet; this says so, and labels a prompt typed meanwhile as
-    /// running once the daemon has started.
+    /// The daemon is still starting: the last `daemon_starting` step, until `daemon_started`. The
+    /// socket listens before the worker runs, so this says a session cannot run anything yet, and
+    /// labels a prompt typed meanwhile as running once the daemon has started.
     pub(crate) booting: Option<String>,
-    /// This daemon's binary is older than the store it serves, as the daemon's own sentence, plus
-    /// which binary it is. `None` is every ordinary attach.
-    ///
-    /// State and not a row: an older binary keeps working when the newer schema only added
-    /// things, and it says so in red on the status line, on every frame and for a head that
-    /// arrives late. Taken from `Warning { code: "store_newer" }`, which needs no protocol bump.
+    /// This daemon's binary is older than the store it serves, as the daemon's own sentence;
+    /// `None` is every ordinary attach. State and not a row: an older binary keeps working when
+    /// the newer schema only added things, and says so in red on the status line every frame.
     pub(crate) store_newer: Option<String>,
     /// What the daemon is holding back from the model right now, `(jobs, subagents, failed)` from
     /// the last `HeldResults`, `None` once all are zero. Drawn on the turn's status row
@@ -976,12 +956,9 @@ pub struct App {
     /// `ActivityChanged` and seeded from a snapshot, drawn as one muted line on the status row
     /// ([`App::activity_line`]). `Quiet` is all a daemon without the frame can say.
     pub(crate) activity: letibot_sessionlog::activity::Activity,
-    /// A fold's long wait, in the compaction's own units.
-    ///
-    /// A field of its own and not a second use of `turn.progress`: an overrun compaction
-    /// summarises a scratch transcript, and forwarding its progress as the session's drew the
-    /// scratch count as the session's context. Nothing else writes this field, so the two cannot
-    /// be confused however alike they look.
+    /// A fold's long wait, in the compaction's own units. Its own field and not a second use of
+    /// `turn.progress`: an overrun compaction summarises a scratch transcript, and forwarding that
+    /// count as the session's drew the scratch context as the session's.
     pub(crate) compacting: Option<CompactionLine>,
     /// When the fold in [`App::compacting`] started, on this head's clock: its first
     /// `CompactionProgress`. See [`App::filling_since`].
@@ -990,36 +967,21 @@ pub struct App {
     /// when the row said everything it had. A cut flash notice, or a progress whose row form left
     /// something out. See [`App::status_row`].
     pub(crate) status_click: Option<(String, String)>,
-    /// Pre-emptive compaction is off for this session, and why: the no-progress guard's finding as
-    /// the daemon rendered it. `None` draws nothing.
-    ///
-    /// State and not a note, because it is true until it is not. Two channels feed it because two
-    /// moments matter: the warning while this head watches, and the settings row for a head that
-    /// attaches after the fact. Keyed on the `off -` spelling the daemon writes only for the
-    /// guard's finding, so a `--no-auto-compact` the person typed is not re-announced.
+    /// Pre-emptive compaction is off and why, as the daemon rendered it; `None` draws nothing.
+    /// A state, fed by the live warning and by the settings row for a later head. The `off -`
+    /// spelling only the guard writes is the key, so a typed `--no-auto-compact` is not re-announced.
     pub(crate) auto_compact_off: Option<String>,
-    /// The person has paused this session's plan-check, carrying the daemon's `until …` words
-    /// (empty for the moment before the settings that name its end).
-    ///
-    /// State and drawn on every frame ([`App::nag_pause_line`]), because a board that stopped
-    /// asking looks exactly like a clock that broke. Fed by the `nags_paused`/`nags_resumed` rows
-    /// while this head watches and by the `nags` settings row otherwise.
+    /// The person has paused this session's plan-check, carrying the daemon's `until ...` words
+    /// (empty until the settings that name the end). Drawn every frame, because a board that
+    /// stopped asking looks exactly like a clock that broke.
     pub(crate) nags_paused: Option<String>,
-    /// The daemon's `asks` settings row while the board waits on the person: its value, `None`
-    /// when it says `none`. The durable half of the waiting line for a head that has not read the
-    /// board yet ([`App::waiting_line`]).
-    ///
-    /// Read once and never refreshed: `Registry::set_settings` stores rows for the next request
-    /// and pushes nothing. That is why [`App::asks_board`] exists, since the string is true only
-    /// while this head has no board to check it against.
+    /// The daemon's `asks` settings row while the board waits on the person, `None` when it says
+    /// `none`: the durable half of the waiting line for a head that has not read the board. Never
+    /// refreshed, since settings rows are stored for the next request and nothing is pushed.
     pub(crate) asks_setting: Option<String>,
-    /// Which session's board this head has read: the mark that ends the settings row's authority.
-    /// A question lives on a row and the row is on the board, so once the board is read it is the
-    /// whole truth about who waits, and an empty board means nobody does.
-    ///
-    /// Without it the line outlived its row: the head could not tell *nobody waits* from *the board
-    /// has not arrived*, so it fell back to a settings string that still quoted a withdrawn
-    /// question. A session id, so a switch invalidates it; cleared on every `Hello`.
+    /// Which session's board this head has read: the mark that ends the settings row's authority,
+    /// since a question lives on a row and the board is the whole truth about who waits. A session
+    /// id, so a switch invalidates it; cleared on every `Hello`.
     pub(crate) asks_board: Option<String>,
     /// Question cards the person put away with Esc, oldest first: the model's `ask_user_question`
     /// cards and the todo rows' cards alike, each with the words and the row that were on it.
@@ -1030,40 +992,25 @@ pub struct App {
     pub(crate) asks_hidden: Option<Vec<String>>,
     /// Question and permission cards answered from this head and not yet settled: closed the
     /// moment the answer left, so a second Enter cannot send it again, and kept until the daemon
-    /// settles them or refuses the answer, which puts the card back in front. See
-    /// [`App::answer_leaving`].
+    /// settles them or refuses the answer, which puts the card back in front.
     pub(crate) answering: Vec<crate::app::todos::Answering>,
     /// Rows a warning's card stands for, one event one row: the row's `item_id` to the key of the
-    /// note whose card draws the event. Such a row draws nothing and its text is in the popup.
-    /// See [`one_event`].
-    ///
-    /// Keyed by the row's own id and not by its index, because a snapshot renumbers nothing: an
-    /// index-keyed map had to be cleared on every snapshot, so a resync or a switch back
-    /// un-collapsed every notice and the rows came back in full. Pruned instead to the rows that
-    /// survive, so the collapse outlives the event that replaced the transcript around it.
+    /// note whose card draws the event, so the row itself draws nothing. Keyed by id, because a
+    /// snapshot renumbers nothing: an index-keyed map had to be cleared on every resync.
     pub(crate) absorbed: std::collections::HashMap<String, String>,
-    /// Todo questions this head has answered and whose board has not come back yet, as
-    /// `(row, question)`. [`App::operator_asks`] leaves them out, so the card can move on and the
-    /// resident line counts what is left the moment the answer goes; a fresh board clears the
-    /// list, because a refused answer comes back still waiting and is asked again.
+    /// Todo questions this head has answered whose board has not come back, as `(row, question)`.
+    /// [`App::operator_asks`] leaves them out so the card can move on and the resident line counts
+    /// what is left; a fresh board clears the list, so a refused answer is asked again.
     pub(crate) todo_answered: Vec<(String, String)>,
-    /// A model switch the daemon has taken and not yet applied: the daemon's own sentence, or
-    /// `None`.
-    ///
-    /// State and drawn as one ([`App::switch_line`]), because a person who typed `/models` during
-    /// a turn needs to know it did not land yet: a note would scroll away inside the very turn it
-    /// is about, and the header keeps naming the old model, which is the truth and half of it.
-    /// `model_switch_pending` sets it and the two verdicts clear it.
+    /// A model switch the daemon has taken and not yet applied: its own sentence, or `None`.
+    /// Drawn as state ([`App::switch_line`]), because a note would scroll away inside the very
+    /// turn it is about while the header keeps naming the old model - true, and half of it.
     pub(crate) model_pending: Option<String>,
 }
 
-/// A confirmation another head asked for, as this screen holds it.
-///
-/// Beside [`App::mode_confirm`] and not instead of it, because the two are one card with two
-/// answers: the person's own `/mode allow-all` is their keystroke, while this one is somebody
-/// else's request and must be answered by its id or the daemon cannot tell which request was
-/// settled. `by` is the asking head, so the card can say a machine wanted this rather than
-/// letting the person read it as their own thought.
+/// A confirmation another head asked for, as this screen holds it. Beside [`App::mode_confirm`]
+/// and not instead of it: the two are one card with two answers, and this one must be answered by
+/// its id or the daemon cannot tell which request was settled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskedMode {
     pub req_id: String,
@@ -1072,29 +1019,22 @@ pub struct AskedMode {
     pub name: String,
 }
 
-/// The two words an echo can carry. Constants because the renderer and the tests both name
-/// them, and a mark spelled twice can be spelled differently.
-///
-/// Both reach the screen as `queued`: to the reader they mean one thing, a message of theirs
-/// that is not a row of the conversation yet, and a second word for it was a distinction the
-/// screen did not need to draw. The states stay separate in the code ([`App::unconfirmed`]).
+/// The two words an echo can carry. Constants because the renderer and the tests both name them,
+/// and a mark spelled twice can be spelled differently. Both reach the screen as `queued`: the
+/// states stay separate in the code ([`App::unconfirmed`]) but the reader needs one word.
 pub const QUEUED: &str = "queued";
 pub const UNCONFIRMED: &str = "queued";
 
-/// The opening delimiter of a screen sent by `/cells`, and its closing one.
-///
-/// A marker and not a sentence because two readers need the edges: the model, to know where
-/// the words stop and the picture starts, and this head, to fold a copy of its own screen out
-/// of its own transcript ([`fold_cells`]). Beside the command that writes them so they cannot
-/// drift.
+/// The opening delimiter of a screen sent by `/cells`, and its closing one. A marker, because two
+/// readers need the edges: the model, to know where the words stop, and this head, to fold a copy
+/// of its own screen out of its transcript ([`fold_cells`]).
 pub(crate) const CELLS_OPEN: &str = "\u{27e6}screen ";
 pub(crate) const CELLS_MARK_END: &str = "\u{27e7}";
 pub(crate) const CELLS_CLOSE: &str = "\u{27e6}end screen\u{27e7}";
 
-// Every verb the dispatcher acts on, checked against [`SLASH_COMMANDS`] by a test and not by
-// derivation: a `match` is not reflectable, so the one mechanism left is a test that reads
-// [`App::command`] and fails when an arm is not offered. The aliases and the daemon's verbs are
-// not enumerated here; the reasoning lives with the test, in `tests::commands`.
+// Every verb the dispatcher acts on, checked against [`SLASH_COMMANDS`] by a test rather than
+// derived: a `match` is not reflectable, so a test reads [`App::command`] and fails when an arm is
+// not offered. Aliases and the daemon's verbs are not enumerated here.
 
 impl App {
     pub fn new(cfg: RenderConfig) -> Self {
@@ -1405,10 +1345,9 @@ impl App {
     /// Tell the head what time it is. The driver calls this once a tick; nothing
     /// else in `App` reads a clock, so a test drives time by hand.
     pub fn clock(&mut self, now_ms: u64) {
-        // **A notice posted before the head had a clock starts timing at its first tick.**
-        // `head.toml`'s problems are said while the prefs load, when `now_ms` is still 0, so
-        // their deadline was `NOTICE_MS` after the epoch — long gone by the first frame, and
-        // the sentence was never seen.
+        // A notice posted before the head had a clock starts timing at its first tick: `head.toml`'s
+        // problems are said while the prefs load, when `now_ms` is still 0, so their deadline was
+        // `NOTICE_MS` after the epoch and the sentence was never seen.
         if self.now_ms == 0
             && now_ms > 0
             && let Some(until) = self.notice_until
@@ -1421,18 +1360,13 @@ impl App {
         self.poll_job_out();
     }
 
-    /// Whether the head wants the terminal repainted from scratch (Ctrl-L, or a
-    /// fold that changed every cached line). Reading it clears it.
-    ///
-    /// **Not the scroll keys.** A moved viewport is a diff rather than an erase —
-    /// every row the window slid is a row whose text differs, and the encoder writes
-    /// exactly those — so the flag on the scroll path bought a whole-screen erase per
-    /// wheel notch and nothing else. See [`App::hold`].
+    /// Whether the head wants the terminal repainted from scratch (Ctrl-L, or a fold that changed
+    /// every cached line); reading it clears it. Not the scroll keys: a moved viewport is a diff
+    /// rather than an erase, so flagging it bought a whole-screen erase per wheel notch.
     pub fn take_redraw(&mut self) -> bool {
-        // **A held view does not let the glass be thrown away** (R56). A `true` here makes the
-        // driver call `Terminal::invalidate`, which forces a full repaint — and a full repaint is
-        // bytes, the one thing the hold exists to prevent. The flag is LEFT SET, so the release
-        // spends it exactly once and the screen comes back whole.
+        // A held view does not let the glass be thrown away: a `true` here makes the driver call
+        // `Terminal::invalidate`, a full repaint, which is the one thing the hold exists to
+        // prevent. The flag is LEFT SET so the release spends it exactly once.
         if self.hold {
             return false;
         }
@@ -1440,11 +1374,9 @@ impl App {
     }
 
     pub fn should_quit(&self) -> bool {
-        // A head that asked the daemon to stop does not leave until it knows: `quit` alone left it
-        // gone while `harnessd` was still at `PPID 1`. A stop this head asked for also outranks a
-        // `Bye`, which the stop itself publishes from the connection thread before the worker has
-        // ended; `watch_stop`'s `gone` is the fact about the process and this check honours it.
-        // A `Bye` still ends everything for a head that did not ask.
+        // A head that asked the daemon to stop does not leave until it knows, so a stop this head
+        // asked for outranks the `Bye` the stop itself publishes before the worker has ended;
+        // `watch_stop`'s `gone` is the fact honoured. A `Bye` still ends an unasked exit.
         if self
             .stopping
             .as_ref()
@@ -1458,10 +1390,9 @@ impl App {
         self.quit
     }
 
-    /// **Ask for the next frame to be rebuilt.** The driver is a separate file and
-    /// mutates the head's state directly (R30's four observations), so it needs one way to
-    /// say *this changed, draw again* — the same flag every internal writer sets, exposed
-    /// rather than kept private.
+    /// Ask for the next frame to be rebuilt. The driver is a separate file and mutates the head's
+    /// state directly, so it needs one way to say *this changed, draw again* - the same flag every
+    /// internal writer sets, exposed rather than kept private.
     pub fn mark_redraw(&mut self) {
         self.redraw = true;
     }
@@ -1486,19 +1417,13 @@ impl App {
     pub const GUTTER: usize = 2;
 }
 
-// The marker: the two counts and nothing else. Its shape is narration -> work -> report, so the
-// counts are the only fact its neighbours do not already give, and the verbs and targets are gone.
-//
-// It is punctuation inside a sentence, not an entry: glued to the narration line that points at
-// the work, and only when that row is [`RowClass::Speech`]. A run with no prose above it stands
-// alone, because counts with no sentence are still the fact and a vanished marker is an elision.
-// The drawing is `ui::transcript`'s; the decision belongs to the row model.
+// The marker: the two counts and nothing else, since its shape is narration -> work -> report and
+// the counts are the only fact its neighbours do not give. Punctuation inside a sentence rather
+// than an entry: glued to the [`RowClass::Speech`] line above it, and alone when there is none.
 
-// The person's own message: an accent bar, a raised block, and the time it was sent.
-//
-// The bar survives with no colour and survives a copy-paste; the block sets a background and a
-// foreground together, since either alone is invisible or unreadable; the timestamp is omitted
-// entirely when the row carries no `ts`, the same rule as a replayed call showing no duration.
+// The person's own message: an accent bar, a raised block, and the time it was sent. The bar
+// survives no colour and a copy-paste; the block sets background and foreground together, since
+// either alone is invisible or unreadable; the timestamp is omitted when the row carries no `ts`.
 
 // What kind of row this is, for the one question the layout asks about its neighbours: does a
 // blank line belong between them. Activity rows pack, because a run of tool cards reads as one

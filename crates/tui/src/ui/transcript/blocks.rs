@@ -4,21 +4,9 @@ use crate::app::*;
 use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::blocks::{QueuedBlock, SessionBlock, UserBlock};
 
-/// **A row this SESSION appended, drawn as the session's** — R42.
-///
-/// The operator: *"why job completion events arrive as my messages?"* Because every one of
-/// them arrives as a `User` item, and this head drew a `User` item the way it draws the person
-/// typing — `▌` and the raised block, which is the mark this file reserves for *your own
-/// words*. A job settlement, a §5.7 salvage notice, a steering line and the intent check are
-/// all *the harness talking*, and drawing them as the operator is exactly the lie the gate
-/// already refuses to let them tell the oracle: **the reader is the other party this gate
-/// serves.**
-///
-/// The shape is the opposite of the block, in the three ways the block is made of: no `▌`
-/// accent bar, no raised background, and the faint register rather than the operator's own.
-/// What it keeps is the label — `session ·`, the same place and shape `queued ·` takes on an
-/// echo — because a row nobody can attribute is the defect, not the fix. Wrapped like any
-/// prose and sanitised like any other content this head did not author.
+/// A row this SESSION appended, drawn as the session's: a settlement, a salvage notice, a steering
+/// line and the intent check all arrive as `User` items, and drawing those as the person typing is
+/// the lie the gate refuses. No accent bar, no raised block, the faint register - but the label stays.
 pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     let folded = fold_cells(text);
     let block = SessionBlock {
@@ -28,11 +16,9 @@ pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<Stri
     row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
-/// **A session row that opens with a card's line**, drawn as [`session_block`] draws one — the
-/// label, the faint text, the clock — with each card line's accent in its role: a red target's
-/// head (`‼ main RED at 60bf819c`) in the failure register, the queue pane's `‼ EMERGENCY`; a
-/// review's verdict in the register the queue pane gives its state. The lines are the caller's,
-/// already cut to [`session_text_cols`]; see `line_cards`.
+/// A session row that opens with a card's line, drawn as [`session_block`] draws one - label, faint
+/// text, clock - with each card line's accent in its role: a red target's head in the failure
+/// register, a review's verdict in the queue pane's. Already cut to [`session_text_cols`].
 pub(crate) fn session_card_block(
     lines: &[crate::ui::transcript::line_cards::CardLine],
     ts: u64,
@@ -78,39 +64,21 @@ pub(crate) fn session_card_block(
     row_strings(&drawn, cfg.palette())
 }
 
-/// **The columns a `session ·` row's own text has** — its label and its trailing clock taken
-/// off.
-///
-/// One function, because the wrap and the trim are two readers of one number: a settlement line
-/// trimmed to a width the wrap does not use is a line that wraps anyway, which is the whole of
-/// the defect this exists for. The operator found it by looking: a finished child's row held the
-/// entire brief this head had written for that child — *"a giant prompt"* — five wrapped rows of
-/// instructions where a settlement should be one line.
+/// The columns a session row's own text has - its label and trailing clock taken off. One
+/// function, because the wrap and the trim are two readers of one number: a settlement line trimmed
+/// to a width the wrap does not use wraps anyway, which is the defect this exists for.
 pub(crate) fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
-    // **Less the row's own two-column indent**, which rano's count leaves out: a line cut to
-    // its count drew past the frame by two, and the frame's truncation took the clock — every
-    // one-line card at full length lost its `HH:MM:SS` to `HH:MM…` (R89, measured on the
-    // fallback's lines, which are the first that are routinely that long).
+    // Less the row's own two-column indent, which rano's count leaves out: a line cut to its count
+    // drew past the frame by two, and the frame's truncation took the clock - every full-length
+    // one-line card lost its `HH:MM:SS` to `HH:MM...`.
     SessionBlock::text_cols(&clock_time(ts), cfg.width)
         .saturating_sub(2)
         .max(8)
 }
 
-/// **What a child was asked, as one line** — the rule the subagents pane and the folded
-/// completion notice share.
-///
-/// `task` is the subtask in full and `prompt` is the pre-field fallback: a `done` row drawn from
-/// `prompt` showed the child's ANSWER where the operator was looking for what they asked
-/// (measured: 122 characters of answer with a two-line task nowhere on the wire). Newlines are
-/// collapsed because both callers draw one line — the pane's row, and a notice's settlement line.
-///
-/// **One function because a row and the pane it points at must not disagree.** The notice looks
-/// the task up *by handle*; a second spelling of this rule over there is exactly the drift that
-/// would have them say different things about one child.
-///
-/// **And as words, not markdown.** A brief is written in markdown — `**Fix the pane.** The
-/// operator's ask…` — and a row is one plain line, so the markers drew as asterisks and
-/// backticks across every row of the operator's pane. See [`one_plain_line`].
+/// What a child was asked, as one line - the rule the subagents pane and the folded completion
+/// notice share. One function because a row and the pane it points at must not disagree; `task` is
+/// the subtask and `prompt` the fallback. As words, not markdown: see [`one_plain_line`].
 pub(crate) fn subagent_asked(s: &SubagentState) -> String {
     if s.task.is_empty() {
         one_plain_line(&s.prompt)
@@ -119,12 +87,9 @@ pub(crate) fn subagent_asked(s: &SubagentState) -> String {
     }
 }
 
-/// **Markdown, as one line of its words**: whitespace collapsed, the inline markers gone.
-///
-/// Through rano's own lexer, so `**bold**`, `` `code` `` and `[a link](…)` read here the way
-/// they read in the transcript, less the styling a one-line row has no room for. Only the head of
-/// the text is lexed — [`PLAIN_LINE_MAX`] characters, more than any row is wide — because the pane
-/// draws every child on every frame, and a brief can be pages long.
+/// Markdown, as one line of its words: whitespace collapsed, the inline markers gone, through rano's
+/// own lexer so a marker reads here as it reads in the transcript. Only the head of the text is
+/// lexed ([`PLAIN_LINE_MAX`]), because the pane draws every child on every frame.
 pub(crate) fn one_plain_line(text: &str) -> String {
     let collapsed: String = text
         .split_whitespace()
@@ -144,42 +109,9 @@ pub(crate) fn one_plain_line(text: &str) -> String {
 /// How much of a text [`one_plain_line`] reads: wider than any terminal row.
 pub(crate) const PLAIN_LINE_MAX: usize = 512;
 
-/// **The daemon's completion notices, folded to one line per settlement.**
-///
-/// The operator's ask, reading a settled job and a finished child: *"too much … i dont want to
-/// see that message to you 'This is the completion…' I also dont care about 'sabagent you
-/// started…' it must be something like Job <id> <command summary or wrap> finished <result
-/// result summary or wrap> same for agents."* leticl folds these and this head drew the whole
-/// paragraph, and the paragraph is the half that is **addressed to the model**: *"you do not
-/// need to wait for it, and `job_wait` would only block you…"* is R7's promise being made to the
-/// model, which is exactly why a person should not have to read it.
-///
-/// What is kept is every fact, one per line: the job, how it ended, what it wrote and what it
-/// ran — `Job j57 exited 0 after 7m06s, wrote 508 bytes: <command>`, and
-/// `Job release-build · j57 exited 0 after …` when the agent named the job (the label, which is
-/// the same string the `bash` result and the settlement notice carry) — and, for a child, the
-/// handle and what it said — `Agent s-…-sub-… · done: 3529`. The heading is dropped, because a
-/// line that names its own kind does not need *"a job you backgrounded has ended:"* above it,
-/// and a group of three becomes three lines rather than one heading and a count.
-///
-/// # Only the sentence this head KNOWS is hidden
-///
-/// **A fold that swallows text it does not recognise is a fold that loses information**, and
-/// this one has an obvious way to do it: a notice whose shape changes under it would have its
-/// new half silently dropped. So every part has to be accounted for — the opening has to be one
-/// of the known ones, every settlement line has to be a bullet (a backticked handle for the two
-/// that are collected by an id — and the handle is the whole span between the backticks, which
-/// for a named job is `release-build · j57` and not one word of it — the line itself for the
-/// plan's nudge), and the only text that may follow them is one of the named promises. Anything
-/// else returns `None` and the row is drawn raw, exactly as before this existed.
-/// The failure of a future change here is then *"the notices got long again"*, which is visible,
-/// rather than *"a notice lost a line"*, which is not.
-///
-/// **The record is untouched.** This is a rendering: the transcript still holds the daemon's
-/// words verbatim, and the model still reads the whole of them. That is also what makes dropping
-/// the promise here honest rather than a loss — what the operator cannot see is on the row they
-/// are looking at, not deleted from it. Opening it on demand is the half leticl has and this head
-/// does not; it is **not** in this change (see TODO.md, the notice-fold row).
+/// The daemon's completion notices, folded to one line per settlement: the paragraph is the half
+/// addressed to the model. Every fact is kept, and a part this head does not recognise returns
+/// `None` and the row is drawn raw, because a fold that swallows text loses information.
 pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
     let rows = folded_notice_rows(text, subagents)?;
     Some(
@@ -190,23 +122,16 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
     )
 }
 
-/// **The same fold, with the child each line is about** — the line and, for a `[task]`
-/// settlement's bullet, the session id the bullet names.
-///
-/// **The id is carried, not recovered.** A click on a finished child's line goes to that child's
-/// session, and the operator's rule for it is the one this tree keeps everywhere: an act names
-/// what it acts on, so it does not re-read the drawn line to find it. The id here is the bullet's
-/// own handle — the string the daemon wrote and the one `task_result` takes — carried out of the
-/// same parse that drew the line, so the row and the switch cannot disagree about which child a
-/// click is for. A row this head does not fold is no ids at all, and the click stays the popup's.
+/// The same fold, with the child each line is about: the line, and for a `[task]` settlement's
+/// bullet the session id it names - carried out of the same parse that drew the line, so a click
+/// and the row cannot disagree. A row this head does not fold is no ids at all.
 pub(crate) fn folded_notice_rows(
     text: &str,
     subagents: &[SubagentState],
 ) -> Option<Vec<(String, Option<String>)>> {
-    /// **The sentences that prove the rest of a row is advice TO THE MODEL rather than a fact
-    /// about the thing reported.** One per opening, because a nag's advice is not a completion's
-    /// — and named as phrases rather than by position, so a row whose shape changed under this
-    /// head stops folding instead of losing the half it did not recognise.
+    /// The sentences that prove the rest of a row is advice TO THE MODEL rather than a fact about
+    /// the thing reported. One per opening, and named as phrases rather than by position, so a row
+    /// whose shape changed stops folding instead of losing the half it did not recognise.
     const PROMISES: &[&str] = &[
         // A completion's closing, `harnessd`'s `JOB_CLOSING` and `TASK_CLOSING` (R93.C1/C2: it
         // used to be a paragraph promising "you do not need to wait for it").
@@ -214,12 +139,9 @@ pub(crate) fn folded_notice_rows(
         "Full answer: `task_result` ",
         // The closing before R93.C1/C2, still in every stored transcript from before it.
         "you do not need to wait for it",
-        // The plan's nudge, whose two closings are the operator's row and the model's own
-        // (`unfinished_plan`): the first is *do it, or mark it done with `todo_write`'s `operator`
-        // field*, the second is *do this one, or mark it done with `todo_write`'s `update` field*.
-        // **One phrase covers both, and it is the phrase both closings contain.** The old second
-        // closing — *mark it done, or drop it* — is gone with the old contract: a row left out of
-        // `todo_write` STAYS on the board, so a model's own row is retired by marking it done.
+        // The plan's nudge, whose two closings are the operator's row and the model's own. One
+        // phrase covers both because it is the phrase both closings contain, and a row left out of
+        // `todo_write` stays on the board, so a model's own row is retired by marking it done.
         "mark it done with `todo_write`",
         // **An orphan child's completion** (R89 item 13): told to this session because the one
         // that started it has stopped. `job_card::CLOSINGS` has the same sentence for `[job]`, so
@@ -228,10 +150,9 @@ pub(crate) fn folded_notice_rows(
     ];
     let mut out: Vec<(String, Option<String>)> = Vec::new();
     for group in text.split("\n\n") {
-        // **R79's held batch opens with one line of its own** — `[meanwhile] N results arrived
-        // while you were busy — …` — and the groups under it are the ordinary ones. Folded to
-        // what it says before the dash; a heading that runs onto a second line is a shape this
-        // head does not know.
+        // A held batch opens with one line of its own and the groups under it are the ordinary ones.
+        // Folded to what it says before the dash; a heading that runs onto a second line is a shape
+        // this head does not know.
         if let Some(said) = group.strip_prefix("[meanwhile] ") {
             if said.contains('\n') {
                 return None;
@@ -245,12 +166,9 @@ pub(crate) fn folded_notice_rows(
             continue;
         }
         let (head, rest) = group.split_once('\n')?;
-        // **The noun a folded line names itself with, and whether its bullet is a HANDLE or the
-        // line itself.** A job and a child are collected by an id — it is what `job_output` and
-        // `task_result` take — so their bullets are backticked handles. A todo nag is not
-        // collected by anything: its bullet is the item's own words and whose row it is, which is
-        // the HEAD the operator asked to see (`in read verbosity todo nag shouldnt show me model
-        // prompt only todo head`).
+        // The noun a folded line names itself with, and whether its bullet is a HANDLE or the line
+        // itself. A job and a child are collected by an id, so their bullets are backticked handles;
+        // a todo nag is collected by nothing, so its bullet is the item's own words and whose row it is.
         let (who, sep): (&str, Option<&str>) = if head.starts_with("[job] ") {
             ("Job ", Some(" "))
         } else if head.starts_with("[task] ") {
@@ -275,28 +193,14 @@ pub(crate) fn folded_notice_rows(
                 settlements += 1;
                 let (body, child) = match sep {
                     Some(sep) => {
-                        // **The handle is everything between the backticks**, not the bullet's
-                        // first word. Since jobs got names it can be `release-build · j65`,
-                        // which has spaces in it — and a `split_once(' ')` reads
-                        // `` `release-build `` as the handle, fails to close its backtick, and
-                        // drops the WHOLE row to raw prose, including the paragraph R7
-                        // addresses to the model. That is the operator's own line, so the fold
-                        // is the last place a name may break something. A child's handle has no
-                        // spaces, so nothing about `[task]` moves.
+                        // The handle is everything between the backticks, not the bullet's first
+                        // word: a named job's handle carries its label and its id, and splitting on a
+                        // space reads `` `release-build `` as the handle and drops the whole row.
                         let (handle, said) = bullet.strip_prefix('`')?.split_once('`')?;
                         let said = said.strip_prefix(' ')?;
-                        // **A child's own task, LOOKED UP rather than parsed.** The notice carries
-                        // only what the child answered; what it was asked is on the subagent row,
-                        // and a second source for that fact is how the row and the pane come to
-                        // disagree. Absent — an older daemon, or a child this head never watched
-                        // spawn — the line still names the handle and the answer.
-                        //
-                        // **And a child's handle may be its LABEL** — `fix-login · s-…-sub-3`
-                        // since children have names (`subagent_notice`), a bare `s-…` id in every
-                        // notice from before. Split back into the two (`split_subagent_label`),
-                        // the row is looked up by the id, and a named child is drawn by its name
-                        // and short id — the pane's own spelling — while a child with no name is
-                        // drawn by its handle exactly as it always was.
+                        // A child's own task is LOOKED UP rather than parsed: the notice carries only
+                        // the answer, and a second source for what was asked is how the row and the
+                        // pane come to disagree. Its handle may carry a label, so the two are split.
                         if who == "Agent " {
                             let (slug, id) = split_child_label(handle);
                             let row = subagents.iter().find(|s| s.session_id == id);
@@ -341,10 +245,9 @@ pub(crate) fn folded_notice_rows(
     (!out.is_empty()).then_some(out)
 }
 
-/// **A child's label split back into its name and handle** — `fix-login · s-1-sub-3` is
-/// `(Some("fix-login"), "s-1-sub-3")`, a bare handle `(None, handle)`. The head's copy of
-/// `letibot_tools::builtins::task::split_subagent_label` (this crate does not link the tools),
-/// with the same rule: only an `s-` handle on the right is a child's.
+/// A child's label split back into its name and handle - `fix-login` then `s-1-sub-3` is
+/// `(Some("fix-login"), "s-1-sub-3")`, a bare handle `(None, handle)`. A copy of the tools' own
+/// function, since this crate does not link them: only an `s-` handle on the right is a child's.
 pub(crate) fn split_child_label(label: &str) -> (Option<&str>, &str) {
     match label.rsplit_once(" · ") {
         Some((slug, handle)) if handle.starts_with("s-") && !slug.trim().is_empty() => {
@@ -366,18 +269,9 @@ pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String>
     row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
-/// **A `/cells` message, with the screen taken back out of it.**
-///
-/// The rows are sent for the model and they are a photograph of this head, so
-/// rendering them inside this head is a picture of the terminal inside the
-/// terminal — re-wrapped to a narrower body, which breaks every box it drew. Worse,
-/// it is permanent: the transcript is scrolled back through for the rest of the
-/// session.
-///
-/// So the transcript keeps the operator's words and one line saying what went with
-/// them. Nothing is hidden that the line does not name, and the model still has
-/// every row. `None` when there is no screen in the text, which is every other
-/// message.
+/// A `/cells` message with the screen taken back out of it: the transcript keeps the operator's
+/// words and one line naming what went with them. Drawing the rows here would be a picture of the
+/// terminal inside the terminal, re-wrapped so every box it drew breaks. `None` for no screen.
 pub(crate) fn fold_cells(text: &str) -> Option<String> {
     let at = text.find(CELLS_OPEN)?;
     let rest = &text[at..];
@@ -443,10 +337,9 @@ pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'st
     if unconfirmed.iter().any(|u| u == text) {
         return UNCONFIRMED;
     }
-    // **A row is drawing these words, so there is nothing left to claim.** `queued` would be
-    // false, and `unconfirmed` belongs to the snapshot case above rather than to this one — the
-    // head knows exactly what is happening here. The row has landed; its body is still coming, and
-    // that is what a row looks like while it is filling in.
+    // A row is drawing these words, so there is nothing left to claim: `queued` would be false, and
+    // `unconfirmed` belongs to the snapshot case above. The row has landed and its body is still
+    // coming, which is what a row looks like while it fills in.
     if drawn {
         return "";
     }
@@ -457,15 +350,9 @@ pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'st
 /// until the daemon has started, and a bare `queued` read like a daemon that stopped listening.
 pub(crate) const QUEUED_UNTIL_STARTED: &str = "queued — runs when the daemon has started";
 
-/// **`queued`, and what the daemon is busy with instead, when it has said.**
-///
-/// `filling` is the `what` of the [`SessionEvent::Filling`](letibot_sessionlog::SessionEvent::Filling)
-/// the daemon is walking right now. A prompt nothing has taken while one runs is waiting behind
-/// THAT — a `/reseat` holds the worker until its carry is written, and the operator watched a bare
-/// `queued` for 6.5 minutes of one (rano, 2026-10-12) with nothing saying why. The daemon's words
-/// up to a `:` are its short name for the operation (`re-seating: carrying …`), so the mark stays
-/// short enough to leave the prompt room on its row. Any other mark is returned as it is: only a
-/// prompt still in the queue is waiting behind anything.
+/// `queued`, and what the daemon is busy with instead, when it has said: `filling` is the `what` of
+/// the `Filling` event it is walking, and a prompt nothing has taken while one runs is waiting
+/// behind that. The words up to a `:` are its short name, so the mark leaves the prompt room.
 pub(crate) fn queued_behind(mark: &str, filling: Option<&str>) -> String {
     match filling {
         Some(what) if mark == QUEUED && !what.is_empty() => {
@@ -477,12 +364,9 @@ pub(crate) fn queued_behind(mark: &str, filling: Option<&str>) -> String {
 }
 
 pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<String> {
-    // Folded here as well as in `user_block`, and it has to be the same text going in: the
-    // pending row is removed when the transcript's user item MATCHES it, so a head that queued
-    // an abbreviation and received the real thing would leave the `queued` line on the screen
-    // for the rest of the session. Measured — the fold belongs to the rendering, not to what
-    // was sent. **And sanitised by the block itself** (§3.1): this echo once reached the
-    // screen raw while `user_block`, the settled row it becomes, was already guarded.
+    // Folded here as well as in `user_block`, and it must be the same text going in: the pending row
+    // is removed when the transcript's user item matches it, so an abbreviation would leave the
+    // `queued` line on the screen for the rest of the session.
     let folded = fold_cells(text);
     let block = QueuedBlock {
         text: folded.unwrap_or_else(|| text.to_string()),
@@ -492,11 +376,9 @@ pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: boo
     row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
-/// `14:32:07` in the local zone, or empty when the row carries no timestamp.
-///
-/// Zero is *unknown*, not the epoch: a log recorded before `SnapshotItem::ts`
-/// existed replays with zeros, and rendering those as `01:00:00` would be a
-/// measurement that was never taken rendered as one that was.
+/// `14:32:07` in the local zone, or empty when the row carries no timestamp. Zero is *unknown*, not
+/// the epoch: a log recorded before `SnapshotItem::ts` existed replays with zeros, and rendering
+/// those as `01:00:00` would be a measurement that was never taken rendered as one that was.
 pub(crate) fn clock_time(ms: u64) -> String {
     if ms == 0 {
         return String::new();

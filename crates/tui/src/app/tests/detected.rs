@@ -1,33 +1,11 @@
-//! **A change detected after a command draws its diff.**
-//!
-//! `crates/tools/src/detect.rs` exists for the operator's own words — *"how to catch edits
-//! via python or git merges"* — and its commit is titled *"an edit made by a shell still
-//! draws a diff"*. It names what changed, materialises the two sides for the one file a card
-//! is drawn for, and puts them on the `ToolFinished` event and on the transcript row, with a
-//! note that keeps saying **how** they were obtained rather than claiming the model called
-//! `edit`.
-//!
-//! What it does not do is draw anything: it is the tool half. And the head's half was
-//! missing, which the operator found by watching a `python3` heredoc rewrite a file and
-//! getting the note, the fold's `+14 lines`, the `ctrl-v` — and no diff. Their report is the
-//! whole of it: *"right, but i didnt see the diff"*, and then *"we had this explicit feature
-//! to detect python edits"*.
-//!
-//! # Why this test drives the real tool
-//!
-//! The loss was in the seam, so a fixture on either side of it would have hidden it. A
-//! hand-built excerpt would have asserted that the head draws a diff for a row this test
-//! wrote; the question is whether it draws one for the row the tool actually hands it, whose
-//! name is `bash` and whose payload is a command's output. So: a real `bash` call, a real
-//! `python3` heredoc, the real event the runtime emitted, and the real row the runtime builds
-//! — and the assertion is about the screen.
+//! A change detected after a command draws its diff: `tools::detect` names what changed and
+//! materialises both sides, and the head draws it. The test drives the real tool because the loss
+//! was in the seam, so a fixture on either side of it would have hidden it.
 
 use super::*;
 
-/// `git` in the fixture tree, failing the test rather than the call.
-///
-/// The sweep is a `git status` and nothing else: outside a repository it has nothing to
-/// compare, so the fixture has to be one.
+/// `git` in the fixture tree, failing the test rather than the call. The sweep is a `git status`
+/// and nothing else, so outside a repository it has nothing to compare - the fixture has to be one.
 fn git(root: &std::path::Path, args: &[&str]) {
     let out = letibot_tools::testing::git(root)
         .args(args)
@@ -117,10 +95,9 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     )));
     a.apply(ServerFrame::Event(env_at(3, 2_000, lifted)));
 
-    // **The card draws it too, before the row's body lands.** A change that appeared only at
-    // the hand-over would be the operator watching a long command finish with nothing to read
-    // and then watching the diff arrive with the row — the same flicker, at the same seam,
-    // that the settled row's own note has already cost once.
+    // The card draws it too, before the row's body lands: a change that appeared only at the
+    // hand-over would be the operator watching a long command finish with nothing to read and then
+    // watching the diff arrive with the row.
     let live = a.screen(120, 40).join("\n");
     assert!(
         live.contains("+ three"),
@@ -165,14 +142,9 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     );
 }
 
-/// **The panel folds the way a real edit's does**, which is the half of "however the head
-/// shows a real edit's diff" that a three-line change cannot exercise: folded keeps the first
-/// eight rows so the change is on the screen without unfolding anything, and the count of what
-/// is left is printed beside the chord that opens the rest — an elision without its
-/// denominator is a silent cut.
-///
-/// No process here: this is [`crate::ui::detected_diff_rows`]'s own rule, and it is asserted
-/// on the rows rather than on a screen because the screen-level case is the test above.
+/// The panel folds the way a real edit's does, which a three-line change cannot exercise: folded
+/// keeps the first eight rows, and the count of what is left is printed beside the chord that
+/// opens the rest - an elision without its denominator is a silent cut. Asserted on the rows.
 #[test]
 fn a_detected_panel_folds_the_way_an_edits_does() {
     let after: String = (1..=24)

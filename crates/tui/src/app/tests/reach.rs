@@ -1,10 +1,6 @@
-//! **A message to a model that cannot be reached opens the chooser** — `app::reach`.
-//!
-//! The operator, 2026-10-18: *"idk why i even have to do --provider. horrible ux - we already
-//! have models chooser and keys asker"*. The launcher stopped asking; these are the head's half:
-//! the chooser opens with the reason when the session's local model cannot be reached, does not
-//! when it can, asks again on every send (nothing is latched), and a cloud row with no key goes
-//! through the key card and takes the held message with it.
+//! A message to a model that cannot be reached opens the chooser (`app::reach`): with the reason
+//! when the session's local model cannot be reached, not when it can, again on every send since
+//! nothing is latched, and a cloud row with no key goes through the key card with the message.
 
 use super::*;
 use letibot_sessionlog::protocol::{MODEL_KEYLESS_KEY, MODEL_KEYS_KEY, SettingRow};

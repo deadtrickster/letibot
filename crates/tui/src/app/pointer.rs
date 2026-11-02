@@ -1,32 +1,12 @@
-//! **The pointer: what it is over, and what it drags across.**
-//!
-//! The operator, 2026-10-11: *"simple mouse selection doesnt work in letibot - only with shift.
-//! in rano it works"*, and *"i want clickable things to be somehow hinted - like say gray changed
-//! to white, or the pointer changed"*.
-//!
-//! The head turns on mouse reporting so a click and the wheel reach it, and a terminal reporting
-//! the mouse leaves selection to the program (Shift is its override). So the head selects, the
-//! way rano does in its own pane:
-//!
-//! * **A press, a drag and a release** are a selection: the cells between the press and the
-//!   pointer are drawn reversed while the drag goes on, and the release copies their text with
-//!   OSC 52 — `/copy`'s door, and for its reason: it works over ssh, where a `pbcopy` would fill
-//!   the far machine's clipboard. A press and a release with no motion
-//!   between them are a click, delivered as the same [`Key::Click`] every click has always been.
-//! * **Motion with no button held** is hover: whatever a click there would act on — a key hint,
-//!   an edit card, a count label, a pane's or a card's row — is drawn a tad brighter, and the
-//!   terminal is asked for the hand pointer (OSC 22) while it is. Not underlined: the operator,
-//!   2026-10-12, *"underline - dont like it"*, *"make text a tad brighter"*.
-//!
-//! Both are drawn onto the finished frame ([`App::paint_pointer`]), after everything else, so no
-//! renderer knows about either.
+//! The pointer: what it is over, and what it drags across. Mouse reporting is on, so the terminal
+//! leaves selection to the head: a press, drag and release select and copy the cells (OSC 52, which
+//! works over ssh), and motion with no button held lights what a click there would act on.
 
 use super::*;
 
-/// **What the pointer is over**, as cells of the last frame: every row of the clickable block
-/// (an edit card's rows, a pane entry's lines), each with the columns to mark — `None` for the
-/// row's own text, first visible cell to last. The operator, 2026-10-12: *"can you light up the
-/// whole clickable block?"*.
+/// What the pointer is over, as cells of the last frame: every row of the clickable block (an edit
+/// card's rows, a pane entry's lines), each with the columns to mark - `None` for the row's own
+/// text, first visible cell to last. The whole block lights, not just the cell pointed at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Hovered {
     pub(crate) rows: Vec<(usize, Option<(usize, usize)>)>,
@@ -131,10 +111,9 @@ pub(crate) fn restyle(row: &str, x0: usize, x1: usize, on: &str, off: &str) -> S
     out
 }
 
-/// **Cells `x0..x1` of a frame row, a tad brighter** — normal intensity and bold, so a faint
-/// hint and an ordinary row both lift, re-applied after every style change inside the run. Where
-/// the run ends, the row's own style is put back exactly — a reset and every style change the
-/// row made before that point, replayed — so nothing after the mark is brightened by it.
+/// Cells `x0..x1` of a frame row, a tad brighter: normal intensity and bold, so a faint hint and an
+/// ordinary row both lift, re-applied after every style change inside the run. Where the run ends
+/// the row's own style is put back exactly, so nothing after the mark is brightened.
 pub(crate) fn brighten(row: &str, x0: usize, x1: usize) -> String {
     const ON: &str = "\x1b[22;1m";
     let mut out = String::with_capacity(row.len() + 24);
@@ -188,15 +167,9 @@ fn text_span(cs: &[char]) -> Option<(usize, usize)> {
     Some((a, b))
 }
 
-/// **Which cells of a row are the row's content** — what a selection can take, as
-/// `(first, one past last)`, or `None` for a row that is all frame.
-///
-/// The operator, 2026-10-12: *"in say opencode i cant even select the bars, it is like selecting
-/// text in the editor doesnt put line numbers"*. So the frame is not selectable at all, rather
-/// than copied and stripped: a code block's `┌─ lang` and `└─` rows and a pane's or popup's
-/// `╭─`/`╰─` edges are none of a selection's, a `│ ` rail (a code block, a quote, a box's side)
-/// or the operator's `▌ ` bar is skipped, a box row's right side too, and the head's own gutter is
-/// never content. What the selection highlights is exactly what it copies.
+/// Which cells of a row are the row's content - what a selection can take, as `(first, one past
+/// last)`, or `None` for a row that is all frame. Frame is not selectable rather than copied and
+/// stripped, so what a selection highlights is exactly what it copies.
 fn content_span(cs: &[char], gutter: usize) -> Option<(usize, usize)> {
     let blank = |c: char| c == ' ' || c == '\0';
     let Some(a) = cs.iter().position(|c| !blank(*c)) else {
@@ -239,11 +212,9 @@ impl App {
         let hit = self.hit_at(x, y)?;
         let row = usize::from(y);
         match hit.target {
-            // **A label on either edge is a button, and its hover is exactly the span the frame
-            // drew** — the count labels and the queue tab on the composer's top edge and in the
-            // queue's strip, the git field on the header, the queue's standings on the bottom
-            // edge. The rectangle is the drawn one, so the mark covers the words and stops where
-            // they stop: a click one cell outside them is nobody's.
+            // A label on either edge is a button, and its hover is exactly the span the frame drew:
+            // the count labels, the queue tab, the git field, the queue's standings. The rectangle
+            // is the drawn one, so a click one cell outside the words is nobody's.
             Target::CountLabel(_) | Target::GitField | Target::QueueStandings => Some(
                 Hovered::one(row, Some((hit.rect.x, hit.rect.x + hit.rect.w))),
             ),
@@ -279,10 +250,9 @@ impl App {
             // whose rows all open the same popup, each of these rows is a different session, so
             // lighting the block would say that two children are one door.
             Target::TaskAgent => Some(Hovered::one(row, None)),
-            // **A live call's card lights whole**, every row it was drawn in — one card is one
-            // door, like a notice, and the pointer over any line of it says so. The record is
-            // keyed by the CALL rather than by a card index, so the rows of one card are the rows
-            // that name one call.
+            // A live call's card lights whole, every row it was drawn in - one card is one door,
+            // like a notice. Keyed by the CALL rather than a card index, so one card's rows are the
+            // rows that name one call.
             Target::LiveCall => {
                 let k = hit.stop_at(row)?;
                 let id = self.call_rows.get(k)?.1.clone();
@@ -328,11 +298,9 @@ impl App {
         })
     }
 
-    /// **The block of rows a pane's or a card's entry is drawn on, and its stop** — from the
-    /// entry's first row (the stop the hit map records) to the next entry's, or to the first blank
-    /// row or line of key hints, whichever is sooner, so a two-line entry (a subagent: its task and its facts) is one
-    /// block and the pane's footer under the last entry is none of it. `None` for a row in no
-    /// entry. What lights up under the pointer, and what a click there selects.
+    /// The block of rows a pane's or a card's entry is drawn on, and its stop: from the entry's
+    /// first row to the next entry's, or to the first blank row or line of key hints, whichever is
+    /// sooner, so a two-line entry is one block and the pane's footer is none of it.
     pub(crate) fn stop_block(&self, hit: &Hit, y: usize) -> Option<(usize, Vec<usize>)> {
         let mut stops = hit.stops.clone();
         stops.sort();
@@ -362,16 +330,9 @@ impl App {
         self.relight();
     }
 
-    /// **What the pointer lights, from the frame that is drawn now.**
-    ///
-    /// The light used to be kept as the rows the pointer was over when it MOVED, and every way
-    /// the screen changes under a still pointer left it on whatever came next: a click that put
-    /// the diff popup up lit the popup's text, a click that opened a run lit the reasoning it
-    /// opened — the operator: *"i suggest you to refactor it properly so it isnot adhoc
-    /// card-by-card click-by-click"*. So nothing is kept but the position, and the light is
-    /// derived from this frame's click targets (`hits`, the key hints, the conversation's maps)
-    /// each time it is drawn: what it lights is always what a click at the pointer would act on
-    /// now. A drag or a selection lights nothing.
+    /// What the pointer lights, from the frame that is drawn now. Only the position is kept: the
+    /// light is derived from this frame's click targets (`hits`, the key hints, the conversation's
+    /// maps) each time it is drawn, so it lights what a click there would act on now.
     pub(crate) fn relight(&mut self) {
         let over = match self.pointer_at {
             Some((x, y)) if self.drag.from.is_none() && self.selection.is_none() => {
@@ -395,13 +356,9 @@ impl App {
         self.drop_selection();
     }
 
-    /// Motion with the left button held: the selection runs from the press to here.
-    ///
-    /// **And the view is held from its first motion** — ctrl-p's hold, by itself: the operator,
-    /// 2026-10-12, *"can we auto trigger ctrl-p once selection starts?"*. A turn streaming in
-    /// under a selection moves the text it was made over; held, the frame stays put while the
-    /// events keep folding. Not when the operator already held it: that hold is theirs, and ends
-    /// when they say so.
+    /// Motion with the left button held: the selection runs from the press to here. The view is
+    /// held from the first motion (ctrl-p's hold), because a turn streaming in under a selection
+    /// moves the text it was made over. Not when the operator already held it: that hold is theirs.
     pub(crate) fn drag_to(&mut self, x: u16, y: u16) {
         if self.drag.from.is_some() {
             if self.selection.is_none() && !self.hold {

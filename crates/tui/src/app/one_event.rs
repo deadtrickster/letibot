@@ -1,54 +1,6 @@
-//! **One event, one row** (R89's last finding) — a reseat, a restart, a red target and a stale
-//! prompt each reached the screen twice or three times: the hub's warning as a card, and the
-//! session's own notice (and, for a reseat, the System row) as more lines saying the same thing.
-//!
-//! The head keeps the warning's card — it is the one every head hears, live or from a snapshot
-//! — and draws nothing for the session rows that say the same event: they are *absorbed* into
-//! it, and the card's popup carries their text under its own. Nothing is dropped: the rows are
-//! still in the transcript (the model read them), still in `/notes`' source, and one click away.
-//!
-//! **What pairs**, and only within [`WINDOW`] rows of the warning's seam, because the daemon
-//! writes the two halves of one event together:
-//!
-//! | warning | session rows |
-//! |---|---|
-//! | `reseated` | the `[reseat] …` notice and the System row `This conversation was re-seated…` |
-//! | `restart_restored`, `restart_reminded` | the `[restart] …` notice |
-//! | `target_red` | the `EMERGENCY — …` notice for the same target and sha |
-//! | `prefix_stale` | the stale-prompt sentence for the same session |
-//!
-//! A row holding several notices (a todo check with the stale paragraph under it) is never
-//! absorbed — hiding it would hide the others with it — save a `[restart]` notice followed only
-//! by the `[task]` groups it carries (the children that restart handed over, which its warning
-//! counts).
-//!
-//! # What a row is collapsed BY, and when the collapse ends
-//!
-//! A row is drawn as nothing while **its note's card is on the screen** (a note this head filed at
-//! a seam) **or the reader retired that note**. That second half is the operator's `ctrl-n`: a
-//! retired note is *hidden, counted and listed* (R10), so the rows it stands for stay hidden with
-//! it. Handing them back instead turned a key that clears the screen into one that swaps a
-//! one-line card for the wall it replaced — the operator: *"after certain events all collapsed
-//! notifications reappear"*.
-//!
-//! A note the reader did **not** retire and whose card is not on the screen — a snapshot's
-//! warning, which is `Placed::Before` and is history (R19) — gives its rows back, because the row
-//! is then the only thing that says the event happened.
-//!
-//! **The pairing is a fact about the ROW, not about where it sits**: it is keyed by `item_id`, so a
-//! snapshot that hands back the same rows keeps it (`App::load` and `App::rows_replaced` prune it
-//! to the rows that survive, instead of clearing it).
-//!
-//! # The one door this does not close, said rather than left to be found
-//!
-//! **A fork** (a compaction, a `/reseat`) still un-collapses: its rows arrive under a new
-//! transcript's ids, so there is no identity for the pairing to cross on, and
-//! `App::rows_replaced` turns every seam in the rows that went into `Placed::Before` — a note
-//! whose card is not drawn does not collapse its row (see below), so the row comes back. That is
-//! deliberate on both counts: the seam names a place in a transcript that is gone (pg-noop's
-//! defect, 2026-10-16: a stale seam drew nothing over the operator's next message), and the wire
-//! does not say where a carried row landed. Closing it needs the fork to name where the rows it
-//! carried went; nothing here can guess it.
+//! One event, one row: a warning's card stands for the session rows that say the same event (a
+//! reseat, a restart, a red target, a stale prompt), so those rows are absorbed into it rather than
+//! dropped - they keep their place in the transcript, and their text rides the card's popup.
 
 use super::*;
 use crate::ui::transcript::{job_card, red_card, stale_card};
@@ -91,11 +43,9 @@ pub(crate) fn of_row(it: &SnapshotItem) -> Option<(Event, String, bool)> {
             .then_some((Event::Reseat, text, true));
     }
     let text = crate::ui::transcript::user::agent_row_text(it)?;
-    // **One notice, or a restart and the deliveries it carries.** A row holding other notices is
-    // never absorbed — hiding it would hide them with it — but a restart's `[task]` groups are the
-    // children that restart handed over, which its warning already counts (`had finished …
-    // delivering it`): left out, the row drew a second `restarted` line and a line per child
-    // under it (pg-noop, 2026-10-14, one restart drawn as two cards and twelve lines).
+    // One notice, or a restart and the deliveries it carries. A row holding other notices is never
+    // absorbed - hiding it would hide them with it - but a restart's `[task]` groups are the
+    // children its warning already counts, and left in they would draw a second line each.
     let groups = job_card::notice_groups(&text);
     let one_event = groups.len() == 1
         || (text.starts_with("[restart] ") && groups[1..].iter().all(|g| g.starts_with("[task] ")));
@@ -134,11 +84,9 @@ fn same_event(e: Event, detail: &str, text: &str) -> bool {
 }
 
 impl App {
-    /// **Pair every warning of the four with the session rows that say the same event**, once —
-    /// called after every frame, cheap (at most 64 notes, [`WINDOW`] rows each). A new pairing
-    /// re-walks the history from the earlier of the row and the warning's seam, so a row drawn
-    /// before its warning arrived goes, and a warning drawn before its row arrived gets the
-    /// row's text in its popup.
+    /// Pair every warning of the four with the session rows that say the same event, once, after
+    /// every frame. A new pairing re-walks from the earlier of the row and the warning's seam, so
+    /// a row drawn before its warning goes and a warning drawn first gets the row's text.
     pub(crate) fn pair_one_event(&mut self) {
         let mut found: Vec<(usize, String, usize)> = Vec::new();
         for (place, n) in &self.notes {
@@ -198,29 +146,9 @@ impl App {
     }
 }
 
-/// **Whether row `item_id` is drawn as nothing because a warning's card stands for it.**
-///
-/// Two ways for the collapse to hold, and they are one question asked of the note: its card is on
-/// the screen ([`Placed::Seam`] — this head watched the event and filed it between two rows), or
-/// the reader retired it ([`App::is_retired`], which is the same pair `note_retired` asks). A note
-/// that is held but *not* drawn and not retired — a snapshot's warning, `Placed::Before`, history
-/// by R19 — does not collapse its rows: the row is then the only thing that says it happened.
-///
-/// **Retirement does not hand the rows back.** It did, and `ctrl-n` therefore swapped a one-line
-/// card for the wall it had replaced: the operator's *"after certain events all collapsed
-/// notifications reappear"*. A retired note is hidden, counted and listed (R10) — `/notes` names
-/// the event and `/notes restore` brings the card back — so the rows it stands for stay hidden
-/// with it.
-///
-/// **The retirement is asked of the KEY SET first, and that half is not decoration.** `notes` is
-/// capped at 64 (`App::file_note` drops the oldest), while the pairing here is keyed by the note's
-/// own key and is deliberately kept past a snapshot for exactly that reason
-/// (`App::absorbed`'s `retain`: *an id the key set still names is kept*). So a long-lived head
-/// reaches a state the first cut could not: the pairing is here, the reader retired it, and the
-/// NOTE IS GONE — and asking the notes alone answered *not collapsed* and drew the row again, on
-/// the first rebuild after the eviction. A rebuild is what an expansion is (`set_lift` →
-/// `invalidate_history`), which is how the operator met it: *"when i click on tool calls counter
-/// tools expand and all hidden with Ctrl-n notification are showed up again"*.
+/// Whether row `item_id` is drawn as nothing because a warning's card stands for it: its card is on
+/// the screen ([`Placed::Seam`]) or the reader retired it - never a note merely held, or the row,
+/// the only witness left, would go. Asked of the key set first: a note may be evicted, the pairing not.
 pub(crate) fn is_absorbed(
     absorbed: &std::collections::HashMap<String, String>,
     notes: &[(Placed, Note)],
@@ -254,15 +182,9 @@ pub(crate) fn absorbed_texts(
     rows.into_iter().map(|(_, t)| t).collect()
 }
 
-/// **A card's popup: its own text and the rows it stands for — the event said ONCE.**
-///
-/// A restart's warning is the notice's header and one `  - KIND NAME: VERDICT` line per thing;
-/// the notice is the same header and one line per thing in the model's words, which say more.
-/// Both under one another drew the header twice — pg-noop, 2026-10-15: *"[restart] the daemon
-/// restarted at 2026-10-15 10:38:05 UTC; when the previous one stopped is unknown … bring back
-/// only that:"*, its four `reminded (not re-run)` lines, then the same header again. When a row
-/// the card absorbed opens with the warning's own first line, the warning's text IS that row's
-/// summary, and the popup is the rows alone. Anything else keeps both, the warning's first.
+/// A card's popup: its own text and the rows it stands for - the event said once. A restart's
+/// warning and the notice it absorbed share a header, so when the row opens with the warning's own
+/// first line the warning's text is that row's summary and the popup is the rows alone.
 pub(crate) fn card_popup_text(own: &str, absorbed: &[String]) -> String {
     let head = own.lines().next().unwrap_or("");
     let repeated = !head.is_empty() && absorbed.iter().any(|t| t.lines().next() == Some(head));
