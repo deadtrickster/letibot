@@ -256,8 +256,12 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
         registry.clone(),
     ) {
         Ok(h) => h,
+        // A refusable skip: this file's whole subject is the exec path, so a box where the harness
+        // cannot build one has run nothing, and the green would be a claim it never tested.
         Err(e) => {
-            eprintln!("sudo-ask: no exec host on this box: {e}");
+            letibot_tokencore::apparatus::absent(&format!(
+                "an exec host this daemon can open ({e})"
+            ));
             return;
         }
     };
@@ -308,15 +312,25 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
         seen.push(env.event.clone());
     }
 
-    let told = said(&seen);
+    let first_told = said(&seen);
     assert!(
         finished,
-        "the run never ended; the head was told: {told:#?}"
+        "the run never ended; the head was told: {first_told:#?}"
     );
     runner
         .join()
         .expect("the run thread")
         .expect("the run records");
+    // The run ending and its last frames are two buffers: a settlement is on the wire before the
+    // process can exit, but this loop breaks on the completion, so the queue is read to the end
+    // here. A verdict built on whichever frames the loop happened to reach first is a verdict on
+    // the box's scheduling, not on what the head was told.
+    while let Ok(inbound) = rx.try_recv() {
+        if let ServerFrame::Event(env) = inbound.frame() {
+            seen.push(env.event.clone());
+        }
+    }
+    let told = said(&seen);
     assert!(
         answered,
         "the password ask never reached the head while the run was blocked — which is what \
@@ -368,8 +382,11 @@ fn a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered() {
         registry.clone(),
     ) {
         Ok(h) => h,
+        // A refusable skip, for the reason the first test's arm carries.
         Err(e) => {
-            eprintln!("sudo-ask-unreadable: no exec host on this box: {e}");
+            letibot_tokencore::apparatus::absent(&format!(
+                "an exec host this daemon can open ({e})"
+            ));
             return;
         }
     };
