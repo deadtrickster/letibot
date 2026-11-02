@@ -89,8 +89,10 @@ tractable: it is frightening open-loop.
   what the model cannot. 3 is an error signal: diff the turn's stated intentions against the tools that
   ran.
 - **The `Gate`** is the current limit, and a gate that returns *allowed* because nothing is wired is a
-  limit set to infinity - which reads as protection and is not.
-- **`BackendCaps`** is the same instinct one layer down: declare what cannot be guaranteed.
+  limit set to infinity - which reads as protection and is not. **`BackendCaps`** is the same instinct
+  one layer down: declare what cannot be guaranteed.
+- **Most "judgment" turns out to be an unasked query** - is this row mine → ask the door; `--expect` is a
+  compare-and-swap and the model forming an opinion is the bug.
 - **Most "judgment" turns out to be an unasked query.** Is this row mine → ask the door; `--expect` is
   a compare-and-swap and the model forming an opinion is the bug.
 
@@ -107,7 +109,6 @@ is trading one failure mode for a worse one.
 - **Where the tolerance band sits**, and whether it is one band or per-operation.
 - **Does enforcement bind the model or the seat?** They differ when the human is driving, and the
   operator should not be locked out of their own restart.
-- **Nothing here is scheduled.** This is the frame the Gate and T21 work should be built against.
 
 ## 10. This is testable, and the fixtures are already written
 

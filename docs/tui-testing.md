@@ -39,12 +39,11 @@ tmux kill-session -t "$S"
 
 ## Why each flag earns its place
 
-- `capture-pane -p` is a screenshot you can diff. Same input, same size, before and after a change:
-  the diff *is* the visual change, and it can go in a test.
-- `-e` is not optional for cursors and colour. A block cursor that is not being drawn looks identical
-  to one that is, in a plain capture - the escape is the only evidence.
-- `-x` / `-y` make narrow terminals testable without a human resizing anything, and
-  `tmux resize-window -t "$S" -x 60` mid-session exercises the resize path.
+- `capture-pane -p` is a screenshot you can diff: same input, same size, before and after a change, and
+  the diff *is* the visual change, so it can go in a test.
+- `-e` is not optional for cursors and colour. A block cursor that is not being drawn looks identical to
+  one that is, in a plain capture - the escape is the only evidence.
+- `-x` / `-y` make narrow terminals testable without a human resizing anything.
 - Headless, so an agent with no tty can see its own output.
 
 ## Two limits, so it is not used for the wrong question
@@ -90,8 +89,3 @@ minute). Sleeping a fixed number of seconds either races it or wastes a minute p
 instead: wait until the pane is non-empty, then until two captures 1.5 s apart are identical. An empty
 pane before startup is a boot window, not a finished render.
 
-## The controlled-pair form, which is the stronger one
-
-Two sessions, identical except for the thing under test, captured and diffed. It answers: does this
-change alter anything other than what I meant it to. Anything in the diff you cannot explain is a
-regression you have not noticed yet.

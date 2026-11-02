@@ -192,17 +192,15 @@ bounds *every* turn.
 ### `prune`: ruled, not built
 
 `prune` walks the message list backwards, skips the last two turns, protects the most recent 40,000
-tokens of tool calls and a list of protected tools, stops at the last summary, and then erases the
-OUTPUT of older tool calls in place, keeping the call and its arguments. It needs no model, so a
-re-prefill is its entire cost.
+tokens of tool calls, stops at the last summary, and then erases the OUTPUT of older tool calls in
+place, keeping the call and its arguments. It needs no model, so a re-prefill is its entire cost.
 
 Adopt, adapted - it is §4's first rung, not an alternative to it:
 
-1. **A fork, not an edit.** Here the ledger is a hash chain over rendered tokens
-   (`crates/tokencore/src/ledger.rs`: `LedgerRow::h_k`, and a replay that disagrees is
-   `LedgerError::ChainMismatch`), so an in-place erasure is the thing the ledger refuses. The erasure
-   lands in a **new base**, exactly as a summary does, and the old transcript is kept whole. That is
-   this repo's own rule: compaction never deletes, it stops carrying.
+1. **A fork, not an edit.** The ledger is a hash chain over rendered tokens (`LedgerRow::h_k`, and a
+   replay that disagrees is `LedgerError::ChainMismatch`), so an in-place erasure is the thing the ledger
+   refuses. The erasure lands in a **new base**, exactly as a summary does, and the old transcript is
+   kept whole: compaction never deletes, it stops carrying.
 2. **A locator, not a tombstone.** The marker can name where the body went, because the spill exists
    (`crates/tools/src/spill.rs`, and `read_spill(hash, range)` is a seated tool). It must not promise
    more than it can: the spill store defaults to **memory**, which dies with the daemon and makes
@@ -230,15 +228,14 @@ transcript is re-sent on every prompt rebuild. opencode strips media on compacti
 recovery message for the provider refusing it. R24 and R27 are yours. Say what you conclude; do
 not silently keep images forever."* Three parts, and the middle one is the one that matters.
 
-**1. Images before the tail leave the prompt by construction - and that IS `stripMedia`.** A row
-before the tail is replaced by the summary, so its `data_ref` is no longer in the transcript and never
-re-sent. No code, and the property is stronger than opencode's: theirs strips media out of parts that
-stay, this one replaces the parts whole.
+**1. Images before the tail leave the prompt by construction - and that IS `stripMedia`.** A row before
+the tail is replaced by the summary, so its `data_ref` is no longer in the transcript and never re-sent.
+No code, and the property is stronger than opencode's, which strips media out of parts that stay.
 
 **2. Images inside the verbatim tail are kept, and must be.** The tail's value is that it is
-byte-identical to what the server already prefilled. Stripping an image would buy a smaller prompt with
-a cold prefill, which is the trade this design exists to refuse - so this is a place where letibot
-should not copy opencode, which strips media in the tail too.
+byte-identical to what the server already prefilled; stripping an image would buy a smaller prompt with
+a cold prefill, which is the trade this design exists to refuse. This is a place where letibot should
+not copy opencode, which strips media in the tail too.
 
 **3. Two things are missing, and the first is a defect the moment images ship on the local
 path.**

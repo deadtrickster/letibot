@@ -105,8 +105,3 @@ Two consequences:
 2. **A turn-time surfacing policy** - what fires, how much, and a threshold. This is where
    over-eagerness pollutes context: a policy, and it wants measuring rather than choosing.
 3. **A `recall` tool** that answers a segment id with its text.
-
-## 8. Status
-
-A concept note, not a plan, but no longer a blocked one: it needs a `SegmentMark` producer, a retrieval
-policy and a `recall` tool, and none of those wait on composable KV.
