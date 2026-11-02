@@ -1395,6 +1395,29 @@ fn the_measured_command_resolves_because_pwd_is_the_calls_own_directory() {
     );
 }
 
+/// A brace beside a quoted value is decided once the quote is read: `rm "$dir"/{a,b}` is two
+/// targets, both reported, rather than one widened scope.
+#[test]
+fn a_brace_beside_a_quoted_value_reports_every_target() {
+    let dir = "/home/dead/Projects/letibot";
+    let x = b(&format!("rm \"{dir}\"/{{a,b}}"));
+    assert!(x.resolved, "{:?}", x.findings);
+    assert_eq!(
+        x.scoped
+            .iter()
+            .map(ScopedIntent::render)
+            .collect::<Vec<_>>(),
+        vec![
+            format!("destroy {dir}/a (workspace)"),
+            format!("destroy {dir}/b (workspace)"),
+        ]
+    );
+    // A brace the quotes DO hold is one literal word, and stays one target.
+    let y = b(&format!("rm \"{dir}/{{a,b}}\""));
+    assert!(y.resolved, "{:?}", y.findings);
+    assert_eq!(y.scoped.len(), 1, "{:?}", y.scoped);
+}
+
 /// A `for` over a brace list is the passes the shell makes of it, so every read and every write
 /// per pass is one the parser reports rather than a hole.
 #[test]

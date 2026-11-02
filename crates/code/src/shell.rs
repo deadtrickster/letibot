@@ -1894,26 +1894,31 @@ fn has_brace_expansion(s: &str) -> bool {
 const MOST_WORDS: usize = 32;
 
 /// A brace expansion, expanded into the words bash produces, or `None` when the text does not
-/// decide it - unlike `$( ... )`, a brace list is not a runtime fact. Refused: a quoted brace, an
-/// alternative holding an expansion or whitespace, too many words, one that makes no word at all.
+/// decide it - unlike `$( ... )`, a brace list is not a runtime fact. Refused: a brace inside
+/// quotes, an alternative holding an expansion or whitespace, too many words, one that makes no
+/// word at all.
 fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
-    if !matches!(
-        node.kind.as_str(),
-        "word" | "concatenation" | "brace_expression" | "number"
-    ) {
+    let (text, quoted) = brace_source(node, source)?;
+    // No brace, no brace expansion: a word with none is read by [`resolve`], which knows a
+    // quoted `*` is a pattern only when the quotes are not there.
+    if !has_brace_expansion(&text) {
         return None;
     }
-    let text = src(node, source);
-    if text.is_empty()
-        || text
-            .chars()
-            .any(|c| matches!(c, '\'' | '"' | '\\' | '$' | '`'))
-        || !has_brace_expansion(text)
-    {
-        return None;
+    // A quoted part INSIDE a brace pair is an alternative whose bytes this does not model,
+    // so that word stays unread; beside the braces it is literal text the shell keeps.
+    let mut depth = 0usize;
+    for (c, in_quotes) in text.chars().zip(&quoted) {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if *in_quotes && depth > 0 {
+            return None;
+        }
     }
     let mut out = Vec::new();
-    for w in expand_braces(text)? {
+    for w in expand_braces(&text)? {
         // **An empty alternative makes no word**: measured, `echo {a,,b}` is two arguments,
         // `echo {a,}` one, and `echo {,}` none at all.
         if w.is_empty() {
@@ -1932,6 +1937,52 @@ fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
         });
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+/// The text a word holds once quotes are removed, when the shell decides it, and which of its
+/// characters came from a quoted part - or `None` when it does not: a quoted part is literal, so
+/// a brace INSIDE one is not an expansion. Anything the shell would act on - an expansion, a
+/// backslash, a substitution - leaves the word where it was.
+fn brace_source(node: &Node, source: &str) -> Option<(String, Vec<bool>)> {
+    match node.kind.as_str() {
+        "raw_string" => {
+            let t = src(node, source);
+            let inner = t.trim_start_matches('\'').trim_end_matches('\'');
+            (!inner.contains(['{', '}'])).then(|| quoted(inner))
+        }
+        "string" | "translated_string" => {
+            let mut lit = String::new();
+            for c in kids(node) {
+                match c.kind.as_str() {
+                    "\"" | "$" => {}
+                    "string_content" | "escape_sequence" => lit.push_str(src(c, source)),
+                    _ => return None,
+                }
+            }
+            (!lit.contains(['{', '}'])).then(|| quoted(&lit))
+        }
+        "concatenation" => {
+            let mut text = String::new();
+            let mut in_quotes = Vec::new();
+            for c in kids(node) {
+                let (part, flags) = brace_source(c, source)?;
+                text.push_str(&part);
+                in_quotes.extend(flags);
+            }
+            Some((text, in_quotes))
+        }
+        "word" | "number" | "brace_expression" => {
+            let t = src(node, source);
+            (!t.contains(['\'', '"', '\\', '$', '`']))
+                .then(|| (t.to_string(), vec![false; t.chars().count()]))
+        }
+        _ => None,
+    }
+}
+
+/// One quoted part, and one flag per character: every character of a quoted run is quoted.
+fn quoted(s: &str) -> (String, Vec<bool>) {
+    (s.to_string(), vec![true; s.chars().count()])
 }
 
 /// What one brace pair is, as far as the text decides. The difference between the last two arms is
@@ -2778,6 +2829,16 @@ mod tests {
         // A quoted brace is not expanded, so it is one literal - and never refused.
         assert_eq!(argv("echo \"{a,b}\""), ["{a,b}"]);
         assert_eq!(argv("echo '{a,b}'"), ["{a,b}"]);
+        // A brace with a quoted literal beside it is still bare, so it expands: the quote
+        // is not an expansion and the brace is outside it.
+        assert_eq!(argv("echo \"x\"{a,b}"), ["xa", "xb"]);
+        assert_eq!(argv("echo {a,b}\"x\""), ["ax", "bx"]);
+        assert_eq!(argv("echo '/w/'{1,2}.txt"), ["/w/1.txt", "/w/2.txt"]);
+        // Which brace is which cannot be said when the quotes hold one of them, and a
+        // backslash or an expansion beside a brace leaves the word unread as it did.
+        for cmd in ["echo \"{a,b}\"{c,d}", "echo a\\{b,c\\}", "echo \"$X\"{a,b}"] {
+            assert!(!n(cmd).is_resolved(), "{cmd} was read: {:?}", n(cmd).stages);
+        }
         // A mixed pair and a step that is not a number are not ranges.
         assert_eq!(argv("echo {1..a}"), ["{1..a}"]);
         assert_eq!(argv("echo {1..3..x}"), ["{1..3..x}"]);
