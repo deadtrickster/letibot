@@ -736,19 +736,23 @@ impl CompactionTail {
     /// to explain: a tail that lost nothing needs no account.
     pub fn why_line(&self) -> Option<String> {
         match self.because.as_str() {
-            // The ruled split, and the reason has to be in the sentence: a reader who does not know
-            // the rule reads this as the head having lost their history.
+            // Only a remote model gets a tail, and the reason has to be in the sentence: a reader
+            // who does not know the rule reads this as the head having lost their history.
             "local_model" => Some(
-                "No verbatim tail: this conversation's turns go to the LOCAL model, and R27's \
-                 split gives the tail to a remote one only — a local model is bounded by the \
-                 KV cache, where a tail competes with the pressure that called this compaction."
+                "No verbatim tail: a verbatim tail is given to a remote model only, so this \
+                 conversation, whose turns go to the LOCAL model, gets none."
                     .into(),
             ),
             "nothing_fits" => Some(format!(
                 "No verbatim tail: the newest exchange by itself is larger than the whole tail \
-                 budget, and this engine never cuts an item in half. {carried} item(s) were in \
-                 the history it was chosen from.",
-                carried = self.carried
+                 budget, and this engine never cuts an item in half. {carried} {were} in the \
+                 history it was chosen from.",
+                carried = self.carried,
+                were = if self.carried == 1 {
+                    "item was"
+                } else {
+                    "items were"
+                }
             )),
             "no_turns" => {
                 Some("No verbatim tail: there was nothing to carry — the history was empty.".into())
@@ -1727,6 +1731,52 @@ mod tests {
         // The model wrote them; refusing to show them would hide the evidence of exactly the
         // malformed call this case is.
         assert_eq!(display_target("  path=src/main.rs  "), "path=src/main.rs");
+    }
+
+    /// A tail's excuse is read by whoever the compaction interrupted, so it carries the one fact
+    /// that explains the zero - no review number, no mechanism - and a count in English.
+    #[test]
+    fn a_tails_excuse_names_no_review_number_and_counts_its_items() {
+        let tail = |because: &str, carried: u64| CompactionTail {
+            turns: Vec::new(),
+            carried,
+            because: because.into(),
+            dropped: 0,
+        };
+
+        let local = tail("local_model", 0)
+            .why_line()
+            .expect("the local case speaks");
+        assert!(
+            local.starts_with("No verbatim tail: "),
+            "the shape a reader scans for: {local}"
+        );
+        assert!(
+            !local.contains("R27"),
+            "a review number is not the reader's to act on: {local}"
+        );
+        assert!(
+            !local.contains("KV") && !local.to_lowercase().contains("cache"),
+            "the mechanism is ours, not the reader's: {local}"
+        );
+        assert!(
+            local.contains("LOCAL model") && local.contains("remote model only"),
+            "the one fact that explains the zero: {local}"
+        );
+
+        let one = tail("nothing_fits", 1)
+            .why_line()
+            .expect("the nothing-fits case speaks");
+        assert!(
+            one.contains("1 item was"),
+            "one item is not a plural: {one}"
+        );
+        assert!(!one.contains("item(s)"), "no bracketed plural: {one}");
+        let three = tail("nothing_fits", 3)
+            .why_line()
+            .expect("the nothing-fits case speaks");
+        assert!(three.contains("3 items were"), "{three}");
+        assert!(!three.contains("item(s)"), "no bracketed plural: {three}");
     }
 
     #[test]

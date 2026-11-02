@@ -38,7 +38,7 @@ impl Harness {
         // speak a prompt that went stale while the old one ran. `None` means keep the current one.
         let reseat = self.reseat_target()?;
         let old_id = self.transcript_id.clone();
-        let orientation = self.orientation(&old_id, next);
+        let orientation = self.orientation(next);
         let lead = TranscriptItem::User {
             speaker: Speaker::Agent,
             parts: vec![UserPart::Text {
@@ -114,16 +114,16 @@ impl Harness {
     /// The orientation: the session's state as facts, and no prose from the old conversation. Each section is read at
     /// the moment of the clear from the thing that owns it, and an empty section says so in one line rather than
     /// vanishing, because an orientation that leaves out no jobs cannot be told from one that forgot to look.
-    pub(crate) fn orientation(&self, old_id: &str, next: Option<&str>) -> String {
+    pub(crate) fn orientation(&self, next: Option<&str>) -> String {
         let me = self.cfg.session_id.clone();
         let mut out = format!(
             "[cleared] The operator cleared this conversation at their request. Nothing said \
              before this point is carried — not even a summary — so do not assume any decision, \
              finding or instruction from it. This is the same session (`{me}`): its board, jobs, \
              subagents, workspace and settings carried on, and they are listed below as they \
-             stand now. The old conversation is transcript `{old_id}` in the store; if the \
-             operator points at something in it, read it with the `transcript` tool rather than \
-             guessing.\n"
+             stand now. The old conversation is still in the store and the `transcript` tool \
+             reaches it, because its `history` is on by default and the search walks back through \
+             the transcripts this session came from.\n"
         );
         if let Some(next) = next.map(str::trim).filter(|t| !t.is_empty()) {
             out.push_str(&format!("\nThe operator said, with the clear: «{next}»\n"));

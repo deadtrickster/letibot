@@ -5140,7 +5140,12 @@ mod the_wire_report {
         let nothing = compaction_said(&none("nothing_fits"), None);
         let empty = compaction_said(&none("no_turns"), None);
         assert!(local.contains("LOCAL model"), "{local}");
-        assert!(local.contains("R27"), "the ruling must be named: {local}");
+        // The one fact behind the zero, and nothing the reader cannot act on: no review number,
+        // no mechanism of ours.
+        assert!(
+            local.contains("remote model only") && !local.contains("R27"),
+            "the local case must say the tail is a remote model's and no more: {local}"
+        );
         assert!(
             nothing.contains("larger than the whole tail budget"),
             "{nothing}"

@@ -293,7 +293,6 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     assert_eq!(said, r.orientation);
     for must in [
         "[cleared]",
-        old_id.as_str(),
         NEXT,
         "write the parser",
         "run the gate",
@@ -307,6 +306,14 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
             "the orientation lacks `{must}`:\n{said}"
         );
     }
+    assert!(
+        !said.contains("#t"),
+        "the orientation names a transcript id `transcript` cannot take:\n{said}"
+    );
+    assert!(
+        said.contains("still in the store") && said.contains("`transcript`"),
+        "the orientation must say where the old conversation is and how to reach it:\n{said}"
+    );
     assert!(
         !said.contains("drift"),
         "nothing of the old conversation's prose is carried:\n{said}"
