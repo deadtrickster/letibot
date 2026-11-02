@@ -1,101 +1,21 @@
-<!-- abstract: MEASURED 2026-11-01: the child missing from task_result was not filtered — its subagent_run row was never written (sqlite: database is locked, printed and carried on), and the session row is the only witness left; with the numbers (517 of 573 child sessions predate the first record) and the rakes. -->
+<!-- abstract: A child missing from `task_result` was never recorded - its `subagent_run` write lost a lock held over a minute - so the session row is the only witness, and both store reads take the "due" window from `first_subagent_run_ms`. -->
 
 # A child absent from `task_result` was never recorded, not filtered
 
-**MEASURED 2026-11-01**, branch `agent/the-lost-child-is-still-listed`, from the operator's
-report that `s-1789462738453908838-sub-1793488007308855461` (`the-notices-stay-collapsed`) was
-missing from a 54-child list after a 2 s restart.
+The daemon's log says it: `not recorded (sqlite: database is locked); it runs, and a daemon restart
+will not bring it back`. `put_subagent_run` goes through `busy::retry_sql` with `BUSY_RETRY_TOTAL` 60 s
+plus a 30 s busy timeout per attempt, so the write lost a lock held for over a minute by another writer
+on the same store. Waiting longer is not the fix; the record is gone.
 
-## The answer, in one line from the daemon's own log
+"No record" only means something inside a window: nothing recorded children before schema 26, so a plain
+`not exists (subagent_run)` query finds hundreds of healthy children.
+`Store::children_without_runs` and `Store::child_without_run` both call the private `unrecorded_of`,
+which takes the window from `first_subagent_run_ms` itself, so a list and a keyed read cannot disagree;
+ A gatekeeper session's children are never recorded
+at all (`record_start` refuses), so do not ask.
 
-`~/logs/harnessd-42ce9f1aae08.log:5054`:
+The class travels with the row: `UnrecordedChild::why: NoRecord::{Due, BeforeTheStore}`, worded in one
+place, `subagent_record::no_record_cause`.
 
-```
-  s-1789462738453908838-sub-1793488007308855461 · not recorded (sqlite: database is locked); it runs, and a daemon restart will not bring it back
-```
-
-**None of the four candidate filters dropped it.** `grep -ac` finds 1456 mentions of the id
-because its *session* rows are there; the `subagent_run` row is not, and never was. Its
-session's `created_at` is 387 s after the id was minted, and it wrote 1456 rows and four
-commits with no record at all. The next line in the log is the same loss again — its `job`
-row: *"its start was not recorded: sqlite: database is locked"*.
-
-`put_subagent_run` goes through `Store::exec` → `busy::retry_sql` with `BUSY_RETRY_TOTAL` =
-60 s plus a 30 s busy timeout per attempt, so the write lost a lock **held for over a
-minute** by another writer on the same 9 GB store (the log's neighbours show the merge
-queue failing the same way). Waiting longer is not the fix; the record was simply gone.
-
-## The window that makes "no record" a meaningful class
-
-`select … from session where parent_session_id=… and not exists (subagent_run)` finds **517**
-children of that one session — because nothing recorded children before schema 26. The
-honest class is *children created at or after the store's first `subagent_run`*
-(`MIN(started_ms)` over the whole table): for that session that is **exactly one**, and it is
-the child that was lost. `Store::first_subagent_run_ms` + `children_without_runs(parent, since)`.
-
-**A gatekeeper session must not be asked at all** — `record_start` refuses to record its
-children (reviewers are the queue's), so "no record" is the ordinary state there: 388 + 59 + 11
-children on this box would have been news to a model.
-
-## The second witness, and where the state word comes from
-
-The child's own session row is a *different* write (made by the child when it opens), and
-`StoredSession::last_item` already answers "how did its last turn end": an `Assistant` with no
-calls after it is a finished turn, anything else is a turn still going when the rows stopped.
-That rule is the whole of `subagent_record::a_child_with_no_record`: `Done` with that text, or
-`Failed` with a sentence naming its last row, its workspace and its session.
-
-## Rakes
-
-* **A child session's `title` is its BRIEF**, not a name (the whole task prompt, truncated).
-  Using it as a slug makes `label()` print a paragraph — a lost child has no name and answers
-  to its handle.
-* **`u64 as i64` on a window wraps NEGATIVE.** `since_ms = u64::MAX` as `i64` is -1, which
-  makes the window *everything* — the direction that hides the bug behind a wall of rows. Use
-  `i64::try_from(..).unwrap_or(i64::MAX)`.
-* **`Registry::new()` already returns `Arc<Registry>`** (again): `Arc::new(Registry::new())`
-  is a type error.
-* `TranscriptItem::ToolResult`'s fields are `edit`, `origin`, `media` — `who` is gone.
-* `session` has **no index on `parent_session_id`**, so the query is a scan of the table
-  (1690 rows here, sub-millisecond). Fine now; a store with 100k sessions would want one.
-
-## UPDATE 2026-11-01 — the review refused the first cut: the window was on the list only
-
-The reviewer found three things, all of them about the window rather than the measurement:
-
-* **The keyed read had no window at all.** `children_without_runs` filtered on
-  `created_at >= since`; `child_without_run` — the one `task_result task=<handle>`,
-  `task_resume` and `job_kill` call — did not. So every child older than the store's first
-  `subagent_run` row (517 of that session's 573) was told *"the store refused the row its spawn
-  writes"* and *"…were never written down. Nothing was spawned."* None of them was lost, no
-  write was refused, and they ran and settled.
-* **`first_subagent_run_ms() == None` was mapped to `0`**, so on a store that had never written a
-  `subagent_run` row every child of the parent was "lost", each carrying the same false cause.
-* **The integration test's window was `1 ms`** — the staged record came from `run()`, whose
-  `started_ms` is 1 — so an unwindowed reader passed every assertion.
-
-What the tree does now:
-
-* **One read, both doors.** `Store::children_without_runs(parent)` and
-  `Store::child_without_run(parent, child)` both call the private `unrecorded_of`, which takes
-  the window from `first_subagent_run_ms` itself — no caller is handed a number, so a list and a
-  keyed read cannot disagree.
-* **`None` is "nothing is due", not "everything is".** The window binds as `i64::MAX`; a store
-  that has never recorded a child lists none of its children.
-* **The class travels with the row.** `UnrecordedChild::why: NoRecord::{Due, BeforeTheStore}`,
-  and `subagent_record::no_record_cause` is the ONE place the model-facing clause is worded —
-  `Due` keeps *the store refused the row its spawn writes*, `BeforeTheStore` says *this child is
-  from before this store recorded any child*. The keyed read still answers for a pre-record child
-  (the model named it); it is the LIST that carries only the due class.
-* **The test stages the window.** The recorded child's `started_ms` is a minute old and the
-  older child's `created_at` a minute before that (`put_session` stamps `now`, so the test moves
-  that one row with an `UPDATE`). MEASURED: with the window removed the list grows to three and
-  the test fails on *"a child from before the store recorded any was never due a row"*.
-* **What is still open**: `job_kill` on a pre-record child answers *"this session has started 0
-  jobs"*, because `route_subagent` resolves a handle against the LIST and its `Unknown` arm drops
-  a runner refusal. A true sentence about the table it was asked about, not a claim about the
-  child — but it is the same shape the branch fixed for a listed child.
-
-Numbers, this worktree (`/data/letibot-target-lostchild`): `-p letibot-tokencore --lib` 141
-passed; `-p letibot-harnessd --lib` 959 passed, 2 ignored; `--test restart_restore` 21 passed;
-`-p letibot-tools --lib` 1326 passed.
+Rakes: a child's `title` is its BRIEF, not a name, and `u64 as i64` on a window wraps NEGATIVE, so use
+`i64::try_from(..).unwrap_or(i64::MAX)`.
