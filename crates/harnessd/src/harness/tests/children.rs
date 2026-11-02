@@ -310,6 +310,102 @@ fn a_child_with_no_model_named_runs_on_its_parents_model() {
     assert!(l.provider.is_none());
 }
 
+/// **A child whose thread ends in failure leaves its worktree reaped**: the one exit every refused,
+/// failed and killed child takes is `finish_child_thread`, and nothing else removed the trees those
+/// children left. The branch keeps its commits, and a tree with uncommitted work is kept.
+#[test]
+fn a_failed_child_leaves_no_worktree_and_keeps_its_branch() {
+    let root = std::env::temp_dir().join(format!(
+        "letibot-reap-{}-{}",
+        std::process::id(),
+        {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let git = |args: &[&str]| {
+        let out = letibot_tools::testing::git(&root)
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("a.txt"), "one\n").expect("write");
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "first"]);
+    let slug = "reap-me";
+    let path = letibot_tools::builtins::task::worktree_path(root.to_str().unwrap(), slug);
+    let branch = letibot_tools::builtins::task::worktree_branch(slug);
+    super::git_in(
+        root.to_str().unwrap(),
+        &["worktree", "add", "-q", &path, "-b", &branch, "HEAD"],
+    )
+    .expect("the worktree is created");
+    let placement = letibot_tools::builtins::task::WorktreePlacement {
+        path: path.clone(),
+        branch: branch.clone(),
+        base_sha: super::git_in(root.to_str().unwrap(), &["rev-parse", "HEAD"]).expect("base"),
+        main_tree: false,
+    };
+
+    // A failure: the tree goes and the branch stays, at the commit the child made.
+    std::fs::write(std::path::Path::new(&path).join("a.txt"), "two\n").expect("write");
+    super::git_in(
+        &path,
+        &["-c", "commit.gpgsign=false", "commit", "-qam", "the work"],
+    )
+    .expect("the child commits");
+    let head = super::git_in(&path, &["rev-parse", "HEAD"]).expect("its head");
+    let slot = TaskSlot::new("s-parent");
+    slot.set_deliverable(deliverable::Deliverable::of(&placement));
+    finish_child_thread(&slot, Err("the provider refused the request".into()));
+    assert!(
+        matches!(slot.status(), letibot_tools::builtins::task::TaskStatus::Failed { .. }),
+        "the child failed: {:?}",
+        slot.status()
+    );
+    assert!(
+        !std::path::Path::new(&path).exists(),
+        "the worktree a failed child left is debris and is reaped"
+    );
+    assert_eq!(
+        super::git_in(root.to_str().unwrap(), &["rev-parse", &branch]).expect("the branch"),
+        head,
+        "the branch keeps what the child committed"
+    );
+
+    // And a tree that still holds uncommitted work is kept: that is what makes reaping safe.
+    let path2 = letibot_tools::builtins::task::worktree_path(root.to_str().unwrap(), "keep-me");
+    let branch2 = letibot_tools::builtins::task::worktree_branch("keep-me");
+    super::git_in(
+        root.to_str().unwrap(),
+        &["worktree", "add", "-q", &path2, "-b", &branch2, "HEAD"],
+    )
+    .expect("a second worktree");
+    std::fs::write(std::path::Path::new(&path2).join("a.txt"), "three\n").expect("write");
+    let kept = TaskSlot::new("s-parent");
+    kept.set_deliverable(deliverable::Deliverable::of(
+        &letibot_tools::builtins::task::WorktreePlacement {
+            path: path2.clone(),
+            branch: branch2.clone(),
+            base_sha: String::new(),
+            main_tree: false,
+        },
+    ));
+    finish_child_thread(&kept, Err("a turn that blew up".into()));
+    assert!(
+        std::path::Path::new(&path2).exists(),
+        "a tree with uncommitted work is not reaped"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A child refused before it opened is a failure `task_result` can read, at once: the refusal returned before
 /// `AnswerOnce` existed, the thread dropped the sentence, and the slot read `Running` with nothing behind it. The
 /// operator's report of that: it hanged on task_result.

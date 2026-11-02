@@ -89,6 +89,24 @@ pub fn with_the_line(d: Option<&Deliverable>, text: &str) -> String {
     }
 }
 
+/// **A child that failed does not need its tree.** Nothing else removes the worktree a refused,
+/// failed or killed child leaves behind, and the branch keeps whatever it committed, so the tree
+/// is a copy of work that is already somewhere else. `Err` is what was kept and why — a tree with
+/// uncommitted work, which the removal refuses on its own.
+pub fn reap_failed(d: Option<&Deliverable>) -> Result<(), String> {
+    let Some(d) = d else {
+        return Ok(());
+    };
+    let path = std::path::Path::new(&d.path);
+    let Some(repo) = crate::mergequeue::git::repo_of_worktree(path) else {
+        return Err(format!(
+            "{} is not a linked worktree of any repository, so nothing was removed from it",
+            d.path
+        ));
+    };
+    crate::mergequeue::git::remove_worktree(&repo, path, &d.branch)
+}
+
 /// The end-of-turn check, with its budget of one: per turn, like `nudges_left`, since a model that answers by
 /// explaining why a file stays out has given a legitimate answer and a second nudge would be the harness arguing. What
 /// it did not commit is then the completion line's job.
@@ -135,6 +153,11 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
+        let _ = git_out(dir, args);
+    }
+
+    /// `git`'s own answer, for the assertions that read a ref or a list rather than change one.
+    fn git_out(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -154,6 +177,7 @@ mod tests {
             "git {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     fn repo(tag: &str) -> Repo {
@@ -378,6 +402,50 @@ mod tests {
             why: "plain".into(),
         });
         assert_eq!(why_of(slot.status()), "plain");
+    }
+
+    /// **A failed child's tree is reaped and its branch is kept**: nothing else removes the worktree
+    /// a refused, failed or killed child leaves, and the branch already holds whatever it committed.
+    #[test]
+    fn a_failure_reaps_the_tree_and_keeps_the_branch() {
+        let r = repo("reap");
+        let wt = Path::new(&r.wt.path).to_path_buf();
+        let main = r.root.join("main");
+        std::fs::write(wt.join("lib.rs"), "fn a() { b() }\n").unwrap();
+        git(&wt, &["add", "lib.rs"]);
+        git(&wt, &["commit", "-q", "-m", "the work"]);
+        let head = git_out(&main, &["rev-parse", &r.wt.branch]);
+        assert_eq!(r.wt.uncommitted(), None);
+
+        reap_failed(Some(&r.wt)).expect("a clean tree is reaped");
+
+        assert!(
+            !wt.exists(),
+            "the tree a failed child left is debris, and nothing else removes it"
+        );
+        assert_eq!(
+            git_out(&main, &["rev-parse", &r.wt.branch]),
+            head,
+            "the branch keeps the work, so only the copy goes"
+        );
+        let listed = git_out(&main, &["worktree", "list", "--porcelain"]);
+        assert!(
+            !listed.contains(&r.wt.path),
+            "its registration goes with it: {listed}"
+        );
+    }
+
+    /// And a tree that still holds uncommitted work is kept: the removal refuses it, and that is
+    /// what makes reaping a failed child safe.
+    #[test]
+    fn a_failure_keeps_a_tree_that_still_holds_uncommitted_work() {
+        let r = repo("reap-dirty");
+        let wt = Path::new(&r.wt.path).to_path_buf();
+        std::fs::write(wt.join("lib.rs"), "fn a() { b() }\n").unwrap();
+        let why = reap_failed(Some(&r.wt)).expect_err("a dirty tree is kept");
+        assert!(why.contains("uncommitted"), "{why}");
+        assert!(wt.exists(), "nothing was removed");
+        assert!(r.wt.uncommitted().is_some(), "and the tree is still dirty");
     }
 
     #[test]

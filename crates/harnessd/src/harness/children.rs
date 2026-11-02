@@ -133,6 +133,10 @@ pub(crate) struct TaskSlot {
     /// The child's name: what a handle may be given as, and what every sentence about the child labels it
     /// by. `None` for a slot made without a spec, whose name is in its record.
     slug: Option<String>,
+    /// **The tree this child's branch lives in**, when it has one. `finish_child_thread` reaps it
+    /// once the child has failed: nothing else removes a refused, failed or killed child's tree, and
+    /// a tree left behind is a copy of a branch that already holds the work.
+    deliverable: std::sync::Mutex<Option<deliverable::Deliverable>>,
 }
 
 /// The handles one runner has handed out, with the slot each knocks on, in the order the
@@ -155,6 +159,7 @@ impl TaskSlot {
         TaskSlot {
             record: None,
             slug: None,
+            deliverable: std::sync::Mutex::new(None),
             state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
                 note: None,
                 // **The reading is attached where it is ASKED for, not settled here.** A value
@@ -168,6 +173,19 @@ impl TaskSlot {
             exited: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// **The tree this child was handed**, recorded so a failure can leave it: see the field.
+    pub(crate) fn set_deliverable(&self, d: Option<deliverable::Deliverable>) {
+        *self.deliverable.lock().expect("task slot") = d;
+    }
+
+    /// Whether this child ended without an answer — the case whose tree nothing else reaps.
+    pub(crate) fn failed(&self) -> bool {
+        matches!(
+            *self.state.lock().expect("task slot"),
+            letibot_tools::builtins::task::TaskStatus::Failed { .. }
+        )
     }
 
     /// The child parked as store-only. Set before [`TaskSlot::mark_exited`], on the same thread.
@@ -288,6 +306,12 @@ impl TaskSlot {
 pub(crate) fn finish_child_thread(slot: &TaskSlot, ran: Result<String, String>) {
     if let Err(why) = ran {
         slot.settle_if_running(letibot_tools::builtins::task::TaskStatus::Failed { why });
+    }
+    // **A failed child's tree is debris**: the branch keeps whatever it committed, and the removal
+    // keeps a tree that still holds uncommitted work, so nothing that matters goes.
+    if slot.failed() {
+        let d = slot.deliverable.lock().expect("task slot").clone();
+        let _ = deliverable::reap_failed(d.as_ref());
     }
 }
 
@@ -2931,6 +2955,9 @@ impl HarnessTaskRunner {
             .worktree
             .as_ref()
             .and_then(deliverable::Deliverable::of);
+        // On the slot as well as the guard: the guard settles the turn, and the slot is what the
+        // thread's own exit has when it comes to reaping a failed child's tree.
+        slot.set_deliverable(the_deliverable.clone());
         let answer = AnswerOnce::new(slot).with_deliverable(the_deliverable.clone());
         let fail = |why: String| {
             answer.say(letibot_tools::builtins::task::TaskStatus::Failed { why: why.clone() });
