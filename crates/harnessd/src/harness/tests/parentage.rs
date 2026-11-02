@@ -1,20 +1,18 @@
-//! **A session a session started has that session as its parent** — the one place the rule is
-//! decided, and the doors it has to hold for.
+//! A session a session started has that session as its parent: the one place the rule is decided,
+//! and the doors it has to hold for.
 //!
 //! The rule lives in `Registry::parent_for` and is applied in `Harness::open_with_registry`, which
-//! every open in this crate goes through. These tests are about the *open*, not about a spawner:
-//! a spawner's job is to state a parent it knows, and the open's job is to have one anyway — from
-//! the registry's entry for the id, or from the session's own row — so that a door which forgot
-//! does not leave a child indistinguishable from a top-level session for the rest of its life.
+//! every open in this crate goes through. These tests are about the open, not about a spawner: the
+//! open has to find a parent anyway, from the registry's entry for the id or from the session's own
+//! row, so a door that forgot does not leave a child indistinguishable from a top-level session.
 //!
-//! Why that matters beyond tidiness: the head's `ctrl-s` tree nests by exactly this field
-//! (`App::placements` / `App::session_rows`), so a child with no parent is drawn at the top of its
-//! project for ever, and the only thing left that names the relation is the `-sub-` in a minted
-//! id — which is a convention, not a record.
+//! It matters because the head's `ctrl-s` tree nests by exactly this field, so a child with no
+//! parent is drawn at the top of its project for ever, and the only thing left naming the relation
+//! is the `-sub-` in a minted id, which is a convention and not a record.
 //!
-//! **The corollary is a test here too**, because a rule that fills in a parent is one edit away
-//! from inventing one: a session a person started has no parent in any of the three sources, and
-//! must come back with none.
+//! The corollary is a test here too: a rule that fills in a parent is one edit away from inventing
+//! one, so a session a person started has no parent in any of the three sources and must come back
+//! with none.
 
 use super::*;
 use crate::sessions::Sessions;
