@@ -192,11 +192,9 @@ impl Harness {
         if let Some(w) = &self.job_watch {
             w.turn_began();
         }
-        // **Only a turn the shared tail is running can start a clock** — see the field. A
-        // `run_rounds` reached outside one (`Harness::system_update`'s, from a compaction or the
-        // `m1` script) has no `end_turn_clock` behind it, and a clock nobody clears is a session
-        // that reads `waiting on: turn` for the life of the daemon. And a door that has not spoken
-        // yet has not started a turn either: the clock waits for the first words.
+        // Only a turn the shared tail is running can start a clock: a `run_rounds` reached outside
+        // one has no `end_turn_clock` behind it, and a clock nobody clears reads `waiting on: turn`
+        // for the life of the daemon. A door that has not spoken yet has not started a turn either.
         if !self.turn_open || self.prompt_in_flight.load(Ordering::SeqCst) {
             return;
         }
@@ -206,11 +204,9 @@ impl Harness {
         // engine's rounds come and go inside this, which is exactly why a reader that times the
         // round events reads a working session as idle at every boundary.
         self.prompt_in_flight.store(true, Ordering::SeqCst);
-        // **And the room is told the session is WORKING** — the beat, run by the daemon and not by
-        // the model. A model that must remember to call `beat` is thinking about its work, and the
-        // ninety-second lease would take its item while it works; the turn clock is the daemon's,
-        // so this is where *working* starts and [`Harness::end_turn_clock`] is where it stops.
-        // Idempotent, and a session with no room pays one `Option` test.
+        // And the room is told the session is WORKING: the beat is the daemon's, not the model's, so
+        // a model thinking about its work cannot lose the item to the lease. Idempotent, and a
+        // session with no room pays one `Option` test.
         if let Some(room) = &self.room {
             room.turn_started();
         }
@@ -218,14 +214,8 @@ impl Harness {
     }
 
     /// The turn is over: stop publishing a start, so a later round that belongs to a NEW prompt
-    /// cannot inherit this one's clock.
-    ///
-    /// **And this is where a switch the operator made during the turn takes effect** — see
-    /// [`Harness::set_provider`], and [`Harness::apply_pending_switch`], which runs after the
-    /// span is marked closed and before anything else reads what answers. Every way out of a
-    /// turn comes through here (`turn_tail::run_turn`: a final answer, an interrupt, a failure,
-    /// a wall, and the door that said nothing at all), which is exactly why the pending switch
-    /// is applied HERE and not on a success path.
+    /// cannot inherit this one's clock. And this is where a switch the operator made during the turn
+    /// takes effect, because every way out of a turn comes through here.
     pub fn end_turn_clock(&mut self) {
         self.turn_began_ms = None;
         self.engine.turn_began_ms = None;
@@ -241,13 +231,9 @@ impl Harness {
         if let Some(w) = &self.job_watch {
             w.turn_began();
         }
-        // **After the flag, deliberately**: the switch is applied through the same door a
-        // between-turns switch takes, and a gate that saw the span still open would pend it again
-        // for ever.
-        // **The turn is over, so the beats stop.** The lease now counts from the last one, which is
-        // exactly the fact it measures: a session whose turn ended is alive and not working on the
-        // item — the operator's *"so they don't occupy it for ever"*, without the model having to
-        // do anything.
+        // After the flag, deliberately: the switch is applied through the same door a between-turns
+        // switch takes, so a gate that saw the span still open would pend it again for ever. The
+        // room's beats stop too, and the lease then counts from the last one.
         if let Some(room) = &self.room {
             room.turn_ended();
         }
@@ -255,36 +241,20 @@ impl Harness {
         self.publish_activity();
     }
 
-    /// **Something fired while nothing was running.** T24's wake, from the worker —
-    /// and, since R7, **the same door a background job's completion comes through.**
+    /// Something fired while nothing was running: T24's wake, from the worker, and since R7 the same
+    /// door a background job's completion comes through.
     ///
-    /// The daemon calls this when [`letibot_sessionlog::registry::Work::Woken`]
-    /// names this session. Every monitor that settled since the cursor, and every
-    /// background job the watcher has queued a completion for, becomes one user item
-    /// and the loop runs — so a condition that happened between turns is acted on,
-    /// rather than sitting in `job_list` until the model happens to ask.
-    ///
-    /// `Ok(None)` means nothing had settled after all: a wake that raced a mid-turn
-    /// pickup by [`HubSteering`], or a job settlement this harness had already turned
-    /// into a turn, or a wake with no completion behind it for any other reason. That
-    /// is a real outcome and not a failure, and returning `None` rather than running
-    /// an empty turn is what stops a spurious wake from costing a generation.
-    ///
-    /// It returns `Ok(None)` even when there are no monitors: a session that can
-    /// background a job and watches no condition still has completions to deliver,
-    /// and the early return that used to sit on `self.monitors` is what would have
-    /// made R7 silently monitor-only.
+    /// `Ok(None)` means nothing had settled after all, which is a real outcome: returning it rather
+    /// than running an empty turn is what stops a spurious wake from costing a generation. A session
+    /// that watches no monitor still has completions, so nothing returns early on `self.monitors`.
     pub fn wake(&mut self) -> Result<Option<Reply>, HarnessError> {
-        // **The merge queue's reviews first**, and they are never a turn of this session: a
-        // gatekeeper started, or a verdict written, is the queue's business. See
-        // [`Harness::serve_reviews`]. A wake is one of the three doors into it and not the only
-        // one any more: a session inside a turn is served at its round boundary, and a session
-        // this daemon holds is served by the daemon's own clock whatever its turn state.
+        // The merge queue's reviews first, and they are never a turn of this session: a gatekeeper
+        // started or a verdict written is the queue's business. A wake is one of three doors into it,
+        // beside the round boundary and the daemon's own clock.
         let _ = self.serve_reviews();
-        // **R92.24: a wake on a workspace that has gone** — a worktree retired under a live
-        // session. Said on the hub once per harness, and to the model when this wake has
-        // something to say anyway (a wake for this alone would be a turn whose every tool call
-        // fails).
+        // A wake on a workspace that has gone: said on the hub once per harness, and to the model
+        // only when this wake has something to say anyway, because a wake for this alone would be a
+        // turn whose every tool call fails.
         let gone = !self.cfg.workspace.is_dir();
         if gone && !self.workspace_gone_said {
             self.workspace_gone_said = true;
@@ -398,25 +368,15 @@ impl Harness {
         // and the operator's ruling quoted on `Deliveries::between_turns`.
         let monitor_n = notices.len() - queue_n;
         let deliveries = self.deliveries();
-        // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
-        // went onto the queue's row above; telling this session's model that "a subagent you
-        // started has finished" would be a turn about work that is already recorded and already
-        // gone from the board. It holds for the QUEUE's session too, and for the same reason — the
-        // pass above ran first and the row is answered (see the field's own doc).
+        // A gatekeeper's settlement is the review's, not this session's news: the verdict went onto
+        // the queue's row above, so telling the model here would be a turn about work already
+        // recorded and already gone from the board.
         let gatekeepers = &self.gatekeepers;
-        // The sentences, and which kind gets which — [`completion_notices`], which is where that
-        // decision lives so that it can be asserted without a live session.
-        //
-        // **And nothing stays held between turns** (the operator, 2026-10-11: *"jobs were ran for
-        // a reason and held for a reason. once turn ends no reason to hold"*): a result that
-        // arrived while the session was idle is said here as an ordinary completion, and the batch
-        // held while the last turn ran is this wake's own content — the turn-end ring
-        // (`JobWatchers::turn_ended`) is what brought the worker here for it.
-        //
-        // **Not marked read yet (R91.11).** `between_turns` marked them delivered — in the store,
-        // for a subagent — and emptied the held set before `submit_item` had put a word in front
-        // of the model; a turn that then failed to open lost them. They are marked once the turn
-        // has opened, and held again if it does not.
+        // The sentences, and which kind gets which, come from `completion_notices` so they can be
+        // asserted without a live session. Nothing stays held between turns: an idle arrival is said
+        // here as an ordinary completion, and the batch the last turn held is this wake's content.
+        // They are marked read only once the turn has opened (R91.11), or a turn that failed to open
+        // would lose them.
         let between = deliveries.as_ref().map(|d| {
             d.between_turns_unread(
                 |c| gatekeepers.contains(&c.job),
@@ -431,12 +391,9 @@ impl Harness {
             held_batch = b.batch;
             said = told;
         }
-        // **And the rows whose condition just became met.** The same door, because a condition
-        // firing is the same kind of fact as a job ending: nothing asked, and the model has to be
-        // told. What the line carries is BOTH halves — the row's own words and what the world says
-        // about its handle — because either alone is unusable: an intent with no fate is a sentence
-        // the model cannot act on, and a fate with no intent is the settlement notice it already
-        // has.
+        // And the rows whose condition just became met: a firing is the same kind of fact as a job
+        // ending, and the line carries both halves, because an intent with no fate is a sentence the
+        // model cannot act on and a fate with no intent is a settlement it already has.
         let result_n = notices.len() - queue_n - monitor_n;
         let due = self.due_todo_rows();
         let fired: Vec<String> = due.iter().map(|(_, handle, _)| handle.clone()).collect();
@@ -477,11 +434,9 @@ impl Harness {
         {
             w.turn_began();
         }
-        // **What this session is waiting on has moved** (`PROTOCOL_VERSION` 52): the monitor cursor
-        // above took the firings, and `between_turns_unread` took the queue and the held set — none
-        // of which publishes an event of its own. Said before the early return below, because the
-        // move that matters most is the one that empties the list: a wake with nothing left to say
-        // is a session that has just gone quiet.
+        // What this session is waiting on has moved: the monitor cursor and `between_turns_unread`
+        // took things that publish no event of their own, and the move that matters most is the one
+        // that empties the list.
         self.publish_activity();
         self.meter_wake(causes, !notices.is_empty());
         if notices.is_empty() {
@@ -498,15 +453,9 @@ impl Harness {
             }
         }
         let text = notices.join("\n\n");
-        // **The wall is checked BEFORE the send — `nag_turn`'s pre-flight, the
-        // same function.** MEASURED 2026-10-09: the FIRST of the thirty
-        // consecutive provider refusals on `s-1789919514688401228` was
-        // attributed to `monitor` — this door — so the insurance is not
-        // theoretical. As with the nag, this is not the load-bearing fix: a
-        // refused wake is classified as the wall and recovered by the turn tail
-        // (`Sessions::wake` calls it), and this pre-flight is what spares the
-        // refused round-trip when the daemon's own ledger already says the next
-        // turn will not fit.
+        // The wall is checked BEFORE the send, as `nag_turn`'s pre-flight is. Not the load-bearing
+        // fix: a refused wake is classified as the wall and recovered by the turn tail, so this only
+        // spares a round trip the daemon's own ledger already knows will not fit.
         self.compact_if_at_the_wall();
         // The harness talking to itself, not the operator. A firing — or a job's end —
         // must never be able to authorise the action it reports on.
