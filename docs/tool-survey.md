@@ -41,80 +41,71 @@ rule that four of them talk about.
 
 ## 1. The catalogue
 
-**opencode** - `bash` (non-zero exit is **not** an error; the code goes to `metadata.exit`),
-`read` (a numbered window plus up to three fuzzy siblings on a miss), `glob`, `grep`,
+**opencode** - `bash` (non-zero exit is **not** an error), `read`, `glob`, `grep`,
 `edit`/`write`/`apply_patch` (`apply_patch` is the only edit route for `gpt-*`), `task`,
 `webfetch`, `websearch`, `todowrite`, `skill`, `question`, `plan_exit`, `lsp` (nine operations,
-behind an experimental flag), `execute`, `invalid` (a decoy). Default ruleset `"*": "allow"`, nine
-tools send `always: ["*"]`, and there is **no sandbox**; because an approved grant is searched
-*after* the config ruleset in a last-match-wins list, **one "Always" click silently disables any
-config `deny` the pattern covers, including opencode's own `.env` guard.**
+behind an experimental flag), `execute`, `invalid` (a decoy). Default ruleset `"*": "allow"` and
+**no sandbox**; because an approved grant is searched *after* the config ruleset, **one "Always"
+click silently disables any config `deny` the pattern covers, including its own `.env` guard.**
 
 **pi** - four tools active: `read`, `bash`, `edit`, `write`; `grep`, `find`, `ls`, `powershell`
-opt-in; **no task, todo, web or LSP tool**. `read` gives raw text with no line numbers and throws
-a raw `ENOENT` on a miss; `bash` has **no default timeout**; `grep`/`find` shell out to `rg`/`fd`
-and **download the binary from GitHub on first use**, so two nominally read-only tools carry a
-network side-channel. **No approval system at all**: the one gate point is a `beforeToolCall` hook
-that **returns `undefined` immediately if no extension registered a handler**.
+opt-in; **no task, todo, web or LSP tool**. `read` gives raw text with no line numbers; `bash` has
+**no default timeout**; `grep`/`find` **download `rg`/`fd` from GitHub on first use**, so two
+nominally read-only tools carry a network side-channel. **No approval system at all**: the one
+gate point is a `beforeToolCall` hook that **returns `undefined` if no extension registered one**.
 
 **omp** - **`xd://` device mounting**, on by default: tools declaring `loadMode = "discoverable"`
 are **removed from the request's tools array** and driven through `read`/`write` against internal
 URLs. That leaves 14 top-level schemas (`read, write, bash, edit, glob, eval, task, hub, learn,
 manage_skill, todo, ask, grep, web_search`) and 12 devices (`ast_grep, ast_edit, debug, github,
 lsp, checkpoint, rewind, security_scan, memory_edit, retain, recall, reflect`). `read`'s schema is
-`path` alone, with every option riding a selector grammar on the path (`:50-200`, `:raw`, `?q=`);
-`browser` and `computer` are **not tools** but preludes in `eval`. Tiers `read < write < exec`
+`path` alone, with every option riding a selector grammar on it. Tiers `read < write < exec`
 against modes `always-ask` / `write` / `yolo`, with **an omitted `approval` defaulting to
 `exec`**; `details` is UI-only, so **anything living only in `details` never reaches the model**.
 
 **grok-build** - seventeen core tools plus conditionals and a plan-mode trio, and **model-facing
-names are not tool ids**: five tools and two params are renamed (`task` → `spawn_subagent`) and
-full name randomization per deployment is supported. Auto-allow: `read_file`, `list_dir`, `grep`,
-`web_search`, `lsp` (off by default), `todo_write`, `update_goal`; prompts: `search_replace`,
-`run_terminal_command`/`monitor`, `use_tool`; no prompt at all: `spawn_subagent`, `workflow`,
-`scheduler_*`, `image_*`. **Two classification gaps**: those have no explicit `AccessKind` arm and
-fall through a catch-all `_ => Read(None)`, and `Read` is *unconditionally allowed* with no path,
-so a path-patterned rule cannot match it. `scheduler_list` declares `Write` for a pure read while
-`todo_write` declares `Read` while mutating session state (letibot's `Access` has a `Session`
-class for exactly this). `search_tool` **does not search code** - it is BM25 over the MCP index.
+names are not tool ids**: five tools and two params are renamed (`task` → `spawn_subagent`).
+Prompts: `search_replace`, `run_terminal_command`/`monitor`, `use_tool`; no prompt at all:
+`spawn_subagent`, `workflow`, `scheduler_*`, `image_*`. **Two classification gaps**: those have no
+explicit `AccessKind` arm and fall through a catch-all `_ => Read(None)`, and `Read` is
+*unconditionally allowed* with no path, so a path-patterned rule cannot match it. `scheduler_list`
+declares `Write` for a pure read while `todo_write` declares `Read` while mutating session state
+(letibot's `Access` has a `Session` class for exactly this). `search_tool` **does not search
+code** - it is BM25 over the MCP tool index.
 
 **dsh** - a Cordis monorepo where ~25 tools are separate plugin packages and **which ones the
 model sees is a composition decision**. The model sees only `name`/`description`/`parameters`;
 schemas carry no constraints beyond type/enum/const/default, so every numeric bound is an
-execute-time throw, and every throw becomes a soft error result. `dsh-base`, `standard` and `ptc`
-mount `bash`/`pwsh` one-shot, the fs group, `job_*`, `skill`, `todo_write`, the goal tools,
-`exit_plan_mode`, five subagent tools, `workflow`, `ralph`, `web_search`, `web_fetch`; `minimal`
-mounts a persistent PTY and `str_replace_editor`. **The most distinctive choice in the five:** the
-`ptc` preset sends **exactly one tool schema - `run_code`** - plus a generated SDK declaring the
-rest, and a direct call naming any other tool is refused. There is a generic `ask` gate, but
-**almost no tool uses it**.
+execute-time throw. `dsh-base`, `standard` and `ptc` mount `bash`/`pwsh` one-shot, the fs group,
+`job_*`, `skill`, `todo_write`, the goal tools, `exit_plan_mode`, five subagent tools, `workflow`,
+`ralph`, `web_search`, `web_fetch`; `minimal` mounts a persistent PTY and `str_replace_editor`.
+**The most distinctive choice in the five:** the `ptc` preset sends **exactly one tool schema -
+`run_code`** - plus a generated SDK declaring the rest. There is a generic `ask` gate, but **almost
+no tool uses it**.
 
 **letibot** - eight read-only tools and a wider session set; the ceiling is `DEFAULT_MAX_TOOLS =
 16`, and a role that wants more is refused by name rather than truncated. `read`/`grep`/`glob`
 carry the denominator and the relaxation ladder; `outline` answers "what does this file define"
-**from a parse rather than a pattern**; `ask_code`/`ask_corpus` are retrieval, `NotRun` when
-nothing is attached; `read_spill` fetches the rest of a bounded output by content hash; `edit` may
-only replace lines a tool displayed; `bash`/`ps`/`pkill`/`monitor`/`jobs` control processes by
-handle, never by pattern. `Access` has five values; the default gate is `NoAdjudicator` and
-refuses with **`NotRun` - nobody decided - not `Denied`**; and a `NEVER_WRITE` list is evaluated
-before any adjudicator and overridable by none.
+**from a parse rather than a pattern**; `read_spill` fetches the rest of a bounded output by
+content hash; `edit` may only replace lines a tool displayed; `ps`/`pkill`/`monitor`/`jobs`
+control processes by handle, never by pattern. The default gate is `NoAdjudicator` and refuses
+with **`NotRun` - nobody decided - not `Denied`**; and a `NEVER_WRITE` list is evaluated before
+any adjudicator and overridable by none.
 
 ## 2. The six questions
 
 **2.1 - does any search tool distinguish "the pattern is not present" from "I searched zero
 files"? Four of five: no. The fifth computes the number and withholds it. letibot is the only one
 that reports the denominator** - the defect that prompted the survey, where letibot's `grep`
-reported an empty corpus as an empty result about a tree holding nine matches. opencode returns
-one shared constant, `"No files found"`, from both `grep` and `glob`, and it fires when files
-*were* searched and nothing matched; worse, a `path` that does not exist is not an error either,
-so grep silently searches the parent directory. pi has no counter, treats ripgrep's exit 1 as
-success, and **kills the rg child** at its 100-match cap. dsh has the denominator **available and
-deliberately dropped** - `parseRecord` skips ripgrep's `summary` record and `--stats` is never
-passed. grok-build folds ripgrep's zero-denominator signal into the same `"No matches found"` as a
+reported an empty corpus as an empty result about a tree holding nine matches. opencode returns one
+shared constant, `"No files found"`, from both `grep` and `glob`, and a `path` that does not exist
+is not an error either - grep silently searches the parent directory. pi has no counter, treats
+ripgrep's exit 1 as success, and **kills the rg child** at its 100-match cap. dsh has the
+denominator **available and deliberately dropped** (`parseRecord` skips ripgrep's `summary`
+record). grok-build folds ripgrep's zero-denominator signal into the same `"No matches found"` as a
 genuine zero-match search, and `.gitignore`/`DenyReadGlobs` shrink the corpus with no disclosure.
-omp computes `filesSearched`, threads it through the pipeline, and **drops it**: `GrepToolDetails`
-has no such field and `details` is UI-only - though it is the only one that thinks about the
-problem, since all-missing paths throw, some-missing paths say `Skipped missing paths: {…}`, and
+omp computes `filesSearched` and **drops it** - `GrepToolDetails` has no such field and `details`
+is UI-only - but it is the only one that thinks about the problem: all-missing paths throw, and
 **a glob timeout with zero hits is an explicit abstention** (*"the scan is incomplete, NOT proof of
 absence"*). letibot treats a zero denominator as a **scope failure**: zero files opened is `failed`
 (`` 0 files matched the scope, so `{source}` was never searched for ``), a genuinely absent pattern
@@ -138,9 +129,9 @@ runtime-enforced" and it has a test named `consecutive_edits_succeed_without_pri
 claims it; opencode ships two false strings. Both enforcers gain a distinction mtime cannot make -
 omp tells a tag minted this session from one from a prior session, so it can say *"copy the
 [path#newhash] header from that edit's response"* instead of *"re-read"*. Their holes: omp's
-head/tail-only edit **applies anyway** on mismatch, its stronger guard is wired to a setting that
-**defaults false**, and the `replace` mode has no check at all; dsh's enforcement lives in a
-separate plugin whose own comment says removing it leaves unconditional mutation.
+head/tail-only edit **applies anyway** on mismatch and the `replace` mode has no check at all;
+dsh's enforcement lives in a separate plugin whose own comment says removing it leaves
+unconditional mutation.
 
 **2.3 - structural / AST tools: one of five ships one, and four ship an LSP tool, three of those
 off by default or unmounted.** omp is the only real prior art: `ast_grep`/`ast_edit` over
@@ -148,13 +139,13 @@ off by default or unmounted.** omp is the only real prior art: `ast_grep`/`ast_e
 proposal the model confirms by writing a reason to `xd://resolve`; plus AST-driven `read` folding,
 **on by default**, which gives parseable code a structural summary with bodies elided. That folding
 is automatic compression, not a query - there is no parameter to ask for "the symbols in this
-file", and symbol search is LSP-backed. Its gap is the 2.1 defect one layer up: `ast_grep` cannot
-distinguish "language unsupported" from "file unparseable" from "pattern absent". LSP: opencode 9
-operations behind an experimental flag; grok-build 6, `default_enabled: false`, needing a
-hand-written `lsp.json` that is folder-trust gated; dsh 4, mounted in no shipped composition; omp
-14, reachable as an `xd://` device. Two mistakes to avoid: opencode **forces `line` and `character`
-to be supplied even for `documentSymbol` and `workspaceSymbol`**, where they are discarded;
-grok-build takes 0-indexed input and emits 1-based output.
+file". Its gap is the 2.1 defect one layer up: `ast_grep` cannot distinguish "language unsupported"
+from "file unparseable" from "pattern absent". LSP: opencode 9 operations behind an experimental
+flag; grok-build 6, `default_enabled: false`, needing a hand-written `lsp.json` that is
+folder-trust gated; dsh 4, mounted in no shipped composition; omp 14, reachable as an `xd://`
+device. Two mistakes to avoid: opencode **forces `line` and `character` even for `documentSymbol`
+and `workspaceSymbol`**, where they are discarded; grok-build takes 0-indexed input and emits
+1-based output.
 
 **2.4 - subagent / task tools: four of five ship one; pi ships an example.**
 
@@ -173,17 +164,15 @@ should be an allowlist** - dsh gives the child the parent's whole composition.
 **2.5 - output capping: all five cap, four spill and say where; the differences are in what is
 capped silently and what has no recovery path.** opencode and omp wrap every tool, pi and
 grok-build cap per tool; caps run 2000 lines / 50 KiB (opencode, pi), 3000 / 50 KiB (omp), a
-1000-line read window and 40 000 bytes (grok-build), 2000 / 50 000 (dsh); spill targets are a
-tool-output directory with a 7-day GC (opencode), a `/tmp` file (pi), `artifact://<id>` (omp), a
-plain file path (grok-build), a 0700 per-session path (dsh). Four properties worth stealing: **the
-notice's byte cost is reserved inside the cap**, so the replacement can never exceed it; **`read`
-is excluded by name** from spilling, to avoid a read→spill→read loop; **a spill failure fails
-open**, leaving the original inline; and **the spill directory must be reachable by the model** -
-opencode adds it to the external-directory allow-list, which three of the others get wrong. The
-worst cases are where a cap has no recovery path: opencode's `grep`/`glob` hard 100-row cap has no
-pagination and infers truncation from `rows.length === limit`, so exactly 100 real matches read as
-truncated; grok-build's `read_file` **truncates its 1000-line window silently**; dsh's persistent
-PTY clips at 16 000 chars keeping the *head*.
+1000-line read window and 40 000 bytes (grok-build), 2000 / 50 000 (dsh). Four properties worth
+stealing: **the notice's byte cost is reserved inside the cap**, so the replacement can never
+exceed it; **`read` is excluded by name** from spilling, to avoid a read→spill→read loop; **a spill
+failure fails open**, leaving the original inline; and **the spill directory must be reachable by
+the model** - opencode adds it to the external-directory allow-list, which three of the others get
+wrong. The worst cases are where a cap has no recovery path: opencode's `grep`/`glob` hard 100-row
+cap has no pagination and infers truncation from `rows.length === limit`, so exactly 100 real
+matches read as truncated; grok-build's `read_file` **truncates its 1000-line window silently**;
+dsh's persistent PTY clips at 16 000 chars keeping the *head*.
 
 **2.6 - edit matching: three of five write a match the model did not ask for and say nothing about
 it. Two are exact-only.**
@@ -241,10 +230,9 @@ grok-build confines the harness once at startup and lets children inherit.**
 passthrough), backends are **chosen by functional probe** rather than a version sniff, and
 **partial enforcement is reported as partial, in the code**; it confines the persistent PTY once at
 spawn and **throws** on any later `sandbox/mode` change. Defeated three ways, all named by the
-project: **reads and network are entirely uncontained**, so **exfiltration needs no bypass** - a
-read of the operator's private key piped straight to a network tool is fully permitted; **the
-harness is unconfined, and a confined child can write what the harness later executes**; and **a
-shipped preset undoes it**. The safety of a dsh deployment is a property of its composition.
+project: **reads and network are entirely uncontained**, so exfiltration needs no bypass at all;
+**the harness is unconfined, and a confined child can write what the harness later executes**; and
+**a shipped preset undoes it**. The safety of a dsh deployment is a property of its composition.
 
 **grok-build** - the parser is load-bearing: it walks the tree-sitter tree against node-kind and
 punctuation allowlists, returns `None` on the first unrecognised node, and that forces one
@@ -261,7 +249,6 @@ the backend captures `declare -f` and `alias -p` and each command is `eval`'d in
 `ALWAYS_SAFE_COMMANDS` entry, that executes `rm`; **`PATH` shims** likewise; and the match on
 `ToolInput` is **not exhaustive**, so image generators, `SchedulerCreate` and `Workflow` fall
 through to `Read(None)` and are auto-approved with the reason `SAFE_COMMAND`.
-
 **omp** - the strict compound parser rejects the whole analysis on `$`, backticks, `( ) < > * ? [
 ] { } ~ | ; &`, on control characters even inside quotes, on `VAR=` prefixes, on 14 interpreter
 names and on ~90 shell-stateful builtins, and normalises the basename before the denylist lookups.
@@ -341,23 +328,19 @@ is a pure function; dsh's auxiliary-model purpose enum is closed to `compaction 
 2. **dsh's vendored-helper-with-source pattern** - a static-musl binary that self-restricts and
    then `execvp`s. grok-build pins `nono` because a rule-ordering change re-opened a macOS deny
    bypass; vendored source makes that risk auditable instead of pinned.
-3. **dsh's `sandbox/mode`-change fence for a persistent shell**, and its **boot-time bootstrap-env
-   refusal**: a project-supplied `.env` may not set `PATH`, `NODE_OPTIONS`, `LD_PRELOAD`/
-   `LD_AUDIT`, `BASH_ENV`, `SHELLOPTS`, `PYTHONSTARTUP`, `GIT_SSH_COMMAND` or any `BASH_FUNC_`
-   name - `BASH_ENV` "runs a file of the project's choosing on every single `bash -c`".
-4. **dsh's one-shot-only grant vocabulary**, which makes the whole grant-widening class
-   unrepresentable - if you keep an "allow session", persist a mode, never a grant. And **its
-   unknown-concurrency-is-exclusive default**: a tool that does not declare itself concurrency-safe
-   is a barrier.
-5. **grok-build's grant round-trip requirement**, its **exec-vehicle list with pinned scope** (the
+3. **dsh's `sandbox/mode`-change fence for a persistent shell**, its **boot-time bootstrap-env
+   refusal** (a project-supplied `.env` may not set `PATH`, `NODE_OPTIONS`, `LD_PRELOAD`/
+   `LD_AUDIT`, `BASH_ENV`, `SHELLOPTS`, `PYTHONSTARTUP` or `GIT_SSH_COMMAND` - `BASH_ENV` "runs a
+   file of the project's choosing on every single `bash -c`"), its **one-shot-only grant
+   vocabulary**, and its **unknown-concurrency-is-exclusive default**.
+4. **grok-build's grant round-trip requirement**, its **exec-vehicle list with pinned scope** (the
    right response to `xargs`/`sudo`/`ssh`/`docker`/`npx` is not to parse their payloads but to
-   refuse to let a *prefix* grant cover them), and its **basename normalisation**.
-6. **grok-build's classifier architecture**, if a model is plugged in: after every deterministic
+   refuse to let a *prefix* grant cover them), its **basename normalisation**, and its **project
+   config asymmetry** (a workspace file may *add* a profile name but never *redefine* a global one).
+5. **grok-build's classifier architecture**, if a model is plugged in: after every deterministic
    layer, filling only fail-closed gaps; every failure routed to a prompt; refuse to infer an allow
    from prose; harness-owned finding tokens carrying no attacker-controlled text.
-7. **grok-build's project-config asymmetry** - a workspace file may *add* a profile name but never
-   *redefine* a global one.
-8. **omp's approve-the-post-revision-input ordering**, which closes the mutation-after-approval hole
+6. **omp's approve-the-post-revision-input ordering**, which closes the mutation-after-approval hole
    pi documents as present; and **pi's no-try/catch-on-the-gate**.
 
 Two verdicts on constructions the brief named. **omp's omitted-`approval`-defaults-to-`exec` is the
@@ -405,8 +388,8 @@ Nothing was built, run or started; every finding is a static read.
 - **pi**: `@anthropic-ai/sandbox-runtime`'s internals are not vendored, so what its profile
   actually permits is outside what can be cited from pi.
 
-One note on a generated document: dsh's `docs/tool-catalog.md` is produced by booting each plugin
-and reading `ctx.tools.schemas()`, which makes it unusually trustworthy - but it boots with a
-*non-confining* fs backend, so it shows `write`/`edit` without the
+One note on a generated document: dsh's generated `tool-catalog.md` is produced by booting each
+plugin and reading `ctx.tools.schemas()`, which makes it unusually trustworthy - but it boots with
+a *non-confining* fs backend, so it shows `write`/`edit` without the
 `sandbox_permissions`/`justification` parameters the shipped bundle adds. A generated catalog is
 still a catalog of one configuration.
