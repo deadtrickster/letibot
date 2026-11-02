@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(step_words("[gate memory: uncapped — /proc/self/cgroup: No such file or directory (os error 2)]").count(), 0);
         assert_eq!(step_words("[step: exit code 101]").count(), 0);
         assert_eq!(
-            step_words("[3 process(es) the step left running were killed with its cgroup]").count(),
+            step_words("[3 processes the step left running were killed with its cgroup]").count(),
             0
         );
         assert_eq!(

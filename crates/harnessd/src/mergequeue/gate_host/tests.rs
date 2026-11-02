@@ -625,7 +625,7 @@ fn the_deadline_sentence_names_the_bound_the_last_poll_was_given() {
         "asking how `lab` is doing did not answer within 4 s",
         Duration::from_secs(4),
     );
-    assert!(said.starts_with("the tail\n\n[gate: 3 poll(s)"), "{said}");
+    assert!(said.starts_with("the tail\n\n[gate: 3 polls"), "{said}");
     assert!(said.contains("not answered within 4 s"), "{said}");
     assert!(said.contains("did not answer within 4 s"), "{said}");
 }

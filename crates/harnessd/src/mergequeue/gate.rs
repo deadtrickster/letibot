@@ -83,11 +83,25 @@ pub const APPARATUS_ABSENT: &str = "the gate could not run here";
 /// (this tree's own tests do), and a rewording has to break both to go unnoticed.
 const APPARATUS_SAID: (&str, &str) = (" is not on this machine", "does not accept a skip");
 
+/// A count and its noun, spelled: `1 process`, `3 processes`. The number is in hand when the row
+/// is written, and a row is read by a person and by a model, so `process(es)` is a placeholder
+/// standing where a word belongs.
+pub(super) fn many(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("{n} {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 /// What a step killed at the gate's cap is said to be - the cap, the peak, how it was known
 /// and the line that raises it.
 pub(crate) fn killed_at_cap_words(step: &str, clause: &str, how: &str, leftover: usize) -> String {
     let left = if leftover > 0 {
-        format!(" {leftover} process(es) were still running in it when it ended.")
+        format!(
+            " {} were still running in it when it ended.",
+            many(leftover, "process", "processes")
+        )
     } else {
         String::new()
     };
@@ -301,8 +315,9 @@ fn tail_of(log: &Path) -> (String, u64) {
         tail.insert_str(
             0,
             &format!(
-                "… [the step has written {len} byte(s); what follows is its last {} line(s)]\n",
-                lines.len() - from_line
+                "… [the step has written {}; what follows is its last {}]\n",
+                many(len as usize, "byte", "bytes"),
+                many(lines.len() - from_line, "line", "lines")
             ),
         );
     }
@@ -577,8 +592,8 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
     match memory {
         StepMemory::Used(u) if u.cap.is_some() && u.killed_at_cap() => {
             return RedCause::KilledAtCap(format!(
-                "the kernel killed {} process(es) inside it at the cap",
-                u.oom_kills
+                "the kernel killed {} inside it at the cap",
+                many(u.oom_kills as usize, "process", "processes")
             ));
         }
         StepMemory::Used(u) if !code_failed && u.near_cap() => {
@@ -643,10 +658,10 @@ impl StepMemory {
     fn evidence(&self, leftover: usize, exit: Option<StepExit>) -> Option<String> {
         let mut line = match self {
             StepMemory::Used(u) if self.killed_at_cap() => format!(
-                "[gate memory: KILLED at the gate's cap — {}; the kernel killed {} process(es) \
-                 inside it. This is `[memory] gate` in providers.toml, not the code]",
+                "[gate memory: KILLED at the gate's cap — {}; the kernel killed {} inside it. This \
+                 is `[memory] gate` in providers.toml, not the code]",
                 u.clause(),
-                u.oom_kills
+                many(u.oom_kills as usize, "process", "processes")
             ),
             StepMemory::Used(u) if u.near_its_cap() => {
                 format!("[gate memory: {} — near its cap]", u.clause())
@@ -669,7 +684,8 @@ impl StepMemory {
         }
         if leftover > 0 {
             line.push_str(&format!(
-                "\n[{leftover} process(es) the step left running were killed with its cgroup]"
+                "\n[{} the step left running were killed with its cgroup]",
+                many(leftover, "process", "processes")
             ));
         }
         Some(line)
@@ -1225,7 +1241,7 @@ fn end_of(text: &str, cap: usize, what: &str) -> String {
     // The marker's own width depends on the number in it, so the room left for the tail is taken from
     // the WIDEST marker this text can produce. A narrower one then leaves a few bytes unused, which
     // is the harmless direction.
-    let marker = |dropped: usize| format!("… [{dropped} byte(s) {what}]\n");
+    let marker = |dropped: usize| format!("… [{} {what}]\n", many(dropped, "byte", "bytes"));
     let room = cap.saturating_sub(marker(text.len()).len());
     let mut start = text.len().saturating_sub(room);
     while start < text.len() && !text.is_char_boundary(start) {
@@ -1697,12 +1713,12 @@ impl Failures {
     fn words(&self, budget: usize) -> String {
         let mut out = String::new();
         out.push_str(&format!(
-            "[gate excerpt: {} target(s) ran — {} passed, {} failed; {} test(s) passed, {} failed. \
-             What follows is taken from the whole of the step's output, not only its end]\n",
-            self.targets_ran,
+            "[gate excerpt: {} ran — {} passed, {} failed; {} passed, {} failed. What follows is \
+             taken from the whole of the step's output, not only its end]\n",
+            many(self.targets_ran, "target", "targets"),
             self.targets_passed,
             self.targets_failed,
-            self.tests_passed,
+            many(self.tests_passed as usize, "test", "tests"),
             self.tests_failed
         ));
         if !self.summary.is_empty() {
@@ -1726,8 +1742,12 @@ impl Failures {
         }
         if self.targets.len() > FAILING_TARGETS {
             out.push_str(&format!(
-                "[gate excerpt: and {} more failing target(s), named above]\n",
-                self.targets.len() - FAILING_TARGETS
+                "[gate excerpt: and {} named above]\n",
+                many(
+                    self.targets.len() - FAILING_TARGETS,
+                    "more failing target",
+                    "more failing targets"
+                )
             ));
         }
         for line in &self.exhausted {
@@ -1761,9 +1781,9 @@ pub fn excerpt(text: &str, cap: usize) -> String {
         // No room for the end. The section and the footer stay, and if the cap cannot hold both the
         // section is what gives way - it is still the last thing to be cut.
         let left_out = format!(
-            "[gate excerpt: the end of the step's output is left out — it is {} byte(s) in all — \
-             because what failed is above]",
-            text.len()
+            "[gate excerpt: the end of the step's output is left out — it is {} in all — because \
+             what failed is above]",
+            many(text.len(), "byte", "bytes")
         );
         let budget = cap.saturating_sub(left_out.len() + pointer.len() + 2);
         format!(
@@ -1999,7 +2019,7 @@ mod tests {
             let second = wait_for("three");
             assert!(
                 second.log_bytes > first.log_bytes,
-                "the tail grew: {} then {} byte(s)",
+                "the tail grew: {} then {} bytes",
                 first.log_bytes,
                 second.log_bytes
             );
@@ -2105,7 +2125,7 @@ mod tests {
         assert!(used(1).killed_at_cap());
         let fine = used(0).evidence(2, None).unwrap();
         assert!(fine.starts_with("[gate memory: peak 64 MiB of a 64 MiB cap — near its cap]"));
-        assert!(fine.contains("2 process(es) the step left running"));
+        assert!(fine.contains("2 processes the step left running"));
         // .F8: what the model reads keeps a near-cap or killed line and drops a quiet peak.
         assert_eq!(for_the_model(&fine), fine);
         let quiet = StepMemory::Used(MemoryUse {
@@ -2118,6 +2138,55 @@ mod tests {
         assert!(quiet.starts_with("[gate memory: peak 8 MiB"), "{quiet}");
         assert_eq!(for_the_model(&format!("ok\n{quiet}")), "ok");
         assert_eq!(StepMemory::Unknown.evidence(0, None), None);
+    }
+
+    /// The count is in hand when the line is written, so the noun is spelled - `1 process`,
+    /// `3 processes`, never `process(es)`. Both a single one and several are checked, because a
+    /// placeholder hides behind the plural form.
+    #[test]
+    fn an_evidence_line_counts_in_words_not_a_placeholder() {
+        let used = StepMemory::Used(MemoryUse {
+            cap: Some(64 << 20),
+            peak: 8 << 20,
+            oom_kills: 0,
+        });
+        for (leftover, said) in [
+            (1, "1 process the step left running"),
+            (3, "3 processes the step left running"),
+        ] {
+            let line = used.evidence(leftover, None).expect("the evidence line");
+            assert!(line.contains(said), "{line}");
+            assert!(!line.contains("(s)") && !line.contains("(es)"), "{line}");
+        }
+        for (ran, passed, tests, said) in [
+            (
+                1,
+                0,
+                1,
+                "1 target ran — 0 passed, 1 failed; 1 test passed, 1 failed",
+            ),
+            (
+                3,
+                2,
+                3,
+                "3 targets ran — 2 passed, 1 failed; 3 tests passed, 1 failed",
+            ),
+        ] {
+            let counted = Failures {
+                targets_ran: ran,
+                targets_passed: passed,
+                targets_failed: ran - passed,
+                tests_passed: tests,
+                tests_failed: 1,
+                ..Default::default()
+            }
+            .words(EVIDENCE_BYTES);
+            assert!(counted.contains(said), "{counted}");
+            assert!(
+                !counted.contains("(s)") && !counted.contains("(es)"),
+                "{counted}"
+            );
+        }
     }
 
     /// The measured case: letibot's `main` at 79c32c1, 2026-10-12, on lab2x1.
@@ -2163,7 +2232,7 @@ mod tests {
         assert!(words.starts_with(GATE_KILLED), "{words}");
         assert!(
             words.contains("KILLED at the gate's memory cap (peak 24.1 GiB of a 24.9 GiB cap)")
-                && words.contains("128 process(es) were still running")
+                && words.contains("128 processes were still running")
                 && words.contains("UNJUDGED, not red")
                 && words.contains("`[memory] gate` in providers.toml"),
             "{words}"
@@ -2174,7 +2243,7 @@ mod tests {
         assert_eq!(
             line,
             "[gate memory: peak 24.1 GiB of a 24.9 GiB cap — near its cap]\n[step: killed by \
-             signal 9 (SIGKILL)]\n[128 process(es) the step left running were killed with its cgroup]"
+             signal 9 (SIGKILL)]\n[128 processes the step left running were killed with its cgroup]"
         );
     }
 
@@ -2186,7 +2255,7 @@ mod tests {
                    didn't exit successfully: `rustc …` (signal: 9, SIGKILL: kill)\n";
         assert!(matches!(
             red_cause(out, StepExit::Code(101), &measured(3)),
-            RedCause::KilledAtCap(how) if how.contains("killed 3 process(es)")
+            RedCause::KilledAtCap(how) if how.contains("killed 3 processes")
         ));
         // Near the cap with no count, the same output is a kill, not a verdict.
         assert!(matches!(
@@ -2739,8 +2808,8 @@ mod tests {
         let at = text.find("worker::a_test").unwrap();
         assert!(
             text.len() - at > EVIDENCE_BYTES,
-            "the failure must sit outside the last {EVIDENCE_BYTES} byte(s), which is what the \
-             old excerpt kept — it is {} byte(s) from the end",
+            "the failure must sit outside the last {EVIDENCE_BYTES} bytes, which is what the old \
+             excerpt kept — it is {} bytes from the end",
             text.len() - at
         );
         assert!(
@@ -2758,13 +2827,13 @@ mod tests {
             "panicked at crates/harnessd/src/worker.rs:12:5",
             "the worker never started",
             // The counts: 1 + 60 targets, 60 of them green, and 300 + 1 tests.
-            "61 target(s) ran — 60 passed, 1 failed; 300 test(s) passed, 1 failed",
+            "61 targets ran — 60 passed, 1 failed; 300 tests passed, 1 failed",
         ] {
             assert!(ex.contains(want), "{want:?} is not in the excerpt:\n{ex}");
         }
         // The tail is present too - it fits beside the failure - and says what it left out.
         assert!(
-            ex.contains("byte(s) of the step's output were left out here; its end follows"),
+            ex.contains("bytes of the step's output were left out here; its end follows"),
             "the cut has to be admitted:\n{ex}"
         );
         assert!(
@@ -2786,7 +2855,7 @@ mod tests {
         );
         assert!(
             ex.len() <= EVIDENCE_BYTES,
-            "the excerpt is {} byte(s), over a {EVIDENCE_BYTES}-byte cap:\n{ex}",
+            "the excerpt is {} bytes, over a {EVIDENCE_BYTES}-byte cap:\n{ex}",
             ex.len()
         );
     }
@@ -2807,7 +2876,7 @@ mod tests {
             "even with the end gone, the row says what failed:\n{ex}"
         );
         assert!(
-            !ex.contains("byte(s) of the step's output were left out here"),
+            !ex.contains("bytes of the step's output were left out here"),
             "{ex}"
         );
     }
@@ -2836,7 +2905,7 @@ mod tests {
         text.push_str("error: 1 target failed:\n    `-p letibot-harnessd --lib`\n");
         assert!(
             text.len() - text.find("Too many open files").unwrap() > EVIDENCE_BYTES,
-            "the sentence has to be outside the last {EVIDENCE_BYTES} byte(s)"
+            "the sentence has to be outside the last {EVIDENCE_BYTES} bytes"
         );
         let ex = excerpt(&text, EVIDENCE_BYTES);
         assert!(
@@ -2915,14 +2984,14 @@ exit 101
             "first failing test `worker::a_test`",
             "`-p letibot-harnessd --lib`",
             "the worker never started",
-            "61 target(s) ran — 60 passed, 1 failed; 300 test(s) passed, 1 failed",
+            "61 targets ran — 60 passed, 1 failed; 300 tests passed, 1 failed",
         ] {
             assert!(out.contains(want), "{want:?} is not on the row:\n{out}");
             assert!(why.contains(want), "{want:?} is not in the verdict:\n{why}");
         }
         assert!(
             out.len() <= EVIDENCE_BYTES,
-            "the row is {} byte(s) against a {EVIDENCE_BYTES}-byte cap:\n{out}",
+            "the row is {} bytes against a {EVIDENCE_BYTES}-byte cap:\n{out}",
             out.len()
         );
         let _ = std::fs::remove_dir_all(&wt);
@@ -2935,7 +3004,7 @@ exit 101
         let why = format!(
             "this daemon shares its cgroup \
              `/sys/fs/cgroup/user.slice/user-1000.slice/session-{}.scope` with 4 other \
-             process(es) — it was not started in a scope of its own (the `letibot` launcher does \
+             processes — it was not started in a scope of its own (the `letibot` launcher does \
              that with `systemd-run --user --scope`), so tool calls run UNCAPPED",
             9_999_999
         );
@@ -2965,7 +3034,7 @@ exit 101
         }
         assert!(
             row.len() <= EVIDENCE_BYTES,
-            "the row is {} byte(s) against a {EVIDENCE_BYTES}-byte cap — the note was spent \
+            "the row is {} bytes against a {EVIDENCE_BYTES}-byte cap — the note was spent \
              outside it:\n{row}",
             row.len()
         );
@@ -3019,7 +3088,7 @@ exit 101
         );
         assert!(
             text.len() > EVIDENCE_BYTES,
-            "the excerpt only runs when the stream is over the cap — it is {} byte(s)",
+            "the excerpt only runs when the stream is over the cap — it is {} bytes",
             text.len()
         );
 
@@ -3052,12 +3121,12 @@ exit 101
             "{ex}"
         );
         assert!(
-            ex.contains("2 target(s) ran — 1 passed, 1 failed; 303 test(s) passed, 1 failed"),
+            ex.contains("2 targets ran — 1 passed, 1 failed; 303 tests passed, 1 failed"),
             "{ex}"
         );
         assert!(
             ex.len() <= EVIDENCE_BYTES,
-            "the excerpt is {} byte(s), over a {EVIDENCE_BYTES}-byte cap:\n{ex}",
+            "the excerpt is {} bytes, over a {EVIDENCE_BYTES}-byte cap:\n{ex}",
             ex.len()
         );
     }
@@ -3304,10 +3373,10 @@ error: 1 target failed:
         let text = "warning: function `f` is never used\n".repeat(EVIDENCE_BYTES / 8);
         let ex = excerpt(&text, EVIDENCE_BYTES);
         assert!(ex.starts_with("… ["), "the cut has to be admitted:\n{ex}");
-        assert!(ex.contains("byte(s) dropped from the front]"), "{ex}");
+        assert!(ex.contains("bytes dropped from the front]"), "{ex}");
         assert!(
             ex.len() <= EVIDENCE_BYTES,
-            "the end is {} byte(s) against a {EVIDENCE_BYTES}-byte cap",
+            "the end is {} bytes against a {EVIDENCE_BYTES}-byte cap",
             ex.len()
         );
     }

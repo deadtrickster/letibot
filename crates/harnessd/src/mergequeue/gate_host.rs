@@ -12,7 +12,7 @@ use letibot_tools::rpc;
 
 use super::gate::{
     Done, GateControl, GateRun, GateVerdict, StepEnd, StepExit, StepMemory, assemble, clause_of,
-    judge, now_ms, read_excerpt, tempfile_in,
+    judge, many, now_ms, read_excerpt, tempfile_in,
 };
 use super::git;
 
@@ -71,12 +71,13 @@ impl Apparatus {
         let mut said = Vec::new();
         if !dropped.is_empty() {
             said.push(format!(
-                "[gate on `{host}`: `{APPARATUS_ENV}=1` was TAKEN OFF {} of {steps} step(s) — \
+                "[gate on `{host}`: `{APPARATUS_ENV}=1` was TAKEN OFF {} of {} — \
                  this machine cannot meet it ({}), so the tests that need it SKIPPED here and \
                  THIS IS NOT A PASS for them; every other test in those steps ran as the project \
                  wrote them, and each one that did not run printed its own SKIPPED line with the \
                  reason. Give the machine the apparatus and the demand comes back by itself]",
                 dropped.len(),
+                many(steps, "step", "steps"),
                 self.missing.join("; "),
             ));
         }
@@ -926,8 +927,9 @@ fn said_with_misses(tail: String, missed: u32, last: &str, bound: Duration) -> S
         return tail;
     }
     format!(
-        "{tail}\n\n[gate: {missed} poll(s) in a row were not answered within {} s while this step \
-         ran — the last said: {last}]",
+        "{tail}\n\n[gate: {} in a row were not answered within {} s while this step ran — the \
+         last said: {last}]",
+        many(missed as usize, "poll", "polls"),
         bound.as_secs()
     )
 }
