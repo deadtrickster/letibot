@@ -1324,58 +1324,21 @@ impl Harness {
         self.continuation_of_fallback = on;
     }
 
-    /// **A prompt through the seam every session has — the one a child was missing.**
+    /// A prompt through the seam every session has, which is the one a child was missing.
     ///
-    /// The operator's requirement, in their words: *"subagent is a normal session.
-    /// it must be able to compact on tool call overrun"* — and their question, *"we
-    /// have overrun protection exactly for this case, why this resurfaces again and
-    /// again"*. Measured 2026-10-06, and this method is the answer to both: a child
-    /// of `s-1789462738453908838` stopped after 207 rounds at 1,131,717 of 1,146,137
-    /// tokens, its wall notice promised *"a compaction was ATTEMPTED"*, and the
-    /// store shows ONE transcript for it — no fork, no compaction item — while its
-    /// parent compacted 57 times in the same window. The protection existed; the
-    /// child could not reach it.
+    /// The wall is detected in the harness, between one round's tool results and the next round's
+    /// send, so a child stops at the wall exactly as a root does. What REACTS to it, compacting and
+    /// continuing on the summary, lived only in `Sessions`, and a child never gets there: its runner
+    /// drives `submit` on the thread its parent spawned it on, and it is adopted into the registry
+    /// and not into `Sessions::open`. So the child could not reach the protection the notice
+    /// promised.
     ///
-    /// # Where the seam was, and why a child never passed it
+    /// This adds exactly the tail the daemon gives its own sessions: the wall is checked before the
+    /// send, a turn that comes back at the wall is compacted and continued under the one bound every
+    /// door runs, and every announcement is the same line a daemon session gets.
     ///
-    /// The wall is DETECTED here in the harness, between one round's tool results
-    /// and the next round's send (the round-loop check in [`Self::submit`] that
-    /// returns [`HarnessError::ContextWall`]) — so a child at the wall stops exactly
-    /// as a root does. What REACTS to the wall — compact, then continue on the
-    /// summary — lived only in `Sessions::after_turn` and
-    /// `Sessions::compact_if_at_the_wall`, and a child never gets there:
-    /// [`HarnessTaskRunner::run_to_completion`] drives `submit` directly on the
-    /// thread its parent spawned it on, and the child is adopted into the registry
-    /// and NOT into `Sessions::open` (by R58's design — the daemon cannot run its
-    /// turns), so even a compaction attempted by id would find nothing to compact.
-    /// A dead child with a notice that says a compaction was attempted is the
-    /// sentence `HarnessError::ContextWall`'s Display writes about `Sessions`'
-    /// behaviour — true for every session the daemon holds, false for every child,
-    /// every time.
-    ///
-    /// # What this adds over [`Harness::submit`]
-    ///
-    /// Exactly the tail the daemon gives its own sessions, no more:
-    ///
-    /// * the wall is checked BEFORE the send, as `Sessions::run_prompt` does for
-    ///   the first prompt after a resume;
-    /// * a turn that comes back [`HarnessError::ContextWall`] is compacted — the
-    ///   same `should_compact` predicate the round loop just fired on — and
-    ///   continued by [`Harness::continue_after_wall`], gated on
-    ///   [`Config::room_for_next_turn`] and bounded by
-    ///   [`WALL_CONTINUES`](crate::sessions::WALL_CONTINUES), the one loop every door
-    ///   runs;
-    /// * every announcement is the same line the daemon's session gets, named with
-    ///   this session's id — the log contrast that settled the finding (a parent
-    ///   with `compacting:` lines beside a child with none) is evidence this must
-    ///   never leave unreadable again.
-    ///
-    /// **Since R68.4 there is one tail, not two.** This method was a second copy of
-    /// the daemon's (`Sessions::after_turn`, which kept its own because it owned the
-    /// failure publish, the todo nag and the turn clock), and the copies drifted. Both
-    /// are now [`crate::turn_tail::run_turn`]: this is that tail with no owner around
-    /// it ([`crate::turn_tail::Bare`]), the daemon's sessions run it with `Sessions` as
-    /// the owner, and a subagent's thread runs it with [`ChildTurns`].
+    /// There is one tail and not two: this is [`crate::turn_tail::run_turn`] with no owner around
+    /// it, and the daemon's sessions run the same function with `Sessions` as the owner.
     pub fn submit_as_a_normal_session(&mut self, prompt: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken_as_a_normal_session(Speaker::Operator, prompt)
     }
@@ -1784,51 +1747,24 @@ impl Harness {
     /// the whole turn stopped when it has been reached, which is the honest half a `Harness`
     /// can do on its own.
     fn stop_the_turn_at_the_wall(&mut self, round: usize) -> Result<(), HarnessError> {
-        // **The wall can arrive MID-TURN, and the turn boundary is too late.**
+        // The wall can arrive MID-TURN, and the turn boundary is too late: a tool result is
+        // appended between rounds, so one big one can put the conversation past `n_ctx` while the
+        // turn is still running, and the next round then sends a prompt the server refuses with the
+        // whole turn lost and nothing recorded.
         //
-        // A tool result is appended between rounds, so one big one can put the
-        // conversation past `n_ctx` while the turn is still running; the next
-        // round then sends a prompt the server refuses with
-        // `500 Context size has been exceeded` and the WHOLE TURN is lost with
-        // nothing recorded. That is how the operator's session died on
-        // 2026-09-15 — a 123k-token `edit` refusal, mid-turn.
+        // This stops the turn instead of compacting in place, because building the new base reaches
+        // the store, the resume chain and the registry, none of which a `Harness` owns. Stopping is
+        // the honest half a `Harness` CAN do: the rounds so far are committed, `Sessions` compacts
+        // at the boundary it already checks, and the next turn continues on the summary.
         //
-        // Measured after the boundary check was added and before this one: a
-        // 700-line read at `--context-window 8000` left 11,818 tokens
-        // resident, 3,818 PAST the window, and survived only because the model
-        // happened not to need another round.
+        // `!self.compacting`: the compaction turn is exempt, because it is the one turn whose whole
+        // purpose is to be over the wall, and stopping it there would make compaction impossible
+        // exactly when it is needed.
         //
-        // pi puts a `prepareNextTurn` hook here for the same reason — its own
-        // comment says *"Preparation can be long-running (for example,
-        // compaction)"* — and runs it between rounds rather than around the
-        // turn.
-        //
-        // This stops the turn instead of compacting in place, because
-        // `turn::compaction` is explicit that building the new base reaches
-        // the store, the resume chain and the registry, none of which a
-        // `Harness` owns. Stopping is the honest half a `Harness` CAN do: the
-        // rounds so far are committed, `Sessions` compacts at the boundary it
-        // already checks, and the next turn continues on the summary. A turn
-        // that ends early and says so beats one the server refuses whole.
-        // `!self.compacting`: **the compaction turn is exempt.** It runs
-        // through this same loop, and it is the one turn whose whole purpose
-        // is to be over the wall — stopping it there would make compaction
-        // impossible exactly when it is needed, which is what happened on the
-        // first run of this check.
-        // **Measured before it is judged (R72)**: the tool results of the round just
-        // ended are in the ledger and not in the last round's count, and the roll adds
-        // them as sent rather than through a ratio they have nothing to do with.
-        //
-        // **And round 0 is checked too, against the window itself** (R72 follow-up).
-        // The doors before a turn (`Sessions::run_prompt`, the nag, the wake) judge the
-        // conversation BEFORE the prompt is appended, with a reserve of a sixteenth of
-        // the window for it — so a prompt bigger than that reserve (a paste, a long
-        // message from a session) went out over the window and came back as the
-        // provider's refusal, the wall reached by a wasted request. Round 0 stops only
-        // when what it is about to send is already PAST the window, not inside the
-        // reserve: the reserve is the doors' question, and asking it again here would
-        // stop every turn the doors had just let through near the edge. Between rounds
-        // it is the reserve, as before — the next round's reply has to fit too.
+        // The count is measured before it is judged: the tool results of the round just ended are
+        // in the ledger and not in the last round's count. And round 0 is checked against the window
+        // itself, not the doors' reserve: the reserve is what let the prompt through in the first
+        // place, and asking it again would stop every turn the doors had just allowed near the edge.
         let now = (!self.compacting).then(|| self.measure_resident());
         // **Not on an estimate of a folded base, at round 0, on a metered session**:
         // that count is the fork's re-based estimate, and the one round that would
@@ -4064,12 +4000,7 @@ fn model_refused(e: &letibot_turn::HttpError) -> bool {
     letibot_http::retry::Policy::the_model_refused(e)
 }
 
-/// **One outage of one model endpoint, and the single row it is worth.**
-///
-/// # The report this exists for
-///
-/// MEASURED 2026-10-30, the operator's screen — three rows in three seconds, one per attempt,
-/// the same sentence with a different number in it:
+/// One outage of one model endpoint, and the single row it is worth.
 ///
 /// ```text
 /// session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:22
@@ -4077,38 +4008,21 @@ fn model_refused(e: &letibot_turn::HttpError) -> bool {
 /// session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:25
 /// ```
 ///
-/// and their words: *"i dont need walls of this … a coutner is what is need"*.
+/// A row per attempt is a wall of the same sentence with a different number in it, and a counter
+/// means the row's text has to be current. A note on the screen cannot be revised: the head files a
+/// warning under `(code, ts, detail)`, so a second publish carrying a bigger count is a SECOND row.
 ///
-/// # Why the row is written when the outage ENDS, and not at its first failure
+/// So the count is written where it is already final. The record is opened by the first failed
+/// attempt and changed by every later one and published never, which is the whole of the fix, and it
+/// is told once when the round ends. An endpoint that answered says `answered again after N
+/// attempts`, because a silent recovery is how somebody spends an afternoon believing it is still
+/// down; a ladder that gave up says the count, when, and the provider's own words; and a `[fallback]`
+/// that moved the session is the row, because two rows about one outage is the wall again.
 ///
-/// A counter means the row's text has to be current — `attempt 3, last at 10:31:25`, with the
-/// LAST attempt's own sentence behind it — and a note on the screen cannot be revised: the head
-/// files a warning under `(code, ts, detail)` (`crates/tui/src/app/notes.rs`), so a second
-/// publish carrying a bigger count is a SECOND row and not an update of the first. A row that
-/// climbs while the outage lasts would therefore need the head, and this daemon does not write
-/// there.
-///
-/// So the count is written where it is already final. The record below is opened by the first
-/// failed attempt and **changed by every later one and published never** — a later attempt adds
-/// no row, which is the whole of the fix — and it is told once, when the round ends:
-///
-/// * the round ended on anything but an HTTP failure ⇒ the endpoint answered, and the row says
-///   `answered again after 3 attempts / 2m 14s`. A silent recovery is how somebody spends an
-///   afternoon believing the endpoint is still down;
-/// * the ladder gave up, or the daemon is closing ⇒ `did not answer (attempt 3, last at
-///   10:31:25): http 502: …` — the count, when, and the provider's own words, which is what a
-///   click opens and what gets pasted into a bug report;
-/// * a `[fallback]` moved the session ⇒ that notice is the row and carries the count
-///   ([`fallback_notice`]), because two rows about one outage is the wall again.
-///
-/// **A failure the ladder never retried is not an outage** and writes nothing: with
-/// `http_retries = 0` the turn's own `turn_failed` is the whole of the news, and a row saying
-/// `attempt 1` beside it would be the same fact twice.
-///
-/// **Told once, structurally.** [`Harness::settle_outage`] TAKES the record, so no path can tell
-/// one outage twice however many ways it ends — the same shape [`Harness::gate_told`] has for the
-/// queue, with the key being the live outage itself. A second outage is a second record: the
-/// count starts again, because two outages are not one counter.
+/// A failure the ladder never retried is not an outage and writes nothing: with no retries the
+/// turn's own `turn_failed` is the whole of the news. Told once structurally, because
+/// [`Harness::settle_outage`] TAKES the record, so no path can tell one outage twice however many
+/// ways it ends. A second outage is a second record, since two outages are not one counter.
 pub(crate) struct Outage {
     /// The host that did not answer, as [`retry_host`] spelled it. A failure against a DIFFERENT
     /// host is a different outage — the operator's `/models` and a `[fallback]` both move this,
