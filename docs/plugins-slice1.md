@@ -1,20 +1,19 @@
 # Plugins, slice 1: contracts and work packages
 
-The first vertical slice of `docs/plugins-plan.md`: the layer stack, hot reload and the shadow gate
-in a new crate, pane plugins run by harnessd and drawn by the TUI, and an example plan dashboard
-as the first plugin. This file fixes the **contracts** so the packages below can be built
-in parallel, each against these interfaces and not against each other's code. A package that needs
-a contract changed says so in its report; it does not change it on its own.
+The first vertical slice of `docs/plugins-plan.md`: the layer stack, hot reload and the shadow gate in
+`crates/plugins`, pane plugins run by harnessd and drawn by the TUI, and an example plan dashboard as
+the first plugin. This file fixes the contracts, so a package can be built against these interfaces
+rather than against another package's code.
 
 ## C1. The wasm call (rano)
 
-rano's `plugin::Plugin` gains, beside `open`/`save`/`provider_open`:
+rano's `plugin::Plugin` gained, beside `open`/`save`/`provider_open`:
 
 ```rust
 impl Plugin {
-    /// Load with extra hook prefixes the host recognises, beside `on_` and `provider_`
-    /// (letibot passes `["pane_", "condition_", "notice_", "digest_", "link_", "command_", "tool_"]`).
-    /// An export with one of these prefixes must have the text-hook signature (i32, i32) -> i32.
+    /// `prefixes` are the hook prefixes the host recognises beside `on_` and `provider_`; letibot
+    /// passes `["pane_", "condition_", "notice_", "digest_", "link_", "command_", "tool_"]`.
+    /// An export with one of them must have the text-hook signature (i32, i32) -> i32.
     pub fn from_bytes_hooks(bytes: &[u8], path: PathBuf, caps: Capabilities, prefixes: &[&str])
         -> Result<Plugin, String>;
     pub fn load_hooks(path: &Path, caps: Capabilities, prefixes: &[&str]) -> Result<Plugin, String>;
@@ -25,8 +24,8 @@ impl Plugin {
 }
 ```
 
-The guest SDK (`sdks/rust`, crate `rano-plugin`) gains, behind a `json` feature (dependency
-`serde_json`, `serde` with `derive`):
+The guest SDK (`sdks/rust`, crate `rano-plugin`) gained, behind a `json` feature (`serde_json`, and
+`serde` with `derive`):
 
 ```rust
 /// Parse the input as JSON into `I`, run `f`, serialize its answer; `None` = unchanged.
@@ -36,8 +35,8 @@ pub fn json_hook<I: DeserializeOwned, O: Serialize>(ptr: u32, len: u32, f: impl 
 
 ## C2. The layer stack (`crates/plugins`, crate `letibot-plugins`)
 
-No wasmtime in this crate's public API: it talks to modules through a trait, so it is testable
-with fakes and the rano engine is one implementation.
+No wasmtime in this crate's public API: it talks to modules through a trait, so a fake stands in for
+the rano engine in tests.
 
 ```rust
 pub trait Module: Send + Sync {
@@ -50,241 +49,57 @@ pub trait Loader: Send + Sync {                           // rano-backed in prod
 }
 
 pub enum Scope { Session, Project, User, BuiltIn }
-pub enum Capability { Exec(String), Read, Http(String) }
-
-/// plugin.toml
-/// name = "plan-dashboard"
-/// purpose = "a project plan's tiers, stages, agents and hosts at a glance"
-/// hooks = ["pane_dashboard"]
-/// capabilities = ["read"]
-/// contract = 1
-pub struct Manifest { pub name: String, pub purpose: String, pub hooks: Vec<String>,
-                      pub capabilities: Vec<Capability>, pub contract: u32 }
-
-pub struct Layer { pub id: String /* "s3", "p1", "u1", "b-github-pr" */, pub scope: Scope,
-                   pub dir: PathBuf, pub manifest: Manifest, pub sha256: String, pub disabled: bool }
+pub enum Capability { Read, ReadPath(String), Exec(String), Http(String) }
 
 pub struct Stack { /* layers newest-first within scope, scopes session > project > user > built-in */ }
 impl Stack {
-    /// Discover layers: session dir, `<project>/.letibot/plugins/*/`, `~/.config/letibot/plugins/*/`,
-    /// and built-ins registered by the host. Each dir holds plugin.toml, src/, plugin.wasm.
+    /// Each argument is the root of a scope and may be absent, which is an empty scope.
     pub fn discover(session_dir: Option<&Path>, project: Option<&Path>, user: Option<&Path>,
                     loader: Arc<dyn Loader>) -> Stack;
-    pub fn layers(&self) -> &[Layer];
-    /// Resolve one hook through the stack. Answer protocol, per layer from the top:
-    ///   {"pass":true} or unchanged -> next layer down
-    ///   {"mask":true}              -> no answer at all
-    ///   {"below": <input>}         -> call the layer below with <input>, then call this layer
-    ///                                   again with the original input plus "below": <its answer>
-    ///   anything else              -> the answer
-    /// A layer that errors (trap, fuel, malformed JSON) is skipped and recorded as a failure.
-    ///
-    /// **The marker is `below`, at the top level, and it is not `look`.** C3's pane document has
-    /// a top-level `look` of its own (*run this for me*: `{"read":…}` or `{"exec":[…]}`), so a
-    /// protocol that spelled *ask the layer below* `{"look":{"below":…}}` could not tell a
-    /// dashboard's answer from a request, and every pane that asked for its file answered
-    /// nothing at all. One word, one meaning, in one place (changed 2026-10-26; slice 1's C2 had
-    /// `{"look":{"below":…}}` and the daemon carried a re-spelling seam for it).
     pub fn call(&self, hook: &str, input: &serde_json::Value) -> Resolved;
-    pub fn set_disabled(&mut self, id: &str, disabled: bool) -> Result<(), String>;
-    /// Hot reload: re-stat each layer's plugin.wasm; changed ones become Candidates.
-    pub fn poll_changes(&mut self) -> Vec<Candidate>;
+    pub fn poll_changes(&mut self) -> Vec<Candidate>;              // hot reload, by module file
     pub fn apply(&mut self, c: Candidate) -> Result<(), String>;   // only after the gate passed
-    pub fn failures(&self) -> &[Failure];
 }
-pub struct Resolved { pub answer: Option<serde_json::Value>, pub by: Option<String> /* layer id */,
-                      pub failures: Vec<Failure> }
-
-/// Recorded inputs: the last N (default 32) inputs per hook, for replay.
-pub struct Recorder { /* ring per hook */ }
-
-/// The shadow gate (plan §2.4), steps in order, first failure stops:
-/// 1 build: `cargo build --offline --release --target wasm32-unknown-unknown` in the layer dir,
-///   copy target/wasm32-unknown-unknown/release/<crate>.wasm to plugin.wasm (via a Builder trait
-///   so tests do not run cargo);
-/// 2 load: Loader::load, every export a known hook kind, contract == 1, manifest hooks == exports;
-/// 3 shadow: a Stack clone with the candidate applied (no effects: the gate never runs looks);
-/// 4 replay: every recorded input of every hook the candidate exports, live vs shadow;
-/// 5 report.
-pub fn gate(stack: &Stack, rec: &Recorder, c: &Candidate, b: &dyn Builder) -> GateReport;
-pub struct GateReport { pub passed: bool, pub build_log: String, pub load: Result<(), String>,
-                        pub fuel: Vec<(String, u64)>, pub diffs: Vec<ReplayDiff>, pub failure: Option<String> }
 ```
 
-## C3. The pane contract (hook `pane_<name>`, JSON, `"v": 2`)
+A `Manifest` is what `plugin.toml` declares: name, purpose, module (default `plugin.wasm`), hooks,
+capabilities, contract and `[contracts]` per hook kind, feeds, actions and `[[tools]]`. A `Layer` is
+one scope's directory with its manifest, the sha256 of its module AND of its `plugin.toml`, a disabled
+flag, and D17's `trusted`/`pin` (plan §2.5). `Resolved` is an answer, the layer id that gave it, and
+the failures met on the way down; `Stack` also answers `layers`, `set_disabled` and `failures`.
 
-The dashboard language is serenedash's (`github.com/deadtrickster/serenedash`), which the operator
-pointed at: **an overview of panels, every panel a summary with a full view behind its own key**;
-every row through **one grid** (label, value, a bar or sparkline, a tail) so the numbers line up
-down the frame; **every bar says its denominator**; **findings** collect everything that tripped in
-one list, and Enter reads one whole — what was measured, the numbers behind it, the fix, and how to
-check it yourself; a **legend** documents every label, and the same text answers on hover; a panel
-that cannot get its data **says why and how to fix it** instead of drawing off an empty result; Esc
-leaves what you navigated into.
+`Stack::call` resolves one hook, per layer from the top: `{"pass":true}` or an unchanged answer
+falls through, `{"mask":true}` is *no answer here and none below*, `{"below": <input>}` calls the
+layer below and then this layer again with the original input plus `below`, and anything else is the
+answer. A layer that traps, runs out of fuel or answers malformed JSON is skipped and recorded as a
+failure. `below` is at the top level and not `look`: a pane's own document has a top-level `look`
+meaning *run this for me*, so `{"look":{"below":…}}` could not tell an answer from a request.
 
-Input:
+Three choices C2 left open, and what was taken. The same `Candidate` goes to the gate and then to
+`apply`, because a rebuilt candidate is a different value and applying one the gate never saw is
+applying an unjudged layer. A manifest with no module is a declaration and not a failure: the layer
+sits on the stack with an empty `sha256`, answers nothing itself, and the module below answers the
+hook, which is how a project installs a built-in's tool.
 
-```jsonc
-{"v":1,
- "state": null | {…},                                  // what this pane returned last time
- "look":  null | {"exit":0,"stdout":"…","stderr":"…"}, // the result of the look it asked for
- "event": null | {"item":"<row id>","action":"<event>"},
- "size":  {"w":120,"h":40}}
-```
+## C3. The pane contract (hook `pane_<name>`)
 
-Output (`View`):
+The exact document - input, `View`, `Panel`, `Block`, `Line`, `Row`, `Finding`, `Action`, the roles,
+the host's keys, the serenedash language it speaks and every refusal - is `docs/plugins-plan.md`
+§4.9. What this slice fixed, and what a host must guarantee:
 
-```jsonc
-{"title":"…",
- "badge": null | {"text":"…","role":"<role>"},        // shown in the status row
- "panels":[ <Panel>… ],                                 // the overview, in order
- "findings":[ <Finding>… ],                             // the `f` view; counted in a summary line
- "legend": {"<label>":"<what it means>", …},            // the `l` view and the hover text
- "look": null | {"exec":["prog","arg",…]} | {"read":"path"},
- "every_s": 0 | <seconds, ≥ 5>,
- "state": null | {…}}
-```
+- A plugin describes and the host draws. A plugin never paints a cell and never reads a key; it
+  returns a document in a vocabulary the head already has, rendered with the same rano widgets as the
+  built-in panes. The view is also data: the same JSON is what an agent reads.
+- Forward compatibility is the host's job: unknown fields are ignored and an unknown block kind
+  renders as one muted line naming the kind, so a newer layer degrades instead of vanishing.
+- The input carries a version (`"v"`, now 3), so a layer can tell which host is asking. The
+  manifest's `contract` is a separate number and is still 1.
 
-`Panel`:
+## C4. The wire
 
-```jsonc
-{"id":"tiers", "key":"t", "title":"tiers",
- "denominator":"rows in the tier",                      // what every bar in it is a share of
- "summary":[ <Block>… ],                                // drawn on the overview (a few lines)
- "view":[ <Block>… ],                                   // drawn when its key is pressed; absent = summary
- "unavailable": null | {"why":"cannot connect to lab2x1","fix":"ssh-add ~/.ssh/headless_server"}}
-```
-
-`Block` is one of:
-
-```jsonc
-{"lines":[ <Line>… ]}                                   // the grid
-{"table":{"columns":["…"],"rows":[<Row>…]}}
-{"tree":{"rows":[<Row with "children":[<Row>…]>…]}}
-{"markdown":"…"}                                        // itemized: list items and headings are stops
-{"kv":{"rows":[["label","value"],…]}}
-```
-
-`Line` — the one grid, laid out by the host (label column, right-aligned value column, glyph
-column, tail; a label too long is truncated with `…`, never clipped):
-
-```jsonc
-{"label":"tier 1", "value":"14/22",
- "bar": null | {"frac":0.64},                           // a share of the panel's denominator
- "spark": null | [0.1, 0.4, …],                         // history, each a share of the same denominator
- "tail":"3 in progress", "role":"<role>",
- "id": null | "tier1", "detail": null | "…markdown…", "actions":[<Action>…]}
-```
-
-`Row` (tables, trees):
-
-```jsonc
-{"id":"tier1/jstests", "cells":["Mongo jstests","not started"], "role":"<role>",
- "detail":"…markdown…", "actions":[<Action>…], "children":[…]}
-```
-
-`Finding`:
-
-```jsonc
-{"id":"stale-status", "what":"status file is 3 days old", "panel":"tiers",
- "severity":"tripped" | "missing" | "passed",
- "detail":"…prose…", "evidence":{"updated":"2026-10-22T…","age_h":74},
- "fix":"…what to do…", "verify":"…a command or query to check it yourself…",
- "actions":[<Action>…]}
-```
-
-`Action`: `{"key":"s","label":"start","say":"…"}` (a line to the session's model, as an operator
-line), `{"key":"r","label":"refresh","look":true}` (re-run the look now), or
-`{"key":"x","label":"expand","event":"expand"}` (call the pane again with `{"item","action"}`).
-
-`role` is one of `muted`, `working`, `attention`, `success`, `failure`, `plain`.
-
-**Keys are the host's** (templated). On the overview: each panel's `key` toggles its view, `f`
-findings, `l` legend; ↑/↓/PgUp/PgDn and the wheel move between stops (lines and rows with an `id`,
-markdown items, findings); a click on a panel opens its view. **Enter** opens the selected stop's
-`detail` (a finding: its detail, evidence as label/value rows, fix and verify). **Esc** leaves what
-you navigated into — detail, then view — and closes the pane at the overview. Action keys are single
-lowercase letters shown in the hint bar for the selected stop; the host refuses a view where an
-action key collides with `q`, `j`, `k`, `f`, `l`, a panel key, or another action of the same stop.
-A summary line under the title counts findings by severity, as serenedash's does.
-
-**The view is also data.** The same JSON is what an agent reads (a later `pane read` tool), the way
-serenedash's `--once --format json` is what its MCP server returns.
-
-### As built, 2026-10-27 — `"v": 2`: feeds, acts, and the row shape a list needs
-
-The session list became a built-in layer (`docs/plugins-plan.md` §7 step 10), and the list needed
-three things a dashboard did not. **The manifest's `contract` stays 1**: every change below is an
-added field or an added word, and an added field is not a version (§1, principle 6) — a layer
-written against `"v": 1` still loads and still draws. The pane INPUT is `"v": 2`, so a plugin can
-tell which host is asking.
-
-**Feeds.** A pane never runs anything for its data: what it needs the host already has. A layer
-declares which facts it reads in its `plugin.toml` and the host hands it exactly those, by name:
-
-```toml
-feeds = ["sessions"]       # sessions | queue | monitors | jobs | todos | git
-```
-
-```jsonc
-{"v":2, "feeds":{"sessions":{…}}}   // only the feeds the answering layer declared
-```
-
-`sessions` and `queue` are fed today. `monitors`, `jobs`, `todos` and `git` are named in the
-contract — the operator's next panes — and each is one more feed, not a format change. A feed is
-data the host already shows (the daemon's session list, the merge queue the head holds), so it
-adjudicates nothing and is granted by being declared and reviewed with the layer.
-
-**`queue` is the second fed feed, and it is fed by the HEAD** (`App::queue_feed`,
-`crates/tui/src/app/queue_pane.rs`): the `QueueSnapshot` the head already holds, cut to this
-session's repository, in the daemon's own words, with every age in milliseconds against the host's
-`now_ms` — a guest has no clock. Its two load-bearing fields are `live` (is the queue working on
-this row or finished with it) and `verbs` (which of the four would move it, and why each that would
-not), both answered by the host because both are the daemon's rules and a second copy of a rule is
-a copy that drifts.
-
-**Acts the host performs.** A row may carry an `enter` act — what Enter does on it — and the verbs
-are declared too, so a view cannot reach one nobody reviewed:
-
-```toml
-actions = ["switch", "fold"]
-```
-
-```jsonc
-"enter": {"switch": "s-1793…"}   // go to that session
-       | {"fold": true}          // open or close this row; the HOST keeps the fold state
-       | {"event": "expand"}     // call the pane again with {"item","action"}
-       | {"verb": "approve", "id": "r-1f2…"}   // a queue verb, on the entry the row names
-```
-
-A view carrying an act its layer did not declare is refused (`View::validate_for`), and the head
-draws what is below it. The next verb a pane needs — `disarm` a monitor, `fire` one now — is one
-more word in that list.
-
-**`{"verb", "id"}` is the fourth act, and it exists because a row has to be able to say WHICH entry
-it means.** A pane whose keys are the HEAD's (`a` approve, `v` veto, `r` restart, `d` rm on the
-queue) had no way to learn which row the plugin drew under the cursor: before this act, a plugin row
-could draw one entry and the keys would act on whichever entry the host's own enumeration happened
-to have there. The act carries the entry; the keys act on it. **The verb word is what the manifest
-gates**, so a layer whose rows ask for `rm` must declare `rm` in `actions` — the allowlist is the
-list of words that can be sent, and `View::validate_for` refuses a row reaching past it.
-
-This is an added WORD, not a version: `"v"` stays 2 and the manifest's `contract` stays 1, because a
-layer written against either still loads and still draws.
-
-**Fold state is the host's, by row id.** `Input::folded` carries what the person has opened and
-closed; the layer decides which rows CAN fold and how they start. A fold is then instant (a map and
-a redraw), and survives the next answer, because it travels back in the input.
-
-**The row grew what a list draws**: `cells` may be a string or `{"text","role"}`, and a row also
-carries `facts` (the right-hand column), `under` (the faint line beneath it), `number` (what
-`/switch N` types), `depth` (a flat list that has already walked its own tree) and `open`
-(`true`/`false`/`"fixed"` — a row no key can fold). `Row::detail` keeps its meaning: prose read
-whole on Enter.
-
-## C4. The wire (protocol 51)
-
-In `crates/sessionlog/src/protocol.rs`, bump `PROTOCOL_VERSION` to 51 and add:
+In `crates/sessionlog/src/protocol.rs`, beside the session frames. The view types are serde structs
+in `crates/sessionlog/src/pane.rs`, shared by the daemon (which validates a plugin's answer into
+them) and the head (which renders them).
 
 ```rust
 // daemon -> head, a session event
@@ -296,53 +111,26 @@ ClientFrame::PaneOpen { pane: String, w: u32, h: u32 }   // the head opened it: 
 ClientFrame::PaneClose { pane: String }                  // the head closed it: stop refreshing it
 ```
 
-**`PaneOpen`'s `w` and `h` are the pane's drawable rectangle** — the columns and rows the head has
-for it, chrome excluded — and they exist because only a head knows them: a dashboard laid out for
-the host's guess wraps its labels for a terminal nobody is looking at. Both are `#[serde(default)]`
-and `0` means *the head did not say* (the host's own default). **A resize is `PaneOpen` again**,
-with the new rectangle: the head already sends it on every open, the daemon already re-runs the
-pane on one, and a second frame kind would be a second way to say *draw it at this size*.
-
-**`PaneClose` is the head saying a pane is off its screen.** Without it the host keeps a refresh
-clock per pane a head has ever opened and asks it again every `every_s` — a wasm call and a look
-every 5–30 seconds, for a screen somebody closed, until the session ends. It is idempotent and
-quiet: nothing is published in answer, and a pane the session never had is not an error.
-
-The view types (`View`, `Block`, `Row`, `Action`, `Role`) are serde structs in
-`crates/sessionlog/src/pane.rs`, shared by the daemon (validates a plugin's answer into them) and
-the head (renders them). Unknown fields are ignored; unknown block kinds render as one muted line
-naming the kind.
+`PaneOpen`'s `w` and `h` are the pane's drawable rectangle with chrome excluded, and they exist
+because only a head knows them: a dashboard laid out for the host's guess wraps its labels for a
+terminal nobody is looking at. Both are `#[serde(default)]`, `0` means the head did not say, and a
+resize is `PaneOpen` again with the new rectangle. `PaneClose` is the head saying a pane is off its
+screen: without it the host keeps a refresh clock per pane a head has ever opened and asks it again
+every `every_s` until the session ends. It is idempotent and quiet, and a pane the session never had
+is not an error.
 
 ## C5. The example: a plan dashboard
 
 The first pane plugin is a generic example in this repository, `plugins/examples/plan-dashboard`,
-reading a project's plan status file `<project>/.letibot/status.json`:
-
-```jsonc
-{"updated":"2026-10-25T21:55:00Z",
- "release":{"name":"v0.2.0","goal":"every row of tiers 0, 1 and 2 done"},
- "tiers":[{"id":"tier0","title":"Tier 0","rows":[
-   {"id":"tier0/a","area":"…","item":"…","status":"done","note":"","branch":"","agent":""}]}],
- "stages":[{"id":"smoke","title":"smoke checkpoint","status":"waiting","note":"…"}],
- "agents":[{"id":"…","kind":"claude|leticode","task":"…","branch":"…","status":"running"}],
- "hosts":[{"id":"lab2x1","state":"busy","jobs":3,"note":""}],
- "yours":[{"id":"tag","what":"tag and publish"}]}
-```
-
-`status` ∈ `done`, `in progress`, `not started`, `waiting`, `blocked`, `yours`. The plugin's only
-capability is `read`. A project with a richer source of truth (live hosts, a scheduler) writes its
-own plugin; this one shows the language.
+reading a project's plan status file `<project>/.letibot/status.json`. Its fixture and its `status`
+vocabulary are in that directory, and its only capability is `read`.
 
 ## Work packages
 
-Each runs as its own leticode instance in its own worktree, commits on its own branch, never
-pushes, and ends with a report: what it built, what it tested, what it could not do, and any
-contract it needed changed.
-
-| id | where | builds | depends on |
-|---|---|---|---|
-| W1 | rano worktree, branch `plugin-call` | C1: `from_bytes_hooks`, `load_hooks`, public `call`, `last_fuel`; SDK `json` feature with `json_hook`; WAT tests | — |
-| W2 | letibot worktree, branch `plugins-stack` | C2 in `crates/plugins` with fake `Module`/`Loader`/`Builder` in tests; no wasmtime dependency yet | contracts only |
-| W3 | letibot worktree, branch `plugins-pane` | C4 types in `crates/sessionlog/src/pane.rs` + protocol 49; the TUI pane that renders a `View` under the C3 keys, opened from the panes list, tested with fixture JSON | contracts only |
-| W5 | letibot worktree, branch `plugins-dash` | C5: `plugins/examples/plan-dashboard`, the guest crate answering `pane_dashboard` from a status file, a fixture `status.json`, built for wasm32, with native unit tests of the view it returns | C1 SDK by path (text hook + its own serde_json) |
-| W4 | letibot, after W1–W3 | harnessd: a rano `Loader`, the stack per session, looks run through the gate, `PluginPane` events, `PaneOpen`/`PaneAction`, hot reload behind the gate | W1, W2, W3 |
+| id | built | where it is now |
+|---|---|---|
+| W1 | C1 and the SDK's `json_hook` | rano, branch `plugin-call` |
+| W2 | C2, with fake `Module`/`Loader`/`Builder` and no wasmtime dependency | `crates/plugins` |
+| W3 | C4's types and the TUI pane | `crates/sessionlog/src/pane.rs`, `crates/tui/src/ui/panes/plugin.rs` |
+| W4 | harnessd's half: the `Loader`, the per-session stack, looks through the gate, `PluginPane`, hot reload | `crates/harnessd/src/plugins.rs`, `crates/harnessd/src/plugins/` |
+| W5 | C5, with a fixture and native tests of the view | `plugins/examples/plan-dashboard` |
