@@ -43,6 +43,20 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R113 - Skills are offered like notes, the index shows only pins, and a live check proves the whole path - **OPEN, filed 2026-11-02, operator's ask**
+
+The prompt's skill index (`crates/tools/src/builtins/skill.rs`, `SkillRegistry::index`) sorts by source priority then name and stops at 60 rows, 4000 bytes or 800 tokens. Nothing ranks by relevance, so a box with many installed skills fills the slots alphabetically, and nothing offers a skill the way `crates/harnessd/src/notes_offer.rs` offers a note. The operator (2026-11-02): the offer is wanted, listing skills in full is not, pins are wanted.
+
+1. Offer. Per round, score the skill corpus (`SkillRegistry::ranked`) against the latest prompt, the plan and the todo board, and name at most two above `QUERY_FLOOR` in the request tail (`TurnRequest::tail`), the same delivery as the notes offer: never a row, never a load, dropped when the model does not take it.
+2. Index. The prompt lists only pinned skills plus a count of the rest and the `skill` verbs. No source gets listed in full.
+3. Pins. `[skills] pin = ["name", ...]` in the project file and the operator's config. A pin that names no skill is said at open, by name.
+4. Live check, before 1-3 land and again after: a session on lab2x1 with a test skill in the worktree's `.letibot/skills`, `/skills` lists and hands it over, `task {skills: [...]}` preloads it in a child, and an unknown name is refused. The R112 change moved the skill roots onto `Config`, so the check covers that too.
+
+**Done when**: a session whose prompt is about a skill's subject gets that skill offered in the tail without the model searching, an unpinned skill is not in the index, and the live check passes on main.
+**Still open?** this entry's list.
+
+---
+
 ## R112 - The harness reads the box's home for instructions and skills, so a test's prompt depends on the host - **CLOSED on branch `remote/02482000`, filed 2026-11-02**
 
 `compact::a_child_session_compacts_on_a_tool_result_overrun_and_finishes` fails on lab2x1 on main (`3566df43`) and passes on lubuntu1 and xmg. The child's prompt there is 8341 tokens of a 32765 window, so the compaction cannot make room and the task ends in `ContextWall`. lab2x1 has `~/.claude/CLAUDE.md` (8.5 kB) and a user skill in `~/.claude/skills`; lubuntu1 has neither. The harness asked `BoxDirs::for_this_box()` (`$HOME`) at three places in `crates/harnessd/src/harness.rs`, and `crates/tools/src/builtins/skill.rs` reads `$HOME/.config/letibot/skills` and `$HOME/.claude/skills`, so an in-process test could not hand them a clean box.
@@ -139,7 +153,7 @@ integration green with the four live-model targets unrun.
 
 ---
 
-## R109 - Skills are proposed, chosen by the operator, and handed to subagents - **BUILT 2026-11-01, not landed**
+## R109 - Skills are proposed, chosen by the operator, and handed to subagents - **LANDED on main (95058763, a68157ec, aa2dba41); live check and the offer are R113**
 
 The operator's design (2026-11-01), in four parts plus six refinements, and what each became. **Status: built on a branch, not landed** — this entry is the record of what the tree now does and of what it deliberately does not.
 
