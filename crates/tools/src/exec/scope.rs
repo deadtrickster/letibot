@@ -289,13 +289,8 @@ pub trait ScopeTree: Send + Sync {
     /// An invisible watcher is an unreapable one.
     fn list(&self) -> Vec<ScopeId>;
 
-    /// Note a scope that already exists and that this tree did not open - a job adopted from
-    /// another host in the same process, whose cgroup is under that host's root.
-    ///
-    /// The default does nothing, which is the honest answer for a tree that cannot be told:
-    /// nothing is *reaped* differently by remembering one, [`ScopeTree::end`] works on any path.
-    /// What it buys is a listing that can show the scope - and a scope nobody lists is the
-    /// invisible watcher again.
+    /// Note a scope that already exists and that this tree did not open: a job adopted from a peer
+    /// whose cgroup sits under its root. Nothing is reaped differently for knowing it, only listed.
     fn remember(&self, _scope: &ScopeId) {}
 
     /// Remove the tree's own empty directories, and report how many went. Only unpopulated
@@ -1041,9 +1036,8 @@ impl ScopeTree for Cgroup2 {
         self.open.lock().expect("scope list").clone()
     }
 
-    /// The cgroup is already there - it belongs to the host that opened it - so the only act
-    /// left is to list it. `prune` reads the filesystem rather than this list, so a scope
-    /// remembered here is still only removed when it holds nothing.
+    /// The cgroup belongs to the host that opened it, so listing it is the whole act. `prune` reads
+    /// the filesystem, so a remembered scope still goes only when it holds nothing.
     fn remember(&self, scope: &ScopeId) {
         let mut open = self.open.lock().expect("scope list");
         if !open.contains(scope) {
@@ -1403,8 +1397,7 @@ impl ScopeTree for ProcessGroups {
         self.open.lock().expect("scope list").clone()
     }
 
-    /// The group is already there and already recorded in the directory the giver wrote it
-    /// to, so listing it is the whole act ([`Cgroup2::remember`]'s reason).
+    /// [`Cgroup2::remember`]'s reason: the group is already recorded where the giver wrote it.
     fn remember(&self, scope: &ScopeId) {
         let mut open = self.open.lock().expect("scope list");
         if !open.contains(scope) {

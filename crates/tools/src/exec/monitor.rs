@@ -783,17 +783,9 @@ impl Monitors {
         Some(f)
     }
 
-    /// Give one of this registry's watchers to another - a session's monitor handed to its heir,
-    /// which is the half of T24 that a monitor needs as much as a job does.
-    ///
-    /// The one-waiter-per-name rule travels with it: a name the heir is already watching is
-    /// REFUSED and the monitor stays here, because two watchers under one name is the defect
-    /// requirement 4 exists to prevent, and dropping it on the floor would be worse than either -
-    /// a watcher that vanishes records nothing, which is the invisible end this package is about.
-    ///
-    /// The heir's poller is started if it had none, and a custom condition's push signal is
-    /// re-installed against the heir: a condition that rang the giver's poller would ring a
-    /// thread that has nothing left to poll, and a monitor whose wakes reach nobody is a poll.
+    /// Give one of this registry's watchers to another, keeping the one-waiter-per-name rule: a name
+    /// the heir already watches is refused and the monitor stays here, since dropping it would be an
+    /// end with nothing recorded. The heir's poller starts if it had none.
     pub fn hand_over(
         self: &Arc<Self>,
         name: &str,
@@ -805,14 +797,10 @@ impl Monitors {
                 live: self.live_names(),
             }));
         }
-        // Two registries, two locks, taken in one fixed order - the lower address first - so
-        // two sessions handing over in opposite directions at the same instant cannot hold
-        // them in the other order. Never holding both would leave a window in which the
-        // monitor is in neither registry, which is the invisibility this refuses.
+        // Two locks, taken in one fixed order so two sessions handing over in opposite directions
+        // cannot hold them the other way round.
         let self_first = (Arc::as_ptr(self) as usize) < (Arc::as_ptr(to) as usize);
-        // The whole move is one block, so both locks are released before the poller is started:
-        // `spawn_poller` takes no lock, but a thread started under one is a thread that can only
-        // fail to be able to say so.
+        // One block, so both locks are released before the poller is started.
         let (m, start) = {
             let (from_lock, into_lock) = if self_first {
                 (&self.inner, &to.inner)

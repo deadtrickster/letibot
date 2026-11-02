@@ -1,27 +1,13 @@
-//! **A session's estate**: what it was still holding when it ended, what ended with it, and what
-//! it handed to the session that outlives it.
+//! **A session's estate**: what it was still holding when it ended, and what became of it.
 //!
-//! This is T24's second half. The substrate reaps a session's processes and retires its watchers
-//! (`HostProcesses::drop`, `ProcessHost::end_scope`), so a top-level session leaking nothing is a
-//! consequence of the mechanism and not of the operator noticing. What the substrate cannot do is
-//! answer *what a subagent left*, because a subagent's heir is a session and not a process: the
-//! facts have to be read before they are true, and said to somebody.
-//!
-//! Three kinds of leftover, and they are not the same fact:
-//!
-//! - What is in the session's OWN scopes ends with it. Right, and worth saying once: a model that
-//!   believed a subagent's `cargo build` would outlive the child was wrong about the mechanism,
-//!   and the same wrong belief is how work gets lost.
-//! - What is in an `explicit` scope outlives the session by design, so it has no owner left the
-//!   moment the session is a subagent's. That is handed to the heir (`exec::hand_over`,
-//!   `Monitors::hand_over`), which is what makes it findable there rather than orphaned here.
-//! - A job of jobs is branches on other machines, which this session never owned. Named and left
-//!   alone: ending them from here would be a `kill` over hosts this box cannot see.
+//! The substrate reaps a session's own scopes and retires its watchers. It cannot answer *what a
+//! subagent left*, because a child's heir is a session: so `settle_estate` reads the facts, hands
+//! what outlives the child to the heir, ends the rest, and says which was which.
 
 use super::*;
 
 /// What a session was still holding when it ended, in the shapes a sentence needs. A `Vec` per
-/// kind and not three counters: a count of what ended names nothing a reader can go and look at.
+/// kind and not counters: a count of what ended names nothing a reader can go and look at.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Estate {
     /// Jobs still running in its own scopes, by label. These end with it.
@@ -59,12 +45,9 @@ fn counted(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// **What a session's end says about its estate** - pure, so what a child tells its parent is
-/// asserted without a daemon, and empty when there is nothing to tell.
-///
-/// It is deliberately not shaped like a count report: every clause ends in what happened to the
-/// thing and what a reader can do about it, because a leftover nobody can act on is a fact that
-/// costs attention and buys nothing.
+/// **What a session's end says about its estate.** Pure, and `None` when there is nothing to tell:
+/// every clause ends in what happened and what a reader can do about it, because a leftover nobody
+/// can act on costs attention and buys nothing.
 pub fn estate_said(e: &Estate) -> Option<String> {
     if e.is_empty() {
         return None;
@@ -129,16 +112,9 @@ fn in_a_scope_here(j: &letibot_tools::exec::JobView) -> bool {
     !j.scope.path.as_os_str().is_empty()
 }
 
-/// **Settle a session's estate**: hand what outlives it to `heir`, end what does not, and say
-/// what became of each.
-///
-/// One function rather than four call sites, because the order is the whole of the correctness:
-/// the survivors are handed over BEFORE the scopes end (or the hand-over hands on nothing), the
-/// lists are read before the end (or the sentence is about an empty table), and the end happens
-/// before the sentence is returned (or the sentence promises something that has not happened yet).
-///
-/// `heir` is `None` when there is nobody to take anything - a top-level session going away - and
-/// then an `explicit` leftover is reported as refused rather than silently kept.
+/// **Settle a session's estate**: hand what outlives it to `heir`, end what does not, and say what
+/// became of each. The order inside is the correctness: hand over before the scopes end, read the
+/// lists before the end, and end before returning the sentence that claims it.
 pub fn settle_estate(
     host: &dyn letibot_tools::exec::ProcessHost,
     heir: Option<&dyn letibot_tools::exec::ProcessHost>,
@@ -146,12 +122,10 @@ pub fn settle_estate(
     use letibot_tools::exec::{ScopeKind, job_label};
 
     let mut e = Estate::default();
-    // The watchers live on the process host that owns them (`HostProcesses::monitors`), so the two
-    // sides of a hand-over are one argument each and no session has to be named.
+    // The watchers live on the process host that owns them, so a hand-over is one argument a side.
     let monitors = host.monitors().cloned();
 
-    // 1. The survivors. `hand_over` is the tools layer's, so a job that moves is one the heir can
-    //    list and kill with no second implementation of either.
+    // The survivors first: after the scopes end there is nothing left to hand over.
     let survivors = host.survivors();
     match heir {
         Some(to) => {
@@ -172,8 +146,7 @@ pub fn settle_estate(
         }
     }
 
-    // 2. The watchers. Only the ones over an `explicit` scope outlive the session; the rest are
-    //    retired by the scope's own end, which is what `retire_under` is for.
+    // Only a watcher over an `explicit` scope outlives the session; `retire_under` takes the rest.
     if let Some(mine) = &monitors {
         for m in mine.list() {
             if m.owner.kind != ScopeKind::Explicit {
@@ -199,16 +172,13 @@ pub fn settle_estate(
                 }
             };
             if !moved {
-                // Nobody took it and nothing owns it any more, so it is retired HERE and the
-                // firing is recorded: a watcher left in a registry that is about to be dropped is
-                // an end with no record, which is the invisible end this module exists to stop.
+                // Nobody took it, and a watcher left in a registry about to be dropped ends unsaid.
                 mine.retire(&m.name, "the session that declared it ended");
             }
         }
     }
 
-    // 3. What ends. Read before the end, or the answer is `nothing was running` about a table
-    //    that has just been emptied.
+    // Read before the end, or the answer is `nothing was running` about an emptied table.
     for j in host.jobs() {
         if !j.state.is_running() {
             continue;
@@ -228,8 +198,7 @@ pub fn settle_estate(
         }
     }
 
-    // 4. And end them, so the sentence is true when it is read. Every scope but the explicit ones:
-    //    those are the heir's now, and ending one here would take back what was just handed over.
+    // Every scope but the explicit ones, which are the heir's now.
     for scope in host.scopes() {
         if scope.kind != ScopeKind::Explicit {
             let _ = host.end_scope(&scope);
@@ -240,9 +209,7 @@ pub fn settle_estate(
 }
 
 impl Harness {
-    /// This session's estate, settled against `heir` - the child's door to
-    /// [`settle_estate`]. The heir is the session that spawned it: its process host is where a
-    /// leftover is handed, and it carries its own watchers.
+    /// This session's estate, settled against `heir`: the child's door to [`settle_estate`].
     pub fn settle_estate(
         &self,
         heir: Option<&dyn letibot_tools::exec::ProcessHost>,
@@ -265,9 +232,8 @@ mod tests {
         }
     }
 
-    /// Nothing left is SILENCE: the common case is a child that ran foreground commands, and a
-    /// line saying "it left nothing" on every one of those is noise that trains a reader to skip
-    /// the line that matters.
+    /// Nothing left is SILENCE: a line saying "it left nothing" on every child that ran a
+    /// foreground command trains a reader to skip the line that matters.
     #[test]
     fn a_session_that_left_nothing_says_nothing() {
         assert_eq!(estate_said(&Estate::default()), None);

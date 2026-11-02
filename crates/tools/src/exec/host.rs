@@ -263,24 +263,20 @@ pub trait ProcessHost: Send + Sync {
     /// asked* and *its deadline passed* are different things to have happened.
     fn kill_job_as(&self, job: &JobId, by: &str) -> Result<Reaping, ExecError>;
 
-    /// The jobs this host is holding that will NOT go with it: a job in an `explicit` scope
-    /// outlives the session that started it, so a session that ends hands them on rather than
-    /// ending them. Read where a session's estate is settled, and empty on a host with no
-    /// mechanism to answer with.
+    /// The jobs this host holds that will NOT go with it: an `explicit` scope outlives the session
+    /// that started it, so a session that ends hands those on instead of ending them.
     fn survivors(&self) -> Vec<Adopted> {
         Vec::new()
     }
 
-    /// Stop listing a job. Called by [`hand_over`] on the side that gave it up, so two tables
-    /// cannot both claim one process.
+    /// Stop listing a job, on the side that gave it up: two tables claiming one process is two
+    /// owners, and two owners is the leak.
     fn forget(&self, job: &JobId) {
         let _ = job;
     }
 
-    /// Take a job this backend did not start, and make it one of its own. The callers are a
-    /// restarted daemon and a session handing its survivors to its heir; everything above this
-    /// layer is written against the backend's own job table, and a host that cannot identify a
-    /// pid must answer *I cannot*.
+    /// Take a job this backend did not start, and make it one of its own. A host that cannot
+    /// identify a pid must answer *I cannot* rather than take back something it cannot end.
     fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
         Err(ExecError::Spawn(format!(
             "this backend cannot adopt `{}`: the record outlived the process that started the \
@@ -710,9 +706,8 @@ pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 /// ([`super::jobs::Capture::release`]) and the row and its counts stay. A running job keeps its.
 pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
 
-/// A job this host did not start: a restarted daemon's record of one, as this layer needs it.
-/// See [`HostProcesses::adopt`], and [`hand_over`] for the caller that hands one to a peer
-/// rather than taking one back from the store.
+/// A job this host did not start: a restarted daemon's record of one, or a peer's, as this layer
+/// needs it. See [`HostProcesses::adopt`] and [`hand_over`].
 #[derive(Debug, Clone)]
 pub struct Adopted {
     pub handle: String,
@@ -725,26 +720,17 @@ pub struct Adopted {
     pub identity: String,
     /// The owner scope as the record spells it: `session.<name>`, `turn.<name>`, `explicit.<name>`.
     pub scope: String,
-    /// The directory the job's own scope really is, when the caller handing it over still holds
-    /// it.
-    ///
-    /// `None` from a daemon's record, whose cgroup died with the process that made it; the
-    /// directory is then re-derived from `scope`, which is the best a name can do. A hand-over
-    /// inside one process has the real one, and it is the whole of the evidence that a later
-    /// kill reaches the process: two hosts in one daemon have a root each
-    /// ([`super::scope::host_tree`] makes a `letibot.<pid>.<seq>` per tree), so a re-derived
-    /// directory would be a new, empty cgroup on the heir's side and its `job_kill` would end
-    /// nothing.
+    /// The directory the job's own scope really is, when the caller still holds it: `None` from a
+    /// daemon's record, whose cgroup died with its process. A name alone re-derives a directory on
+    /// the HEIR's root, where its `job_kill` would end nothing.
     pub scope_dir: Option<String>,
-    /// The directory of the scope that reaps it, for the same reason: an `explicit` scope
-    /// opened by the giver is not under the heir's root, and opening one there would give the
-    /// job a second owner.
+    /// The reaping scope's directory, for the same reason: one opened by the giver is not under the
+    /// heir's root, and opening it there would give the job a second owner.
     pub owner_dir: Option<String>,
 }
 
-/// One job moved from the host that held it to another: the handle, the name a sentence uses,
-/// and - when it did not move - why. A caller records these rather than a count, because a
-/// hand-over that moved nothing and one that moved two are different facts, and `0` is neither.
+/// One job moved from the host that held it to another. A caller records these rather than a
+/// count, because a hand-over that moved nothing and one that moved two are different facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handover {
     pub job: JobId,
@@ -753,18 +739,9 @@ pub struct Handover {
     pub refused: Option<String>,
 }
 
-/// Give `to` every job `from` would otherwise leave running when it goes.
-///
-/// An `explicit` scope is a resource somebody declared should outlive the session that started
-/// it - right for a long-lived checkout on a box that stays up, and an orphan the moment that
-/// session is a subagent's, because a subagent's session ends when its task does. Ending one
-/// would be a lie about what `explicit` means; leaving it would be the leak T24 exists to stop.
-/// So it moves, and it moves as the record a restarted daemon already uses ([`Adopted`]), so
-/// `job_list`, `job_output` and `job_kill` work in the heir without a second implementation of
-/// any of them.
-///
-/// A job that moved leaves the giver's table ([`ProcessHost::forget`]): a job in two tables is
-/// two owners, which is the thing this package is about.
+/// Give `to` every job `from` would otherwise leave running when it goes: the ones in an
+/// `explicit` scope, which outlives the session by design and has no owner left once that session
+/// is a subagent's. It travels as [`Adopted`], so `job_list` and `job_kill` already work there.
 pub fn hand_over(from: &dyn ProcessHost, to: &dyn ProcessHost) -> Vec<Handover> {
     from.survivors()
         .into_iter()
@@ -1585,9 +1562,8 @@ impl ProcessHost for HostProcesses {
         let (kind, name) = scope_kind_of(&a.scope);
         let (owner, scope) = match (&a.owner_dir, &a.scope_dir) {
             (Some(owner_dir), Some(scope_dir)) => {
-                // The two directories are the record, and this host's tree is told about them
-                // so `scopes()` and the housekeeping prune can see them: a scope nobody lists
-                // is an unreapable one, which is the whole of T24.
+                // The real directories, listed so `scopes()` can show them: a scope nobody lists is
+                // an unreapable one.
                 let owner = super::scope::ScopeId {
                     kind,
                     name,
@@ -1989,9 +1965,8 @@ impl ProcessHost for HostProcesses {
         self.tree.list()
     }
 
-    /// The running jobs that will NOT go with this host: those in an `explicit` scope, which
-    /// outlives the session by design and therefore has no reaper left when the session ends.
-    /// A job whose pid no longer answers is left out - it is not a survivor, it is a row.
+    /// The running jobs in an `explicit` scope: the ones no reaper is left for once this host goes,
+    /// and the only ones an heir can be handed.
     fn survivors(&self) -> Vec<Adopted> {
         self.jobs
             .lock()
@@ -2009,10 +1984,8 @@ impl ProcessHost for HostProcesses {
                     slug: j.slug.clone(),
                     cwd: j.cwd.clone(),
                     pid: j.pid,
-                    // The identity the heir's watcher compares against. Read here and not
-                    // invented: an identity that never matches would settle the handed-over job
-                    // as `Dead` on its first look and leave the process running with nobody
-                    // watching it, which is the orphan this whole path exists to prevent.
+                    // Read, never invented: an identity that cannot match settles the handed-over
+                    // job as `Dead` on its first look, and the process runs on unwatched.
                     identity: super::procs::read(j.pid)
                         .map(|p| format!("start:{}", p.start))
                         .unwrap_or_default(),
