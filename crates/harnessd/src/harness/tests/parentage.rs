@@ -1,20 +1,6 @@
-//! **A session a session started has that session as its parent** — the one place the rule is
-//! decided, and the doors it has to hold for.
-//!
-//! The rule lives in `Registry::parent_for` and is applied in `Harness::open_with_registry`, which
-//! every open in this crate goes through. These tests are about the *open*, not about a spawner:
-//! a spawner's job is to state a parent it knows, and the open's job is to have one anyway — from
-//! the registry's entry for the id, or from the session's own row — so that a door which forgot
-//! does not leave a child indistinguishable from a top-level session for the rest of its life.
-//!
-//! Why that matters beyond tidiness: the head's `ctrl-s` tree nests by exactly this field
-//! (`App::placements` / `App::session_rows`), so a child with no parent is drawn at the top of its
-//! project for ever, and the only thing left that names the relation is the `-sub-` in a minted
-//! id — which is a convention, not a record.
-//!
-//! **The corollary is a test here too**, because a rule that fills in a parent is one edit away
-//! from inventing one: a session a person started has no parent in any of the three sources, and
-//! must come back with none.
+//! A session a session started has that session as its parent: the rule lives in `Registry::parent_for` and is applied
+//! in every open, which finds a parent from the registry's entry or the session's own row. The head's tree nests by this
+//! field, and the corollary is a test too: a session a person started must come back with none.
 
 use super::*;
 use crate::sessions::Sessions;
@@ -63,10 +49,8 @@ fn parts_for(dir: &Scratch, id: &str) -> Option<(Parts, Config, std::path::PathB
     Some((parts, cfg, path))
 }
 
-/// **Open `cfg.session_id` through a registry that already knows whose it is** — the shape of
-/// every door that registers first and opens second (a head's `ResumeSession`, a parked child
-/// reopened by its parent, the daemon's `--session`), with the config's own field left empty, as
-/// a door that forgot to copy it would.
+/// Open `cfg.session_id` through a registry that already knows whose it is: the shape of every door that registers first
+/// and opens second, with the config's own field left empty as a door that forgot to copy it would.
 fn open_registered(
     parts: &Parts,
     mut cfg: Config,
@@ -107,12 +91,9 @@ fn stored_parent(path: &std::path::Path, id: &str) -> Option<String> {
         .parent_session_id
 }
 
-/// **A child opened by a door that left the config empty is still a child** — the registry's
-/// entry is the second source, and it is the one every "register, then open" door has.
-///
-/// This is the test the rule exists for: before it, the parent was written to the store row from
-/// `cfg` alone, so this session's row said `NULL` and the head's tree drew it at the top of its
-/// project for ever.
+/// A child opened by a door that left the config empty is still a child, since the registry's entry is the second
+/// source. Before this the parent was written from `cfg` alone, so the row said NULL and the head's tree drew it at the
+/// top of its project for ever.
 #[test]
 fn a_child_a_door_opened_without_its_parent_still_has_one() {
     let dir = Scratch::new("parentage-registered");
@@ -132,11 +113,8 @@ fn a_child_a_door_opened_without_its_parent_still_has_one() {
     );
 }
 
-/// **A session a person started has no parent, and the rule must not invent one.**
-///
-/// The three sources are all empty here — no caller's word, an entry created with none, and a row
-/// this open is about to write — which is exactly the state of a head's `NewSession` and of a
-/// fresh launcher start.
+/// A session a person started has no parent, and the rule must not invent one: the three sources are all empty here,
+/// which is the state of a head's `NewSession` and of a fresh launcher start.
 #[test]
 fn a_session_a_person_started_has_no_parent() {
     let dir = Scratch::new("parentage-person");
@@ -178,11 +156,8 @@ fn a_child_of_a_child_is_parented_on_the_child() {
     );
 }
 
-/// **A session whose entry forgot reads the parent off its own row** — the third source, and the
-/// repair for a daemon that registered a child with no parent at all.
-///
-/// The row is seeded first and the open then finds it (`put_session` writes only a session it has
-/// no row for), so the only thing that can answer is the row itself.
+/// A session whose entry forgot reads the parent off its own row: the third source, and the repair for a daemon that
+/// registered a child with no parent at all. The row is seeded first and the open then finds it.
 #[test]
 fn a_daemon_whose_entry_forgot_reads_the_parent_off_the_row() {
     let dir = Scratch::new("parentage-row");
@@ -234,18 +209,9 @@ fn the_callers_word_is_written_when_nothing_else_knows() {
     );
 }
 
-/// **The `--session` door, measured** — the daemon's own first session, reopened by id from a
-/// launcher.
-///
-/// `harnessd --session <id>` does not set `Config::parent_session_id` (it is a command line, and
-/// the flag that carries a parent is a spawn's, not a person's), so the config arrives empty and
-/// the *only* record of the relation is the row the id was born with. Before
-/// `Registry::parent_for` was applied at the open, this session was a root to its own harness:
-/// no `parent` row in its settings, the root's paragraph in its prompt, and — the one with teeth —
-/// no parent id to address, so a child reopened this way could not message its parent at all.
-///
-/// `Sessions` is driven rather than `Harness` because this is the door: the launcher's flag goes
-/// through `Sessions::open_first_with_seat` and nothing else.
+/// The `--session` door, measured: `harnessd --session <id>` does not set a parent, so the config arrives empty and the
+/// only record of the relation is the row the id was born with. Before `parent_for`, this session was a root to its own
+/// harness and a child reopened this way could not message its parent at all. `Sessions` is driven because this is the door.
 #[test]
 fn a_session_the_launcher_reopened_with_session_keeps_the_parent_it_was_born_with() {
     let dir = Scratch::new("parentage-session-flag");

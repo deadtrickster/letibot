@@ -3,20 +3,14 @@
 //! around it, and the restart restore that starts a turn nobody typed for.
 use super::*;
 
-/// A `LogSink` that also hands back the item ids it saw.
-///
-/// See point 1 in the module header. It forwards everything unchanged: a sink that
-/// filtered would make the head's view depend on which daemon published it.
+/// A `LogSink` that also hands back the item ids it saw, so a row's body can be paired with the
+/// id the event named. It forwards everything unchanged: a sink that filtered would make the head's
+/// view depend on which daemon published it.
 pub(crate) struct CapturingSink {
     inner: LogSink,
     ids: Vec<String>,
-    /// The last `turn_id` this sink saw start.
-    ///
-    /// Read for §4.5: when a turn fails, the daemon has to publish a terminal event
-    /// *for that turn*, and `HarnessError` does not carry an id — the failure is
-    /// raised in several places, one of them before a turn id exists at all. Taken
-    /// off the event on its way past, for the same reason the item ids are: the
-    /// minting rule lives in the engine and a second copy of it goes stale.
+    /// The last `turn_id` this sink saw start, taken off the event on its way past: a failure has
+    /// to publish a terminal event for its turn, and `HarnessError` does not carry an id.
     turn_id: Option<String>,
 }
 
@@ -45,14 +39,9 @@ impl EventSink for CapturingSink {
     }
 }
 
-/// **Pair every id a sink captured with its row's body** — the free half of
-/// `Harness::reconcile`, so the summary-turn helper (which cannot borrow `&self`,
-/// see [`Harness::run_summary_turn`]) pairs rows by the same rule and cannot drift
-/// from it.
-///
-/// The ids come off the events rather than being recomputed; see point 1 in the
-/// module header. A count mismatch is a bug in the pairing, not something to paper
-/// over, so it is announced as a warning on the same log the head reads.
+/// Pair every id a sink captured with its row's body: the free half of `Harness::reconcile`, so the
+/// summary-turn helper pairs rows by the same rule. A count mismatch is a bug in the pairing, and it
+/// is announced rather than papered over.
 pub(crate) fn reconcile_rows(
     hub: &Arc<Hub>,
     sink: &mut CapturingSink,
@@ -83,27 +72,16 @@ pub(crate) fn reconcile_rows(
 // ---------------------------------------------------------------------------
 
 impl Harness {
-    /// **The loop.** One user message in, one answer out, however many tool rounds
-    /// that takes.
-    ///
-    /// This is the one door the **operator's own words** come through, and it is the
-    /// only place that records them as such: see [`TrailMirror`] for why the speaker
-    /// cannot be recovered from the transcript afterwards.
+    /// The loop: one user message in, one answer out, however many tool rounds that takes. This is
+    /// the one door the operator's own words come through, and the only place that records them as
+    /// the operator's: the speaker cannot be recovered from the transcript afterwards.
     pub fn submit(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken(Speaker::Operator, text)
     }
 
-    /// **The operator's words with the chips they put beside them** — `PROTOCOL_VERSION` 50.
-    ///
-    /// The files are read HERE, by the daemon, because the daemon is the half that writes the
-    /// transcript: the row is the durable artifact, and what it carries is the `data:` URI and
-    /// the inlined text rather than a path that may be gone by the time the next round renders
-    /// the conversation (`letibot_transcript::media`'s own argument for putting `Media` on a
-    /// row). See [`crate::attachments`] for what each kind becomes.
-    ///
-    /// A file that could not be read is said in the row and warned on the log — the words still
-    /// send, because they are the operator's and the attachment is not — and an EMPTY list is
-    /// [`Harness::submit`], byte for byte.
+    /// The operator's words with the chips they put beside them. The files are read HERE, since the daemon
+    /// writes the transcript and the row carries the `data:` URI rather than a path that may be gone. A file
+    /// that could not be read is said in the row and warned; an empty list is `submit`, byte for byte.
     pub fn submit_attached(
         &mut self,
         text: &str,
@@ -119,16 +97,9 @@ impl Harness {
         self.submit_spoken_parts(Speaker::Operator, text, extra)
     }
 
-    /// **One turn, with the speaker given** — the operator's own words through
-    /// [`Harness::submit`], a parent's correction through
-    /// [`Harness::submit_a_parents_message`].
-    ///
-    /// The speaker is not decoration. [`AuthorisationTrail`] is where a turn's authority is
-    /// decided and [`Speaker::Agent`] never authorises on its own, so a row that says the wrong
-    /// speaker is a row that grants the wrong thing — which is why the parent's message has a
-    /// door of its own rather than a flag on this one. The two speaker vocabularies are matched
-    /// inline here for the same reason `TrailMirror::seed` matches them inline: the one place
-    /// they meet is the one place a reader has to look for the mapping.
+    /// One turn, with the speaker given. The speaker is not decoration: [`Speaker::Agent`] never
+    /// authorises on its own, so a row saying the wrong speaker grants the wrong thing, which is why
+    /// a parent's message has a door of its own rather than a flag on this one.
     pub(crate) fn submit_spoken(
         &mut self,
         speaker: Speaker,
@@ -177,39 +148,16 @@ impl Harness {
         self.submit_items(items)
     }
 
-    /// **The shared tail has taken a turn on this harness** — `turn_tail::run_turn`, once per door,
-    /// before the door's own act.
-    ///
-    /// It says only that there is a turn to end, not that one has started speaking: what starts the
-    /// clock is the turn's first words ([`Harness::begin_turn_clock`]), and [`Harness::end_turn_clock`]
-    /// clears this again. A turn taken and never ended would be exactly the state
-    /// `Harness::system_update`'s own rounds would leave behind, which is why it is the tail's act
-    /// rather than every caller's.
+    /// The shared tail has taken a turn on this harness, once per door and before the door's own act. It says
+    /// only that there is a turn to end, not that one has started speaking, which is what the first words do.
+    /// The tail's act rather than every caller's, since a turn taken and never ended is a state to avoid.
     pub(crate) fn turn_taken(&mut self) {
         self.turn_open = true;
     }
 
-    /// **A prompt has arrived: this is where the whole turn's clock starts.**
-    ///
-    /// Called once per prompt, never per round — the engine's `turn_began_ms` is then carried on
-    /// every `TurnStarted` that prompt produces, which is what stops a head restarting its clock
-    /// at each round. The engine field is private to this module and this is the only writer, so
-    /// the two cannot drift out of step.
-    ///
-    /// **Idempotent within one prompt**, and that is load-bearing now that the two callers are the
-    /// places a turn actually speaks: [`Harness::submit_items_then`] (which a wall-continuation
-    /// re-enters, one prompt later, with this still running) and [`Harness::run_rounds`] (which the
-    /// operator's `!` line reaches with its rows already in). A second call leaves the start where
-    /// the first put it, so the promise above holds without either caller having to know.
-    ///
-    /// **And it is NOT called by the door.** `turn_tail::run_turn` used to start it before the
-    /// door's own act, which meant a door that found nothing to say — `Harness::wake` with no notice
-    /// behind it, `Ok(None)` — published `waiting on: turn` for a turn that never ran; a `wait`
-    /// blocked on that session armed on it and answered `0 — the turn ended` about a session that
-    /// had run nothing at all. MEASURED 2026-10-26 as the bridge's end-to-end flake, one run in
-    /// four: the empty wake was the daemon's own startup ring
-    /// (`Sessions::put_a_restored_session_to_work`) draining on the worker's first pass, on the
-    /// session that had never turned.
+    /// A prompt has arrived, and this is where the whole turn's clock starts: once per prompt, never per round,
+    /// with the engine's field carried on every `TurnStarted` so a head does not restart its clock. Idempotent
+    /// within one prompt, and not called by the door: a door that says nothing must not publish a turn.
     pub fn begin_turn_clock(&mut self, began_ms: u64) {
         // **A settlement taken for this turn is no longer owed** — the words are in the rows this
         // turn opens with, whether or not the clock below starts. See
@@ -217,11 +165,9 @@ impl Harness {
         if let Some(w) = &self.job_watch {
             w.turn_began();
         }
-        // **Only a turn the shared tail is running can start a clock** — see the field. A
-        // `run_rounds` reached outside one (`Harness::system_update`'s, from a compaction or the
-        // `m1` script) has no `end_turn_clock` behind it, and a clock nobody clears is a session
-        // that reads `waiting on: turn` for the life of the daemon. And a door that has not spoken
-        // yet has not started a turn either: the clock waits for the first words.
+        // Only a turn the shared tail is running can start a clock: a `run_rounds` reached outside
+        // one has no `end_turn_clock` behind it, and a clock nobody clears reads `waiting on: turn`
+        // for the life of the daemon. A door that has not spoken yet has not started a turn either.
         if !self.turn_open || self.prompt_in_flight.load(Ordering::SeqCst) {
             return;
         }
@@ -231,11 +177,9 @@ impl Harness {
         // engine's rounds come and go inside this, which is exactly why a reader that times the
         // round events reads a working session as idle at every boundary.
         self.prompt_in_flight.store(true, Ordering::SeqCst);
-        // **And the room is told the session is WORKING** — the beat, run by the daemon and not by
-        // the model. A model that must remember to call `beat` is thinking about its work, and the
-        // ninety-second lease would take its item while it works; the turn clock is the daemon's,
-        // so this is where *working* starts and [`Harness::end_turn_clock`] is where it stops.
-        // Idempotent, and a session with no room pays one `Option` test.
+        // And the room is told the session is WORKING: the beat is the daemon's, not the model's, so
+        // a model thinking about its work cannot lose the item to the lease. Idempotent, and a
+        // session with no room pays one `Option` test.
         if let Some(room) = &self.room {
             room.turn_started();
         }
@@ -243,14 +187,8 @@ impl Harness {
     }
 
     /// The turn is over: stop publishing a start, so a later round that belongs to a NEW prompt
-    /// cannot inherit this one's clock.
-    ///
-    /// **And this is where a switch the operator made during the turn takes effect** — see
-    /// [`Harness::set_provider`], and [`Harness::apply_pending_switch`], which runs after the
-    /// span is marked closed and before anything else reads what answers. Every way out of a
-    /// turn comes through here (`turn_tail::run_turn`: a final answer, an interrupt, a failure,
-    /// a wall, and the door that said nothing at all), which is exactly why the pending switch
-    /// is applied HERE and not on a success path.
+    /// cannot inherit this one's clock. And this is where a switch the operator made during the turn
+    /// takes effect, because every way out of a turn comes through here.
     pub fn end_turn_clock(&mut self) {
         self.turn_began_ms = None;
         self.engine.turn_began_ms = None;
@@ -266,13 +204,9 @@ impl Harness {
         if let Some(w) = &self.job_watch {
             w.turn_began();
         }
-        // **After the flag, deliberately**: the switch is applied through the same door a
-        // between-turns switch takes, and a gate that saw the span still open would pend it again
-        // for ever.
-        // **The turn is over, so the beats stop.** The lease now counts from the last one, which is
-        // exactly the fact it measures: a session whose turn ended is alive and not working on the
-        // item — the operator's *"so they don't occupy it for ever"*, without the model having to
-        // do anything.
+        // After the flag, deliberately: the switch is applied through the same door a between-turns
+        // switch takes, so a gate that saw the span still open would pend it again for ever. The
+        // room's beats stop too, and the lease then counts from the last one.
         if let Some(room) = &self.room {
             room.turn_ended();
         }
@@ -280,36 +214,17 @@ impl Harness {
         self.publish_activity();
     }
 
-    /// **Something fired while nothing was running.** T24's wake, from the worker —
-    /// and, since R7, **the same door a background job's completion comes through.**
-    ///
-    /// The daemon calls this when [`letibot_sessionlog::registry::Work::Woken`]
-    /// names this session. Every monitor that settled since the cursor, and every
-    /// background job the watcher has queued a completion for, becomes one user item
-    /// and the loop runs — so a condition that happened between turns is acted on,
-    /// rather than sitting in `job_list` until the model happens to ask.
-    ///
-    /// `Ok(None)` means nothing had settled after all: a wake that raced a mid-turn
-    /// pickup by [`HubSteering`], or a job settlement this harness had already turned
-    /// into a turn, or a wake with no completion behind it for any other reason. That
-    /// is a real outcome and not a failure, and returning `None` rather than running
-    /// an empty turn is what stops a spurious wake from costing a generation.
-    ///
-    /// It returns `Ok(None)` even when there are no monitors: a session that can
-    /// background a job and watches no condition still has completions to deliver,
-    /// and the early return that used to sit on `self.monitors` is what would have
-    /// made R7 silently monitor-only.
+    /// Something fired while nothing was running: the worker's wake, and since R7 the door a job's completion
+    /// comes through. `Ok(None)` means nothing had settled after all, which is a real outcome: returning it
+    /// rather than running an empty turn is what stops a spurious wake costing a generation.
     pub fn wake(&mut self) -> Result<Option<Reply>, HarnessError> {
-        // **The merge queue's reviews first**, and they are never a turn of this session: a
-        // gatekeeper started, or a verdict written, is the queue's business. See
-        // [`Harness::serve_reviews`]. A wake is one of the three doors into it and not the only
-        // one any more: a session inside a turn is served at its round boundary, and a session
-        // this daemon holds is served by the daemon's own clock whatever its turn state.
+        // The merge queue's reviews first, and they are never a turn of this session: a gatekeeper
+        // started or a verdict written is the queue's business. A wake is one of three doors into it,
+        // beside the round boundary and the daemon's own clock.
         let _ = self.serve_reviews();
-        // **R92.24: a wake on a workspace that has gone** — a worktree retired under a live
-        // session. Said on the hub once per harness, and to the model when this wake has
-        // something to say anyway (a wake for this alone would be a turn whose every tool call
-        // fails).
+        // A wake on a workspace that has gone: said on the hub once per harness, and to the model
+        // only when this wake has something to say anyway, because a wake for this alone would be a
+        // turn whose every tool call fails.
         let gone = !self.cfg.workspace.is_dir();
         if gone && !self.workspace_gone_said {
             self.workspace_gone_said = true;
@@ -319,40 +234,27 @@ impl Harness {
                 compaction: None,
             });
         }
-        // **Two kinds of thing arrive between turns, and they share one turn.**
-        //
-        // A monitor that fired, and a background job that ended. Both are the machine's
-        // reading of the world with nobody having asked, both must reach the model
-        // unprompted, and neither may jump a person who is waiting: that ordering is
-        // `Bell::next_any`'s — commands drain before wakes — and it holds for both
-        // because both arrive as `Work::Woken`.
-        // **And the queue's entries that wait for a merge gate**, said to this session's model —
-        // the operator: *"let main project agent manage it"*.
-        // **A wake is where a monitor's firing (or expiry) is seen**, so the store's record of
-        // what is watching is brought up to date here (`crate::restart`).
+        // Two kinds of thing arrive between turns and share one turn: a monitor that fired and a job that
+        // ended. Both must reach the model unprompted, and neither may jump a person waiting, since commands
+        // drain before wakes. The queue's gate entries and the store's watch records are updated here too.
         self.sync_monitor_records();
-        // **Every sentence below goes through the `notice` hook** (`docs/plugins-plan.md` §4.3):
-        // one kind per source, because a layer that patches the wording of a firing is not thereby
-        // the answerer for the queue's verdicts. It is applied per source and not to the joined
-        // text, so the facts a layer is handed are the ones its sentence was composed from.
+        // Every sentence below goes through the `notice` hook: one kind per source, because a layer that patches
+        // a firing's wording is not thereby the answerer for the queue's verdicts. Applied per source and not to
+        // the joined text, so the facts a layer is handed are the ones its sentence was composed from.
         let queue = self.queue_notices();
         let mut notices = self.noticed_all(
             letibot_plugin::notice::MERGE_QUEUE,
             queue,
             serde_json::json!({}),
         );
-        // **The room's bells** (the room's slice 2). A room event about this session became a
-        // sentence on the connection's own thread — `crate::room::wake` — because the thread that
-        // hears a bell is not the thread that runs a turn. This is where it reaches the model, as
-        // one notice per event, through the same `notice` hook as every other sentence the harness
-        // composes: a layer may reword a room notice and may not delete it (it is a fact the model
-        // is owed — somebody else's claim on a resource it also wants).
+        // The room's bells: a room event about this session became a sentence on the connection's own thread,
+        // because the thread that hears a bell is not the thread that runs a turn. One notice per event, through
+        // the same hook, so a layer may reword it and may not delete it: the model is owed that fact.
         let room = crate::room::wake::take(&self.cfg.session_id);
         notices.extend(self.noticed_all(letibot_plugin::notice::ROOM, room, serde_json::json!({})));
-        // **And the children a restart brought back** — the operator's *"we should bring
-        // subagents back … and restart automatically"*: the model is told, in one line each,
-        // which came back and which could not. Counted with the queue's notices: both are facts
-        // the daemon found in the store rather than settlements that arrived.
+        // And the children a restart brought back, one line each, saying which came back and which could not.
+        // Counted with the queue's notices, since both are facts the daemon found in the store rather than
+        // settlements that arrived.
         let restart_taken = self.restart_notices.clone();
         let restarts = std::mem::take(&mut self.restart_notices);
         notices.extend(self.noticed_all(
@@ -360,15 +262,9 @@ impl Harness {
             restarts,
             serde_json::json!({}),
         ));
-        // **And the entries the queue has handed to this session**, which is the fallback: no
-        // reviewer could judge them, and the project merges such a branch through its own main
-        // session (`[queue] merge_via_session`), so the project that owns the branch is told — and
-        // this is the telling. NOT a refused review: a refusal goes to the child that made the
-        // branch through `mergequeue::review::deliver_refusal`, and one that cannot be delivered
-        // is raised as `refusal_undelivered`, never handed over here. Second, and
-        // after the gate notice, because an entry can be in only one of the two states: the first
-        // is *the repository has no gate*, the second is *the queue has given the entry back to
-        // you*, and the one that matters to the model reading them is the one that is true.
+        // And the entries the queue has handed to this session, which is the fallback: no reviewer could judge
+        // them and the project merges such a branch through its own session. NOT a refused review, which goes to
+        // the child that made the branch. Second, because an entry is in one of the two states.
         let handover = self.handover_notices();
         notices.extend(self.noticed_all(
             letibot_plugin::notice::MERGE_QUEUE,
@@ -405,43 +301,18 @@ impl Harness {
                 }
             }
         }
-        // **The hop that did not exist (R7).** `JobSettled` reaches every head; this is
-        // what reaches the model, and taking it here is what stops it arriving twice.
-        //
-        // **And it is THIS session's queue that is drained, which is the routing fix of
-        // 2026-10-05.** The queue is per session: a job a subagent backgrounded is queued
-        // on the subagent's set and drained by the subagent, so the notice says *you
-        // backgrounded* to the one session that did. Sharing the tree's queue (R58) is
-        // what put a subagent's `sleep 25` in the main session's conversation, where the
-        // handle was not in `job_list` and `job_output` could not open it. The one thing
-        // that still arrives here from below is a settlement whose own session stopped
-        // before it could be drained ([`JobWatchers::stop`]) — and `completion_notices`
-        // is given this session's id so that it is not read as this session's own.
-        //
-        // **R79: between turns nothing is held** — a wake runs no turn (`Ok(None)` below) only
-        // when there is truly nothing to say. Holding is for a RUNNING turn; see `crate::delivery`
-        // and the operator's ruling quoted on `Deliveries::between_turns`.
+        // The hop that did not exist (R7): `JobSettled` reaches every head, and this is what reaches the model,
+        // taking it here so it cannot arrive twice. It is THIS session's queue that is drained, so a subagent's
+        // job is not announced to its parent as one the parent backgrounded. R79: between turns nothing is held.
         let monitor_n = notices.len() - queue_n;
         let deliveries = self.deliveries();
-        // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
-        // went onto the queue's row above; telling this session's model that "a subagent you
-        // started has finished" would be a turn about work that is already recorded and already
-        // gone from the board. It holds for the QUEUE's session too, and for the same reason — the
-        // pass above ran first and the row is answered (see the field's own doc).
+        // A gatekeeper's settlement is the review's, not this session's news: the verdict went onto
+        // the queue's row above, so telling the model here would be a turn about work already
+        // recorded and already gone from the board.
         let gatekeepers = &self.gatekeepers;
-        // The sentences, and which kind gets which — [`completion_notices`], which is where that
-        // decision lives so that it can be asserted without a live session.
-        //
-        // **And nothing stays held between turns** (the operator, 2026-10-11: *"jobs were ran for
-        // a reason and held for a reason. once turn ends no reason to hold"*): a result that
-        // arrived while the session was idle is said here as an ordinary completion, and the batch
-        // held while the last turn ran is this wake's own content — the turn-end ring
-        // (`JobWatchers::turn_ended`) is what brought the worker here for it.
-        //
-        // **Not marked read yet (R91.11).** `between_turns` marked them delivered — in the store,
-        // for a subagent — and emptied the held set before `submit_item` had put a word in front
-        // of the model; a turn that then failed to open lost them. They are marked once the turn
-        // has opened, and held again if it does not.
+        // The sentences, and which kind gets which, come from `completion_notices` so they can be asserted
+        // without a live session. Nothing stays held between turns; they are marked read only once the turn has
+        // opened, or a turn that failed to open would lose them.
         let between = deliveries.as_ref().map(|d| {
             d.between_turns_unread(
                 |c| gatekeepers.contains(&c.job),
@@ -456,12 +327,9 @@ impl Harness {
             held_batch = b.batch;
             said = told;
         }
-        // **And the rows whose condition just became met.** The same door, because a condition
-        // firing is the same kind of fact as a job ending: nothing asked, and the model has to be
-        // told. What the line carries is BOTH halves — the row's own words and what the world says
-        // about its handle — because either alone is unusable: an intent with no fate is a sentence
-        // the model cannot act on, and a fate with no intent is the settlement notice it already
-        // has.
+        // And the rows whose condition just became met: a firing is the same kind of fact as a job
+        // ending, and the line carries both halves, because an intent with no fate is a sentence the
+        // model cannot act on and a fate with no intent is a settlement it already has.
         let result_n = notices.len() - queue_n - monitor_n;
         let due = self.due_todo_rows();
         let fired: Vec<String> = due.iter().map(|(_, handle, _)| handle.clone()).collect();
@@ -502,11 +370,9 @@ impl Harness {
         {
             w.turn_began();
         }
-        // **What this session is waiting on has moved** (`PROTOCOL_VERSION` 52): the monitor cursor
-        // above took the firings, and `between_turns_unread` took the queue and the held set — none
-        // of which publishes an event of its own. Said before the early return below, because the
-        // move that matters most is the one that empties the list: a wake with nothing left to say
-        // is a session that has just gone quiet.
+        // What this session is waiting on has moved: the monitor cursor and `between_turns_unread`
+        // took things that publish no event of their own, and the move that matters most is the one
+        // that empties the list.
         self.publish_activity();
         self.meter_wake(causes, !notices.is_empty());
         if notices.is_empty() {
@@ -523,15 +389,9 @@ impl Harness {
             }
         }
         let text = notices.join("\n\n");
-        // **The wall is checked BEFORE the send — `nag_turn`'s pre-flight, the
-        // same function.** MEASURED 2026-10-09: the FIRST of the thirty
-        // consecutive provider refusals on `s-1789919514688401228` was
-        // attributed to `monitor` — this door — so the insurance is not
-        // theoretical. As with the nag, this is not the load-bearing fix: a
-        // refused wake is classified as the wall and recovered by the turn tail
-        // (`Sessions::wake` calls it), and this pre-flight is what spares the
-        // refused round-trip when the daemon's own ledger already says the next
-        // turn will not fit.
+        // The wall is checked BEFORE the send, as `nag_turn`'s pre-flight is. Not the load-bearing
+        // fix: a refused wake is classified as the wall and recovered by the turn tail, so this only
+        // spares a round trip the daemon's own ledger already knows will not fit.
         self.compact_if_at_the_wall();
         // The harness talking to itself, not the operator. A firing — or a job's end —
         // must never be able to authorise the action it reports on.
@@ -547,11 +407,9 @@ impl Harness {
             }],
             |_| opened = true,
         );
-        // **Told only once the turn has opened (R91.11).** Opened means the notice is in the
-        // transcript and in the store, so the model reads it whatever its rounds come to. A turn
-        // that never opened put nothing in front of anybody: the results go back to the held
-        // set, the restart notices back to the harness, and the monitor cursor back to where it
-        // was, so the next wake says all of it.
+        // Told only once the turn has opened: opened means the notice is in the transcript and in the store, so
+        // the model reads it whatever its rounds come to. A turn that never opened put nothing in front of
+        // anybody, so the results, the restart notices and the monitor cursor all go back and the next wake says it.
         if opened {
             if let Some(d) = &deliveries {
                 d.read(&said);
@@ -566,10 +424,9 @@ impl Harness {
             self.monitor_cursor.store(cursor_before, Ordering::SeqCst);
         }
         out.map(Some)
-            // ...and the condition is spent only once the model HAS been told. Consuming before the
-            // submit would let a turn that failed to start silently eat the firing, and **a firing
-            // nobody hears is the failure this whole mechanism exists to rule out**, where a firing
-            // reported twice is merely dull. So the order here is the requirement and not tidiness.
+            // ...and the condition is spent only once the model HAS been told. Consuming before the submit would
+            // let a turn that failed to start silently eat the firing, and a firing nobody hears is the failure
+            // this mechanism exists to rule out, where one reported twice is merely dull.
             .inspect(|_out| {
                 if !fired.is_empty() {
                     self.todos.consume_conditions(&fired);
@@ -580,16 +437,9 @@ impl Harness {
             })
     }
 
-    /// **A subagent brought back after a daemon restart carries on** — the operator, 2026-10-12:
-    /// *"we should bring subagents back - i cant afford to wait till they finish. we should record
-    /// them (session persist anyway) and restart automatically"*.
-    ///
-    /// The session was reopened from the store under its own id, so the conversation is the
-    /// child's own; what it lacks is the turn that was in flight. This is that turn, opened by
-    /// `notice` (`crate::subagent_record::child_notice`) in the harness's own voice — the shape of
-    /// [`Harness::continue_after_wall`]: `Speaker::Agent`, never an authorisation, never readable
-    /// as the operator's words. A child of THIS child that was brought back too is said in the
-    /// same turn ([`Harness::restore_after_restart`]), and so is anything held for it.
+    /// A subagent brought back after a daemon restart carries on: its session was reopened from the store
+    /// under its own id, so the conversation is its own, and what it lacks is the turn that was in flight. This
+    /// is that turn, opened by a notice in the harness's own voice, with its own children and held work in it.
     pub fn continue_after_restart(&mut self, notice: &str) -> Result<Reply, HarnessError> {
         let mut parts = vec![notice.to_string()];
         parts.append(&mut self.restart_notices);
@@ -605,49 +455,9 @@ impl Harness {
         })
     }
 
-    /// **A settlement this daemon queued for a session that was not open is not lost.**
-    ///
-    /// # The hole this closes
-    ///
-    /// [`crate::jobwatch::JobWatchers`] is built **per open**, so a settlement that lands while
-    /// its session is not open has nowhere to go: the queue it is pushed into belongs to a
-    /// harness nobody will drain again, and the ring that would have started the turn names a
-    /// session `Sessions::wake` answers `Gone` for (`sessions::wake_route`). Both die with the
-    /// harness. What survives is the **row**, because it is written where the settlement is first
-    /// known rather than where it is read: `subagent_run` by the child's own thread
-    /// ([`crate::subagent_record::SubagentRecord::settled`]) and `job` by
-    /// [`crate::jobwatch::JobRecorder::record`] — each with `delivered = 0`, which is that
-    /// column's whole meaning (*the model has not been told*).
-    ///
-    /// This is the door that reads it, at the one moment it is true: the session has just been
-    /// opened, so its watcher set is new and empty and nothing in this process is holding the
-    /// settlement. Queued as an ordinary [`JobCompletion`], it is worded by the same
-    /// `completion_notices` a live settlement is — *a subagent you started has finished: …* — so
-    /// a settlement that outlived its session is not a second kind of notice. The open's own
-    /// ring (`Sessions::put_a_restored_session_to_work`) is what makes the turn.
-    ///
-    /// # Only this daemon's own, and that is the other half rather than a narrowing
-    ///
-    /// `instance` is the daemon that last owned the row. A row a **gone** daemon wrote is
-    /// [`Harness::restore_after_restart`]'s (`runs`/`settled` below, which filter on
-    /// `instance != me`), and it is worded as a restart because that is what it was. A row
-    /// **this** daemon wrote and never delivered is what the open of a session it had closed
-    /// finds, and it is worded as a completion because nothing restarted. The two filters are
-    /// disjoint, so no settlement is delivered twice.
-    ///
-    /// # What it cannot do, said rather than implied
-    ///
-    /// A job's output is gone by now — `job_output` reads the process host's own capture, and
-    /// the process is long reaped — so the notice names the job and says how it ended, which is
-    /// what `job_output`'s absence leaves true. A child's answer IS in the row (`outcome`), and
-    /// the notice carries its first line exactly as a live settlement does.
-    ///
-    /// # What it returns
-    ///
-    /// How many settlements it queued. A queued settlement is a notice the next wake says, and a
-    /// session whose ONLY news is one of them is a session that still owes work — which is
-    /// [`Harness::restore_after_restart`]'s decision about the restart sentence's door, so the
-    /// count has to leave this function rather than be recomputed there.
+    /// A settlement this daemon queued for a session that was not open is not lost: `JobWatchers` is built
+    /// per open, so its queue dies with that harness, but the ROW survives with `delivered = 0`, and this
+    /// reads it at the one moment it is true. Only rows this daemon wrote; returns how many it queued.
     fn deliver_settlements_left_undelivered(&self, store: &Store, me: &str, sid: &str) -> usize {
         let Some(watch) = self.job_watch.clone() else {
             return 0;
@@ -681,10 +491,8 @@ impl Harness {
             });
             queued += 1;
         }
-        // **And the jobs**, whose rows the recorder writes for the same reason and with the same
-        // `delivered = 0`. A child's handle has a `running` job row too (the sink writes one for
-        // every `Backgrounded`, before it knows which kind it is), so it is skipped here the way
-        // `restore_after_restart` skips it.
+        // And the jobs, whose rows the recorder writes for the same reason and with the same `delivered = 0`.
+        // A child's handle has a `running` job row too, so it is skipped here the way `restore_after_restart` skips it.
         for job in store.undelivered_jobs(sid).unwrap_or_default() {
             if store.subagent_run(&job.handle).ok().flatten().is_some() {
                 continue;
@@ -722,25 +530,9 @@ impl Harness {
         queued
     }
 
-    /// **What this session was running when its daemon stopped — restored, or reminded** — called
-    /// once, when the session is opened (`Sessions::harness_as`, `Sessions::open_first_with_seat`,
-    /// and a resumed child's own `run_to_completion`). See `crate::restart` for the whole of it.
-    ///
-    /// The operator, 2026-10-12: *"to make restarts as much painless as possible - by default we
-    /// restore agents, monitors, and remind the model about jobs. Now, if some threshold passed -
-    /// say more than 1 hours after the stop, we start to simply remind the model stating that time
-    /// passed and this is what you wre running and how to restart that"* — and *"this is the case
-    /// for when harnessd stopped of course"*: only records a daemon that is GONE wrote are read, so
-    /// a session opened by the daemon that holds its records (an attach after a long idle, a
-    /// `/resume`) does nothing here.
-    ///
-    /// Everything it decides is one notice: queued for this session's next turn
-    /// ([`Harness::restart_notices`] — the daemon rings the session right after the open, so that
-    /// turn is now), published on the hub as `restart_restored` or `restart_reminded` for the
-    /// operator, and printed on the daemon's log. Every child resumed or re-delivered is watched by
-    /// this session's own watcher set, so its completion arrives exactly as a fresh child's does.
-    ///
-    /// `None` when there was nothing to do — the ordinary open.
+    /// What this session was running when its daemon stopped, restored or reminded: called once, when the
+    /// session is opened, over records a daemon that is GONE wrote. Everything it decides is one notice, and
+    /// `None` when there was nothing to do, which is the ordinary open.
     pub fn restore_after_restart(&mut self) -> Option<String> {
         use letibot_tools::builtins::task::{RestartFate, RestoreMode};
         let path = self.cfg.store.clone()?;
@@ -752,13 +544,9 @@ impl Harness {
         // opened hours after the daemon came back is exactly the case the threshold exists for.
         let opened_ms = letibot_sessionlog::event::now_ms();
         let sid = self.cfg.session_id.clone();
-        // **Before anything about a restart, the settlements THIS daemon dropped** — see
-        // [`Harness::deliver_settlements_left_undelivered`]. It lives here because this is the
-        // door every open passes through (`Sessions::harness_as`, `Sessions::open_first_with_seat`,
-        // a resumed child's `run_to_completion`) and it is the door whose own ring, a few lines
-        // later in `Sessions`, is what turns a queued settlement into a turn. The count is kept
-        // because a settlement nobody has been told about is one of the things that makes an
-        // otherwise empty restart a TURN ([`crate::restart::Owed`]).
+        // Before anything about a restart, the settlements THIS daemon dropped: this is the door every open
+        // passes through, and its own ring is what turns a queued settlement into a turn. The count is kept
+        // because a settlement nobody was told about is one thing that makes an empty restart a TURN.
         let settlements = self.deliver_settlements_left_undelivered(&store, &me, &sid);
 
         // **What a gone daemon left**, and which daemon that was. Read before anything is
@@ -792,22 +580,14 @@ impl Harness {
             .filter(|m| m.live && m.instance != me)
             .collect();
         let mut jobs = Vec::new();
-        // **A job row with no context is a relic of a build before `job_context`**, not a job
-        // that was running at THIS stop: it names no daemon, so it cannot say when anything
-        // stopped, and reminding the model of it as running is false. pg-noop, 2026-10-15: four
-        // such rows (j900, j610, j624, j2437, from builds long gone) were the session's only
-        // records, `Stopped::latest` over no daemon at all said the stop was unknown, and a
-        // daemon down a couple of seconds told the model *"when the previous one stopped is
-        // unknown … NOTHING was restored automatically"* over four jobs nobody was running.
-        // They are closed quietly below, the way a reminded job is, and said to nobody.
+        // A job row with no context is a relic of a build before `job_context`, not a job running at this stop:
+        // it names no daemon, so it cannot date anything, and reminding the model of it is false. They are closed
+        // quietly below, the way a reminded job is, and said to nobody.
         let mut relics = Vec::new();
         for job in store.jobs(&sid).unwrap_or_default() {
-            // **A job the old daemon's ORDERLY stop ended is a job that was running at the
-            // stop**, and is reminded like one. `Registry::close` ends every run in flight
-            // (`end_running`, *"killed by the daemon stopping"*) before the process exits, so
-            // after a clean restart no job row reads `running` at all — and the reminder this
-            // pass exists to give was never given: pg-noop's `slt-sweep` (j17239), 4,262 of
-            // 4,771 files into its measurement, killed at 02:05:55 and mentioned to nobody.
+            // A job the old daemon's ORDERLY stop ended was running at the stop, and is reminded like one:
+            // `Registry::close` ends every run in flight before the process exits, so after a clean restart no row
+            // reads `running` at all and the reminder this pass exists to give would never be given.
             if job.state != "running" && job.state != crate::restart::STOPPED_WITH_THE_DAEMON {
                 continue;
             }
@@ -850,17 +630,9 @@ impl Harness {
             let _ = store.put_job(&sid, &lost);
             let _ = store.deliver_job(&sid, &job.handle);
         }
-        // **A restart is SAID, whatever the store holds** — the operator, 2026-10-30, after one
-        // restart had told the model something and the next had said nothing: *"mb always tell
-        // agent about restart? with the current time lol"*. That is a clock and not a courtesy:
-        // the model's sense of time went through a stop and a start, and only this daemon knows
-        // when. A session that existed before this daemon started was held by a daemon that is
-        // gone — which is the whole of what `came_back` asks, and it is asked of the session ROW
-        // because a session with nothing running has no other record to ask.
-        // **And a daemon actually stopped here.** A session older than this daemon is not by itself
-        // a restart: a seeded session, a resumed one, one this daemon opened first — all predate
-        // `back_ms` while nothing stopped. What makes it a restart is another daemon's `daemon_life`
-        // row carrying a stop, which is a fact about the box rather than an inference from a clock.
+        // A restart is SAID, whatever the store holds: the model's sense of time went through a stop and a
+        // start, and only this daemon knows when. A session older than this daemon is not by itself a restart,
+        // so what makes it one is another daemon's row carrying a stop, a fact about the box and not a clock.
         let a_daemon_stopped = store
             .lives()
             .map(|lives| {
@@ -869,28 +641,23 @@ impl Harness {
                     .any(|l| l.stopped_ms.is_some() && l.instance != me)
             })
             .unwrap_or(false);
-        // **And only the sessions a person reads.** The review queue's own session is opened by
-        // this daemon too, and it is nobody's conversation: the operator saw the restart twice —
-        // once for his session and once for the gatekeeper's — and asked for one
-        // (*"i dont need two"*). A subagent is nobody's either; it reads what its parent tells it.
+        // And only the sessions a person reads: the review queue's own session is nobody's conversation, and the
+        // operator saw the restart twice and asked for one. A subagent is nobody's either; it reads what its
+        // parent tells it.
         let a_persons_session = !letibot_sessionlog::is_gatekeeper_session(&sid)
             && !matches!(store.session_parent(&sid), Ok(Some(Some(p))) if !p.is_empty());
-        // **The session's own row, read once**, because it answers two questions: whether this
-        // session existed before this daemon started (so a daemon that is gone held it), and what
-        // its last row was — which is the only evidence a session that was mid-turn when the
-        // daemon stopped leaves behind ([`crate::restart::mid_turn`]).
+        // The session's own row, read once, because it answers two questions: whether this session existed
+        // before this daemon started, and what its last row was, which is the only evidence a session that was
+        // mid-turn when the daemon stopped leaves behind.
         let row = store.session(&sid).ok().flatten();
         let came_back = a_daemon_stopped
             && a_persons_session
             && row
                 .as_ref()
                 .is_some_and(|s| (s.created_ms.max(0) as u64) < back_ms);
-        // **Once per (session, restart)** — `queue_told` is the store's own "said once" table and
-        // the key names the daemon, so a session this daemon opens twice says it once, and the
-        // NEXT daemon says it again because it is a different restart. Spent on the first open
-        // whatever that open says, so an empty reopen cannot say what the first one already did.
-        // A store that cannot record it is treated as *not yet said*: a sentence said twice is
-        // dull, and one never said is the defect this exists for.
+        // Once per (session, restart): `queue_told` keys on the daemon, so a session opened twice says it once
+        // and the next daemon says it again, being a different restart. Spent on the first open whatever that
+        // open says. A store that cannot record it is treated as not yet said.
         let already_said = came_back
             && !store
                 .tell_once(&format!("restart:{sid}:{me}"), back_ms)
@@ -902,21 +669,17 @@ impl Harness {
             if !came_back || already_said {
                 return None;
             }
-            // **What this session still owes decides the door its sentence takes** — the
-            // operator, 2026-11-01: *"it is not ok that restart notice arrived with my continue"*.
-            // Nothing owed keeps the row (a generation spent on a sentence is still a generation
-            // spent); anything owed makes the sentence the content of the turn the work already
-            // costs. See [`crate::restart::Owed`].
+            // What this session still owes decides the door its sentence takes: nothing owed keeps the row, since
+            // a generation spent on a sentence is still spent; anything owed makes the sentence the content of the
+            // turn the work already costs.
             let owed = self
                 .owed_after_a_restart(row.as_ref().and_then(|s| s.last_item.as_ref()), settlements);
             return self.say_nothing_was_running(&store, back_ms, &owed);
         }
 
-        // **How long the daemon was down**: from the latest stop among the daemons these records
-        // came from, to this daemon's start — the fact the notice's first line states. **The
-        // threshold is applied to a different interval** (R91.8): stop → this open
-        // (`restores(opened_ms, …)`), because a session opened hours after the daemon came back is
-        // the case the threshold is for.
+        // How long the daemon was down: from the latest stop among the daemons these records came from, to this
+        // daemon's start. The threshold is applied to a different interval, stop to this OPEN, because a session
+        // opened hours after the daemon came back is the case it is for.
         let mut instances: Vec<(String, u64)> = Vec::new();
         for (inst, at) in runs
             .iter()
@@ -1013,10 +776,9 @@ impl Harness {
                 said.push(crate::restart::said::monitor_scoped(&m.name, &scope));
                 continue;
             }
-            // **The same call, made again.** It was gated when the model first made it; this
-            // re-establishes that declaration rather than making a new one, so it goes through the
-            // door with no gate (the operator's own runs use it for the same reason: nobody is
-            // left to ask). The recording wrapper writes the new declaration under this daemon.
+            // The same call, made again: it was gated when the model first made it, and this re-establishes that
+            // declaration rather than making a new one, so it goes through the door with no gate. The recording
+            // wrapper writes the new declaration under this daemon.
             let call = ToolCall {
                 id: format!("restart-monitor-{}", m.name),
                 name: "monitor".into(),
@@ -1096,33 +858,9 @@ impl Harness {
         Some(text)
     }
 
-    /// **A restart with nothing to restore, said anyway** — the operator, 2026-10-30: *"mb always
-    /// tell agent about restart? with the current time lol"*. The sentence is
-    /// [`crate::restart::nothing_running`]'s; this is the reading behind it and the door it takes.
-    ///
-    /// # Which daemon stopped, from a session with no work in it
-    ///
-    /// The stop is dated from the daemons the session's OWN rows name, whatever state those rows
-    /// are in: a monitor it retired, a child that finished, the last job it ran. A session that
-    /// names nobody — created, never used, nothing run in it — has no record that could date a
-    /// stop, and the sentence says `unknown` rather than borrowing the newest stop in the store,
-    /// which belongs to whichever daemon on this box stopped last and is a claim about another
-    /// folder's process.
-    ///
-    /// # The door, and which of the two it takes
-    ///
-    /// **A session that owes nothing** has nothing to continue, so the sentence is filed and the
-    /// model reads it when it next reads ([`Harness::say_without_a_turn`]): no wake, no turn. A
-    /// restore is the opposite — a resumed child is work to continue — and keeps the turn it has
-    /// always had.
-    ///
-    /// **A session that owes something is the operator's ruling of 2026-11-01**: *"it is not ok
-    /// that restart notice arrived with my continue … so i expected that after restart you will
-    /// continue"*. The sentence is queued as a restart notice instead, which is the turn the
-    /// daemon's own ring at open already costs for the work ([`crate::restart::Owed`], and
-    /// [`Harness::owed_after_a_restart`] for what counts). The cost of the whole mechanism is one
-    /// model call per restart per session that owed anything; a session that owes nothing keeps
-    /// the row and spends none.
+    /// A restart with nothing to restore, said anyway. The stop is dated from the daemons the session's OWN
+    /// rows name; a session that names nobody says `unknown` rather than borrowing the newest stop in the
+    /// store, which is a claim about another folder's process. Owing nothing gets a row, owing work a turn.
     fn say_nothing_was_running(
         &mut self,
         store: &Store,
@@ -1168,13 +906,9 @@ impl Harness {
             ),
         };
         eprintln!("  {sid} · restart: nothing was running — {text}");
-        // **One line, not two.** In the quiet case the sentence is written as a transcript row
-        // ([`Harness::say_without_a_turn`]), which the person sees where the rest of the
-        // conversation is and the model reads at its next turn. In the owed case it is queued as
-        // a restart notice, which the wake spends a turn on and the person sees as that turn's
-        // opening line. Neither publishes a hub warning: the row drew the restart twice for one
-        // stop — the operator: *"i need only one restart notification"* — and the row is the copy
-        // that both readers can use.
+        // One line, not two: in the quiet case the sentence is a transcript row, which the person sees and the
+        // model reads at its next turn, and in the owed case it is a restart notice the wake spends a turn on.
+        // Neither publishes a hub warning, which drew the restart twice for one stop.
         if owed.any() {
             self.restart_notices.push(text.clone());
         } else if let Err(e) = self.say_without_a_turn(&text) {
@@ -1183,18 +917,9 @@ impl Harness {
         Some(text)
     }
 
-    /// **What this session still owes**, as [`crate::restart::Owed`] — the four facts that decide
-    /// whether an otherwise empty restart is a turn.
-    ///
-    /// `last` is the session row's last transcript row (read once by
-    /// [`Harness::restore_after_restart`]) and `settlements` is what
-    /// [`Harness::deliver_settlements_left_undelivered`] queued at this open.
-    ///
-    /// The board is read twice on purpose: `due_rows` is the rows whose condition the world now
-    /// meets ([`Harness::due_todo_rows`], the wake's own predicate, so the two cannot disagree)
-    /// and `plan_rows` is every row still owed — the plan the model wrote, which is the one thing
-    /// a session with no record of a turn leaves that says it has work left. A `Postponed` or
-    /// `Cancelled` row is the operator's act and is not owed; a `Completed` one is answered.
+    /// What this session still owes, as `restart::Owed`: the four facts that decide whether an otherwise empty
+    /// restart is a turn. The board is read twice on purpose, since `due_rows` is the wake's own predicate and
+    /// `plan_rows` is every row still owed. A postponed or cancelled row is the operator's act.
     fn owed_after_a_restart(
         &self,
         last: Option<&TranscriptItem>,
@@ -1214,28 +939,9 @@ impl Harness {
         }
     }
 
-    /// **Tell this session's model something without starting a turn** — the door a restart with
-    /// nothing owed takes (`crate::restart`), and the two states it has to tell apart.
-    ///
-    /// * **A turn is running** → the step boundary of THAT turn (`self.injected`, the queue the
-    ///   harness's own nudges ride): the model reads the sentence in the turn already open, and
-    ///   nothing is preempted.
-    /// * **Idle** → a transcript row, which the model reads at its next turn — whenever that is.
-    ///   **No wake**: a wake is a model call, and a call spent to say *"the daemon came back at
-    ///   21:28"* to a session that owes nothing is a call spent on a sentence. What the line is
-    ///   for is closing a gap in the model's sense of time, and that gap is closed whenever it
-    ///   next reads.
-    ///
-    /// **And that is the cost argument's whole reach.** It decides the door for a session with
-    /// nothing outstanding; a session that owes work takes the turn it already costs
-    /// ([`Harness::say_nothing_was_running`], [`crate::restart::Owed`]), because there the person
-    /// is waiting for the session to continue and a row is read when they type — the operator,
-    /// 2026-11-01: *"it is not ok that restart notice arrived with my continue"*.
-    ///
-    /// A row rather than an injection in the idle case, deliberately: an injection is read at a
-    /// step boundary and there is no step boundary to wait for, while a row is in the transcript
-    /// whether or not a turn ever runs — the same reason [`Harness::note_to_model`] queues rather
-    /// than speaks.
+    /// Tell this session's model something without starting a turn, which is the door a restart with nothing
+    /// owed takes. A turn running reads it at that turn's step boundary; an idle session gets a transcript row
+    /// and NO wake, because a wake is a model call and the gap it closes is closed when the model next reads.
     pub(crate) fn say_without_a_turn(&mut self, text: &str) -> Result<(), HarnessError> {
         let Some(text) = self.noticed(letibot_plugin::notice::RESEAT, text, serde_json::json!({}))
         else {
@@ -1251,26 +957,16 @@ impl Harness {
         self.record_notice(&text)
     }
 
-    /// **A turn is running, as far as this test is concerned** — the one state
-    /// [`Harness::say_without_a_turn`] branches on that a test cannot reach by running a turn: a
-    /// turn holds the harness for its whole life, so nothing else can call in while one is in
-    /// flight. See `tests::restart_notice`.
+    /// A turn is running, as far as this test is concerned: the one state `say_without_a_turn` branches on that
+    /// a test cannot reach by running a turn, since a turn holds the harness for its whole life.
     #[cfg(test)]
     pub(crate) fn hold_a_turn_open_for_test(&self, open: bool) {
         self.prompt_in_flight.store(open, Ordering::SeqCst);
     }
 
-    /// **The turn a fallback earned, opened by the notice that says so** — the operator's ruling
-    /// of 2026-10-12 (*"when it finally applied the turn didnt continue"*), built as an act.
-    ///
-    /// `turn_tail::run_turn` is the only caller, and it makes this a whole turn of its own through
-    /// the same sequence every door gets: the refusal ended the last one, and this one starts with
-    /// a user item in the harness's own voice (`Speaker::Agent`, as a wake's and a plan-check's
-    /// notices are) — which is also what makes the work legal for the model that took over, since
-    /// a model's first request has to follow a user message.
-    ///
-    /// **The held batch rides in**, by R79's rule: this is a turn the model takes anyway, so the
-    /// results it is owed at a turn start go with it rather than waiting for a prompt.
+    /// The turn a fallback earned, opened by the notice that says so: the refusal ended the last turn, and
+    /// this one starts with a user item in the harness's voice, which is also what makes the work legal for the
+    /// model that took over. The held batch rides in, since this is a turn the model takes anyway.
     pub fn continue_after_fallback(&mut self, notice: String) -> Result<Reply, HarnessError> {
         let mut text = notice;
         if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
@@ -1289,20 +985,9 @@ impl Harness {
         })
     }
 
-    /// **The continuation turn a fallback owed, taken — at most once, and never over a stop.**
-    ///
-    /// `None` is the ordinary case. Two ways to get it back empty, and both are the point:
-    ///
-    /// * the turn that just ended was itself a fallback continuation — see
-    ///   [`crate::turn_tail::run_turn`], which never takes one twice, so a fallback chain cannot
-    ///   ping-pong between two names and pay a model change per turn for ever;
-    /// * **the operator asked for a stop the failed turn did not take.** An interrupt that
-    ///   arrived after that turn's last round sits in the queue with nothing to act on it, and a
-    ///   fresh turn started on top of it would either be aborted by it or, worse, ignore their
-    ///   stop. Their word ends the work here, and the session stays on the fallback model.
-    ///
-    /// **It always clears the field**, taken or not: a notice left armed would open a turn nobody
-    /// asked for at the end of some later turn.
+    /// The continuation turn a fallback owed, taken at most once and never over a stop. Empty when the turn
+    /// that ended was itself a continuation, so a chain cannot ping-pong, and when the operator asked for a stop
+    /// the failed turn did not take. It always clears the field, or a notice left armed would open a turn later.
     pub(crate) fn take_fallback_continuation(&mut self) -> Option<String> {
         let notice = self.fallback_continuation.take()?;
         if self.hub.has_queued_interrupt() {
@@ -1324,78 +1009,16 @@ impl Harness {
         self.continuation_of_fallback = on;
     }
 
-    /// **A prompt through the seam every session has — the one a child was missing.**
-    ///
-    /// The operator's requirement, in their words: *"subagent is a normal session.
-    /// it must be able to compact on tool call overrun"* — and their question, *"we
-    /// have overrun protection exactly for this case, why this resurfaces again and
-    /// again"*. Measured 2026-10-06, and this method is the answer to both: a child
-    /// of `s-1789462738453908838` stopped after 207 rounds at 1,131,717 of 1,146,137
-    /// tokens, its wall notice promised *"a compaction was ATTEMPTED"*, and the
-    /// store shows ONE transcript for it — no fork, no compaction item — while its
-    /// parent compacted 57 times in the same window. The protection existed; the
-    /// child could not reach it.
-    ///
-    /// # Where the seam was, and why a child never passed it
-    ///
-    /// The wall is DETECTED here in the harness, between one round's tool results
-    /// and the next round's send (the round-loop check in [`Self::submit`] that
-    /// returns [`HarnessError::ContextWall`]) — so a child at the wall stops exactly
-    /// as a root does. What REACTS to the wall — compact, then continue on the
-    /// summary — lived only in `Sessions::after_turn` and
-    /// `Sessions::compact_if_at_the_wall`, and a child never gets there:
-    /// [`HarnessTaskRunner::run_to_completion`] drives `submit` directly on the
-    /// thread its parent spawned it on, and the child is adopted into the registry
-    /// and NOT into `Sessions::open` (by R58's design — the daemon cannot run its
-    /// turns), so even a compaction attempted by id would find nothing to compact.
-    /// A dead child with a notice that says a compaction was attempted is the
-    /// sentence `HarnessError::ContextWall`'s Display writes about `Sessions`'
-    /// behaviour — true for every session the daemon holds, false for every child,
-    /// every time.
-    ///
-    /// # What this adds over [`Harness::submit`]
-    ///
-    /// Exactly the tail the daemon gives its own sessions, no more:
-    ///
-    /// * the wall is checked BEFORE the send, as `Sessions::run_prompt` does for
-    ///   the first prompt after a resume;
-    /// * a turn that comes back [`HarnessError::ContextWall`] is compacted — the
-    ///   same `should_compact` predicate the round loop just fired on — and
-    ///   continued by [`Harness::continue_after_wall`], gated on
-    ///   [`Config::room_for_next_turn`] and bounded by
-    ///   [`WALL_CONTINUES`](crate::sessions::WALL_CONTINUES), the one loop every door
-    ///   runs;
-    /// * every announcement is the same line the daemon's session gets, named with
-    ///   this session's id — the log contrast that settled the finding (a parent
-    ///   with `compacting:` lines beside a child with none) is evidence this must
-    ///   never leave unreadable again.
-    ///
-    /// **Since R68.4 there is one tail, not two.** This method was a second copy of
-    /// the daemon's (`Sessions::after_turn`, which kept its own because it owned the
-    /// failure publish, the todo nag and the turn clock), and the copies drifted. Both
-    /// are now [`crate::turn_tail::run_turn`]: this is that tail with no owner around
-    /// it ([`crate::turn_tail::Bare`]), the daemon's sessions run it with `Sessions` as
-    /// the owner, and a subagent's thread runs it with [`ChildTurns`].
+    /// A prompt through the seam every session has, which is the one a child was missing: the wall is detected
+    /// in the harness, but what REACTS to it lived only in `Sessions`, which a child never reaches. One tail and
+    /// not two: this is `run_turn` with no owner around it.
     pub fn submit_as_a_normal_session(&mut self, prompt: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken_as_a_normal_session(Speaker::Operator, prompt)
     }
 
-    /// **A parent's message to a child BETWEEN turns — the turn it makes, spoken as the
-    /// parent's.**
-    ///
-    /// The operator's ruling, verbatim: *"fix task_message - it should enqueue"*. Until this
-    /// existed, a message could only enter a turn that was already running (`HubSteering`'s
-    /// `Message` arm), and the parent's tool refused to send one to a child that was not —
-    /// because *"nothing drains a child's queue between turns"*, so a queued message would
-    /// have been accepted and heard by nobody. A child between turns is now reached: the
-    /// message is queued, the child's own serving thread is woken (`Hub::wake_its_own_reader`),
-    /// and this is the turn that reads it.
-    ///
-    /// **Why this is not [`Harness::submit`]**: the speaker. The words are recorded as the
-    /// sender's — [`message_from_a_session`], naming which session — so they cannot authorise the
-    /// act they race, cannot coalesce with the operator's own text, and cannot be taken back.
-    /// That is the same rule the mid-turn door follows, and the same text: a session cannot tell
-    /// which state it was in when the other end spoke.
+    /// A parent's message to a child BETWEEN turns: the turn it makes, spoken as the parent's. Until it arrived,
+    /// a message could only enter a running turn, since nothing drained a child's queue between them. Not
+    /// `submit`, because the speaker is the sender's, so the words can neither authorise nor be taken back.
     pub fn submit_a_parents_message(
         &mut self,
         from: &str,
@@ -1405,12 +1028,9 @@ impl Harness {
         self.submit_spoken_as_a_normal_session(Speaker::Agent, &said)
     }
 
-    /// **The turn and its tail, with the speaker given** — the body both doors above share, and
-    /// since R68.4 nothing but the shared tail itself ([`crate::turn_tail::run_turn`]) with no
-    /// owner around it ([`crate::turn_tail::Bare`]): the pre-wall check, the failure, the
-    /// compaction after the turn (the refused door after a wall) and the continuation past it.
-    /// This used to be a second copy of that sequence, and the copy was a step behind the
-    /// daemon's: no failure published, a different `auto_compact_skipped` sentence.
+    /// The turn and its tail, with the speaker given: the body both doors above share, and since R68.4 nothing
+    /// but the shared tail with no owner around it. It used to be a second copy of that sequence, and the copy
+    /// was a step behind the daemon's: no failure published, a different `auto_compact_skipped` sentence.
     fn submit_spoken_as_a_normal_session(
         &mut self,
         speaker: Speaker,
@@ -1434,18 +1054,14 @@ impl Harness {
         self.submit_spoken(Speaker::Agent, &said)
     }
 
-    /// §5.3: change the system prompt mid-session, in the form the dialect can
-    /// render.
-    ///
-    /// **Appended, never rewritten.** Rewriting message 0 cost a full cold
-    /// re-prefill of a 179k conversation when measured; that is what this method
-    /// exists not to do.
+    /// Change the system prompt mid-session, in the form the dialect can render. Appended, never rewritten:
+    /// rewriting message 0 cost a full cold re-prefill of a long conversation when measured, which is what this
+    /// method exists not to do.
     pub fn system_update(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.system_updates += 1;
-        // A turn, so distances stay right — but **not** an utterance. A system
-        // update is the operator changing the instructions, not the operator
-        // authorising an action, and letting it into the trail would make
-        // "be helpful with files" readable as consent to touch one.
+        // A turn, so distances stay right, but NOT an utterance: a system update is the operator changing the
+        // instructions and not authorising an action, and letting it into the trail would make a general
+        // instruction readable as consent to act on it.
         self.trail.begin_turn();
         let item = self
             .cfg
@@ -1455,27 +1071,9 @@ impl Harness {
         self.submit_item(item)
     }
 
-    /// **Compaction.** One summary turn, then the fork.
-    ///
-    /// The turn asks for the summary over the prefix the server is already holding
-    /// — that is the whole cache argument, and [`run_compaction`] carries it. If
-    /// the model answers by proposing tool calls, the fork is refused: a summary is
-    /// a record, not an action, and a summary turn that *worked* is a turn that did
-    /// something with nobody watching. The instruction and the turn stay in the
-    /// transcript either way — nothing is reduced until the fork lands, so a
-    /// refusal here leaves the session exactly as it was, and the next attempt
-    /// appends a fresh instruction over this one.
-    /// **Who answers this session's summary turns.**
-    ///
-    /// The provider when there is one, so a compaction is rendered, counted and
-    /// billed as part of the conversation it is summarising. Compaction used to
-    /// call the engine's local path unconditionally, which sent a metered
-    /// session's whole history to the daemon's own model — and a 1.5M-token
-    /// history to a 262144-token server is a 400, which is why a conversation
-    /// that had overrun could not compact its way out.
-    ///
-    /// Borrowed from three separate fields, so the caller can still take
-    /// `&mut self.engine` and `&mut self.session` beside it.
+    /// Compaction: one summary turn, then the fork, asked over the prefix the server already holds, which is
+    /// the cache argument. A summary that proposes tool calls is refused, since a summary is a record and not an
+    /// action. The provider answers it when there is one, so a metered summary is billed with its conversation.
     pub(crate) fn answerer<'p>(
         provider: &'p Option<Box<dyn letibot_backend::MessagesBackend>>,
         prefix: &'p StablePrefix,
@@ -1485,12 +1083,9 @@ impl Harness {
             Some(p) => letibot_turn::compaction::Answerer::Provider {
                 backend: p.as_ref(),
                 system: &prefix.system,
-                // **The prefix's own tools, so the summary is sent under the SAME
-                // prefix as every other turn in this conversation.** They are not here
-                // so the summary can call one — nothing executes what it proposes.
-                // They are here so a local server's cached prefix still matches and
-                // the largest call in the session is not a cold prefill. See
-                // `Answerer::Provider`'s docs.
+                // The prefix's own tools, so the summary goes under the SAME prefix as every other turn: not so
+                // it can call one, since nothing executes what it proposes, but so a cached prefix still matches
+                // and the largest call in the session is not a cold prefill.
                 tools_json: &prefix.tools_json,
             },
         }
@@ -1506,20 +1101,16 @@ impl Harness {
         self.submit_items_then(items, |_| {})
     }
 
-    /// [`Harness::submit_items`], with `opened` called once the rows are in the transcript AND
-    /// the store — the point past which the model reads them whatever the rounds come to — and
-    /// not at all when the turn never got there (R91.11: `Harness::wake` marks results told
-    /// there, not before).
+    /// `submit_items`, with `opened` called once the rows are in the transcript AND the store, the point past
+    /// which the model reads them whatever the rounds come to. Not called when the turn never got there.
     fn submit_items_then(
         &mut self,
         items: Vec<TranscriptItem>,
         opened: impl FnOnce(&mut Self),
     ) -> Result<Reply, HarnessError> {
-        // **The prompt's clock starts before the rows go in** — from the moment a turn has words
-        // to give the model it is in flight, and the append below publishes, so a head that was
-        // waiting on this session reads `turn` and not a quiet moment between the queue and the
-        // model. Idempotent: a wall-continuation comes back through here with the clock already
-        // running. See [`Harness::begin_turn_clock`] for why the door does not start it.
+        // The prompt's clock starts before the rows go in: from the moment a turn has words it is in flight, and
+        // the append below publishes, so a waiting head reads `turn` rather than a gap. Idempotent, since a
+        // wall-continuation comes back with the clock already running.
         self.begin_turn_clock(letibot_sessionlog::event::now_ms());
         let mut sink = CapturingSink::new(self.hub.clone());
         self.session.append_items(&self.engine, &items, &mut sink)?;
@@ -1532,38 +1123,25 @@ impl Harness {
         out
     }
 
-    /// **A turn's rounds are over** — counted on the watcher set's read record, which is how the
-    /// plan check's grace after an ending tells *delivered in the turn that just ended* from
-    /// *delivered a turn ago* (`JobWatchers::grace_left`). Called by both doors into
-    /// `run_rounds`, whatever the rounds came to: a turn that failed still ended.
+    /// A turn's rounds are over, counted on the watcher set's read record, which is how the plan check's grace
+    /// tells *delivered in the turn that just ended* from *delivered a turn ago*. Called by both doors into
+    /// `run_rounds`, since a turn that failed still ended.
     pub(crate) fn note_turn_ended(&self) {
         if let Some(w) = &self.job_watch {
             w.turn_ended();
         }
     }
 
-    /// Give an unnamed session a name, **once**, from the message that opened it.
-    ///
-    /// `Config::title`'s note said a title must not be derived from a prompt, and the
-    /// reason it gave is the one this respects: *"a title guessed from content is a
-    /// title that changes under you, and a session picker whose rows rename
-    /// themselves is a picker you cannot learn."* The defect there is the **changing**,
-    /// not the deriving. This fires on the first user item of a session that has no
-    /// title, writes it to the store, and can never fire again — a second user message
-    /// finds a title already set and leaves it alone. So a row's name is stable from
-    /// the moment it first has one, which is the property that made the objection.
-    ///
-    /// It is a default, not a decision: `/rename` and `letibot --rename` overwrite it,
-    /// and an operator who names a session up front never sees this run at all.
+    /// Give an unnamed session a name, once, from the message that opened it: the defect in deriving a title is
+    /// the CHANGING and not the deriving, so this can never fire again once a title is set. It is a default, not
+    /// a decision, since `/rename` overwrites it.
     fn name_from_first_message(&mut self) {
         if !self.cfg.title.is_empty() {
             return;
         }
-        // Read, not remembered. A head can name this session through the registry's
-        // own connection at any moment, and this harness's `cfg.title` would still be
-        // empty — so a derivation that trusted its own copy would overwrite the name
-        // the operator had just typed, with a few words from a message they sent
-        // before they typed it.
+        // Read, not remembered: a head can name this session through the registry at any moment, so a
+        // derivation trusting `cfg.title` would overwrite the name the operator had just typed with words from a
+        // message they sent before it.
         if let Some(store) = &self.store
             && let Ok(Some(t)) = store.title(&self.cfg.session_id)
         {
@@ -1605,12 +1183,8 @@ impl Harness {
         self.new_title = Some(title);
     }
 
-    /// A title this harness has just derived, for the daemon to put in the registry.
-    ///
-    /// The registry is what a head's picker is drawn from and the harness does not
-    /// hold one — `Sessions` does. Handing it over rather than reaching for it keeps
-    /// the harness free of the registry, which is what lets a `Harness` be built in a
-    /// test with nothing but a `Hub`.
+    /// A title this harness has just derived, for the daemon to put in the registry: the harness holds no
+    /// registry, so handing the title over is what lets a `Harness` be built in a test with nothing but a `Hub`.
     pub fn take_new_title(&mut self) -> Option<String> {
         self.new_title.take()
     }
@@ -1637,35 +1211,20 @@ impl Harness {
         self.deliverable = d;
     }
 
-    /// **A turn's rounds, and what is left of its steering when they end** (R91.1).
-    ///
-    /// The rounds hand back to [`Self::handed_back`] whatever a failed or interrupted round
-    /// had taken out of the hub; while the turn runs, the next round's greedy poll takes it.
-    /// When the turn is over:
-    ///
-    /// * **an interrupt is spent** — the turn it was pressed against has ended, and one
-    ///   left behind would stop the NEXT turn at its first token;
-    /// * **another session's message is WRITTEN INTO THE TRANSCRIPT** — see
-    ///   [`Self::keep_the_words_it_never_read`], and `HubSteering`'s `Message` arm for why the
-    ///   row and the injection are one item on every other path;
-    /// * **everything else stays**, for the next turn's greedy poll: the operator's words, an
-    ///   answer the board already took, results already marked delivered. A failed turn read
-    ///   none of it, and the operator is told so.
+    /// A turn's rounds, and what is left of its steering when they end (R91.1): the rounds hand back whatever
+    /// a failed or interrupted one had taken from the hub, and the next round's greedy poll takes it. When the
+    /// turn is over an interrupt is spent, another session's message becomes a row, and everything else stays.
     pub(crate) fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
-        // **The clock starts here for a door that appends no rows of its own** — the operator's
-        // `!` line is already two rows on the log when `run_after_operator_shell` asks for its
-        // turn, so this is the first point that turn exists. A no-op when `submit_items_then` has
-        // already started it, which is every other door. See [`Harness::begin_turn_clock`] for
-        // why a door that finds nothing to say must not have started it at all.
+        // The clock starts here for a door that appends no rows of its own: the operator's `!` line is already
+        // on the log when it asks for its turn. A no-op when `submit_items_then` started it, which is every other
+        // door; a door that finds nothing to say must not start it at all.
         self.begin_turn_clock(letibot_sessionlog::event::now_ms());
         let out = self.rounds();
         let (unread, left) = {
             let mut held = self.handed_back.lock().unwrap_or_else(|e| e.into_inner());
             held.retain(|m| !m.urgent);
-            // **A session's message comes out of the carried set, because it is about to be a
-            // row.** It is not re-offered by any source of its own, so leaving it here is the
-            // one way a parent's words could be read twice (the next turn's greedy poll would
-            // append the item a second time). See `SteeringMessage::from_session`.
+            // A session's message comes out of the carried set, because it is about to be a row. Nothing else
+            // re-offers it, so leaving it here is the one way a parent's words could be read twice.
             let mut unread: Vec<SteeringMessage> = Vec::new();
             held.retain(|m| match m.from_session.is_some() {
                 true => {
@@ -1678,12 +1237,9 @@ impl Harness {
         };
         for m in &unread {
             if let Err(e) = self.keep_the_words_it_never_read(&m.text) {
-                // Not fatal: the words are still on this session's log (the door recorded
-                // them), and the turn's own outcome is what the caller is waiting for. Said,
-                // because a row that was not written is a row a later reader will not find —
-                // and **put back**, so the next turn's greedy poll carries them as the
-                // injection they would have been rather than losing them to a store that was
-                // busy at the wrong moment.
+                // Not fatal: the words are still on this session's log, and the turn's outcome is what the caller
+                // waits for. Said, because a row that was not written is a row a later reader will not find, and
+                // put back, so the next turn's greedy poll carries them as the injection they would have been.
                 self.handed_back
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1710,32 +1266,9 @@ impl Harness {
         out
     }
 
-    /// **A message this turn never read, made a row anyway** — the one path on which a parent's
-    /// words could reach a child's queue and leave no record of themselves.
-    ///
-    /// The ordinary path needs nothing: the engine appends the steering item at a step boundary
-    /// and `run_rounds` persists it with the round's own rows (see `HubSteering`'s `Message`
-    /// arm for the whole of that argument). This is the other path — a round that failed after
-    /// the greedy poll had taken the message, which hands it back
-    /// ([`letibot_turn::steering::SteeringSource::give_back`]) with no boundary ever arriving.
-    /// The carried set survives a turn and would carry it into the next one, and that is enough
-    /// for the operator's own prompt (a head is waiting on it, and the echo says `queued`). It
-    /// is NOT enough for a session's message, for two reasons measured here:
-    ///
-    /// * **a child may never run another turn.** A parked child whose parent spoke while a
-    ///   round was failing would hold the words in memory for ever — no row, no queue entry, and
-    ///   nothing in the store for a later reader (the operator's own report: four
-    ///   `task_message`s, *"of the child's 278 transcript rows, not one contains the parent's
-    ///   words"*);
-    /// * **the row is what makes the exchange visible at all.** A head attached to the child,
-    ///   and the child's own conversation view, read the transcript and nothing else — so words
-    ///   that exist only in a steering slot are words nobody can see.
-    ///
-    /// So the words are appended as the very item the injection would have been — same text,
-    /// same `Speaker::Agent`, one `Text` part — and the next turn reads them as the history they
-    /// now are. The trail is not told again: the door recorded the utterance when it took it
-    /// (`HubSteering`'s `Message` arm), and a second `say` would be a second turn's worth of
-    /// authority over one sentence.
+    /// A message this turn never read, made a row anyway: the one path on which a parent's words could reach a
+    /// child's queue and leave no record. A child may never run another turn, and the row is what makes the
+    /// exchange visible, so the words are appended as the item the injection would have been.
     fn keep_the_words_it_never_read(&mut self, said: &str) -> Result<(), HarnessError> {
         let item = TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
@@ -1769,11 +1302,9 @@ impl Harness {
         if self.key_wanted.is_some() {
             self.obtain_key(None)?;
         }
-        // **And no model at all is said here too, at the same point and for the same reason.**
-        // A daemon started with no GGUF and no provider (`Parts::load`) has nothing a turn can
-        // go to: its own server would be sent byte ids it cannot read. The head opens its
-        // model chooser before this is reached; this is the floor under a head that did not
-        // (a one-shot, an older head), and it names the verb that ends it.
+        // And no model at all is said at the same point: a daemon with no GGUF and no provider has nothing a turn
+        // can go to, since its server would be sent byte ids it cannot read. The head opens its chooser before
+        // this; this is the floor under a head that did not, and it names the verb that ends it.
         if self.provider.is_none() && self.engine.vocab().is_bytes() {
             return Err(HarnessError::Setup(NO_MODEL_CHOSEN.to_string()));
         }
@@ -1784,58 +1315,13 @@ impl Harness {
     /// the whole turn stopped when it has been reached, which is the honest half a `Harness`
     /// can do on its own.
     fn stop_the_turn_at_the_wall(&mut self, round: usize) -> Result<(), HarnessError> {
-        // **The wall can arrive MID-TURN, and the turn boundary is too late.**
-        //
-        // A tool result is appended between rounds, so one big one can put the
-        // conversation past `n_ctx` while the turn is still running; the next
-        // round then sends a prompt the server refuses with
-        // `500 Context size has been exceeded` and the WHOLE TURN is lost with
-        // nothing recorded. That is how the operator's session died on
-        // 2026-09-15 — a 123k-token `edit` refusal, mid-turn.
-        //
-        // Measured after the boundary check was added and before this one: a
-        // 700-line read at `--context-window 8000` left 11,818 tokens
-        // resident, 3,818 PAST the window, and survived only because the model
-        // happened not to need another round.
-        //
-        // pi puts a `prepareNextTurn` hook here for the same reason — its own
-        // comment says *"Preparation can be long-running (for example,
-        // compaction)"* — and runs it between rounds rather than around the
-        // turn.
-        //
-        // This stops the turn instead of compacting in place, because
-        // `turn::compaction` is explicit that building the new base reaches
-        // the store, the resume chain and the registry, none of which a
-        // `Harness` owns. Stopping is the honest half a `Harness` CAN do: the
-        // rounds so far are committed, `Sessions` compacts at the boundary it
-        // already checks, and the next turn continues on the summary. A turn
-        // that ends early and says so beats one the server refuses whole.
-        // `!self.compacting`: **the compaction turn is exempt.** It runs
-        // through this same loop, and it is the one turn whose whole purpose
-        // is to be over the wall — stopping it there would make compaction
-        // impossible exactly when it is needed, which is what happened on the
-        // first run of this check.
-        // **Measured before it is judged (R72)**: the tool results of the round just
-        // ended are in the ledger and not in the last round's count, and the roll adds
-        // them as sent rather than through a ratio they have nothing to do with.
-        //
-        // **And round 0 is checked too, against the window itself** (R72 follow-up).
-        // The doors before a turn (`Sessions::run_prompt`, the nag, the wake) judge the
-        // conversation BEFORE the prompt is appended, with a reserve of a sixteenth of
-        // the window for it — so a prompt bigger than that reserve (a paste, a long
-        // message from a session) went out over the window and came back as the
-        // provider's refusal, the wall reached by a wasted request. Round 0 stops only
-        // when what it is about to send is already PAST the window, not inside the
-        // reserve: the reserve is the doors' question, and asking it again here would
-        // stop every turn the doors had just let through near the edge. Between rounds
-        // it is the reserve, as before — the next round's reply has to fit too.
+        // The wall can arrive MID-TURN, and the turn boundary is too late: a tool result between rounds can put
+        // the conversation past `n_ctx` and lose the next round whole. This stops the turn instead of compacting,
+        // since building the new base reaches the store and the registry. Round 0 is checked against the window.
         let now = (!self.compacting).then(|| self.measure_resident());
-        // **Not on an estimate of a folded base, at round 0, on a metered session**:
-        // that count is the fork's re-based estimate, and the one round that would
-        // replace it with the provider's is this one. Stopping it on the estimate
-        // (pg-noop, 2026-10-11: ≈ 1,039,055, past the window; measured 507,355) is a
-        // wall nothing could ever measure its way out of. If the provider counts it
-        // over, it says so, and the refused door folds.
+        // Not on an estimate of a folded base, at round 0, on a metered session: that count is the fork's
+        // re-based estimate, and the one round that would replace it with the provider's is this one. Stopping on
+        // the estimate is a wall nothing could measure its way out of; if the provider counts it over, it says so.
         let unmeasured_base = round == 0
             && self.provider.is_some()
             && self.cfg.wall.awaiting_on(&self.session.transcript_id);
@@ -1855,11 +1341,8 @@ impl Harness {
                 window,
                 self.cfg.wall_basis(),
             ) {
-                // In the units the operator's header shows, and the count the
-                // decision was made on; see `Harness::measure_resident`. The
-                // ledger's own figures are named once at the end rather than per
-                // number, because three conversions in one sentence is not a
-                // sentence.
+                // In the units the operator's header shows, and the count the decision was made on. The ledger's
+                // own figures are named once at the end, because three conversions in one sentence is not a sentence.
                 let (w, h) = self.cfg.shown_wall();
                 let r = now.map(|n| n.tokens).unwrap_or(resident);
                 let unit = self.token_unit();
@@ -1869,10 +1352,8 @@ impl Harness {
                     .map(|p| format!("{}/{}", p.name(), p.model()))
                     .unwrap_or_default();
                 let also = if let Some(model) = self.cfg.carried_note() {
-                    // **An estimate, named as one, with whose measurement it is.** This
-                    // is the line the 2026-10-25 session needed and did not get: the
-                    // count is the ledger's bytes converted by the ratio deepseek
-                    // measured, not a number anything has confirmed for glm-coding.
+                    // An estimate, named as one, with whose measurement it is: the ledger's bytes converted by the
+                    // ratio another model measured, and not a number anything has confirmed for this one.
                     format!(
                         " (estimated with {model}'s measured scale: no round has run on \
                              {here} yet, so this box's own ledger count is converted by the \
@@ -1886,10 +1367,8 @@ impl Harness {
                              because it holds the reasoning the provider is not sent)"
                     )
                 } else if self.cfg.tokens_are_unscaled() {
-                    // **The switch window, named rather than presented as calibrated.**
-                    // No round has run on this model yet, so these are the ledger's own
-                    // counts against a window measured on the model before it — and a
-                    // reader who is not told cannot tell that from a measured sentence.
+                    // The switch window, named rather than presented as calibrated: no round has run on this model
+                    // yet, so these are the ledger's counts against a window measured on the model before it.
                     format!(
                         " (these are this box's own ledger counts: no round has run on \
                              {here} since it took over, so nothing has measured how its \
@@ -1910,17 +1389,9 @@ impl Harness {
 
                     compaction: None,
                 });
-                // **And it names the session, for the same reason the `compacting:` line
-                // two steps below it does and only since 2026-10-03.** This is one log file
-                // every daemon appends to, so a wall printed here and the compaction it
-                // triggers (`sessions.rs`) land with other sessions' work between them —
-                // and with no id either side, *which* session met the wall is unreadable,
-                // which is exactly what left the operator's *"too much too early"*
-                // unattributable. Measured 2026-10-03: a wall at 1.4M tokens followed by a
-                // fold to 633k and a compaction to 8k, and no way to say whether those were
-                // one session behaving differently or two behaving consistently. The id
-                // costs fourteen bytes and makes the pair a measurement rather than an
-                // adjacency — the same correction the `compacting:` line already had.
+                // And it names the session, for the reason the `compacting:` line does: one log file that every
+                // daemon appends to, so without an id *which* session met the wall is unreadable. Fourteen bytes
+                // make the pair a measurement rather than an adjacency.
                 let session_id = &self.cfg.session_id;
                 eprintln!(
                     "  {session_id}: context wall: stopped after {round} round(s) at {r} of {w} \
@@ -1946,48 +1417,25 @@ impl Harness {
         let mut metrics = Vec::new();
         let mut tool_calls = 0usize;
         let mut truncated = false;
-        // **The intent check nudges once per user turn, and the bound is the point.**
-        //
-        // T21.3's response is *"append 'you said you would X — do it or say why
-        // not' and continue"*, and continuing means the answer turn is not the end
-        // of the loop. What it must not become is a loop: a model that answers the
-        // nudge with more prose and no tool call would produce a second finding, a
-        // third, and burn `max_tool_rounds` on an argument. One is the error signal;
-        // two is the harness insisting. If the model explains itself and stops, that
-        // is a legitimate answer to the check — `docs/closed-loop.md`'s tolerance
-        // band, set at its narrowest until somebody measures a better one.
+        // The intent check nudges once per user turn, and the bound is the point: continuing means the answer
+        // turn is not the end of the loop, and what it must not become is a loop where the harness argues with
+        // the model. One is the error signal, two is the harness insisting, and an explanation is a real answer.
         let mut nudges_left = 1usize;
-        // **And a worktree child that is about to finish with its work outside its branch** —
-        // `deliverable::EndOfWork`, the same budget of one: told what is uncommitted, once, and
-        // then its answer stands (the parent's completion carries the line if it is still dirty).
-        // The report: *"Seven times tonight a child has ended with its work outside its branch,
-        // and each time the recovery was the same two commands."*
+        // And a worktree child about to finish with its work outside its branch: the same budget of one, told
+        // what is uncommitted once, and then its answer stands, with the parent's completion carrying the line if
+        // the tree is still dirty.
         let mut end_of_work = deliverable::EndOfWork::new();
-        // **And a model that stops because "my context is full" when it is not** — R71,
-        // `crate::context_claim`. The same budget as the nudge above, and for the same
-        // reason: one line telling the model its measured fill, then — if it says it again
-        // — one warning to the operator, never a second line to the model. Always on: it
-        // is gated by a measurement, not by the prose heuristic `--intent-prose` guards.
+        // And a model that stops because its context is full when it is not: the same budget, one line telling it
+        // the measured fill and then a warning to the operator rather than a second line. Gated by a measurement
+        // and not by the prose heuristic.
         let mut context_check = crate::context_claim::Check::new();
-        // **The encoder for "is this turn getting anywhere".**
-        //
-        // Per user turn, because "already seen" is a claim about *this* turn — a
-        // file read in an earlier turn is a legitimate thing to read again now.
-        // `max_tool_rounds` below is the backstop it demotes; see `crate::progress`
-        // for why a round count was the wrong instrument and what replaced it.
+        // The encoder for whether this turn is getting anywhere, per user turn because already-seen is a claim
+        // about THIS turn: a file read earlier is a legitimate thing to read again. `max_tool_rounds` below is the
+        // backstop it demotes.
         let mut progress = crate::progress::ProgressDetector::new(self.cfg.stall_rounds);
-        // **The turn's standing-notes offers** — see `crate::notes_offer`, which is
-        // where the whole argument lives. Per ROUND for the round's own offer, and
-        // **per SESSION for the memory** — *"rare (once per note per turn at most)"*
-        // was the wrong unit: a turn is minutes and a session is days, so a note
-        // never read and never in the prompt won the same slot in turn after turn.
-        // Measured 2026-10-10: 120 offers, 19 taken, one note offered 22 times, every
-        // repeat a row in the operator's transcript. `recall` reads back what this
-        // session has already been offered, so the offer is once per note per
-        // SESSION, and does so from the log rather than from a set in memory —
-        // see its own doc. The offer itself is per ROUND and lives in the request
-        // assembly below, never in the transcript — *a row cannot be un-said; an
-        // assembly can be recomposed*.
+        // The turn's standing-notes offers: per ROUND for the round's own offer and per SESSION for the memory,
+        // since a note never read won the same slot turn after turn. `recall` reads back what this session was
+        // offered, from the log; the offer lives in the request assembly, because a row cannot be un-said.
         let mut offers = crate::notes_offer::Offers::new();
         offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
 
@@ -1995,16 +1443,9 @@ impl Harness {
         for round in 0..backstop {
             self.stop_the_turn_at_the_wall(round)?;
             let mut sink = CapturingSink::new(self.hub.clone());
-            // **Compose this round's offer, before anything is sent.** It is scored
-            // against the person's prompt and the turn's tool results — the design's
-            // own subject — and handed to the engine as a trailing item that
-            // `session.items` never sees. Nothing over the floor is said, and
-            // nothing said is recorded: see `crate::notes_offer`.
-            //
-            // **Not on a compaction turn.** That turn is the harness asking for a
-            // summary of what is already here; a note offered on top of it is a
-            // fetch in the middle of a job whose whole instruction is to write, and
-            // the offer would be settled against calls the summary turn never made.
+            // Compose this round's offer before anything is sent, scored against the person's prompt and the
+            // turn's results and handed to the engine as a trailing item `session.items` never sees. Not on a
+            // compaction turn, where an offer would be settled against calls the summary never made.
             if !self.compacting {
                 offers.compose(
                     &self.cfg.workspace,
@@ -2015,44 +1456,17 @@ impl Harness {
                 );
             }
             let tail = offers.tail();
-            // **Take the round again when the endpoint is the thing that
-            // failed.** An inner loop, so a retry does NOT spend one of
-            // `max_tool_rounds`: it produced nothing and appended nothing, and
-            // ending a turn early because a server was restarting would be the
-            // budget measuring the wrong thing. See `letibot_http::retry`.
-            //
-            // # And the second question: is the operator's `/models` being heard?
-            //
-            // It is, and it is answered HERE — but it is not APPLIED here, and that
-            // distinction is the whole of this loop's model rule.
-            //
-            // MEASURED 2026-10-12, the operator's GLM coding plan, quota exhausted:
-            // `/models` sat in the hub's queue for a whole 63-second ladder and was
-            // answered after the turn, by which time the turn was FAILED — *"while
-            // those backoffs were cycling - the model change didnt take"*. So the turn
-            // polls the queue itself and answers (`apply_queued_model`).
-            //
-            // MEASURED 2026-10-26, the other half: applying it here is what broke the
-            // next session. The round was re-issued on deepseek carrying the rest of
-            // GLM's turn — assistant tool-call rounds with no `reasoning_content` — and
-            // deepseek's thinking mode refuses exactly that (`http 400: The
-            // `reasoning_content` in the thinking mode must be passed back to the API`).
-            // The operator's sentence for the rule: *"we can switch after turn ends"*.
-            //
-            // So: the switch is recorded and said (*"turns go to X when this turn
-            // ends"*), every attempt of this turn is sent to the model the turn STARTED
-            // on, and `end_turn_clock` applies it. `[fallback]` is the same rule for the
-            // daemon's own switch — see `fall_back_from`.
+            // Take the round again when the endpoint is what failed: an inner loop, so a retry does not spend a
+            // `max_tool_rounds`, since it produced nothing. And `/models` is ANSWERED here but not APPLIED, because a
+            // re-issued round carries the rest of the old turn, which a thinking-mode provider refuses.
             let mut tried_fallbacks: Vec<String> = Vec::new();
             // **One steering per round, outside the retry loop (R91.1).** A failed attempt
             // hands what it took back to this value, and the retried attempt's greedy poll
             // must find it there; one built per pass dropped it on the floor.
             let mut steering = self.steering();
-            // **The ladder this turn walks, and the only thing that decides whether a round
-            // is taken again** — see `letibot_http::retry`, where *what is retryable, and for
-            // how long* is written down. It is also what the turn's ending is said from: the
-            // count and the waiting are nobody else's to report, and a failure that reads as
-            // `FAILED — http io: …` with no count is the report this was written for.
+            // The ladder this turn walks, and the only thing that decides whether a round is taken again. It is
+            // also what the turn's ending is said from, since the count and the waiting are nobody else's to
+            // report and a failure with no count is the report this was written for.
             let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
                 self.cfg.http_retries,
             ));
@@ -2099,18 +1513,13 @@ impl Harness {
                     self.switch_back = None;
                     break attempted;
                 };
-                // **A switch the operator made during this attempt is answered here, and
-                // nothing else changes.** The wait below exists for an endpoint that is
-                // coming back — a 5xx, a timeout — and a deliberate switch is not weather
-                // either way: it is not this round's to apply, so the ladder goes on against
-                // the model the turn started on and the switch takes when the turn ends.
-                // Answered BEFORE the key arm deliberately: a 401 from the model they are
-                // leaving is not a reason to ask them for a key to it.
+                // A switch the operator made during this attempt is answered here and nothing else changes: it is
+                // not this round's to apply, so the ladder goes on against the model the turn started on. Answered
+                // before the key arm, since a 401 from the model they are leaving is no reason to ask for its key.
                 self.apply_queued_model();
-                // **A refused key is asked for again**, on the same card, and the round is
-                // taken again — nothing was recorded, so the retry sends the same bytes.
-                // Only a key this session can replace: one from `$PROVIDER_API_KEY` or
-                // `--api-key` wins over the file, so a typed one would be saved and ignored.
+                // A refused key is asked for again, on the same card, and the round is taken again, since nothing
+                // was recorded. Only a key this session can replace: one from the environment or `--api-key` wins
+                // over the file, so a typed one would be saved and ignored.
                 if let letibot_turn::HttpError::Status {
                     code: code @ (401 | 403),
                     body,
@@ -2133,41 +1542,22 @@ impl Harness {
                     }
                     continue;
                 }
-                // **This attempt failed, and the outage it belongs to remembers how many
-                // have** — the record is changed here and published nowhere: the row is
-                // written once, when the outage ends. See [`Outage`]. After the key arm
-                // deliberately: a key the provider refused is that card's news, not the
-                // endpoint's weather.
+                // This attempt failed, and the outage it belongs to remembers how many have: the record changes
+                // here and is published nowhere, because the row is written once when the outage ends. After the
+                // key arm, since a refused key is that card's news and not the endpoint's weather.
                 self.outage_failed(&e);
                 let Some(wait) = ladder.failed(&e) else {
-                    // **The ladder has nothing left to wait for, and the session may still
-                    // have somewhere to go — but not this round.**
-                    //
-                    // The MODEL itself is what refused (a 429 or a 5xx, not a wire failure)
-                    // and this box has a `[fallback] models` list, so `fall_back_from` names
-                    // the first model that can answer and records it as the switch waiting
-                    // for this turn to end. **The round is not re-issued there**, and that is
-                    // the same rule as the operator's own `/models` above: a model's first
-                    // request has to follow a user message, and the rest of this turn belongs
-                    // to the model that refused it. So this turn ends here with the provider's
-                    // own refusal, and the next one starts on the model the list names.
-                    //
-                    // A transport failure gets not even that: the model may be perfectly
-                    // well and it is the route to it that is down, so moving the session
-                    // would abandon the box the operator chose for a reason that is not
-                    // about the model.
+                    // The ladder has nothing left to wait for, and the session may still have somewhere to go, but not
+                    // this round: the MODEL refused and a fallback list exists, so the switch is recorded for the end of
+                    // this turn and the round is not re-issued. A transport failure gets not even that.
                     if let Some(next) = self.fall_back_from(&e, &mut tried_fallbacks) {
                         let was = self.provider_line();
-                        // **Whether a turn was armed decides what may be promised.** This turn is
-                        // the continuation a fallback earns whenever one is already running (the
-                        // bound), and then no second turn is opened — so the sentence must not
-                        // say one is.
+                        // Whether a turn was armed decides what may be promised: this turn is the continuation a
+                        // fallback earns when one is already running, and then no second turn is opened, so the
+                        // sentence must not say one is.
                         let opens_a_turn = self.fallback_continuation.is_some();
-                        // **The outage is this notice's to tell.** One row per outage, and
-                        // this is the row: the session is moving, and the count belongs in
-                        // the sentence that says so rather than in a second row beside it
-                        // saying the same endpoint is out. Taken, so `settle_outage` below
-                        // finds nothing left to write. See [`Outage`].
+                        // The outage is this notice's to tell: one row per outage, and this is it, since the session
+                        // is moving and the count belongs in that sentence. Taken, so `settle_outage` finds nothing.
                         let outage = self.outage.take();
                         self.hub.publish(SessionEvent::Warning {
                             code: "model_endpoint_retry".into(),
@@ -2178,63 +1568,33 @@ impl Harness {
                     }
                     break Err(TurnFailure::Http(e));
                 };
-                // **Nothing is published here, and that is the change.** This used to raise
-                // `model_endpoint_retry` once per attempt — three rows in three seconds for
-                // one endpoint, which is the operator's *"i dont need walls of this … a
-                // coutner is what is need"*. The attempt is already in the outage's count
-                // (above) and the row is written when the outage ends; see [`Outage`].
+                // Nothing is published here, and that is the change: this used to raise a row per attempt, three in
+                // three seconds for one endpoint. The attempt is in the outage's count, and the row is written when
+                // the outage ends.
                 if !self.sleep_unless_closed(wait) {
                     break Err(TurnFailure::Http(e));
                 }
             };
-            // **The outage this round was in, if any, is over — and it is said ONCE, here,
-            // where the count is final.** A round that ended on anything but an HTTP
-            // failure was answered: the endpoint is back, and that is the other half of the
-            // news (a silent recovery is how somebody spends an afternoon believing it is
-            // still down). See [`Outage`].
+            // The outage this round was in, if any, is over, and it is said ONCE here where the count is final: a
+            // round that ended on anything but an HTTP failure was answered, and a silent recovery is how somebody
+            // spends an afternoon believing the endpoint is still down.
             self.settle_outage(!matches!(&outcome, Err(TurnFailure::Http(_))));
-            // Before the match, deliberately: three of the four arms below leave
-            // this function, and the one that matters most for §4.5 is the `Err(e)`
-            // that propagates — a failure whose turn id is only recorded on the
-            // success path is a failure the daemon cannot name.
+            // Before the match, deliberately: three of the four arms below leave this function, and the one that
+            // matters most is the error that propagates. A failure whose turn id is only recorded on the success path
+            // is a failure the daemon cannot name.
             self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
             let ok: TurnOk = match outcome {
                 Ok(ok) => ok,
-                // §5.7, and the notice goes where the model will read it.
-                // Nothing was committed, so there is no tool-call row to answer
-                // and the notice is a user item. Bounded by the engine's own
-                // salvage budget: the round after this one either succeeds or
-                // comes back as `SalvageExhausted`.
+                // Nothing was committed, so there is no tool-call row to answer and the notice is a user item. Bounded
+                // by the engine's own salvage budget: the round after this one either succeeds or comes back as
+                // `SalvageExhausted`.
                 Err(TurnFailure::BatchTruncated { notices, .. }) => {
                     self.append_notice(letibot_plugin::notice::SALVAGE, &notices.join("\n"))?;
                     continue;
                 }
-                // **The operator's own sentence, because it is the only one with evidence.**
-                //
-                // Measured in the transcript, 2026-09-18. The model overthought its way past the
-                // output limit and said nothing. It was sent three machine notices in a row --
-                // "continue or say why not", "Answer again, and put the answer before the
-                // reasoning if you are close to the limit", then the first again -- and produced
-                // three more empty turns. Then the operator typed:
-                //
-                //     you keep overthinking cut it short and do things
-                //
-                // and the very next reasoning block opened "The operator is frustrated. Let me
-                // cut it short and just do the thing", followed by the work, in 34 tokens of
-                // thinking instead of thousands.
-                //
-                // Why the old ones failed, specifically:
-                //   * "continue or say why not" is an OPEN QUESTION. A model that just
-                //     overthought is being invited to deliberate, and it accepts.
-                //   * "if you are close to the limit" is a CONDITION it has to evaluate --
-                //     more thinking -- and it is already true, so the hedge is pure cost.
-                //   * Neither says the thing that worked: stop thinking, act.
-                //
-                // So: imperative, short, no question, no condition, and it names the behaviour
-                // rather than the mechanism. A model does not need to be told about token
-                // limits; it needs to be told what to do next.
-                // R93.D1: it named the enum (`reasoning_only`), told models whose thinking
-                // always comes first to "reason after", and accused on the first occurrence.
+                // The operator's own sentence, because it is the only one with evidence: three machine notices
+                // produced three more empty turns, and one imperative line produced the work. So: no question and no
+                // condition, naming the behaviour rather than the mechanism.
                 Err(TurnFailure::EmptyLength { .. }) => {
                     self.append_notice(
                         letibot_plugin::notice::NUDGE,
@@ -2243,13 +1603,9 @@ impl Harness {
                     )?;
                     continue;
                 }
-                // R7: the turn stopped inside its own reasoning block and said
-                // nothing. GLM's end-of-turn token doubles as a nameable string,
-                // so this is self-inflicted turn-ending, and the answer is the
-                // same shape as the two arms above — tell the model, let the loop
-                // run. Bounded by the engine's salvage budget exactly as they are:
-                // once the cap is spent the engine returns `SalvageExhausted` and
-                // this arm never sees another unfinished turn.
+                // The turn stopped inside its own reasoning and said nothing. GLM's end-of-turn token doubles as a
+                // nameable string, so this is self-inflicted, and the answer is the same shape as the arms above:
+                // tell the model and let the loop run, bounded by the same salvage budget.
                 Err(TurnFailure::UnfinishedReasoning { .. }) => {
                     // R93.D2: this arm is the turn ending INSIDE its reasoning, not running out.
                     self.append_notice(
@@ -2260,25 +1616,9 @@ impl Harness {
                     continue;
                 }
                 Err(TurnFailure::Http(e)) => {
-                    // **A context-length refusal IS the wall, and this is where it
-                    // becomes one.** The provider owns the window and it has just
-                    // said the prompt does not fit; every recovery `Sessions` has
-                    // — the forced compaction and the continuation after it — is
-                    // gated on `HarnessError::ContextWall`, so leaving the refusal
-                    // a backend error leaves all of it unreachable. MEASURED
-                    // 2026-10-09, session `s-1789919514688401228`: thirty
-                    // consecutive 400s from `deepseek/deepseek-flash`
-                    // (1,048,624 / 1,049,070 / 1,049,191 tokens against its
-                    // 1,048,576), the first on a `monitor` wake and the last on a
-                    // `todo check`, and not one compaction between them.
-                    //
-                    // The numbers stay honest about whose they are: the ERROR
-                    // carries this box's own ledger and planning window (what it
-                    // knows, in the units it decides in), and the WARNING names the
-                    // provider's two alongside them — never a blend. A window this
-                    // box never learned reads as zero in the error and is named as
-                    // unconfigured in the warning, because inventing one here would
-                    // point the operator at a wall nobody measured.
+                    // A context-length refusal IS the wall: the provider owns the window and has said the prompt does
+                    // not fit, and every recovery `Sessions` has is gated on `ContextWall`. The error carries this
+                    // box's own counts and the warning names the provider's two beside them, never a blend.
                     if let letibot_turn::HttpError::Status { body, .. } = &e
                         && let Some(refusal) = context_length_refusal(body)
                     {
@@ -2341,19 +1681,9 @@ impl Harness {
                             ledger: (resident, window),
                         });
                     }
-                    // **The whole account of the failure, not just the last call of it.**
-                    //
-                    // `http io: provider unreachable: io: failed to lookup address information:
-                    // Temporary failure in name resolution` is the truth about ONE call, and the
-                    // operator read it under `FAILED — ` with `(nothing was recorded)` after it and
-                    // no way to tell whether the daemon had tried once or six times — nor, on the
-                    // other class, whether a `401` had been asked six times for no reason. The
-                    // ladder knows both, so the ending is its sentence: *tried 6 times over 31s,
-                    // then gave up: name resolution failed*, or *http 401: … — the provider refused
-                    // it, and a refusal is not retried (1 call, no waiting)*.
-                    //
-                    // The typed cause rides along ([`HarnessError::Endpoint`]) because
-                    // `switch_back_notice` still asks it which 4xx refused.
+                    // The whole account of the failure, not just the last call of it: the ladder knows how many times
+                    // it tried and for how long, so the ending is its sentence rather than one call's error under
+                    // `FAILED` with no count. The typed cause rides along, since `switch_back_notice` asks which 4xx.
                     return Err(HarnessError::Endpoint {
                         said: ladder.ending(&e),
                         cause: e,
@@ -2362,54 +1692,17 @@ impl Harness {
                 Err(e) => return Err(e.into()),
             };
 
-            // **Pair against everything the ledger took, not just the model's rows.**
-            //
-            // A steering message is appended inside the turn (`engine.rs`: "let
-            // steering_items = pending.take_items(); session.append_items(...)"), through
-            // the SAME sink, so it emits a `TranscriptAppended` like any other row — but
-            // `TurnOk` reports it in `steering_applied` rather than in `items`.
-            // Reconciling against `items` alone therefore left one unmatched id per
-            // steering message, `record_item_pairing` fired, and the head drew the
-            // steering rows empty.
-            //
-            // Harmless until T21.3 joined the intent check to the steering source, which
-            // made an injection ordinary rather than rare. `reconcile` zips positionally,
-            // so the order here is load-bearing — and there are now THREE groups, not
-            // two, because the greedy poll appends whatever was waiting BEFORE the
-            // generation as well. Transcript order is: what arrived while the last tool
-            // ran, then the model's own rows, then what arrived while it was speaking.
+            // Pair against everything the ledger took, not just the model's rows: a steering message goes through
+            // the same sink but is reported in `steering_applied`, so reconciling against `items` left an unmatched id
+            // per message. Three groups, in transcript order: the tool's, the model's, then what arrived as it spoke.
             let mut appended = ok.steering_before.clone();
             appended.extend(ok.items.iter().cloned());
             appended.extend(ok.steering_applied.iter().cloned());
             self.reconcile(&mut sink, &appended);
             self.persist()?;
-            // The last round's prompt size is the session's context size, and the
-            // session row is the only place it survives a restart: a head that
-            // attaches to a rebuilt view has no turn state to read it from.
-            // Per round, the same way the heads' own `TurnFinished` updates theirs,
-            // so the row and the screen agree at every point a round has landed.
-            // **And what that prompt cost in each side's tokens.**
-            //
-            // The ledger and the provider count different things — reasoning is in
-            // one and dropped from the other — so this is the only honest way to
-            // convert between them, and it is a measurement rather than a
-            // constant. See `Config::ledger_scale`.
-            // **Any round, local included.** The guard here used to be
-            // `self.provider.is_some()`, which meant a local round never refreshed the ratio:
-            // after a provider → local switch the provider's scale stayed for the rest of the
-            // session, and a session that had never been switched ran unscaled for ever. The
-            // ledger and the server count the same prompt, so a local round measures a ratio
-            // that is 1 by construction — and measuring it rather than assuming it is the
-            // same rule the rest of this field follows.
-            //
-            // **And paired with the ledger the PROMPT had, not the one after the reply
-            // (R72).** `prompt_tokens` counts what was sent; the round's own rows — the
-            // model's reply and what was steered in while it spoke — were appended after
-            // it, so the ledger read here is longer than the prompt by exactly those rows.
-            // Pairing the two made a ratio of two moments, and on a reasoning-heavy reply
-            // the difference is mostly reasoning. The prompt's ledger is the row boundary
-            // before them: the rows are one-to-one with `appended`, and the last
-            // `items + steering_applied` of them came after the prompt.
+            // The last round's prompt size is the session's context size, and the row is the only place it survives
+            // a restart. Measured every round and for a local session too, and paired with the ledger the PROMPT had
+            // rather than the one after the reply, or the ratio is of two moments and mostly reasoning.
             let rendered_at = {
                 let rows = self.session.ledger.rows();
                 let after = ok.items.len() + ok.steering_applied.len();
@@ -2435,21 +1728,16 @@ impl Harness {
                 });
                 self.cfg.ledger_scale = Some((rendered_at, ok.metrics.prompt_tokens));
                 self.measure_resident();
-                // **The measurement the wall controller waits for** — the first round on a
-                // folded base is where "did the fold make room" is answered, by the
-                // provider's own count. Not the summary turn's rounds: those count the
-                // history being folded, not the base.
+                // The measurement the wall controller waits for: the first round on a folded base is where did the fold
+                // make room is answered, by the provider's own count. Not the summary turn's rounds, which count the
+                // history being folded.
                 if !self.compacting {
                     self.observe_wall(ok.metrics.prompt_tokens);
                 }
             }
-            // Persisted with the ledger beside the count, so a restart recovers the
-            // pair above instead of pairing the count with whatever ledger it has
-            // then. See the gate in `Harness::open`.
-            //
-            // **Not fatal (R91.6).** The row is a measurement, and the round it measures is
-            // already in the ledger and the store: a busy store that refused it used to end
-            // the whole turn. Said, and the next round writes a fresh one.
+            // Persisted beside the count, so a restart recovers the pair instead of pairing the count with whatever
+            // ledger it has then. Not fatal: a measurement a busy store refused used to end the whole turn, and the
+            // next round writes a fresh one.
             if let Err(e) = self.persist_context(&ok.metrics, rendered_at) {
                 eprintln!("  store: {e}");
                 self.hub.publish(SessionEvent::Warning {
@@ -2474,29 +1762,19 @@ impl Harness {
                 .flatten()
                 .collect();
             let text = visible_text(&appended);
-            // **The offer is settled here, where the round's calls are known**, and
-            // logged whichever way it went — *"the signal is did a tool call in the
-            // next round touch that path? Log offers and take-ups; tune the floor
-            // from that ratio."* A round that ends the turn with no calls settles
-            // with an empty list, which is an untaken offer and is recorded as one.
+            // The offer is settled here, where the round's calls are known, and logged whichever way it went. A round
+            // that ends the turn with no calls settles with an empty list, which is an untaken offer recorded as one.
             offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
-            // **What the agent says it is doing, recorded before its calls are
-            // adjudicated.** A model's prose for a round is the sentence in front of
-            // its tool calls — "the queued-prompt rendering lives in app.rs; I am
-            // reading the composer block" — and that sentence is the one thing the
-            // guard is missing when the operator's instruction names a goal rather
-            // than a file. Never an authorisation and never citable; see
-            // `ModelBrief::agent_claim`.
+            // What the agent says it is doing, recorded before its calls are adjudicated: the sentence in front of its
+            // tool calls is what the guard is missing when the operator's instruction names a goal rather than a file.
+            // Never an authorisation and never citable.
             self.trail.claims(&text);
             self.meter_round(&ok.metrics, rendered_at);
             metrics.push(ok.metrics);
 
-            // **The context claim, checked against what the daemon measured** — R71. Judged
-            // here, once per round and whichever way the round went, so the log has every
-            // claim; acted on in the two branches below, where the intent check steers.
-            // **And the reasoning in front of it**, when the reply holds no claim: a model that
-            // budgets by "my context 49% → one call" says it there and nowhere the operator reads.
-            // A claim found only there is told, never made to keep going — the reply may be whole.
+            // The context claim, checked against what the daemon measured: judged once per round whichever way it went,
+            // so the log has every claim. And the reasoning in front of it, since a model that budgets by a percentage
+            // says it there and nowhere the operator reads. A claim found only there is told, never forced.
             let (context_claim, claim_in_reasoning) =
                 match self.judge_context_claim(&mut context_check, &text, false) {
                     Some(line) => (Some(line), false),
@@ -2510,73 +1788,40 @@ impl Harness {
                 };
 
             if calls.is_empty() {
-                // **A model that stopped "because the context is full" when it is not.**
-                //
-                // First, ahead of the intent check: the excuse is usually WHY a promise was
-                // not kept, and the measured fill is the more useful of the two lines. It goes
-                // through `append_notice` for the reason the nudge below does — the turn is
-                // over, and a steering message would arrive after the reply — and the loop
-                // continues, which is the half that makes it a correction rather than a report.
+                // A model that stopped because the context is full when it is not: first, ahead of the intent check,
+                // since the excuse is usually why a promise was not kept. It goes through `append_notice`, because the
+                // turn is over and the loop continuing is what makes it a correction rather than a report.
                 if let Some(steer) = &context_claim {
                     self.append_notice(letibot_plugin::notice::NUDGE, steer)?;
                     if !claim_in_reasoning {
                         continue;
                     }
                 }
-                // **The turn boundary, and the one the error signal is about.**
-                //
-                // A turn that ends with no tool call is exactly T21.3's case —
-                // *"when model says ill start that and by end of the turn forgets
-                // and does not start anything"* — so the diff runs here, before the
-                // reply leaves. `close_the_turn` reads the assistant's own text out
-                // of `appended`; the tool calls are already in the ledger, put there
-                // by the encoder as they ran.
+                // The turn boundary, and the one the error signal is about: a turn that ends with no tool call is
+                // exactly the case of a model that says it will start something and forgets. The diff runs before the
+                // reply leaves, reading the assistant's text out of the rows just appended.
                 if nudges_left > 0
                     && let Some(steer) = self.close_the_turn(&ok.turn_id, &appended)
                 {
                     nudges_left -= 1;
-                    // Through `append_notice` rather than the steering queue: this
-                    // turn is over, and a message queued for "the next step
-                    // boundary" of a turn that has ended would arrive after the
-                    // reply the operator is waiting on. The loop continues, which is
-                    // the half of T21.3 that makes it a correction rather than a
-                    // report.
+                    // Through `append_notice` rather than the steering queue: the turn is over, and a message queued for
+                    // the next step boundary of a turn that has ended would arrive after the reply the operator waits for.
+                    // The loop continuing is what makes it a correction.
                     self.append_notice(letibot_plugin::notice::NUDGE, &steer)?;
                     continue;
                 }
-                // **The branch is the deliverable.** After the intent check, so a turn that
-                // promised work and did not start it hears about the promise first; the dirty
-                // tree is still there to be told about on the round that answers it. Through
-                // `append_notice` for the same reason as the nudge above: the turn is over, and
-                // the loop continuing is what makes it a correction rather than a report.
-                // **Not on a round that was cut short**: an interrupt (a `job_kill`, the
-                // operator's stop) is the turn being ENDED, and a nudge that continued it would
-                // be the harness overruling the stop. That child's line goes to its parent in
-                // the completion instead (`AnswerOnce`).
+                // The branch is the deliverable, after the intent check, so a turn that promised work and did not
+                // start it hears about the promise first. Not on a round cut short: an interrupt is the turn being
+                // ENDED, and a nudge that continued it would be the harness overruling the stop.
                 if !ok.truncated
                     && let Some(steer) = end_of_work.at_turn_end(self.deliverable.as_ref())
                 {
                     self.append_notice(letibot_plugin::notice::NUDGE, &steer)?;
                     continue;
                 }
-                // **A message queued while the head was running is a prompt, not a
-                // footnote.**
-                //
-                // The engine drains the steering queue at the step boundary — after
-                // `TurnFinished` — and appends what it finds as user items, reporting
-                // them in `steering_applied`. Until now that was where the story
-                // ended: a turn that made no tool call returned here, the worker went
-                // idle, and the queued message sat in the transcript answered by
-                // nobody — "message was queued when you stopped and it didnt restart
-                // you, while it went out o the queue". The loop continues instead:
-                // the next round's prompt is the transcript, the queued items are its
-                // last rows, and the model answers them. This covers every kind of
-                // steering the boundary absorbs, not only the operator's words — a
-                // monitor firing that lands at the boundary is `wake`'s business when
-                // nothing is running, and this is the same obligation when something
-                // just did. Bounded the way every round is: a round with nothing
-                // queued and no tool call returns below, so one queued message costs
-                // exactly one round.
+                // A message queued while the head was running is a prompt, not a footnote: the engine appends what it
+                // finds at the step boundary, and a turn that made no tool call used to return with the message
+                // answered by nobody. The loop continues, and a round with nothing queued returns below.
                 if !ok.steering_applied.is_empty() {
                     continue;
                 }
@@ -2594,26 +1839,14 @@ impl Harness {
             let turn_id = ok.turn_id.clone();
             let mut backgrounded = false;
             let mut results = Vec::with_capacity(calls.len());
-            // **The person's half of a question, held back until every result is in.**
-            //
-            // A question's answer is the operator's own row, and it is appended with this
-            // round's results — but AFTER all of them, never between a call and its result.
-            // `Harness::settle_asked` carries the measurement and the reason; the short of
-            // it is that a non-`tool` row closes `pair_tool_calls`' answering window, so a
-            // `User` row inserted before the result makes the model read *no result was
-            // recorded* beside the real one.
+            // The person's half of a question, held back until every result is in: a non-`tool` row closes
+            // `pair_tool_calls`' answering window, so a `User` row inserted before the result makes the model read
+            // *no result was recorded* beside the real one.
             let mut asked: Vec<TranscriptItem> = Vec::new();
             for call in &calls {
-                // Call order, and appended in call order. See point 3 above.
-                // `self.tool_sink` is the log sink wrapped in the intent encoder, so
-                // every result is measured on its way past — an `ok` is an effect
-                // and anything else is an attempt, which is the distinction the
-                // diff below is built on.
-                // **And nothing an earlier call left can be read as this one's answer.**
-                // The slot is emptied immediately before the call runs, so whatever is in
-                // it afterwards belongs to THIS call — including nothing. Without this a
-                // questioner that ran outside the round loop (the door's own execute path)
-                // would leave an exchange for the next model question to claim.
+                // Call order, and appended in call order. `self.tool_sink` is the log sink wrapped in the intent
+                // encoder, so every result is measured on its way past. And the slot is emptied immediately before the
+                // call runs, so nothing an earlier call left can be read as this one's answer.
                 self.asked.lock().unwrap_or_else(|e| e.into_inner()).take();
                 let started = Instant::now();
                 let r = self.runtime.invoke(&turn_id, call, &mut self.tool_sink);
@@ -2685,40 +1918,24 @@ impl Harness {
             self.session
                 .append_items(&self.engine, &results, &mut sink)?;
             self.reconcile(&mut sink, &results);
-            // **And the calls this round's gate admitted without asking anybody** (D16). Said
-            // here, after the results and never between them: a notice appended between a call
-            // and its result closes the pairing window and the model reads *no result was
-            // recorded* beside the real one. See [`Harness::flush_gate_admissions`].
+            // And the calls this round's gate admitted without asking anybody, said after the results and never
+            // between them: a notice between a call and its result closes the pairing window.
             self.flush_gate_admissions()?;
             // A round can have started or ended a job; refill the mailbox now so a
             // pane opened mid-turn answers with this round's table, not last
             // round's. Cheap: the list is filtered before it is built.
             self.publish_jobs();
-            // **And a mode change the operator made while this turn was running.**
-            //
-            // It sat in the command queue until the worker came back — which is
-            // after the turn — so `/mode` moved nothing while the turn went on
-            // asking under the old point. That is exactly when somebody reaches
-            // for it. Applied here, at the round boundary, on the thread that owns
-            // the harness: the gate reads its mode at decision time, so the very
-            // next call is governed by it.
+            // And a mode change the operator made while this turn was running: it sat in the queue until the turn
+            // ended, so `/mode` moved nothing while the turn went on asking under the old point. Applied here, the
+            // very next call is governed by it.
             self.apply_queued_mode();
-            // **And a tool the operator ran while this turn was running** — R31's deposit,
-            // which is what the door is FOR.
-            //
-            // The operator watches the model go down a wrong path and drops the doc in; the
-            // row lands here, at the round boundary, and the next round of this same turn
-            // reads it. The alternative was measured rather than feared: a door call sat in
-            // the worker's queue until the turn ended, and a turn can run for minutes — see
-            // `Hub::try_head_run_command`, which is where the mechanism is written down.
+            // And a tool the operator ran while this turn was running, which is what the door is FOR: the operator
+            // drops the doc in and the next round of this same turn reads it, rather than waiting out a turn that can
+            // run for minutes.
             self.apply_queued_head_run();
-            // **And the merge-queue reviews this session hosts**, at the same boundary and for
-            // the same reason as the two above: they are work whose whole point is to happen
-            // *during* a turn, and the door that would otherwise take them (`Harness::wake`) is
-            // the one this turn is holding shut. MEASURED, 2026-10-10: eighteen `Due` rows,
-            // none of them ever asked, for half an hour — the ring was queued behind turns that
-            // never looked. The cost here is one indexed `SELECT` over a table that is one row
-            // per queue entry, against a round that is a generation.
+            // And the merge-queue reviews this session hosts, at the same boundary: they are work whose point is to
+            // happen DURING a turn, and the door that would take them is the one this turn holds shut. One indexed
+            // `SELECT` against a round that is a generation.
             let served = self.serve_reviews();
             if served > 0 {
                 eprintln!(
@@ -2731,11 +1948,9 @@ impl Harness {
             // the store and the heads hear about it now, at the round boundary —
             // not when the turn ends, which is after the work the plan describes.
             self.flush_todos()?;
-            // A turn that ran tools also gets the diff — a completion marked done
-            // while nothing succeeded is `CompletedWithoutEffect` and is just as
-            // much the error signal. This one goes through the steering queue,
-            // because the loop is about to generate again and the step boundary is
-            // where §5.8 injects.
+            // A turn that ran tools also gets the diff, since a completion marked done while nothing succeeded is
+            // just as much the error signal. It goes through the steering queue, because the loop is about to
+            // generate again.
             if nudges_left > 0
                 && let Some(steer) = self.close_the_turn(&turn_id, &appended)
             {
@@ -2754,21 +1969,9 @@ impl Harness {
                     .push_back(steer);
             }
 
-            // **A backgrounded job gives the floor back to the OPERATOR, not to
-            // the model.**
-            //
-            // Ctrl-B exists because a tool is taking too long and there is
-            // something to say. It used to end only the `bash` call: control went
-            // straight back to the model, whose very next move was `job_wait` with
-            // a three-minute bound — so the operator was deaf again immediately and
-            // their line sat queued through all of it. *"i backgrounded a job but
-            // my messsage still queued"*.
-            //
-            // So when a round backgrounded something and the operator is waiting,
-            // the turn ends here. Their prompt is deliberately NOT consumed as
-            // steering — `has_queued_prompt` only looks — so the worker picks it up
-            // as a turn of its own and answers it first. That is what asking for
-            // the floor means; the job is still running and still theirs to read.
+            // A backgrounded job gives the floor back to the OPERATOR, not to the model: ending only the `bash` call
+            // handed control straight back, and the model's next move was a bounded wait. So the turn ends here, and
+            // their prompt is not consumed as steering, so the worker answers it as a turn of its own.
             if backgrounded && self.hub.has_queued_prompt() {
                 self.publish_jobs();
                 return Ok(Reply {
@@ -2780,16 +1983,9 @@ impl Harness {
                 });
             }
 
-            // **The stop, and it is two-stage on purpose.**
-            //
-            // `docs/closed-loop.md` §4: a closed loop corrects inside the tolerance
-            // band and faults outside it. One round before the bound the model is
-            // told what the detector sees — through the same step-boundary injection
-            // T21.3 uses — so a turn that was in fact working can say so and carry
-            // on. Only if the *next* round is also stalled does the turn stop.
-            //
-            // The asymmetry is deliberate. Cutting a working turn has now cost two
-            // sessions; letting a stuck one run one extra round costs one round.
+            // The stop, and it is two-stage on purpose: one round before the bound the model is told what the
+            // detector sees, so a turn that was working can say so and carry on, and only the next stalled round
+            // stops it. Cutting a working turn has cost two sessions; one extra round costs one round.
             if round_verdict == crate::progress::Round::Stalled {
                 if progress.exhausted() {
                     return Err(HarnessError::NoProgress {
@@ -2809,52 +2005,14 @@ impl Harness {
         Err(HarnessError::LoopBound { rounds: backstop })
     }
 
-    /// This session's steering source: the head's queue, the intent findings, and
-    /// a monitor that fires mid-turn.
-    ///
-    /// Rebuilt per round because it borrows nothing and holds only clones; what it
-    /// must **share** is the trail, the injected queue and the monitor cursor, so a
-    /// firing picked up in one round is not delivered again in the next.
-    /// **A `/mode` issued while this turn is running**, taken at a round boundary.
-    ///
-    /// Reported exactly as the between-turns path reports it — same sentence,
-    /// same codes — because "what did my mode change do" must not depend on
-    /// whether a turn happened to be running when it was typed.
-    /// **A door call the operator made while this turn is running**, run and appended here.
-    ///
-    /// Called at the round boundary beside [`Harness::apply_queued_mode`] and for the same
-    /// reason: it is a command whose whole point is to act *during* a turn, so it is taken by
-    /// the thread that owns this harness rather than waiting for the worker — which is
-    /// inside the turn.
-    ///
-    /// # The admission is the same one, and it is not a second door
-    ///
-    /// The name was checked against [`letibot_sessionlog::HEAD_RUN_TOOLS`] on the connection's
-    /// thread before this command was ever queued, and the corpus row is written by
-    /// [`Harness::admit_operator_call`] — the same function the worker's path calls. So the
-    /// sugar does not skip the door: **the same list, the same row, the same `human:<who>`**,
-    /// and only the thread that runs the tool differs.
-    ///
-    /// # It loops, because the operator may drop two things in
-    ///
-    /// A round is long and the boundary is the only moment this can be done, so a queue that
-    /// held two documents would otherwise deliver one per round.
+    /// This session's steering source: the head's queue, the intent findings and a monitor that fires mid-turn.
+    /// Rebuilt per round, but what it must SHARE is the trail, the injected queue and the monitor cursor, so a
+    /// firing is not delivered twice. The boundary is also where a `/mode` and a door call are taken.
     fn apply_queued_head_run(&mut self) {
         while let Some(cmd) = self.hub.try_head_run_command() {
-            // **The operator's shell line is taken by the same picker and runs the
-            // same way** — synchronously, here, at the round boundary — but it is
-            // not a door call and has no admission to note, so the two kinds are
-            // separated before the door's own bookkeeping starts rather than
-            // threaded through it with an `if`.
-            //
-            // **Unless a run of its own kind is already in flight.** One operator run
-            // per session is the rule (one input handle; see `crate::bangrun`), and a
-            // line typed mid-turn while a between-turns run waits on its thread would
-            // overlap it if this ran it here. It parks instead — worker-owned state,
-            // drained by the settle arm when the in-flight run hands back — and the
-            // turn goes on, which is what the operator watching both wanted: neither
-            // their command nor the turn is lost, and neither runs on top of the
-            // other. When NOTHING is in flight this keeps its old timing exactly.
+            // The operator's shell line is taken by the same picker and runs the same way, but it is not a door
+            // call and has no admission to note, so the two kinds are separated before the bookkeeping starts.
+            // Unless a run is already in flight, since one operator run per session is the rule: it parks instead.
             if let CommandKind::OperatorShell { line, who } = &cmd.kind {
                 let (line, who) = (line.clone(), who.clone());
                 if self.bang_in_flight() {
@@ -2884,10 +2042,8 @@ impl Harness {
                 ..
             } = &cmd.kind
             else {
-                // The picker matched an `OperatorCall` or an `OperatorShell`; anything
-                // else here would be a bug in the picker, and returning rather than
-                // panicking leaves the command queued for the worker, which is where it
-                // belongs.
+                // The picker matched an `OperatorCall` or an `OperatorShell`; anything else is a bug in the picker,
+                // and returning rather than panicking leaves the command queued for the worker, where it belongs.
                 return;
             };
             let (call_id, name, arguments, who) = (
@@ -2896,21 +2052,15 @@ impl Harness {
                 arguments.clone(),
                 who.clone(),
             );
-            // **Noted and taken around a synchronous run**, exactly as the worker's path does.
-            // With the daemon running the tool there is no window in which the pending entry
-            // is the only record of the call, so the note is normally a no-op — but keeping
-            // the pair means a head that detaches during the run still gets the sentence, and
-            // a future reader sees one pattern rather than two.
+            // Noted and taken around a synchronous run, as the worker's path does: the note is normally a no-op,
+            // but keeping the pair means a head that detaches during the run still gets the sentence.
             self.hub
                 .note_operator_call(&call_id, &cmd.head_id, &name, &who);
             let said = self.run_operator_call(&call_id, &name, &arguments, &who);
             self.hub.take_operator_call(&call_id);
             if let Err(e) = said {
-                // **Said, because there is nothing to return it to.** The worker's path
-                // reports a failure as `Outcome::Failed`, which the daemon prints; this one
-                // has no caller to answer, so the failure goes on the log or it goes
-                // nowhere — and a call that ran with its row unpinned is exactly the kind of
-                // silence this tree exists against.
+                // Said, because there is nothing to return it to: this path has no caller to answer, so the failure
+                // goes on the log or nowhere, and a call that ran with its row unpinned is the silence to avoid.
                 self.import_note(
                     "transcript_store",
                     format!(
@@ -2987,34 +2137,9 @@ impl Harness {
         }
     }
 
-    /// **A `/models` the operator typed while this turn was running** — taken and answered here,
-    /// on the thread that owns this harness, and **recorded rather than applied**.
-    ///
-    /// # Why the turn takes it at all
-    ///
-    /// `Hub::try_command_for_running_turn` carries the measurement (2026-10-12: the
-    /// operator's `/models` sat in the queue for a whole 63-second ladder and was
-    /// answered after the turn). `/mode` has had this door since R29 and `/models` did not, and
-    /// the reply arriving while they are looking matters just as much now that the switch no
-    /// longer takes effect mid-turn: the sentence they get back is *what will happen and when*,
-    /// which is only useful inside the turn it is about.
-    ///
-    /// # Why it no longer takes effect here
-    ///
-    /// Because it must not, and the measurement is [`Harness::set_provider`]'s: a round re-issued
-    /// on another model in the middle of a turn carries the rest of the old model's turn, and a
-    /// thinking-mode provider refuses exactly that. So the switch goes through the ordinary door,
-    /// which records it as pending, and [`Harness::end_turn_clock`] applies it.
-    ///
-    /// # What it will NOT take
-    ///
-    /// `slash::mid_turn_switch_ok` decides, and its two `no`s are the switches that
-    /// re-seat the conversation — a fleet model's weights, and `local` when this
-    /// session is on foreign weights. A re-seat forks the transcript and swaps the
-    /// session under `self.session`, under a turn that is in flight with a sink open
-    /// and rows still to reconcile. Those lines stay in the queue, in order, and the
-    /// worker takes them when the turn ends, exactly as every `/models` did before
-    /// this existed: the switch still lands, one turn later than it would have.
+    /// A `/models` the operator typed while this turn was running: taken and answered here, and RECORDED rather
+    /// than applied, since the reply says what will happen and when. `mid_turn_switch_ok` refuses the two switches
+    /// that re-seat the conversation, because a fork under a turn in flight has rows still to reconcile.
     fn apply_queued_model(&mut self) {
         while let Some(cmd) = self.take_queued_model() {
             let letibot_sessionlog::hub::CommandKind::Slash { line } = &cmd.kind else {
@@ -3035,10 +2160,9 @@ impl Harness {
                     Ok((choice, lines)) => self.apply_model_choice(choice, lines),
                     Err(lines) => crate::slash::SlashReply { lines, ok: false },
                 },
-                // The picker only says yes to a model switch, so this is a bug in the
-                // predicate rather than a verb. Answered rather than dropped: the
-                // command has been taken out of the queue, and a command that vanishes
-                // without a word is the failure this tree keeps deleting.
+                // The picker only says yes to a model switch, so this is a bug in the predicate rather than a verb.
+                // Answered rather than dropped: the command has been taken out of the queue, and a command that
+                // vanishes without a word is the failure this tree keeps deleting.
                 _ => crate::slash::SlashReply {
                     lines: vec![format!(
                         "/{line}: not a model switch this turn can apply, so nothing moved"
@@ -3074,24 +2198,15 @@ impl Harness {
         })
     }
 
-    /// **This attempt failed, and the outage remembers it** — see [`Outage`] for why nothing is
-    /// published here.
-    ///
-    /// **Which host, asked of the thing that was contacted.** This read
-    /// `self.cfg.endpoint.authority()` — the LOCAL endpoint — on a path that also serves cloud
-    /// turns, so a resolver failure against a provider was reported as a problem with
-    /// `127.0.0.1:8080`. MEASURED 2026-10-01: the operator read *"the model server at
-    /// 127.0.0.1:8080 did not answer: ... Temporary failure in name resolution"* and went to a
-    /// `llama-server` that was answering `/health` with 200. Not knowing which host failed is
-    /// what made the message expensive; `cfg.endpoint` is only right for the local route, so the
-    /// cloud route is asked for its own.
+    /// This attempt failed, and the outage remembers it. The host is asked of the thing that was contacted: this
+    /// read the LOCAL endpoint on a path that also serves cloud turns, so a resolver failure against a provider was
+    /// reported as a problem with `127.0.0.1:8080`, which is what made the message expensive.
     fn outage_failed(&mut self, e: &letibot_turn::HttpError) {
         let host = retry_host(self.provider.as_deref(), &self.cfg.endpoint);
         let now = letibot_sessionlog::event::now_ms();
-        // **A failure against a DIFFERENT host is a different outage** — the operator's
-        // `/models` and a `[fallback]` both move this, and two endpoints' attempts are not one
-        // counter. The old record is dropped rather than told: it is over, and the row for it
-        // would be about a host this session is no longer failing against.
+        // A failure against a DIFFERENT host is a different outage: `/models` and a fallback both move this, and two
+        // endpoints' attempts are not one counter. The old record is dropped rather than told, since it is over and
+        // its row would name a host this session no longer fails against.
         match &mut self.outage {
             Some(o) if o.host == host => {
                 o.attempts += 1;
@@ -3110,12 +2225,9 @@ impl Harness {
         }
     }
 
-    /// **The outage is over, and this is the one row it earns** — see [`Outage`].
-    ///
-    /// `answered` is *the round ended on anything but an HTTP failure*, which includes a round
-    /// that failed for some other reason: the endpoint spoke, so the outage is over either way.
-    /// The record is TAKEN, so this is the only place that can write the row and it can write it
-    /// once.
+    /// The outage is over, and this is the one row it earns. `answered` is the round ending on anything but an HTTP
+    /// failure, which includes a round that failed another way, since the endpoint spoke. The record is TAKEN, so
+    /// this is the only place that writes the row and it writes it once.
     fn settle_outage(&mut self, answered: bool) {
         let Some(outage) = self.outage.take() else {
             return;
@@ -3143,44 +2255,9 @@ impl Harness {
         });
     }
 
-    /// **The model is out, and this box has somewhere else to go** — `[fallback]
-    /// models` in `providers.toml`, tried in the operator's order, once each.
-    ///
-    /// # It records the move; it does not make it
-    ///
-    /// The operator's ruling stands — *"it is a standard thing to do - limits, 5xx, etc. we
-    /// must be able to change models like for the main session"* — and what changed is WHEN. A
-    /// 429 that says `Weekly/Monthly Limit Exhausted` is not weather and no wait lifts it, so the
-    /// session moves at the end of the turn instead of inside it; the turn that met the refusal
-    /// ends with it.
-    ///
-    /// **Why the round cannot go on elsewhere** (MEASURED 2026-10-26, [`Harness::set_provider`]
-    /// has the whole of it): a re-issued round carries the rest of the old model's turn — its
-    /// assistant tool-call rounds — and a thinking-mode provider refuses exactly that, by name.
-    /// A model's first request must follow a user message, and the only user message available is
-    /// the next turn's.
-    ///
-    /// # The two guards, and why each is here
-    ///
-    /// * **`model_refused`**: a 429 or a 5xx only. A connection that was refused, a
-    ///   stream that did not parse, a 408 — those are the route rather than the model,
-    ///   and moving the session would abandon the model the operator chose for a reason
-    ///   that is not about it.
-    /// * **`context_length_refusal`**: a provider refusing the prompt for LENGTH is
-    ///   answering perfectly well. That is the wall, it is classified as one a few lines
-    ///   below in `run_rounds`, and another model would refuse the same prompt.
-    ///
-    /// # What it will and will not switch to
-    ///
-    /// A **metered** name only, and this is narrower than `/models` on purpose. A fleet model or
-    /// the daemon's own server can re-render the conversation into a fork, and that is not
-    /// something a retry loop should do unbidden — not even at a turn boundary, where the fork
-    /// would land between the rows the turn has written and the ones it has not. A name it will
-    /// not take is SAID and skipped — a fallback nobody can reach, silently, is the defect the
-    /// key's own reader is written against.
-    ///
-    /// Returns the model it recorded, or `None` when the list is empty, spent, or has
-    /// nothing this turn can use.
+    /// The model is out and this box has somewhere else to go: a `[fallback] models` list, tried once each. It
+    /// records the move and does not make it, because a re-issued round carries the rest of the old turn and a
+    /// thinking-mode provider refuses that. A 429 or a 5xx only, and a metered name only.
     fn fall_back_from(
         &mut self,
         e: &letibot_turn::HttpError,
@@ -3230,13 +2307,9 @@ impl Harness {
             // `fallback_notice`'s, said by the caller with the provider's own refusal in it.
             let target = model_name_of(&Some(pc.clone()));
             self.pend_switch(Some(pc), target.clone());
-            // **And the work goes on by itself** — the operator's ruling of 2026-10-12, and the
-            // half a switch alone does not do: *"when it finally applied the turn didnt
-            // continue"*. `turn_tail::run_turn` opens this turn when the one that met the refusal
-            // has ended, with the notice as its user item.
-            //
-            // **Not when THIS turn is already such a continuation**: a fallback chain would then
-            // ping-pong between two names, paying a model change per turn and never stopping.
+            // And the work goes on by itself: `run_turn` opens this turn when the one that met the refusal has
+            // ended, with the notice as its user item. Not when THIS turn is already a continuation, or a fallback
+            // chain would ping-pong between two names for ever.
             if !self.in_fallback_continuation() {
                 self.fallback_continuation = Some(fallback_continuation_notice(&here, &target, e));
             }
@@ -3283,63 +2356,19 @@ impl Harness {
         }
     }
 
-    /// **The intent diff at a turn boundary**, or `None` when there is nothing to
-    /// say — which is the common case and is meant to be.
-    ///
-    /// Two callers into one of two functions, and the difference is a flag:
-    ///
-    /// * `intent::close_the_turn` reads the assistant's own prose for the
-    ///   [`letibot_tools::builtins::intent::commitments`] heuristic **as well as**
-    ///   the tool-declared half.
-    /// * `IntentLedger::reconcile(turn_id, "")` is the tool-declared half alone,
-    ///   which that method's own doc calls *"the deterministic one"*.
-    ///
-    /// **And it is TWO questions, not one** — both of them *did this turn stop with
-    /// something it said it would do still open*. The ledger answers it of the intentions
-    /// the turn declared; `todo::unfinished_plan` answers it of the model's OWN plan,
-    /// which is the larger half because the plan is where a long session's work actually
-    /// lives. Both findings are true and the model should hear both, so they are joined
-    /// rather than one being chosen over the other; either alone is the message.
-    ///
-    /// The deterministic half is the default because of the rule this whole strand
-    /// is under: **nothing widens by default.** The prose heuristic can only fire on
-    /// a turn that ran nothing at all, which for a plain answer is the normal case,
-    /// so switching it on for every existing session would put *"you said you would
-    /// X"* into conversations that were working. It is the more useful half and it
-    /// is the one with false positives, so it is `--intent-prose` and its cost is
-    /// written where somebody deciding can read it.
-    ///
-    /// The deterministic half needs no flag because it cannot fire unless the model
-    /// used `todo` or `goal`, and those are seated only by a role that names them.
-    /// A default `letibot` session is behaviourally identical.
+    /// The intent diff at a turn boundary, or `None` when there is nothing to say, which is the common case. Two
+    /// questions, both asking whether the turn stopped with something it said it would do still open: the ledger's
+    /// declared intentions and the model's own plan. Both are true and are joined. The prose half is opt-in.
     fn close_the_turn(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
-        // **THE PLAN IS NOT CHECKED HERE ANY MORE, and that is the scheduling change.**
-        //
-        // The turn-boundary check is for a claim about the turn that just ended — T21.3's *"when
-        // model says ill start that and by end of the turn forgets and does not start anything"* —
-        // and the intent ledger is exactly that (`steer_for_turn`).
-        //
-        // The PLAN is not a claim about one turn; it is a standing fact about the session, and
-        // checking it at every turn boundary gave the operator both failure modes at once: a
-        // session in constant conversation was checked after every exchange (*"looks like our todo
-        // nag is overkill"*), while a session that went quiet was checked once and then never
-        // again. It is now delivered by the IDLE clock instead — `Sessions::rearm_todo_nag` and
-        // `Harness::nag_turn`, on the operator's own instruction: *"maybe wait for a timeout
-        // actually. so send it when model is idling"* and *"but certainly not after my message."*
-        //
-        // One check, one schedule. `None` here is what makes that true rather than a comment
-        // saying so, and `close_the_turn_with` keeps the plan parameter so the join it performs is
-        // still reachable from a test.
+        // The plan is not checked here any more: the turn boundary is for a claim about the turn that just ended,
+        // while the plan is a standing fact about the session, and checking it here gave both failure modes at once.
+        // It is delivered by the idle clock instead, and `None` here is what makes that true.
         self.close_the_turn_with(turn_id, items)
     }
 
-    /// The intent finding for a turn that has just ended.
-    ///
-    /// A named function rather than the call inlined above, because it is the seam the tests
-    /// reach — and it is now the WHOLE of the turn-boundary check. The plan's finding used to be
-    /// joined in here (see `close_the_turn` for why it is not), so a reader looking for where the
-    /// todo check happens will not find it at this layer at all: it is `Harness::nag_turn`, on the
-    /// idle clock.
+    /// The intent finding for a turn that has just ended: a named function because it is the seam the tests reach,
+    /// and now the whole of the turn-boundary check. The plan's finding is not joined here, so a reader looking for
+    /// the todo check will not find it at this layer: it is `nag_turn`, on the idle clock.
     fn close_the_turn_with(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
         // R93.F30: one plan tool per seat. Where it is `todo_write`, the intent ledger's own
         // board is empty and the check reads the `todo_write` board instead.
@@ -3349,10 +2378,9 @@ impl Harness {
         steer_for_turn_over(&self.intent, self.cfg.intent_prose, turn_id, items, plan)
     }
 
-    /// **One round's context claim, judged, logged and — for the operator — warned
-    /// about.** The line for the MODEL is returned, for the caller to deliver where the
-    /// round's shape says it goes (a notice after a turn that ended, the step boundary
-    /// for one that is still calling tools). See `crate::context_claim`.
+    /// One round's context claim, judged, logged and warned about. The line for the MODEL is returned, for the
+    /// caller to deliver where the round's shape says it goes: a notice after a turn that ended, the step boundary
+    /// for one still calling tools.
     fn judge_context_claim(
         &mut self,
         check: &mut crate::context_claim::Check,
@@ -3390,23 +2418,13 @@ impl Harness {
         }
     }
 
-    /// **The session's fill, as the wall judges it** — the one place a context claim's
-    /// measurement is read, so the day the wall's measurement changes (R72 rewrites
-    /// `planning_window` and the ledger scale) this changes with it and nothing else
-    /// does.
-    ///
-    /// The verdict is the wall's own: `Config::at_the_wall` over the ledger, the
-    /// predicate `compact_at_the_wall` acts on — so the check never calls a claim false
-    /// that the harness would have compacted for. The two numbers the model is told are
-    /// in the units the head shows (`Config::shown_tokens`), because a figure the
-    /// operator cannot find on their own screen is a second disagreement. `None` when the
-    /// window is unknown: not knowing is not a measurement, and a claim cannot be
-    /// checked against it.
+    /// The session's fill, as the wall judges it: the one place a claim's measurement is read, so the day the wall's
+    /// measurement changes this changes with it. The verdict is the wall's own predicate, and the numbers are in the
+    /// units the head shows. `None` when the window is unknown, since not knowing is not a measurement.
     fn context_fill(&mut self) -> Option<crate::context_claim::Fill> {
-        // **R72's count, the one the head and the wall show.** `measure_resident` refreshes
-        // `cfg.ledger_scale` from the provider's own last count plus what was sent since, so
-        // `planning_window`, `at_the_wall` and `shown_tokens` below all read that one number —
-        // the slap quotes the fill the operator sees, not the ledger's reasoning-heavy length.
+        // R72's count, the one the head and the wall show: `measure_resident` refreshes the scale from the
+        // provider's last count plus what was sent since, so every reader below takes that one number rather than the
+        // ledger's reasoning-heavy length.
         self.measure_resident();
         self.cfg.planning_window()?;
         let resident = self.session.ledger.len() as u64;
@@ -3420,34 +2438,18 @@ impl Harness {
         })
     }
 
-    /// **Tell this session's model something the HARNESS found, without running a turn.**
-    ///
-    /// The door [`crate::plugins`] needs and the reason it queues rather than publishes: a layer
-    /// the shadow gate refused, or a pane that answered something the contract refuses, is a fact
-    /// the MODEL is the one that can fix — and a fact only the harness can put in front of it,
-    /// because a notice is a transcript row and rows are the harness's to write. The tick that
-    /// discovers it runs on the worker's idle pass, where the harness is in hand; the gate itself
-    /// runs off that pass, on a thread, which is why it hands the sentence over instead of
-    /// speaking ([`crate::plugins::PluginHost::take_notices`]).
-    ///
-    /// It is `append_notice` and not a turn: a plugin that failed to load is not a reason to
-    /// spend a generation, and the row is read by the model's next turn like any other harness
-    /// note.
+    /// Tell this session's model something the HARNESS found, without running a turn: a plugin failure is a fact
+    /// the model can fix and only the harness can put in front of it. It is `append_notice` and not a turn, because a
+    /// layer that failed to load is no reason to spend a generation.
     pub(crate) fn note_to_model(&mut self, text: &str) -> Result<(), HarnessError> {
-        // **Not through the `notice` hook, on purpose.** This is a plugin layer's own failure — a
-        // gate refusal, a pane the contract refused — and a layer that traps inside the hook that
-        // reports trapping would be a loop with a model at the end of it. §4.3's rule is that the
-        // harness's notices may be reworded; a notice about a broken report is not one of them.
+        // Not through the `notice` hook, on purpose: this is a plugin layer's own failure, and a layer that traps
+        // inside the hook that reports trapping would be a loop with a model at the end of it.
         self.record_notice(text)
     }
 
-    /// **One notice through the plugin stack** — the sentence to record, or `None` when a layer
-    /// dropped it (`docs/plugins-plan.md` §4.3).
-    ///
-    /// A session with no layers, or one whose layers answer other hooks, gets its sentence back
-    /// unchanged and pays one walk over an empty slice: `PluginHost::notice` answers before it
-    /// builds an input when nothing exports `notice_<kind>`, which is what makes *a session with
-    /// no layers behaves as it did* a property of the code rather than a promise.
+    /// One notice through the plugin stack: the sentence to record, or `None` when a layer dropped it. A session
+    /// with no layers gets its sentence back and pays one walk over an empty slice, since the host answers before it
+    /// builds an input when nothing exports the hook.
     fn noticed(&self, kind: &str, text: &str, facts: serde_json::Value) -> Option<String> {
         match self.plugin_host() {
             Some(host) => host.notice(&self.hub, kind, text, facts),
@@ -3479,10 +2481,8 @@ impl Harness {
 
     /// The row itself, whoever decided the sentence.
     fn record_notice(&mut self, text: &str) -> Result<(), HarnessError> {
-        // The harness talking to itself. Recorded as such, so a §5.7 salvage notice
-        // or an intent nudge can never be read back as the operator authorising the
-        // action it is about — which is the whole reason [`Speaker`] has three
-        // values rather than one.
+        // The harness talking to itself, recorded as such, so a salvage notice or an intent nudge can never be read
+        // back as the operator authorising the action it is about: the whole reason `Speaker` has three values.
         self.trail.say(Speaker::Agent, text, Some(Instant::now()));
         let item = TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
@@ -3495,18 +2495,9 @@ impl Harness {
         self.persist()
     }
 
-    /// **Say the calls the gate admitted without asking anybody** (D16), one transcript row
-    /// each.
-    ///
-    /// Called at the round boundary — after a round's results are on the log and before the
-    /// model generates again — because that is the one point in a turn where a row can be
-    /// appended without landing between a tool call and its result. `pair_tool_calls` reads
-    /// the first non-`tool` row as the end of an answering window, so a notice written
-    /// between them would make the model read *no result was recorded* beside the real one.
-    ///
-    /// A session whose gate has no admission sink (no adjudicator, or a fixture) has an empty
-    /// queue and pays one lock; a session at a point that asks nothing of this kind never
-    /// queues anything at all.
+    /// Say the calls the gate admitted without asking anybody, one row each, at the round boundary: the one point
+    /// in a turn where a row can be appended without landing between a tool call and its result. A session with no
+    /// admission sink pays one lock.
     fn flush_gate_admissions(&mut self) -> Result<(), HarnessError> {
         let lines: Vec<String> = {
             let mut q = self
@@ -3521,16 +2512,11 @@ impl Harness {
         Ok(())
     }
 
-    /// Attach content to the rows the log already announced (T13.1).
-    ///
-    /// The ids come off the events rather than being recomputed; see point 1 in the
-    /// module header. A count mismatch is a bug in the pairing, not something to
-    /// paper over, so it is announced as a warning on the same log the head reads.
+    /// Attach content to the rows the log already announced: the ids come off the events rather than being
+    /// recomputed, and a count mismatch is a bug in the pairing, so it is announced rather than papered over.
     pub(crate) fn reconcile(&self, sink: &mut CapturingSink, items: &[TranscriptItem]) {
-        // **What this session now holds** (R66). Restated here because this is the one function
-        // every append goes through — the six `append_items` call sites and the compaction
-        // fork's swap — so the census's number is a walk of the transcript as it is, and not a
-        // counter that can drift from it. See [`crate::footprint`].
+        // What this session now holds, restated here because this is the one function every append goes through,
+        // so the census's number is a walk of the transcript as it is and not a counter that can drift from it.
         self.restate_footprint();
         // The trail's denominator, counted where every appended batch passes.
         // `messages_scanned` has to be what was **looked at**, and this is the one
@@ -3543,10 +2529,9 @@ impl Harness {
         }
     }
 
-    /// **The lines a reply cites, published after its row** ([`crate::citations`]). The stored
-    /// snapshot when there is one — a reply restored or carried by a fork shows what it cited
-    /// when it was written — and otherwise the file as it is now, read through this session's
-    /// backend and stored. Silent for a row that cites nothing.
+    /// The lines a reply cites, published after its row: the stored snapshot when there is one, since a reply
+    /// restored or carried by a fork shows what it cited when it was written, and otherwise the file as it is now.
+    /// Silent for a row that cites nothing.
     pub(crate) fn publish_citations(&self, item_id: &str, item: &TranscriptItem) {
         let TranscriptItem::Assistant { text, .. } = item else {
             return;
@@ -3592,34 +2577,9 @@ impl Harness {
             });
     }
 
-    /// **Run the summary turn and pair every row it appended** — the one door both
-    /// callers go through, because the two of them forgetting is exactly the defect
-    /// this closes.
-    ///
-    /// `run_compaction` appends the summary INSTRUCTION and the model's ANSWER to the
-    /// session through the sink, and a sink announces each row it is handed.
-    /// `reconcile` is the only thing that hands the hub the row's BODY. Two callers
-    /// (`compact_inner`'s ordinary arm and `reseat`) ran `run_compaction` against this
-    /// session's own sink and never reconciled it — the ids stayed in the sink and
-    /// were dropped with it, so the two rows were announced and never filled.
-    ///
-    /// **The hole was in the DAEMON's view, so nothing on a head could repair it**:
-    /// every later snapshot announced the same two rows with `item: None`, and
-    /// `/resync` serves that same view — which is why the operator ran it three times
-    /// and the `2 row(s) announced … and never filled` line did not move. MEASURED on
-    /// their live session 2026-10-05: rows `#t45.510` (the instruction) and `#t45.511`
-    /// (the summary), both stored with their bodies and both served body-less, until
-    /// the daemon was restarted and the resume's republish filled them.
-    ///
-    /// The slice is taken from the session AFTER the turn, so the pairing is the
-    /// session's own order — the same positional zip `reconcile` documents, and it
-    /// covers the salvage notices a say-nothing summary turn appends as well as the
-    /// instruction and the answer.
-    ///
-    /// An associated function rather than a method, and the reason is the borrow:
-    /// `answerer` already holds `&self.provider` and `&self.prefix` for the call, so
-    /// a `&self` receiver here would overlap it. `hub` is passed in for the same
-    /// reason the row pairing is a free function.
+    /// Run the summary turn and pair every row it appended: one door, because the two callers forgetting is the
+    /// defect this closes. `run_compaction` appends through the sink and `reconcile` hands the hub the row's body, so
+    /// a caller that skipped it announced rows and never filled them. The slice is taken AFTER the turn.
     pub(crate) fn run_summary_turn(
         hub: &Arc<Hub>,
         engine: &mut TurnEngine,
@@ -3629,10 +2589,9 @@ impl Harness {
         ladder: &mut letibot_http::retry::Ladder,
     ) -> Result<CompactionOutcome, HarnessError> {
         let mark = session.items.len();
-        // **The summary turn is a provider call, so it walks the same ladder** — and its
-        // failure is said the same way, with the count in it. A compaction that failed on a
-        // blip used to end the session's only chance to fold, and the operator read
-        // `compaction FAILED: http io: …` with no way to tell one attempt from six.
+        // The summary turn is a provider call, so it walks the same ladder and its failure is said with the count
+        // in it: a compaction that failed on a blip used to end the session's only chance to fold, with no way to
+        // tell one attempt from six.
         let outcome =
             run_compaction(engine, session, sink, answerer, ladder).map_err(|e| match e {
                 TurnFailure::Http(e) => HarnessError::Endpoint {
@@ -3646,23 +2605,9 @@ impl Harness {
         Ok(outcome)
     }
 
-    /// Write every ledger row that has not reached the store yet.
-    ///
-    /// Persist and announce the todo list, if the model wrote one since last time.
-    ///
-    /// The tool mutates the board; this is the harness noticing. Called at every
-    /// round boundary so the pane moves with the work rather than after it — a
-    /// plan that reaches the head only when the turn ends is a plan the operator
-    /// watches being executed blind. A storeless session announces but does not
-    /// persist: the list is still real for the life of the session, and saying so
-    /// once in the open notes would be the honest form; silently pretending it
-    /// persisted would not be.
-    /// **[`Harness::flush_todos`] for a caller with no error to return** — the three doors that
-    /// used to `eprintln!` the failure and nothing else (R67 item 15): the operator's own rows,
-    /// the review queue's board, and a fired condition being spent. Each is a plan the store does
-    /// not hold, and the last is the worst of them: a condition that fired and was not written
-    /// down fires AGAIN after a restart. So the failure reaches the session's hub as
-    /// `todos_not_stored`, beside the daemon's log line.
+    /// Write every ledger row that has not reached the store yet, and persist and announce the todo list if the
+    /// model wrote one. Called at every round boundary, so the pane moves with the work. The `_or_say` half is for
+    /// the three doors that used to `eprintln!` the failure and nothing else.
     pub(crate) fn flush_todos_or_say(&mut self, what: &str) {
         if let Err(e) = self.flush_todos() {
             eprintln!("  todos: {what} could not be written down: {e}");
@@ -3683,21 +2628,17 @@ impl Harness {
             return Ok(());
         }
         let items = self.todos.snapshot();
-        // **Patient (R91.6), and only then marked written (R91.7).** The version was recorded
-        // BEFORE the write, so a write that failed left the next flush seeing "nothing moved"
-        // and returning `Ok` without writing — and a restart then reverted the operator's
-        // answers, `wait_on` edges and consumed conditions. Now a busy store is waited out as
-        // the transcript's rows are, and the version moves only once the store has the board.
+        // Patient, and only then marked written: the version was recorded BEFORE the write, so a failed write left
+        // the next flush seeing nothing moved and returning without writing, and a restart then reverted the
+        // operator's answers and consumed conditions. A busy store is waited out, and the version moves last.
         if self.store.is_some() {
             let session = self.cfg.session_id.clone();
             self.store_patiently("todos", |store| store.put_todos(&session, &items))?;
         }
         self.todos_version = v;
-        // **AND SAY IT LOUDLY WHEN A PERSON STARTS OR STOPS BEING WAITED ON** — *"the heads show
-        // loud notification that im waited"*. Compared across flushes, so a re-publish of the same
-        // board says nothing and each question is announced once when it is asked and once when it
-        // is settled (answered, detached by the model, or its row closed). The settings row moves
-        // with it, because that is what a head attaching later reads.
+        // And say it loudly when a person starts or stops being waited on: compared across flushes, so each
+        // question is announced once when asked and once when settled. The settings row moves with it, because that
+        // is what a head attaching later reads.
         let waiting = crate::operator_ask::waiting(&items);
         if waiting != self.asks_said {
             for (row, question) in waiting.iter().filter(|w| !self.asks_said.contains(w)) {
@@ -3726,26 +2667,21 @@ impl Harness {
         Ok(())
     }
 
-    /// The store's todo shape, as the wire spells it. Two types because the two
-    /// crates cannot share one — the protocol does not grow a storage dependency
-    /// to save a `struct` — and one conversion because the fields are the same
-    /// four words.
+    /// The store's todo shape, as the wire spells it: two types because the two crates cannot share one, and one
+    /// conversion because the fields are the same four words.
     pub(crate) fn todo_entry(t: TodoItem) -> TodoEntry {
         TodoEntry {
             content: t.content,
-            // **The store's condition, as the WIRE spells it.** A `match` rather than a
-            // pass-through because the two crates keep their own copy of the type on purpose,
-            // so a variant has to be spelled on both sides — which is what makes an
-            // unevaluable condition a compile error instead of a row that waits for ever.
+            // The store's condition, as the WIRE spells it: a `match` rather than a pass-through, because the two
+            // crates keep their own copy on purpose, so a variant is spelled on both sides and an unevaluable
+            // condition is a compile error rather than a row that waits for ever.
             when: t.when.map(|c| match c {
                 letibot_tokencore::store::TodoCondition::Job { handle } => {
                     letibot_sessionlog::event::TodoCondition::Job { handle }
                 }
             }),
-            // **And its EDGES, by the same rule and for a second reason.** The `match` is the
-            // compile-time half (a need kind this head cannot decode would be a row nobody could
-            // act on); the field itself is what makes the pane able to CARRY an edge rather than
-            // only draw one — see `TodoEntry::needs`.
+            // And its EDGES, by the same rule and for a second reason: the `match` is the compile-time half, and the
+            // field is what lets the pane CARRY an edge rather than only draw one.
             needs: t
                 .needs
                 .into_iter()
@@ -3774,11 +2710,9 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::Room { item, working } => {
                         letibot_sessionlog::event::TodoNeed::Room { item, working }
                     }
-                    // **An unknown kind stays unknown on the wire**, which is what lets a head
-                    // that does not know one pass it back to a daemon that does rather than
-                    // dropping the edge it cannot read.
-                    // **The operator's question travels whole** — the options are what the head's
-                    // card offers, and an answer is checked against them on the way back.
+                    // An unknown kind stays unknown on the wire, so a head that does not know one passes it back to a
+                    // daemon that does rather than dropping the edge. The operator's question travels whole, since its
+                    // options are what the card offers and an answer is checked against them.
                     letibot_tokencore::store::TodoNeed::Operator { question, options } => {
                         letibot_sessionlog::event::TodoNeed::Operator { question, options }
                     }
@@ -3816,17 +2750,9 @@ impl Harness {
         }
     }
 
-    /// The database enforces the append-only property itself — a trigger refuses a
-    /// `seq` that is not the next one and a `tok_offset` that does not continue the
-    /// previous row — so a divergence between the ledger and the store is a failed
-    /// INSERT rather than a quiet inconsistency.
-    /// Wait, unless this session is going away. `false` means it is: the hub
-    /// closed under us and there is nobody left to answer.
-    ///
-    /// Sliced rather than one `sleep`, because the longest wait here is
-    /// thirty-two seconds and a daemon asked to stop during one should not have
-    /// to sit it out — `Ctrl+C Ctrl+C` closes the registry from the connection's
-    /// thread, and this is the worker noticing.
+    /// The database enforces the append-only property itself, so a divergence between the ledger and the store is
+    /// a failed INSERT rather than a quiet inconsistency. And this waits, unless the session is going away: `false`
+    /// means the hub closed and there is nobody left to answer. Sliced, so a daemon asked to stop is not held here.
     fn sleep_unless_closed(&self, total: std::time::Duration) -> bool {
         let slice = std::time::Duration::from_millis(250);
         let deadline = std::time::Instant::now() + total;
@@ -3843,12 +2769,9 @@ impl Harness {
         self.persist_reporting(&mut |_, _| {})
     }
 
-    /// **One store write, with the patience [`Self::persist_reporting`] has** (R91.6): the
-    /// store's own minute of busy retries, and past that a wait — said on the session's log
-    /// every two minutes — until the store frees, the session closes, or
-    /// [`STORE_BUSY_PATIENCE`] runs out counted from the first busy failure. Anything that is
-    /// not busy is returned at once. `f` must be safe to run again: a busy write committed
-    /// nothing.
+    /// One store write, with the patience `persist_reporting` has: the store's own minute of busy retries, and past
+    /// that a wait stated every two minutes until the store frees, the session closes, or `STORE_BUSY_PATIENCE` runs
+    /// out. Anything that is not busy is returned at once. `f` must be safe to run again, since a busy write wrote nothing.
     pub(crate) fn store_patiently<T>(
         &self,
         what: &str,
@@ -3897,25 +2820,9 @@ impl Harness {
         }
     }
 
-    /// **The rows not yet written, written in chunks of [`PERSIST_CHUNK`], one transaction
-    /// each** — and `progress(done, total)` told after every chunk, in rows of this call.
-    ///
-    /// It used to be one autocommit `INSERT` per row, which is free for the two or three rows
-    /// a round appends and ruinous for a fork that carries the whole conversation: the rano
-    /// session's `/reseat`, 2026-10-12, spent 6.5 minutes writing 971 rows that took two
-    /// seconds to render. See [`letibot_tokencore::store::Store::append_items`] for where the
-    /// time went. Chunked rather than one transaction for the lot so the write lock every
-    /// daemon on the box shares is held for a bounded stretch at a time, and so a long carry
-    /// can say how far it has got between chunks.
-    ///
-    /// `persisted` advances only after a chunk has committed, so a chunk that fails leaves
-    /// the count at the last row that is really in the store, and the next call retries from
-    /// there.
-    ///
-    /// **A busy store is waited out here, not failed on** (`STORE_BUSY_PATIENCE`): the store
-    /// retries a busy chunk for a minute itself, and past that this loop resyncs `persisted`
-    /// from the store, says `store_busy_wait` on the session's hub at most every two minutes,
-    /// and tries again — giving up only when the session closes or the patience runs out.
+    /// The rows not yet written, in chunks of `PERSIST_CHUNK`, one transaction each, with `progress` told after
+    /// every chunk. `persisted` advances only after a chunk commits, so a failure retries from the last real row, and
+    /// a busy store is waited out here rather than failed on.
     pub(crate) fn persist_reporting(
         &mut self,
         progress: &mut dyn FnMut(u64, u64),
@@ -3954,13 +2861,9 @@ impl Harness {
                     self.persisted = to;
                     progress((to - start) as u64, total);
                 }
-                // **A busy store is waited for, never died of.** pg-noop's model, 2026-10-12
-                // ~01:20: *"the child died on sqlite: database is locked in the harness's own
-                // store … both cost an agent's worth of work."* The store has already retried
-                // for a minute on top of its busy timeout; past that the turn WAITS, says so on
-                // the session's own log, and only gives up when the session is going away or
-                // the wait is past `STORE_BUSY_PATIENCE` — a store wedged for half an hour is a
-                // fault to report, not a contention to sit out.
+                // A busy store is waited for, never died of: the store has already retried for a minute, and past that
+                // the turn WAITS, says so on the session's own log, and gives up only when the session is going away or
+                // the wait passes `STORE_BUSY_PATIENCE`, since a store wedged half an hour is a fault to report.
                 Err(e) if e.is_busy() => {
                     // A chunk is one transaction and a busy one committed nothing, but the
                     // store is the authority: resume from what it holds, or the next attempt
@@ -4023,53 +2926,27 @@ impl Harness {
                 &self.cfg.session_id,
                 Some(metrics.prompt_tokens),
                 Some(metrics.cached_tokens),
-                // **The same ledger the in-memory anchor above just used**, so a
-                // restart recovers what this daemon had rather than a second
-                // opinion about it: the ledger length of the PROMPT the count
-                // measured (R72), which the round's reply was appended after. A
-                // restart adds those rows back as `recovered_scale` describes.
+                // The same ledger the in-memory anchor just used, so a restart recovers what this daemon had rather
+                // than a second opinion: the ledger length of the PROMPT the count measured, which the reply came after.
                 Some(rendered_at),
             )
             .map_err(|e| HarnessError::Store(format!("context: {e}")))
     }
 }
 
-/// How many times a round is re-attempted when the model endpoint fails.
-///
-/// **The default for [`Config::http_retries`], and only that** — the RULE is
-/// [`letibot_http::retry::Policy`], which is where *what is retryable, and for how long* is
-/// written down (three classes, a bounded ladder, and a sentence for each ending). This
-/// constant is the number the daemon hands it.
-///
-/// Five, doubling from a second: 1, 2, 4, 8, 16 — six calls, 31 seconds of waiting. That is
-/// the measured 29–31 s llama.cpp cold reload, which is the longest legitimate silence the
-/// ladder exists for, and half the 63 s it used to be: the count no longer has to carry the
-/// classification, because a refusal is now refused on the first call.
-///
-/// A caller that already KNOWS the endpoint is not there — a test pointed at a dead port —
-/// sets it to 0 and is told so at once. That minute was real: seven tests in `compact.rs`
-/// took 63.7 seconds of wall clock for 3.5 seconds of CPU, all of it one of them walking
-/// this ladder.
+/// How many times a round is re-attempted when the model endpoint fails: the default for `Config::http_retries`
+/// and only that, since the RULE is `letibot_http::retry::Policy`. Five, doubling from a second, which is the
+/// measured cold reload the ladder exists for. A caller that knows the port is dead sets it to 0.
 pub const MAX_HTTP_RETRIES: u32 = letibot_http::retry::STANDARD_RETRIES;
 
-/// **Did the MODEL refuse, rather than the wire failing?**
-///
-/// The discriminator `Harness::fall_back_from` turns on: a `429` or a `5xx` and nothing else.
-/// A `408` is the one that looks like it and is not — the server waited too long for US, which
-/// is the route rather than a statement about the model — and a transport failure says nothing
-/// about it either. The whole of the argument is
-/// [`letibot_http::retry::Policy::the_model_refused`], which is where it now lives so that a
-/// reader changing what counts as weather sees the retry rule in the same file.
+/// Did the MODEL refuse, rather than the wire failing? A 429 or a 5xx and nothing else: a 408 is the server
+/// waiting too long for US, which is the route, and a transport failure says nothing about the model. The argument
+/// lives in `letibot_http::retry::Policy::the_model_refused`, beside the retry rule.
 fn model_refused(e: &letibot_turn::HttpError) -> bool {
     letibot_http::retry::Policy::the_model_refused(e)
 }
 
-/// **One outage of one model endpoint, and the single row it is worth.**
-///
-/// # The report this exists for
-///
-/// MEASURED 2026-10-30, the operator's screen — three rows in three seconds, one per attempt,
-/// the same sentence with a different number in it:
+/// One outage of one model endpoint, and the single row it is worth.
 ///
 /// ```text
 /// session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:22
@@ -4077,38 +2954,21 @@ fn model_refused(e: &letibot_turn::HttpError) -> bool {
 /// session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:25
 /// ```
 ///
-/// and their words: *"i dont need walls of this … a coutner is what is need"*.
+/// A row per attempt is a wall of the same sentence with a different number in it, and a counter
+/// means the row's text has to be current. A note on the screen cannot be revised: the head files a
+/// warning under `(code, ts, detail)`, so a second publish carrying a bigger count is a SECOND row.
 ///
-/// # Why the row is written when the outage ENDS, and not at its first failure
+/// So the count is written where it is already final. The record is opened by the first failed
+/// attempt and changed by every later one and published never, which is the whole of the fix, and it
+/// is told once when the round ends. An endpoint that answered says `answered again after N
+/// attempts`, because a silent recovery is how somebody spends an afternoon believing it is still
+/// down; a ladder that gave up says the count, when, and the provider's own words; and a `[fallback]`
+/// that moved the session is the row, because two rows about one outage is the wall again.
 ///
-/// A counter means the row's text has to be current — `attempt 3, last at 10:31:25`, with the
-/// LAST attempt's own sentence behind it — and a note on the screen cannot be revised: the head
-/// files a warning under `(code, ts, detail)` (`crates/tui/src/app/notes.rs`), so a second
-/// publish carrying a bigger count is a SECOND row and not an update of the first. A row that
-/// climbs while the outage lasts would therefore need the head, and this daemon does not write
-/// there.
-///
-/// So the count is written where it is already final. The record below is opened by the first
-/// failed attempt and **changed by every later one and published never** — a later attempt adds
-/// no row, which is the whole of the fix — and it is told once, when the round ends:
-///
-/// * the round ended on anything but an HTTP failure ⇒ the endpoint answered, and the row says
-///   `answered again after 3 attempts / 2m 14s`. A silent recovery is how somebody spends an
-///   afternoon believing the endpoint is still down;
-/// * the ladder gave up, or the daemon is closing ⇒ `did not answer (attempt 3, last at
-///   10:31:25): http 502: …` — the count, when, and the provider's own words, which is what a
-///   click opens and what gets pasted into a bug report;
-/// * a `[fallback]` moved the session ⇒ that notice is the row and carries the count
-///   ([`fallback_notice`]), because two rows about one outage is the wall again.
-///
-/// **A failure the ladder never retried is not an outage** and writes nothing: with
-/// `http_retries = 0` the turn's own `turn_failed` is the whole of the news, and a row saying
-/// `attempt 1` beside it would be the same fact twice.
-///
-/// **Told once, structurally.** [`Harness::settle_outage`] TAKES the record, so no path can tell
-/// one outage twice however many ways it ends — the same shape [`Harness::gate_told`] has for the
-/// queue, with the key being the live outage itself. A second outage is a second record: the
-/// count starts again, because two outages are not one counter.
+/// A failure the ladder never retried is not an outage and writes nothing: with no retries the
+/// turn's own `turn_failed` is the whole of the news. Told once structurally, because
+/// [`Harness::settle_outage`] TAKES the record, so no path can tell one outage twice however many
+/// ways it ends. A second outage is a second record, since two outages are not one counter.
 pub(crate) struct Outage {
     /// The host that did not answer, as [`retry_host`] spelled it. A failure against a DIFFERENT
     /// host is a different outage — the operator's `/models` and a `[fallback]` both move this,
@@ -4125,12 +2985,9 @@ pub(crate) struct Outage {
 }
 
 impl Outage {
-    /// **The row for an outage that ended without an answer** — the count, when the last attempt
-    /// was, and the provider's own words.
-    ///
-    /// `(attempt 3, last at 10:31:25): http 502: …` is one clause and one colon, so the head's
-    /// one-line card keeps the count and the time in front of the cut and puts the provider's
-    /// sentence behind the click — which is the shape the operator asked for.
+    /// The row for an outage that ended without an answer: the count, when the last attempt was, and the provider's
+    /// own words, so the head's one-line card keeps the count and the time before the cut and the sentence behind
+    /// the click.
     fn did_not_answer(&self) -> String {
         format!(
             "the model endpoint at {host} did not answer (attempt {n}{last}): {said}",
@@ -4171,11 +3028,9 @@ impl Outage {
     }
 }
 
-/// **A wall clock, `10:31:25`** — for the sentence that says when the last attempt failed.
-///
-/// `None` when the clock cannot be read, and the caller then says the count without the time.
-/// The same `localtime_r` shape as `seated_at`, for its reason: a harness is opened from more
-/// than one thread, and the `_r` form hands back nothing shared.
+/// A wall clock, `10:31:25`, for the sentence that says when the last attempt failed. `None` when the clock cannot
+/// be read, and the caller then says the count without the time. The `localtime_r` form, since a harness is opened
+/// from more than one thread.
 fn outage_clock(ms: u64) -> Option<String> {
     let secs = (ms / 1000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -4194,15 +3049,9 @@ fn outage_span(ms: u64) -> String {
     }
 }
 
-/// **The retry notice for a session that moves because the model is OUT.**
-///
-/// Names what refused, what it said, where the session goes and WHEN, and how to come back —
-/// five facts, because this is a model change the operator did not type and every one of them is
-/// a question they will have. The WHEN is the one that changed on 2026-10-26: the switch takes at
-/// the end of this turn, never inside it (see [`Harness::set_provider`]), so the notice must not
-/// promise the round continues — it does not. **The WORK continues**, which is a different promise
-/// and the daemon's own to keep: [`Harness::continue_after_fallback`] opens the next turn on the
-/// model named here.
+/// The retry notice for a session that moves because the model is OUT: what refused, what it said, where the
+/// session goes and WHEN, and how to come back. The WHEN is the part that matters, since the switch takes at the
+/// end of this turn and the notice must not promise the round continues. The WORK continues, which is the daemon's.
 fn fallback_notice(
     was: &str,
     now: &str,
@@ -4240,16 +3089,9 @@ fn fallback_notice(
     )
 }
 
-/// **The notice that OPENS the turn a fallback earned** — the model's own copy, as a user item in
-/// the harness's voice (`Speaker::Agent`), which is the same shape a plan-check's and a wake's
-/// notice take.
-///
-/// The register is the harness's: `[fallback]` first, like `[todo]`, `[workspace]` and
-/// `[reseat]`, so a reader can tell a notice the daemon wrote from the operator's words. What it
-/// carries is the three facts the model cannot recover from the transcript alone: **what
-/// refused** (this is not the model's own failure), **where it is now** (a different model is
-/// answering), and **that nothing was lost** — the failed round committed nothing, so the tool
-/// results above it are the work's real state and re-doing them is waste the operator pays for.
+/// The notice that OPENS the turn a fallback earned: the model's own copy, as a user item in the harness's voice.
+/// The register is the harness's, so a reader can tell it from the operator's words, and it carries what the model
+/// cannot recover from the transcript: what refused, where it is now, and that nothing was lost.
 fn fallback_continuation_notice(was: &str, now: &str, e: &letibot_turn::HttpError) -> String {
     format!(
         "[fallback] {was} refused ({}); continuing this task on {now}. The turn before this one \
@@ -4259,12 +3101,8 @@ fn fallback_continuation_notice(was: &str, now: &str, e: &letibot_turn::HttpErro
     )
 }
 
-/// **The refusal in the few words a notice can afford** — `http 429`, or the kind of failure for
-/// one that is not a status at all.
-///
-/// Deliberately NOT the provider's body: the body goes to the operator in [`fallback_notice`],
-/// where a person reading a quota message is worth the tokens. This is the model's copy, and what
-/// it needs to know is *the model moved*, not what the old one said.
+/// The refusal in the few words a notice can afford: `http 429`, or the kind of failure for one that is not a
+/// status at all. Deliberately NOT the provider's body, which goes to the operator where it is worth the tokens.
 fn refusal_word(e: &letibot_turn::HttpError) -> String {
     match e {
         letibot_turn::HttpError::Status { code, .. } => format!("http {code}"),
@@ -4273,22 +3111,9 @@ fn refusal_word(e: &letibot_turn::HttpError) -> String {
     }
 }
 
-/// **The host a retry warning names, for the route this turn is on.**
-///
-/// Split out of the retry loop so the choice is testable on its own, because the wrong
-/// answer here is expensive in a way a passing build cannot show: the loop used to name
-/// `cfg.endpoint` — the LOCAL endpoint — on a path that also serves cloud turns, so the
-/// operator read
-///
-///   the model server at 127.0.0.1:8080 did not answer: ... Temporary failure in name
-///   resolution
-///
-/// on 2026-10-01 while `llama-server` was answering `/health` with 200 and
-/// `letibot --status` reported it `ok`. The failure was a resolver lookup for a provider
-/// host; the message sent them to debug the one component that was working.
-///
-/// So: the local route names the local endpoint, and a cloud route is asked for its own
-/// host — the URL it actually posts to, which the operator's key file may have moved.
+/// The host a retry warning names, for the route this turn is on. Split out so the choice is testable, because the
+/// wrong answer here is expensive and invisible to a passing build: the loop named `cfg.endpoint`, the LOCAL one, on
+/// a path that also serves cloud turns, and sent the operator to debug the component that was working.
 fn retry_host(provider: Option<&dyn letibot_backend::MessagesBackend>, local: &Endpoint) -> String {
     match provider {
         None => local.authority(),
@@ -4296,32 +3121,18 @@ fn retry_host(provider: Option<&dyn letibot_backend::MessagesBackend>, local: &E
     }
 }
 
-/// **What a context-length refusal told us**, in the provider's own numbers.
-///
-/// `requested` and `limit` are the two numbers the body names — the prompt size it
-/// refused and the window it refused against — either of which a body may carry only
-/// one of. They are the PROVIDER's counts, not this box's ledger, and a caller that
-/// wants to compare them with its own must say which is which rather than silently
-/// pairing them (the same rule `Config::ledger_scale` exists for).
+/// What a context-length refusal told us, in the provider's own numbers: the prompt size it refused and the window
+/// it refused against, either of which a body may carry alone. They are the PROVIDER's counts, not this box's
+/// ledger, and a caller comparing them with its own must say which is which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ContextLengthRefusal {
     requested: Option<u64>,
     limit: Option<u64>,
 }
 
-/// **The HTTP status a failure names, when it is a provider refusing what was SENT.**
-///
-/// 4xx is that class: the request reached a model that read it and said no. 429 is not
-/// (the ladder's — it waits, and may move the session), 408 is not (the server waited too
-/// long for US, which is the route), and neither is anything 5xx or transport, which is a
-/// fact about the endpoint rather than about what was sent. Read by
-/// [`Harness::switch_back_notice`].
-///
-/// **Two shapes**, because a failure now reaches a caller either as it left the engine
-/// ([`TurnFailure::Http`]) or as the ladder's account of it ([`HarnessError::Endpoint`]), and
-/// a question that answered only the first would silently stop advising a switch back on
-/// exactly the failures an operator most wants advice on — a `400` from the model they just
-/// moved to.
+/// The HTTP status a failure names, when it is a provider refusing what was SENT: 4xx is that class, while 429 is
+/// the ladder's, 408 is the route, and 5xx or transport is a fact about the endpoint. Two shapes, because a failure
+/// reaches a caller either as it left the engine or as the ladder's account of it.
 pub(crate) fn provider_refusal(e: &HarnessError) -> Option<u16> {
     e.http_cause()
         .and_then(letibot_http::retry::Policy::refusal_of_what_was_sent)
@@ -4362,11 +3173,9 @@ pub(crate) fn provider_refusal(e: &HarnessError) -> Option<u16> {
 /// is an overfit"*). Anything else — a 400 about invalid tokens, a 500 about a slot —
 /// is a backend error and stays one: if this cannot parse, it does not guess.
 fn context_length_refusal(body: &str) -> Option<ContextLengthRefusal> {
-    // The structured half: a JSON error object with a field that NAMES the
-    // context as the complaint. Both fields are read independently — an
-    // OpenAI-shaped body carries `type: "invalid_request_error"` AND
-    // `code: "context_length_exceeded"` TOGETHER, so `type` cannot be the
-    // only gate or the specific field never gets its say.
+    // The structured half: a JSON error object with a field that NAMES the context as the complaint. Both fields are
+    // read independently, since an OpenAI-shaped body carries a `type` and a `code` together, so `type` cannot be the
+    // only gate.
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         let err = v.get("error")?;
         let ty = err.get("type").and_then(|t| t.as_str());
@@ -4419,40 +3228,21 @@ fn number_after(body: &str, anchor: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// **Whether a silence notice applies at all, and about which host.**
-///
-/// `None` for the local route — and that is a policy, not an accident: a local round is
-/// silent for 29-31 s reloading a cold GGUF and for minutes on a long prefill, both of
-/// which this tree calls *progress*. Split from `SilenceWatch` so the decision can be
-/// tested without starting a thread, and from `retry_host` because this one has to
-/// answer `None` where that one always names something.
+/// Whether a silence notice applies at all, and about which host. `None` for the local route, and that is policy:
+/// a local round is silent for 29-31 s reloading a cold GGUF and for minutes on a long prefill, both of which this
+/// tree calls progress. Split from `SilenceWatch` so the decision is testable without a thread.
 fn silence_host(provider: Option<&dyn letibot_backend::MessagesBackend>) -> Option<String> {
     provider.map(|p| p.authority())
 }
 
-/// **How long a CLOUD round may produce nothing before the silence is worth
-/// naming.**
-///
-/// Fifteen seconds, and the number is a judgement rather than a measurement. What IS
-/// measured (2026-10-02) is the shape it distinguishes: a degraded DeepSeek answered a
-/// streaming request in **12.44 s** to first byte while rejecting a bogus key in
-/// 0.33 s and a non-streaming request returned nothing at all in 25 s. So a metered
-/// round can sit silent for tens of seconds and then succeed — and until this existed,
-/// the operator learned that by asking somebody to run `curl -w`.
-///
-/// Chosen above the 12.44 s that was measured as *working*, so the notice means "this
-/// is slower than a healthy provider", not "this failed".
+/// How long a CLOUD round may produce nothing before the silence is worth naming: fifteen seconds, a judgement
+/// above the 12.44 s a degraded provider was measured taking to its first byte, so the notice means slower than a
+/// healthy provider and not this failed.
 const SILENT_ROUND_SECS: u64 = 15;
 
-/// **The notice for a cloud round that has produced nothing, when one is
-/// warranted.**
-///
-/// Pure — no clock, no thread — so the decision can be tested on its own. The
-/// watchdog below is its only caller.
-///
-/// The sentence is careful about what is actually known. Nothing here can see the HTTP
-/// status, so it does not claim the request was accepted: it says the round has
-/// produced nothing, which is the fact, and names the host it is waiting on.
+/// The notice for a cloud round that has produced nothing, when one is warranted: pure, with no clock and no
+/// thread, so the decision is testable on its own. Nothing here can see the status, so it claims nothing about the
+/// request: it says the round has produced nothing and names the host it waits on.
 fn silence_notice(
     host: &str,
     silent: std::time::Duration,
@@ -4470,33 +3260,9 @@ fn silence_notice(
     ))
 }
 
-/// **Say something WHILE a cloud round is silent**, which is the one thing the
-/// operator could not interpret.
-///
-/// # Why a thread and not a timeout
-///
-/// The provider blocks its round inside `complete`, so nothing on this thread can
-/// notice a silence: the round gets control back only when a delta arrives or the
-/// request fails, and both of those are the END of the silence. A watchdog is the only
-/// way to speak during the wait.
-///
-/// # Why it REPORTS rather than aborting
-///
-/// A first-byte *deadline* that aborted would break the case that was measured to be
-/// working: 12.44 s to first byte is a degraded provider that DOES answer, and a
-/// deadline short enough to catch it would fail a round that was going to succeed and
-/// then retry into the same slow backend. What the operator lacked was not a kill
-/// switch but a sentence; the retry ladder already handles a provider that is
-/// genuinely gone, and `letibot_http::retry::Policy` is where that policy lives. So this fires
-/// once, the round continues, and nothing is cancelled.
-///
-/// # Scope, and why it is the cloud route only
-///
-/// A LOCAL round is legitimately silent for 29-31 s reloading a cold GGUF and for
-/// minutes on a long prefill — this tree calls both of those *progress*, and the retry
-/// constants are written around them. A notice there would fire on healthy work and
-/// teach the operator to ignore the code, which is worse than not having it. `None` for
-/// the local route is therefore not an omission.
+/// Say something WHILE a cloud round is silent: a thread, because the provider blocks the round inside `complete`,
+/// so nothing on this thread could notice. It REPORTS and does not abort, since a first-byte deadline would fail a
+/// round that was going to succeed. Cloud only, since a local round is legitimately silent.
 struct SilenceWatch {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -4564,16 +3330,9 @@ impl SilenceWatch {
 
 #[cfg(test)]
 mod endpoint_retry {
-    //! **When the model server is not answering, take the round again.** The
-    //! operator, 2026-09-17: *"implement exponential backoff and auto turn
-    //! restart for when model http endpoint doesnt answer or answers with error
-    //! codes except unauthenticated"*.
-    // **The retry rule's own tests are the policy's**, beside it in
-    // `crates/http/src/retry.rs`: what is retryable, the ladder's numbers, the billing
-    // refusal and the ending sentence are one subject with one home, and a second copy here
-    // is a second thing to keep true. What is left in this module is what the DAEMON does
-    // with an answer — which host a warning names, what a fallback says, when a silence is
-    // worth a row.
+    //! When the model server is not answering, take the round again. The retry rule's own tests are the policy's,
+    //! beside it in `crates/http/src/retry.rs`, since that is one subject with one home. What is left in this module
+    //! is what the DAEMON does with an answer: which host a warning names, what a fallback says, when silence matters.
     use super::{
         ContextLengthRefusal, Outage, SilenceWatch, context_length_refusal,
         fallback_continuation_notice, fallback_notice, model_refused, outage_span, retry_host,
@@ -4588,17 +3347,9 @@ mod endpoint_retry {
         }
     }
 
-    /// The exception is the whole point: a credential the server rejected is
-    /// rejected identically every time, so a minute of backoff buys nothing and
-    /// buries the real cause under six notices.
-    /// **THE SWEEP'S JUDGEMENT, and the defect it exists for, in the operator's words: *"look at the
-    /// window number 11 - stuck at the tool and i cant interrupt it"*.**
-    ///
-    /// MEASURED on that daemon: a `grep` was dispatched, its executor thread and its process both
-    /// vanished, and the call sat `running` in the head for eight minutes. `esc esc` was dead
-    /// because the interrupt stops GENERATION and generation had already ended — there was no token
-    /// to stop and no boundary to reach. Nothing in the daemon looked, because settlement had three
-    /// callers and every one of them was the thread that was gone.
+    /// The exception is the whole point: a credential the server rejected is rejected identically every time, so a
+    /// minute of backoff buries the cause under six notices. The sweep's judgement, for a call whose executor and
+    /// process both vanished: it sat `running` for eight minutes while `esc esc` did nothing.
     mod abandoned_call_sweep {
         use crate::harness::abandoned_calls;
         use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
@@ -4695,14 +3446,9 @@ mod endpoint_retry {
         }
     }
 
-    /// **"The model is out" is a narrower question than "is this worth waiting for",
-    /// and the difference is what decides whether a session MOVES.**
-    ///
-    /// `fall_back_from` reads this, so an answer that is too wide moves a conversation to
-    /// another model over a failure that had nothing to do with the model — a route that is
-    /// down, a stream that did not parse, a server that waited too long for us. And one that
-    /// is too narrow leaves the operator's quota exhaustion ending a turn, which is the
-    /// report this whole change is.
+    /// The model is out is a narrower question than is this worth waiting for, and the difference decides whether a
+    /// session MOVES: too wide an answer moves a conversation over a failure that had nothing to do with the model,
+    /// and too narrow leaves a quota exhaustion ending a turn.
     #[test]
     fn a_model_is_out_only_when_the_model_says_so() {
         // Out: the two the operator's plan produces, and any 5xx.
@@ -4730,16 +3476,9 @@ mod endpoint_retry {
         );
     }
 
-    /// **The fallback sentence, in the words the operator needed to read.**
-    ///
-    /// It must name what refused, where the session goes, WHEN it goes there, and how to come
-    /// back — and it must not promise the round continues, which is what it said until
-    /// 2026-10-26: a model's first request has to follow a user message, so the round that met
-    /// the refusal ends with it (see `Harness::set_provider`).
-    ///
-    /// **Two verdicts, because there are two cases**: the usual one opens the continuation turn,
-    /// and a chain whose second name is also out opens nothing — the sentence must not promise a
-    /// turn the tail will not run.
+    /// The fallback sentence, in the words the operator needed: what refused, where the session goes, when, and how
+    /// to come back, and never promising the round continues. Two verdicts, because the usual case opens the
+    /// continuation turn and a chain whose second name is also out opens nothing.
     #[test]
     fn a_fallback_names_the_way_back_and_says_when_the_switch_takes() {
         let out = || HttpError::Status {
@@ -4808,13 +3547,9 @@ mod endpoint_retry {
         );
     }
 
-    /// **The one row an outage is worth, in both of its endings** — the count, when the last
-    /// attempt was, and the provider's own words, which is what the click opens.
-    ///
-    /// The clock is the machine's, so the assertions are about the SHAPE the head's one-line card
-    /// cuts at (`(attempt 3, last at ` and then the colon) rather than about a literal time —
-    /// `crates/harnessd/tests/model_outage.rs` is where the whole sentence is read off a real
-    /// daemon, three real attempts and a real head.
+    /// The one row an outage is worth, in both of its endings: the count, when the last attempt was, and the
+    /// provider's own words. The clock is the machine's, so the tests assert the SHAPE the card cuts at rather than a
+    /// literal time.
     #[test]
     fn an_outage_is_one_row_that_carries_its_count() {
         let outage = Outage {
@@ -4908,10 +3643,8 @@ mod endpoint_retry {
         );
     }
 
-    /// **The notice fires only past the threshold, and says what it knows.**
-    ///
-    /// The number in the sentence is the measured silence, not the threshold — the
-    /// operator needs to know how long they waited, not what the policy was.
+    /// The notice fires only past the threshold, and says what it knows: the number in the sentence is the measured
+    /// silence and not the threshold, since the operator needs to know how long they waited.
     #[test]
     fn the_silence_notice_needs_the_threshold_passed() {
         let t = std::time::Duration::from_secs(15);
@@ -4930,15 +3663,9 @@ mod endpoint_retry {
         assert!(!n.contains("accepted"), "{n}");
     }
 
-    /// **A round that has produced nothing publishes exactly one notice.**
-    ///
-    /// MEASURED as the shape this exists for: a degraded DeepSeek took 12.44 s to its
-    /// first byte and a NON-streaming request returned nothing in 25 s — and until this,
-    /// the operator could not tell either from a provider that was gone without asking
-    /// for `curl -w`.
-    ///
-    /// Once, not once per slice: a round that is slow for a minute must not fill the
-    /// session with the same sentence.
+    /// A round that has produced nothing publishes exactly one notice: a degraded provider took 12.44 s to its
+    /// first byte and a non-streaming request returned nothing in 25, and neither could be told from a provider that
+    /// was gone. Once, not once per slice, so a slow minute does not fill the session.
     #[test]
     fn a_silent_cloud_round_publishes_one_notice() {
         use letibot_sessionlog::SessionEvent;
@@ -4966,15 +3693,9 @@ mod endpoint_retry {
         assert!(said[0].contains("api.deepseek.com"), "{}", said[0]);
     }
 
-    /// **And a local round is never nagged about silence.**
-    ///
-    /// A cold GGUF reload is 29-31 s and a long prefill is minutes; both are progress,
-    /// and the retry constants are written around them. A notice there would fire on
-    /// healthy work and teach the operator to ignore the code.
-    ///
-    /// Two halves, because they are two different mistakes: `silence_host` decides
-    /// whether the route qualifies at all (tested here, no thread), and `SilenceWatch`
-    /// decides what to do once it does (tested above and below).
+    /// And a local round is never nagged about silence: a cold GGUF reload is 29-31 s and a long prefill is minutes,
+    /// both progress. Two halves, since they are two mistakes: `silence_host` decides whether the route qualifies,
+    /// and `SilenceWatch` decides what to do once it does.
     #[test]
     fn a_local_round_is_not_told_its_silence_is_suspicious() {
         use letibot_backend::{BackendCaps, BackendError, Completion, MessagesBackend, StreamFlow};
@@ -5036,23 +3757,9 @@ mod endpoint_retry {
         assert_eq!(said, 0, "a local prefill is not a fault");
     }
 
-    /// **A retry notice must name the host that was actually contacted.**
-    ///
-    /// The loop named `cfg.endpoint` — the LOCAL endpoint — on a path that also serves
-    /// cloud turns. MEASURED 2026-10-01: the operator read *"the model server at
-    /// 127.0.0.1:8080 did not answer: ... Temporary failure in name resolution"* and went
-    /// to a `llama-server` that was answering `/health` with 200, because the failure was
-    /// a resolver lookup against a provider host the message never named. The retry
-    /// policy was right and the diagnosis was wrong, which is why nothing caught it.
-    ///
-    /// The override half is the one worth pinning: the answer comes from the backend, so
-    /// it follows whatever URL that backend was built with — a proxy or a rented host is
-    /// named as itself, not as the preset it replaced.
-    /// **The wall as the provider speaks it, recognised.** One test per measured
-    /// body, verbatim, because the matcher is only as narrow as its fixtures —
-    /// and one per way a body must NOT be read as the wall, because a matcher too
-    /// wide sends a session through a compaction it did not need on top of a
-    /// failure it did not deserve.
+    /// A retry notice must name the host actually contacted: the loop named the LOCAL endpoint on a path that also
+    /// serves cloud turns, so the operator debugged a server answering 200 while the failure was a resolver lookup
+    /// against a provider host the message never named. The override comes from the backend, so a proxy is named.
     #[test]
     fn the_two_measured_refusal_bodies_are_recognised_with_their_numbers() {
         // llama.cpp, JSON, the numbers as fields — the structured half.
@@ -5195,21 +3902,9 @@ pub(crate) fn one_line(s: &str, n: usize) -> String {
     }
 }
 
-/// **Calls an assistant row asked for that no row ever answered** — `(call_id, name)`, in the order
-/// they were asked.
-///
-/// The whole of the sweep's judgement, kept apart from the plumbing so it can be tested on its own.
-/// It reads ONE transcript, which is why it is right here and not a per-call guess: an assistant row
-/// that names a call is the request, a `ToolResult` row with that id is the answer, and a call
-/// between the two is one nothing will ever answer.
-///
-/// **Linear, and that is a requirement rather than tidiness** (R67 item 14). The answered ids were a
-/// `Vec` and each asked call was looked up with `iter().any`, which is O(calls × results) over the
-/// whole in-memory transcript — and this runs for every held session two seconds after every
-/// command or wake, ON THE WORKER. The tree the review measured had ~15k `bash` results, so one
-/// sweep of one big session was on the order of 10⁸ string compares with every other session's
-/// work queued behind it. A `HashSet` of borrowed ids makes it one pass and one lookup per call,
-/// and nothing is cloned that is not returned.
+/// Calls an assistant row asked for that no row ever answered, `(call_id, name)`, in order: the sweep's judgement,
+/// apart from the plumbing so it is tested alone. It reads ONE transcript, since a row naming a call is the request
+/// and a `ToolResult` with that id is the answer. Linear on purpose, since this runs on the worker.
 pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
     let mut asked: Vec<(&str, &str)> = Vec::new();
     let mut answered: std::collections::HashSet<&str> = std::collections::HashSet::new();

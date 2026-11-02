@@ -1,5 +1,5 @@
-//! **The harness's tests**, one file per theme, and the fixtures they share. Each theme file
-//! reaches the fixtures, the harness and the imports below through `use super::*`.
+//! The harness's tests, one file per theme, and the fixtures they share. Each theme file reaches the
+//! fixtures, the harness and the imports below through `use super::*`.
 
 use letibot_tools::builtins::intent::{Question, QuestionAnswer};
 

@@ -1,45 +1,6 @@
-//! **`/clear`: a fresh conversation for the same session.**
-//!
-//! The operator, verbatim: *"I need to be able to clear context - fresh reseat without loosing
-//! session todos and jobs"*, *"and subagents"*, *"this will allow me to fix model degradation"*.
-//!
-//! # What it is for, and why neither verb it sits beside does it
-//!
-//! A long session's model degrades. MEASURED 2026-10-11 on pg-noop: 710k of a 1M window, the
-//! reasoning full of `✓ ✗ ✓ ✓` glyph spam and the same boilerplate repeated round after round.
-//! `/compact` does not cure that — it summarises the history, and the summary is written by the
-//! drifted model in its own drifted voice, which then becomes the base every later turn imitates.
-//! `/reseat` changes message zero and carries every item across verbatim, which keeps the drift
-//! whole. What the operator asked for is the third thing: **the conversation starts over and the
-//! session does not**.
-//!
-//! # What carries on, and why none of it needed carrying
-//!
-//! Everything the operator listed lives in the [`Harness`], not in its transcript, so a fork that
-//! swaps the transcript leaves all of it standing — that is the whole design, and it is why this
-//! is a fork rather than a new session:
-//!
-//! * the **id and title** — a fork is a new `<session>#tN` transcript under the same session row;
-//! * the **todo board** — `self.todos`, persisted in the store's `todo` table keyed by session;
-//! * **jobs** — the process host is the backend's, and [`JobWatchers`] queue a settlement for
-//!   the SESSION (`jobwatch.rs`'s module header), so a job started under the old transcript
-//!   is delivered by the next wake into the new one;
-//! * **subagents** — the runner's slots are the harness's, a child's registry parent is the
-//!   session id, and a child's settlement rides the same watchers as a job;
-//! * **workspace, seat, mode, notes, queue rows** — the harness's configuration and the store.
-//!
-//! # What the new conversation starts with
-//!
-//! Message zero, freshly composed ([`Harness::reseat_target`]: the prompt, the tools and the
-//! standing notes this daemon would seat a NEW conversation with), then ONE item: an orientation
-//! the harness writes from STATE — the board, the jobs, the children, the queue — spoken as
-//! [`letibot_transcript::Speaker::Agent`], because it is not the operator's words and must never
-//! authorise anything. **It carries nothing of the old conversation's prose**: no summary, no
-//! last answer, no reasoning. That is exactly the degradation being cleared, and a "short recap"
-//! written by the model that drifted would hand the drift straight back.
-//!
-//! The old transcript stays in the store, whole and resumable; the orientation names it, so the
-//! operator can point at something in it and the model can read it with `transcript`.
+//! `/clear`: a fresh conversation for the same session. `/compact` summarises the history in the drifted voice and
+//! `/reseat` carries it verbatim, so neither cures a degraded model. Everything the operator keeps lives in the
+//! `Harness` and not its transcript, which is why this forks: a new message zero and one orientation item, no old prose.
 
 use std::time::Duration;
 
@@ -62,16 +23,9 @@ pub struct ClearReport {
 }
 
 impl Harness {
-    /// **Clear the conversation and keep the session** — `/clear [what to do next]`.
-    ///
-    /// A fork onto a freshly composed message zero whose body is one orientation item and nothing
-    /// else. `next` is the operator's optional sentence, quoted in the orientation as theirs; no
-    /// turn is run for it, because the slash verb is the operator's act on the session and the
-    /// next prompt is theirs to send.
-    ///
-    /// Refuses without a store — a fork needs somewhere to keep the conversation it leaves — and
-    /// that is the only refusal: unlike `/reseat` there is no "nothing to do", because the history
-    /// is what is being dropped and an unchanged message zero is simply re-used.
+    /// Clear the conversation and keep the session: a fork onto a fresh message zero whose only
+    /// item is the orientation. `next` is the operator's optional sentence, quoted as theirs, and
+    /// no turn runs for it. Refuses without a store, because a fork must keep what it leaves.
     pub fn clear_conversation(&mut self, next: Option<&str>) -> Result<ClearReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
@@ -80,10 +34,8 @@ impl Harness {
                     .into(),
             ));
         }
-        // **Message zero as a NEW conversation would get it** — the same computation every
-        // compaction and `/reseat` makes, so the cleared conversation is not left speaking a
-        // prompt that went stale while the old one ran. `None` is the prompt already being
-        // spoken, and then the fork keeps it.
+        // Message zero as a NEW conversation would get it, so the cleared conversation does not
+        // speak a prompt that went stale while the old one ran. `None` means keep the current one.
         let reseat = self.reseat_target()?;
         let old_id = self.transcript_id.clone();
         let orientation = self.orientation(&old_id, next);
@@ -128,9 +80,8 @@ impl Harness {
         })
     }
 
-    /// **The sentence a clear is announced with on the session's log** — the boundary row a head
-    /// draws where the old conversation ended. One function so the root's arm and a child's
-    /// serving loop say the same thing.
+    /// The sentence a clear is announced with on the session's log: the boundary row a head draws
+    /// where the old conversation ended. One function so the root's arm and a child's loop agree.
     pub fn publish_cleared(&self, r: &ClearReport) {
         let mut said = format!(
             "conversation cleared: {} → {}. The new conversation is message zero plus a {}-line \
@@ -160,13 +111,9 @@ impl Harness {
         });
     }
 
-    /// **The orientation: the session's state, as facts, and no prose from the old
-    /// conversation.**
-    ///
-    /// Each section is read from the thing that owns it — the board, the process host, the
-    /// subagent runner, the store's queues — at the moment of the clear. An empty section says so
-    /// in one line rather than vanishing, because an orientation that leaves out "no jobs" is one
-    /// the model cannot tell from an orientation that forgot to look.
+    /// The orientation: the session's state as facts, and no prose from the old conversation. Each section is read at
+    /// the moment of the clear from the thing that owns it, and an empty section says so in one line rather than
+    /// vanishing, because an orientation that leaves out no jobs cannot be told from one that forgot to look.
     pub(crate) fn orientation(&self, old_id: &str, next: Option<&str>) -> String {
         let me = self.cfg.session_id.clone();
         let mut out = format!(
@@ -281,8 +228,8 @@ impl Harness {
     }
 }
 
-/// **The verb's own answer**, beside the `cleared` row: what the operator does next. Short,
-/// because the row above it already said what happened.
+/// The verb's own answer, beside the `cleared` row: what the operator does next. Short, because
+/// the row above it already said what happened.
 pub fn clear_reply(r: &ClearReport) -> String {
     format!(
         "cleared: now on {}. The model has not been asked anything yet — your next prompt is the \

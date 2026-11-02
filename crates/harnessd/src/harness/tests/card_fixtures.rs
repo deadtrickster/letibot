@@ -1,11 +1,6 @@
-//! **The TUI's one-line cards for a restart and a stale prompt are pinned to what the daemon
-//! writes** — the operator, pasting what pg-noop's head drew after its restart onto a new build:
-//! *"these gray walls are hilarious … make them the usual one liners"*.
-//!
-//! `restart_card` and `stale_card` in the TUI parse these files to draw each notice as one line;
-//! a reworded notice fails here before it falls back on a screen. Re-bless with
-//! `LETIBOT_BLESS_RESTART_CARD=1`, and teach the card the new shape if it moved a part it keys
-//! on.
+//! The TUI's one-line cards for a restart and a stale prompt are pinned to what the daemon writes: `restart_card` and
+//! `stale_card` parse these files, so a reworded notice fails here before it falls back on a screen. Re-bless with
+//! `LETIBOT_BLESS_RESTART_CARD=1`, and teach the card the new shape if a part it keys on moved.
 
 use crate::restart::{
     Outcome, RESTORE_WITHIN, Stopped, header, job_line, monitor_rearmed_line,

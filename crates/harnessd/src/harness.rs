@@ -1,5 +1,4 @@
-//! **The loop.** Submit → stream → parse a tool call → execute it → append the
-//! result → resubmit.
+//! The loop: submit, stream, parse a tool call, execute it, append the result, resubmit.
 //!
 //! ```text
 //!   user item ──append──> ledger ──submit──> stream ──parse──> items
@@ -9,32 +8,11 @@
 //!   ToolResult item <──transcript_item── ToolRuntime::invoke ── yes
 //! ```
 //!
-//! `ToolRuntime::transcript_item` and `ToolLogSink` were the two ends of this wire
-//! and both were tested. This file is what runs between them.
-//!
-//! # Three things this file had to decide that no crate had decided
-//!
-//! **1. Item ids are minted by two different rules, and the head needs both.**
-//! `Session::append_items` mints `"{transcript}.{index}"`; the turn engine mints
-//! `"{turn_id}.{n}"`. §4.5's `TranscriptAppended` carries no content, so the daemon
-//! has to call `Hub::record_item(item_id, item)` out of band — and it must use the
-//! *same* id the event carried, or the head shows an empty row forever. Rather than
-//! reimplementing both rules and going stale, [`CapturingSink`] reads the id off
-//! the event on its way past. That is not a workaround for T13.1; T13.1 is the
-//! event having no content channel, and widening it unilaterally is not this
-//! strand's call.
-//!
-//! **2. A failed turn leaves nothing to answer.** When §5.7 refuses a batch, the
-//! engine commits *nothing* — so there are no tool-call rows to attach pi's
-//! "re-issue with complete arguments" notice to. The notice therefore goes in as a
-//! plain user item, which is the only append-only place it fits, and the loop
-//! retries under the engine's own salvage budget rather than a second counter.
-//!
-//! **3. A tool batch is executed in call order and appended in call order.** Not a
-//! style choice: GLM's shipped template *sorts* tool results by tool-call order, so
-//! appending them in any other order would rewrite bytes already in the KV cache.
-//! Keeping call order makes the template's sort a no-op and both properties hold at
-//! once.
+//! Three rules the loop cannot break. Item ids are minted by two different rules, so
+//! [`CapturingSink`] reads the id off the event rather than reimplementing either. A failed turn
+//! commits nothing, so the salvage notice goes in as a plain user item, the only append-only place
+//! it fits. And a tool batch is executed and appended in call order, because GLM's shipped template
+//! sorts tool results by call order and any other order would rewrite bytes already in the KV cache.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -83,54 +61,30 @@ use letibot_tools::ExecBackend as _;
 // are only reachable with it in scope.
 use letibot_tools::ProcessHost as _;
 
-/// How many of the operator's own utterances the trail carries.
-///
-/// Bounded for the reason every body in this tree is bounded, and the bound is
-/// small because §2's evidence is *recent*: the sentence that authorised an action
-/// is nearly always the last one or two. What the cap must never do is make an
-/// **uncollected** trail look like a short one, and it cannot — the denominator
-/// travels separately and counts every message scanned.
+/// How many of the operator's own utterances the trail carries. The bound is small because the
+/// sentence that authorised an action is nearly always the last one or two, and the denominator
+/// travels separately, so a short trail cannot read as a complete one.
 const TRAIL_UTTERANCES: usize = 12;
 
-/// How far back the walk goes. A session with 400 turns has an authorisation
-/// somewhere in the last handful, and scanning all of it to find twelve is work
-/// done inside the tool path.
-///
-/// **It is also how many utterances the trail HOLDS** — see [`TrailMirror::say`].
-/// Keeping more than this was pure waste and an unbounded per-session term: the
-/// only reader takes the last `TRAIL_SCAN`, so everything older than the sixtieth
-/// was held for the life of the session and never read once.
+/// How far back the walk goes, and how many utterances the trail holds: the only reader takes the
+/// last `TRAIL_SCAN`, so anything older was held for the life of the session and never read.
 pub(crate) const TRAIL_SCAN: usize = 60;
 
-/// The longest an utterance travels verbatim, matching
-/// [`letibot_tools::authorise::Utterance::operator`]'s own rule. A truncated
-/// authorisation that reads as complete is worse than a missing one, so a clipped
-/// one says it was clipped.
-///
-/// **And it is how much of an utterance is STORED** — see [`TrailMirror::say`]. What
-/// travels was always clipped to this; holding the rest cost the daemon memory no reader
-/// ever looked at.
+/// The longest an utterance travels verbatim, matching `Utterance::operator`'s own rule: a
+/// truncated authorisation that reads as complete is worse than a missing one, so a clipped one
+/// says it was clipped. It is also how much is stored.
 pub(crate) const UTTERANCE_CHARS: usize = 600;
 
-/// Everything the engine borrows for the life of the daemon.
-///
-/// Held apart from [`Harness`] because `TurnEngine<'a>` borrows the vocabulary and
-/// the renderer, and a struct owning both the borrow and the borrowed would be
-/// self-referential. The caller keeps this on the stack and hands out a reference,
-/// which is a two-line inconvenience against a `Box::leak` that lies about
-/// lifetimes.
-/// Every field is an `Arc`, so a clone is a handful of refcount bumps — which
-/// is what lets a second head (the HTTP one) hold the same vocabulary and dialect
-/// without loading either again.
+/// Everything the engine borrows for the life of the daemon. Held apart from [`Harness`] because
+/// `TurnEngine<'a>` borrows the vocabulary and the renderer, and a struct owning both the borrow and
+/// the borrowed would be self-referential. Every field is an `Arc`, so a clone is a few refcounts.
 #[derive(Clone)]
 pub struct Parts {
     pub vocab: std::sync::Arc<Vocab>,
     pub wiring: std::sync::Arc<Wiring>,
-    /// Per-project mode store, loaded once at daemon start. The mode is a session
-    /// property: a session's point is its project's row (longest ancestor wins), not
-    /// the daemon's `--mode` flag, so moving a project does not mean restarting the
-    /// daemon. Wrapped in a lock because the `/mode` command writes it at run time
-    /// while session opens read it. See `D13`.
+    /// Per-project mode store, loaded once at daemon start: a session's point is its project's row
+    /// (longest ancestor wins), not the daemon's `--mode` flag. Locked because `/mode` writes it
+    /// while session opens read it.
     pub mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
     /// The subagent (task) journal, shared with every subagent runner so spawns and
     /// finishes land in one place and reach the dashboard's state file.
@@ -141,119 +95,43 @@ pub struct Parts {
     /// The loaded skills, shared with the `skill` tool and the dashboard's `skills`
     /// panel.
     pub skills: std::sync::Arc<letibot_tools::builtins::skill::SkillRegistry>,
-    /// **Every live todo board this daemon holds, by session id** — the map a parent's
-    /// `todo_write` with a `target` resolves its child through (`crate::child_todos`).
-    ///
-    /// It rides [`Parts`] for the same reason [`Parts::tree_slots`] does: a live `Arc` that
-    /// belongs to the DAEMON and not to any one session's config, handed to every harness so
-    /// each can register its own board at open — root, child, resumed or fresh — and read any
-    /// other's through the resolver built beside it. The store path rides along because the
-    /// resolver's flush runs on another thread and reaches the store by path — a handle onto
-    /// the process's one connection, not a second one.
+    /// Every live todo board this daemon holds, by session id: the map a parent's `todo_write` with
+    /// a `target` resolves its child through. It rides [`Parts`] because it belongs to the daemon,
+    /// and the store path rides along because the resolver's flush runs on another thread.
     pub child_boards: std::sync::Arc<crate::child_todos::ChildBoards>,
-    /// **The watcher set of the subagent TREE this session belongs to, when it is a
-    /// child** (R58).
-    ///
-    /// `None` for a root: a root's watcher set is its own, built at open. `Some` for a
-    /// child, carrying its parent's, so the child's set can join the tree's — sharing the
-    /// watching/settled bookkeeping, **the level above** (whose queue what this session can
-    /// no longer drain goes to, and whose id the ring for it names) and the **ROOT**, which
-    /// is the one session in a tree that has a head and is therefore the one a permission
-    /// card can be drawn by (`tree_root`).
-    ///
-    /// **The RING is not among them any more** (2026-10-06). It used to carry the root's id
-    /// so a grandchild's settlement would ring a session `Sessions::open` holds, because a
-    /// ring for a child was `Ignored` — the condition fired and was discarded. The ring now
-    /// names the session that OWNS the settlement (the parent, at every depth) and the
-    /// daemon serves a session it does not hold by handing the wake to the thread that does
-    /// (`Sessions::wake` → `Hub::wake_its_own_reader`), so a card and an exit are two
-    /// questions with two answers. See `jobwatch`'s module header.
-    ///
-    /// **Not the completions queue** — each session drains its own (2026-10-05). A tree
-    /// whose settlements all landed on the root's queue delivered a subagent's background
-    /// job to the main session as *"a job you backgrounded"*, and left the subagent that
-    /// started it never told; see [`crate::jobwatch::JobWatchers::shares_tree`] for what
-    /// the tree still shares and why the ring alone is enough.
-    ///
-    /// It rides [`Parts`] rather than [`Config`] because a config is *this* session's
-    /// facts and a watcher set is a live `Arc`, not a value to clone per session.
+    /// The watcher set of the subagent TREE this session belongs to, when it is a child (R58).
+    /// `None` for a root, whose set is its own; a child carries its parent's, so the tree shares the
+    /// watching bookkeeping, the level above and the ROOT a permission card can be drawn by.
     pub tree_watch: Option<std::sync::Arc<crate::jobwatch::JobWatchers>>,
-    /// **The subagent handle list a child of this session shares** (R58).
-    ///
-    /// `None` for a root — its runner gets a fresh list. `Some(parent's)` for a child, so
-    /// the whole tree hands out and collects ONE list: `task_result` and `job_kill` on a
-    /// grandchild's handle then work from any ancestor, which is the requirement's own
-    /// *"every ancestor's handle can be collected from any level"*. Without it the tree's
-    /// wake delivers a settlement the root was told about and cannot collect — the
-    /// completion names a handle no runner in `open` holds.
+    /// The subagent handle list a child of this session shares (R58): `None` for a root, `Some` for a
+    /// child, so the whole tree hands out and collects one list. Without it a settlement names a
+    /// handle no runner in `open` holds.
     pub(crate) tree_slots: Option<TaskSlots>,
-    /// **The head's answers, as the whole tree reaches them** — the ask route's half of
-    /// R58.
-    ///
-    /// The operator, on where a subagent's permission ask goes: *"who asks subagents
-    /// permissions? i think they should surface to the parent head all the way to the root
-    /// obviously"*. A child has no head, so its gate's card is posted to the session that
-    /// does — the tree's ROOT — and the root's own [`crate::answers::Answers`] is what
-    /// settles it: posting on the root's hub without the root's sink would leave a card
-    /// that nothing can answer.
-    ///
-    /// `None` for a root, whose own answers are built at open; `Some` for a child, which
-    /// inherits its root's and hands the same value to its own children. It rides
-    /// [`Parts`] rather than [`Config`] because it is a live `Arc` and not a value to clone
-    /// per session — the same reason [`Parts::tree_watch`] does.
+    /// The head's answers, as the whole tree reaches them: a child has no head, so its gate's card is
+    /// posted to the tree's ROOT and settled by that session's `Answers`, or nothing could answer it.
+    /// `None` for a root, whose own are built at open.
     pub tree_head: Option<std::sync::Arc<crate::answers::Answers>>,
-    /// **The daemon's review desk** — who is reviewing what, and what they have handed in
-    /// ([`letibot_tools::builtins::verdict::ReviewDesk`]).
-    ///
-    /// It rides [`Parts`] for [`Parts::child_boards`]'s reason exactly: a review has two sides in
-    /// two sessions — the queue's session opens it and writes the row, and the gatekeeper child
-    /// hands the verdict in — and the child is a session of its own with a harness of its own. One
-    /// `Arc` for the daemon is what makes those two sides one act; a desk per harness would be a
-    /// different desk on each side of it, and the child's verdict would reach nobody.
-    ///
-    /// **Not a store.** What the desk holds is a submission in flight; the durable row is the
-    /// queue's own (`Store::put_review`), written by the pass that owns that write
-    /// (`Harness::serve_reviews` → `write_outcome`). See the module doc for why the states stay
-    /// where they were.
+    /// The daemon's review desk: who is reviewing what, and what they have handed in. It rides
+    /// [`Parts`] because a review has two sides in two sessions, and one `Arc` is what makes them one
+    /// act. Not a store: the durable row is the queue's own.
     pub reviews: std::sync::Arc<letibot_tools::builtins::verdict::ReviewDesk>,
 }
 
-/// How many ledger rows a resume announces between progress ticks.
-///
-/// See `Harness::republish`: a tick per row overflowed a head's queue and DEMOTED it, so the
-/// restore's own progress bar was killed by the events carrying it.
+/// How many ledger rows a resume announces between progress ticks: a tick per row overflowed a
+/// head's queue and demoted it, so the restore's own progress bar was killed by the events carrying it.
 const FILLING_STRIDE: usize = 64;
 
-/// How many transcript rows one store transaction writes (`Harness::persist_reporting`).
-///
-/// One transaction per row made a 971-row `/reseat` take 6.5 minutes on a store a dozen daemons
-/// share; one transaction for everything would hold the box's single write lock for the whole of
-/// a long carry. A chunk is the middle: a handful of lock trips for a whole conversation, and the
-/// lock released often enough that another daemon's write never waits behind more than one chunk.
-///
-/// It IS the store's own chunk ([`letibot_tokencore::store::Store::APPEND_CHUNK`], 64, measured
-/// on the `sessions.db` volume as the hold that lets a competing writer in): one chunk here is
-/// then exactly one `BEGIN IMMEDIATE` transaction in the store, so a committed chunk, a tick of
-/// the carry's `Filling` line and the `persisted` count all mean the same rows.
+/// How many transcript rows one store transaction writes, and it is the store's own chunk: one
+/// chunk here is exactly one `BEGIN IMMEDIATE`, so a committed chunk, a tick of the carry's
+/// `Filling` line and the `persisted` count all mean the same rows.
 const PERSIST_CHUNK: usize = letibot_tokencore::store::Store::APPEND_CHUNK;
 
 impl Parts {
     pub fn load(cfg: &Config) -> Result<Parts, HarnessError> {
         let wiring = cfg.dialect.wiring(cfg.effort.as_deref());
-        // **Which vocabulary, decided by what the turns need.** A GGUF named on the command
-        // line is read by llama.cpp — the only vocabulary a local llama-server can take ids
-        // from. None named and a provider answering: the byte vocabulary, because there
-        // the ids never leave this machine (see `letibot_tokencore::vocab`).
-        //
-        // **None named and no provider: the byte vocabulary too, and no refusal.** This was a
-        // refusal naming both ways out, and it was the daemon's half of the launcher's model
-        // gate — a box with no GGUF and no key could not start a session at all. The operator,
-        // 2026-10-18, after `leticode` on such a box refused: *"idk why i even have to do
-        // --provider. horrible ux - we already have models chooser and keys asker"*. So the
-        // daemon starts with no model chosen, the head opens its chooser when the first message
-        // is sent (the `vocab` row says `none`), and a TURN on the local route is what is refused
-        // — in `rounds`, before anything is sent (`NO_MODEL_CHOSEN`), because a llama-server
-        // cannot read byte ids and the guess this used to refuse would still be a guess there.
+        // Which vocabulary, decided by what the turns need: a GGUF is read by llama.cpp, and no GGUF
+        // with a provider means the byte vocabulary, whose ids never leave this machine. No GGUF and no
+        // provider is the same byte vocabulary and no refusal: a turn on the local route is what is.
         let vocab = match &cfg.vocab_gguf {
             Some(path) => {
                 if !path.is_file() {
@@ -317,27 +195,15 @@ pub enum HarnessError {
     Setup(String),
     Turn(TurnFailure),
     Store(String),
-    /// The model went round the tool loop `max_tool_rounds` times and was still
-    /// producing new results. **The backstop, not a judgement about the work** —
-    /// a turn that was going nowhere would have been stopped by
-    /// [`HarnessError::NoProgress`] long before this.
-    ///
-    /// Reported, never silently truncated to whatever the last round happened to
-    /// say.
+    /// The model went round the tool loop `max_tool_rounds` times and was still producing results:
+    /// the backstop, not a judgement about the work, and reported rather than silently truncated to
+    /// whatever the last round happened to say.
     LoopBound {
         rounds: usize,
     },
-    /// The turn stopped because the next round would not fit in the context
-    /// window. **Not a failure of the work**: everything already produced is
-    /// committed, and `Sessions` compacts before the next turn.
-    ///
-    /// **`resident` and `window` are in `unit`** — the provider's count on a metered
-    /// session, the window as it was given (R72). They used to be the LEDGER's pair, and
-    /// the head drew them with no unit: *"stopped after 1 round(s) at the context wall:
-    /// 56466 of 41843 tokens resident"* for a 40,000-token deepseek window, while the
-    /// daemon's log line for the same wall said *"53978 of 40000 deepseek tokens (56466 of
-    /// 41843 ledger tokens)"*. `ledger` keeps the box's own pair for the parenthesis, and
-    /// is not printed where it is the same two numbers (a local session).
+    /// The turn stopped because the next round would not fit the window: not a failure of the work,
+    /// since everything produced is committed and `Sessions` compacts before the next turn.
+    /// `resident` and `window` are in `unit`, and `ledger` keeps the box's own pair for the parenthesis.
     ContextWall {
         rounds: usize,
         resident: u64,
@@ -345,29 +211,15 @@ pub enum HarnessError {
         unit: String,
         ledger: (u64, u64),
     },
-    /// **The progress check fired.** `stall_rounds` consecutive rounds produced
-    /// nothing this turn had not already seen.
-    ///
-    /// `evidence` is a sentence naming what the detector saw — the calls, the
-    /// outcomes and the denominator — because a stop that cites evidence is one an
-    /// operator can contradict and a round count is not. See [`crate::progress`].
+    /// The progress check fired: `stall_rounds` consecutive rounds produced nothing this turn had not
+    /// already seen. `evidence` names what the detector saw, because a stop that cites evidence is one
+    /// an operator can contradict and a round count is not.
     NoProgress {
         evidence: String,
     },
-    /// **The endpoint failed, and this is the whole account of it** — the class, how many
-    /// times the call was tried and for how long, and the provider's own last words.
-    ///
-    /// `said` is [`letibot_http::retry::Ladder::ending`]'s sentence, built where the ladder
-    /// was run, and it is what the head draws under `FAILED — `. A failure with no count on
-    /// it is the report this exists for: *"a child's turn ended with FAILED — http io:
-    /// provider unreachable: … (nothing was recorded)"*, which does not say whether the
-    /// daemon tried once or six times, and a `401` that reads like a timeout is the same
-    /// defect one class along.
-    ///
-    /// `cause` is kept typed because two questions are asked of a failure AFTER it is
-    /// said: `switch_back_notice` cites a 4xx ([`letibot_http::retry::Policy::refusal_of_what_was_sent`])
-    /// and a caller may want the status. Nothing else about it is secret — it is in the
-    /// sentence too, in the provider's own words.
+    /// The endpoint failed, and this is the whole account of it: the class, how many times the call
+    /// was tried and for how long, and the provider's own last words. `cause` stays typed because two
+    /// questions are asked of a failure after it is said, and nothing about it is secret.
     Endpoint {
         said: String,
         cause: letibot_turn::HttpError,
@@ -396,12 +248,9 @@ impl std::fmt::Display for HarnessError {
             // took, and what the provider said last. See [`HarnessError::Endpoint`].
             HarnessError::Endpoint { said, .. } => write!(f, "{said}"),
             HarnessError::Store(s) => write!(f, "store: {s}"),
-            // **Never "the model called tools N times without answering".**
-            // It *was* answering; it had not finished, and that sentence taught an
-            // operator to distrust the model when the harness was at fault — the
-            // same defect as `grep` reporting absence when it had opened no files.
-            // Reaching here now means every round was still producing new results,
-            // which is a fact about the size of the task, not about the model.
+            // Never "the model called tools N times without answering": it WAS answering and had not
+            // finished, and reaching here means every round still produced new results, which is a fact
+            // about the size of the task and not about the model.
             HarnessError::ContextWall {
                 rounds,
                 resident,
@@ -451,21 +300,9 @@ impl From<letibot_turn::EngineError> for HarnessError {
     }
 }
 
-/// **Which question a compaction door is answering.**
-///
-/// Two questions share `Config::at_the_wall`'s arithmetic and differ in exactly
-/// one gate, which is why they are one body with a parameter
-/// (`Harness::compact_at_the_wall`) rather than two functions with copied
-/// thresholds — a copy is the drift this tree deletes:
-///
-/// * [`WallWhy::Tidy`] — *would the next turn not fit, so should something be
-///   tidied first?* `auto_compact` (the operator's switch) and the threshold answer
-///   it, and the wall controller (`crate::wall`) stands it down while a folded base
-///   is unmeasured or when every fold was measured still at the wall (`Stuck`).
-/// * [`WallWhy::Refused`] — *a turn was just refused for context length, is there
-///   a way forward?* The refusal is the evidence, so there is no threshold to
-///   re-check and no flag to read: the provider measured the prompt against the
-///   real window and said no.
+/// Which question a compaction door is answering. Two questions share `Config::at_the_wall`'s
+/// arithmetic and differ in exactly one gate, which is why they are one body with a parameter rather
+/// than two functions with copied thresholds: `Tidy` reads `auto_compact`, `Refused` never does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WallWhy {
     Tidy,
@@ -488,12 +325,9 @@ pub struct Reply {
 }
 
 impl Reply {
-    /// D11's `f_keep` — `cached / what the previous turn left in the cache` — for
-    /// every submission this reply cost.
-    ///
-    /// Shorter than `metrics` when a submission had no cached entry to measure
-    /// against (a first turn, or a backend that skipped the check); those are
-    /// dropped rather than reported as 0.0 or 1.0.
+    /// D11's `f_keep` (`cached / what the previous turn left in the cache`) for every submission this
+    /// reply cost, shorter than `metrics` when a submission had no cached entry: those are dropped
+    /// rather than reported as 0.0 or 1.0.
     pub fn f_keep(&self) -> Vec<f64> {
         self.metrics.iter().filter_map(|m| m.f_keep()).collect()
     }
@@ -523,38 +357,9 @@ struct Said {
     at: Option<Instant>,
 }
 
-/// **The authorisation trail's source**, and the reason it is a mirror rather than
-/// a walk over `session.items`.
-///
-/// `docs/boundary-and-adjudication.md` §2: a stateless command classifier cannot be
-/// correct, because *"it is ok to use ssh key if i said ssh to that host"* — the
-/// same command is authorised or not depending on what the operator just said. So
-/// the adjudicator's input is a command **plus what authorised it**.
-///
-/// # Why the speaker cannot be inferred afterwards
-///
-/// Everything this session appends as a `TranscriptItem::User` looks identical in
-/// the transcript: the operator's prompt, a head's steering, §5.7's salvage notice,
-/// and the intent check's own *"you said you would X"*. Walking the transcript and
-/// calling all of them the operator's words would let **the harness authorise
-/// itself**, and an agent whose own text can authorise an action is the shape a
-/// prompt injection would most like to take — which is exactly why
-/// [`Speaker`] exists and why [`Speaker::Agent`] never authorises on its own.
-///
-/// The provenance is known only at the moment of appending, so it is recorded
-/// there. This type is that record. It is **not** a second transcript: it holds
-/// the user-side text and a count of everything else, and the count is the
-/// denominator — *"0 of 41 messages"* is a measurement and *"0"* is not.
-///
-/// # Where `seconds_ago` comes from
-///
-/// From here. `letibot-transcript` does not stamp items, so
-/// [`Utterance::seconds_ago`] is `None` unless a session loop supplies it — and
-/// this is that session loop. A live utterance is stamped with an [`Instant`] when
-/// it is appended. A row **rebuilt from the store** is not: nothing recorded when
-/// it was said, and a reconstructed clock would be a guess presented as a
-/// measurement. Those keep `None`, which reads as *not recorded* rather than as
-/// *just now*, and their `turns_ago` is still exact.
+/// The authorisation trail's source, and why it is a mirror rather than a walk over `session.items`:
+/// every `User` row looks identical in the transcript, so calling them all the operator's would let
+/// the harness authorise itself. The provenance is known only at the append, so it is recorded there.
 #[derive(Default)]
 pub struct TrailMirror {
     inner: Mutex<TrailInner>,
@@ -567,12 +372,9 @@ struct TrailInner {
     items: usize,
     /// The turn currently being served. 0 before the first one.
     turn: u32,
-    /// **The agent's most recent statement of what it is doing**, for the guard to
-    /// connect the operator's words to a call with. Never an authorisation, never
-    /// citable — see [`letibot_tools::authorise::ModelBrief::agent_claim`].
-    ///
-    /// One line, replaced rather than accumulated: the question is what it is doing
-    /// NOW, and a history of claims is a history the agent wrote.
+    /// The agent's most recent statement of what it is doing, for the guard to connect the operator's
+    /// words to a call with. Never an authorisation and never citable. One line, replaced rather than
+    /// accumulated, because the question is what it is doing NOW.
     claim: Option<String>,
 }
 
@@ -589,25 +391,16 @@ impl TrailMirror {
         self.lock().turn += 1;
     }
 
-    /// **The denominator.** Every item this session appended, of any kind.
-    ///
-    /// Kept apart from [`TrailMirror::say`] because the two answer different
-    /// questions and collapsing them is the defect `TrailProvenance` exists to
-    /// stop: *"I looked at 41 messages and 0 were the operator's"* is a
-    /// measurement, and *"0"* is not.
+    /// The denominator: every item this session appended, of any kind. Kept apart from
+    /// [`TrailMirror::say`] because collapsing the two is the defect `TrailProvenance` exists to stop:
+    /// `0 of 41 messages` is a measurement and `0` is not.
     fn note_items(&self, n: usize) {
         self.lock().items += n;
     }
 
-    /// Record one thing that was said, with the provenance the caller knows and
-    /// nobody else can recover.
-    ///
-    /// **Two caps, and both were already the only values anything read.** The trail
-    /// holds at most [`TRAIL_SCAN`] utterances and at most [`UTTERANCE_CHARS`]
-    /// characters of each: `trail()` takes the last sixty and clips each to six
-    /// hundred, so everything this drops was memory no reader could reach. It is a
-    /// memory bound and not a behaviour change — and it is what makes
-    /// `crate::footprint`'s trail ceiling a bound the code holds rather than a wish.
+    /// Record one thing that was said, with the provenance only the caller knows. Two caps, and both
+    /// were already the only values anything read (`trail()` takes the last sixty and clips each to six
+    /// hundred), so this is a memory bound and not a behaviour change.
     fn say(&self, speaker: Speaker, text: &str, at: Option<Instant>) {
         if text.trim().is_empty() {
             return;
@@ -630,11 +423,8 @@ impl TrailMirror {
         Self::keep_the_last_scan(&mut g.said);
     }
 
-    /// Drop everything past the [`TRAIL_SCAN`] the walk can reach.
-    ///
-    /// One statement, in one place, because the two writers (`say` and `seed`) must not
-    /// disagree about how long the trail is: a seeded trail that kept 500 rows and a live
-    /// one that kept 60 would be two bounds over one buffer.
+    /// Drop everything past the [`TRAIL_SCAN`] the walk can reach: one statement in one place, because
+    /// `say` and `seed` must not disagree about how long the trail is.
     fn keep_the_last_scan(said: &mut Vec<Said>) {
         if said.len() > TRAIL_SCAN {
             let drop = said.len() - TRAIL_SCAN;
@@ -650,29 +440,9 @@ impl TrailMirror {
         (g.said.iter().map(|s| s.text.len()).sum(), g.said.len())
     }
 
-    /// Seed from a transcript rebuilt out of the store.
-    ///
-    /// **The speaker comes off the row** — R42. Until 2026-10-05 this called every
-    /// `User` row the operator's, on a reading that was honest when it was written:
-    /// *"the store does not record which of them the harness injected"*. Then R42 added
-    /// `TranscriptItem::User::speaker` and nothing came back here to read it, so the
-    /// claim outlived the code that made it true.
-    ///
-    /// What it cost: a resumed session put its own job settlements, salvage notices and
-    /// intent checks into the authorisation trail **as the operator's utterances**.
-    /// Measured on the live corpus, 280 of the 715 briefs the oracle answered carried a
-    /// `[job] a job you backgrounded has ended` notice rendered under `[operator · …]`,
-    /// numbered, and citable as `ALLOW <n>`.
-    ///
-    /// The guard that was defeated is built and correct:
-    /// [`AuthorisationTrail::cited_operator_words`] already refuses an ALLOW citing an
-    /// agent line — *"the agent authorising itself… the exact move the trail exists to
-    /// make impossible"* — and it cannot refuse what arrives relabelled. So the fix
-    /// belongs here rather than there: the check was never wrong, its input was.
-    ///
-    /// A row written before the field existed deserialises as `Operator`
-    /// (`#[serde(default)]`), which is what a head already drew for it, so an old
-    /// transcript reads exactly as it did.
+    /// Seed from a transcript rebuilt out of the store. The speaker comes off the row (R42): calling
+    /// every `User` row the operator's put the session's own settlements and notices into the
+    /// authorisation trail as citable utterances. A row older than the field reads as `Operator`.
     fn seed(&self, items: &[TranscriptItem]) {
         let mut g = self.lock();
         g.items = items.len();
@@ -700,11 +470,9 @@ impl TrailMirror {
                     text
                 };
                 g.said.push(Said {
-                    // **The two `Speaker` enums meet here and nowhere else**: the
-                    // row's (`letibot_transcript`, two variants) and the trail's
-                    // (`letibot_tools::authorise`, which also has `Tool`). Matched
-                    // inline rather than behind a `From`, so the one place they touch
-                    // is the one place a reader has to look for the mapping.
+                    // The two `Speaker` enums meet here and nowhere else, matched inline rather than
+                    // behind a `From`, so the one place they touch is the one place a reader looks for
+                    // the mapping.
                     speaker: match speaker {
                         letibot_transcript::Speaker::Operator => Speaker::Operator,
                         letibot_transcript::Speaker::Agent => Speaker::Agent,
@@ -765,10 +533,8 @@ impl TrailMirror {
                 seconds_ago: said.at.map(|t| now.duration_since(t).as_secs()),
             });
         }
-        // The denominator is what was **looked at**, not what came back. Deriving
-        // it from the result would collapse "I looked at 41 messages and 0 were the
-        // operator's" into "I looked at 0", which is the whole distinction
-        // `TrailProvenance` exists to keep.
+        // The denominator is what was LOOKED AT, not what came back: deriving it from the result
+        // collapses "I looked at 41 messages and 0 were the operator's" into "I looked at 0".
         AuthorisationTrail::from_messages(utterances, scanned.max(g.items.min(TRAIL_SCAN)))
     }
 }
@@ -777,32 +543,14 @@ impl TrailMirror {
 // A question the model asked, and the answer a person gave it
 // ---------------------------------------------------------------------------
 
-/// **The tool whose call is an exchange with a person** rather than a piece of work.
-///
-/// Spelled here and not imported from `letibot-tools`, because what the name means at
-/// THIS layer is *the one call whose result carries a person's own utterance* — a fact
-/// about the transcript, not about the tool's schema.
+/// The tool whose call is an exchange with a person rather than a piece of work. Spelled here and
+/// not imported, because at this layer the name means *the one call whose result carries a person's
+/// own utterance*, a fact about the transcript and not about the schema.
 const ASK_USER_QUESTION: &str = "ask_user_question";
 
-/// **The person's own words, exactly** — what their row carries, or `None` when there is
-/// no honest way to state them.
-///
-/// The brief this answers is the one the `!` line's own row keeps: *their words, verbatim*.
-/// So the parts are read off the ANSWER and nothing of ours is prepended — a citable
-/// utterance with a harness sentence glued to its front is a citable utterance of the
-/// wrong thing.
-///
-/// | what they did | what the row says |
-/// |---|---|
-/// | chose an option | the option's own text |
-/// | chose, and qualified it | the option's text, then their note, on its own line |
-/// | typed an answer | what they typed |
-/// | abstained | `abstain` — the act, which is the only word for it the wire carries |
-///
-/// `None` is *an answer with nothing of the person's in it*: an option index the question
-/// never offered. The tool refuses one of those (`QuestionAnswer::validate`), and the round
-/// loop writes no rows for a result the tool did not accept — so this arm is the belt to
-/// that pair of braces and not a state a session reaches.
+/// The person's own words, exactly: what their row carries, or `None` when there is no honest way to
+/// state them. The parts are read off the ANSWER and nothing of ours is prepended, because a citable
+/// utterance with a harness sentence glued to it is a citable utterance of the wrong thing.
 fn operator_answer_text(asked: &crate::answers::Asked) -> Option<String> {
     let a = &asked.answer;
     if a.abstain {
@@ -824,18 +572,9 @@ fn operator_answer_text(asked: &crate::answers::Asked) -> Option<String> {
     Some(said.join("\n"))
 }
 
-/// **The question, as the SESSION's own row** — never the operator's.
-///
-/// The trail reads every `User` row with `speaker: Operator` as words of theirs that an
-/// action may cite, so a question put in their mouth would be a question the harness could
-/// quote back as authorisation for the answer to it. This row is `Speaker::Agent` for that
-/// reason and for the other one: the question is the model's, and a head drawing it as the
-/// person's would be showing the reader the wrong half of the exchange as theirs.
-///
-/// **The options are a LIST, one per line** (R90.24): `options offered:` and then `- OPTION` for
-/// each, an option's own line breaks folded to spaces. They used to be joined with ` | ` on one
-/// line, and an option holding ` | ` came back as two. The head reads either shape
-/// (`asked_card::question_of`), so stored rows still parse.
+/// The question, as the SESSION's own row and never the operator's: the trail would otherwise quote
+/// it back as authorisation for the answer to it. The options are a list, one per line, so an option
+/// holding ` | ` is not read as two.
 fn question_row_text(asked: &crate::answers::Asked) -> String {
     let q = &asked.question;
     let mut said = format!("asked: {}", q.text.trim());
@@ -849,13 +588,9 @@ fn question_row_text(asked: &crate::answers::Asked) -> String {
     said
 }
 
-/// **The two rows the person's half of a question makes**, as a free function so the shape
-/// can be tested without a daemon, a model or a socket — the same reason `abandoned_calls`
-/// is one.
-///
-/// The order is the question and then the answer, which is how a reader walks them. Where
-/// they land relative to the call's own result is the round loop's business, and it is not
-/// this order: see `Harness::settle_asked`.
+/// The two rows the person's half of a question makes, as a free function so the shape is testable
+/// without a daemon, a model or a socket. The order is the question and then the answer; where they
+/// land beside the call's own result is `Harness::settle_asked`'s business.
 fn asked_rows(asked: &crate::answers::Asked, said: &str) -> [TranscriptItem; 2] {
     [
         TranscriptItem::User {
@@ -877,18 +612,9 @@ fn asked_rows(asked: &crate::answers::Asked, said: &str) -> [TranscriptItem; 2] 
 // Surfacing a denial
 // ---------------------------------------------------------------------------
 
-/// **Every refusal, onto the session's own log, the moment it is decided.**
-///
-/// `docs/boundary-and-adjudication.md` §4b. Not at turn end and not on request: the
-/// whole defect is that the operator learns about a denial by noticing a task that
-/// stopped, infers nothing was decided, and watches the model try a variant.
-///
-/// It publishes rather than returning, because the gate calls it from inside the
-/// tool path and the operator may be somewhere else entirely. The log is the one
-/// place both a live head and a late one look.
-/// Public because it is the *only* implementation of `DenialSink` that reaches a
-/// person, and a seam whose one real implementation is private is a seam nobody
-/// else can check.
+/// Every refusal, onto the session's own log, the moment it is decided: the operator otherwise learns
+/// of a denial by noticing a task that stopped. It publishes rather than returning, because the gate
+/// calls it from inside the tool path and the operator may be somewhere else entirely.
 pub struct HubDenials {
     hub: Arc<Hub>,
 }
@@ -899,13 +625,8 @@ impl HubDenials {
     }
 }
 
-/// **Where a gate admission goes** (D16) — the channel in the other direction from
-/// [`HubDenials`], and the reason it is a seam rather than a `publish`.
-///
-/// An admission is not a denial and must not be drawn as one: nothing was refused, the model
-/// has its result, and there is no card to answer. What the operator is owed is *to be told it
-/// happened in their session*, which is a transcript row — and a transcript row is the
-/// harness's to write, on the harness's thread. So this collects the sentence and
+/// Where a gate admission goes: the channel in the other direction from [`HubDenials`], and a seam
+/// because an admission is not a denial and must not be drawn as one. It collects the sentence and
 /// [`Harness::flush_gate_admissions`] says it at a round boundary.
 pub struct HubAdmissions {
     lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -967,48 +688,9 @@ impl DenialSink for HubDenials {
 // Steering
 // ---------------------------------------------------------------------------
 
-/// Steering from the head socket (§5.8), from the intent check, from a fired
-/// monitor, and from a background job of this session's own that has ended.
-///
-/// A `Prompt` that arrives while the model is generating is a correction, and it
-/// goes in at the next step boundary. An `Interrupt` is the urgent form: it stops
-/// generation at the next token and the partial output is kept.
-///
-/// The hub's queue is drained here *only while a turn is running*; between turns
-/// the daemon's own worker owns it. One drainer at a time, by construction of who
-/// is executing.
-///
-/// # Four sources, one queue, and the speaker is recorded as they are drained
-///
-/// The step boundary is the only place any of the four can be injected, so they
-/// share this source rather than each growing a path into the engine. What they do
-/// **not** share is provenance: a head's prompt is the operator, and the intent
-/// check, a monitor firing and a settlement are this harness talking to itself. That
-/// distinction is recorded here, at the moment the message is handed over, because after
-/// the engine appends it they are four identical `User` items. See [`TrailMirror`].
-///
-/// # Why a settlement is here at all, when the session has a wake
-///
-/// For a **root** it is not: [`Harness::wake`] is its door, and
-/// [`JobWatchers::take_mid_turn_completions`] returns nothing for it — a second
-/// delivery path for the R7 turn would be exactly the kind of duplicate this tree
-/// keeps finding. A **child** has a between-turn wake too, and since 2026-10-06 it is one
-/// that ARRIVES: the ring names the child, `Sessions::wake` cannot run its turn (`open`
-/// holds no harness for it), so the daemon hands the wake to the thread that does
-/// ([`letibot_sessionlog::hub::Hub::wake_its_own_reader`], answered by `serve_child`) and
-/// the settlement becomes a turn of the child's own. What that door cannot reach is a turn
-/// already RUNNING — the child's serving thread is inside it — and the round boundary is
-/// the only place a turn in flight can be told anything. This is that place.
-///
-/// That guard is the set's, not this struct's: it is the same question — *is this session
-/// the top of its tree* — and it is answered where the session ids are.
-///
-/// **Since R79 the question here is a different one, and it is asked of roots and children
-/// alike: does the work wait on this result?** Only what it does — a row's `when`/`needs`, a
-/// wait, `wake: "now"`, the failure of one of those — comes in at a round boundary; everything
-/// else is held for the next turn boundary or the starvation cap ([`Deliveries`],
-/// `crate::delivery`). One queue and one sort still mean one delivery: the wake that follows
-/// finds the result taken or held, never untold.
+/// Steering from the head socket, the intent check, a fired monitor and a settlement: the step
+/// boundary is the only place any of them can be injected, so they share one source. Provenance is
+/// recorded here, because after the engine appends them they are four identical `User` items.
 pub struct HubSteering {
     hub: Arc<Hub>,
     /// Where the speaker of each injected message is recorded. `None` in a test
@@ -1031,25 +713,17 @@ pub struct HubSteering {
     /// running turn IS this session being stopped, and a supervisor stops its children before
     /// it goes (see [`HarnessTaskRunner`]). `None` in a test with no session behind it.
     subagents: Option<Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
-    /// Messages handed back by a failed turn, drained before the hub's queue so the
-    /// next poll finds them first. See [`SteeringSource::give_back`].
-    ///
-    /// **Shared with the harness (R91.1)**, not owned by this value: a `HubSteering` is
-    /// built per round, and one that owned what it was handed back took it with it when
-    /// the round's retry, or the turn, let it go — an operator follow-up typed mid-stream
-    /// and then a provider drop or an esc-esc, R79 immediates already marked delivered,
-    /// a monitor firing whose cursor had moved. In the harness's queue they survive into
-    /// the retried round, the next round, and — after a failed turn — the next turn.
+    /// Messages handed back by a failed turn, drained before the hub's queue so the next poll finds
+    /// them first. Shared with the harness on purpose: a `HubSteering` is built per round, and one
+    /// that owned them lost them when the round let go.
     held: Arc<Mutex<VecDeque<SteeringMessage>>>,
     /// **This session's board**, for the one command a running turn applies to it: the
     /// operator's answer to a row's question (`CommandKind::AnswerTodo`), which reaches the model
     /// at the next step boundary rather than after the turn. `None` in a test with no board.
     todos: Option<Arc<TodoBoard>>,
-    /// **This session's own parent, if it has one** — the one fact
-    /// [`message_from_a_session`] needs to word a message correctly, and the reason it is here
-    /// rather than read from the hub: a message says *"your parent session"* only when the
-    /// sender IS this session's parent, and the between-turns door reads the same field off the
-    /// harness's config. Two doors, one answer — see the `Message` arm.
+    /// This session's own parent, if it has one: the one fact `message_from_a_session` needs to word
+    /// a message correctly. A message says "your parent session" only when the sender IS this
+    /// session's parent, and the between-turns door reads the same field off the config.
     parent: Option<String>,
 }
 
@@ -1073,18 +747,9 @@ impl HubSteering {
 /// The warning code for a session whose workspace no longer exists (R92.24).
 const WORKSPACE_GONE: &str = "workspace_gone";
 
-/// **The warning code for a session that asked for a boundary and got a whole-host shell**
-/// (TODO R98).
-///
-/// Said once, at open, on the session's own hub and in the daemon's log. It exists because the
-/// consequence is invisible from the inside: D16 admits a command without a card only *inside a
-/// measured boundary*, so a session without one asks the operator about every `cargo test` — and
-/// an operator who is not told that would read the cards as the gate being broken.
-///
-/// **macOS only**, and that is the shape of the rule rather than an accident: on Linux a boundary
-/// that cannot be built is a refusal, so there is no unconfined session to warn about
-/// (`docs/boundary-and-adjudication.md` §4k). The one arm that publishes this is the macOS
-/// fallback in `Harness::open`, which is behind the same `cfg`.
+/// The warning code for a session that asked for a boundary and got a whole-host shell, said once at
+/// open: the consequence is invisible from the inside, since a session with no boundary asks about
+/// every `cargo test`. macOS only, because on Linux an unbuildable boundary is a refusal.
 #[cfg(target_os = "macos")]
 const BOUNDARY_ABSENT: &str = "boundary_absent";
 
@@ -1102,17 +767,9 @@ fn workspace_gone(workspace: &std::path::Path) -> String {
     )
 }
 
-/// A monitor firing, as the sentence the model is given — or `None` when nothing in `fired` is
-/// news to it.
-///
-/// It reports **why it fired**, not that it did — T24 requirement 3 — and (R93.C8) one line per
-/// watch in its own words: `[monitor] \`name\` fired: why.` or `[monitor] \`name\` expired
-/// without firing.` The model's OWN `retire` and an owner ending are not announced at all: the
-/// first is the model's act one call ago (and a wake spent telling it so was a turn for nothing),
-/// the second is the scope it declared the watch under going away. Both are still recorded
-/// (`Deliveries::log_firings`); only the sentence is spared. The old head ("N watch(es) fired")
-/// called an expiry a firing, leaked the declaring turn id, and closed with the same aphorism on
-/// every notice.
+/// A monitor firing, as the sentence the model is given, or `None` when nothing in `fired` is news.
+/// It reports WHY it fired, one line per watch. The model's own `retire` and an owner ending are
+/// recorded but not announced: the first is its act one call ago, the second is the scope going away.
 fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> Option<String> {
     use letibot_tools::exec::monitor::Fired;
     let lines: Vec<String> = fired
@@ -1131,12 +788,8 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> Option<Stri
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-/// **The firings `monitor_notice` was composed from**, as the facts the `notice` hook is handed
-/// (`docs/plugins-plan.md` §4.3).
-///
-/// The point of handing them over is that a layer can build a different sentence out of the same
-/// news — *the pull request the firing is about is in conflict* is not a rewording of this text,
-/// it is a sentence about these facts.
+/// The firings `monitor_notice` was composed from, as the facts the `notice` hook is handed, so a
+/// layer can build a different sentence out of the same news rather than reword this one.
 fn monitor_facts(fired: &[letibot_tools::exec::monitor::Firing]) -> serde_json::Value {
     use letibot_tools::exec::monitor::Fired;
     let rows: Vec<serde_json::Value> = fired
@@ -1335,36 +988,9 @@ const MODEL_RETIRE: &str = "the model";
 /// own ([`MODEL_RETIRE`]).
 const OPERATOR_RETIRE: &str = "the operator";
 
-/// **The completion of a background job, as the sentence the model is handed (R7).**
-///
-/// The other half of [`monitor_notice`], and the same shape: a labelled notice, in the
-/// harness's own voice, submitted as a turn. What it must carry is what the acceptance
-/// criterion names — the job, its command, how it ended, and where its output is — and
-/// what it must **not** do is inline the output: `produced` is a byte count and the words
-/// are one `job_output` away, so a build log of 27,000 lines never enters the context
-/// unbidden.
-///
-/// The closing sentence is the other half of R7, and it is a promise rather than a
-/// footnote: *you do not need to wait for this.* The tool text is what taught the model
-/// that waiting was the only way to learn a result; see `bash`'s backgrounded result and
-/// `job_output`'s empty-job branch for the strings that did the teaching.
-///
-/// **And the job is named the way every other sentence names it.** The operator reads this
-/// line in the transcript, and the complaint that put this here was theirs, verbatim:
-/// *"j57 doesnt ringe the bell for me"* — a counter is not a name. So the bullet carries
-/// [`letibot_tools::exec::job_label`]'s spelling, `release-build · j65`, which is the same
-/// string `bash`'s backgrounded result printed when the job was started and the same one
-/// `/job` draws; a job nobody named is still just `j65`, byte for byte, because the label's
-/// fallback IS the id. The name is on the settlement ([`JobCompletion::slug`]) rather than
-/// looked up here, because by the time this runs the job has usually been reaped — the same
-/// reason [`JobCompletion::command`] is carried.
-///
-/// **`mine` is the ownership flag, and it is not a politeness.** `true` is the session that
-/// backgrounded the job — the only one that can read it, since `job_output` asks *this*
-/// session's host. `false` is the level the settlement was handed up to because the session
-/// that started it had stopped ([`JobWatchers::stop`]): the owning session is named on the
-/// line instead, and the closing sentence does **not** send this reader to `job_output`,
-/// because for it that door does not open.
+/// The completion of a background job, as the sentence the model is handed: a labelled notice in the
+/// harness's own voice. It names the job, its command, how it ended and where its output is, and never
+/// inlines the output, which is one `job_output` away. `mine` says whose job it was.
 fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     let mut s = String::from("[job] ");
     match (mine, done.len() == 1) {
@@ -1403,10 +1029,8 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         if let Some(m) = &c.memory {
             s.push_str(&format!("    memory: {m}\n"));
         }
-        // **The one job whose result IS its output** — a fanout's per-host table, which
-        // [`letibot_tools::exec::ProcessHost::settlement_note`] answers with and nothing else does.
-        // Indented under the row it belongs to, and carried in `detail` rather than read from a
-        // stream, because the job has usually been reaped by the time this is built.
+        // The one job whose result IS its output: a fanout's per-host table, carried in `detail`
+        // rather than read from a stream, because the job has usually been reaped by now.
         if !c.detail.is_empty() {
             for line in c.detail.lines() {
                 s.push_str(&format!("    {line}\n"));
@@ -1427,19 +1051,9 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     s
 }
 
-/// **The same sentence for a subagent, and the same rule behind it.**
-///
-/// A subagent settles through the job channel because it *is* one — the operator's
-/// ruling — and this is only the wording, not a second mechanism. What differs is the
-/// verb: a subagent has no `job_output` to read, it has `task_result`, and its answer is
-/// the thing the model was waiting for rather than a stream it has to go and fetch. So
-/// the notice carries the child's first line as well as naming how to collect the whole
-/// of it, which is what makes the wake actionable rather than a nudge.
-///
-/// **And `mine` is the same flag as the job side's**, with one difference worth stating:
-/// a handed-up child is still collectable here — `task_result` reads the tree's handle list
-/// (`Parts::tree_slots`, R58), which every level of a tree shares — so the closing sentence
-/// keeps its promise where the job side's cannot.
+/// The same sentence for a subagent, and the same rule: a subagent settles through the job channel
+/// because it IS one, and only the verb differs, since a child is read with `task_result`. A
+/// handed-up child is still collectable here, because every level shares the tree's handle list.
 fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
     let mut s = String::from("[task] ");
     match (mine, done.len() == 1) {
@@ -1504,30 +1118,9 @@ fn handles_as(field: &str, done: &[JobCompletion]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
-/// **One channel, two nouns: the sentences a settlement produces, in one place.**
-///
-/// A job and a subagent arrive through the same queue and ring the same bell — see
-/// [`JobWatchers::watch`] — and they are told apart **here** rather than in two queues, because two
-/// queues would be the second mechanism the ruling avoided. The split is only for wording: a job is
-/// read with `job_output` and a child with `task_result`.
-///
-/// **And one more split, which is ownership rather than wording — but it is wording that is
-/// wrong without it.** A settlement is drained by the session that started it; the one
-/// exception is a settlement whose own session stopped before it could be drained, which
-/// [`JobWatchers::stop`] hands up a level so that it is not read by nobody. That
-/// completion is not this session's, and `me` is what tells the two apart: `owner != me`
-/// means *say whose it was*, do not say *you backgrounded*.
-///
-/// **Why it is a function rather than four lines inside [`Harness::wake`].** This is the one part of
-/// the wake that decides anything, and `wake()` cannot be reached by a test: it needs a live
-/// `Harness`, which this crate's tests build only where an apparatus (a vocabulary, a store) is
-/// present. **A decision exercisable only by standing up a whole session is a decision nothing
-/// asserts** — which is how *"nothing fired"* could be reported without CI disagreeing about whether
-/// the notice could fire at all. So the partition is pure and has pure tests, and `wake()` is left
-/// with the part that is not a decision: taking the queue and submitting what this returns.
-///
-/// An empty queue returns nothing, and that is load-bearing rather than tidy: `wake()` returns
-/// `Ok(None)` on an empty result rather than running a turn with nothing to say.
+/// One channel, two nouns: a job and a subagent arrive through the same queue and ring the same bell,
+/// and are told apart here rather than in two queues, because two queues would be the second mechanism
+/// the ruling avoided. `owner != me` is what says whose a settlement was.
 fn completion_notices(done: Vec<JobCompletion>, me: &str, rows: &[TodoItem]) -> Vec<String> {
     // **Mine first**, then what was handed up — so a session reading one wake reads its
     // own settlements before its children's, and the order of the two groups cannot be
@@ -1553,22 +1146,9 @@ fn completion_notices(done: Vec<JobCompletion>, me: &str, rows: &[TodoItem]) -> 
     out
 }
 
-/// **The plan rows that wait on these completions, as one line under the notice** — or nothing
-/// when no row does.
-///
-/// The operator, 2026-10-11: *"the completion should mention associated todos"*. A row attached
-/// with `wait_on` (a `TodoNeed::Job` or `TodoNeed::Child` edge) is the plan's own statement that
-/// this ending is what it was waiting for, and the completion is the moment that row has to move —
-/// so the notice names it, on both halves of the board (the model's and the operator's), rather
-/// than leaving the model to remember the edge it attached hours ago. Measured on pg-noop the same
-/// day: a job's completion arrived, the model read it, and the CRITERION row waiting on it was left
-/// `in_progress` until the plan check came round to ask.
-///
-/// **One line, after the closing paragraph, opening with [`WAITING_ON_THIS`] or
-/// [`WAITING_ON_THESE`]** — the head's fold and job card recognise it by those words and nothing
-/// else. Only OPEN rows (`pending`, `in_progress`): a row that is done or set aside owes nothing.
-/// Row text is cut the way the check cuts a job's description (`said_short`), because this is a
-/// pointer to the row and not its restatement.
+/// The plan rows that wait on these completions, as one line under the notice, or nothing when no row
+/// does: a row attached with `wait_on` is the plan's own statement that this ending is what it waited
+/// for. One line, opening with [`WAITING_ON_THIS`] or [`WAITING_ON_THESE`], naming open rows only.
 fn waiting_on_these(done: &[JobCompletion], rows: &[TodoItem]) -> String {
     use letibot_tokencore::store::{TodoNeed, TodoStatus};
     let waits = |row: &TodoItem, c: &JobCompletion| {
@@ -1621,10 +1201,9 @@ fn waiting_on_these(done: &[JobCompletion], rows: &[TodoItem]) -> String {
     )
 }
 
-/// **The endings these rows wait on that the model has not digested yet**, added to `jobs` — the
-/// half of `Harness::running_jobs` that reads the watcher set's read record
-/// ([`JobWatchers::grace_left`]), free so it is asserted without a session. A job `jobs` already
-/// calls running is skipped: running is its own quiet, and the grace is for after.
+/// The endings these rows wait on that the model has not digested yet, added to `jobs`: the half of
+/// `running_jobs` that reads the watcher set's read record. A job already called running is skipped,
+/// because running is its own quiet and the grace is for after.
 pub(crate) fn graced_endings(
     mut jobs: letibot_tools::builtins::todo::RunningJobs,
     rows: &[TodoItem],
@@ -1669,13 +1248,9 @@ fn meanwhile_notice(
     parts.join("\n\n")
 }
 
-/// **R79's delivery, for the two places that hand a result to the model** — the round boundary
-/// ([`HubSteering`]) and a turn's start ([`Harness::wake`] and every door that submits a turn).
-///
-/// The decision is [`crate::delivery::decide`], pure and asserted there; this is the part that
-/// reads the session — its watcher set, its board, its record — and turns what the decision said
-/// into notices. Built per use from the harness's own fields, so it holds no state of its own:
-/// what is held lives on the watcher set, which is what a child's stop hands up.
+/// R79's delivery, for the two places that hand a result to the model: the round boundary and a
+/// turn's start. The decision is `crate::delivery::decide`'s, pure and asserted there; this reads the
+/// session and turns the decision into notices, holding no state of its own.
 #[derive(Clone)]
 pub(crate) struct Deliveries {
     watch: Arc<JobWatchers>,
@@ -1770,11 +1345,8 @@ impl Deliveries {
         (!parts.is_empty()).then(|| parts.join("\n\n"))
     }
 
-    /// **A turn the model is taking anyway**: whatever is immediate, what arrived while the
-    /// session was idle, and the batch held while the last turn ran (under [`Rule::Batch`] —
-    /// it rides this turn).
-    ///
-    /// [`Rule::Batch`]: crate::delivery::Rule::Batch
+    /// A turn the model is taking anyway: whatever is immediate, what arrived while the session was
+    /// idle, and the batch held while the last turn ran (under `Rule::Batch`, which rides this turn).
     pub(crate) fn at_turn_start(&self) -> Option<String> {
         let b = self.between_turns(|_| false, crate::delivery::Rule::Batch);
         let mut parts = b.now;
@@ -1782,23 +1354,9 @@ impl Deliveries {
         (!parts.is_empty()).then(|| parts.join("\n\n"))
     }
 
-    /// **Everything owed to a session between turns** (R79, after the operator's 2026-10-11
-    /// ruling: *"jobs were ran for a reason and held for a reason. once turn ends no reason to
-    /// hold"*).
-    ///
-    /// Holding exists only so a RUNNING turn is not interrupted, so between turns nothing stays
-    /// held. What is owed splits by one fact, *did it arrive before the session's last turn
-    /// ended* ([`JobWatchers::last_turn_ended`]):
-    ///
-    /// * **arrived while the model was working** — the held batch, under one `[meanwhile]`
-    ///   heading worded for `held_rule` (`TurnEnd` from the turn-end wake, `Batch` when another
-    ///   turn's start got to it first);
-    /// * **arrived while it was idle** — never held in any sense the model should be told about:
-    ///   an ordinary completion notice, beside the immediates, recorded as [`Rule::Idle`].
-    ///
-    /// The immediates are the sort's as before, and `skip` drops what is nobody's news.
-    ///
-    /// [`Rule::Idle`]: crate::delivery::Rule::Idle
+    /// Everything owed to a session between turns: holding exists only so a running turn is not
+    /// interrupted, so nothing stays held. What arrived while the model was working is the batch under
+    /// `held_rule`; what arrived while it was idle is an ordinary completion, recorded as `Rule::Idle`.
     pub(crate) fn between_turns(
         &self,
         skip: impl Fn(&JobCompletion) -> bool,
@@ -1809,10 +1367,9 @@ impl Deliveries {
         out
     }
 
-    /// **[`Self::between_turns`] without marking anything read** (R91.11): the sentences, and
-    /// the results they say, for a caller that has not yet put them in front of the model. It
-    /// marks them with [`Self::read`] once it has, or hands them back with [`Self::put_back`]
-    /// when the turn that was to carry them never opened.
+    /// `between_turns` without marking anything read (R91.11): the sentences and the results they say,
+    /// for a caller that has not yet put them in front of the model. It marks them with `read` once it
+    /// has, or hands them back with `put_back` when the turn never opened.
     pub(crate) fn between_turns_unread(
         &self,
         skip: impl Fn(&JobCompletion) -> bool,
@@ -1892,13 +1449,9 @@ fn human_secs(ms: u64) -> String {
 
 impl SteeringSource for HubSteering {
     fn try_next(&mut self) -> Option<SteeringMessage> {
-        // A handed-back message comes out first, with the flags it had when it was
-        // taken: it was taken before anything still in the hub's queue, and an
-        // interrupt is not something a later message reorders. It is the same
-        // `SteeringMessage` coming out again, so `from_operator` and `urgent` are
-        // intact — and it is not recorded in the trail here, because `try_next`
-        // records a message when it is taken and this one was already recorded the
-        // first time it was taken. See [`Self::give_back`].
+        // A handed-back message comes out first, with the flags it had when it was taken: it was taken
+        // before anything still in the hub's queue, so a later message cannot reorder an interrupt. It
+        // is not recorded in the trail here, because `try_next` recorded it the first time it was taken.
         if let Some(m) = self
             .held
             .lock()
@@ -1913,17 +1466,9 @@ impl SteeringSource for HubSteering {
         if let Some(cmd) = self.hub.try_steering_command() {
             return match cmd.kind {
                 CommandKind::Prompt { text, attachments } => {
-                    // The operator, typing into a running turn. This is the case
-                    // §2's *"yeah restart"* is about, and it is the one utterance
-                    // that can authorise the action it is racing. Marked as the
-                    // operator's so consecutive prompts coalesce into one held
-                    // message and a take-back drops them.
-                    //
-                    // **The chips are read HERE and not by the engine**, because a turn's
-                    // library has no business opening the operator's files: what it is
-                    // handed is parts. A file that vanished between the frame and this
-                    // poll is said on the session's log, so nothing about the prompt is
-                    // silent — see `crate::attachments`.
+                    // The operator, typing into a running turn: the one utterance that can authorise the
+                    // action it is racing. The chips are read HERE and not by the engine, because a turn's
+                    // library has no business opening the operator's files.
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Operator, &text, Some(Instant::now()));
                     }
@@ -1938,69 +1483,25 @@ impl SteeringSource for HubSteering {
                     Some(SteeringMessage::operator_with(text, extra))
                 }
                 CommandKind::Interrupt { reason } => {
-                    // **THE CHILDREN FIRST, THEN THIS SESSION.** The operator's design in their
-                    // own words — *"we talk to parents and they own lifecycle"* — and this is
-                    // the one door an interrupt reaches a turn in flight through. Nothing here
-                    // waits for the children: a stop that blocked on its subtree would hold the
-                    // turn it is stopping open. Each child is told through its own runner, and
-                    // each child stops ITS children when the stop reaches it, which is how one
-                    // interrupt walks a whole tree without anybody holding a grandchild's
-                    // handle.
+                    // The children first, then this session: the one door an interrupt reaches a turn in
+                    // flight through. Nothing here waits for the children, because a stop that blocked on
+                    // its subtree would hold the turn it is stopping open.
                     stop_children_first(self.subagents.as_ref(), &self.hub);
                     Some(SteeringMessage::urgent(reason))
                 }
                 CommandKind::Message { from, text } => {
-                    // **A parent's live correction** — an agent's utterance in a session it is not
-                    // seated in, so it is recorded as `Speaker::Agent` and NOT as the operator.
-                    // That is the whole of the difference between this and the `Prompt` arm
-                    // above, and it is why the variant exists rather than reusing one: an
-                    // operator's words can authorise the act they race, coalesce with other
-                    // operator text, and be taken back — a parent's cannot.
-                    //
-                    // `SteeringMessage::normal` is the same door this session's own boundary
-                    // already uses for injected context, so a correction arrives as context at
-                    // the next round boundary rather than as an interruption: a child told to
-                    // change course should finish the call it is in and change, not abandon it.
-                    //
-                    // **And the words are [`message_from_a_session`]'s**, which is the same text
-                    // the between-turns door hands the session (`serve_child`'s
-                    // `ChildCommand::Hear`): a session that could tell which door the words came
-                    // through would be reading the machinery instead of the message.
-                    //
-                    // # Which door writes the ROW, and why the row is the injection
-                    //
-                    // MEASURED 2026-10-29 (`message_between_turns`'s
-                    // `a_message_to_a_running_child_lands_in_that_turn`, extended with a
-                    // `transcript_item` read): this arm writes NO row, and the child's
-                    // transcript gets one anyway — because the row and the injection are the
-                    // same thing. The steering message below is handed to the engine, the
-                    // engine's `Pending::take_items` turns it into a `User` item with
-                    // `Speaker::Agent`, and `Session::append_items` appends that item through
-                    // the same writer every other row goes through (`reconcile` + `persist` in
-                    // `Harness::run_rounds`). The model reads that row; a head draws that row;
-                    // the store holds that row. A second row written here would be a COPY of
-                    // the injection, and the child would read its parent's sentence twice.
-                    //
-                    // What that leaves is one window, and it is the reason
-                    // `SteeringMessage::from_a_session` exists: the item is appended at a
-                    // **step boundary**, and a round that fails after taking this message
-                    // hands it back (`SteeringSource::give_back`) without a boundary ever
-                    // arriving. `Harness::run_rounds` closes that window — a message still
-                    // carried when the turn is over is written into the transcript there, in
-                    // these same words, so the row exists whether or not a turn ever read it.
+                    // A parent's live correction is an agent's utterance, so it is recorded as
+                    // `Speaker::Agent`: an operator's words can authorise and be taken back, a parent's
+                    // cannot. It arrives at the next round boundary, as context rather than an interrupt.
                     let said = message_from_a_session(&from, &text, self.parent.as_deref());
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Agent, &said, Some(Instant::now()));
                     }
                     Some(SteeringMessage::from_a_session(said, from))
                 }
-                // **The operator answered a row's question while the turn runs** — R79: an
-                // operator's words are immediate, so the answer is applied to the board HERE and
-                // the model reads it at this step boundary. Recorded as the operator's, and sent
-                // as a notice that stands alone (`normal`): the line is the harness's sentence
-                // ABOUT their answer, and a take-back of queued prompts must not drop an answer
-                // the board has already taken. A refusal (the row moved on, or an answer the row
-                // never offered) is said to the heads and the poll goes on to the next source.
+                // The operator answered a row's question while the turn runs: an operator's words are
+                // immediate, so the answer is applied to the board HERE and the model reads it at this
+                // step boundary, as a notice that stands alone and a take-back cannot drop.
                 CommandKind::AnswerTodo {
                     content,
                     question,
@@ -2050,20 +1551,9 @@ impl SteeringSource for HubSteering {
             }
             return Some(SteeringMessage::normal(text));
         }
-        // **Then the room, at the boundary a running turn actually reaches** — firecode's first
-        // rule, *listen before you work*.
-        //
-        // A room event becomes a sentence on the connection's own thread (`crate::room::wake`) and
-        // `Harness::wake` reads that queue between turns. That is one door, and it is the wrong one
-        // for a session in the middle of a long turn: the message that says *`s-b` claimed the tag
-        // you were about to take* arrives after the work it would have changed. MEASURED 2026-10-31
-        // (branch `agent/the-bell-per-client`): `try_next` had five sources and none of them was the
-        // room, so a room note waited for the turn to end while the engine was polling this function
-        // every step boundary.
-        //
-        // **It is the same queue, taken by whichever door gets there first** — `wake::take` empties
-        // it — so a note is delivered exactly once, mid-turn or between turns, and no bookkeeping is
-        // needed to keep the two from both speaking.
+        // Then the room, at the boundary a running turn actually reaches. A room event becomes a
+        // sentence on the connection's thread and `wake` reads it between turns, which is the wrong door
+        // for a long turn: the note arrives after the work it would have changed. One queue, so once.
         let room = crate::room::wake::take(&self.hub.session_id());
         if !room.is_empty() {
             let text = room.join("\n\n");
@@ -2072,16 +1562,9 @@ impl SteeringSource for HubSteering {
             }
             return Some(SteeringMessage::normal(text));
         }
-        // Then a background job or subagent of THIS session's own that has ended. It is
-        // here, above the monitors, because the monitors block below returns early when
-        // this session has no monitor registry — and a read-only seat that can only
-        // `task` is exactly the session that has completions and no monitors.
-        //
-        // **R79: only what the work waits on comes in mid-turn**, for a root and a child
-        // alike — a row's `when`/`needs`, a wait, `wake: "now"`, or the failure of one of
-        // those. Everything else is held for the next turn boundary, unless it has been held
-        // past the cap. See `crate::delivery`. (Before R79 a root heard nothing here and
-        // everything as a wake turn after; a child heard everything here.)
+        // Then a background job or subagent of THIS session's own that has ended, above the monitors
+        // because that block returns early with no registry, and a read-only seat with `task` and no
+        // monitors is exactly this case. Only what the work waits on comes in mid-turn.
         if let Some(d) = &self.deliveries
             && let Some(text) = d.at_round_boundary()
         {
@@ -2116,31 +1599,16 @@ impl SteeringSource for HubSteering {
         Some(SteeringMessage::normal(text))
     }
 
-    /// The take-back the operator issued from a head: the hub drops the head's
-    /// still-queued prompts, and the engine's `Pending` drops the held operator
-    /// text when this returns `true`. The two halves of one recall — a prompt
-    /// typed behind a long tool call is still in the hub's queue, one absorbed
-    /// during generation is already held here, and the operator's Up pulled the
-    /// whole thing back into the composer.
+    /// The take-back the operator issued from a head: the hub drops the head's still-queued prompts and
+    /// the engine's `Pending` drops the held text when this returns true. Both halves are one recall —
+    /// one prompt is in the hub's queue, another is already held here.
     fn try_withdraw(&mut self) -> bool {
         self.hub.try_withdraw_command()
     }
 
-    /// **Hand a message back to the source, for a turn that failed.**
-    ///
-    /// The mirror of the take in [`Self::try_next`]: a message is out of the hub's
-    /// queue the moment `try_next` dequeues it, and a turn that fails commits
-    /// nothing (§5.7), so the words go back rather than being appended — appending
-    /// them would advance the ledger and the prefix on an error path, the same loss
-    /// with a different sign. They are held in `self.held` and drained by the next
-    /// [`Self::try_next`] before the hub's queue, so the retried or next round's
-    /// greedy pre-poll puts them in the prompt.
-    ///
-    /// **No `t.say` on the way back.** `try_next` is where a message is recorded in
-    /// the trail as `Speaker::Operator` when it is taken; recording it here would
-    /// record one that may never be consumed. The message keeps its
-    /// `from_operator`/`urgent` flags because it is the same `SteeringMessage`
-    /// coming out again.
+    /// Hand a message back to the source, for a turn that failed: the words go back rather than being
+    /// appended, because appending on an error path advances the ledger and the prefix. No `t.say` here,
+    /// because `try_next` already recorded it; the message keeps its flags, being the same value.
     fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
         self.held
             .lock()
@@ -2152,121 +1620,62 @@ impl SteeringSource for HubSteering {
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness {
     cfg: Config,
-    /// **The right to append to this session's transcript**, claimed at open and given back when
-    /// this harness is dropped ([`crate::writer`], `letibot_tokencore::store::writers`).
-    ///
-    /// A field rather than a call at every write, because the claim is a LIFETIME and not a
-    /// permission check: it is taken once, it is what a second process's open is refused by, and
-    /// the value's only job is to be dropped at the right moment. `None` for a session with no
-    /// store, and for one whose live copy is on another endpoint.
+    /// The right to append to this session's transcript, claimed at open and given back on drop. A field
+    /// because the claim is a LIFETIME and not a permission check: it is what a second process's open is
+    /// refused by. `None` with no store, and for a session whose live copy is elsewhere.
     _writer: Option<crate::writer::Claim>,
     /// **The daemon's mode rows**, which a `/mode` taken by a running turn writes
     /// (`apply_queued_mode`, through [`crate::modes::record`]).
     mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
-    /// **The worktree and branch this session's work must end up on**, when it is a
-    /// `task_start` child with a fresh worktree; `None` for every other session. Read as a turn
-    /// is about to end ([`deliverable::EndOfWork`]): a dirty tree is told once, in the harness's
-    /// voice, and the turn goes on. Set by the spawn (`run_to_completion`), not by `open`,
-    /// because the placement is the runner's fact and the config does not carry it.
+    /// The worktree and branch this session's work must end up on, for a `task_start` child, and `None`
+    /// for every other session. Read as a turn ends, so a dirty tree is told once and the turn goes on.
+    /// Set by the spawn, because the placement is the runner's fact.
     deliverable: Option<deliverable::Deliverable>,
-    /// **When the prompt this turn is serving arrived, carried across its rounds.**
-    ///
-    /// The operator, watching the composer: *"it should be still responding even while you do
-    /// tools calls and such, and not reset, currently it resets."* That is the arithmetic, and
-    /// the cause is structural: `run_turn_steered` is called INSIDE the round loop, so the
-    /// `TurnStarted` the head times from fires once PER ROUND — the clock restarted at every
-    /// round and the row read `2.1s` a minute into a turn.
-    ///
-    /// A turn is one prompt, however many rounds it takes, so **the turn's start belongs to the
-    /// prompt and not to a round.** Stamped where the prompt arrives and published on every
-    /// round's `TurnStarted`, which is the only place that can see both.
-    ///
-    /// The monotonic ms the head should count from, or `None` to keep counting from its own
-    /// (a snapshot turn, where neither end measured anything).
+    /// When the prompt this turn is serving arrived, carried across its rounds: `run_turn_steered` runs
+    /// INSIDE the round loop, so the `TurnStarted` a head times from fires once per round and the clock
+    /// restarted. A turn is one prompt, so its start belongs to the prompt and not to a round.
     turn_began_ms: Option<u64>,
-    /// **Whether a PROMPT is in flight** — the span [`Harness::begin_turn_clock`] and
-    /// [`Harness::end_turn_clock`] bracket, from the prompt being taken to its loop returning
-    /// (final answer, interrupt, failure, wall-continuation, or a stop on a card).
-    ///
-    /// **The activity's `Turn` and this are the same span, deliberately** (`PROTOCOL_VERSION` 52):
-    /// the engine publishes `TurnStarted`/`TurnFinished` once per ROUND, and a round that ended
-    /// with tool calls is always followed by another round of the same prompt — so a `Turn` derived
-    /// from those events would drop to *quiet* at every round boundary, which is the false wake
-    /// the whole mechanism exists to remove (measured: the bridge's `wait` exited there, QC's
-    /// `wait` exited there, and so did R55's flicker on this head's own row).
-    ///
-    /// An `Arc<AtomicBool>` because [`crate::activity`]'s source closure reads it from whatever
-    /// thread publishes, and the harness holds it `&mut` while a prompt runs. Set and cleared in
-    /// the two clock functions and nowhere else: the clock's span IS this span, so a second writer
-    /// would be a second answer to one question.
+    /// Whether a PROMPT is in flight: the span the two clock functions bracket. The activity's `Turn` is
+    /// deliberately the same span, because the engine's events fire per round and a turn derived from
+    /// them would drop to quiet at every boundary. Set and cleared in those two functions alone.
     prompt_in_flight: Arc<AtomicBool>,
-    /// **Whether the shared tail is running a turn on this harness right now** — the gate on
-    /// [`Harness::begin_turn_clock`], and the reason it is not a clock in its own right.
-    ///
-    /// A turn's clock belongs to a TURN, and a turn is [`crate::turn_tail::run_turn`]'s: it is the
-    /// one place that knows a turn will be ended ([`Harness::end_turn_clock`]) and that a door may
-    /// end up saying nothing at all. The prompt is not the only caller of `run_rounds` —
-    /// `Harness::system_update` (a compaction's fabric block, `/compact`, the `m1` script) appends
-    /// an item and runs its rounds outside any turn, and a clock started there would never be
-    /// cleared: the session would read `waiting on: turn` for the life of the daemon.
+    /// Whether the shared tail is running a turn on this harness: the gate on `begin_turn_clock`, and
+    /// why that is not a clock in its own right. `system_update` reaches `run_rounds` outside any turn,
+    /// and a clock started there would never be cleared.
     turn_open: bool,
     /// The server thread answers the head's `Settings` from the registry, so
     /// what is running is what the pane shows.
     session_registry: Arc<letibot_sessionlog::registry::Registry>,
-    /// **The daemon's subagent journal, which is how a plan knows a child is still running.**
-    ///
-    /// A row may wait on a CHILD ([`letibot_tokencore::store::TodoNeed::Child`]), and whether that
-    /// child is running is not a fact any board holds: the journal is where every spawn and every
-    /// finish lands (`opening`/`running`/`done`/`failed`), so the idle check reads it here beside
-    /// the session registry — which supplies the other half, when the child was opened. See
-    /// `crate::sessions::child_sessions`, the one reader.
-    ///
-    /// It rides the harness rather than a config because it is the DAEMON's record and not this
-    /// session's, and it is shared: the same `Arc` the task runner spawns through, so a child
-    /// this session started and one a peer started are one fact.
+    /// The daemon's subagent journal, which is how a plan knows a child is still running: whether a
+    /// child is running is not a fact any board holds. Shared, because it is the DAEMON's record, so a
+    /// child this session started and one a peer started are one fact.
     tasks: Arc<crate::tasks::TaskJournal>,
     /// Where the mode came from, for the settings row: the project store or
     /// the daemon's flag/default. Decided at open and not kept by `Config`.
     mode_source: String,
     engine: TurnEngine,
-    /// **The counter this session's standing notes are measured with** — the section's own,
-    /// and a field rather than a read of `self.engine` because the notes pane's read happens
-    /// on the SERVER's thread while the engine lives on this one. It tracks the engine: set at
-    /// open from `Parts`, and reassigned wherever `self.engine` is, so a session that moved
-    /// weights measures its notes with the vocabulary it is now speaking — which is the same
-    /// counter `reseat_target` assembles the next section with.
-    ///
-    /// See [`Harness::install_notes_source`], the only reader.
+    /// The counter this session's standing notes are measured with: a field rather than a read of
+    /// `self.engine`, because the notes pane reads on the server's thread. It tracks the engine wherever
+    /// the engine moves, so a session that changed weights measures notes it now speaks.
     note_vocab: Arc<Vocab>,
     /// **The skills this daemon loaded**, which the prompt's index is composed from and the page's
     /// rows are read off — the same `Arc` the `skill` tool and the dashboard hold, so a pane and a
     /// prompt cannot list two different corpora.
     skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
     session: Session,
-    /// **Shared, because the operator's run does not run on this harness's thread.**
-    ///
-    /// A `!` line is handed to a thread of its own (see `crate::bangrun`) and that thread
-    /// invokes through THIS runtime — one exec host per session is a fact (`job_list`, a
-    /// promotion, the run ender at shutdown all name jobs in it), so a second runtime would
-    /// be a second list of the same jobs. Everything the runtime holds is either read-only
-    /// after open or synchronised; the gate, the one field that mutates in place, sits
-    /// behind its own mutex for exactly this reason — see `ToolRuntime::gate`.
+    /// Shared, because the operator's run does not run on this harness's thread: a `!` line is handed to
+    /// a thread of its own and invokes through THIS runtime, since one exec host per session is a fact.
+    /// The gate sits behind its own mutex for exactly this reason.
     runtime: std::sync::Arc<ToolRuntime>,
     hub: Arc<Hub>,
     store: Option<Store>,
-    /// **The corpus sink, kept beside the gate's own copy** — R24 part two, decision 2.
-    ///
-    /// The gate writes every row it decides; an operator's OWN call is not a decision the
-    /// gate took, so nothing in the gate would write it. It must still land in the same
-    /// corpus, through the same sink, or the calibration reads a call the person ran as an
-    /// auto-admit — which is the defect decision 2 exists for. One `Arc`, cloned before the
-    /// gate takes its own.
+    /// The corpus sink, kept beside the gate's own copy: an operator's own call is not a decision the
+    /// gate took, so nothing in the gate would write it, and it must still land in the same corpus.
     corpus: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>>,
     transcript_id: String,
-    /// The stable prefix **this transcript was built with** — which on a resume is
-    /// the session's own, not the one this daemon would render now. Compaction
-    /// forks with it, for the same reason a resume keeps it: rewriting message 0
-    /// is what forces a full cold re-prefill.
+    /// The stable prefix this transcript was built with: on a resume the session's own, not the one
+    /// this daemon would render now. Compaction forks with it for the same reason a resume keeps it,
+    /// since rewriting message 0 forces a full cold re-prefill.
     prefix: StablePrefix,
     /// The store's content address for [`Harness::prefix`]. Empty when there is no
     /// store, and never read in that case — compaction is refused before the id
@@ -2283,35 +1692,23 @@ pub struct Harness {
     /// True only while [`Harness::compact`] is running its summary turn. See the
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
-    /// **Where the provider last counted this conversation** (R72) — the anchor the
-    /// wall's resident count is rolled forward from. `cfg.ledger_scale` is kept as
-    /// the pair `(ledger now, resident now)` that [`Harness::measure_resident`] last
-    /// computed from it, so every `Config` method that converts reads the current
-    /// count and not a ratio from another moment.
-    ///
-    /// `None` with `cfg.ledger_scale` set is a scale this session did not measure —
-    /// a subagent's, inherited from its parent — and keeps the old ratio reading.
-    /// See [`WallAnchor`].
+    /// Where the provider last counted this conversation: the anchor the wall's resident count is
+    /// rolled forward from, with `cfg.ledger_scale` as the pair `measure_resident` computed. `None`
+    /// with a scale set is one this session did not measure, and it keeps the old ratio reading.
     wall_anchor: Option<WallAnchor>,
-    /// How this daemon RENDERS a prompt: the dialect's template and the tool-schema
-    /// serialiser. Kept so a re-seat can build a new stable prefix the same way
-    /// `open` built the first one — one renderer, so the prefix a re-seat writes
-    /// and the prefix a fresh session writes cannot drift.
+    /// How this daemon RENDERS a prompt: the dialect's template and the tool-schema serialiser. One
+    /// renderer, so the prefix a re-seat writes and the prefix a fresh session writes cannot drift.
     render: std::sync::Arc<Wiring>,
-    /// The prerequisites this session's wiring supplies and the classes it seats,
-    /// read once at open. What `/mode` checks a new point against, so a move that
-    /// the open would have refused is refused the same way rather than taken and
-    /// then failing on its first call.
+    /// The prerequisites this session's wiring supplies and the classes it seats, read once at open.
+    /// What `/mode` checks a new point against, so a move the open would have refused is refused the
+    /// same way rather than taken and then failing on its first call.
     supplies: Option<(Vec<letibot_tools::mode::Prereq>, letibot_tools::mode::Seats)>,
     /// `Some` when this harness was rebuilt from the store rather than opened fresh.
     /// The daemon prints it; a head is told through the log, by the rows themselves.
     resumed: Option<ResumeReport>,
-    /// What `open` decided that the operator would otherwise learn a turn later,
-    /// for a session that was NOT resumed — the resume report carries the same
-    /// notes for one that was. Measured 2026-09-14: a one-shot started with
-    /// `--mode allow-all` ran at `writes allowed` because the project store said
-    /// so, and the note saying so went into a report nobody printed, because the
-    /// session was new.
+    /// What `open` decided that the operator would otherwise learn a turn later, for a session that
+    /// was NOT resumed. A one-shot started `--mode allow-all` ran at `writes allowed` because the
+    /// project store said so, and the note saying so went into a report nobody printed.
     open_notes: Vec<String>,
     /// A title this harness derived and the daemon has not yet published. See
     /// [`Harness::take_new_title`].
@@ -2321,63 +1718,42 @@ pub struct Harness {
     /// door — no head chooses one: the head sends the line and the daemon owns the run.
     bang_seq: u64,
 
-    /// **The worker's serialization state for this session's operator runs** — whether
-    /// one is in flight on its own thread, and the lines parked behind it. Attached by
-    /// `Sessions` at open ([`Self::set_bang_state`]) as a clone of the same `Arc` the
-    /// dispatch arm reads, so the round boundary's pickup (`apply_queued_head_run`)
-    /// and the worker's settle arm answer ONE question — *is a run going?* — from one
-    /// place. `None` only in a harness no `Sessions` built (the tests that drive one
-    /// directly), where the pickup keeps its old synchronous timing.
+    /// The worker's serialization state for this session's operator runs: whether one is in flight on
+    /// its own thread, and the lines parked behind it. The same `Arc` the dispatch arm reads, so the
+    /// round boundary's pickup and the worker's settle arm answer one question from one place.
     bang: Option<std::sync::Arc<crate::bangrun::State>>,
 
     /// Who said what, so the gate's adjudicator can see what authorised an action.
     /// Fed at every append, because the provenance is only knowable there.
     trail: Arc<TrailMirror>,
-    /// **What this session's harness HOLDS, restated at every append** — R66's other half, see
-    /// [`crate::footprint`]. The hub's census reads these through the source registered at open,
-    /// and they are atomics because the reader is the memory watchdog's thread and the writer is
-    /// this one: a lock here would be a lock a turn holds, taken from the census.
+    /// What this session's harness HOLDS, restated at every append. Atomics, because the reader is the
+    /// memory watchdog's thread and the writer is this one: a lock here would be a lock a turn holds,
+    /// taken from the census.
     footprint_gauges: Arc<crate::footprint::Gauges>,
-    /// **The last question this session asked a person, and the answer it got** — filled by
-    /// the session's own [`crate::answers::HeadQuestioner`] and read back by the round loop,
-    /// which is the one place a tool result is appended. See [`Harness::settle_asked`] for
-    /// why the person's half of the exchange is written down there and not by the tool.
+    /// The last question this session asked a person, and the answer it got: filled by the session's
+    /// own `HeadQuestioner` and read back by the round loop, which is the one place a tool result is
+    /// appended. The person's half is written there and not by the tool.
     asked: crate::answers::AskLog,
-    /// **The calls this session's gate admitted without asking anybody, waiting to be said**
-    /// (D16).
-    ///
-    /// The gate runs inside the runtime, off this struct, so it hands the sentence over rather
-    /// than speaking it — [`Harness::flush_gate_admissions`] writes one transcript row per
-    /// notice at a round boundary, which is the only place a row can go that does not sit
-    /// between a tool call and its result.
+    /// The calls this session's gate admitted without asking anybody, waiting to be said. The gate runs
+    /// inside the runtime, off this struct, so it hands the sentence over: `flush_gate_admissions`
+    /// writes one row per notice at a round boundary, where no row lands between a call and its result.
     gate_admissions: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    /// The session's todo list, shared with the tool that writes it. The harness
-    /// is the persister: [`Harness::flush_todos`] compares the board's version
-    /// with the last one it handled and does the store write and the
-    /// announcement when they differ.
+    /// The session's todo list, shared with the tool that writes it. The harness is the persister:
+    /// `flush_todos` compares the board's version with the last one it handled and writes.
     todos: Arc<TodoBoard>,
     /// The board version this harness last persisted and announced.
     todos_version: u64,
-    /// **The questions the heads were last told this board waits on the operator for** —
-    /// `(row, question)`, compared at every flush so each is announced once when asked and once
-    /// when settled. Seeded from the board at open: a restart does not re-announce, the settings
-    /// row carries the state to a head that attaches.
+    /// The questions the heads were last told this board waits on the operator for: each is announced
+    /// once when asked and once when settled. Seeded from the board at open, so a restart does not
+    /// re-announce and the settings row carries the state to a head that attaches.
     asks_said: Vec<(String, String)>,
     /// **The row the last plan-check named**, so the check keeps asking about THAT row rather than
     /// whatever happens to head the queue now. See `unfinished_plan_for`: the choice is sticky, and
     /// this is the one field that remembers it.
     nag_choice: Option<String>,
-    /// **The stale-prompt sentence the model has already been told**, so it is told ONCE.
-    ///
-    /// The operator, on the reseat card: *"regarding reseat - since it is important id suggest
-    /// to show me "select" with one option - reseat and abstain and then when on abstain keep
-    /// reseat select open. this way i keep reseat in mind because it stares at me yet can
-    /// continue at my risk"*. The decision is the person's and it stares at them from their
-    /// head, so the model is not the one to keep it in mind — the plan-check used to append the
-    /// sentence to every check and tell the model to keep asking, which the operator had called
-    /// nagging. Compared by text, so a DIFFERENT stale sentence (the build moved again) is told
-    /// once more; cleared by the fork that re-seats. Held in memory: a daemon restart may tell
-    /// the model once more, which is one line per restart and not one per nag window.
+    /// The stale-prompt sentence the model has already been told, so it is told ONCE. The decision is
+    /// the person's and it stares at them from their own head. Compared by text, so a different
+    /// sentence is told again, and cleared by the fork that re-seats.
     stale_told: Option<String>,
     /// **A fork whose rows are not all stored yet** (R91.2) — sealed by [`Harness::seal_fork`]
     /// once they are.
@@ -2392,21 +1768,14 @@ pub struct Harness {
     /// What the next step boundary will inject: intent findings, monitor firings.
     /// Shared with the session's [`HubSteering`].
     injected: Arc<Mutex<VecDeque<String>>>,
-    /// **What a round handed back to its steering** — shared with every [`HubSteering`]
-    /// this harness builds, so a message taken out of the hub and handed back by a
-    /// failed or interrupted round outlives the round (R91.1). See [`Harness::run_rounds`]
-    /// for what happens to it when the turn ends.
+    /// What a round handed back to its steering, shared with every `HubSteering` this harness builds,
+    /// so a message handed back by a failed or interrupted round outlives the round (R91.1).
     handed_back: Arc<Mutex<VecDeque<SteeringMessage>>>,
     /// This session's monitors, when the backend can start processes.
     monitors: Option<Arc<Monitors>>,
-    /// **This session's connection to the box's room** (the room's slice 2), when there is a
-    /// coordinator and this session may speak in it — a top-level session, and no other.
-    ///
-    /// It is on the harness because two of its three duties are the harness's own moments: the beat
-    /// starts and stops with [`Harness::begin_turn_clock`]/[`Harness::end_turn_clock`], and the
-    /// tool behind it is registered in this session's registry. The third — the bell — is the
-    /// connection's own thread pushing a sentence into [`crate::room::wake`] and ringing the
-    /// worker's bell; this field is what keeps the connection alive for the session's life.
+    /// This session's connection to the box's room, when there is a coordinator and this session may
+    /// speak in it. Two of its three duties are the harness's own moments (the beat starts and stops
+    /// with the turn clock); this field is what keeps the connection alive for the session's life.
     room: Option<Arc<crate::room::link::SessionRoom>>,
     /// Shared with [`HubSteering`] so a firing reaches the model exactly once,
     /// whether it is picked up mid-turn or between turns by [`Harness::wake`].
@@ -2419,63 +1788,30 @@ pub struct Harness {
     /// processes. Fed by the sink as backgrounded results pass; stopped when the
     /// backend closes.
     job_watch: Option<Arc<JobWatchers>>,
-    /// **The session's children, as the thing that owns their lifecycle.**
-    ///
-    /// The same `Arc` the tool registry holds for `task`/`task_result`/`task_message` and the
-    /// same one `job_watch` walks to their slots — one object, three readers, because a second
-    /// runner would hand out handles its sibling could not collect or stop.
-    ///
-    /// The harness keeps it because **stopping is the session's business and not a tool's**: an
-    /// interrupt arrives as a `CommandKind`, and *stop my children, then me* has to happen on
-    /// this session's own thread — mid-turn through [`HubSteering`]'s interrupt arm, between
-    /// turns through [`serve_child`]'s stop arm, and after the fact (nothing running) through
-    /// [`crate::sessions::Sessions::dispatch`]'s. Before this field the runner was reachable
-    /// only from the tool registry and the watcher set, so an interrupt had nothing to reach
-    /// its children with — which is the defect, measured, that this exists for.
+    /// The session's children, as the thing that owns their lifecycle: the same `Arc` the tool registry
+    /// and `job_watch` hold, because a second runner would hand out handles its sibling cannot collect.
+    /// Stopping is the session's business, so an interrupt has to reach the runner on this thread.
     subagents: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
-    /// **The merge-queue reviews this session is hosting** — who is reviewing what, and what
-    /// they have handed in. See [`Harness::serve_reviews`], and
-    /// [`letibot_tools::builtins::verdict::ReviewDesk`] for why it is a shared `Arc` rather than a
-    /// list on this harness.
-    ///
-    /// **The child's verdict arrives HERE, and not in its prose.** The reviewer calls
-    /// `review_verdict`, the desk records what it handed in, and the next pass of this session
-    /// takes it and writes the entry's row. A child that answers in prose without ever calling it
-    /// has judged nothing ([`review_outcome`] counts that attempt rather than inventing one), and
-    /// a child that dies without calling it leaves the row where it is for the queue to ask
-    /// again.
+    /// The merge-queue reviews this session is hosting: who is reviewing what, and what they handed in.
+    /// The child's verdict arrives HERE and not in its prose, since a child that answers without calling
+    /// `review_verdict` has judged nothing and leaves the row for the queue to ask again.
     reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
-    /// **Every gatekeeper child this session has started**, answered or not: a settlement naming
-    /// one is the review's, not news for this session's model, and is dropped from the notices
-    /// (`Harness::wake`).
-    ///
-    /// **The reason changed with the ownership, and it is still the reason.** While the review ran
-    /// under the tree the branch came from, this session's model had nothing to do with a review at
-    /// all. Now the review is a `task` child of the QUEUE's session (`Harness::serve_reviews`), so
-    /// the settlement does arrive at the session that owns the row — and it is still not news,
-    /// because `Harness::wake` calls `serve_reviews` FIRST: by the time the notices are built, the
-    /// verdict the child handed in has been written onto the entry's review row and the row is off
-    /// this session's board. What the queue's session hears about its rows is the BOARD (a row
-    /// `in progress` with the child's handle, or gone), not a sentence about a child that has
-    /// already been collected.
+    /// Every gatekeeper child this session has started: a settlement naming one is the review's, not
+    /// news for this session's model, and is dropped from the notices. `wake` serves the reviews first,
+    /// so by the time the notices are built the verdict is already written onto the row.
     gatekeepers: std::collections::HashSet<String>,
-    /// **What this session's model is owed about the children a restart brought back** — one
-    /// `[restart]` line per child that was resumed or could not be (`crate::subagent_record`).
-    /// Filled by [`Harness::restore_after_restart`] when the session is opened, and said by the next
-    /// turn the session takes ([`Harness::wake`], or a restarted child's own continuation).
+    /// What this session's model is owed about the children a restart brought back: one `[restart]`
+    /// line per child that was resumed or could not be. Filled by `restore_after_restart` at open and
+    /// said by the next turn the session takes.
     restart_notices: Vec<String>,
     /// Whether this harness has said its workspace is gone (R92.24) — once, at the first wake
     /// that found it so.
     workspace_gone_said: bool,
     /// The monitor names live at the last [`Harness::sync_monitor_records`], sorted.
     monitors_seen_live: Vec<String>,
-    /// **The queue entries this session's model has been told about** — that its repository needs a
-    /// merge gate, or that no gatekeeper can judge its branch — so each is said once per daemon.
-    /// See [`Harness::queue_notices`] and [`Harness::handover_notices`].
-    ///
-    /// One set for both, because an entry has one `evidence` string and is therefore in one of the
-    /// two states at a time: the second telling would be about the same row, and a session told
-    /// twice about one entry is the nag the set exists to prevent.
+    /// The queue entries this session's model has been told about, so each is said once per daemon. One
+    /// set for both kinds, because an entry has one `evidence` string and a second telling would be
+    /// about the same row.
     gate_told: std::collections::HashSet<String>,
     /// **The outage the retry ladder is in, if any** — one per endpoint, told ONCE when it ends.
     /// See [`Outage`] for why the row is written at the end and not per attempt.
@@ -2484,100 +1820,53 @@ pub struct Harness {
     /// the local server through the engine's own `/completion` path — **unless**
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
-    /// **A provider chosen and not yet usable, because no key for it resolves.**
-    ///
-    /// It used to be a refusal at open: the daemon bound its socket and died before a
-    /// head could attach, so the person who could fix it never saw the sentence. Now the
-    /// session opens and the first turn asks for the key on the masked secret card —
-    /// the sudo password's machinery, so the key never enters an event — saves it to
-    /// providers.toml (0600), and builds the provider. See [`Harness::obtain_key`].
+    /// A provider chosen and not yet usable, because no key for it resolves. It used to be a refusal at
+    /// open, which killed the daemon before a head could attach; now the first turn asks for the key on
+    /// the masked secret card, saves it to providers.toml (0600) and builds the provider.
     key_wanted: Option<crate::config::ProviderConfig>,
-    /// **The local server's own context window**, kept from before the first
-    /// switch to a provider so `/models local` can put it back.
-    ///
-    /// `Option<Option<u64>>`: the outer says whether this session has ever left
-    /// the local server, the inner is the window itself — which is legitimately
-    /// `None` when `/props` reported nothing. Collapsing the two would make
-    /// "never switched" and "switched away from a server with no window" the same
-    /// state, and only one of them should restore anything.
+    /// The local server's own context window, kept from before the first switch to a provider so
+    /// `/models local` can put it back. `Option<Option<u64>>`: never switched against switched away from
+    /// a server with no window, and only one of those should restore anything.
     local_window: Option<Option<u64>>,
-    /// **What `/models local` returns to**: the daemon's own server, vocabulary
-    /// and dialect, captured at open before any switch moved them. See
-    /// [`OwnServer`] for why a return needs a record rather than a re-derivation,
-    /// and [`Harness::set_own_server`] for the return itself.
+    /// What `/models local` returns to: the daemon's own server, vocabulary and dialect, captured at
+    /// open before any switch moved them. A return needs a record rather than a re-derivation.
     own_server: OwnServer,
-    /// **The same fact, shared with the subagent runner** — so a child spawned with
-    /// `model: "local"` plans its compaction against the daemon's own server window
-    /// rather than the cloud model's number the parent is carrying. Written wherever
-    /// [`Harness::local_window`] is written; see [`HarnessTaskRunner::local_window`].
+    /// The same fact, shared with the subagent runner, so a child spawned `model: "local"` plans its
+    /// compaction against the daemon's server window rather than the cloud model's number the parent
+    /// carries. Written wherever `local_window` is written.
     local_window_cell: Arc<std::sync::Mutex<Option<Option<u64>>>>,
-    /// **This session's point, as it stands now**, shared with the subagent runner.
-    ///
-    /// A cell rather than `cfg.mode` because the runner holds a *clone* of this config,
-    /// taken at open ([`HarnessTaskRunner::base`]), and `/mode` moves the point without
-    /// touching that clone — so a child spawned after a move came up at the point its
-    /// parent had opened at. Written wherever the point moves
-    /// ([`Harness::set_mode_consented`], and once at open); read at every spawn. See
-    /// [`HarnessTaskRunner::point`].
+    /// This session's point, as it stands now, shared with the subagent runner. A cell because the
+    /// runner holds a clone of this config taken at open, and `/mode` moves the point without touching
+    /// that clone, so a child spawned after a move would come up at the old point.
     point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
-    /// **The model this session switched away from, kept until a round proves the new
-    /// one works** — so a switch that fails says how to go back.
-    ///
-    /// The failure it exists for is the one an operator cannot see the shape of:
-    /// MEASURED 2026-10-25, a long session was switched to `glm-coding`, the provider
-    /// refused its very first request (`messages.content.type is invalid`), and every turn
-    /// after that was refused the same way. The operator's only move was to remember what
-    /// the session had been on and type it back — and the daemon knew both the name and
-    /// the command. See [`Harness::switch_back_notice`].
+    /// The model this session switched away from, kept until a round proves the new one works, so a
+    /// switch that fails says how to go back. Without it the operator had to remember what the session
+    /// had been on and type it back by hand.
     switch_back: Option<SwitchBack>,
-    /// **A model switch that arrived while a prompt was in flight**, waiting for that prompt
-    /// to end — see [`Harness::set_provider`] and [`Harness::apply_pending_switch`].
-    ///
-    /// It is a field and not a queue of the hub because it is not a command anybody replays: the
-    /// request is answered the moment it is taken (`"turns go to X when this turn ends"`), and
-    /// what is left to do is one act, at one moment the harness already has
-    /// ([`Harness::end_turn_clock`]). A queue would let two switches stack and make *which one
-    /// wins* a question about the order a worker happened to drain them in.
+    /// A model switch that arrived while a prompt was in flight, waiting for that prompt to end. A
+    /// field and not a hub queue, because the request is answered the moment it is taken and what is
+    /// left is one act at one moment. A queue would let two switches stack.
     pending_switch: Option<PendingSwitch>,
-    /// **The turn the daemon owes after it moved this session off a model that was out** — the
-    /// notice that opens it, built where the refusal is ([`Harness::fall_back_from`]), taken by
-    /// [`crate::turn_tail::run_turn`] where a turn ends.
-    ///
-    /// The operator's ruling, 2026-10-12, is the whole requirement: *"when it finally applied the
-    /// turn didnt continue"*. Ending the turn on the refusal and moving the session was half an
-    /// answer; the work is carried on by a NEW turn, opened by a user item in the harness's own
-    /// voice — which is also what a model's first request has to follow (see
-    /// [`Harness::set_provider`]).
-    ///
-    /// **At most one**: the continuation turn is `Door::Fallback`, and a turn that is itself a
-    /// continuation never earns another (see the tail's own note), so a fallback chain cannot
-    /// ping-pong between two names — a chain that pays a model change per turn and never stops.
+    /// The turn the daemon owes after it moved this session off a model that was out: the notice that
+    /// opens it, built where the refusal is and taken where a turn ends. Ending the turn on the refusal
+    /// was half an answer, so the work goes on in a new turn. At most one, or a chain would ping-pong.
     fallback_continuation: Option<String>,
     /// **This turn IS the automatic continuation a fallback earned** — set while it runs, so
     /// [`Harness::fall_back_from`] moves the session to the next name without arming a second
     /// continuation. See `fallback_continuation` for why the bound exists.
     continuation_of_fallback: bool,
-    /// **The session's plugin host, once the daemon has one** — the same live `Arc` the `plugin`
-    /// tool asks through (`crate::plugins::desk::SessionPlugins`), handed over here because the
-    /// two halves are built at different moments: the tool is seated when the harness opens, and
-    /// the host when the DAEMON opens the session (`Sessions::open_plugins`, which is the one
-    /// place a hub and a pane driver exist).
-    ///
-    /// `None` in a session the daemon did not open — a subagent, whose harness its parent's runner
-    /// builds — and `plugin scaffold`/`build` work there, because they are file and cargo
-    /// operations on the session's own plugin directory.
+    /// The session's plugin host, once the daemon has one: the same live `Arc` the `plugin` tool asks
+    /// through, handed over because the tool is seated at open and the host when the daemon opens the
+    /// session. `None` in a session the daemon did not open, where scaffold and build still work.
     plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>>,
     /// **The mode confirmation a head asked for and nobody has answered**
     /// (`PROTOCOL_VERSION` 54, B8). One per session: a second ask supersedes it.
     mode_confirm: Option<PendingModeConfirm>,
 }
 
-/// **A confirmation of `allow-all` that is waiting for a person** — the daemon's half of the
-/// card raised by another head's ask.
-///
-/// The `asked` list is the rule and not bookkeeping: the card went to those heads, and only
-/// those heads can answer it. The bridge that asked for it is never among them, which is what
-/// makes *the bridge never consents for itself* structural rather than a promise.
+/// A confirmation of `allow-all` waiting for a person: the daemon's half of the card another head's ask
+/// raised. The `asked` list is the rule and not bookkeeping — the card went to those heads and only
+/// they can answer it, which makes *the bridge never consents for itself* structural.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingModeConfirm {
     /// The id the asker's own `client_request_id` was turned into; the card and the settle
@@ -2592,12 +1881,9 @@ pub struct PendingModeConfirm {
     pub asked: Vec<String>,
 }
 
-/// What a resume actually rebuilt.
-///
-/// Reported rather than assumed, and reported as *numbers*: "resumed" on its own is
-/// the claim, and the row count, the token count and the chain head are the evidence.
-/// The head in particular is what makes two resumes of the same session comparable —
-/// if it differs, one of them is not the conversation the other was.
+/// What a resume actually rebuilt, reported as numbers: the row count, the token count and the chain
+/// head are the evidence that `resumed` is only the claim. The head is what makes two resumes of one
+/// session comparable — if it differs, one of them is not the conversation the other was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeReport {
     pub transcript_id: String,
@@ -2612,11 +1898,9 @@ pub struct ResumeReport {
     pub notes: Vec<String>,
 }
 
-/// **The operator's message when they hand a skill over** — `/skills NAME`, the pane's Enter.
-///
-/// The label is the whole of it: the body is somebody else's prose, and a model that read it as
-/// the operator's own instruction would be following a text the operator merely pointed at. What
-/// follows the name on their line goes on after it, as their words, in the same turn.
+/// The operator's message when they hand a skill over: `/skills NAME`, and the pane's Enter. The label
+/// is the whole of it, because the body is somebody else's prose and a model that read it as the
+/// operator's instruction would follow a text they merely pointed at.
 pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) -> String {
     let mut text = format!(
         "[skill `{}`, from {} — the words below are the skill's, handed to you by the \
@@ -2635,12 +1919,9 @@ pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) 
 }
 
 impl Harness {
-    /// The turn this harness last started, or empty before the first one.
-    ///
-    /// The daemon needs it to publish `TurnFailed` against the turn a head is
-    /// watching. Empty is a real answer — a turn that failed while being *set up*
-    /// never got an id — and the head treats an empty one as "the pane you are
-    /// looking at", which is the only pane that can be spinning at that point.
+    /// The turn this harness last started, or empty before the first one. Empty is a real answer — a
+    /// turn that failed while being set up never got an id — and a head treats it as the pane it is
+    /// looking at, the only one that can be spinning then.
     pub fn last_turn_id(&self) -> &str {
         &self.last_turn_id
     }
@@ -2649,12 +1930,9 @@ impl Harness {
         &self.hub
     }
 
-    /// **The cell the daemon fills with this session's plugin host** — see the field.
-    ///
-    /// `Sessions::open_plugins` is the only caller: it builds the host (the one place a hub and a
-    /// pane driver exist) and fills this in, so the `plugin` tool seated when this harness opened
-    /// asks the very stack the head's panes are drawn from. Two hosts would be two answers to
-    /// *what is in force*.
+    /// The cell the daemon fills with this session's plugin host. `Sessions::open_plugins` is the only
+    /// caller, so the `plugin` tool asks the very stack the head's panes are drawn from: two hosts would
+    /// be two answers to what is in force.
     pub fn plugin_slot(&self) -> Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>> {
         self.plugin_slot.clone()
     }
@@ -2674,81 +1952,33 @@ impl Harness {
         &self.cfg.workspace
     }
 
-    /// **This session's connection to the box's room**, when it has one — the `room` tool's half,
-    /// and what a room pane is drawn from (`crate::plugins::room_feed`).
-    ///
-    /// It is `None` on a box with no coordinator and on a subagent (which speaks through its
-    /// parent), and both of those are ordinary states rather than failures.
+    /// This session's connection to the box's room, when it has one: the `room` tool's half, and what a
+    /// room pane is drawn from. `None` on a box with no coordinator and on a subagent, which speaks
+    /// through its parent, and both are ordinary states rather than failures.
     pub fn room_link(&self) -> Option<Arc<crate::room::link::SessionRoom>> {
         self.room.clone()
     }
 
-    /// **Turn the guard model on or off, now, on the running session.**
-    ///
-    /// > *"I want to start leticode, do /supervise, and move on."*
-    ///
-    /// Reaches the live gate rather than persisting a setting for next time, which is
-    /// the difference between this and `/mode`: a mode decides which tools are seated
-    /// and what asks, so it is fixed when a session opens; supervision decides only
-    /// whether the model gets a turn before the answer, and nothing seated depends on
-    /// that.
-    ///
-    /// Returns the gate's own sentence, refusal included. A session with no
-    /// `--oracle` gets a refusal naming the flag — never a quiet success.
-    /// Whether the guard model currently gets a turn. Read off the gate, never off
-    /// the config that asked for it.
+    /// Turn the guard model on or off on the running session, and read whether it gets a turn now.
+    /// The gate is reached rather than a setting persisted, which is the difference from `/mode`:
+    /// supervision decides only whether the model gets a turn, so nothing seated depends on it.
     pub fn supervising(&self) -> bool {
         self.gate().supervising()
     }
 
-    /// The gate, locked. See `ToolRuntime::gate` for why it is behind one: the runtime
-    /// is shared with the operator's run thread, and the gate is the one field that
-    /// mutates in place. Held across a decision by the caller that makes one; these
-    /// reads and moves are momentary.
+    /// The gate, locked: the runtime is shared with the operator's run thread and the gate is the one
+    /// field that mutates in place. Reads and moves are momentary; a caller making a decision holds it.
     fn gate(&self) -> std::sync::MutexGuard<'_, Box<dyn letibot_tools::Gate>> {
         self.runtime.gate.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    // Point this session's guard at `endpoint`, build it and attach it.
-    //
-    // For `/supervise HOST:PORT`, which is the override and not the normal path —
-    // the normal path is `[gatekeeper] endpoint` in the operator's config, read at
-    // daemon start. Nothing is written here: config is the operator's file to edit,
-    // and a harness that rewrote it behind them would make a one-off override
-    // permanent without being asked.
+    // Point this session's guard at `endpoint`, build it and attach it: the `/supervise HOST:PORT`
+    // override, not the normal path, which is `[gatekeeper] endpoint` read at daemon start. Nothing is
+    // written here, because config is the operator's file and a rewrite would make an override permanent.
 
-    /// **Close out tool calls no round owns any more, and look in the logs to say why.**
-    ///
-    /// MEASURED, on the operator's own head: a `grep` was dispatched, its executor thread and its
-    /// process both vanished, and the call sat `running` in the head for eight minutes while
-    /// `esc esc` did nothing — because the interrupt stops GENERATION and generation had long since
-    /// ended. Nothing in this daemon looked. There were three callers of `Job::settle` and every one
-    /// of them was the thing that was already gone.
-    ///
-    /// # Why this is a CHECK and not a timeout
-    ///
-    /// The round loop is SYNCHRONOUS: a turn calls `runtime.invoke` and blocks until the tool
-    /// answers, so while a round is in flight **this function cannot run at all** — it runs on the
-    /// worker thread, which is the thread the round is holding. So if it is running, no round owns
-    /// any call, and a call with no result in the transcript is a call nothing will ever answer.
-    ///
-    /// That is the whole of the liveness test, and it needs no clock, no thread introspection and no
-    /// new bookkeeping: **the fact that we are here is the fact that the executor is gone.** A
-    /// timeout would have to guess a duration that is generous to `cargo build` and still quick for
-    /// a lie; this cannot be wrong about a call that is legitimately in flight, because a
-    /// legitimately-in-flight call is one this cannot run alongside.
-    ///
-    /// # And it reads the log, because "failed" is not a diagnosis
-    ///
-    /// The operator: *"if it is dead let it look into the logs."* The stored transcript is the
-    /// durable record, and the rows around the stall are what a reader needs — what the run was
-    /// doing, which call went unanswered, and what came before it. So the payload carries the tail
-    /// of the session's own stored transcript, newest last, and the warning names the call.
-    ///
-    /// A `NotRun` outcome rather than `Failed`, deliberately: nothing ran and nothing failed. F5's
-    /// rule — *a component's "I did not do this" must not be reported as a success* — cuts the other
-    /// way here too, and the honest word for a call whose executor disappeared is that it did not
-    /// run.
+    /// Close out tool calls no round owns any more, and read the log to say why. The round loop is
+    /// synchronous, so if this is running no round owns a call: the fact that we are here is the fact
+    /// that the executor is gone, which needs no timeout. `NotRun`, because nothing ran and nothing failed.
     pub fn sweep_abandoned_calls(&mut self) -> usize {
         // **THE DECISION IS A FREE FUNCTION**, so it can be tested without a daemon, a model or a
         // socket. What is left here is the plumbing: read the log, build the rows, append them.
@@ -2781,11 +2011,9 @@ impl Harness {
             });
             settled += 1;
         }
-        // **And the head is told, and told when the record could not be written** — R67 item 15.
-        // This used to be a hub block that did nothing (`let _ = hub;`) and a `let _ =` on the
-        // append, so a call closed out here was announced to nobody but the transcript, and a
-        // close-out the store refused was announced to nobody at all: the spinner the sweep exists
-        // to end would stay up, and nothing would say why.
+        // And the head is told, including when the record could not be written: this used to be a hub
+        // block that did nothing and a `let _ =` on the append, so a close-out the store refused was
+        // announced to nobody and the spinner the sweep exists to end stayed up.
         let named: Vec<String> = results
             .iter()
             .filter_map(|r| match r {
@@ -2826,51 +2054,16 @@ impl Harness {
         Ok(())
     }
 
-    /// **Move THIS session to another point, now.**
-    ///
-    /// `/mode` wrote the project's row and told the operator the point applied
-    /// "from the NEXT session". That was true, and it was asked about three times,
-    /// because the sentence is not what anybody typing `/mode automode` wants: they
-    /// want the session in front of them to behave differently from the next call.
-    ///
-    /// What the gate needs is a field write — it reads its mode at decision time —
-    /// so the work here is the part the old comment worried about: the prerequisite
-    /// check the open would have run, re-run against what this session actually
-    /// has; the standing grants, dropped (a new point is a new question); and a
-    /// point whose decider is the model getting its supervision turned on, the way
-    /// an open at that point would. Nothing here touches the backend: writable or
-    /// confined is a property of the SEAT, and the prerequisite check is what
-    /// refuses a point the seat cannot carry.
+    /// Move THIS session to another point, now, rather than from the next session: the gate needs a
+    /// field write. The work is the prerequisite check the open would have run, re-run against what this
+    /// session has, the standing grants dropped, and a model-decided point's supervision turned on.
     pub fn set_mode(&mut self, mode: letibot_tools::mode::Mode) -> Result<String, String> {
         self.set_mode_consented(mode, false)
     }
 
-    /// **`/mode`, with the operator's answer to the unconfined-`allow-all` question.**
-    ///
-    /// `allow-all` requires a confinement and `backend_confined` is true for a
-    /// firecode placement and nothing else, so on the operator's own box the point
-    /// was unreachable by every route and the refusal pointed at cgroups and bwrap,
-    /// which could not have supplied it. Their words, 2026-09-20: *"allow-all doesnt
-    /// work"*, and then *"make it ask for confirmation on bare host and let it thru"*.
-    ///
-    /// So: the head asks, and a `yes` arrives here as `consented`. It selects
-    /// [`Mode::ALLOW_ALL_HERE`] — the same coordinate with the boundary told
-    /// truthfully — and only under all three of these, each checked rather than
-    /// assumed:
-    ///
-    ///   1. the point asked for is `allow-all`. Consent is for one question; it does
-    ///      not travel to a point the operator did not pick.
-    ///   2. this session really has no confinement. Inside a VM the ordinary
-    ///      `allow-all` already opens, and substituting the consented point there
-    ///      would record a person's answer where a structural fact was the reason.
-    ///   3. the substituted point passes `check` on its own. It drops only
-    ///      `Confinement`; a seat with no writable backend still cannot carry it.
-    ///
-    /// **It is not persisted.** `sessions.rs` writes the project's row from the name
-    /// the operator typed, which stays `allow-all` and stays refused for the next
-    /// daemon. Consent is a thing a person gave once, in front of one session; a
-    /// consented point that came back on every later start would be exactly the
-    /// "banner says one thing" state this module refuses everywhere else.
+    /// `/mode`, with the operator's answer to the unconfined-`allow-all` question. A `yes` selects
+    /// `Mode::ALLOW_ALL_HERE` only when the point asked for is `allow-all`, this session really has no
+    /// confinement, and the substituted point passes `check` alone. It is not persisted.
     pub fn set_mode_consented(
         &mut self,
         mode: letibot_tools::mode::Mode,
@@ -2896,13 +2089,9 @@ impl Harness {
         let dropped = self.gate().set_mode(mode)?;
         let mut said = format!("this session is at `{}` from the next call", mode.name);
         if vouched {
-            // Said here rather than only in the confirmation the head showed: the
-            // banner, the warning on the log and this sentence are what a person
-            // reads later, and "you agreed to this" belongs in all three.
-            // Not "the project's row still reads `allow-all`" — it does not.
-            // Nothing was written, so the row reads whatever it read before, and
-            // claiming otherwise put a third false sentence on a card that already
-            // had two.
+            // Said here and not only on the card: the banner, the log warning and this sentence are what
+            // a person reads later. Not "the project's row still reads allow-all" — it does not, because
+            // nothing was written.
             said.push_str(
                 " — nothing confines this box, and this point stands on your \
                  confirmation rather than on a boundary. It lasts for this session \
@@ -2935,14 +2124,9 @@ impl Harness {
         Ok(said)
     }
 
-    /// **Does the point asked for need a PERSON's answer here** — the two facts
-    /// [`Harness::set_mode_consented`] reads from `supplies`, asked on their own.
-    ///
-    /// `allow-all` requires a confinement, and a session on a bare host has none; that is the
-    /// one point in the tree whose opening is a person's answer rather than a structural fact
-    /// (`Mode::ALLOW_ALL_HERE`). A session that never recorded what it can supply — a fixture
-    /// — is answered `true`, the fail-closed direction, because consent cannot be honoured
-    /// against a list nobody computed.
+    /// Does the point asked for need a PERSON's answer here: the two facts `set_mode_consented` reads
+    /// from `supplies`, asked on their own. A session that recorded no supplies is answered `true`, the
+    /// fail-closed direction, because consent cannot be honoured against a list nobody computed.
     pub fn mode_needs_consent(&self, mode: letibot_tools::mode::Mode) -> bool {
         if mode.name != letibot_tools::mode::Mode::ALLOW_ALL.name {
             return false;
@@ -2953,27 +2137,9 @@ impl Harness {
         }
     }
 
-    /// **A head ASKS for the point that needs a person** (`PROTOCOL_VERSION` 54, B8).
-    ///
-    /// The bridge can want `allow-all` for a package's session and cannot be the person whose
-    /// box is the boundary, so it asks instead of setting: the confirmation is pushed to the
-    /// session's OTHER heads that may decide, and the point moves only when one of them says
-    /// yes ([`Harness::answer_mode_confirm`]).
-    ///
-    /// Three things this decides, and they are the whole of what the requester is told:
-    ///
-    /// * **The point needs nobody's confirmation** — `writes-allowed`, `read-only`, a VM-placed
-    ///   `allow-all` — so it is applied here and settled `applied`. A program asking for a point
-    ///   no person has to approve is not a question for a person.
-    /// * **Nobody can be asked** — the session's only head is the one that asked. Then the answer
-    ///   is the refusal the bridge returns to its caller: *needs the operator's confirmation in a
-    ///   head: run `leticode --session <id>`*, which is the command that opens one.
-    /// * **Otherwise the card goes out** and this returns with the request open.
-    ///
-    /// **One open request per session, and a new one supersedes it** — the alternative is a
-    /// requester whose own patience ran out leaving a card up that refuses every later attempt.
-    /// The superseded request is settled `answer: nobody, applied: false`, so the head that was
-    /// asked takes the stale card down before the new one lands.
+    /// A head ASKS for the point that needs a person: the confirmation is pushed to the session's other
+    /// deciding heads, and the point moves only when one says yes. A point nobody has to approve is
+    /// applied here; with no other head the caller gets the refusal naming `leticode --session`.
     pub fn ask_mode_confirm(
         &mut self,
         name: &str,
@@ -3059,12 +2225,9 @@ impl Harness {
         Ok(())
     }
 
-    /// **A head's answer to that ask** — `yes` applies the point, `no` applies nothing.
-    ///
-    /// Refused by name when no request is open, when the id is not the open one, and when this
-    /// head was not asked. That last check is the structural half of *the bridge never consents
-    /// for itself*: the daemon sent the card to a set of heads, and only those heads can answer
-    /// it.
+    /// A head's answer to that ask: `yes` applies the point, `no` applies nothing. Refused by name when
+    /// no request is open, when the id is not the open one, and when this head was not asked, which is
+    /// the structural half of *the bridge never consents for itself*.
     pub fn answer_mode_confirm(
         &mut self,
         req_id: &str,
@@ -3148,14 +2311,9 @@ impl Harness {
         }
     }
 
-    /// **How a confirmation ended, to every head** — the asker's answer and the other heads'
-    /// dismissal of the card, in one frame.
-    ///
-    /// `name` is **the point that is now in force** when it applied, which is not always the
-    /// point that was asked for: a consented `allow-all` on a bare host lands on
-    /// [`letibot_tools::mode::Mode::ALLOW_ALL_HERE`], the same coordinate with the boundary
-    /// told truthfully. A caller that read `allow-all` back would be told the point it asked
-    /// for rather than the one its session is at.
+    /// How a confirmation ended, to every head, in one frame. `name` is the point now in force and not
+    /// always the one asked for: a consented `allow-all` lands on `ALLOW_ALL_HERE`, so a caller reading
+    /// the ask back would be told the wrong point.
     fn settle_mode_confirm(
         &self,
         open: &PendingModeConfirm,
@@ -3208,16 +2366,9 @@ impl Harness {
             .set_settings(&self.cfg.session_id, rows);
     }
 
-    /// **What a head needs to offer the door without holding a schema** — R31 and R32.
-    ///
-    /// Derived here, from the registry this session seats and the allowlist the daemon
-    /// enforces, so a tool whose schema changes moves a head's behaviour with no head
-    /// rebuilt. A name the allowlist carries and the registry does not comes back with the
-    /// sentence a head says instead of the bare form, which is a visible miss rather than a
-    /// silent absence.
-    ///
-    /// **Idempotent and cheap**: this runs on open and on every republish, and it is one
-    /// pass over three schemas.
+    /// What a head needs to offer the door without holding a schema, derived from this session's
+    /// registry and the daemon's allowlist, so a schema change moves a head's behaviour with no head
+    /// rebuilt. Idempotent and cheap: one pass over three schemas, on open and every republish.
     fn door_tools(&self) -> Vec<letibot_sessionlog::protocol::HeadRunTool> {
         let allow = letibot_sessionlog::HEAD_RUN_TOOLS;
         let schemas = self.runtime.registry.schemas();
@@ -3250,10 +2401,9 @@ impl Harness {
     }
 
     pub fn set_supervision(&mut self, on: bool) -> Result<String, String> {
-        // **Attach on demand.** `/supervise` on a session that opened with no
-        // `--oracle` is the ordinary case, not the exceptional one: nobody types
-        // daemon flags. If an address is known from anywhere, use it rather than
-        // refusing and sending the operator to restart a daemon.
+        // Attach on demand: `/supervise` on a session opened with no `--oracle` is the ordinary case,
+        // since nobody types daemon flags. If an address is known from anywhere, use it rather than
+        // sending the operator to restart a daemon.
         if on && !self.gate().supervising() {
             let known = self.cfg.oracle.clone().or_else(|| {
                 letibot_provider::gatekeeper(None)
@@ -3285,10 +2435,8 @@ impl Harness {
         &self.cfg
     }
 
-    /// **Where this session's point came from** — the settings row's own field, for a
-    /// caller that wants to say it somewhere else as well (the spawn does: a child whose
-    /// point was clamped says so on its parent's progress line). Empty meanings are the
-    /// row's; see [`Config::settings`].
+    /// Where this session's point came from: the settings row's own field, for a caller that says it
+    /// somewhere else too (a child whose point was clamped says so on its parent's progress line).
     pub fn mode_source(&self) -> &str {
         &self.mode_source
     }
@@ -3308,21 +2456,15 @@ impl Harness {
         &self.session.items
     }
 
-    /// **What this session's harness holds, now** — the same answer the hub's census gets.
-    ///
-    /// Read by a test that wants to compare the census against the transcript it describes, and
-    /// by nothing in a daemon (the daemon reads it through the hub, on the watchdog's thread).
-    /// The transcript's half is the gauges, which [`restate_footprint`](Self::restate_footprint)
-    /// keeps exact; the trail's is read live.
+    /// What this session's harness holds, now: the same answer the hub's census gets. Read by a test
+    /// comparing the census against the transcript it describes, and by nothing in a daemon.
     pub fn footprint(&self) -> letibot_sessionlog::hub::Footprint {
         crate::footprint::of(&self.footprint_gauges, &self.trail)
     }
 
-    /// **Restate the hub's footprint from what this harness holds** — see [`crate::footprint`].
-    ///
-    /// Called at open and from [`Harness::reconcile`], which every append goes through. Each
-    /// call walks the rows: an increment would be cheaper and would under-report for ever after
-    /// one missed site, and a transcript is a few hundred rows of a few strings each.
+    /// Restate the hub's footprint from what this harness holds, at open and from `reconcile`, which
+    /// every append goes through. Each call walks the rows: an increment would under-report for ever
+    /// after one missed site, and a transcript is a few hundred rows of a few strings each.
     fn restate_footprint(&self) {
         self.footprint_gauges
             .set_ceiling(crate::footprint::ceiling_for(self.cfg.context_window));
@@ -3341,47 +2483,23 @@ impl Harness {
         self.todos.snapshot()
     }
 
-    /// **This session's watcher set** — what queues a background job's or a subagent's
-    /// settlement for THIS session, whichever transcript it is speaking by then.
-    ///
-    /// A turn arms it through its own sink (`JobWatchSink`); this is for a caller that invokes
-    /// a tool outside a turn and still wants the `Backgrounded` outcome watched the same way.
-    /// The `/clear` test is that caller: it starts the job and the child through the runtime,
-    /// clears, and proves the settlements land in the new conversation.
+    /// This session's watcher set: what queues a background job's or a subagent's settlement for THIS
+    /// session, whichever transcript it is speaking by then. A turn arms it through its own sink; this
+    /// is for a caller that invokes a tool outside a turn and still wants it watched.
     pub fn job_watchers(&self) -> Option<Arc<JobWatchers>> {
         self.job_watch.clone()
     }
 
-    /// **The sink for a call this session runs OUTSIDE a turn** — the operator's own call and
-    /// their `!` line, both of which run on a door rather than in a round.
-    ///
-    /// It is a [`JobWatchSink`] around [`letibot_tools::events::NullToolSink`], and both halves
-    /// are load-bearing:
-    ///
-    /// * **null**, because the transcript row is the durable record and every head draws *it* —
-    ///   what the tool emits here is a `ToolStarted`/`ToolProgress` pair for a call no head
-    ///   proposed, and a second copy as an event would be one fact in two places;
-    /// * **watched**, because a `Backgrounded` outcome from such a call is a promise the row
-    ///   makes in words — *its completion will be delivered to you on its own* — and nothing
-    ///   delivers it unless the watcher was armed where the handle was minted.
-    ///
-    /// MEASURED 2026-10-31: both doors invoked with a bare `NullToolSink`, so an operator's run
-    /// that was moved to the background (Ctrl+O mid-flight) or a `task` run from the console
-    /// queued no settlement and rang no bell. The row said the completion would arrive; it never
-    /// could. The same fix at `crate::bangrun`'s thread, which is where a `!` line between turns
-    /// actually runs.
+    /// The sink for a call this session runs OUTSIDE a turn: the operator's own call and their `!` line.
+    /// Null, because the transcript row is the durable record and every head draws it; watched, because
+    /// a `Backgrounded` outcome is a promise the row makes in words and nothing else delivers it.
     fn unprompted_sink(&self) -> JobWatchSink<letibot_tools::events::NullToolSink> {
         JobWatchSink::new(letibot_tools::events::NullToolSink, self.job_watch.clone())
     }
 
-    /// **The board's version — the one fact that says the board moved, and from whom.**
-    ///
-    /// `flush_todos` watches it to decide whether an announcement is owed; a parked
-    /// child's serving loop (`serve_child`) watches it for the other writer that can
-    /// move this board: a parent's `todo_write target=` (`child_todos`), which runs on
-    /// the parent's thread and leaves this the only way to notice. The version is the
-    /// board's own (bumped by every mutator, whatever thread it ran on), so it needs no
-    /// new channel and cannot disagree with the flush.
+    /// The board's version, which says the board moved and from whom: `flush_todos` watches it to decide
+    /// whether an announcement is owed, and a parked child's loop watches it for the other writer, a
+    /// parent's `todo_write target=`. It needs no new channel and cannot disagree with the flush.
     pub fn todo_board_version(&self) -> u64 {
         self.todos.version()
     }
@@ -3402,21 +2520,15 @@ impl Harness {
         self.provider.is_some()
     }
 
-    /// **The unit a printed count is in**, for the lines that print one: a count with
-    /// no unit beside another in a different one is how *"3191928 of 3404045"* and
-    /// *"937686 of 999999"* came to sit on adjacent log lines for the same check (R72).
-    ///
-    /// Three answers on a metered session, because there are three states and only one of
-    /// them is a measurement: `deepseek tokens` (measured on this model), `glm-coding tokens
-    /// (estimated with deepseek/deepseek-flash's measured scale)` (the ratio a switch carried),
-    /// and `ledger tokens (unscaled …)` (nothing measured anywhere).
+    /// The unit a printed count is in: a count with no unit beside another in a different one is how
+    /// `3191928 of 3404045` came to sit on the line above `937686 of 999999`. Three answers on a metered
+    /// session, because only one of the three states is a measurement.
     pub fn token_unit(&self) -> String {
         match (&self.provider, self.cfg.ledger_scale) {
             (Some(p), Some(_)) => format!("{} tokens", p.name()),
-            // **An estimate names the model that made it.** `estimated with deepseek's
-            // measured scale` is a different claim from `deepseek tokens` and from
-            // `ledger tokens (unscaled …)`, and a reader who is not told which one they are
-            // looking at cannot tell a measurement from an inherited ratio.
+            // An estimate names the model that made it: `estimated with deepseek's measured scale` is a
+            // different claim from `deepseek tokens` and from `ledger tokens (unscaled)`, and a reader not
+            // told which they have cannot tell a measurement from an inherited ratio.
             (Some(p), None) => match self.cfg.carried_note() {
                 Some(model) => format!(
                     "{} tokens (estimated with {model}'s measured scale)",
@@ -3437,20 +2549,16 @@ impl Harness {
         self.session.ledger.tokens()
     }
 
-    /// The stable prefix's tokens, which the ledger keeps apart from the item rows.
-    ///
-    /// C9 compares against exactly this: a system change that appended left these
-    /// bytes untouched, and one that rewrote the head did not.
+    /// The stable prefix's tokens, which the ledger keeps apart from the item rows. C9 compares against
+    /// exactly this: a system change that appended left these bytes untouched, one that rewrote the head
+    /// did not.
     pub fn prefix_tokens(&self) -> &[letibot_tokencore::TokenId] {
         self.session.ledger.prefix_tokens()
     }
 
-    /// The ledger row ids, in order.
-    ///
-    /// What pairs an announcement with its body: `TranscriptAppended` carries an id
-    /// and `Hub::record_item` fills the row it names, and a second minting rule
-    /// anywhere would go stale against `Session::append_items`. A caller checking
-    /// that pairing needs to read the ids rather than recompute them.
+    /// The ledger row ids, in order: what pairs an announcement with its body, since
+    /// `TranscriptAppended` carries an id and `Hub::record_item` fills the row it names. A caller
+    /// checking that pairing reads the ids rather than recomputing them.
     pub fn row_ids(&self) -> Vec<&str> {
         self.session
             .ledger
@@ -3531,24 +2639,9 @@ impl Harness {
         }
     }
 
-    /// **Install this session's standing-notes source**, which is what a head's `ListNotes`
-    /// is answered from.
-    ///
-    /// A closure rather than a mailbox, and the vocabulary is the whole of why: the form each
-    /// note has — verbatim, or an index because it did not fit what was left of the budget —
-    /// is decided with [`Harness::note_vocab`], and the server thread that answers the frame holds
-    /// no counter at all. So this hands the registry something that *can* measure
-    /// (`letibot_sessionlog::registry::NotesSource`) and the read happens on the ask.
-    ///
-    /// **On the ask and not at a moment of our choosing**, because the notes are the
-    /// operator's own files, edited in another window with nothing to tell this daemon: a
-    /// mailbox refilled at session open would answer *what the corpus was when the section
-    /// was last assembled*, which is a fact about the prompt, and a note written while the
-    /// session sat idle would be missing from a pane that claims one row per note.
-    ///
-    /// Cheap enough to run per pane-open: a readdir, one read per note and one pass of the
-    /// counter — the same work [`crate::standing_notes::section`] does at every base rebuild,
-    /// and a person opens this pane rarely.
+    /// Install this session's standing-notes source, which a head's `ListNotes` is answered from. A
+    /// closure rather than a mailbox, and the read happens on the ask, because the notes are the
+    /// operator's own files edited in another window. Cheap: a readdir and one read per note.
     fn install_notes_source(&self) {
         let workspace = self.cfg.workspace.clone();
         let global = self.cfg.global_notes();
@@ -3556,10 +2649,9 @@ impl Harness {
         // re-reads the corpus on every open and the answer is the config's, so a fixture's pane
         // names the files a fixture wrote.
         let box_dirs = self.cfg.box_dirs.clone();
-        // **The vocabulary the section itself is measured with**, and a field of its own
-        // rather than the engine's — see `Harness::note_vocab`, which tracks the engine
-        // wherever it moves so the pane cannot measure with the vocabulary the session
-        // *opened* on.
+        // The vocabulary the section itself is measured with: a field of its own rather than the
+        // engine's, because the pane's read happens on the server's thread and must not measure with the
+        // vocabulary the session OPENED on.
         let vocab = self.note_vocab.clone();
         self.session_registry.set_notes_source(
             &self.cfg.session_id,
@@ -3588,31 +2680,17 @@ impl Harness {
         );
     }
 
-    /// **The operator hands this session one skill's body** — `/skills NAME`, and the `/skills`
-    /// pane's Enter.
-    ///
-    /// Three rows' worth of decision in one place: the body is the operator's message (a `User`
-    /// row with `Speaker::Operator`), the label says what it is and where it came from — a skill
-    /// is not the operator's words, and a model that read it as an instruction would be following
-    /// somebody else's prose on their word — and the rest of the line, when there is one, goes on
-    /// as the operator's own prompt in the same turn.
+    /// The operator hands this session one skill's body: `/skills NAME` and the pane's Enter. The body
+    /// is their message, the label says where it came from because a skill is not their words, and the
+    /// rest of the line goes on as their own prompt in the same turn.
     pub fn load_skill(&mut self, name: &str, then: &str) -> Result<Reply, HarnessError> {
         let skill = self.skills.load_any(name).map_err(HarnessError::Setup)?;
         self.submit(&skill_message(&skill, then))
     }
 
-    /// **Say what this session is waiting on, if it has changed** — `PROTOCOL_VERSION` 52.
-    ///
-    /// Almost every move is caught by the hub itself: [`Hub::publish`] re-derives the value after an
-    /// event whose fold can have moved it (`SessionEvent::touches_activity` — a turn starting or
-    /// ending, a call, a card, a settlement, a child) and [`Hub::set_activity`] drops an unchanged
-    /// one. So this is for the changes that happen with **no event at all**: a monitor firing on the
-    /// waiter's own thread, a settlement queued by a watcher thread, a prompt sitting in the
-    /// command queue. Called at the points the harness knows one of those to be true, and
-    /// idempotent by construction: a value equal to the last one publishes nothing.
-    ///
-    /// **Why it is not a timer.** A tick would make the value eventually right, which is the shape
-    /// of every heuristic this replaces. Each call site is a place where a fact changed.
+    /// Say what this session is waiting on, if it has changed. Almost every move is caught by the hub
+    /// itself, so this is for the changes with no event at all: a monitor firing on the waiter's own
+    /// thread, a settlement queued by a watcher, a prompt sitting in the command queue. Not a timer.
     pub(crate) fn publish_activity(&self) -> bool {
         self.hub.refresh_activity()
     }
@@ -3623,21 +2701,15 @@ impl Harness {
         &self.monitor_cursor
     }
 
-    /// Say that this session's monitor wake is armed, so the disclosure stops
-    /// saying it is a poll.
-    ///
-    /// A setter rather than something the harness works out, because arming is the
-    /// **daemon's** act — the harness has no bell to ring and no thread to block in
-    /// — and a harness that claimed a wake it had not been given would be the
-    /// banner defect this file has already paid for four times.
+    /// Say that this session's monitor wake is armed, so the disclosure stops calling it a poll. A
+    /// setter because arming is the daemon's act, and a harness claiming a wake it was not given would
+    /// be the banner defect this file has already paid for.
     pub fn declare_monitor_wake(&mut self) {
         self.wiring.monitor_wake = true;
     }
 
-    // ---- the metrics instruments' harness half (TODO R81, `crate::instruments`) ----------
-    //
-    // Each call site in this file is one line; what the line needs from the harness is here, in
-    // one block, so a merge that moves a site moves one line.
+    // The metrics instruments' harness half: each call site in this file is one line, and what the
+    // line needs from the harness is here in one block, so a merge that moves a site moves one line.
 
     fn meter_round(&mut self, m: &letibot_turn::metrics::TurnMetrics, ledger: u64) {
         let provider = self.provider.as_ref().map(|p| p.name());
@@ -3678,15 +2750,9 @@ impl Harness {
         );
     }
 
-    /// **What this session's model is told about the queues: a repository that declares no gate.**
-    ///
-    /// For each repository a branch from this session's tree is waiting in, whose target is held
-    /// `blocked` because its `AGENTS.md` has no `Merge gate` section — once per daemon. The
-    /// sentence names the repository and what to do: `merge_gate` for the choices, the operator to
-    /// pick, the section committed on the target.
-    /// **Arm the watches on a pull request this session just opened** (`pr_watch`), through the
-    /// operator's door (the model did not ask for them, so no gate is owed them), and answer the
-    /// sentence the model reads. A watch already armed under the same name is left as it is.
+    /// What this session's model is told about the queues: a repository whose target declares no gate,
+    /// said once per daemon with `merge_gate` as the way forward. `watch_opened_pr` arms the watches on a
+    /// pull request this session just opened, through the operator's door, and answers with the sentence.
     pub(crate) fn watch_opened_pr(&self, url: &str, n: u64) -> String {
         let mut armed = Vec::new();
         let mut refused = Vec::new();
@@ -3718,12 +2784,9 @@ impl Harness {
         crate::pr_watch::told(url, &armed, &refused)
     }
 
-    /// **A plugin layer's look at a tool result** (`docs/plugins-plan.md` §4.2): the text the model
-    /// is about to read, and anything the layer asked to watch.
-    ///
-    /// It changes the payload in place, because that is the one string every later reader uses —
-    /// the progress encoder, the transcript row and the store — so a rewrite that ran after any of
-    /// them would be a result the model read and nobody recorded.
+    /// A plugin layer's look at a tool result: the text the model is about to read, and anything the
+    /// layer asked to watch. It changes the payload in place, because that is the one string every later
+    /// reader uses, so a rewrite after any of them would be a result nobody recorded.
     fn plugin_result(
         &self,
         call: &letibot_transcript::ToolCall,
@@ -3757,13 +2820,9 @@ impl Harness {
         }
     }
 
-    /// **Arms a monitor a layer asked for**, through the operator's door — the same one
-    /// [`Harness::watch_opened_pr`] uses, and for the same reason: nobody asked this session's
-    /// model for the watch, so no gate is owed it, and the monitor tool's own rules (coalescing,
-    /// the already-watched refusal, the TTL caps) apply unchanged.
-    ///
-    /// The answer is a sentence appended to the call's result, so the model reads what is now
-    /// watching at the moment it caused it.
+    /// Arms a monitor a layer asked for, through the operator's door, because nobody asked this
+    /// session's model for the watch and so no gate is owed it. The monitor tool's own rules apply
+    /// unchanged, and the answer is a sentence appended to the call's result.
     fn arm_plugin_monitor(&self, arm: &letibot_plugin::tool_result::Arm) -> String {
         let name = arm.plugin.clone();
         if self
@@ -3793,33 +2852,16 @@ impl Harness {
         }
     }
 
-    /// **Whether the queues' news is this daemon's to tell a model.** False under `--no-queue`
-    /// ([`Config::serve_queues`]), and it is the whole of the model-facing half of that flag: a
-    /// daemon that holds no lease composes no sentence about a lease — not the emergency
-    /// ([`Harness::queue_emergency_notices`]), not the project's missing gate
-    /// ([`Harness::queue_notices`]), not a branch handed back to it
-    /// ([`Harness::handover_notices`]) — because every one of them would be about work another
-    /// daemon owns, and a package worker told to fix a red `main` is the defect the flag exists
-    /// for (2026-10-26). The heads still draw the queue's alerts from the watcher; only the
-    /// model's copy is withheld.
+    /// Whether the queues' news is this daemon's to tell a model: false under `--no-queue`, and that is
+    /// the whole of the model-facing half of the flag. Every notice would be about work another daemon
+    /// owns. The heads still draw the queue's alerts; only the model's copy is withheld.
     fn queue_news_is_mine(&self) -> bool {
         self.cfg.serve_queues
     }
 
-    /// **This project's stuck rows, as the idle check reads them** — the census
-    /// (`mergequeue::stuck`), or `None` when this session is not the project's, when the queue is
-    /// not this daemon's to speak about, or when nothing is stuck.
-    ///
-    /// **The project's, by the same test the emergency uses** — a root session of this workspace's
-    /// repositories and never the review queue's own — because a count of rows is news only to the
-    /// session that can act on them, and a subagent told *eight rows are stuck in `main`* has been
-    /// handed somebody else's work. `queue_news_is_mine` is the `--no-queue` flag's half: a daemon
-    /// that holds no lease composes no sentence about a lease.
-    ///
-    /// `repositories_of_workspace_cached` and not the uncached one: this is read on every turn's
-    /// end (the clock re-arms there), and the answer for one workspace does not change between two
-    /// of them. A session in NO repository answers `None` rather than the whole box's rows — the
-    /// same rule `desk::nowhere` states, and for the same reason.
+    /// This project's stuck rows, as the idle check reads them: `None` when this session is not the
+    /// project's, when the queue is not this daemon's to speak about, or when nothing is stuck. The
+    /// cached resolution, because this is read on every turn's end and one workspace does not change.
     pub fn stuck_census(&self) -> Option<crate::mergequeue::stuck::Stuck> {
         if !self.queue_news_is_mine() || self.is_the_queue() {
             return None;
@@ -3837,12 +2879,9 @@ impl Harness {
         (!census.is_empty()).then_some(census)
     }
 
-    /// **What the idle check's clock needs to know about this project's queue** — one reading, and
-    /// the clock's arming, the sentence and the identity all take it from here, so a schedule
-    /// cannot arm for a census the sentence would not say.
-    ///
-    /// `says` is `Stuck::is_news` and not *there are bad rows*: a row that went bad a minute ago is
-    /// the transition notice's, and the census exists for the row that STAYED bad.
+    /// What the idle check's clock needs to know about this project's queue: one reading, so the
+    /// clock's arming, the sentence and the identity cannot disagree. `says` is `Stuck::is_news` and
+    /// not *there are bad rows*, because a row that just went bad is the transition notice's.
     pub fn queue_news(&self) -> crate::sessions::QueueNews {
         let Some(census) = self.stuck_census() else {
             return crate::sessions::QueueNews::none();
@@ -3854,12 +2893,9 @@ impl Harness {
         }
     }
 
-    /// **The census as a sentence, when there is one to say** — `None` for a queue with nothing
-    /// stuck, or one whose oldest row is still too young to be news.
-    ///
-    /// Read by `Sessions::deliver_due_censuses`, which hands it to [`Harness::census_turn`]. It is
-    /// composed from the store AT THE MOMENT IT IS SAID and not held from the arming, so a row that
-    /// recovered between the two is not announced as stuck.
+    /// The census as a sentence, when there is one to say: `None` for a queue with nothing stuck, or
+    /// one whose oldest row is too young to be news. Composed from the store at the moment it is said,
+    /// so a row that recovered between arming and delivery is not announced as stuck.
     pub fn stuck_census_text(&self) -> Option<String> {
         let now = letibot_sessionlog::registry::now_ms();
         let census = self.stuck_census()?;
@@ -3868,24 +2904,9 @@ impl Harness {
             .then(|| crate::mergequeue::notices::stuck_census(&census, now))
     }
 
-    /// **The census as a TURN** — the sentence [`Harness::stuck_census_text`] composed, said by the
-    /// harness and answered by the model.
-    ///
-    /// It was a NOTICE and it cost no model call, and it reached nobody for eight hours. MEASURED
-    /// 2026-11-01 on the operator's daemon: a row sat in `conflict` from 02:37 to 10:52 while the
-    /// census wrote its sentence every interval into a session that was not running — a mailbox,
-    /// read at the model's next turn, and a quiet session has none. Their verdict on it names the
-    /// defect: *"probably doesnt even reach you"*.
-    ///
-    /// So it goes through the door every turn goes through (`submit_spoken`, and the shared tail
-    /// around it), which is what makes it a bell rather than a note: the model is woken, reads the
-    /// count and the age, and can act. **What it costs is one model call per interval per project
-    /// while a row is stuck** — `mergequeue::stuck::STUCK_REPEAT_MS` (two hours), against eight
-    /// hours of a row nobody saw.
-    ///
-    /// **The held batch rides in with it**, as R79 gives it to every turn a break ends: the
-    /// sentences delivered while nothing was running are the reason a quiet session has turns to
-    /// take at all.
+    /// The census as a TURN: the sentence `stuck_census_text` composed, said by the harness and answered
+    /// by the model. As a notice it reached nobody for hours, because a mailbox is read at the model's next
+    /// turn and a quiet session has none. The held batch rides in with it, as R79 gives it to any break.
     pub fn census_turn(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken(Speaker::Agent, text)
     }
@@ -3934,22 +2955,9 @@ impl Harness {
         out
     }
 
-    /// **A target emergency, told to the model of the project that has to act** (R76 item 1).
-    ///
-    /// The queue raised `target_red`, `queue_blocked` and `queue_needs_human` as warnings on every
-    /// hub — which heads draw and no model reads. pg-noop's `main` went red on 2026-10-11 and the
-    /// project's own agent never heard of it, and could not have got itself out if it had. So a
-    /// ROOT session (never the review queue's own) is told, once per daemon per red tip or parked
-    /// row, with the failing step and the end of its output FIRST:
-    ///
-    /// * its repository's target is red, timed out, or unjudged because the gate's own setup
-    ///   failed (`mergequeue::serve::emergency_health`);
-    /// * the review of its target's red tip is blocked or cannot decide;
-    /// * a branch of its own tree is blocked in review, or its reviewer cannot decide (a branch
-    ///   handed over under `merge_via_session` is [`Harness::handover_notices`]'s instead).
-    ///
-    /// The queue's worker rings the session (`QueueDoor::ring_repository` / `ring_project`); these
-    /// are the words its wake reads.
+    /// A target emergency, told to the model of the project that has to act: the queue's warnings are
+    /// drawn by heads and read by no model, so a ROOT session is told once per daemon, with the failing
+    /// step and its output first. A branch handed over under `merge_via_session` is `handover_notices`'s.
     pub fn queue_emergency_notices(&mut self) -> Vec<String> {
         if !self.queue_news_is_mine() {
             return Vec::new();
@@ -4076,12 +3084,9 @@ impl Harness {
         out
     }
 
-    /// **The reviews this daemon's queues claimed, served by THIS session's runner** — the
-    /// review queue's session (`sessions::gatekeeper::session`) is the host; every other session
-    /// serves nothing. The body is [`crate::mergequeue::review::serve`]: start a reviewer for each
-    /// claimed row nobody is on (placed per decision 3), write the verdict it handed in bound to
-    /// the head it judged (decision 6), count an attempt that reached none, and kill a reviewer
-    /// whose row moved on without it (a deadline, a person). Answers how many reviewers started.
+    /// The reviews this daemon's queues claimed, served by THIS session's runner: the review queue's
+    /// session is the host and every other session serves nothing. It starts a reviewer per claimed row,
+    /// writes the verdict it handed in, counts an attempt that reached none, and kills a stale one.
     pub fn serve_reviews(&mut self) -> usize {
         if !self.is_the_queue() {
             return 0;
@@ -4152,36 +3157,16 @@ impl Harness {
         self.room.is_some()
     }
 
-    /// **Whose subagent this session is, as the open settled it** — resolved once by
-    /// `Registry::parent_for` (the caller's word, then the registry's entry, then the session's own
-    /// row), so a child whose parent was settled here stays a child for the life of the process and
-    /// the room's door, the settings row and the store row cannot disagree about it.
+    /// Whose subagent this session is, as the open settled it: resolved once by `Registry::parent_for`,
+    /// so a child stays a child for the life of the process and the room's door, the settings row and
+    /// the store row cannot disagree.
     pub fn parent_session(&self) -> Option<&str> {
         self.cfg.parent_session_id.as_deref()
     }
 
-    /// **The room's reminders, onto this session's own board** — one row per item it holds, and
-    /// the row the idle check carries so a holder is reminded without a model call.
-    ///
-    /// The operator's ask is `docs/room.md`'s *Still owed* item 3: *"just like with todo top level
-    /// session get reminds (with ability to mark waits_on) so they dont occupy it for ever"*. The
-    /// room already answers the question (`room reminders`); this is the join.
-    ///
-    /// **A subagent returns 0 before anything else, and it is the second of two refusals rather
-    /// than the only one.** [`crate::room::link`] gives a session with a `parent_session_id` no
-    /// connection at all, so `self.room` is `None` for a subagent already — but the room's own rule
-    /// is *top-level sessions only*, and a daemon that answered it in one place would be one
-    /// refactor away from a subagent with a room row it does not hold.
-    ///
-    /// **A room that does not answer clears the rows.** The record of a claim is the room's, and a
-    /// room that has stopped answering has no record — a coordinator restart empties it, which is
-    /// the decision `docs/room.md` states (*"a restart begins with no items at all"*). Leaving a
-    /// `you hold …` row on a board after the room has gone would be the one reading that is false
-    /// and that nothing would ever correct.
-    ///
-    /// Returns how many rows the session holds now. It is called on the daemon's idle tick (see
-    /// [`crate::room::remind::ROOM_PASS_EVERY`]) and is a no-op that costs one socket frame when
-    /// the answer has not moved.
+    /// The room's reminders, onto this session's own board: one row per item it holds, carried by the
+    /// idle check so a holder is reminded without a model call. A subagent returns 0 first, because the
+    /// room's rule is top-level sessions only. A room that does not answer clears the rows.
     pub fn fill_room_board(&mut self) -> usize {
         // **The room's rule, said here as well as at the door.** See this function's own doc.
         if self.cfg.parent_session_id.is_some() {
@@ -4441,12 +3426,9 @@ impl Harness {
         &self.open_notes
     }
 
-    /// The authorisation trail this session would show an adjudicator right now.
-    ///
-    /// Public because it is the input to a decision taken on the operator's behalf,
-    /// and §4c wants the trail stored as **what was actually shown to the model**
-    /// rather than as a later reconstruction — which means something has to be able
-    /// to read it without going through a denial.
+    /// The authorisation trail this session would show an adjudicator right now. Public because it is the
+    /// input to a decision taken on the operator's behalf, and the trail has to be readable without going
+    /// through a denial.
     pub fn trail(&self) -> AuthorisationTrail {
         self.trail.trail()
     }
@@ -4456,10 +3438,9 @@ impl Harness {
         &self.intent
     }
 
-    /// **The operator's answer to a row's question, between turns** — applied to the board,
-    /// persisted and announced, and the line the model must be told handed back for the turn the
-    /// caller runs with it (`Sessions::dispatch`'s `AnswerTodo` arm, and a child's own thread).
-    /// The mid-turn half is `HubSteering`'s arm; both go through [`crate::operator_ask::settle`].
+    /// The operator's answer to a row's question, between turns: applied to the board, persisted and
+    /// announced, with the line the model must be told handed back for the caller's turn. The mid-turn
+    /// half is `HubSteering`'s arm and both go through `crate::operator_ask::settle`.
     pub fn answer_operator_ask(
         &mut self,
         content: &str,
@@ -4472,22 +3453,14 @@ impl Harness {
     }
 }
 
-/// How many bytes of a job's output one read returns: 16 KiB, enough that a build
-/// log's tail is a single read, with the next offset named when it is not. One
-/// constant because the slash reply, the pane's window and any future reader must
-/// agree about what "one page" means or they will page each other in circles.
+/// How many bytes of a job's output one read returns: enough that a build log's tail is a single read,
+/// with the next offset named when it is not. One constant, or the slash reply and the pane's window
+/// page each other in circles.
 pub const JOB_OUTPUT_WINDOW: usize = 16 * 1024;
 
-/// A window onto a background job's output, with the numbers a pane needs to draw
-/// its own header and its own paging.
-///
-/// [`Harness::job_output`] returns *prose* — a footer sentence with the offsets in
-/// it — for a head that will print the lines it was handed, which is what a slash
-/// reply is. This is the same read with the offsets **beside** the text, so the
-/// jobs pane can say where the window starts, whether anything fell off the front,
-/// and where to ask next without parsing a sentence it did not write. The two reads
-/// sit on one call — `ProcessHost::output` over the capture ring — and differ only
-/// in presentation.
+/// A window onto a background job's output, with the numbers a pane needs for its own header and
+/// paging. `job_output` returns prose for a head that prints what it is handed; this is the same read
+/// with the offsets beside the text, so the pane need not parse a sentence it did not write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobWindow {
     /// The offset this window actually starts at — the request is clamped to what
@@ -4515,17 +3488,9 @@ pub struct JobWindow {
     pub next: Option<u64>,
 }
 
-/// **What the world says about one handle** — the three answers a conditioned row needs, and they
-/// are three because a reader acts differently on each.
-///
-/// **`Unknown` MEETS the condition**, and that is the operator's own requirement read literally:
-/// *"a todo conditioned on job end, and then i restart head and harnessd. once server is back it
-/// should fire - job is gone"*. A job that is not running has ended, and a handle this daemon has
-/// never heard of is what that looks like after a restart. What it does NOT say is what became of
-/// the job — which is why the sentence for it sends the reader to look, and why the operator's own
-/// split is the one to keep: *"if you want to distinguish - you either follow the job result up
-/// manually (which is more robust) if next steps depend on it or just do your things if it was just
-/// a timeline"*.
+/// What the world says about one handle: three answers, because a reader acts differently on each.
+/// `Unknown` MEETS the condition, since a job that is not running has ended and a handle this daemon
+/// never heard of is what that looks like after a restart. It does not say what became of the job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobFate {
     /// Still running **here**. The condition is not met.
@@ -4537,12 +3502,9 @@ pub enum JobFate {
     Unknown,
 }
 
-/// **One due row, as the sentence the model is handed.** Pure, so the wording is asserted without
-/// a session — the same reason [`recorded_job_lines`] is.
-///
-/// `handle` is passed rather than carried in the fate because a fate is a fact about a job and the
-/// handle is how a row names it; the two arrive from different places and only this function has
-/// both.
+/// One due row, as the sentence the model is handed: pure, so the wording is asserted without a
+/// session. `handle` is passed rather than carried in the fate, because a fate is a fact about a job
+/// and the handle is how a row names it.
 fn fate_line(handle: &str, fate: &JobFate) -> String {
     match fate {
         // Never printed — a running job is not due — and answerable anyway, because a function
@@ -4557,15 +3519,9 @@ fn fate_line(handle: &str, fate: &JobFate) -> String {
     }
 }
 
-/// **The decision `Harness::job_fate` makes, as a function of what its two looks returned.**
-///
-/// Pulled out for the reason [`fate_line`] is pure: this decision is the thing a conditioned row
-/// turns on — the operator's own acceptance case is *"a todo conditioned on job end, and then i
-/// restart head and harnessd. once server is back it should fire - job is gone"* — and reaching it
-/// through a `Harness` needs a backend, a registry, a gate and a store, so nothing asserted it at
-/// all. What is left in the method is the two reads; what is here is the ORDER, which is the whole
-/// of the honesty: only the process host can say a job runs *now*, and a stored `running` row is a
-/// job the daemon was watching when it died, which is a fact about *then*.
+/// The decision `Harness::job_fate` makes, as a function of what its two looks returned: pulled out so
+/// the choice a conditioned row turns on is asserted without a backend, a registry, a gate and a store.
+/// The ORDER is the whole of the honesty, since only the host can say a job runs NOW.
 fn fate_of(live: Option<letibot_tools::exec::JobState>, record: Option<&JobRecord>) -> JobFate {
     if let Some(state) = live {
         return if state.is_running() {
@@ -4584,46 +3540,17 @@ fn fate_of(live: Option<letibot_tools::exec::JobState>, record: Option<&JobRecor
     }
 }
 
-/// **Which of a board's rows the world now meets** — the filter and the pairing, apart from the
-/// harness that owns the rows and the world.
-///
-/// The board is one union (`TodoBoard::snapshot`), so this walks the whole of it and skips four
-/// kinds: **a row with no condition is not this question's subject**, **a running job is not
-/// due**, and **a row the idle check may not speak about — one the operator has POSTPONED, or one
-/// already `Completed` — is not this question's subject either**. The postponed half is the
-/// operator's ask — a postponed item *"persists but without nag"* — and what it means for a
-/// conditioned row is exact: the handle is KEPT (nothing here clears it), the row does not fire
-/// while it is set aside, and lifting the postponement hands the same question back to this
-/// filter, which is what makes the state reversible rather than a quiet way to drop a firing.
-///
-/// **The fourth skip is this change's, and it is kept rather than reverted.** The skip reads
-/// `sessions::the_check_may_ask_about` — the same predicate the idle check arms on and the same
-/// one `Harness::nag_notice` reads through — and that predicate's whole answer is *the rows the
-/// check may speak about*, which are `Pending` and `InProgress`. Unifying the readers therefore
-/// stopped a `Completed` row that still carries a handle from firing, where this filter alone
-/// used to let it: a sentence telling the model that finished work is due, which is the nag the
-/// rest of the mechanism refuses to send. Reverting that would mean a second predicate and two
-/// answers to *what may the check ask about*; it is asserted below instead, so the widened answer
-/// is a decision on the record rather than a side effect nobody read.
-///
-/// Those skips are the whole of the policy, and they are here rather than in the caller
-/// so that the decision and the sentence [`fate_line`] writes for it cannot be tested apart from
-/// each other — which is what left this piece unasserted until now.
-///
-/// **`jobs` is the fourth fact the narrowing takes**, beside the board's statuses, the children and
-/// the row's own condition: a row that waits on a job this session is running is not one the idle
-/// check may speak about, so it must not fire here either. It is handed in rather than looked up so
-/// that this stays a function of its arguments — see `Harness::running_jobs` for the one lookup.
+/// Which of a board's rows the world now meets: the filter and the pairing, apart from the harness. Four
+/// skips, each a fact: no condition, a running job, a row the check may not speak about, and one already
+/// done. `jobs` is handed in so this stays a function of its arguments.
 fn due_rows(
     rows: &[TodoItem],
     children: &letibot_tools::builtins::todo::ChildSessions,
     jobs: &letibot_tools::builtins::todo::RunningJobs,
     fate: impl Fn(&str) -> JobFate,
 ) -> Vec<(String, String, JobFate)> {
-    // **A firing is a delivery, not a nag**: the grace after an ending (`RunningJobs::digesting`)
-    // keeps the CHECK from asking about a row the model has not digested the news for, and this is
-    // that news — so it is read without the grace, or a row whose `when` and `wait_on` name one job
-    // would hear its condition a turn late.
+    // A firing is a delivery, not a nag: the grace after an ending keeps the CHECK from asking about a
+    // row the model has not digested the news for, and this IS that news, so it is read without the grace.
     let jobs = &jobs.clone().without_grace();
     let mut out = Vec::new();
     for row in rows {
@@ -4642,10 +3569,8 @@ fn due_rows(
     out
 }
 
-/// **What a recorded job's window says**, apart from the harness that found the row.
-///
-/// A free function so the words can be asserted without a store, a vocabulary or a session —
-/// the same reason [`completion_notices`] is one. What the harness adds around it is a lookup.
+/// What a recorded job's window says, apart from the harness that found the row: a free function, so the
+/// words can be asserted without a store, a vocabulary or a session.
 fn recorded_job_lines(row: &JobRecord) -> Vec<String> {
     let mut lines = vec![format!(
         "this job is not in this daemon's table: {} after {}, {} bytes out. Its bytes were \
@@ -4663,20 +3588,9 @@ fn recorded_job_lines(row: &JobRecord) -> Vec<String> {
 }
 
 impl Harness {
-    /// **The window for a handle this daemon never ran**, or the refusal when the store has
-    /// never heard of it either.
-    ///
-    /// The measured complaint: entering a job showed nothing *"whether it went to file or not"*,
-    /// and after a restart it showed nothing at all — `no job ... here` about a job whose ending
-    /// was written down. This is the durable half answering. It says *not in this daemon's table*
-    /// rather than *it ran*, because the row carries a state WORD and this function does not
-    /// parse it: a job whose word is `not run (could not join its scope)` must not be described
-    /// here as one that ran.
-    ///
-    /// **What it cannot give is the bytes.** They lived in a ring owned by the process that
-    /// wrote them, so they are gone — and the row's `redirect` (R41) is the one thing that can
-    /// say where they went instead. A window that invented a page of output would be worse than
-    /// an empty one; this one names the loss and, when it can, the file.
+    /// The window for a handle this daemon never ran, or the refusal when the store has never heard of it
+    /// either. It says *not in this table* rather than *it ran*, because the row carries a state word and
+    /// this does not parse it. The bytes are gone; the row's `redirect` says where they went instead.
     fn recorded_job_window(&self, job: &str) -> Result<JobWindow, String> {
         let Some(row) = self.recorded_job(job) else {
             return Err(format!(
@@ -4709,14 +3623,9 @@ impl Harness {
             .find(|r| r.handle == handle)
     }
 
-    /// **What the world says about one handle** — see [`JobFate`] for why there are three answers
-    /// and why `Unknown` meets a condition.
-    ///
-    /// **The live table is asked FIRST, and the order is the whole of the honesty.** Only the
-    /// process host can say whether a job runs *now*; a stored `running` row is a job the daemon
-    /// was watching when it died, which is a fact about *then*. The record is the second look
-    /// because it is what survives a restart — and it is why a conditioned row fires at all after
-    /// one, which is the case the whole mechanism exists for.
+    /// What the world says about one handle. The live table is asked FIRST, which is the whole of the
+    /// honesty: only the process host can say a job runs now, and a stored `running` row is a fact about
+    /// then. The record is the second look, because it is what survives a restart.
     pub fn job_fate(&self, handle: &str) -> JobFate {
         // **Two looks, and [`fate_of`] is the decision between them** — the live table first,
         // because only the process host can say a job runs *now*, and the record second, because
@@ -4730,18 +3639,9 @@ impl Harness {
         fate_of(live, self.recorded_job(handle).as_ref())
     }
 
-    /// **The rows whose condition the world now meets** — the row's text, the handle it waits on,
-    /// and the fate — so the caller can both report and CONSUME them in one breath.
-    ///
-    /// **The fate is carried and not collapsed into a boolean**, because the operator's own split
-    /// depends on it: *"you either follow the job result up manually (which is more robust) if next
-    /// steps depend on it or just do your things if it was just a timeline"*. A handle that ended
-    /// here can be read with `job_output`; one this daemon never heard of cannot, and its sentence
-    /// says so rather than leaving the reader to find out by asking.
-    ///
-    /// **The handle comes back with the row because consuming needs it**, and the condition IS the
-    /// handle. A formatter returning only strings would leave the caller re-deriving what it had
-    /// just looked up — which is how the two would come to disagree.
+    /// The rows whose condition the world now meets: the row's text, the handle and the fate, so the
+    /// caller can report and consume them in one breath. The fate is carried and not collapsed into a
+    /// boolean, because a handle that ended here can be read and one never heard of cannot.
     pub fn due_todo_rows(&self) -> Vec<(String, String, JobFate)> {
         // **The rows and both live facts, taken together** — the same reading `nag_notice` takes, so
         // the firing and the nag cannot disagree about whether a row is one the check may speak
@@ -4765,21 +3665,17 @@ impl Harness {
         };
         let jid = letibot_tools::exec::JobId(job.to_string());
         let Some(view) = host.job(&jid) else {
-            // **A job this daemon never ran, but whose ending it may have written down.**
-            // The process table is memory: after a restart, a handle the pane listed a moment
-            // ago answered `no job ... here` *about a job whose ending is in the store*. The
-            // host is still asked FIRST, because only it can say whether a job runs now; the
-            // row answers what happened, which is a different question. See [`JobRecord`].
+            // A job this daemon never ran, but whose ending it may have written down: the process table is
+            // memory, so after a restart the host answers nothing about a job the store has a row for. The
+            // host is still asked first, since only it can say a job runs now.
             return self.recorded_job_window(job);
         };
         let slice = host
             .output(&jid, offset, limit)
             .map_err(|e| e.to_string())?;
-        // **The decision is [`job_window_for`'s]**, apart from the two reads, for the same
-        // reason [`fate_of`] is apart from `job_fate`: this is what a pane turns on, and
-        // reaching it through a `Harness` needs a backend, a registry, a gate and a store —
-        // so nothing ever held it to a REAL job, which is how the compound-command defect
-        // below survived every test this module had.
+        // The decision is `job_window_for`'s, apart from the two reads, for the reason `fate_of` is apart
+        // from `job_fate`: this is what a pane turns on, and reaching it through a harness needs a backend,
+        // a registry, a gate and a store, so nothing held it to a real job.
         Ok(job_window_for(
             &view.command,
             &view.state,
@@ -4790,13 +3686,9 @@ impl Harness {
     }
 }
 
-/// **One live read of a job's output, as the event that answers it** — the half of
-/// [`Harness::job_output_window`] that needs only the process host, so it can run on a head's
-/// connection thread while the worker runs a turn (`Harness::install_job_output_source`).
-///
-/// `None` when the host does not hold the job: that answer is the store's record, and the
-/// worker reads it. A host that holds the job but cannot read its output is a refusal, said as
-/// the same `job_output_refused` warning the queued path publishes.
+/// One live read of a job's output, as the event that answers it: the half of `job_output_window` that
+/// needs only the process host, so it can run on a head's connection thread while the worker runs a turn.
+/// `None` when the host does not hold the job, whose answer is the store's record.
 pub(crate) fn live_job_output(
     host: &dyn letibot_tools::exec::ProcessHost,
     job: &str,
@@ -4834,18 +3726,13 @@ impl JobWindow {
     }
 }
 
-/// **The window one read of a job's output answers with** — the decision half of
-/// [`Harness::job_output_window`], which does the two reads (the job's row, its capture
-/// ring) and hands everything to this.
+/// The window one read of a job's output answers with: the decision half of
+/// [`Harness::job_output_window`], which does the two reads and hands everything to this.
 ///
-/// **A job whose command redirects its output to a file: the FILE is the window** (R41),
-/// and the daemon does the reading — a head has no business reading the box's filesystem,
-/// and the path is this side's own record of where the bytes went.
-///
-/// **The redirect is enough; the capture holding bytes must not un-redirect the job.**
-/// The first shape of this answered from the file only when the capture was *completely*
-/// empty, which read the command as if a job either redirects or writes but cannot do
-/// both. The operator's own workbench said otherwise, measured in their store:
+/// A job whose command redirects its output to a file answers with the FILE, and the daemon does the
+/// reading, because a head has no business reading the box's filesystem. The redirect is enough on its
+/// own: reading from the file only when the capture was completely empty took a command as either
+/// redirecting or writing, and a compound command does both.
 ///
 /// ```text
 /// handle  state      produced  redirect
@@ -4854,25 +3741,14 @@ impl JobWindow {
 /// j70     killed      0        /tmp/tpcc-trace-server.log ← this one worked
 /// ```
 ///
-/// j87's command is compound — `sleep 1; head -1 …; echo "=== MIX …"; cd … && ./stroppy
-/// run … > /tmp/tpcc-trace2.log 2>&1` — so a preamble of 2426 bytes reached the capture
-/// before the work's stage sent its own bytes to the file, and entering the job drew the
-/// preamble and never the run. **The trade this takes, stated rather than papered over:
-/// when a command names a file, that file is the window whatever the capture holds, and
-/// the capture's bytes — the preamble — are not drawn.** They are not lost silently:
-/// the fresh read says how many are outside the window and where the window is, the same
-/// *counted, not hidden* rule the jobs listing itself follows. The other shapes were
-/// rejected on this tree's own rule that `produced`/`from`/`dropped` are one story about
-/// one source: splicing the capture in front of the file makes one window out of two
-/// coordinate spaces whose offsets cannot mean the same thing, and switching to the file
-/// only at settlement hands the pane a `produced` that changes stories the moment the job
-/// ends — a livetail of a redirected job wants the file too, because that is where the
-/// work has been going all along.
+/// So when a command names a file, that file is the window whatever the capture holds, and the
+/// capture's bytes are not drawn. They are not lost silently either: the read says how many are
+/// outside the window and where the window is. Splicing the two coordinate spaces together, or
+/// switching to the file only at settlement, would make `produced`/`from`/`dropped` two stories
+/// about one source.
 ///
-/// `offset == 0` is the TAIL — the last `limit` bytes — because that is what an output
-/// pane is for and what a fresh read means. Any other offset is a forward window from
-/// there, so the ring's own convention holds: `→` asks for the offset `next` named, and
-/// a reader can walk to the end of a long log.
+/// `offset == 0` is the TAIL, the last `limit` bytes, because that is what an output pane is for.
+/// Any other offset is a forward window from there, so a reader can walk to the end of a long log.
 fn job_window_for(
     command: &str,
     state: &letibot_tools::exec::JobState,
@@ -4884,12 +3760,9 @@ fn job_window_for(
         return match tail_file(&path, offset, limit) {
             Some(w) => {
                 let mut lines = Vec::new();
-                // **The preamble, counted rather than hidden.** The capture may hold
-                // bytes the redirect never took — a compound command's preamble — and
-                // this window is over the FILE, so those bytes are outside it. The
-                // fresh read is where the disclosure belongs: `offset == 0` is the
-                // read that means *the tail*, and repeating the count above every
-                // paged read would be noise, not disclosure.
+                // The preamble, counted rather than hidden: the capture may hold bytes the redirect never
+                // took, and this window is over the file. The disclosure belongs on the fresh read, since
+                // repeating the count on every paged read would be noise.
                 if offset == 0 && slice.produced > 0 {
                     lines.push(format!(
                         "{} bytes this job wrote outside the redirect are in its capture, \
@@ -4945,19 +3818,9 @@ fn job_window_for(
     }
 }
 
-/// **The tail of a file, as the window a pane draws** — the file half of R41's redirected jobs.
-///
-/// `offset == 0` is the TAIL: the last `limit` bytes, which is what a fresh read of an output
-/// pane means. Any other offset is a forward window from there, so the caller can offer the
-/// next offset to `→` exactly as it does for a captured job.
-///
-/// `None` when the file cannot be opened or read — the job has not created it yet, or it is
-/// not this process's to read — and the caller then falls back to the sentence that names it.
-///
-/// **Bytes, not lines, and lossily decoded.** A log is a stream of bytes that happens to be
-/// mostly text; a window that refused to draw because one byte in the middle was not UTF-8
-/// would be a pane that refuses to show a build log. `progress_lines` does the rest — see it
-/// for why the carriage returns are the split's business.
+/// The tail of a file, as the window a pane draws: the file half of a redirected job. `offset == 0` is
+/// the tail, any other offset a forward window, and `None` when the file cannot be read so the caller
+/// falls back to the sentence naming it. Bytes, lossily decoded, because a log is not text.
 struct FileWindow {
     from: u64,
     to: u64,
@@ -4996,24 +3859,9 @@ fn tail_file(path: &str, offset: u64, limit: usize) -> Option<FileWindow> {
     })
 }
 
-/// **The captured bytes, as lines a person can read** — and a progress bar is one line.
-///
-/// `slice.text()` is a terminal RECORDING, not prose. A tool that draws a progress bar
-/// writes `…10%\r…20%\r…100%` with no newline in it, so splitting on `\n` alone puts the
-/// whole run of updates on one row: `2%23%47%100%`, which is what the operator read and
-/// reported (*"hope to tail its out with ascii codes correctly processed"*).
-///
-/// The rule is the terminal's own and nothing more: `\r` returns to column 0, and what is
-/// written after it OVERWRITES what was there — so the line is the result of writing each
-/// segment over the current one, and a shorter final segment leaves the tail of a longer
-/// earlier one standing (which is what the screen showed, and not a detail worth losing).
-/// No cursor movement beyond the carriage return: `\x1b[A` and friends are stripped
-/// downstream by the head like every other escape (§3.1), and emulating them here would be
-/// inventing facts about a screen this daemon never had.
-///
-/// The splitting is the daemon's on purpose — `JobWindow::lines` exists so that two heads
-/// cannot disagree about where a line ends — and a carriage return is part of where a line
-/// ends, so it belongs here with the split.
+/// The captured bytes, as lines a person can read, and a progress bar is one line: `\r` returns to
+/// column 0 and what follows OVERWRITES it, so the line is each segment written over the last. The split
+/// is the daemon's, so two heads cannot disagree about where a line ends.
 fn progress_lines(text: &str) -> Vec<String> {
     text.split('\n')
         .map(|line| {
@@ -5041,16 +3889,9 @@ fn progress_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Where a further read of a job's output would start, or `None` when the window
-/// has reached the end of what the ring still holds.
-///
-/// `produced == dropped + retained` for a ring that only discards from the front,
-/// so `to < produced` says exactly "there is more that is still readable" — and the
-/// end of what is held is the only place a further read could go. `next` is the
-/// offset to ask at, not a count, so a pane can ask at it verbatim.
-///
-/// A named free function for the same reason [`round_backstop`] is: it is the one
-/// piece of arithmetic in the window and a test can hold it to.
+/// Where a further read of a job's output would start, or `None` when the window has reached the end of
+/// what the ring holds: `produced == dropped + retained`, so `to < produced` says there is more. A named
+/// free function because it is the one piece of arithmetic in the window.
 fn next_job_offset(slice: &letibot_tools::exec::OutputSlice) -> Option<u64> {
     (slice.to < slice.produced).then_some(slice.to)
 }
@@ -5087,10 +3928,8 @@ pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option
     ))
 }
 
-// **The end-to-end test of the merge queue's enqueue, in its own file** — declared here
-// because it is a test of THIS module's private `HarnessTaskRunner`, and because a crate
-// whose runner is private can only be tested from inside the crate. Its own header says what
-// it closes and what it still cannot reach.
+// The end-to-end test of the merge queue's enqueue, declared here because it tests THIS module's private
+// runner, which a crate can only reach from inside itself.
 mod clear;
 pub use clear::{ClearReport, clear_reply};
 
@@ -5170,17 +4009,9 @@ mod queue_e2e;
 #[cfg(test)]
 mod tests;
 
-/// **The model half of layer B**, built from the config, or a refusal that names the
-/// missing piece.
-///
-/// One function because two points need it and they must not diverge:
-/// `--adjudicator model` puts it in front of the gate alone, and `/mode supervised`
-/// puts it in front of a person. A second copy is a second place for the baseline
-/// closure to be written slightly differently, and that closure is layer A — the
-/// classification the oracle's whole answer is about.
-///
-/// `asked_by` names whichever of the two asked, so the refusal says which flag or
-/// which mode is missing an `--oracle` rather than naming one of them for both.
+/// The model half of layer B, built from the config, or a refusal naming the missing piece. One function
+/// because two points need it: `--adjudicator model` puts it before the gate alone and `/mode supervised`
+/// puts it before a person. `asked_by` names whichever asked, so the refusal names the right flag.
 pub(crate) fn model_adjudicator(
     cfg: &Config,
     asked_by: &str,
@@ -5229,12 +4060,9 @@ pub(crate) fn model_adjudicator(
                 letibot_tools::intent::Baseline::of_command_with(cmd, &surroundings, &req.scripts)
             },
         )
-        // **The wait, announced before it starts.** Consulting the guard costs
-        // seconds on this box, and a turn that pauses with nothing on the screen
-        // reads as a hang — the operator went to `htop` to find out whether
-        // anything was wrong. Nothing was; the guard was deciding, and nobody
-        // said so. `ToolProgress` is the one the head already renders as the
-        // latest note on the running call.
+        // The wait, announced before it starts: consulting the guard costs seconds on this box, and a turn
+        // that pauses with nothing on screen reads as a hang. `ToolProgress` is what a head already renders
+        // as the latest note on the running call.
         .with_notice(
             move |req: &letibot_tools::AdjudicationRequest, note: &str| {
                 if let Some(h) = &hub {
@@ -5312,15 +4140,9 @@ mod gatekeeper_reviews {
         );
     }
 
-    /// **The notes keeper is a seat, and the seat is what confines it.**
-    ///
-    /// `notes` declares `Access::Write`, so the backend has to be writable — a read-only backend
-    /// refuses every repair, and a keeper that cannot repair only complains. What keeps it out of
-    /// the code is the SEAT: no `write`, no `edit`, no `bash`, no child to delegate to. Both
-    /// halves are asserted here because either one alone reads as the other having been done.
-    /// **A reviewer reads the references**: the gatekeeper seat gets `web_search` and
-    /// `web_fetch` when the session has them (the operator: reviewers should be able, and
-    /// encouraged, to read man pages and docs), and never the room.
+    /// The notes keeper is a seat, and the seat is what confines it: `notes` needs a writable backend, and
+    /// what keeps it out of the code is having no `write`, no `edit`, no `bash` and no child. A reviewer
+    /// reads the references (web search and fetch) and never the room.
     #[test]
     fn the_reviewer_seat_reads_the_web_when_the_session_has_it() {
         let mut cfg = Config::for_this_box("/tmp");
@@ -5407,13 +4229,9 @@ mod gatekeeper_reviews {
     }
 }
 
-/// **What a D16 admission says on the transcript** — the one line an operator reads while the
-/// work happens.
-///
-/// The row the gate writes is the record (`/gate`, the corpus); this is the channel beside it,
-/// and the only thing that can go wrong in it is a sentence that does not say which command
-/// ran or which rule said so. The gate's own half — that the sink is called, once per admit,
-/// with the boundary's measured mechanism — is `adjudicate::tests::boundary`'s.
+/// What a D16 admission says on the transcript: the one line an operator reads while the work happens.
+/// The row the gate writes is the record; this is the channel beside it, and the only thing that can go
+/// wrong is a sentence that does not say which command ran or which rule said so.
 #[cfg(test)]
 mod gate_admissions {
     use super::*;

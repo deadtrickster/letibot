@@ -1,20 +1,6 @@
-//! **What `Harness::open` does about a transcript whose prefix the rows do not agree with.**
-//!
-//! Two behaviours, one defect: MEASURED 2026-10-26 in the operator's store, `s-gatekeeper#t0` was
-//! seated 2026-10-11 under a 24,407-token prefix with no rows, and a daemon running newer
-//! binaries appended its first fourteen rows at **32162** — the prompt *that* build composes.
-//!
-//! 1. **An empty transcript is re-seated onto the prompt this daemon composes** (option (a), not
-//!    (b): with no rows there is no chain to rebuild and no cache to keep, so keeping the old
-//!    prompt would only give a new conversation tools it cannot call). This is the prevention —
-//!    the store refuses the append now too (`Store::assert_anchored`), so without it such a
-//!    session could never take its first turn.
-//! 2. **A transcript whose rows chain from a different prefix is forked onto it**, not refused
-//!    for ever, and the old transcript is left exactly as it was. This is the repair for stores
-//!    already in the state.
-//!
-//! Both run on stores built here, with the byte vocabulary and a provider that is never called —
-//! no GGUF, no model server (`no_vocab.rs`'s reasoning).
+//! What `Harness::open` does about a transcript whose prefix the rows do not agree with: an empty one is re-seated onto
+//! the prompt this daemon composes, and one whose rows chain from a different prefix is forked onto it rather than
+//! refused for ever. Both run on stores built here, with the byte vocabulary and a provider that is never called.
 
 use super::*;
 use letibot_tokencore::ledger::{chain, hash_tokens};
@@ -68,12 +54,9 @@ fn parts(cfg: &Config) -> Parts {
     parts
 }
 
-/// A session row and a transcript under a prefix **this daemon does not compose**, with `rows`
-/// rows in it (none for the re-seat case).
-///
-/// The dialect and the vocabulary are this build's own, because they are in the store's record
-/// of the prefix and a mismatch there is a DIFFERENT repair (the re-render fork, `open`'s arm
-/// above) — the defect this file is about changed the prompt's text and nothing else.
+/// A session row and a transcript under a prefix this daemon does not compose, with `rows` rows in it. The dialect and
+/// vocabulary are this build's own, since a mismatch there is a different repair: the defect here changed the prompt's
+/// text and nothing else.
 fn seed(
     dir: &Scratch,
     id: &str,
@@ -149,10 +132,9 @@ fn blob(tokens: &[u32]) -> Vec<u8> {
     tokens.iter().flat_map(|t| t.to_le_bytes()).collect()
 }
 
-/// **An empty transcript the older build seated is re-seated onto this daemon's prompt**, and a
-/// row appended afterwards rebuilds — which is the whole point: before this, the append landed at
-/// the daemon's prefix length inside a transcript whose prefix was the older one, and no resume
-/// could rebuild it again.
+/// An empty transcript the older build seated is re-seated onto this daemon's prompt, and a row appended afterwards
+/// rebuilds: before this, the append landed at the daemon's prefix length inside a transcript whose prefix was the older
+/// one, and no resume could rebuild it again.
 #[test]
 fn an_empty_transcript_is_reseated_onto_the_prompt_this_daemon_composes() {
     let dir = Scratch::new("prefix-reseat");

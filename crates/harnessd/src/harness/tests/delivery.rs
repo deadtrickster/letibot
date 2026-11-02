@@ -1,7 +1,5 @@
-//! **R79 at the round boundary and the turn's start** — what a running turn is handed, and what
-//! waits for the next break. The decision itself is `crate::delivery`'s and asserted there; these
-//! drive it through the steering source a turn actually polls, with a watcher set, a board and a
-//! record on disk.
+//! R79 at the round boundary and the turn's start: what a running turn is handed, and what waits for the next break.
+//! The decision is `crate::delivery`'s and asserted there; these drive it through the steering source a turn polls.
 
 use super::*;
 
@@ -116,11 +114,9 @@ fn row(when: Option<TodoCondition>, needs: Vec<TodoNeed>) -> TodoItem {
     }
 }
 
-/// **A routine completion during a long turn is held, and the batch arrives as ONE note at the
-/// boundary** — the operator's point 1. A CHILD is the session that used to hear every
-/// settlement at its next round boundary; now neither of two routine ones reaches it mid-turn,
-/// and the next turn it takes opens with both under one `[meanwhile]` line, recorded as a batch
-/// of two with the times they arrived.
+/// A routine completion during a long turn is held, and the batch arrives as ONE note at the boundary: a child used to
+/// hear every settlement at its next round, and now neither of two routine ones reaches it mid-turn, with both under one
+/// `[meanwhile]` line and recorded as a batch of two with the times they arrived.
 #[test]
 fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
     let dir = Scratch::new("r79-batch");
@@ -212,15 +208,9 @@ fn woken(registry: &letibot_sessionlog::registry::Registry) -> bool {
     )
 }
 
-/// **Mid-turn a routine result is still held; the turn's END wakes the session for it, and the
-/// wake hands it over as one batch under the turn-end heading.**
-///
-/// pg-noop, 2026-10-11: a result held while the model worked was told only when the operator next
-/// spoke, with a heading claiming the model was busy. The operator's ruling: *"jobs were ran for a
-/// reason and held for a reason. once turn ends no reason to hold"*. Holding is for a RUNNING turn
-/// only: the round boundary still holds (no interruption), `JobWatchers::turn_ended` rings the
-/// session's wake when something is held — and only then — and `between_turns` delivers it,
-/// recorded as `turn_end`.
+/// Mid-turn a routine result is still held; the turn's END wakes the session for it, and the wake hands it over as one
+/// batch under the turn-end heading. Holding is for a RUNNING turn only: the round boundary still holds without
+/// interrupting, the turn end rings the wake when something is held, and `between_turns` delivers it as `turn_end`.
 #[test]
 fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
     let dir = Scratch::new("r79-turn-end");
@@ -253,12 +243,9 @@ fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
     assert_eq!(rec[0]["rule"], "turn_end");
 }
 
-/// **Between turns the line is the turn's end**: what arrived before it is the batch, under its
-/// heading; what arrived after it — while the session was idle — is an ordinary notice with no
-/// heading, recorded as `idle`. Several held results are ONE batch.
-///
-/// pg-noop, 2026-10-11, and the operator's ruling: *"jobs were ran for a reason and held for a
-/// reason. once turn ends no reason to hold"*.
+/// Between turns the line is the turn's end: what arrived before it is the batch under its heading, and what arrived
+/// after it while the session was idle is an ordinary notice with no heading, recorded as `idle`. Several held results
+/// are ONE batch.
 #[test]
 fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
     let dir = Scratch::new("r79-idle");
@@ -325,13 +312,9 @@ fn held_said(hub: &Hub) -> Vec<(u64, u64, u64)> {
         .collect()
 }
 
-/// **The held set is said on the hub every time it changes, by kind and failures, and only
-/// then.**
-///
-/// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
-/// held - somewhere close to Responding ...."*. A job and a failed subagent held at a round
-/// boundary say `(1, 1, 1)`; a round boundary that changes nothing says nothing (the re-sort takes
-/// the set and puts it back without a dip to zero); delivering it says `(0, 0, 0)`.
+/// The held set is said on the hub every time it changes, by kind and failures, and only then: a job and a failed
+/// subagent held at a round boundary say `(1, 1, 1)`, a boundary that changes nothing says nothing, and delivering it
+/// says `(0, 0, 0)`.
 #[test]
 fn the_held_counts_are_said_on_the_hub_when_they_change() {
     let dir = Scratch::new("r79-held-said");
@@ -513,10 +496,8 @@ fn the_meanwhile_notice_is_the_heads_fixture() {
             ..settled("j1043", "exited 101", SystemTime::UNIX_EPOCH)
         },
     ];
-    // **Both headings the head is handed**: the batch that rode a turn started for another reason,
-    // and the batch delivered the moment the turn it was held through ended (the operator,
-    // 2026-10-11: *"jobs were ran for a reason and held for a reason. once turn ends no reason to
-    // hold"*).
+    // Both headings the head is handed: the batch that rode a turn started for another reason, and the batch delivered
+    // the moment the turn it was held through ended.
     for (rule, fixture) in [
         (crate::delivery::Rule::Batch, "job_notice_meanwhile.txt"),
         (
@@ -598,19 +579,9 @@ fn askable(board: &[TodoItem], w: &JobWatchers, cap: Duration, now: SystemTime) 
     .collect()
 }
 
-/// **The grace after a wait ends, step by step: quiet until the model has READ the completion and
-/// finished a turn after the one it arrived in.**
-///
-/// The operator, 2026-10-11: *"when wait on condition happens - say job finishes, we must delay the
-/// nag for a bit to let the model process the result"*. Measured on pg-noop the same day: the
-/// `wait_on` silence ended the instant the gate job did, so the check asked about the CRITERION row
-/// while the completion that answered it was still queued. The fact guarded is the delivery and
-/// the turn end after it — not a timer:
-///
-/// 1. ended, still in the queue → quiet;
-/// 2. delivered at a round boundary of the running turn, and that turn ends → still quiet (the
-///    check at this turn end must not ask about what the model just read);
-/// 3. the NEXT turn ends → askable as before.
+/// The grace after a wait ends, step by step: quiet until the model has READ the completion and finished a turn after
+/// the one it arrived in. Ended and still queued is quiet, delivered at a round boundary and then that turn ends is
+/// quiet, and the NEXT turn ends is askable. The fact guarded is the delivery, not a timer.
 #[test]
 fn a_wait_ons_grace_lasts_until_the_turn_after_the_completion_was_read() {
     let dir = Scratch::new("grace-steps");
@@ -685,10 +656,9 @@ fn a_held_or_wake_delivered_completion_is_graced_the_same_way() {
     assert_eq!(askable(&board, &w, cap, SystemTime::now()).len(), 2);
 }
 
-/// **The backstop: a grace cannot outlive R79's starvation cap**, so a completion that is never
-/// delivered — or a model that read it and went idle — cannot silence a row for ever. Measured
-/// from the ending; and the idle clock is armed for the moment it runs out, because a model that
-/// went idle takes no turn that would re-arm it. pg-noop, 2026-10-11.
+/// The backstop: a grace cannot outlive R79's starvation cap, so a completion never delivered cannot silence a row for
+/// ever. Measured from the ending, and the idle clock is armed for the moment it runs out, since a model that went idle
+/// takes no turn that would re-arm it.
 #[test]
 fn the_grace_has_a_backstop_and_the_clock_is_armed_for_it() {
     let hub = Hub::new("s-r79");
@@ -740,11 +710,9 @@ fn the_grace_has_a_backstop_and_the_clock_is_armed_for_it() {
     );
 }
 
-/// **The completion names the rows that wait on it — both halves of the board — and says nothing
-/// when none do.** The operator, 2026-10-11: *"the completion should mention associated todos"*.
-/// Measured on pg-noop the same day: the gate's completion arrived and the CRITERION row attached
-/// to it stayed `in_progress` until the plan check came round, because nothing in the notice tied
-/// the two together. A DONE row is not named: it owes nothing.
+/// The completion names the rows that wait on it, on both halves of the board, and says nothing when none do: the
+/// gate's completion used to arrive while the row attached to it stayed `in_progress`. A DONE row is not named, since
+/// it owes nothing.
 #[test]
 fn the_completion_names_the_rows_waiting_on_it() {
     let board = waiting_board();
@@ -807,10 +775,9 @@ fn the_completion_names_the_rows_waiting_on_it() {
     assert!(two.ends_with("now that they have ended."), "{two}");
 }
 
-/// **A `when: job` firing is not delayed by the grace.** The grace is for the CHECK — it must not
-/// ask about a row before the model has digested the ending — and a condition firing is the news
-/// itself, delivered in the same wake as the completion. A row that both waits on `j12` and fires
-/// on it would otherwise hear its condition a turn late. pg-noop, 2026-10-11.
+/// A `when: job` firing is not delayed by the grace: the grace is for the CHECK, which must not ask about a row before
+/// the model has digested the ending, while a condition firing is the news itself. A row that both waits on `j12` and
+/// fires on it would otherwise hear its condition a turn late.
 #[test]
 fn a_when_job_firing_is_not_held_back_by_the_grace() {
     let mut row = waiting_board().remove(1);
@@ -829,10 +796,9 @@ fn a_when_job_firing_is_not_held_back_by_the_grace() {
     assert_eq!(due.len(), 1, "the condition fires with the completion");
 }
 
-/// **A want does not outlive the delivery of its result, by any door** (R91.17). The `wanted` map
-/// was cleared only on IMMEDIATE delivery: a want recorded while the result was already held, and
-/// then handed over in the batch, stayed for the session's life — as did a `job_wait` on a result
-/// that had already been delivered.
+/// A want does not outlive the delivery of its result, by any door: the `wanted` map was cleared only on IMMEDIATE
+/// delivery, so a want recorded while the result was held, and then handed over in the batch, stayed for the session's
+/// life.
 #[test]
 fn a_want_is_forgotten_when_its_result_is_delivered_in_a_batch_or_already_was() {
     let dir = Scratch::new("r79-wanted");

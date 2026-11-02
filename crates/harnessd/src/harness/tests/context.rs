@@ -65,18 +65,8 @@ fn deepseek_window() -> Config {
     cfg
 }
 
-/// **R72: a reasoning-heavy history is judged at the window's REAL edge.**
-///
-/// The provider counted 880k at its last round, over a ledger ~3.4× that (the
-/// reasoning it is not sent). Then a round fails inside its own reasoning — R7's
-/// *"the turn spent its whole output on reasoning"* — which commits 200k ledger
-/// tokens of thought and measures nothing, and a 12k tool result lands. The
-/// provider will be sent 892k of a 1M window whose wall is at 937.5k: room.
-///
-/// The ratio reading — `ledger ÷ (ledger, provider)` as learned at the round —
-/// counted the 200k of unsent thought at nearly a third of its size and the
-/// session past the wall (941.7k against 937.5k), compacting a conversation with
-/// 108k of its window free.
+/// R72: a reasoning-heavy history is judged at the window's REAL edge. The provider counted 880k over a ledger ~3.4x
+/// that, so the ratio reading put it past the wall and compacted a conversation with 108k of its window free.
 #[test]
 fn a_reasoning_heavy_history_meets_the_wall_at_the_providers_count() {
     let mut w = Wall::new(20_000);
@@ -125,14 +115,9 @@ fn a_reasoning_heavy_history_meets_the_wall_at_the_providers_count() {
     );
 }
 
-/// **R72: a restart whose last append was a notice comes back at the provider's
-/// count, and does not compact.**
-///
-/// MEASURED 2026-10-11, leticl's `s-1791151788256943467` after a daemon restart:
-/// `compacting: 3454266 of 1000000 tokens resident` → `compacted: 75408` — a
-/// session the provider counted at ~740k, because the stored pair's ledger no
-/// longer EQUALLED the rebuilt one (something was appended after the last round),
-/// so the window went unscaled and the raw ledger was compared with it.
+/// R72: a restart whose last append was a notice comes back at the provider's count, and does not compact. Measured: a
+/// session the provider counted at ~740k compacted to 75k, because the stored pair's ledger no longer EQUALLED the
+/// rebuilt one, so the window went unscaled.
 #[test]
 fn a_restart_after_a_notice_recovers_the_providers_count_and_does_not_compact() {
     let mut w = Wall::new(20_000);
@@ -213,15 +198,9 @@ fn a_fork_rebases_the_count_and_a_local_session_counts_the_ledger() {
     assert_eq!(local.tokens, w.len(), "ratio 1 by construction");
 }
 
-/// **A fork of a metered session is sized in the provider's units, not the ledger's
-/// bytes.**
-///
-/// MEASURED 2026-10-11, pg-noop's `/reseat`: a metered session's ledger is
-/// `Vocab::bytes`, and the reingested transcript's sent rows came to 1,276,902 of
-/// them. Deepseek had counted the same conversation at 598k, and the estimate fired
-/// "compacting: 1276902 of 1000000 deepseek tokens resident" — an ordinary fold of a
-/// conversation with 400k of its window free, then "≈ 735950" after it, also in bytes.
-/// The last measurement's sent-to-provider ratio carries across the fork.
+/// A fork of a metered session is sized in the provider's units, not the ledger's bytes: a reingested transcript's sent
+/// rows came to 1,276,902 bytes where deepseek had counted 598k, so the estimate fired an ordinary fold of a
+/// conversation with 400k of its window free. The sent-to-provider ratio carries across the fork.
 #[test]
 fn a_fork_of_a_byte_ledger_is_sized_by_the_last_measured_ratio() {
     let mut w = Wall::new(120_000);
@@ -289,12 +268,8 @@ fn the_compacted_line_is_one_unit_said_once() {
     );
 }
 
-/// **The wall's turn failure is the provider's count with its unit** (R72 follow-up,
-/// defect A). MEASURED on a scratch deepseek session at a 40,000-token window: the
-/// head drew *"── FAILED — stopped after 1 round(s) at the context wall: 56466 of
-/// 41843 tokens resident"* while the log for the same wall said *"53978 of 40000
-/// deepseek tokens (56466 of 41843 ledger tokens)"* — the ledger's pair, no unit,
-/// and a window nobody configured.
+/// The wall's turn failure is the provider's count with its unit: the head drew a ledger pair with no unit against a
+/// window nobody configured, while the log for the same wall named the provider's two.
 #[test]
 fn the_wall_failure_says_the_providers_count_and_names_its_unit() {
     let said = super::HarnessError::ContextWall {
@@ -456,11 +431,9 @@ fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
     );
 }
 
-/// **A switch that fails says how to go back** — the notice, its 4xx gate, and the
-/// command an operator can type.
-///
-/// MEASURED 2026-10-25: the screen said `FAILED — http 400: messages.content.type is
-/// invalid`, and the way back was the operator's memory of what the session had been on.
+/// A switch that fails says how to go back: the notice, its 4xx gate, and the command an operator can type. Measured
+/// on a session whose screen said `FAILED — http 400: messages.content.type is invalid`, where the way back was the
+/// operator's memory.
 #[test]
 fn a_switch_that_fails_names_the_model_before_it_and_the_command_back() {
     let said = super::switch_back_said("deepseek/deepseek-flash", "glm-coding/glm-5.3", 400);
@@ -493,12 +466,8 @@ fn a_switch_that_fails_names_the_model_before_it_and_the_command_back() {
     );
 }
 
-/// **Infinity is `0`, and it is one line, so it gets one test.**
-///
-/// The operator: *"make 200 tool calls limit configurable and set it to
-/// infinity"*. `0` reaching the loop as `0` would mean a turn that may take no
-/// rounds at all — the exact opposite — and it is the kind of inversion that
-/// looks right in a diff.
+/// Infinity is `0`, and it is one line, so it gets one test: `0` reaching the loop as `0` would mean a turn that may
+/// take no rounds at all, the exact opposite, and it is the kind of inversion that looks right in a diff.
 #[test]
 fn a_zero_backstop_is_unbounded_and_every_other_number_is_itself() {
     assert_eq!(super::round_backstop(0), usize::MAX, "0 means no bound");
@@ -512,12 +481,9 @@ fn a_zero_backstop_is_unbounded_and_every_other_number_is_itself() {
     );
 }
 
-/// **`next` is the offset to ask at, not a count, and it stops at the end.**
-///
-/// A pane pages by handing `next` straight back as the next request's offset,
-/// so it has to be the offset the window ended at — and it has to be `None`
-/// exactly when the ring holds nothing further, or the pane offers a page that
-/// comes back empty and reads as the job's end.
+/// `next` is the offset to ask at, not a count, and it stops at the end: a pane pages by handing it straight back, and
+/// it has to be `None` exactly when the ring holds nothing further, or the pane offers a page that comes back empty and
+/// reads as the job's end.
 #[test]
 fn a_job_window_names_the_next_offset_until_the_ring_runs_out() {
     let slice = |from, to, produced, dropped, retained| letibot_tools::exec::OutputSlice {
@@ -540,11 +506,9 @@ fn a_job_window_names_the_next_offset_until_the_ring_runs_out() {
     assert_eq!(next_job_offset(&slice(992, 996, 1000, 992, 8)), Some(996));
 }
 
-/// **The rungs above the ordinary fold press harder, and the sliced one is reachable at
-/// any size.** pg-noop, 2026-10-11: 941,101 of 1,000,000 fit one summary call, so
-/// `plan_overrun` said `NotOverrun`, the ordinary fold carried its second half verbatim,
-/// and deepseek measured 507,355 after it. The smaller-tail rung halves that verbatim
-/// part; the sliced rung is the two-half plan with nothing verbatim, asked for by name.
+/// The rungs above the ordinary fold press harder, and the sliced one is reachable at any size: a history that fit one
+/// summary call left the ordinary fold carrying its second half verbatim, which the smaller-tail rung halves and the
+/// sliced rung drops, asked for by name.
 #[test]
 fn the_ladder_rungs_carry_less_verbatim_and_the_sliced_one_ignores_size() {
     // A history of forty 23k items, ~920k, under a 1M window.
@@ -579,11 +543,8 @@ fn the_ladder_rungs_carry_less_verbatim_and_the_sliced_one_ignores_size() {
     }
 }
 
-/// **A verbatim reseat is refused only when the conversation cannot be sent at all** — the
-/// operator, of a peerdb session at 901,221 of a 1,000,000-token window refused a `/reseat`
-/// because a turn's headroom would not fit: *"why reseat cant work if it is a mere tool schema
-/// change? it is a very strange thing to say"*. The conversation was already that size on the
-/// old prompt; a reseat changes it by the schema's difference. Keeping a turn's room is the
+/// A verbatim reseat is refused only when the conversation cannot be sent at all: the conversation was already that
+/// size on the old prompt and a reseat changes it by the schema's difference, so keeping a turn's room is the
 /// compaction's job before the next turn, reseated or not.
 #[test]
 fn a_verbatim_reseat_is_refused_only_over_the_window() {

@@ -1,30 +1,17 @@
-//! **Model switching**: `/models`, a provider swap, a declared local model and the
-//! way back — the endpoints, vocabularies and windows a session moves between, and
-//! what each switch owes the one before it.
+//! Model switching: `/models`, a provider swap, a declared local model and the way back. The
+//! endpoints, vocabularies and windows a session moves between, and what each switch owes the one
+//! before it.
 use super::*;
 
-/// **The daemon's own server, exactly as this session's daemon was started against
-/// it** — what `/models local` returns to.
-///
-/// Captured at open, before any switch can move anything, because a switch
-/// overwrites the very fields this holds: a session that moved to another fleet
-/// model's weights has an `engine` rendering another dialect and a `cfg.endpoint`
-/// naming another box, and "back to local" is a RETURN, not a no-op. Before this
-/// existed the return was partial in a way nobody could see: the window came back
-/// (its own remember-on-first-move) while the address stayed wherever the last
-/// fleet switch put it, and the line still said *"turns go to the local server"*.
-///
-/// The vocabulary and the wiring are held here as `Arc`s — the same ones
-/// [`Parts`] opened with — so the return does not reload a tokenizer or rebuild a
-/// renderer; it reseats the pair the daemon started with.
+/// The daemon's own server, exactly as this session's daemon was started against it: what `/models local` returns
+/// to. Captured at open, before any switch can move anything, since a switch overwrites the fields this holds. The
+/// vocabulary and wiring are the `Arc`s `Parts` opened with, so a return re-seats that pair.
 #[derive(Clone)]
 pub(crate) struct OwnServer {
     pub(crate) endpoint: Endpoint,
     pub(crate) model: String,
-    /// The GGUF the daemon started on, or `None` when it started on the byte
-    /// vocabulary — the same `Option` `Config::vocab_gguf` carries since main
-    /// made the vocabulary optional. `vocab` below holds the thing itself
-    /// either way, and its `source()` is the honest name for both.
+    /// The GGUF the daemon started on, or `None` when it started on the byte vocabulary. `vocab`
+    /// below holds the thing itself either way, and its `source()` is the honest name for both.
     pub(crate) vocab_gguf: Option<PathBuf>,
     pub(crate) dialect: crate::dialect::Dialect,
     pub(crate) media_marker: Option<String>,
@@ -42,15 +29,9 @@ pub(crate) fn superseded(name: &str) -> String {
     )
 }
 
-/// **A switch waiting for the turn in flight to end** — recorded, said, and applied where the
-/// prompt span closes.
-///
-/// MEASURED 2026-10-26, the operator's session: `/models deepseek/deepseek-flash` typed while a
-/// round on `glm-coding/glm-5.3` was failing was applied INSIDE the retry loop, so the round was
-/// re-issued on deepseek carrying the rest of GLM's turn — a run of assistant tool-call rounds
-/// with no `reasoning_content`, which deepseek's thinking mode refuses (`http 400: The
-/// `reasoning_content` in the thinking mode must be passed back to the API`). The operator's
-/// sentence for the rule: *"we can switch after turn ends"*.
+/// A switch waiting for the turn in flight to end: recorded, said, and applied where the prompt span closes. A switch
+/// taken inside a failing round re-issues that round on the new model carrying the rest of the old one's turn, which
+/// the new model refuses, and a model's first request must follow a user message.
 pub(crate) struct PendingSwitch {
     /// The argument [`Harness::set_provider`] will be given when the turn ends: `Some` is a
     /// metered provider, `None` the daemon's own server.
@@ -61,9 +42,9 @@ pub(crate) struct PendingSwitch {
     model: String,
 }
 
-/// **The model a `set_provider` argument would land on**, in [`Harness::model_name`]'s spelling
-/// (`deepseek/deepseek-flash`, `local`) — so a switch that is still pending can be named, and
-/// compared with what answers now, without building a provider for it.
+/// The model a `set_provider` argument would land on, in [`Harness::model_name`]'s spelling
+/// (`deepseek/deepseek-flash`, `local`), so a pending switch can be named and compared with what
+/// answers now without building a provider for it.
 pub(crate) fn model_name_of(choice: &Option<crate::config::ProviderConfig>) -> String {
     match choice {
         None => "local".to_string(),
@@ -74,12 +55,9 @@ pub(crate) fn model_name_of(choice: &Option<crate::config::ProviderConfig>) -> S
     }
 }
 
-/// **The sentence a failed switch earns** — apart from [`Harness::switch_back_notice`] so
-/// the wording and the command are testable without a session, a store and a provider.
-///
-/// The command is spelled the way the head's `/models` takes it (`Harness::model_name`),
-/// not described: an operator reading *"go back to deepseek"* would have to work out
-/// which of five spellings the verb accepts, and the daemon already knows.
+/// The sentence a failed switch earns, apart from [`Harness::switch_back_notice`] so the wording
+/// and the command are testable without a session, a store and a provider. The command is spelled
+/// the way `/models` takes it, because the daemon already knows which of five spellings it wants.
 pub(crate) fn switch_back_said(previous: &str, now: &str, code: u16) -> String {
     format!(
         "the first round on `{now}` was refused by the provider (http {code}). Nothing this \
@@ -88,11 +66,9 @@ pub(crate) fn switch_back_said(previous: &str, now: &str, code: u16) -> String {
     )
 }
 
-/// **The model a session switched away from**, kept until a round proves the new one
-/// answers — the fact that makes a failed switch recoverable by the person who typed it.
-///
-/// Held in [`Harness::model_name`]'s spelling, which is the one `/models` takes, so the
-/// command in the notice is not a second name to translate.
+/// The model a session switched away from, kept until a round proves the new one answers: the fact that makes a failed
+/// switch recoverable by the person who typed it. Held in `model_name`'s spelling, which is what `/models` takes, so the
+/// notice's command is not a second name to translate.
 pub(crate) struct SwitchBack {
     /// What answered before the switch: `deepseek/deepseek-flash`, `local`.
     previous: String,
@@ -113,90 +89,29 @@ impl Harness {
         ))
     }
 
-    /// **Switch to a model this fleet hosts** — `/models dense78`, `/models local.glm`.
-    ///
-    /// Declared in `providers.toml` as a `[model."…"]` block with an address; see
-    /// [`letibot_provider::keys::LocalModel`]. These are `local` in every sense that
-    /// matters here: no key, no meter, an OpenAI-compatible or llama.cpp server on the
-    /// LAN. So this takes the local path — `provider` cleared — and moves where that
-    /// path points.
-    ///
-    /// # Why it verifies the vocabulary before it moves
-    ///
-    /// The engine tokenizes HERE, with this daemon's GGUF, and sends token ids. Point
-    /// it at a server holding different weights and nothing fails: the ids are valid
-    /// numbers and mean other words. That is silent corruption of the one thing a
-    /// transcript is for, so a switch that cannot show the weights match does not
-    /// happen — unless it does something better than refuse: load the vocabulary of
-    /// the weights the target itself names, seat the dialect the target's own
-    /// template settles on, and re-render the conversation into a fork under both.
-    ///
-    /// Four outcomes, and each is a sentence rather than a shrug:
-    ///
-    ///   * `/props` names the same GGUF this daemon tokenizes with — the address
-    ///     moves, and nothing else does. The engine, the dialect and the
-    ///     conversation's tokens all stay.
-    ///   * `/props` names OTHER weights whose template matches a dialect this tree
-    ///     drives (or the block asserts one) — a full switch: their vocabulary
-    ///     loaded from the GGUF they name, their dialect seated, the conversation
-    ///     re-rendered into a fork keyed by that dialect's template, the window
-    ///     retuned against the box that will answer. `/models local.glm` from a
-    ///     qwen daemon is this arm, and it is the arm the operator asked for.
-    ///   * the weights differ and no dialect can be named honestly — refused,
-    ///     naming what was looked for and the key that asserts it by hand.
-    ///   * nothing answers, or `/props` names no model at all (a proxy, a server
-    ///     without it) — refused, and `same_vocab = true` in the block asserts by
-    ///     hand that the weights match. An operator saying *"I know these are the
-    ///     same weights"* is a decision on the record; this guessing it would not be.
-    ///
-    /// # Why the cross-weights arm forks rather than swapping the renderer under a
-    /// live transcript
-    ///
-    /// Every token in the session's ledger was rendered by one dialect against one
-    /// vocabulary. Appending another dialect's bytes to them builds a prompt no
-    /// model was trained on — the exact corruption the vocabulary check exists to
-    /// refuse, one layer down. So the switch re-renders the conversation whole,
-    /// the same way a resume into a daemon of another dialect does, into a fork
-    /// whose stable-prefix row is keyed by the NEW dialect's template sha: another
-    /// dialect's cache row is never reused, by construction rather than by check.
+    /// Switch to a model this fleet hosts: a `[model."..."]` block with an address, and `local` in every sense that
+    /// matters, so this takes the local path with `provider` cleared. The engine tokenizes HERE, so other weights are only
+    /// safe through a fork re-rendered under their vocabulary and dialect, and weights matching no dialect are refused.
     pub fn set_local_model(
         &mut self,
         m: &letibot_provider::keys::LocalModel,
     ) -> Result<String, HarnessError> {
         let want = parse_local_url(&m.url)
             .map_err(|e| HarnessError::Setup(format!("[model.\"{}\"] {e}", m.name)))?;
-        // **One `/props` probe decides the whole switch** — weights, dialect,
-        // marker — before anything moves, so a refusal leaves the session exactly
-        // as it was. The daemon's own vocabulary is optional since main made it
-        // so (a box with only an API key starts on the byte one), and the
-        // decision takes it as an `Option`: with one, behaviour is as it was;
-        // without one, nothing can be the SAME weights as a vocabulary that does
-        // not exist, and the probe alone settles which weights the switch seats
-        // — the target's own, reported by the target.
+        // One `/props` probe decides the whole switch, before anything moves, so a refusal leaves
+        // the session exactly as it was. The daemon's own vocabulary is optional, and without one
+        // nothing can be the SAME weights as a vocabulary that does not exist.
         let switch = local_switch_decision(&want, m, self.cfg.vocab_gguf.as_deref())
             .map_err(HarnessError::Setup)?;
 
-        // Off any metered provider first, and by its own door, so the ledger scale and
-        // the restored window are handled where that is understood. Its report is
-        // discarded deliberately: it describes a move to the daemon's own server, which
-        // is a waypoint here rather than where this switch lands.
-        //
-        // **But not its re-seat half, when this switch replaces the engine anyway.**
-        // `/models local`'s door returns a session sitting on the daemon's own
-        // weights — re-rendered back, if a previous switch moved it — and a
-        // conversation forked back only to be forked again onto the target's
-        // dialect a moment later pays two cold prefills for one decision. So the
-        // same-weights arm takes the full door and the other-weights arm takes
-        // the door with its re-seat withheld: the engine this arm is about to
-        // discard is not rebuilt first.
+        // Off any metered provider first, and by its own door, so the ledger scale and the restored window are handled
+        // where that is understood. Its report is discarded, since it describes a move to the daemon's own server, a
+        // waypoint here. The other-weights arm withholds that door's re-seat so one decision does not pay two prefills.
         match switch {
             LocalSwitch::SameWeights => {
-                // **The UNGATED door, and the one place that matters.** This is a waypoint on the
-                // road to a fleet model, not a switch the operator asked for: the gated door would
-                // see a prompt in flight and record `local` as a pending switch, and the endpoint
-                // would then move under it — half a switch, which is worse than either. A fleet
-                // switch cannot arrive inside a turn anyway (`slash::mid_turn_switch_ok` refuses
-                // it), and this keeps the two facts from disagreeing if that ever changes.
+                // The UNGATED door: this is a waypoint on the road to a fleet model, not a switch the operator asked
+                // for, and the gated door would see a prompt in flight, record `local` as pending and then move the
+                // endpoint under it. A fleet switch cannot arrive inside a turn anyway.
                 self.set_provider_now(None)?;
                 self.move_local_endpoint(&want, m)
             }
@@ -211,20 +126,17 @@ impl Harness {
         }
     }
 
-    /// The address move a same-weights switch is: the engine, the dialect and the
-    /// conversation all stay, and only where turns are posted changes.
-    ///
-    /// Split from [`Harness::set_local_model`] so the arm that changes nothing but
-    /// the address is readable as exactly that, beside the arm that changes
-    /// everything.
+    /// The address move a same-weights switch is: the engine, the dialect and the conversation all
+    /// stay, and only where turns are posted changes. Split from [`Harness::set_local_model`] so the
+    /// arm that changes nothing but the address reads as exactly that.
     fn move_local_endpoint(
         &mut self,
         want: &Endpoint,
         m: &letibot_provider::keys::LocalModel,
     ) -> Result<String, HarnessError> {
-        // **The engine is what actually holds the address** — `cfg.endpoint` is the
-        // record and `engine.endpoint` is where `/completion` is posted. Writing one
-        // and not the other is how a switch reports a move it did not make.
+        // The engine is what actually holds the address: `cfg.endpoint` is the record and
+        // `engine.endpoint` is where `/completion` is posted. Writing one and not the other is how a
+        // switch reports a move it did not make.
         self.cfg.endpoint = want.clone();
         self.engine.endpoint = want.clone();
         self.cfg.model = m.model.clone();
@@ -234,11 +146,10 @@ impl Harness {
             self.cfg.sampling = sampling.clone();
             self.engine.sampling = sampling;
         }
-        // A different box is a different KV cache and a different window; the ratio
-        // measured on the old one is not evidence about this one.
+        // A different box is a different KV cache and a different window, so a ratio measured on the
+        // old one is not evidence about this one - nor is one measured on a cloud model, whose count
+        // is not this ledger's.
         self.cfg.ledger_scale = None;
-        // And a ratio measured on a CLOUD model -- `None` here unless this session came
-        // from one -- is not evidence about a local ledger, whose count IS the prompt.
         self.cfg.carried_scale = None;
         let moved = self.retune_window_local(want, &m.name, m.profile.window);
         let line = format!(
@@ -254,14 +165,9 @@ impl Harness {
         Ok(line)
     }
 
-    /// **The cross-weights switch** — the arm that makes `/models local.glm` work
-    /// from a daemon started on the qwen weights.
-    ///
-    /// Everything here happens in an order where a failure leaves a session that
-    /// still works: the probe and the dialect were decided before this was called,
-    /// the vocabulary loads before anything is written, the fork is written before
-    /// anything is swapped, and the engine moves only once the fork exists. A
-    /// failure at any step is the sentence naming the step.
+    /// The cross-weights switch: the arm that makes `/models local.glm` work from a daemon started on the qwen
+    /// weights. The order is what leaves a session that still works on failure: vocabulary loaded, fork written, engine
+    /// moved last.
     fn set_local_model_weights(
         &mut self,
         want: &Endpoint,
@@ -279,11 +185,9 @@ impl Harness {
                 want.authority()
             )));
         }
-        // The GGUF `/props` named is a path on the box that RUNS the server; a
-        // LAN target can name one this box cannot read, and the switch tokenizes
-        // HERE. Refused with the path and what to do about it, rather than
-        // searched for by basename — a basename hunt that found the wrong file
-        // would be this switch's own corruption, committed by its own fix.
+        // The GGUF `/props` named is a path on the box that RUNS the server, and this box
+        // tokenizes. Refused with the path rather than hunted by basename: a basename hunt that
+        // found the wrong file would be this switch's own corruption, committed by its own fix.
         if !gguf.is_file() {
             return Err(HarnessError::Setup(format!(
                 "{} serves weights at `{}` (its /props answer), and that is not a file \
@@ -302,11 +206,9 @@ impl Harness {
         let old_gguf = self.engine.vocab().source().to_string();
         let was_tokens = self.session.ledger.len();
 
-        // **The vocabulary of the weights that will answer.** The second
-        // vocabulary a process ever loads — the daemon's own came first, at
-        // start — and the one a box short of memory cannot afford. It is CPU-only
-        // by the shim's own construction (see `csrc/shim.c`), which is what lets
-        // a daemon already holding one model's weights load another's tokenizer.
+        // The vocabulary of the weights that will answer: the second a process ever loads, and
+        // CPU-only by the shim's own construction, which is what lets a daemon already holding one
+        // model's weights load another's tokenizer.
         let vocab = Arc::new(load_gguf(&gguf).map_err(|e| {
             HarnessError::Setup(format!(
                 "loading the vocabulary at `{}`, which {}'s /props named: {e}. A \
@@ -346,11 +248,9 @@ impl Harness {
         })?;
         engine.media_marker = props.media_marker.clone();
 
-        // **The fork's prefix, keyed by the NEW dialect's own template sha.**
-        // `stable_prefix.dialect_sha` is the key a resume checks before reusing a
-        // rendering, so the row this writes is what makes a switch to another
-        // dialect never reuse this one's cache — including by a daemon that
-        // resumes this session later.
+        // The fork's prefix, keyed by the NEW dialect's template sha: that is the key a resume
+        // checks before reusing a rendering, so this row is what stops another dialect's cache row
+        // being reused, here or by a daemon that resumes the session later.
         let next = StablePrefix {
             system: self.cfg.system.clone(),
             tools_json: wiring.tools_json(&self.runtime.registry.schemas()),
@@ -374,16 +274,12 @@ impl Harness {
             .put_stable_prefix(&rec)
             .map_err(|e| HarnessError::Store(e.to_string()))?;
 
-        // **The engine moves first**, because the fork below renders with
-        // `self.engine` — and the fork is the first thing that can no longer fail
-        // cheaply, so by the time it runs, everything it renders with is already
-        // the pair the next turn will use.
+        // The engine moves first, because the fork below renders with `self.engine`, and the fork is
+        // the first thing that can no longer fail cheaply.
         self.engine = engine;
-        // **And the counter the notes pane measures with moves with it.** The section is
-        // assembled with the engine's own vocabulary, so a pane that went on measuring with
-        // the one this session OPENED on would disagree with the prompt about which notes are
-        // whole — the one thing the pane exists to show. See `Harness::install_notes_source`,
-        // whose closure reads this field.
+        // The counter the notes pane measures with moves too: the section is assembled with the
+        // engine's own vocabulary, so a pane measuring with the one this session OPENED on would
+        // disagree with the prompt about which notes are whole.
         self.note_vocab = vocab.clone();
         self.render = wiring.clone();
         self.cfg.dialect = dialect;
@@ -397,11 +293,9 @@ impl Harness {
         // would be a conversion of a local count into something it is not.
         self.cfg.carried_scale = None;
 
-        // **The conversation, re-rendered whole under the new pair.** The items
-        // are dialect-neutral (`item_json`); the tokens were a cache of one
-        // rendering — the same rationale the resume fork is built on, and the
-        // same machinery `reingest` drives: fork, carry every item, summarise
-        // nothing.
+        // The conversation, re-rendered whole under the new pair: the items are dialect-neutral,
+        // while the tokens were a cache of one rendering - the same rationale the resume fork is
+        // built on.
         let items = self.session.items.clone();
         let outcome = CompactionOutcome {
             turn_id: format!("{}#weights", self.transcript_id),
@@ -457,23 +351,9 @@ impl Harness {
         Ok(line)
     }
 
-    /// **Point `context_window` at the box that will answer** — the fleet half of
-    /// [`Harness::retune_window`], reading the server instead of the catalogue.
-    ///
-    /// This is not symmetry for its own sake. Measured on this fleet the day the
-    /// switch landed: `127.0.0.1:8080` serves the 27B at `n_ctx` 262144 and
-    /// `192.168.1.78:8082` serves **the same GGUF** at 57344. Without this the
-    /// switch inherited the window this daemon started with, so a session that moved
-    /// to .78 planned compaction against 262144 tokens on a server holding 57344 —
-    /// and the conversation would run off the end of the KV cache with every local
-    /// check saying there was room. The weights matching is exactly what made it
-    /// easy to miss: the vocabulary check passes, and the window is the thing that
-    /// does not travel with it.
-    ///
-    /// A server that will not report `n_ctx` leaves the window `None`, which is this
-    /// config's word for *no wall* rather than for a large one — the same reading
-    /// `cli` takes for a local endpoint that will not say. It is said out loud,
-    /// because planning against nothing is a decision the operator should see.
+    /// Point `context_window` at the box that will answer: the fleet half of `retune_window`, reading the server rather
+    /// than the catalogue. The window does not travel with matching weights, since two servers holding one GGUF can be
+    /// started at different `n_ctx`, and a server that will not report one leaves the window `None`, which is said.
     fn retune_window_local(&mut self, want: &Endpoint, name: &str, stated: Option<u64>) -> String {
         // Remembered on the way out, so `/models local` restores the server this
         // daemon was started against rather than keeping another box's number. Same
@@ -485,10 +365,9 @@ impl Harness {
             }
         }
         let was = self.cfg.context_window;
-        // **A stated window beats the probe**, for the same reason `--context-window`
-        // beats `/props` at startup: the operator naming a number is them telling the
-        // daemon something it cannot work out, and the case the key exists for is a
-        // proxy whose `/props` answers about itself rather than the server behind it.
+        // A stated window beats the probe, as `--context-window` beats `/props` at startup: the
+        // operator naming a number is them telling the daemon something it cannot work out, and the
+        // case the key exists for is a proxy whose `/props` answers about itself.
         let now = stated.or_else(|| letibot_turn::serving::served_ctx(want));
         self.cfg.context_window = now;
         match now {
@@ -499,10 +378,8 @@ impl Harness {
                     Some(old) => format!(". Context window {old} → {w}"),
                     None => format!(". Context window now {w}"),
                 };
-                // The consequence, not just the number — `retune_window`'s own rule:
-                // being told after the turn that it had to compact is being told
-                // too late. A move to a SMALLER box is where this bites, and that is
-                // the ordinary direction for a fleet switch.
+                // The consequence, not just the number: being told after the turn that it had to compact is too late.
+                // A move to a SMALLER box is where this bites, and that is the ordinary direction for a fleet switch.
                 if resident + self.cfg.headroom() >= w {
                     said.push_str(&format!(
                         "; this conversation is {resident} token(s), so the next turn \
@@ -519,19 +396,9 @@ impl Harness {
         }
     }
 
-    /// **Ask the operator for the key [`Harness::key_wanted`] names, and make it the
-    /// session's provider.**
-    ///
-    /// The masked card is the sudo password's: [`letibot_sessionlog::hub::Hub::request_secret`]
-    /// raises `SecretRequested` to every head and the answer comes back on a channel, never
-    /// in an event — so the key reaches providers.toml and nowhere else. The worker blocks
-    /// while it waits, which is safe for the same reason it is for sudo: the answer is
-    /// handled on the answering head's own reader thread.
-    ///
-    /// Refuses at once, rather than after a wait, when no head that answers decisions is
-    /// attached (a one-shot `--prompt`, say): the sentence then names the variable and the
-    /// file instead. A key that providers.toml could not hold is asked for again, saying
-    /// why, up to three times. `why` is the reason for asking again — a 401's own words.
+    /// Ask the operator for the key `key_wanted` names, and make it the session's provider: the masked card is the
+    /// sudo password's, so the key reaches providers.toml and nowhere else. Refuses at once when no head that answers
+    /// decisions is attached, and a key providers.toml could not hold is asked for again, with `why` as the reason.
     pub(crate) fn obtain_key(&mut self, why: Option<String>) -> Result<(), HarnessError> {
         let Some(pc) = self.key_wanted.clone() else {
             return Ok(());
@@ -592,9 +459,8 @@ impl Harness {
             letibot_provider::keys::store_key(Some(&file), &pc.name, &key).map_err(|e| {
                 HarnessError::Setup(format!("saving the key to {}: {e}", file.display()))
             })?;
-            // **The first key on a box also chooses the default**, so the next `letibot`
-            // starts here without a flag. Only when there is none: an existing choice is the
-            // operator's and is not this card's to move.
+            // The first key on a box also chooses the default, so the next `letibot` starts here
+            // without a flag. Only when there is none: an existing choice is the operator's.
             let mut made_default = false;
             if let Ok(None) = letibot_provider::keys::default_choice(Some(&file)) {
                 made_default =
@@ -627,34 +493,9 @@ impl Harness {
         )))
     }
 
-    /// **Switch what answers this session's turns**, underneath the conversation.
-    /// `None` is the local server. The transcript, the ledger and the tools are
-    /// untouched: the next turn simply goes elsewhere. Returns a line saying what
-    /// answers now; a provider whose key cannot be found is refused and nothing
-    /// changes.
-    ///
-    /// # A switch never lands inside a turn
-    ///
-    /// **While a prompt is in flight the request is PENDING**, and this returns the
-    /// sentence that says when it will take: it is recorded ([`Harness::pending_switch`]),
-    /// said on the hub (`model_switch_pending`), and applied where the prompt span closes
-    /// ([`Harness::apply_pending_switch`], from [`Harness::end_turn_clock`]).
-    ///
-    /// The measurement is the whole of the rule. MEASURED 2026-10-26, the operator's
-    /// session: a `/models deepseek/deepseek-flash` typed while a round on `glm-coding` was
-    /// failing was applied inside the retry loop, so the round was re-issued on deepseek
-    /// carrying the rest of GLM's turn — a run of assistant tool-call rounds with no
-    /// `reasoning_content`, which deepseek's thinking mode refuses
-    /// (`http 400: The reasoning_content in the thinking mode must be passed back to the
-    /// API`). A model's first request must follow a USER message, so the turn that was
-    /// running on the old model has to end before the new one speaks. Their words for the
-    /// rule: *"we can switch after turn ends"*.
-    ///
-    /// **Two things are not a switch and are not deferred.** A provider built for the
-    /// model the session is ALREADY on is a rebuild (`Harness::obtain_key` renews a
-    /// refused key through this very door, and a deferred rebuild would retry the round
-    /// with the key the provider just refused), so the target name is compared against
-    /// [`Harness::model_name`] first and an unchanged name goes straight through.
+    /// Switch what answers this session's turns, underneath the conversation: `None` is the local server, and the
+    /// transcript, ledger and tools are untouched. In flight the request is PENDING, since a mid-round switch re-issues
+    /// the round carrying the rest of the old turn. A provider built for the model already on is a rebuild, not a switch.
     pub fn set_provider(
         &mut self,
         choice: Option<crate::config::ProviderConfig>,
@@ -668,18 +509,9 @@ impl Harness {
         self.set_provider_now(choice)
     }
 
-    /// **Record a switch for the end of this turn, and say so** — the pending half of
-    /// [`Harness::set_provider`].
-    ///
-    /// The sentence is the return value (so the verb's reply carries it) *and* a
-    /// `model_switch_pending` warning (so a head that is not the one that typed it — and the
-    /// one that is, once the reply has scrolled — has it on the status line rather than only in
-    /// the scrollback).
-    ///
-    /// **It does not build the provider.** A switch that would be refused — a key that does not
-    /// resolve — is refused when it is applied, and `model_switch_not_applied` is what says so
-    /// then. Building it here would either refuse a request the turn cannot act on yet or build
-    /// one twice.
+    /// Record a switch for the end of this turn and say so: the sentence is both the return value and a
+    /// `model_switch_pending` warning, so a head that did not type it has it on the status line. The provider is not
+    /// built here, since building it would either refuse a request the turn cannot act on or build it twice.
     pub(crate) fn pend_switch(
         &mut self,
         choice: Option<crate::config::ProviderConfig>,
@@ -699,58 +531,25 @@ impl Harness {
         said
     }
 
-    /// **The switch itself**, with no question about the turn span — [`Harness::set_provider`]
-    /// is the door everything asks through, and this is what it calls once nothing is in flight.
-    ///
-    /// `end_turn_clock` is the one caller that must not go through the gate (the span has just
-    /// closed, and it is applying what the gate recorded).
+    /// The switch itself, with no question about the turn span: `set_provider` is the door everything asks through and
+    /// this is what it calls once nothing is in flight. `end_turn_clock` must not go through that gate, since the span
+    /// has just closed and it is applying what the gate recorded.
     fn set_provider_now(
         &mut self,
         choice: Option<crate::config::ProviderConfig>,
     ) -> Result<String, HarnessError> {
-        // **A switch clears the ratio, in BOTH directions** — ruled 2026-09-24, and the
-        // reason is this document's own: **a measurement made on one model is not evidence
-        // about another.** `ledger_scale` is `(ledger tokens, the model's prompt tokens)` for
-        // one prompt on one model, and carrying it across a switch presents a stale
-        // measurement as a current one.
-        //
-        // **Not re-derived.** There is nothing to re-derive it FROM at the moment of the
-        // switch — the first round on the new model is what produces it — so "re-derive"
-        // would mean inventing a ratio, which is a guess wearing a number's clothes. Cleared,
-        // and the first round sets it; until then the unscaled count stands, which
-        // `Config::planning_window` already returns when the scale is `None`, and
-        // `Config::tokens_are_unscaled` is how a reader says so rather than treating it as
-        // calibrated.
-        //
-        // **The old pair is KEPT, as an estimate that names the model it was measured
-        // on** — the half of this that used to be wrong. Clearing is right: the first
-        // round on the new model's tokenizer is what measures it, and until then nothing
-        // about this model has been measured. What clearing must not do is turn the
-        // ledger's own bytes into the number compared with the new model's window:
-        // MEASURED 2026-10-25, a session switched to `glm-coding` stopped at round 0 with
-        // `2708271 of 1000000 ledger tokens (unscaled: no round on glm-coding has measured
-        // yet)` and never sent a byte. See `Config::CarriedScale` for the whole of it, and
-        // `Config::carried_note` for how every line that prints a converted count says
-        // whose measurement it is.
-        //
-        // **The clear is inside each arm and not before the `match`**, because this method
-        // promises that a switch which cannot be built changes nothing — and a scale dropped
-        // for a provider whose key turned out to be missing would be a change made by a
-        // refusal. `carry_the_scale` is called after the provider that can fail is built,
-        // on the same line as the clear it is the other half of.
+        // A switch clears the measured ratio in both directions: a measurement made on one model is not evidence about
+        // another, and carrying it across presents a stale measurement as a current one. The old pair is kept as an
+        // estimate that names its model, and the clear sits inside each arm so a refusal still changes nothing.
         match choice {
-            // The daemon's own server takes token ids, and a byte-vocabulary session has
-            // none it could read: refused before anything changes, as the promise above
-            // says. (main's guard, kept: a daemon with no vocabulary of its own has
-            // nothing `/models local` could return to. The guard and the return below
-            // read the same fact — the vocabulary the engine tokenizes with NOW, which
-            // a cross-weights switch may have replaced since the daemon started.)
+            // The daemon's own server takes token ids, and a byte-vocabulary session has none it could read: refused
+            // before anything changes. The guard reads the vocabulary the engine tokenizes with NOW, which a
+            // cross-weights switch may have replaced since the daemon started.
             None if self.engine.vocab().is_bytes() => {
                 Err(HarnessError::Setup(NO_VOCAB_FOR_LOCAL.to_string()))
             }
-            // **`/models local` is a RETURN** — to the daemon's own weights, address,
-            // sampling, marker, window and vocabulary, re-seated — and not a provider
-            // clear. `set_own_server` is this arm; see its doc for the re-seat half.
+            // `/models local` is a RETURN to the daemon's own weights, address, sampling, marker,
+            // window and vocabulary, re-seated, not a provider clear. `set_own_server` is this arm.
             None => self.set_own_server(true),
             Some(pc) => {
                 let p = build_provider(&pc, &self.cfg.sampling, provider_notes(&self.hub))
@@ -761,12 +560,9 @@ impl Harness {
                     p.name(),
                     p.model()
                 );
-                // **The window follows the model.** Compaction is planned against
-                // `context_window` — `plan_overrun`, `should_compact` and
-                // `headroom` all read it — and it came from the LOCAL server's
-                // `/props`. Leaving it there meant a conversation answered by a
-                // cloud model was measured against the llama-server's window, and
-                // compacted at the wrong time or not at all.
+                // The window follows the model: compaction is planned against `context_window`, and
+                // it came from the LOCAL server's `/props`, so leaving it there measured a cloud
+                // conversation against the llama-server's window.
                 line.push_str(&self.retune_window(&pc));
                 // After everything that can fail, and before anything reads it.
                 self.note_the_way_back();
@@ -774,29 +570,17 @@ impl Harness {
                 self.cfg.ledger_scale = None;
                 self.provider = Some(p);
                 self.cfg.provider = Some(pc);
-                // **Say it, or the head goes on drawing the old name.** The
-                // header reads the model from the daemon's word, and the daemon's
-                // word was sent once at attach: the operator switched leticl to
-                // deepseek and the top row still said qwen, indefinitely. The
-                // `model` settings row carries what answers now, and this is what
-                // makes it carry it.
+                // Say it, or the head goes on drawing the old name: the header reads the model
+                // from the daemon's word, and that word was sent once at attach.
                 self.publish_settings();
                 Ok(line)
             }
         }
     }
 
-    /// **Keep the ratio a switch is about to clear, named after the model that measured
-    /// it** — the other half of the clear in [`Harness::set_provider`], and see
-    /// `Config::CarriedScale` for why the pair is kept at all.
-    ///
-    /// Called only where the switch SUCCEEDED: a switch refused for a missing key changes
-    /// nothing, and a scale moved by a refusal would be a change made by nothing.
-    ///
-    /// **A second switch with nothing measured in between keeps the older pair rather
-    /// than overwriting it with `None`** — `deepseek → glm-coding → grok` is one session
-    /// whose only measurement was deepseek's, and that is still the best estimate there is
-    /// for either of the others.
+    /// Keep the ratio a switch is about to clear, named after the model that measured it. Called only where the switch
+    /// SUCCEEDED, since one refused for a missing key changes nothing. A second switch with nothing measured between
+    /// keeps the older pair rather than overwriting it with `None`.
     fn carry_the_scale(&mut self) {
         let Some((ledger, provider)) = self.cfg.ledger_scale else {
             return;
@@ -811,34 +595,18 @@ impl Harness {
         });
     }
 
-    /// **Remember the model this switch is leaving, so a refusal can name the way back.**
+    /// Remember the model this switch is leaving, so a refusal can name the way back.
     ///
-    /// Read BEFORE anything moves, and only where the move cannot fail after it — see
-    /// [`Harness::switch_back_notice`] for what reads it.
+    /// Read BEFORE anything moves, and only where the move cannot fail after it.
     fn note_the_way_back(&mut self) {
         self.switch_back = Some(SwitchBack {
             previous: self.model_name(),
         });
     }
 
-    /// **A switch that fails says how to go back** — the notice a provider's refusal earns
-    /// on the first round after a model switch, or `None` when this is not that.
-    ///
-    /// MEASURED 2026-10-25, `s-1791394076177451000`: a long session was switched to
-    /// `glm-coding`, and every request it sent came back
-    /// `http 400: messages.content.type is invalid, allowed values: ['text']`. The screen
-    /// said `FAILED — http 400: …` and stopped there; the operator had to remember what
-    /// the session had been on and type it back by hand, and the daemon knew both the name
-    /// and the command. That is the whole of this function.
-    ///
-    /// **4xx only**, because that is the class that refuses *what was sent*: a 429 is the
-    /// ladder's (it waits, and may fall back), a 5xx is an endpoint that is unwell, and
-    /// neither is evidence about the model. A transport failure says nothing about it
-    /// either.
-    ///
-    /// The armed state is TAKEN, so one switch earns one notice: a second failure is a
-    /// session that has a problem the way back does not fix, and repeating the advice
-    /// every turn is how a warning becomes furniture.
+    /// A switch that fails says how to go back, or `None` when this is not that. Without it the operator has to
+    /// remember what the session had been on, while the daemon knew the name and the command. 4xx only, and the armed
+    /// state is TAKEN, so repeating the advice every turn cannot make it furniture.
     pub fn switch_back_notice(&mut self, e: &HarnessError) -> Option<String> {
         let back = self.switch_back.take()?;
         let code = provider_refusal(e)?;
@@ -851,32 +619,17 @@ impl Harness {
         Some(switch_back_said(&back.previous, &now, code))
     }
 
-    /// **The whole of `/models NAME`, in one place, for both callers.**
-    ///
-    /// There are two: the worker's arm (`Sessions::slash`, between turns, which is where the
-    /// verb has always been answered) and the retry loop's poll of the queue
-    /// ([`Harness::take_queued_model`], which is the operator's own line answered DURING the turn
-    /// they typed it in rather than after it). Two copies of a switch would be two places for the
-    /// screen, the session row and the thing that actually answers to disagree — which is the
-    /// defect [`Harness::persist_provider_choice`] was written for, one door along.
-    ///
-    /// **A switch asked for while a prompt is in flight is recorded and NOT applied** — see
-    /// [`Harness::set_provider`]. The reply still comes back `ok`, and it says when the switch
-    /// takes (*"turns go to X when this turn ends"*), which is the honest answer: it was accepted,
-    /// and it is not in force yet.
-    ///
-    /// **The choice is resolved by the caller, not here.** `models_choice` needs no
-    /// harness, and the worker's path must still carry the resolver's own notes when
-    /// the session it names is not open — so what this takes is the resolved choice
-    /// and the lines it came with.
+    /// The whole of `/models NAME`, in one place for both callers: the worker's arm and the retry loop's poll. Two
+    /// copies would be two places for the screen, the row and the answer to disagree. Asked for in flight it is recorded
+    /// and not applied, and the reply still says when it takes. The choice is resolved by the caller.
     pub fn apply_model_choice(
         &mut self,
         choice: crate::slash::ModelChoice,
         mut lines: Vec<String>,
     ) -> crate::slash::SlashReply {
-        // **What answers before, so the row is written only when it moved.** A pending switch
-        // leaves this name alone, and a session row written with the OTHER model's name would
-        // make a restart resume on a model this daemon never ran.
+        // What answers before, so the row is written only when it moved: a pending switch leaves
+        // this name alone, and a row written with the other model's name would make a restart resume
+        // on a model this daemon never ran.
         let was = self.model_name();
         let applied = match choice {
             crate::slash::ModelChoice::OwnServer => self.set_provider(None),
@@ -887,11 +640,9 @@ impl Harness {
         };
         match applied {
             Ok(line) => {
-                // **The choice goes to the session row in the same breath** —
-                // `persist_provider_choice`'s own doc is why. A switch that reached
-                // the screen but not the row was a choice that expired with the
-                // process, which is the defect this whole change is. A pending one is written
-                // where it is applied instead ([`Harness::apply_pending_switch`]).
+                // The choice goes to the session row in the same breath: a switch that reached the
+                // screen but not the row was a choice that expired with the process. A pending one
+                // is written where it is applied instead.
                 if self.model_name() != was
                     && let Err(why) = self.persist_provider_choice()
                 {
@@ -907,51 +658,27 @@ impl Harness {
         }
     }
 
-    /// **Back to the daemon's own server** — the `None` arm of [`Harness::set_provider`].
-    ///
-    /// `reseat_foreign` is the one honest wrinkle: `/models local` means *this
-    /// daemon's own server, exactly as it was started*, so a session sitting on
-    /// another fleet model's WEIGHTS comes back to the daemon's vocabulary and
-    /// dialect here, conversation re-rendered into a fork under them. But a switch
-    /// straight from one fleet model's weights to another's calls this only to get
-    /// off a metered provider first — its engine is about to be replaced, and a
-    /// conversation forked back to the daemon's dialect only to be forked again a
-    /// moment later pays two cold prefills for one decision — so that caller passes
-    /// `false` and takes the field clears without the re-seat.
+    /// Back to the daemon's own server: the `None` arm of `set_provider`. `reseat_foreign` is the wrinkle, since
+    /// `/models local` means the daemon's server as it was started, while a switch between two fleet models calls this
+    /// only to get off a metered provider first and passes `false` to skip a re-seat it would throw away.
     fn set_own_server(&mut self, reseat_foreign: bool) -> Result<String, HarnessError> {
         self.note_the_way_back();
         self.provider = None;
         self.cfg.ledger_scale = None;
-        // **And the carried pair goes with it**: coming home means the ledger IS the
-        // prompt again (the engine sends its own token ids), so a ratio measured by a
-        // cloud model would convert a count that needs no conversion. See
-        // `Config::scale`, which would ignore it anyway — cleared here so that the only
-        // state a reader has to reason about is the one that applies.
+        // The carried pair goes too: coming home means the ledger IS the prompt again, so a ratio
+        // measured by a cloud model would convert a count that needs no conversion.
         self.cfg.carried_scale = None;
         self.cfg.provider = None;
-        // **The return itself**: address, alias, sampling, marker, vocabulary,
-        // dialect — every field a fleet switch overwrote, given back the value
-        // the daemon started with. The window is restored from its own memory
-        // below, the same way it always was.
-        //
-        // Before this was a return it was half of one: the address stayed
-        // wherever the last fleet switch put it while the line still said "the
-        // local server", and the operator's own file documents `local` as
-        // *(the bare word) is the daemon's own model*. A line that names the
-        // wrong box is the provenance defect in report form.
+        // The return itself: every field a fleet switch overwrote, given back the value the daemon
+        // started with. Half a return is a line that names the wrong box, which is the provenance
+        // defect in report form.
         let own = self.own_server.clone();
         let mut reseat = String::new();
         let foreign = self.on_foreign_weights();
         if foreign && reseat_foreign {
-            // The mirror of the switch's cross-weights arm, aimed home: the
-            // daemon's own pair, the conversation re-rendered under it, a fork
-            // keyed by the daemon's own template sha. It can only fail where the
-            // switch can fail, and for the same reasons. What moved is said in
-            // the values AS THEY STOOD — the re-seat overwrites them, so they are
-            // read before it runs.
-            // The names in the line are the vocabularies' own `source()`s — a
-            // GGUF's path, or `bytes:<hash>` for a daemon that started on the
-            // byte vocabulary — read before the re-seat overwrites them.
+            // The mirror of the switch's cross-weights arm, aimed home: the daemon's own pair, the conversation
+            // re-rendered under it, a fork keyed by the daemon's own template sha. What moved is read BEFORE the
+            // re-seat, because the re-seat overwrites it.
             let (was_vocab, was_dialect) =
                 (self.engine.vocab().source().to_string(), self.cfg.dialect);
             self.reseat_to_own(&own)?;
@@ -981,11 +708,9 @@ impl Harness {
             self.cfg.sampling = own.sampling.clone();
             self.engine.sampling = own.sampling;
         }
-        // Back to the server's own window, which is the one its `/props`
-        // reported at startup. Restored rather than recomputed: the local
-        // endpoint is not asked again here, and keeping a cloud model's
-        // window over a local conversation is the same bug pointing the
-        // other way.
+        // Back to the server's own window, the one its `/props` reported at startup. Restored
+        // rather than recomputed: the local endpoint is not asked again here, and keeping a cloud
+        // model's window over a local conversation is the same bug pointing the other way.
         let mut line = format!(
             "turns go to the local server at {} ({}) from the next one on",
             self.cfg.endpoint.authority(),
@@ -1005,32 +730,17 @@ impl Harness {
         Ok(line)
     }
 
-    /// **Is this session on weights that are not the daemon's own?**
-    ///
-    /// The one question that decides whether a return to the daemon's own server is an
-    /// address move or a re-seat: [`Harness::set_own_server`] re-renders the conversation
-    /// into a fork when the vocabulary or the dialect has been moved by a fleet switch,
-    /// and only then.
-    ///
-    /// Named rather than inlined because it now has two readers, and they are asking
-    /// different questions of the same fact: `set_own_server` is deciding whether to
-    /// fork, and `slash::mid_turn_switch_ok` is deciding whether a RUNNING TURN may
-    /// carry a `/models local` out itself — which it may exactly when the return is the
-    /// cheap arm. Two copies of this expression would be two answers to that.
+    /// Is this session on weights that are not the daemon's own? The one question that decides whether a return to the
+    /// daemon's own server is an address move or a re-seat. Named because two readers ask different questions of it:
+    /// whether to fork, and whether a RUNNING TURN may carry a `/models local` out itself.
     pub(crate) fn on_foreign_weights(&self) -> bool {
         self.cfg.vocab_gguf != self.own_server.vocab_gguf
             || self.cfg.dialect != self.own_server.dialect
     }
 
-    /// The re-seat half of a return to the daemon's own weights: the mirror of
-    /// [`Harness::set_local_model_weights`], aimed at the [`OwnServer`] pair.
-    ///
-    /// Everything is the same shape and for the same reasons — the engine is
-    /// rebuilt from the daemon's own vocabulary and wiring (no load, they are the
-    /// `Arc`s open captured), the fork's prefix row is keyed by the daemon's own
-    /// template sha, the conversation is re-rendered whole and nothing is
-    /// summarised. The one thing that differs is where the facts come from: not a
-    /// probe, the record.
+    /// The re-seat half of a return to the daemon's own weights: the mirror of `set_local_model_weights`, aimed at the
+    /// `OwnServer` pair. The facts come from the record rather than a probe: the engine is rebuilt from the daemon's own
+    /// vocabulary and wiring, the fork's prefix row is keyed by its template sha, and the conversation is re-rendered.
     fn reseat_to_own(&mut self, own: &OwnServer) -> Result<(), HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
@@ -1117,11 +827,9 @@ impl Harness {
             },
         );
         self.compacting = false;
-        // The engine moved first, so a fork failure here would leave the session
-        // rendering the own dialect over a foreign-rendered ledger — the
-        // corruption this whole file refuses. The fork cannot fail halfway
-        // (`fork_to_summary` writes every store row before it swaps), so this
-        // names the state rather than papering over it.
+        // The engine moved first, so a fork failure here would leave the session rendering the own dialect over a
+        // foreign-rendered ledger, the corruption this file refuses. The fork cannot fail halfway, so this names the
+        // state rather than papering over it.
         forked.map_err(|e| {
             HarnessError::Setup(format!(
                 "re-rendering the conversation for this daemon's own weights: {e}. \
@@ -1133,20 +841,16 @@ impl Harness {
         Ok(())
     }
 
-    /// Point `context_window` at the model that will answer, and say what moved.
-    ///
-    /// Returns the sentence to append to the switch's report, empty when nothing
-    /// changed. An unknown model leaves the window alone **and says so** — the
-    /// silent half of this bug was that nobody could tell which window was in
-    /// force.
+    /// Point `context_window` at the model that will answer, and say what moved: the sentence to append to the
+    /// switch's report, empty when nothing changed. An unknown model leaves the window alone AND says so, since the
+    /// silent half of this bug was that nobody could tell which window was in force.
     fn retune_window(&mut self, pc: &crate::config::ProviderConfig) -> String {
         // Remembered on the way out to the first provider, so `/models local`
         // restores the server's own number rather than keeping a cloud model's.
         if self.local_window.is_none() {
             self.local_window = Some(self.cfg.context_window);
-            // **And mirrored to the runner**, which needs it for a `local` child spawned
-            // while THIS session is on a provider. One write site, so the two cannot
-            // remember different windows.
+            // And mirrored to the runner, which needs it for a `local` child spawned while THIS
+            // session is on a provider. One write site, so the two cannot disagree.
             if let Ok(mut g) = self.local_window_cell.lock() {
                 *g = self.local_window;
             }
@@ -1203,15 +907,9 @@ impl Harness {
         }
     }
 
-    /// **This session's model, spelled the way `/models` takes it** — `local`, `name`,
-    /// or `name/model`.
-    ///
-    /// Two readers, and both are asking *which model is this session on* rather than
-    /// *what is answering it*: the session row ([`Harness::persist_provider_choice`],
-    /// where a restart reads it back through the same door) and the retry loop's
-    /// fallback, which must not spend a name on the model that just refused the round.
-    /// [`Harness::provider_line`] is the other question — the one a person reads, which
-    /// names the endpoint and says METERED — and the two are deliberately not merged.
+    /// This session's model, spelled the way `/models` takes it: `local`, `name`, or `name/model`. Two readers ask
+    /// which model the session is on rather than what answers it: the session row a restart reads back, and the retry
+    /// loop's fallback. `provider_line` is the other question, the one a person reads, and they are not merged.
     pub fn model_name(&self) -> String {
         match &self.cfg.provider {
             None => "local".to_string(),
@@ -1235,22 +933,17 @@ impl Harness {
         self.runtime.backend.close()
     }
 
-    /// **The switch that was waiting for the turn to end, taken** — the other half of
-    /// [`Harness::set_provider`]'s gate.
-    ///
-    /// `None` is the ordinary case and costs nothing. A failure — a key that no longer resolves,
-    /// a provider that will not build — leaves the session on the model it is on, which is a
-    /// working session, and says so under its own code: a request the operator made that did not
-    /// take is theirs to correct, not a fault of the session's.
+    /// The switch that was waiting for the turn to end, taken: the other half of `set_provider`'s gate. A failure
+    /// leaves the session on the model it is on, which is a working session, and says so under its own code.
     pub(crate) fn apply_pending_switch(&mut self) {
         let Some(pending) = self.pending_switch.take() else {
             return;
         };
         match self.set_provider_now(pending.choice) {
             Ok(line) => {
-                // **The session row follows it**, the same as a switch made between turns
-                // (`Harness::apply_model_choice`): the row is what a restart resumes on, and a
-                // deferred switch that only reached this process would expire with it.
+                // The session row follows it, as a switch made between turns does: the row is what a
+                // restart resumes on, and a deferred switch that only reached this process would
+                // expire with it.
                 if let Err(why) = self.persist_provider_choice() {
                     self.hub.publish(SessionEvent::Warning {
                         code: "model_switch_applied".into(),
@@ -1280,16 +973,9 @@ impl Harness {
         }
     }
 
-    /// **THE SWITCH, ON THE SESSION ROW** — so a restart brings the session back on
-    /// what it was switched to rather than on the daemon's own default.
-    ///
-    /// Called from the `/models` arm the moment the in-memory switch has taken, the
-    /// same place `publish_settings` is: the two are one act's two halves, and a
-    /// switch that reached the screen but not the row was a choice that expired with
-    /// the process. `local` is stored BY NAME rather than left NULL, because the two
-    /// answer different questions at a resume — *no opinion* against *the local
-    /// server, deliberately* — and a daemon whose own default is a provider would
-    /// otherwise hand a switched-back session straight back to it.
+    /// The switch, on the session row, so a restart brings the session back on what it was switched to. Called where
+    /// `publish_settings` is, since the two are one act's halves. `local` is stored BY NAME rather than left NULL,
+    /// because a daemon whose default is a provider would otherwise hand a switched-back session straight back.
     pub fn persist_provider_choice(&self) -> std::result::Result<(), String> {
         let Some(store) = &self.store else {
             return Ok(());
@@ -1300,30 +986,9 @@ impl Harness {
             .map_err(|e| format!("the choice was not written to the session row: {e}"))
     }
 
-    /// **A RESUME RESTORES THE SESSION'S OWN MODEL**, from the row the switch wrote.
-    ///
-    /// The defect, in one sentence: a session switched to a cloud provider came back
-    /// on the CLI default after a restart, because `set_provider` was in-memory and
-    /// the session row had nowhere to record the choice. Called at both open paths —
-    /// the first session a `--continue` resumes and the lazy `harness()` a head's
-    /// switch reaches — before any turn runs.
-    ///
-    /// Three spellings of the row, three behaviours, and the distinction is the
-    /// point:
-    ///
-    /// * `None` — never switched, so the daemon's own default stands, which is what
-    ///   such a session always did;
-    /// * `local` — the deliberate switch back, restored as an ACT (`set_provider(None)`)
-    ///   rather than skipped, because a daemon whose default is a provider would
-    ///   otherwise hand the session straight back to it;
-    /// * `name` or `name/model` — resolved through the SAME door the switch went
-    ///   through (`models_choice`), so a restore cannot build a provider the verb
-    ///   would refuse. A preset this build no longer knows fails the restore and the
-    ///   daemon default stands — said rather than silent, and the row is left alone so
-    ///   a build that does know the preset still finds it.
-    ///
-    /// Returns the sentence a resume should say, or `None` when there was nothing to
-    /// restore.
+    /// A resume restores the session's own model, from the row the switch wrote, at both open paths. `None` is never
+    /// switched, so the daemon's default stands; `local` is the deliberate switch back, restored as an ACT; a name is
+    /// resolved through the same door the switch went through. A preset this build no longer knows leaves the row alone.
     pub fn restore_provider_choice(&mut self) -> Option<String> {
         let stored = self
             .store
@@ -1358,19 +1023,16 @@ impl Harness {
                     Err(e) => Some(format!("could not restore {stored}: {e}")),
                 }
             }
-            // **A fleet model is restored through its own door**, which re-checks the
-            // vocabulary. That check is not ceremony on a resume: the daemon being
-            // resumed INTO may have been started on different weights than the one
-            // that stored the row, and a restore that skipped it would be the one
-            // path into exactly the corruption `set_local_model` exists to refuse.
+            // A fleet model is restored through its own door, which re-checks the vocabulary: the daemon being resumed
+            // INTO may have been started on different weights, and skipping that check is the one path into the
+            // corruption `set_local_model` exists to refuse.
             Ok((crate::slash::ModelChoice::Local(m), _)) => match self.set_local_model(&m) {
                 Ok(_) => Some(format!("restored to {stored}")),
                 Err(e) => Some(format!("could not restore {stored}: {e}")),
             },
-            // `ModelChoice::Local` is `models_choice("local")`, and `local` is handled
-            // by name above — a row that reached here as local would mean the store
-            // spelled a switch to the local server some other way, and the honest
-            // answer is the daemon default rather than a panic on a fact nobody wrote.
+            // `ModelChoice::Local` is `models_choice("local")`, and `local` is handled by name above,
+            // so a row that reached here as local would mean the store spelled it some other way:
+            // the honest answer is the daemon default rather than a panic on a fact nobody wrote.
             Ok((crate::slash::ModelChoice::OwnServer, _)) | Err(_) => Some(format!(
                 "could not restore {stored}: this build does not know that provider, so the \
                  daemon's own default answers"
@@ -1379,54 +1041,17 @@ impl Harness {
     }
 }
 
-/// **What one `/props` probe says about switching to a declared local model** —
-/// the decision, or a refusal that names the fact it is missing.
-///
-/// The free function both doors need, so their answers cannot drift:
-/// [`Harness::set_local_model`] for a session switching, and the spawn path for a
-/// child seated on a declared local model. Its predecessor answered one question
-/// (*are these the weights we tokenize with?*) with a basename comparison and a
-/// refusal; the switch this tree owes the operator asks three, and each has its
-/// own honest "cannot tell" rather than a default:
-///
-///   * **which weights answer there** — `/props`'s `model_path`, the vocabulary's
-///     one source;
-///   * **which template they render** — `/props`'s `chat_template`, the dialect's
-///     one source, because what the target SAYS it renders with cannot drift from
-///     what it actually renders the way a table of weight names can;
-///   * **what to do when they are other weights** — this used to be "refuse, and
-///     let the operator start another daemon". Now it is a switch: the target's
-///     own vocabulary, loaded from the GGUF it names, and the dialect its
-///     template (or the block's hand-asserted `dialect =` key) settles on.
-///
-/// # The three refusals that are not this function's business
-///
-/// Loading the vocabulary and resolving the dialect against it happen in the
-/// caller, where a failure can leave the caller's state untouched. This function
-/// only decides; it probes nothing twice and mutates nothing.
-///
-/// # Why `same_vocab = true` is read here and not interpreted here
-///
-/// It is the operator's assertion that the target serves the weights this
-/// session's vocabulary already tokenizes for — the same kind of decision on the
-/// record `dialect =` is. It short-circuits the weights question because the
-/// person who wrote it answered it; it does NOT assert anything about the
-/// dialect, which is why the same-weights arm keeps the dialect this session
-/// already speaks. A `same_vocab` that also smuggled a dialect change would be a
-/// key that guesses, and a guess is the one thing this switch refuses to make.
+/// What one `/props` probe says about switching to a declared local model: the decision, or a refusal naming the fact
+/// it is missing. The free function both doors need, so a session switching and a spawn cannot drift. `same_vocab` is
+/// the operator's assertion about the WEIGHTS and says nothing about the dialect, which the same-weights arm keeps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalSwitch {
-    /// The target serves the weights this session's vocabulary already tokenizes
-    /// for — measured by basename, or asserted with `same_vocab = true`. The
-    /// engine, dialect and vocabulary all stay; only the address moves.
-    ///
-    /// A session with no vocabulary of its own (the byte vocabulary a cloud-only
-    /// daemon starts on) can never take this arm: there are no weights to be the
-    /// same as, so such a switch always seats the target's own.
+    /// The target serves the weights this session's vocabulary already tokenizes for, measured by basename or asserted
+    /// with `same_vocab = true`: the engine, dialect and vocabulary all stay and only the address moves. A session with
+    /// no vocabulary of its own can never take this arm, since there are no weights to be the same as.
     SameWeights,
-    /// **The target serves other weights**: the switch must load their vocabulary
-    /// and seat their dialect, and the conversation must be re-rendered into a
-    /// fork before the first turn on them.
+    /// The target serves other weights: the switch must load their vocabulary and seat their
+    /// dialect, and the conversation must be re-rendered into a fork before the first turn on them.
     OtherWeights {
         /// The probe everything here was derived from, for the caller's marker
         /// and its report.
@@ -1438,35 +1063,17 @@ pub enum LocalSwitch {
     },
 }
 
-/// Decide a switch to a declared local model from ONE `/props` probe.
-///
-/// Every refusal is a sentence naming the endpoint, what it looked for, and the
-/// key that asserts the fact by hand — because "it refused" names nothing and
-/// this is the sentence an operator reads at a picker.
-///
-/// The daemon's own vocabulary is an `Option`, because main made it one: `None`
-/// is the byte vocabulary, and there the decision changes shape rather than
-/// refusing wholesale — nothing can be `SameWeights`, `same_vocab = true` has
-/// no vocabulary to assert against, and the probe alone settles that the switch
-/// seats the weights the target itself reports, with their vocabulary and
-/// dialect. The refusals that remain name the GGUF the target reported.
+/// Decide a switch to a declared local model from one `/props` probe. Every refusal names the endpoint, what it looked
+/// for, and the key that asserts the fact by hand, since it refused names nothing and this is the sentence read at a
+/// picker. The daemon's own vocabulary is an `Option`, and with none the decision changes shape rather than refusing.
 pub fn local_switch_decision(
     want: &letibot_turn::http::Endpoint,
     m: &letibot_provider::keys::LocalModel,
     vocab: Option<&std::path::Path>,
 ) -> Result<LocalSwitch, String> {
-    // `same_vocab` is not sampling, so the profile reader files it under
-    // `unknown` — which is where a key it does not interpret belongs. Read
-    // here, where it means something (see the enum's doc for what it does
-    // and does not assert).
-    //
-    // **But only where there is a vocabulary to be the same as.** A daemon
-    // started for a cloud provider has none — the byte vocabulary — and there
-    // the assertion cannot be true: the target's weights differ from a
-    // vocabulary that does not exist, so NOTHING can be `SameWeights` and the
-    // probe below decides alone, whatever the block asserts. The switch that
-    // comes out of it is the honest one for that box anyway: the target's own
-    // reported weights, with their vocabulary loaded and their dialect seated.
+    // `same_vocab` is not sampling, so the profile reader files it under `unknown`, where a key it does not interpret
+    // belongs. But only where there is a vocabulary to be the same as: a cloud-only daemon has none, so the probe
+    // below decides alone.
     let asserted_same = vocab.is_some()
         && m.profile
             .unknown
@@ -1518,11 +1125,8 @@ pub fn local_switch_decision(
     if vocab
         .is_some_and(|vocab| vocab_basename(std::path::Path::new(&theirs)) == vocab_basename(vocab))
     {
-        // Same weights carry the same template, so the dialect this session
-        // speaks is the dialect they render: nothing to re-derive, nothing to
-        // re-render, and the switch is the address move it always was.
-        // (Unreachable with no vocabulary of our own: a basename cannot match
-        // one that does not exist.)
+        // Same weights carry the same template, so the dialect this session speaks is the dialect they render: nothing
+        // to re-derive and the switch is the address move it always was. Unreachable with no vocabulary of our own.
         return Ok(LocalSwitch::SameWeights);
     }
     let dialect = dialect_for_target(&props, m, want).map_err(|why| {
@@ -1552,24 +1156,9 @@ pub fn local_switch_decision(
     })
 }
 
-/// **Which dialect does this target render?** — from its own template when it
-/// says, from the block's assertion when it cannot, refused when neither speaks.
-///
-/// The order is the whole decision, and it is not a priority contest:
-///
-///   * the **served template** matching a dialect this tree drives is the one
-///     source that cannot drift from what the server actually renders, so it
-///     settles the question outright;
-///   * the **asserted `dialect =`** exists for the cases where that source is not
-///     available honestly — a server too old to report a template, or one whose
-///     template matches nothing this tree drives;
-///   * a served template that matches NEITHER dialect with no assertion is a
-///     refusal, because the alternative is guessing a dialect for weights it was
-///     not written for — valid ids meaning other words, silently;
-///   * an assertion that CONTRADICTS a matching template is a refusal too, for
-///     the same reason in the other direction: the server's own template is the
-///     thing it renders with, and a block that disagrees with it is a mistake
-///     somewhere that a person should fix rather than a tie this code breaks.
+/// Which dialect does this target render? From its own template when it says, from the block's assertion when it
+/// cannot, refused when neither speaks: a served template settles it, since it cannot drift from what is rendered, and
+/// guessing a dialect is valid ids meaning other words.
 fn dialect_for_target(
     props: &letibot_turn::serving::ServedProps,
     m: &letibot_provider::keys::LocalModel,
@@ -1577,9 +1166,9 @@ fn dialect_for_target(
 ) -> Result<crate::dialect::Dialect, String> {
     use crate::dialect::Dialect;
     let all = [Dialect::Glm, Dialect::Qwen];
-    // An asserted value that names no dialect is refused rather than dropped:
-    // honouring an assertion nobody can read is the regression the profile
-    // reader's own test names, one layer down.
+    // An asserted value that names no dialect is refused rather than dropped: honouring an
+    // assertion nobody can read is the regression the profile reader's own test names, one layer
+    // down.
     let asserted = m.profile.dialect.as_deref().map(|name| {
         Dialect::parse(name).ok_or_else(|| {
             format!(
@@ -1642,10 +1231,9 @@ fn dialect_for_target(
             m.name,
             d.family()
         )),
-        // Two byte-identical templates would mean two dialects rendering the
-        // same bytes; unreachable with the dialects this tree ships, and the
-        // honest answer if it ever happens is a person's, not a first-element
-        // pick the compiler would silently make of it.
+        // Two byte-identical templates would mean two dialects rendering the same bytes, which is
+        // unreachable with the dialects this tree ships; the honest answer if it ever happens is a
+        // person's, not a first element the compiler would silently pick.
         (many, _) => Err(format!(
             "{} reports a chat template that matches {} dialects this tree drives \
              ({}), which this code cannot choose between",
@@ -1659,23 +1247,15 @@ fn dialect_for_target(
     }
 }
 
-/// `http://192.168.1.78:8082` or `192.168.1.78:8082` into an [`Endpoint`].
-///
-/// A scheme is accepted and discarded rather than refused: the operator writes the
-/// url they `curl`, and `[model."x"] url = "http://…"` is the shape that reads
-/// naturally beside a key block's `url`. A path is accepted and discarded too —
-/// `/v1/chat/completions` is what the curl carries and the client appends its own
-/// route, so keeping it would produce `/v1/chat/completions/completion`.
-/// **A declared url's `host:port`**, or `None` when it names no usable address.
-///
-/// `config` needs it to tell which declared model a session is actually on, and it
-/// must ask the same parser the switch used: comparing the url text would make
-/// `http://192.168.1.78:8082` and `192.168.1.78:8082` two different models, and the
-/// operator may have written either.
+/// A declared url's `host:port`, or `None` when it names no usable address. `config` needs it to tell which declared
+/// model a session is on, and it asks the same parser the switch used: comparing url text would make two spellings of
+/// one address two different models.
 pub fn local_url_authority(url: &str) -> Option<String> {
     parse_local_url(url).ok().map(|e| e.authority())
 }
 
+/// `http://192.168.1.78:8082` or `192.168.1.78:8082` into an `Endpoint`: a scheme is accepted and discarded, because
+/// the operator writes the url they curl, and so is a path, since the client appends its own route.
 pub(crate) fn parse_local_url(url: &str) -> Result<Endpoint, String> {
     let rest = url
         .trim()
@@ -1697,14 +1277,9 @@ pub(crate) fn parse_local_url(url: &str) -> Result<Endpoint, String> {
     Ok(Endpoint::new(host, port))
 }
 
-/// The GGUF's own file name, which is what two servers holding one model agree on
-/// even when the directories differ. A split GGUF's `-00001-of-00006` suffix is kept:
-/// two servers that disagree about the shard count are not serving the same file.
-/// **Do stored ids mean something else under this vocabulary?** Yes when one side is the
-/// byte vocabulary and the other is not, or both are byte tables of different literals.
-/// Two GGUFs: not decided here (see the resume that calls this). An empty stored source is
-/// a row from before the column was filled, and is taken to be a GGUF — which every such
-/// row is.
+/// Do stored ids mean something else under this vocabulary? Yes when one side is the byte vocabulary and the other is
+/// not, or both are byte tables of different literals. Two GGUFs are not decided here, and an empty stored source is a
+/// row from before the column was filled, taken to be a GGUF.
 pub(crate) fn vocab_differs(stored: &str, current: &str) -> bool {
     let bytes = |s: &str| s.starts_with(letibot_tokencore::BYTES_SOURCE);
     match (bytes(stored), bytes(current)) {
@@ -1714,9 +1289,9 @@ pub(crate) fn vocab_differs(stored: &str, current: &str) -> bool {
     }
 }
 
-/// **What is left over when `git worktree add -b <branch>` fails** (TODO R92.17) — a branch an
-/// earlier child left behind, or a registration whose directory is gone (locked, or not yet
-/// pruned). Said with the commands that clear it; empty when neither is the cause.
+/// What is left over when `git worktree add -b <branch>` fails: a branch an earlier child left
+/// behind, or a registration whose directory is gone. Said with the commands that clear it; empty
+/// when neither is the cause.
 pub(crate) fn leftover_hint(workspace: &str, branch: &str, err: &str) -> String {
     let mut hint = String::new();
     let branch_left = git_in(
@@ -1745,10 +1320,9 @@ pub(crate) fn leftover_hint(workspace: &str, branch: &str, err: &str) -> String 
     hint
 }
 
-/// **Tell `key` to session `me` once** — once per daemon in `told` (the session's own memory),
-/// and once across restarts in the store's `queue_told` (`told:<session>:<key>`, R92.7): a
-/// restarted daemon that re-reads a red tip or a parked row does not tell it again, and so a ring
-/// about it wakes nobody to nothing. A store that cannot answer is not a reason to stay silent.
+/// Tell `key` to session `me` once: once per daemon in `told` and once across restarts in `queue_told`, so a
+/// restarted daemon that re-reads a red tip does not tell it again. A store that cannot answer is not a reason to stay
+/// silent.
 pub(crate) fn told_once(
     told: &mut std::collections::HashSet<String>,
     store: &letibot_tokencore::store::Store,
@@ -1785,7 +1359,7 @@ mod vocab_differs_tests {
     }
 }
 
-/// **Does `pc`'s key fail to resolve** — the one failure a pasted key fixes?
+/// Does `pc`'s key fail to resolve: the one failure a pasted key fixes?
 pub(crate) fn key_is_missing(pc: &crate::config::ProviderConfig) -> bool {
     let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
         return false;
@@ -1796,9 +1370,9 @@ pub(crate) fn key_is_missing(pc: &crate::config::ProviderConfig) -> bool {
     )
 }
 
-/// **Would a key saved to providers.toml be the one used?** Not when the command line
-/// (`--api-key`) or the environment (`$DEEPSEEK_API_KEY`…) supplies it: both come first in
-/// the resolution order, so asking would save a key that is then ignored.
+/// Would a key saved to providers.toml be the one used? Not when the command line (`--api-key`) or
+/// the environment supplies it: both come first in the resolution order, so asking would save a key
+/// that is then ignored.
 pub(crate) fn key_is_replaceable(pc: &crate::config::ProviderConfig) -> bool {
     if pc.api_key.is_some() {
         return false;
@@ -1812,9 +1386,9 @@ pub(crate) fn key_is_replaceable(pc: &crate::config::ProviderConfig) -> bool {
     }
 }
 
-/// **Why a pasted key cannot be saved**, or `None` when it can. providers.toml is parsed by
-/// hand (`keys::parse_file`): a `#` anywhere starts a comment and quotes are stripped, not
-/// escaped — so such a key would be saved and read back as something else.
+/// Why a pasted key cannot be saved, or `None` when it can. providers.toml is parsed by hand
+/// (`keys::parse_file`): a `#` anywhere starts a comment and quotes are stripped, not escaped, so
+/// such a key would be saved and read back as something else.
 fn unsavable_key(k: &str) -> Option<&'static str> {
     if k.is_empty() {
         Some("it was empty")

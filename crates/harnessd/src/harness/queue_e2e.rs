@@ -1,18 +1,6 @@
-//! **The queues, end to end: the child that finishes, the review row it leaves, and the landing.**
-//!
-//! The operator: *"well we definitely want an end to end test for the merge queue"*. The glue
-//! measured here is [`HarnessTaskRunner::enqueue_entry`] and its caller
-//! [`HarnessTaskRunner::enqueue_finished`]: a `task_start` child recorded by [`PlacedChild::of`]
-//! finishes, and its branch is put up for REVIEW (R61: *"review is review and merge is merge"*) —
-//! a review row naming the repository its worktree is in, the target the project lands on and the
-//! head as it is now — announced on every hub (`QueueMoved`) and told to this conversation
-//! (`merge_queued`). Then the repository's queue worker (`mergequeue::serve::RepoQueue`) claims
-//! it, the reviewer's verdict is written the way the review pool writes it, and the worker lands
-//! it: rebased in the queue's own worktree, gated, the target moved by compare-and-swap.
-//!
-//! Not a live test: no model, no child spawned. The vocabulary is the only apparatus (the runner
-//! carries it), and the test skips without it; `LETIBOT_REQUIRE_APPARATUS=1` refuses the skip.
-//! The store is a temp file, never the daemon's own.
+//! The queues, end to end: the child that finishes, the review row it leaves, and the landing. A `task_start` child
+//! is recorded, finishes, and its branch goes up for review naming the repository, the target and the head, and the
+//! worker claims, judges and lands it. Not a live test: the vocabulary is the only apparatus, the store a temp file.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,8 +17,8 @@ use crate::mergequeue::gate::GreenGate;
 use crate::mergequeue::serve::{Pass, QueueDoor, QueueEnv, RepoQueue};
 use crate::sessions::Sessions;
 
-/// **The branch every child in this file is on** — `worktree_branch`'s own shape,
-/// `agent/<slug>`, so a name that reaches the queue here is a name `task_start` produces.
+/// The branch every child in this file is on: `worktree_branch`'s own shape, `agent/<slug>`, so a
+/// name that reaches the queue here is a name `task_start` produces.
 const SLUG: &str = "queue-e2e-child";
 
 // ===== The fixture: the vocabulary, a temp store, and two hubs =====
@@ -70,12 +58,9 @@ impl Drop for TempDir {
     }
 }
 
-/// **Everything the tests here start from, built once.**
-///
-/// The store is a **temp** file and never the daemon's own: the queue lives in `sessions.db`,
-/// and a test that opened the operator's would be writing rows into a live queue. The two
-/// sessions are registered because `enqueue_finished` publishes to one hub and broadcasts to
-/// every hub, and the difference between the two doors is half of what this file asserts.
+/// Everything the tests here start from, built once. The store is a temp file, because a test that opened the
+/// operator's would write rows into a live queue. Two sessions are registered because `enqueue_finished` publishes to
+/// one hub and broadcasts to every hub, and that difference is half of what this file asserts.
 struct Fixture {
     /// Held, not read: dropping it deletes the repo and the store.
     dir: TempDir,
@@ -99,7 +84,7 @@ impl Fixture {
         let db = dir.path().join("sessions.db");
         let mut cfg = Config::for_this_box(dir.path());
         cfg.vocab_gguf = Some(gguf);
-        // **The `--store`**, which is the whole of what makes a daemon able to enqueue at all.
+        // The `--store`, which is the whole of what makes a daemon able to enqueue at all.
         cfg.store = Some(db.clone());
         cfg.session_id = "s-parent".into();
         // Nothing here reaches an endpoint, and the one path that could would spend the whole
@@ -124,10 +109,9 @@ impl Fixture {
         })
     }
 
-    /// **The runner, with the children `start_worktree` would have recorded.**
-    ///
-    /// `HarnessTaskRunner::for_enqueue` is the test-only constructor beside the type: the four
-    /// facts the enqueue reads, and `None` for the eleven a spawn reads.
+    /// The runner, with the children `start_worktree` would have recorded. `for_enqueue` is the
+    /// test-only constructor beside the type: the four facts the enqueue reads, and `None` for the
+    /// eleven a spawn reads.
     fn runner(&self, placed: Vec<PlacedChild>) -> HarnessTaskRunner {
         HarnessTaskRunner::for_enqueue(&self.parts, self.cfg.clone(), self.registry.clone(), placed)
     }
@@ -138,16 +122,9 @@ impl Fixture {
     }
 }
 
-/// **A repo with `main` and one worktree per child** — the shape `task_start` arranges and the
-/// queue serves: each branch cut from `main`'s single commit, checked out at
-/// `<root>/worktrees/<slug>`, with one commit of its own that writes `a.txt`.
-///
-/// `children` is `(slug, what the child put in a.txt)`. Two children writing DIFFERENT text to
-/// the same line is the conflict fixture, and it is the only difference between the two tests
-/// below — the queue rebases the second onto what the first landed, which is what makes two
-/// green branches red together.
-///
-/// Returns the repo, the SHA every branch was cut from, and the branches in the order given.
+/// A repo with `main` and one worktree per child, the shape `task_start` arranges: each branch cut from `main`'s single
+/// commit, checked out under `worktrees/<slug>`, with one commit of its own. `children` is `(slug, text)`, and two
+/// children writing different text to one line is the conflict fixture.
 fn repo_with_children(under: &Path, children: &[(&str, &str)]) -> (PathBuf, String, Vec<Branch>) {
     let root = under.join("repo");
     std::fs::create_dir_all(&root).expect("the repo's directory");
@@ -202,8 +179,8 @@ struct Branch {
 }
 
 impl Branch {
-    /// **The placement the runner records for this child** — the three facts `start_worktree`
-    /// reads out of git and keeps, and the one it decides (`main_tree: false`).
+    /// The placement the runner records for this child: the three facts `start_worktree` reads out
+    /// of git and keeps, and the one it decides.
     fn placement(&self, base_sha: &str) -> WorktreePlacement {
         WorktreePlacement {
             path: self.worktree.display().to_string(),
@@ -214,8 +191,8 @@ impl Branch {
     }
 }
 
-/// Run one git command in `dir`, asserting it succeeds — so a failure names the command and
-/// git's own words rather than panicking on a bare `expect`.
+/// Run one git command in `dir`, asserting it succeeds, so a failure names the command and git's
+/// own words rather than panicking on a bare `expect`.
 fn git(dir: &Path, args: &[&str]) {
     let out = letibot_tools::testing::git(dir)
         .args(args)
@@ -228,8 +205,8 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-/// Whether a git command in `dir` succeeds — for the assertions that are about a command
-/// FAILING, which is how a deleted branch is observed.
+/// Whether a git command in `dir` succeeds, for the assertions that are about a command failing,
+/// which is how a deleted branch is observed.
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
     letibot_tools::testing::git(dir)
         .args(args)
@@ -250,7 +227,7 @@ fn sha(dir: &Path, rev: &str) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// **A door that drops** — what the queue says is asserted where it is said.
+/// A door that drops: what the queue says is asserted where it is said.
 struct Quiet;
 
 impl QueueDoor for Quiet {
@@ -261,8 +238,8 @@ impl QueueDoor for Quiet {
     }
 }
 
-/// **The repository's queue worker, holding its lease** — with a green gate (the gate itself is
-/// asserted in `mergequeue::serve::tests` against real steps).
+/// The repository's queue worker, holding its lease, with a green gate. The gate itself is asserted
+/// in `mergequeue::serve::tests` against real steps.
 fn worker(fx: &Fixture, repo: &Path) -> RepoQueue {
     let me = LeaseClaim {
         owner: "e2e/1/1".into(),
@@ -294,8 +271,8 @@ fn worker(fx: &Fixture, repo: &Path) -> RepoQueue {
     )
 }
 
-/// **The reviewer's accept, written the way the review pool writes it** — bound to the head the
-/// queue's claim read.
+/// The reviewer's accept, written the way the review pool writes it: bound to the head the queue's
+/// claim read.
 fn accept(fx: &Fixture, id: &str) -> String {
     let s = fx.store();
     let r = s.review_row(id).expect("reads").expect("the row");
@@ -329,8 +306,8 @@ fn passes(q: &RepoQueue, n: usize) {
     }
 }
 
-/// **Whether this hub's log carries a queue move about `id`** — read off a real hub, because the
-/// door under test is `Registry::broadcast`.
+/// Whether this hub's log carries a queue move about `id`: read off a real hub, because the door
+/// under test is `Registry::broadcast`.
 fn heard_about(hub: &Hub, id: &str) -> bool {
     hub.retained()
         .iter()
@@ -349,7 +326,7 @@ fn warning(hub: &Hub, code: &str) -> Option<String> {
 
 // ===== The tests =====
 
-/// **A finished child leaves a review row, and the queues review and land it.**
+/// A finished child leaves a review row, and the queues review and land it.
 #[test]
 fn a_finished_child_leaves_a_review_row_and_the_queues_land_it() {
     let Some(fx) = Fixture::new("lands") else {
@@ -428,9 +405,9 @@ fn a_finished_child_leaves_a_review_row_and_the_queues_land_it() {
     ));
 }
 
-/// **The second child's rebase conflicts, and the merge queue parks it with git's own words.**
-/// Two children cut from one commit, writing the same line differently: the first lands; the
-/// second is rebased onto what the first landed, and that conflicts.
+/// The second child's rebase conflicts, and the merge queue parks it with git's own words. Two
+/// children cut from one commit writing the same line differently: the first lands, the second is
+/// rebased onto what the first landed, and that conflicts.
 #[test]
 fn the_second_childs_rebase_conflicts_and_the_queue_parks_it() {
     let Some(fx) = Fixture::new("conflict") else {
@@ -480,8 +457,8 @@ fn the_second_childs_rebase_conflicts_and_the_queue_parks_it() {
     );
 }
 
-/// **A child of the main tree leaves no row** — the rule `start_worktree` records by, and the
-/// enqueue's own guard.
+/// A child of the main tree leaves no row: the rule `start_worktree` records by, and the enqueue's
+/// own guard.
 #[test]
 fn a_child_of_the_main_tree_leaves_no_entry() {
     let Some(fx) = Fixture::new("main-tree") else {
@@ -513,16 +490,9 @@ fn a_child_of_the_main_tree_leaves_no_entry() {
     assert!(warning(&fx.parent, "merge_not_queued").is_none());
 }
 
-/// **A branch with nothing on it is refused by name, and leaves no row** (R92.11, and the half of
-/// R92.16 that reaches a person).
-///
-/// `task_start` cuts `agent/<slug>` from the base and the child commits on it. Two shapes leave
-/// the branch where it started: a child placed in a VM commits inside the VM's copy of the
-/// repository, and a child whose work was never committed. The head was read with
-/// `unwrap_or_default()`, so either became a review row whose `head_sha` was the base — a row no
-/// reviewer could act on (`start_reviewer` proves its clone at `head_sha`, so it went back to
-/// `waiting` for ever), with the parent told its branch *"is in the review queue"*. A branch this
-/// host does not have at all (a swept worktree) is the same nothing.
+/// A branch with nothing on it is refused by name, and leaves no row: a child in a VM commits inside the VM's copy and
+/// one whose work was never committed leaves the branch where it started, and reading the head with a default made
+/// either a review row whose `head_sha` was the base.
 #[test]
 fn a_branch_with_no_commit_of_its_own_is_refused_by_name_and_leaves_no_row() {
     let Some(fx) = Fixture::new("empty-branch") else {
@@ -624,7 +594,7 @@ fn a_branch_with_no_commit_of_its_own_is_refused_by_name_and_leaves_no_row() {
     ));
 }
 
-/// **A second finish of one child is one row.**
+/// A second finish of one child is one row.
 #[test]
 fn a_second_finish_of_one_child_is_one_row() {
     let Some(fx) = Fixture::new("twice") else {
@@ -643,7 +613,7 @@ fn a_second_finish_of_one_child_is_one_row() {
     assert_eq!(rows[0].id, handle);
 }
 
-/// **A daemon with no `--store` refuses by name rather than dropping the branch.**
+/// A daemon with no `--store` refuses by name rather than dropping the branch.
 #[test]
 fn a_daemon_with_no_store_refuses_by_name() {
     let Some(mut fx) = Fixture::new("no-store") else {
@@ -675,10 +645,9 @@ fn a_daemon_with_no_store_refuses_by_name() {
     ));
 }
 
-/// **Decision 4's per-project option, at the end that reaches a model**: a review the queue
-/// could not run, handed to the project's main session, is TOLD to that session — once, naming
-/// the row, the branch, the worktree and the operator's door. A review merely BLOCKED (the
-/// default: raise only) tells the project nothing.
+/// The per-project option, at the end that reaches a model: a review the queue could not run,
+/// handed to the project's main session, is told to that session once, naming the row, the branch,
+/// the worktree and the operator's door. A review merely blocked tells the project nothing.
 #[test]
 fn a_review_handed_to_the_project_is_told_once_and_a_blocked_one_is_not() {
     let Some(f) = Fixture::new("handover") else {
@@ -742,11 +711,9 @@ fn a_review_handed_to_the_project_is_told_once_and_a_blocked_one_is_not() {
     assert!(project.handover_notices().is_empty(), "said ONCE");
 }
 
-/// **A red target is TOLD to the project's root session's model — once, the failing step and the
-/// end of its output first** (R76 item 1). FAILS before R76: `target_red` was a warning on the
-/// hubs and nothing the session's model reads; pg-noop's agent never heard its `main` was red.
-/// The review of the red tip, blocked, is told the same way; a subagent and the review queue's own
-/// session are told nothing.
+/// A red target is told to the project's root session's model once, the failing step and the end of
+/// its output first. The review of the red tip, blocked, is told the same way; a subagent and the
+/// review queue's own session are told nothing.
 #[test]
 fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_first() {
     use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
@@ -841,14 +808,14 @@ fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_
         "{blocked}"
     );
     assert!(project.queue_emergency_notices().is_empty(), "told ONCE");
-    // **A restart forgets nothing it said** (R92.7): the daemon's memory gone, the store's
-    // `queue_told` rows are what keep it once.
+    // A restart forgets nothing it said: the daemon's memory gone, the store's `queue_told` rows are
+    // what keep it once.
     project.gate_told.clear();
     assert!(
         project.queue_emergency_notices().is_empty(),
         "told once across a restart too"
     );
-    // **Green again is said once** (R92.6), and only to a session that was told it was red.
+    // Green again is said once, and only to a session that was told it was red.
     let mut green = s.target_health(&repository, "main").unwrap().unwrap();
     green.state = HealthState::Green;
     s.set_target_health(&green, "test").unwrap();
@@ -856,8 +823,8 @@ fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_
     assert_eq!(said.len(), 1, "{said:#?}");
     assert!(said[0].contains("green again"), "{}", said[0]);
     assert!(project.queue_emergency_notices().is_empty(), "once");
-    // **And the daemon's door rings exactly the repository's root** — `s-elsewhere` is held by
-    // the same registry and is no session of this repository.
+    // And the daemon's door rings exactly the repository's root: `s-elsewhere` is held by the same
+    // registry and is no session of this repository.
     let door = crate::mergequeue::RegistryDoor {
         registry: f.registry.clone(),
         store_path: f.db.clone(),
@@ -876,20 +843,9 @@ fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_
 
 // ===== A refusal, at the end that reaches a model =====
 
-/// **A `--no-queue` daemon tells its sessions' models nothing about the queue** — not the red
-/// target, not the target with no gate, not a branch handed back — and the store in this test is
-/// the same store a daemon that DOES serve the queues is told from, so the assertions are about
-/// the flag and not about a store with nothing in it.
-///
-/// The defect (`docs/claude-code-bridge.md`, 2026-10-26): the daemon the Claude Code bridge
-/// started for package P1 in a fresh worktree of this repository is one of its session daemons by
-/// the queue's own rule, so it took letibot's lease and put an EMERGENCY in front of the package's
-/// model before its brief. [`Harness::queue_emergency_notices`], [`Harness::queue_notices`] and
-/// [`Harness::handover_notices`] are every model-facing queue notice there is, and this is the
-/// one place all three are checked against the flag.
-///
-/// No vocabulary is needed: a session with no GGUF and no provider opens on the byte vocabulary
-/// (`Parts::load`), and this test runs no turn.
+/// A `--no-queue` daemon tells its sessions' models nothing about the queue: not the red target, not the target with no
+/// gate, not a branch handed back. The store is the same one a daemon that serves the queues is told from, so the
+/// assertions are about the flag. No vocabulary is needed, and this test runs no turn.
 #[test]
 fn a_no_queue_daemon_tells_its_sessions_nothing_about_the_queues() {
     use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
@@ -1055,9 +1011,9 @@ fn a_no_queue_daemon_tells_its_sessions_nothing_about_the_queues() {
     assert!(handed[0].contains("agent/s-proj-handed"), "{}", handed[0]);
 }
 
-/// **A review row of the child `s-parent-sub-1`, under this fixture's `s-parent`**, with the
-/// child's session row naming its parent — the root is only reachable by walking the store, so a
-/// row written as its own root would pass whether the walk worked or not.
+/// A review row of the child `s-parent-sub-1`, under this fixture's `s-parent`, with the child's
+/// session row naming its parent: the root is only reachable by walking the store, so a row written
+/// as its own root would pass whether the walk worked or not.
 fn a_childs_review(s: &Store, id: &str, branch: &str, worktree: &str) {
     s.put_session(&letibot_tokencore::store::SessionRecord {
         id: id.into(),
@@ -1093,9 +1049,9 @@ fn a_childs_review(s: &Store, id: &str, branch: &str, worktree: &str) {
     .expect("the row");
 }
 
-/// **A reviewer's `reject`, handed in at the desk and served** by the review pool, whose
-/// `deliver` is exactly what `Harness::serve_reviews` wires: [`HarnessTaskRunner::send`] on the
-/// daemon's registry. Three passes, so a delivery that repeated would be seen.
+/// A reviewer's `reject`, handed in at the desk and served by the review pool, whose `deliver` is
+/// exactly what `Harness::serve_reviews` wires: [`HarnessTaskRunner::send`] on the daemon's
+/// registry. Three passes, so a delivery that repeated would be seen.
 fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
     let s = fx.store();
     assert!(
@@ -1111,9 +1067,9 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         .unwrap()
     );
     let desk = letibot_tools::builtins::verdict::ReviewDesk::new();
-    // **A real directory, because `verdict` asks whether the tree a reviewer was given is still
-    // there** — a fixture naming `""` would be asserting a verdict about a tree that does not
-    // exist, which is now a WAIT.
+    // A real directory, because `verdict` asks whether the tree a reviewer was given is still
+    // there: a fixture naming "" would assert a verdict about a tree that does not exist, which is
+    // now a WAIT.
     let judged_tree = std::env::temp_dir();
     desk.opened(
         "s-gk",
@@ -1174,8 +1130,8 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
     );
 }
 
-/// **Every message a hub's queue holds** — drained, which is what the session's own reader does
-/// with it: a `Message` here is a turn the model runs about it.
+/// Every message a hub's queue holds, drained, which is what the session's own reader does with it:
+/// a `Message` here is a turn the model runs about it.
 fn queued_messages(hub: &Hub) -> Vec<String> {
     std::iter::from_fn(|| hub.try_command())
         .filter_map(|c| match c.kind {
@@ -1185,9 +1141,9 @@ fn queued_messages(hub: &Hub) -> Vec<String> {
         .collect()
 }
 
-/// **A refusal reaches the LIVE child that wrote the branch as a message on its own queue** — the
-/// door `task_message` uses, so the child's model hears the reviewer's reasons and nothing else
-/// does. Once, over three passes.
+/// A refusal reaches the live child that wrote the branch as a message on its own queue, the door
+/// `task_message` uses, so the child's model hears the reviewer's reasons and nothing else does.
+/// Once, over three passes.
 #[test]
 fn a_refusal_is_queued_to_the_live_child_that_wrote_the_branch() {
     let Some(fx) = Fixture::new("refusal-child") else {
@@ -1230,10 +1186,9 @@ fn a_refusal_is_queued_to_the_live_child_that_wrote_the_branch() {
     assert!(warning(&fx.parent, "refusal_undelivered").is_none());
 }
 
-/// **When the child's session has closed, the refusal is queued to the session that ENQUEUED it**
-/// — the project's root, found by walking the store — as a message its model runs a turn about,
-/// not a pane row and not a `!` line on a head. This is the case of 2026-10-11: the child that
-/// finished is the party most likely to be gone.
+/// When the child's session has closed, the refusal is queued to the session that enqueued it (the
+/// project's root, found by walking the store) as a message its model runs a turn about, not a pane
+/// row and not a `!` line on a head: the child that finished is the party most likely to be gone.
 #[test]
 fn a_refusal_is_queued_to_the_root_when_the_child_has_closed() {
     let Some(fx) = Fixture::new("refusal-root") else {
@@ -1276,11 +1231,9 @@ fn a_refusal_is_queued_to_the_root_when_the_child_has_closed() {
     assert!(warning(&fx.parent, "refusal_undelivered").is_none());
 }
 
-/// **A review the queue could not run, of a CHILD's branch, under `merge_via_session`, reaches the
-/// child's ROOT** — the queue rings the project session the row's tree walks up to (the daemon's
-/// own door, [`crate::mergequeue::RegistryDoor`]), and that session's model is told once.
-/// `a_review_handed_to_the_project_is_told_once_and_a_blocked_one_is_not` writes the row as the
-/// root's own; this is the row as `enqueue_finished` writes it.
+/// A review the queue could not run, of a child's branch, under `merge_via_session`, reaches the child's root: the
+/// queue rings the project session the row's tree walks up to, and that session's model is told once. This is the row
+/// as `enqueue_finished` writes it.
 #[test]
 fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
     let Some(fx) = Fixture::new("handover-child") else {

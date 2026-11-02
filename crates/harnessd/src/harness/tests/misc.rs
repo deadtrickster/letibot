@@ -2,12 +2,9 @@
 
 use super::*;
 
-/// **The scratch is per-user and per-process, never the flat world-readable
-/// `/tmp/letibot-scratch-<pid>`** — the operator's ask, 2026-10-05: *"job output
-/// should go to your scratch directory."* The path is checked by SHAPE rather than
-/// by resolving `$XDG_RUNTIME_DIR`, which a test must not mutate process-wide: the
-/// old spelling is refused outright, and the directory component the process's
-/// scratch sits in is the per-user one either environment names.
+/// The scratch is per-user and per-process, never the flat world-readable `/tmp/letibot-scratch-<pid>`: the operator
+/// asked for job output to go to the scratch directory. The path is checked by SHAPE rather than by resolving
+/// `$XDG_RUNTIME_DIR`, which a test must not mutate process-wide.
 #[test]
 fn the_scratch_dir_is_per_user_and_never_the_flat_tmp_spelling() {
     let s = super::scratch_dir();
@@ -30,11 +27,9 @@ fn the_scratch_dir_is_per_user_and_never_the_flat_tmp_spelling() {
     }
 }
 
-/// **The depth cap refuses by NAME, and at the right boundary** (R58).
-///
-/// `task` is seated on `m2_coder` at every depth, so the seat table is not where the
-/// limit lives — this function is. `depth == max` is the `task` call that would open
-/// `max + 1` and is refused; `depth == max - 1` is the last one allowed.
+/// The depth cap refuses by NAME, and at the right boundary: `task` is seated at every depth, so this function is where
+/// the limit lives. `depth == max` is the call that would open `max + 1` and is refused, and `depth == max - 1` the last
+/// one allowed.
 #[test]
 fn the_depth_cap_refuses_the_spawn_one_past_it_by_name() {
     // A root (0) with the ruled default (3) may spawn, and so may levels 1 and 2.
@@ -94,11 +89,8 @@ fn the_vocab_comparison_is_the_file_name_not_the_path() {
 
 #[test]
 fn the_shell_is_declared_pinned_only_where_an_exec_backend_exists() {
-    // R10's wiring. The pin claim rides on the host spawn's env hygiene —
-    // `a_bash_env_planted_in_the_parent_never_reaches_the_child` in
-    // `letibot-tools` holds that — so a seat with an exec backend declares
-    // it, and a seat without one leaves `Unknown`, under which a bare name
-    // is `not_run`: the fail-closed direction.
+    // R10's wiring: the pin claim rides on the host spawn's env hygiene, which `letibot-tools` holds, so a seat with an
+    // exec backend declares it and one without leaves `Unknown`, under which a bare name is `not_run`.
     let mut cfg = Config::for_this_box(std::env::temp_dir());
     cfg.seat = Seat::Runner;
     match surroundings_for(&cfg).shell {
@@ -114,13 +106,9 @@ fn the_shell_is_declared_pinned_only_where_an_exec_backend_exists() {
     );
 }
 
-/// **R18's daemon half: layer A is given the configured workspace.**
-///
-/// The wrong fact the operator's four cards showed came from the *backend's root*
-/// (`/` for an unconfined seat), not from here — `surroundings_for` has always used
-/// `cfg.workspace`. This pins it, because two halves of one program answering *where
-/// is this session* differently is exactly the shape of that defect, and nothing in
-/// either half would have noticed.
+/// R18's daemon half: layer A is given the configured workspace. The wrong fact the operator's cards showed came from
+/// the backend's root, not from here, and this pins it, because two halves answering where this session is differently
+/// is the shape of that defect.
 #[test]
 fn the_gate_is_told_the_configured_workspace_and_not_a_root() {
     let mut cfg = Config::for_this_box("/home/dead/Projects/letibot");
@@ -137,12 +125,8 @@ fn the_gate_is_told_the_configured_workspace_and_not_a_root() {
     );
 }
 
-/// **The stop must not blame the model for working.**
-///
-/// The sentence this replaced was *"the model called tools 12 times without
-/// answering"*. It was answering; it had not finished, and an operator who reads
-/// that learns to distrust the model when the harness was at fault — the same
-/// defect as `grep` reporting absence when it had opened no files.
+/// The stop must not blame the model for working: the sentence this replaced said the model called tools twelve times
+/// without answering, which taught an operator to distrust the model when the harness was at fault.
 #[test]
 fn neither_stop_accuses_the_model_of_not_answering() {
     let backstop = HarnessError::LoopBound { rounds: 200 }.to_string();
@@ -180,10 +164,8 @@ fn neither_stop_accuses_the_model_of_not_answering() {
     assert!(!e.contains("without answering"), "{e}");
 }
 
-/// **The repository's landing tree is in its sessions' confined view, read-only.** The firecode
-/// session, 2026-10-11: *"`.git` is on the never-write list — I can't inspect the landing
-/// worktree, and no grant reaches it."* The daemon adds the grant itself, beside `--grant-ro`'s,
-/// for the repository the workspace is — and only that one.
+/// The repository's landing tree is in its sessions' confined view, read-only: `.git` is on the never-write list, so no
+/// grant reached it. The daemon adds the grant itself, beside `--grant-ro`'s, for the repository the workspace is.
 #[test]
 fn a_confined_session_reads_its_repositorys_landing_tree_and_cannot_write_it() {
     use letibot_tools::exec::confine::Grant;
@@ -218,10 +200,9 @@ fn a_confined_session_reads_its_repositorys_landing_tree_and_cannot_write_it() {
     assert!(confined_grants(&cfg, Some(&root)).is_empty());
 }
 
-/// **A VM holds one repository** — the operator: *"VMs are per repo anyway — at least must be"*.
-/// In a folder that is one project of several repositories a VM child with nothing named is
-/// refused naming them; a named one is copied; a name that is not a repository is refused; and a
-/// child on the host, or of a session of one repository, is left as it was.
+/// A VM holds one repository: in a folder that is one project of several, a VM child with nothing named is refused
+/// naming them, a named one is copied, a name that is not a repository is refused, and a child on the host is left as
+/// it was.
 #[test]
 fn a_vm_child_of_a_folder_of_repositories_copies_the_one_it_names() {
     use crate::harness::vm_copy_for;

@@ -11,12 +11,9 @@ fn agent_row(text: &str) -> TranscriptItem {
     }
 }
 
-/// A ledger with an encoder attached, which is what every session has.
-///
-/// Constructing the decorator is the *only* way to say so — the flag is
-/// `pub(crate)` in `letibot-tools` precisely so that "an encoder was declared"
-/// and "an encoder was wired" cannot be two different facts. The sink is
-/// dropped; the attachment is not.
+/// A ledger with an encoder attached, which is what every session has. Constructing the decorator is the only way to
+/// say so, since the flag is `pub(crate)` precisely so that an encoder declared and an encoder wired cannot be two
+/// different facts.
 fn encoded() -> IntentLedger {
     let l = IntentLedger::new();
     let l = Arc::new(l);
@@ -64,11 +61,8 @@ fn a_downgrade_denies_the_seated_tools_of_its_classes_and_the_well_known_names()
     );
 }
 
-/// **A child's answer is settled once, and a path out with no answer still settles.**
-///
-/// Two failures this guard exists for, and both are silent without it: a settlement that
-/// never fires leaves the parent's `task_result` waiting for ever, and a second one lets a
-/// path out of the call overwrite the answer the child actually gave.
+/// A child's answer is settled once, and a path out with no answer still settles: a settlement that never fires leaves
+/// the parent's `task_result` waiting for ever, and a second lets a path out overwrite the answer the child gave.
 #[test]
 fn a_childs_answer_is_settled_once_and_never_overwritten() {
     use letibot_tools::builtins::task::TaskStatus;
@@ -124,18 +118,8 @@ fn a_childs_answer_is_settled_once_and_never_overwritten() {
     );
 }
 
-/// **The turn boundary carries the intent finding and NOTHING about the plan.**
-///
-/// This test used to assert the opposite — that the plan's finding was joined in at the turn
-/// boundary because *"joining is what keeps this inside the one-nudge budget"*. That budget was
-/// the thing the operator rejected: one nudge per user turn means a session in constant
-/// conversation is checked after every exchange (*"looks like our todo nag is overkill"*) while
-/// a quiet one is checked once and never again. The plan is now delivered by the IDLE clock
-/// (`Sessions::rearm_todo_nag`, `Harness::nag_turn`), so what is left here is the finding that
-/// really is about the turn that just ended.
-///
-/// The plan half has its own tests where it now lives: `unfinished_plan` in `letibot-tools` for
-/// the text, and `nag_should_arm` below for the schedule.
+/// The turn boundary carries the intent finding and NOTHING about the plan. The old assertion joined the plan here to
+/// keep the one-nudge budget the operator rejected; the plan is now the idle clock's, and its tests live there.
 #[test]
 fn the_turn_boundary_says_what_the_turn_promised_and_not_what_the_plan_is() {
     // A session with nothing declared has nothing to say at the boundary — the common case,
@@ -153,10 +137,8 @@ fn the_turn_boundary_says_what_the_turn_promised_and_not_what_the_plan_is() {
     assert!(!steer.contains("[todo check]"), "{steer}");
 }
 
-/// **An unattached encoder is loud, not silent.** The state this is asserting
-/// is the one a session must never be in quietly: a diff computed against
-/// nothing would report every completion as verified, which is exactly the
-/// announced-but-not-done failure wearing the check's own clothes.
+/// An unattached encoder is loud, not silent: a diff computed against nothing would report every completion as
+/// verified, which is the announced-but-not-done failure wearing the check's own clothes.
 #[test]
 fn a_ledger_with_no_encoder_says_so_in_the_diff_itself() {
     let bare = IntentLedger::new();
@@ -171,14 +153,9 @@ fn a_ledger_with_no_encoder_says_so_in_the_diff_itself() {
 
 // -- the authorisation trail --------------------------------------------
 
-/// **The harness must not be able to authorise itself.**
-///
-/// Everything a session appends as a `User` item looks identical in the
-/// transcript: the operator's prompt, a head's steering, §5.7's salvage notice
-/// and the intent check's own *"you said you would X"*. A trail walked over the
-/// transcript would read all four as the operator's words, and an agent whose
-/// own text can authorise an action is the shape a prompt injection would most
-/// like to take. This is the assertion that keeps the four apart.
+/// The harness must not be able to authorise itself: everything a session appends as a `User` item looks identical in
+/// the transcript, so a trail walked over it would read the operator's prompt, a head's steering, a salvage notice and
+/// an intent nudge as the operator's words.
 #[test]
 fn an_injected_notice_is_never_read_back_as_the_operator() {
     let m = TrailMirror::default();
@@ -208,12 +185,8 @@ fn an_injected_notice_is_never_read_back_as_the_operator() {
     );
 }
 
-/// The denominator is what was **looked at**, and it is not derived from what
-/// came back.
-///
-/// `docs/tool-design-brief.md` §2.2 applied to a security input: an adjudicator
-/// told *"the operator said nothing"* when nobody looked would deny the thing
-/// that was asked for. `0 of 41` is a measurement; `0` is not.
+/// The denominator is what was LOOKED AT, and it is not derived from what came back: an adjudicator told the operator
+/// said nothing when nobody looked would deny the thing that was asked for. `0 of 41` is a measurement and `0` is not.
 #[test]
 fn a_trail_with_no_operator_words_still_carries_its_denominator() {
     let m = TrailMirror::default();
@@ -239,10 +212,8 @@ fn a_trail_with_no_operator_words_still_carries_its_denominator() {
     }
 }
 
-/// A gate with no trail source installed reports `NotCollected` — **not** an
-/// empty trail. This is the state the whole seam exists to leave behind, and it
-/// is asserted here so that "the default is safe" is a fact rather than a
-/// recollection.
+/// A gate with no trail source installed reports `NotCollected`, not an empty trail: this is the state the whole seam
+/// exists to leave behind, asserted so the safe default is a fact rather than a recollection.
 #[test]
 fn an_uninstalled_trail_is_not_collected_rather_than_empty() {
     let t = AuthorisationTrail::default();
@@ -301,18 +272,9 @@ fn a_resumed_trail_is_seeded_with_no_clock() {
     );
 }
 
-/// **A resumed session does not promote its own words to the operator's.**
-///
-/// The regression this closes was live and measurable: `seed` destructured
-/// `TranscriptItem::User { parts, .. }` and stamped `Speaker::Operator` on every
-/// row, so a job settlement came back as an operator utterance and
-/// [`AuthorisationTrail::cited_operator_words`] — which exists precisely to refuse
-/// an ALLOW citing agent text — had nothing left to refuse. 280 of 715 briefs the
-/// oracle answered carried one.
-///
-/// Both halves are asserted, because only one of them is the bug: the agent row is
-/// still **carried** (it is context, and `Speaker::Agent` says what it is), and it
-/// is no longer **counted** as something that could authorise anything.
+/// A resumed session does not promote its own words to the operator's: `seed` stamped `Speaker::Operator` on every
+/// row, so a job settlement came back as an operator utterance and the cite check had nothing to refuse. Both halves
+/// are asserted, since only one is the bug: the agent row is still carried and no longer counted.
 #[test]
 fn a_resumed_trail_does_not_call_the_harnesss_own_rows_the_operators() {
     let m = TrailMirror::default();
@@ -366,9 +328,8 @@ fn an_intent_declared_and_not_acted_on_produces_steering() {
     assert!(steer.contains("restart the model server"), "{steer}");
 }
 
-/// **The default does not fire on prose**, which is the whole reason the prose
-/// half is a flag. A turn that says "I'll check the file" and calls nothing is
-/// the *normal* shape of a plain answer, and nudging it would put the check into
+/// The default does not fire on prose, which is the whole reason the prose half is a flag: a turn that says it will
+/// check the file and calls nothing is the normal shape of a plain answer, and nudging it would put the check into
 /// conversations that were working.
 #[test]
 fn the_prose_heuristic_is_off_unless_it_is_asked_for() {
@@ -402,10 +363,9 @@ fn reading_the_same_turn_twice_says_the_same_thing() {
 
 // -- the monitor notice --------------------------------------------------
 
-/// A monitor that expired is **not** a monitor that fired, and the sentence the
-/// model gets has to keep them apart — reporting a deadline as a completion is
-/// F5 one primitive over. And (R93.C8) the model's own `retire` and an owner
-/// ending are not announced as anything.
+/// A monitor that expired is not a monitor that fired, and the sentence the model gets has to keep them apart, since
+/// reporting a deadline as a completion is one primitive over. The model's own `retire` and an owner ending are not
+/// announced as anything.
 #[test]
 fn a_monitor_notice_says_which_of_the_four_endings_it_was() {
     use letibot_tools::exec::monitor::{Fired, Firing};
@@ -470,17 +430,9 @@ fn a_monitor_notice_says_which_of_the_four_endings_it_was() {
     );
 }
 
-/// **The trail holds only what it reads** — R66.
-///
-/// `trail()` takes the last [`TRAIL_SCAN`] utterances and clips each to [`UTTERANCE_CHARS`];
-/// the buffer behind it kept every user-side text for the life of the session, so a long
-/// session's trail was a per-session term with no ceiling at all — and the census could only
-/// have reported a number with nothing over it.
-///
-/// Nothing observable through `trail()` changes, which is why this asserts on the BUFFER: the
-/// caps are now the store's and the reader's both, and a test of the reader alone cannot see
-/// that. The second half pins what a clip must never lose: an authorisation that reads as
-/// complete when it is not.
+/// The trail holds only what it reads: `trail()` takes the last `TRAIL_SCAN` and clips each to `UTTERANCE_CHARS`, while
+/// the buffer kept every user-side text for the session's life. This asserts on the BUFFER, since nothing observable
+/// through `trail()` changes, and pins what a clip must never lose.
 #[test]
 fn the_trail_holds_only_what_it_reads() {
     let m = TrailMirror::default();
