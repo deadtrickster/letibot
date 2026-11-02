@@ -431,4 +431,40 @@ mod tests {
         );
         assert_eq!(spec.stop_tokens[0].role, ControlRole::EndOfTurn);
     }
+
+    /// An owned table answers exactly as a borrowed one does: the same value, not a second
+    /// implementation, so a dialect read out of a GGUF cannot answer a lookup differently from a
+    /// compiled one just because its literals were allocated.
+    #[test]
+    fn an_owned_table_answers_exactly_as_a_borrowed_one_does() {
+        let owned = ControlTokens::owned(
+            TOKENS
+                .iter()
+                .map(|t| ControlToken::owned(t.role, t.literal.to_string()))
+                .collect(),
+        );
+        let borrowed = ControlTokens::borrowed(TOKENS);
+        assert_eq!(owned, borrowed);
+
+        for t in TOKENS {
+            assert_eq!(
+                owned.by_literal(&t.literal),
+                borrowed.by_literal(&t.literal)
+            );
+            let owned_role: Vec<&str> = owned
+                .all_with_role(t.role)
+                .map(|x| x.literal.as_ref())
+                .collect();
+            let borrowed_role: Vec<&str> = borrowed
+                .all_with_role(t.role)
+                .map(|x| x.literal.as_ref())
+                .collect();
+            assert_eq!(owned_role, borrowed_role);
+        }
+
+        assert_eq!(
+            StopToken::owned(ControlRole::TurnEnd, "<|im_end|>"),
+            StopToken::borrowed(ControlRole::TurnEnd, "<|im_end|>")
+        );
+    }
 }
