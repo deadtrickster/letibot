@@ -49,13 +49,21 @@ Every session opens its own `Store`, plus a second for the corpus sink, and clai
 (`crates/harnessd/src/writer.rs`, `crates/tokencore/src/store/writers.rs`). The queue service and
 the supervisor open their own.
 
-Those are handles, not connections. `Store` is an `Arc<Shared>` holding one
-`Mutex<ManuallyDrop<Connection>>` per path (`crates/tokencore/src/store.rs`), and sqlite3 keeps the
-file's descriptor until the process's LAST connection to that file closes - so the descriptor count
-is bounded by the pool, not by the session count. Two rules come with it:
+Those are handles, not connections. `Store::open` keeps a process-wide
+`Mutex<HashMap<canonical path, Weak<Shared>>>` and hands out the live `Arc<Shared>`, which holds one
+`Mutex<ManuallyDrop<Connection>>` per path (`crates/tokencore/src/store.rs`). sqlite3 keeps a file's
+descriptor in the inode's own record and releases it only when the process's LAST connection to that
+file closes, so the descriptor count is the high-water mark of concurrent connections, not the
+number of opens: twenty stores opened one at a time leave four descriptors on a WAL file. A pool
+would buy concurrency, not fewer descriptors.
 
-- A `Store::connection()` guard must not be alive across another `Store` method call. That is a
-  self-deadlock and the compiler will not say so.
+Three rules come with it:
+
+- A `Conn` guard must not be alive across another `Store` method call. That is a self-deadlock and
+  the compiler will not say so, which is why the `_on(conn, ..)` forms exist.
+- A write takes the connection INSIDE the retry closure (`write_tx`), so a busy `BEGIN IMMEDIATE`
+  drops the guard before the backoff sleeps. A caller that takes it outside runs the whole retry
+  budget holding the process's only connection.
 - A test whose point was a second connection now sees one, and measures nothing.
 
 A newer store is read, not refused. `crates/tokencore/src/store/floor.rs` declares, for every arm
