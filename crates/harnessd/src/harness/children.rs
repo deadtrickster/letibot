@@ -3693,21 +3693,13 @@ impl HarnessTaskRunner {
         )
     }
 
-    fn run_to_completion(
+    /// **Where the child's tools run, and the tree a VM copies** — the two answers a `task`
+    /// gives before anything is minted or opened.
+    fn child_placement(
         &self,
-        sub_id: &str,
-        prompt: &str,
         spec: &letibot_tools::builtins::task::TaskSpec,
-        slot: &TaskSlot,
-        progress: &mut dyn FnMut(&str),
-        restart: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<(letibot_tools::builtins::task::Placement, Option<PathBuf>), String> {
         use letibot_tools::builtins::task::Placement;
-        let role = spec.role.as_str();
-        // **The downgrade is a union**: whatever this session was denied, its
-        // children are denied, plus what this call asks. A downgraded session
-        // cannot spawn a wider child by naming a wider role.
-        let downgrade = self.base.downgrade.and(&spec.downgrade);
         // Placement: a VM is booted on a copy of this session's workspace by the
         // child's own `open` (see `firecode.rs`); a boot that fails is a spawn that
         // fails, named — never a subagent run on the host and called a VM.
@@ -3736,6 +3728,59 @@ impl HarnessTaskRunner {
             spec.vm_source.as_deref(),
             &self.base.workspace,
         )?;
+        Ok((placement, vm_copy))
+    }
+
+    /// **A VM child's life is its turn's**: close the backend, keep what died with it, say
+    /// where the work went, and hand its branch to the queue. There is no later to answer in.
+    fn finish_a_vm_child(
+        &self,
+        sub: &mut Harness,
+        reply: Reply,
+        answer: &AnswerOnce<'_>,
+        sub_id: &str,
+    ) -> String {
+        // Read before the close: the close is what kills them (R92.1).
+        let lost = sub.jobs_lost_with_the_vm();
+        let landed = sub.close_backend();
+        let mut said = match landed {
+            Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
+            None => reply.text,
+        };
+        if let Some(line) = vm_jobs_lost_line(&lost) {
+            said.push_str("\n\n");
+            said.push_str(&line);
+        }
+        answer.say(letibot_tools::builtins::task::TaskStatus::Done {
+            answer: said.clone(),
+            // **No reading for a VM child**: its substrate is closed with its turn, so the
+            // child is not reachable and there is no present to report. See `collect`.
+            child: None,
+        });
+        // **The child has finished, so its branch goes to the queue** — the runner's own
+        // half of `task_start`'s door, taken here because THIS is the finish. See
+        // [`HarnessTaskRunner::finished`]: the two notices (this one and a `task_result`
+        // that arrives later) are one entry under one id.
+        self.enqueue_finished(sub_id);
+        said
+    }
+
+    fn run_to_completion(
+        &self,
+        sub_id: &str,
+        prompt: &str,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+        slot: &TaskSlot,
+        progress: &mut dyn FnMut(&str),
+        restart: Option<&str>,
+    ) -> Result<String, String> {
+        use letibot_tools::builtins::task::Placement;
+        let role = spec.role.as_str();
+        // **The downgrade is a union**: whatever this session was denied, its
+        // children are denied, plus what this call asks. A downgraded session
+        // cannot spawn a wider child by naming a wider role.
+        let downgrade = self.base.downgrade.and(&spec.downgrade);
+        let (placement, vm_copy) = self.child_placement(spec)?;
         // A subagent is a real session: mint its id and create its hub. **The id was already
         // minted by [`HarnessTaskRunner::start`]** — it is what that call returned — so what
         // arrives here is a handle, and it is unique because [`mint_sub_id`] made it so. The
@@ -4454,29 +4499,7 @@ impl HarnessTaskRunner {
         // task and no more: its substrate cannot be held open for a later question, and that is
         // stated here rather than discovered as silence.
         if placement != letibot_tools::builtins::task::Placement::Host {
-            // Read before the close: the close is what kills them (R92.1).
-            let lost = sub.jobs_lost_with_the_vm();
-            let landed = sub.close_backend();
-            let mut said = match landed {
-                Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
-                None => reply.text,
-            };
-            if let Some(line) = vm_jobs_lost_line(&lost) {
-                said.push_str("\n\n");
-                said.push_str(&line);
-            }
-            answer.say(letibot_tools::builtins::task::TaskStatus::Done {
-                answer: said.clone(),
-                // **No reading for a VM child**: its substrate is closed with its turn, so the
-                // child is not reachable and there is no present to report. See `collect`.
-                child: None,
-            });
-            // **The child has finished, so its branch goes to the queue** — the runner's own
-            // half of `task_start`'s door, taken here because THIS is the finish. See
-            // [`HarnessTaskRunner::finished`]: the two notices (this one and a `task_result`
-            // that arrives later) are one entry under one id.
-            self.enqueue_finished(&sub_id);
-            return Ok(said);
+            return Ok(self.finish_a_vm_child(&mut sub, reply, &answer, &sub_id));
         }
         // **A host child stays reachable** — the operator's ruling (*"mid turn, post turn
         // whatever"*), and this is where the answer is given: **as the turn ends**, not on the
