@@ -1,24 +1,11 @@
 //! Metrics and operator feedback: the event row, and the one way to send one.
 //!
-//! Every decision this tree has taken was made from a hand query, a log grep or one anecdote, and
-//! each should have been a `SELECT`. So the daemon writes one append-only row per observation, a
-//! turn or a model round or a tool call or a delivery or a wake or a compaction, into a sibling file
-//! beside the store rather than into it: every daemon on the box shares the store's one writer lock.
+//! Every decision here was made from a hand query, a log grep or one anecdote, and each
+//! should have been a `SELECT`. So the daemon writes one append-only row per observation
+//! into a sibling file, `metrics.db`, never the store that eleven daemons already share.
 //!
-//! [`emit`] never blocks and never touches SQL. Anything on the worker's path is paid by every
-//! prompt, so an instrument builds a small [`Event`] and hands it to a bounded channel with
-//! `try_send`. A full channel drops the event and counts it ([`dropped`]), and the writer thread
-//! reports the count as a `metrics.dropped` row. No lock shared with the store, no allocation beyond
-//! the event, no file. The writer, one thread per daemon behind the `store` feature, drains the
-//! channel and commits a batch a second.
-//!
-//! Off is free: nothing is installed until the daemon calls [`store::start`], so a head, a test and a
-//! daemon with metrics off all reach an [`emit`] that returns at the first branch.
-//!
-//! A row is `kind`, `name`, `outcome`, three integer slots and a small JSON `attrs`, so a new kind is
-//! a new constant and a new view rather than an `ALTER`, and a build that knows fewer kinds writes
-//! beside one that knows more. [`kind`] names every kind this tree writes, and [`store::VIEWS`] is
-//! where the meaning of each slot becomes column names.
+//! The one rule: `emit` never blocks and never touches SQL - a bounded channel, and a
+//! full one drops the event and counts it. Nothing is installed until `store::start`.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -32,7 +19,7 @@ pub mod stats;
 #[cfg(feature = "store")]
 pub mod store;
 
-/// Every kind this tree writes, dotted.
+/// **Every kind this tree writes** — `docs/metrics.md` §2.3's vocabulary, dotted.
 pub mod kind {
     /// A turn began. Written with the turn's end (see the harness's `instruments`), stamped
     /// with the moment it began. `name` = the door; n1/n2/n3 = fill tokens, window, rounds.
@@ -81,8 +68,9 @@ pub mod kind {
     pub const FEEDBACK: &str = "operator.feedback";
     /// The writer's own health: events dropped on a full channel since the last report.
     pub const DROPPED: &str = "metrics.dropped";
-    /// A key the writer is holding back (§2.9): one repeating event over its per-second budget,
-    /// where n1 is the events held back in that second and n2 the events seen in it.
+    /// A key the writer is holding back: one repeating event over its per-second budget.
+    /// `name` is the suppressed kind, n1 the events held back in that second, n2 the
+    /// events seen in it; `attrs.key` is `session|kind|name|outcome`.
     pub const SUPPRESSED: &str = "metrics.suppressed";
 }
 
@@ -94,8 +82,9 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// One observation, a row of `event` before it is written. `daemon` and `build` are the writer's,
-/// filled once per row, and `root_id` may be left `None` for the writer to fill from the tree.
+/// One observation, a row of `event` before it is written. `daemon` and `build` are the
+/// writer's, filled once per row from what `store::start` was given; `root_id` may be
+/// `None`, and the writer fills it from the tree `session_parent` taught it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// **The moment of the observation**, not of the write — a batch lands up to a second later.
@@ -226,8 +215,9 @@ pub enum Msg {
     Flush(SyncSender<()>),
 }
 
-/// The bounded channel and its drop counter: its own type rather than two statics so the
-/// never-blocks property is testable on a channel nobody drains.
+/// The bounded channel and its drop counter, the whole of the emitting side. Its own type
+/// rather than two statics so the never-blocks property can be tested on a channel nobody
+/// drains, without installing anything process-wide.
 #[derive(Debug)]
 pub struct Emitter {
     tx: SyncSender<Msg>,

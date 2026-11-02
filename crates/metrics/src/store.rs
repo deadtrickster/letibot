@@ -1,37 +1,11 @@
-//! **`metrics.db`** — the schema, the writer thread, and the 90-day prune.
+//! `metrics.db`: the schema, the writer thread, and the prune.
 //!
-//! One writer per daemon (`metrics-writer`), owning its own connection to a file nobody else
-//! locks: WAL, `synchronous=NORMAL`, `busy_timeout` 2 s. It drains the channel and commits **one
-//! transaction per second or per 1,000 rows**, whichever comes first (§2.7). A commit that fails
-//! is tried once more and then the batch is dropped and counted — metrics must never wedge the
-//! daemon, and eleven daemons write this file side by side.
-//!
-//! **Retention** (the operator's decision 2): raw rows 90 days; every `operator.feedback` row,
-//! and every row of a turn a mark points at, forever; and before a day's rows go, they are rolled
-//! up into `daily`, which is kept forever. The prune runs on this thread, once at start and then
-//! once a day.
-//!
-//! # The two caps — a rate and a size (`docs/metrics.md` §2.9)
-//!
-//! Age alone does not bound this file. On 2026-10-27 an old build's session spun for 20 hours
-//! handing `interrupt` back to its own queue, and each pass emitted a `worker.cmd` row: **1,400
-//! rows a second, 270,214,514 of them**, and an `metrics.db` of **89 GB**. Retention was never
-//! going to catch that — 90 days of it is 90 days of disk.
-//!
-//! So the writer holds two limits, and neither can gain anything by moving to the emitting site:
-//! coalescing means *holding events back until the interval closes*, which a fire-and-forget
-//! `try_send` cannot do, and the writer is the one place that sees every event one daemon writes
-//! and is off the hot path (the emitter's contract is "never blocks, never touches SQL").
-//!
-//! - **A rate** ([`RateCap`]): more than [`RATE_BUDGET`] identical events a second — one key per
-//!   `(session_id, kind, name, outcome)` — and the rest of that second becomes ONE row carrying
-//!   the count it held back (`attrs.suppressed`), plus a `metrics.suppressed` report per key per
-//!   minute that also goes to the daemon's log. Under the budget nothing changes: the rows are
-//!   byte-identical to what this writer wrote before the cap existed.
-//! - **A size** ([`Writer::enforce_size`]): over `[metrics] max_mb` the oldest whole days are
-//!   rolled up and deleted until the file is under a low-water mark, in bounded steps; then
-//!   `PRAGMA incremental_vacuum` gives the pages back. Checked at start and every
-//!   [`SIZE_EVERY`] — once a day would be ~24 GB behind a storm like the one above.
+//! One writer per daemon, owning its own connection to a file nobody else locks: WAL,
+//! `synchronous=NORMAL`, `busy_timeout` 2 s, one transaction per second or per 1,000 rows,
+//! and a failed commit tried once more before the batch is dropped and counted.
+//! Retention keeps raw rows 90 days, rolls them into `daily` forever, and keeps every mark
+//! and every row of a marked turn. Age alone does not bound the file, so there are two caps:
+//! a rate of identical events per key per second, and a size the oldest days are rolled up to.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -155,8 +129,9 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// From `[metrics]`'s raw strings, where `0` means no cap and anything unreadable is the
-    /// default: a metrics setting is never a reason a daemon does not start.
+    /// From `[metrics]`'s raw strings: `enabled = false|off|no|0` switches off, `keep_days` a
+    /// number, `snippets` kinds separated by spaces or commas, `rate_per_sec` and `max_mb`
+    /// numbers (`0` is "no cap"). Anything unreadable is the default, never a refused start.
     pub fn from_raw(
         enabled: Option<&str>,
         keep_days: Option<&str>,
@@ -257,9 +232,9 @@ pub struct Identity {
     pub build: String,
 }
 
-/// The rate cap's budget: identical events per key per second (§2.9). Twenty a second is five times
-/// the fastest honest key in this tree, and cuts a measured loop of 1,400 identical rows a second to
-/// twenty rows and one summary.
+/// The rate cap's budget: identical events per key per second, per
+/// `(session_id, kind, name, outcome)`. Twenty is five times the fastest honest key in this
+/// tree, so the file's growth is a function of the cap rather than of a defect.
 pub const RATE_BUDGET: u32 = 20;
 
 /// One rate window. A second, because a per-second rate is the number the incident is described
@@ -275,8 +250,9 @@ pub const ALERT_EVERY_MS: u64 = 60_000;
 /// out and cleared rather than grown (bounded memory on a writer thread that must never wedge).
 pub const MAX_KEYS: usize = 4096;
 
-/// The size cap's default: 2048 MiB, a little over twice a full retention window at the design's
-/// growth, so it must not fire on a healthy file and must fire long before a disk is gone.
+/// The size cap's default: 2048 MiB. The age rule is normally the binding one, so this must
+/// not fire on a healthy file and must fire long before a disk is gone - a little over twice
+/// a full retention window.
 pub const MAX_MB: u64 = 2048;
 
 /// The size cap's low-water mark, as a percentage of the ceiling: once over the cap the writer
@@ -361,9 +337,9 @@ impl Slot {
     }
 }
 
-/// The rate cap (§2.9): `admit` answers whether the event is a row of its own, and the window's end
-/// writes ONE row of the same kind carrying the count, because a count of events is not one
-/// observation of the kind.
+/// The rate cap. `admit` answers whether the event is a row of its own; when it is not, it
+/// is counted into the key's window, whose end writes one row carrying `attrs.suppressed`
+/// and no `n1..n3`.
 #[derive(Debug)]
 pub struct RateCap {
     budget: u32,
@@ -511,16 +487,16 @@ pub const BATCH_ROWS: usize = 1000;
 pub const BATCH_EVERY: Duration = Duration::from_secs(1);
 const DAY_MS: u64 = 86_400_000;
 
-/// The rollout's `WHERE`: an id range and a time bound, plus the two kinds of row kept forever (a
-/// mark, and every row of a marked turn). Shared by the rollup and the delete, so what goes into
-/// `daily` is exactly what leaves `event`.
+/// The rollout's `WHERE`: an id range and a time bound, plus the two kinds of row kept
+/// forever. Shared by the rollup and the delete so what goes into `daily` is exactly what
+/// leaves `event`, and a kept row is never counted in both.
 const FOREVER: &str = " kind <> 'operator.feedback' \
      AND (turn_id IS NULL OR turn_id NOT IN \
           (SELECT turn_id FROM event WHERE kind = 'operator.feedback' AND turn_id IS NOT NULL))";
 
-/// A day's rows summed into `daily`, shared by the age prune and the size cap. It adds to a group
-/// because the cap deletes a day in chunks, and the rollup and the delete being one transaction is
-/// what keeps a row counted once.
+/// A day's rows summed into `daily`, shared by the age prune and the size cap. It ADDS to a
+/// group rather than ignoring it, because the size cap deletes a day in chunks: what keeps a
+/// row counted once is that the rollup and the delete are one transaction.
 const ROLLUP: &str = "INSERT INTO daily (day, kind, name, model, outcome, n, sum_dur_ms, \
      max_dur_ms, sum_n1, sum_n2, sum_n3) \
      SELECT date(ts_ms / 1000, 'unixepoch'), kind, COALESCE(name, ''), \
@@ -558,8 +534,9 @@ impl Writer {
         self.log = Box::new(f);
     }
 
-    /// Can this file give freed pages back? `false` for a file created before this build set
-    /// `auto_vacuum`, where the cap still deletes rows but `incremental_vacuum` moves nothing.
+    /// Can this file give freed pages back? `false` for a file created before `auto_vacuum`
+    /// was set: the cap still deletes and rolls up, but `incremental_vacuum` moves nothing
+    /// until the operator runs one `VACUUM`.
     pub fn shrinks(&self) -> bool {
         self.shrinks
     }
@@ -581,8 +558,9 @@ impl Writer {
         at.to_string()
     }
 
-    /// One transaction for the batch, tried twice. `n` is ROWS, not events: the rate cap turns a
-    /// storm into its budget plus one summary, and it does that here, before the transaction.
+    /// One transaction for the batch, tried twice. `Ok(n)` is ROWS, not events: the rate cap
+    /// turns a storm into its first `RATE_BUDGET` events plus one summary, and does it here,
+    /// before the transaction, because coalescing is arithmetic and not SQL.
     pub fn write_batch(&mut self, batch: &[Event]) -> rusqlite::Result<usize> {
         if batch.is_empty() {
             return Ok(0);
@@ -687,9 +665,9 @@ impl Writer {
         Ok(rows.len())
     }
 
-    /// Roll up, then prune, the rows older than `keep_days`, except the marks and every row of a
-    /// marked turn, which are kept forever. The rollup covers exactly the rows the delete takes, so
-    /// a surviving row is not counted twice. Returns the rows deleted.
+    /// Roll up, then prune, the rows older than `keep_days`, except the marks and every row of
+    /// a marked turn: those are the labelled data and are kept forever. The rollup covers
+    /// exactly the rows the delete takes, so nothing is counted in both.
     pub fn prune(&mut self, now_ms: u64) -> rusqlite::Result<usize> {
         let cutoff = now_ms.saturating_sub(self.settings.keep_days.saturating_mul(DAY_MS));
         // Whole days only: a day is rolled up when every row of it is past the cutoff, so a
@@ -710,11 +688,9 @@ impl Writer {
             .is_none_or(|t| now_ms.saturating_sub(t) >= DAY_MS)
     }
 
-    /// The size cap (§2.9): over `max_mb`, roll the oldest whole days up and delete them until the
-    /// file is under the low-water mark, then give the pages back.
-    ///
-    /// Bounded, because this runs on the thread that also writes: a file far over the cap shrinks over
-    /// several passes rather than stalling the daemon. The cap beats the age rule on purpose.
+    /// The size cap: over `[metrics] max_mb`, roll the oldest whole days up and delete them
+    /// until the file is under `SIZE_LOW_PCT` of the ceiling, then give the pages back. Bounded
+    /// because it runs on the writing thread, so a far-over file shrinks over several passes.
     pub fn enforce_size(&mut self) -> rusqlite::Result<usize> {
         self.last_size_check = Some(now_ms());
         let cap = self.settings.max_bytes();
@@ -866,9 +842,9 @@ impl Writer {
             .unwrap_or_default()
     }
 
-    /// Give back at most `pages` pages, then let the WAL carry the truncation out to the file: the
-    /// rows must be drained, since `PRAGMA incremental_vacuum` yields one row per page it frees, and a
-    /// statement stepped once gives back one page.
+    /// Give back at most `pages` pages, then checkpoint so the truncation reaches the file.
+    /// The rows must be drained: `incremental_vacuum` yields one row per page it frees, so a
+    /// statement stepped once gives back one page. No `auto_vacuum` means no pages at all.
     fn shrink(&mut self, pages: i64) -> rusqlite::Result<()> {
         {
             let mut st = self
@@ -911,8 +887,9 @@ pub fn start(path: &Path, id: Identity, settings: Settings) -> rusqlite::Result<
     }))
 }
 
-/// The writer's loop: `dropped` reads the emitter's counter, and a rise since the last batch is a
-/// `metrics.dropped` row. Both caps run on this thread and nowhere else.
+/// The writer's loop. `dropped` reads the emitter's counter, and a rise since the last batch is
+/// written as a `metrics.dropped` row, which is the writer reporting on its own health. The
+/// size cap is checked here, once before the loop and then every `SIZE_EVERY`.
 pub fn serve(w: &mut Writer, rx: Receiver<Msg>, dropped: impl Fn() -> u64) {
     let mut reported = 0u64;
     // Said once, at start: without this the size cap deletes rows nobody can see the effect of.
@@ -1076,9 +1053,9 @@ mod tests {
         );
     }
 
-    /// The writer batches: many emits within a second are one commit, and a flush answers only after
-    /// they are on disk. The rate cap is off here on purpose, since forty events under one key would
-    /// be coalesced into a summary.
+    /// The writer batches: many emits within a second are one commit, and a flush answers only
+    /// after they are on disk. The rate cap is off here on purpose, so forty events under one
+    /// key stay forty rows rather than one summary.
     #[test]
     fn the_writer_drains_the_channel_in_batches_and_reports_its_drops() {
         let p = temp("serve");

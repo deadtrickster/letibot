@@ -1,49 +1,11 @@
-//! The seat's instruction files: the markdown a leticode reads because it says
-//! how to work in this project.
+//! The seat's instruction files: the markdown a leticode reads because it says how
+//! to work in this project.
 //!
-//! > *"leticode can support claude.md. but not letibot"*
-//! >
-//! > *"let it just look for the canonical claude.md if our leticode.md doesnt
-//! > exist"*
-//! >
-//! > *"and on this host they both link to the same claude.md from handoffs"*
-//!
-//! Three sentences and one rule: a project's instructions may be written under
-//! the name this seat gives them ([`INSTRUCTION_FILE`]) or under the canonical
-//! name every other tool already reads ([`CANONICAL_INSTRUCTION_FILE`]), and the
-//! SEAT is the thing that knows both. The runtime must not — *"i want letibot
-//! stay a framework, a runtime"* — so the two names are spelled here and
-//! nowhere in `letibot-harnessd`, which asks this crate for a list of paths and
-//! reads them. A runtime that knew the names would be the framework deciding
-//! what a leticode is; and one that knew a checkout path, as the first cut of
-//! this did, would be worse: *"dont you think hardcoding the repo checkout path
-//! is a bit too much"*.
-//!
-//! # Two scopes, and the rule in each
-//!
-//! * **Workspace** — walk up from the session's workspace. At the first
-//!   directory holding either name, the seat's own wins; and a file found nearer
-//!   beats one further up, in either name. This is [`crate::LeticodeConfig::discover`]'s
-//!   walk with a preference inside each directory rather than one name.
-//! * **Box** — the config dir this crate already reads ([`user_path`]'s
-//!   directory, `~/.config/letibot/` in the default spelling): its own
-//!   `leticode.md` if it is there, else the canonical `~/.claude/CLAUDE.md`. On
-//!   the operator's box the two are links to one file — the third sentence above
-//!   — so the fallback costs nothing there and is still the whole reason a
-//!   `CLAUDE.md` written for another tool reaches a leticode at all.
-//!
-//! **Neither present is an answer, not a fault.** A seat with no instruction
-//! file has none: [`instructions`] answers an empty list, nothing is created,
-//! nothing is warned about and nothing is refused. That is what makes this safe
-//! to ask on every session open.
-//!
-//! # Why a `BoxDirs` rather than `$HOME` read where it is needed
-//!
-//! Because a test that read the box it runs on would pass or fail with
-//! `~/.claude/CLAUDE.md` — the operator's own file, which exists on the box this
-//! was written on. The two directories are a value the caller supplies
-//! ([`BoxDirs::for_this_box`] in production), which is the same shape
-//! `standing_notes::section` already takes its box-wide notes directory in.
+//! A project's instructions may be written under the name this seat gives them or
+//! under the canonical name every other tool reads, and the SEAT is what knows both:
+//! the runtime stays a framework, so the two names are spelled here and nowhere in
+//! `letibot-harnessd`, which asks this crate for paths and reads them. Neither file
+//! present is an answer, not a fault: an empty list, nothing created.
 
 use std::path::{Path, PathBuf};
 
@@ -62,9 +24,9 @@ pub const CANONICAL_INSTRUCTION_FILE: &str = "CLAUDE.md";
 /// The canonical name's directory under the box's home.
 const CANONICAL_DIR: &str = ".claude";
 
-/// The two directories a box-scope answer comes from, given rather than discovered: the config dir,
-/// where this crate's own files live, and the home, where another tool's canonical file lives. The
-/// default is two empty paths, which is a box with no instruction file of its own.
+/// The two directories a box-scope answer comes from, given rather than discovered:
+/// where this crate's own files live, and where another tool's canonical file lives.
+/// Empty by default, which is a box with no instruction file of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoxDirs {
     /// The seat's config dir — `~/.config/letibot/` in the default spelling.
@@ -74,8 +36,9 @@ pub struct BoxDirs {
 }
 
 impl BoxDirs {
-    /// This box's: the config dir [`user_path`] answers from, and `$HOME`. Derived from [`user_path`]
-    /// rather than from `$HOME` spelled again, so `$XDG_CONFIG_HOME` is honoured here too.
+    /// This box's: the config dir `user_path` answers from, and `$HOME`. Derived
+    /// from `user_path` rather than `$HOME` spelled again, so a `$XDG_CONFIG_HOME`
+    /// that `providers.toml` honours is honoured here too.
     pub fn for_this_box() -> BoxDirs {
         BoxDirs {
             config: user_path()
@@ -89,9 +52,9 @@ impl BoxDirs {
     }
 }
 
-/// The seat's instruction files for a session at `workspace`, nearest first: at most two, and none
-/// when the seat has no instruction file anywhere. The workspace's comes first because a project
-/// that says how to build itself outranks a box that says how to work.
+/// The seat's instruction files for a session at `workspace`, nearest first: at most
+/// two, none when the seat has no instruction file anywhere. The workspace's comes
+/// first because a project that says how to build itself outranks a box.
 pub fn instructions(workspace: &Path, box_dirs: &BoxDirs) -> Vec<PathBuf> {
     let mut out = Vec::with_capacity(2);
     for found in [workspace_scope(workspace), box_scope(box_dirs)]
@@ -108,8 +71,9 @@ pub fn instructions(workspace: &Path, box_dirs: &BoxDirs) -> Vec<PathBuf> {
     out
 }
 
-/// The workspace scope: the nearest directory at or above `workspace` holding either name, and inside
-/// it the seat's own before the canonical one. `pop` at the filesystem root ends the walk.
+/// The workspace scope: the nearest directory at or above `workspace` holding either
+/// name, and inside it the seat's own before the canonical one. `pop` returns false at
+/// the filesystem root, which is where the walk stops rather than looping.
 fn workspace_scope(workspace: &Path) -> Option<PathBuf> {
     let mut dir = workspace.to_path_buf();
     loop {
@@ -122,9 +86,9 @@ fn workspace_scope(workspace: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The box scope: the config dir's own file, else the canonical one under the box's home. Exactly two
-/// addresses, which is the rule: a file arriving from a place nobody documented is the surprise this
-/// tree keeps paying for.
+/// The box scope: the config dir's own file, else the canonical one under the box's
+/// home. Exactly two addresses, which is the operator's rule: a canonical file dropped
+/// in the config dir is not a third place the rule never named.
 fn box_scope(box_dirs: &BoxDirs) -> Option<PathBuf> {
     if let Some(own) = in_path(&box_dirs.config, INSTRUCTION_FILE).filter(|p| p.is_file()) {
         return Some(own);
@@ -144,7 +108,9 @@ fn in_dir(dir: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// `dir/name`, or `None` when `dir` is empty.
+/// `dir/name`, or `None` when `dir` is empty. An empty path is not the working
+/// directory: `PathBuf::new().join(name)` is relative, so an unguarded join would
+/// have a fixture, or a daemon with no `$HOME`, read `./leticode.md` from its cwd.
 fn in_path(dir: &Path, name: &str) -> Option<PathBuf> {
     (!dir.as_os_str().is_empty()).then(|| dir.join(name))
 }
@@ -291,9 +257,9 @@ mod tests {
         assert!(instructions(&ws, &no_box()).is_empty());
     }
 
-    /// The box scope is exactly the two addresses the rule names: the config dir's own file and the
-    /// canonical one under the box's home. A canonical file dropped in the config dir is not a third,
-    /// since a file arriving from an undocumented place is the surprise this rule exists to prevent.
+    /// The box scope is exactly the two addresses the rule names: the config dir's own
+    /// file, and the canonical one under the box's home. A canonical file dropped in
+    /// the config dir is not a third - a file from a place nobody documented.
     #[test]
     fn the_box_scope_is_the_two_addresses_the_rule_names() {
         let ws = dir("box-third-ws");

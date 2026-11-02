@@ -1,13 +1,11 @@
 //! The seam between the turn engine and whatever actually runs the model.
 //!
-//! A backend states what it can promise in [`BackendCaps`], and that statement is
-//! what an invariant suite reads to decide whether it may assert the structural
-//! prefix property or must skip and say so. A skip carries a sentence rather than a
-//! bool because a silent degradation that reads as a green tick is the failure this
-//! seam exists to prevent.
+//! A metered provider API is a later milestone, but the seam is reserved now:
+//! retrofitting it means touching the turn engine, compaction and every metric.
 //!
-//! Only `letibot-transcript` is a dependency: a provider backend must not have to
-//! link the rendering stack it will never use.
+//! A backend declares what it cannot guarantee so tests skip loudly rather than
+//! pass vacuously. The crate depends on `letibot-transcript` alone: a provider
+//! backend must not link the rendering stack it will never use.
 
 use letibot_transcript::TranscriptItem;
 
@@ -40,27 +38,32 @@ pub enum CacheReporting {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Meter {
-    /// Tokens cost wall clock: local work, or hardware rented by the hour.
+    /// Tokens cost wall clock. Local, and our own cloud compute — the operator's
+    /// point is that renting the hardware makes these the same case, because you
+    /// pay for time either way.
     WallClock,
     /// Tokens cost money. Compaction stops being a latency optimisation.
     Metered,
 }
 
-/// How strongly the append-only prompt invariant holds: request N+1 reads the same region of token
-/// ids further, so there is no rewrite to represent. A `messages` API cannot offer that.
+/// How strongly the append-only prompt invariant holds. The claim that a prefix
+/// violation is blocked holds only for token ids over memory we own; it does not
+/// survive a `messages` API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PrefixGuarantee {
     /// Violation is unrepresentable. Assert the region property directly.
     Structural,
-    /// We send messages and the provider renders, so the check is afterwards: did
-    /// its cache behave as though the prefix was stable?
+    /// We send messages; the provider renders. We can only check afterwards that
+    /// its cache behaved as though the prefix was stable — a weaker, statistical
+    /// claim about the past.
     Asserted,
-    /// Nothing to check. A suite reaching this must skip and say so.
+    /// Nothing to check. A suite reaching this must **skip and say so**.
     None,
 }
 
-/// What a turn cost, in the unit that backend actually charges. One type with an explicit meter, so a
-/// report cannot silently add milliseconds to dollars.
+/// What a turn cost, in the unit that backend actually charges.
+///
+/// One type with an explicit meter, so a report cannot add milliseconds to dollars.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TurnCost {
     pub meter: Meter,
@@ -68,20 +71,22 @@ pub struct TurnCost {
     pub cached_tokens: u64,
     pub generated_tokens: u64,
     pub wall_ms: u64,
-    /// Only meaningful when `meter == Metered`. `None` under `WallClock` - not
+    /// Only meaningful when `meter == Metered`. `None` under `WallClock` — not
     /// zero, because zero is a number somebody will sum.
     pub micros_usd: Option<u64>,
 }
 
-/// One turn's worth of work, in terms both a local and a remote backend can realise. It carries the
-/// transcript rather than a rendered prompt, or every backend would need the rendering stack.
+/// One turn's work, in terms a local and a remote backend can both realise. It
+/// carries the transcript, not a rendered prompt: realisation is the backend's
+/// job, and a rendered string would force every backend through the render stack.
 #[derive(Debug, Clone)]
 pub struct TurnRequest<'a> {
     pub system: &'a str,
     pub tools_json: &'a [String],
     pub items: &'a [TranscriptItem],
-    /// Items this request carries and the transcript does not: committed nowhere, so the cached prefix
-    /// stays exactly `items`. Not a `System` item, which the API refuses while tools are carried.
+    /// Items this request carries and the transcript does not: rendered after
+    /// `items`, committed nowhere, so the next request's cached prefix is exactly
+    /// `items`. Never a `System` item - the provider refuses a trailing one.
     pub tail: &'a [TranscriptItem],
     pub max_output_tokens: Option<u32>,
 }
@@ -94,12 +99,13 @@ pub trait Backend {
     fn name(&self) -> &str;
 }
 
-/// One piece of a streamed answer as a `messages` API hands it over, forwarded to the engine's sink
-/// the way a local server's token deltas are.
+/// One piece of a streamed answer, as a `messages` API hands it over. The
+/// turn engine forwards these to its event sink the way it forwards a local
+/// server's token deltas, so a head draws a cloud turn and a local one alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delta {
     Text(String),
-    /// `reasoning_content` (DeepSeek, GLM, Grok) - the thinking, kept apart from
+    /// `reasoning_content` (DeepSeek, GLM, Grok) — the thinking, kept apart from
     /// the answer by the API rather than by a parser.
     Reasoning(String),
     /// A fragment of a tool call. The first fragment for an `index` carries the
@@ -139,7 +145,7 @@ pub struct Completion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamFlow {
     Continue,
-    /// Close the connection now - an urgent steering message, a guard.
+    /// Close the connection now — an urgent steering message, a guard.
     Stop,
 }
 
@@ -170,20 +176,21 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// A backend that takes the transcript and answers with a completion. Realisation stays the
-/// backend's job, so the transcript crosses this seam and never a rendered prompt or token ids; the
-/// token ledger is the local record and is never sent anywhere.
+/// A backend that takes the transcript and answers with a completion. The turn
+/// engine keeps its token ledger as the local record, tokenised with the session's
+/// own vocabulary and never sent anywhere.
 pub trait MessagesBackend: Send + Sync {
     fn caps(&self) -> BackendCaps;
 
-    /// `deepseek`, `glm`, `grok` - the preset's name.
+    /// `deepseek`, `glm`, `grok` — the preset's name.
     fn name(&self) -> &str;
 
     /// The model id sent on the wire.
     fn model(&self) -> &str;
 
-    /// `HOST:PORT` of what this backend actually talks to. Read from the URL the request is posted to,
-    /// not stored beside it where it could drift and send a reader to a server that was answering.
+    /// `HOST:PORT` of the thing this backend actually talks to, for a message that
+    /// has to name it: read from the URL the request is posted to, not stored
+    /// beside it where it could drift away from the daemon's configuration.
     fn authority(&self) -> String;
 
     /// One completion over the request, streaming deltas to `on_delta` as they
@@ -197,7 +204,8 @@ pub trait MessagesBackend: Send + Sync {
 }
 
 impl BackendCaps {
-    /// The shape of a llama.cpp server we run ourselves, local or rented.
+    /// The shape of a llama.cpp server we run ourselves — local or rented, the
+    /// operator's distinction being that rented compute is still billed by time.
     pub const OWN_SERVER: BackendCaps = BackendCaps {
         renders_locally: true,
         accepts_token_ids: true,
@@ -206,8 +214,8 @@ impl BackendCaps {
         prefix: PrefixGuarantee::Structural,
     };
 
-    /// The shape of a token-metered provider API. Not implemented yet; reserved so
-    /// the tests that must weaken against it exist first.
+    /// The shape of a token-metered provider API. Not implemented; reserved so the
+    /// tests that must weaken against it can be written now.
     pub const METERED_API: BackendCaps = BackendCaps {
         renders_locally: false,
         accepts_token_ids: false,

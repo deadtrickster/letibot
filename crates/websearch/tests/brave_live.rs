@@ -1,11 +1,11 @@
 //! The real Brave API. `BRAVE_LIVE=1 cargo test -p letibot-websearch --test brave_live`.
 //!
-//! The one thing the stand-in in `fake_brave.rs` cannot check: whether Brave's actual JSON
-//! field names are the ones this crate reads. Until this runs, those names are an
-//! assumption.
+//! The one thing the stand-in cannot check: whether Brave's actual JSON field names are the
+//! ones this crate reads. Those were written from the documented shape, so until this runs,
+//! `web.results[].description` and friends are an assumption.
 //!
-//! It costs one query against the operator's key, so it asserts on structure and never on
-//! what the web happens to say today.
+//! Costs one query against the operator's key, so it is one search and it asserts on
+//! structure, never on what the web happens to say today.
 
 use letibot_tools::builtins::external::web::{SearchProvider, SearchQuery};
 use letibot_websearch::Brave;
@@ -30,9 +30,9 @@ fn brave_answers_with_the_fields_this_crate_reads() {
         })
         .expect("a live search");
 
-    // Structure, not content. If the field names were wrong every one of these would be
-    // empty while the request itself succeeded, which is the silent-wrong-answer shape
-    // this test exists to catch.
+    // Structure, not content. If the field names were wrong every one of these
+    // would be empty while the request itself succeeded — which is exactly the
+    // silent-wrong-answer shape this test exists to catch.
     assert!(
         !out.hits.is_empty(),
         "no hits parsed: field names are wrong, or the key has no quota"

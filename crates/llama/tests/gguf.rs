@@ -1,5 +1,5 @@
-// The tokencore tests that need a real vocabulary: `tokencore` does not link llama.cpp, so a
-// GGUF can only be loaded from this crate.
+// The tokencore tests that need a real vocabulary, moved here with the llama backend:
+// `tokencore` no longer links llama.cpp, so a GGUF can only be loaded from this crate.
 mod tests {
     use letibot_dialect::{
         ControlRole, ControlToken, ControlTokens, RenderSpan, StablePrefix, StopToken,
@@ -9,9 +9,9 @@ mod tests {
     use letibot_transcript::{TranscriptItem, UserPart};
     use std::path::Path;
 
-    /// The vocabulary the FFI tests load, or `None` with the skip already announced: loud, naming the
-    /// path and the variable that overrides it. Absent apparatus reported as a failed assertion would
-    /// make a suite that can never go green and hide a real failure in its constant red.
+    /// The vocabulary the FFI tests load, or `None` with the skip already announced. Loud
+    /// and not quiet: `present_gguf` names the path and prints `THIS IS NOT A PASS`, and
+    /// `LETIBOT_REQUIRE_APPARATUS=1` turns the skip back into a failure.
     fn vocab() -> Option<Vocab> {
         let p = letibot_llama::apparatus::present_gguf()?;
         Some(letibot_llama::load(&p).expect("the vocabulary must load"))
@@ -27,8 +27,9 @@ mod tests {
         assert!(v.eos().is_some());
     }
 
-    /// Does a space survive tokenise then detokenise? letibot is token-native where other clients send
-    /// text, so this round trip is a step they do not have.
+    /// Does a space survive tokenise -> detokenise? letibot is token-native where
+    /// opencode sends text, so this round trip is the one step opencode does not have and
+    /// the first place to look when the model drops a space.
     #[test]
     fn spaces_survive_the_token_round_trip() {
         let Some(v) = vocab() else { return };
@@ -43,8 +44,9 @@ mod tests {
         }
     }
 
-    /// A character whose bytes straddle two tokens must come back whole: decoding each token on its
-    /// own would make both halves invalid UTF-8.
+    /// A character whose bytes straddle two tokens: the piece-based `detokenize` decodes
+    /// the whole piece, because decoding each token alone made both halves invalid UTF-8
+    /// and any message containing one became `<undecodable N token(s)>`.
     #[test]
     fn multibyte_characters_survive_detokenizing() {
         let Some(v) = vocab() else { return };
@@ -130,8 +132,9 @@ mod tests {
 
     #[test]
     fn text_cannot_become_a_control_token_however_it_is_spelled() {
-        // The injection case, at the tokenizer rather than at the type: even if the string
-        // reaches the text path, the text path cannot produce the control id.
+        // The injection case, at the tokenizer rather than at the type: the dialect
+        // crate proves the renderer will not emit a Control span for this, and here we
+        // prove the text path cannot produce the control id even if the string reaches it.
         let Some(v) = vocab() else { return };
         let literal = "<|im_start|>";
         let control = v.resolve_control(literal).expect("Qwen has <|im_start|>");
@@ -176,8 +179,9 @@ mod tests {
 
     #[test]
     fn user_defined_tokens_resolve_even_though_is_control_is_false_for_them() {
-        // Both are user-defined tokens rather than control ones, and a check written against
-        // `llama_vocab_is_control` would reject half of a correct dialect.
+        // Measured: Qwen marks <|im_start|> CONTROL (attr 8) but <think> and
+        // <tool_call> USER_DEFINED (attr 16). A check written against
+        // llama_vocab_is_control would reject half of a correct dialect.
         let Some(v) = vocab() else { return };
         for literal in ["<think>", "</think>", "<tool_call>", "</tool_call>"] {
             let id = v
@@ -200,8 +204,9 @@ mod tests {
         ControlTokens::borrowed(QWEN_CONTROLS)
     }
 
-    /// The span for a role, for the stand-in renderer below. It asserts the assumption it depends on:
-    /// ChatML spells each of these one way.
+    /// The span for a role, for the stand-in renderer below. It asserts the assumption it
+    /// depends on: ChatML spells each of these exactly one way, so "the token for this
+    /// role" is a well-formed question here.
     fn ctl(role: ControlRole) -> RenderSpan {
         let tokens = qwen();
         let mut all = tokens.all_with_role(role);
@@ -251,8 +256,9 @@ mod tests {
 
     #[test]
     fn a_failure_listing_is_ordered_by_role_not_by_hashing() {
-        // `ControlRole: Ord` exists for this: two runs against the same broken vocabulary
-        // must print the same report. Declared here in a deliberately unsorted order.
+        // `ControlRole: Ord` exists for exactly this: two runs against the same broken
+        // vocabulary must print the same report, so a diff of two startup logs is about
+        // the vocabulary. Declared here in a deliberately unsorted order.
         let Some(v) = vocab() else { return };
         const BROKEN: &[ControlToken] = &[
             ControlToken::borrowed(ControlRole::ToolCallClose, "<|missing_c|>"),
@@ -273,8 +279,9 @@ mod tests {
 
     #[test]
     fn a_stop_token_that_is_really_a_sequence_fails_at_startup_and_names_the_boundary() {
-        // The argument for `StopToken` carrying a role: a stop literal that is not one
-        // vocabulary entry never fires, and the turn runs to n_ctx saying nothing.
+        // The whole argument for `StopToken` carrying a role: a stop literal that is not
+        // one vocabulary entry never fires, and the turn then runs to n_ctx, which costs
+        // a whole context window and says nothing.
         let Some(v) = vocab() else { return };
         let good = [
             StopToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
@@ -298,9 +305,9 @@ mod tests {
 
     #[test]
     fn the_decoder_a_parser_needs_is_the_one_thing_with_a_vocabulary() {
-        // `parse(&[u32])` was unimplementable because the dialect crate has no vocab.
-        // `TokenDecoder` is the seam, and this is its only real implementation: ids in, the
-        // exact rendered bytes out, plus the role of every id that is a boundary.
+        // `parse(&[u32])` cannot work because the dialect crate has no vocab and must
+        // return `Content(String)`. `TokenDecoder` is the seam, and this is its only real
+        // implementation: ids in, the exact rendered bytes out.
         let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
         let decoder = VocabDecoder::new(&v, &map);
@@ -339,8 +346,9 @@ mod tests {
 
     // --- a stand-in dialect, so the seam can be exercised ------------------
 
-    /// A ChatML renderer, in this test module only, so the seam is exercised over something with
-    /// control tokens in it rather than over synthetic ids.
+    /// A ChatML renderer, in this test module only. It exists so the seam - render to
+    /// spans, tokenize the spans, append to the ledger - can be tested end to end before a
+    /// real dialect lands.
     fn render(prefix: &StablePrefix, items: &[TranscriptItem]) -> Vec<RenderSpan> {
         let mut spans = Vec::new();
         spans.push(ctl(ControlRole::TurnStartUser));
@@ -357,7 +365,7 @@ mod tests {
 
     fn render_item(item: &TranscriptItem) -> Vec<RenderSpan> {
         match item {
-            // Renders to nothing.
+            // §4.2: renders to nothing.
             TranscriptItem::SegmentMark { .. } => vec![],
             TranscriptItem::System { text, .. } => vec![
                 ctl(ControlRole::TurnStartUser),
@@ -491,9 +499,9 @@ mod tests {
 
         ledger.verify_chain().unwrap();
 
-        // Incremental and from-scratch must be the same token vector. If they ever differ
-        // the ledger is internally consistent and wrong, and the harness would report a
-        // prefix it never sent.
+        // Incremental and from-scratch must be the same token vector. The whole
+        // append-only design rests on it: if these ever differ, the ledger is internally
+        // consistent and wrong.
         let from_scratch = tokenize_spans(&v, &map, &render(&prefix, &items)).unwrap();
         assert_eq!(
             ledger.tokens(),
@@ -538,8 +546,9 @@ mod tests {
 
     #[test]
     fn detokenizing_our_spans_reproduces_the_rendered_string() {
-        // The "ours" half of the fidelity diff: the tokenizer is not the thing that would
-        // make our string differ from the server's.
+        // The "ours" half of the /apply-template fidelity diff (§7.2, I3). W3
+        // compares this string against the server's; here we only prove the
+        // tokenizer is not the thing that would make them differ.
         let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
         let prefix = StablePrefix {
@@ -632,16 +641,16 @@ mod tests {
 
     // --- the independent oracle -------------------------------------------
 
-    /// Cross-check against the running server's `/tokenize`. A check, not a dependency: with no server
-    /// listening the test says so and stops, since "the oracle is not running" and "we disagree" are
-    /// different facts.
+    /// Cross-check against the running server's `/tokenize`. A check, not a dependency: the
+    /// FFI path above never touches the network, and no server listening means the test
+    /// says so and stops rather than failing.
     #[test]
     fn we_agree_with_the_server_oracle_where_one_is_running() {
         let Some(v) = vocab() else { return };
 
-        // A third fact looks exactly like disagreement: the oracle is a different model.
-        // One port may serve several models by rotation, and the ids of one vocabulary are
-        // not the ids of another, so ask what the server loaded before reading its ids.
+        // Three facts, not two. Besides "the oracle is not running" and "we disagree with
+        // the oracle" there is "the oracle is a DIFFERENT MODEL", which looks exactly like
+        // the second: ask what the server loaded before believing its ids.
         if let Some(props) = post_get("/props") {
             let served = serde_json::from_str::<serde_json::Value>(&props)
                 .ok()
@@ -671,8 +680,9 @@ mod tests {
 
         let mut checked = 0usize;
         for probe in probes {
-            // `parse_special` must be passed, and passed false: the server defaults it to
-            // true, so omitting it compares our text path against the server's control path.
+            // `parse_special` must be passed, and passed false. The server defaults it to
+            // true, so an oracle comparison that omits it compares our text path against
+            // the server's control path and calls the disagreement a bug.
             let body = serde_json::json!({
                 "content": probe, "add_special": false, "parse_special": false
             })
@@ -697,9 +707,9 @@ mod tests {
         }
         assert_eq!(checked, probes.len());
 
-        // And the special-token half: the server, told to parse specials, resolves the same
-        // single id we do. The omitted `parse_special` here is the server's default, on
-        // purpose.
+        // And the special-token half: the server, told to parse specials,
+        // resolves the same single id we do. Note the omitted `parse_special`
+        // here is the server's default of true, on purpose.
         let body = serde_json::json!({
             "content": "<|im_start|>", "add_special": false
         })
@@ -716,8 +726,9 @@ mod tests {
             // *control* answer and must match resolve_control, not tokenize_text.
             assert_eq!(theirs, vec![v.resolve_control("<|im_start|>").unwrap()]);
 
-            // And the finding itself, pinned: the two flags give two different answers for
-            // the same string, so which one the oracle was asked is load-bearing.
+            // And the finding itself, pinned: the two flags give two different
+            // answers for the same string, so which one the oracle was asked is
+            // load-bearing and cannot be left to a default.
             assert_ne!(
                 theirs,
                 v.tokenize_text("<|im_start|>").unwrap(),
@@ -727,8 +738,8 @@ mod tests {
         }
     }
 
-    /// A four-line HTTP/1.1 `GET`, for `/props`. `None` means "could not ask", which the caller must not
-    /// read as "the answer was no".
+    /// `GET path`, for `/tokenize` and `/props`. Same framing tolerance for both; a `None`
+    /// means "could not ask", which the caller must not read as "the answer was no".
     fn post_get(path: &str) -> Option<String> {
         use std::io::{Read, Write};
         use std::net::TcpStream;
@@ -753,7 +764,6 @@ mod tests {
         Some(tail[start..=end].to_string())
     }
 
-    /// A four-line HTTP/1.1 `POST`, for one JSON round trip against localhost.
     fn post(path: &str, body: &str) -> Option<String> {
         use std::io::{Read, Write};
         use std::net::TcpStream;

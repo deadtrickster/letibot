@@ -1,13 +1,11 @@
-//! Compiles the C shim (see `csrc/shim.c` for why one exists) and links the fork's `libllama`.
+//! Compiles the C shim (see `csrc/shim.c` for why one exists) and links the
+//! fork's `libllama`.
 //!
-//! Where the checkout and its library are is `build-support.rs`, included rather than copied,
-//! because five crates need the same answer. This is the only one of the five that asserts: it
-//! is the only crate that links the library, so a box with no llama.cpp fails here, with the
-//! list of paths tried, rather than linking a binary that cannot start.
-//!
-//! The search also has to work under the merge gate, which is a child of a daemon whose
-//! environment may carry neither `LETIBOT_LLAMA_DIR` nor `LETIBOT_LLAMA_LIB`. A script that finds
-//! its header only when a human exported a variable cannot be run by a queue.
+//! Where the checkout and its library are is `build-support.rs`, included rather than
+//! copied, because five crates need the same answer. This is the only one of the five
+//! that ASSERTS: it is the only crate that links the library, so a box with no llama.cpp
+//! must fail here, with the list of paths tried, rather than link a binary that cannot
+//! start.
 
 include!("build-support.rs");
 
@@ -32,9 +30,9 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=dylib=llama");
-    // The shim calls `ggml_backend_dev_by_type` to name the CPU device for a vocabulary load
-    // (see csrc/shim.c): that symbol lives in libggml, which libllama imports at runtime.
-    // Naming it here keeps the shim's one dependency explicit instead of relying on link order.
+    // The shim calls `ggml_backend_dev_by_type` to name the CPU device for a
+    // vocabulary load: that symbol lives in libggml, which libllama imports at runtime.
+    // Naming it here keeps the shim's one dependency explicit.
     println!("cargo:rustc-link-lib=dylib=ggml");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }
@@ -55,9 +53,8 @@ fn locate_checkout() -> std::path::PathBuf {
 }
 
 /// The directory holding `libllama`, or a failure that lists every path tried.
-///
-/// `LETIBOT_LLAMA_LIB` is an instruction rather than a hint, so a directory that was named and
-/// holds nothing is a failure naming it, not a quiet fall back to one that does.
+/// `LETIBOT_LLAMA_LIB` is an instruction rather than a hint, so a directory that was
+/// named and holds nothing is a failure naming it, not a quiet fall back to one that does.
 fn locate_lib(checkout: &std::path::Path) -> std::path::PathBuf {
     let candidates = llama_lib_candidates(checkout);
     let lib = match std::env::var_os("LETIBOT_LLAMA_LIB") {
