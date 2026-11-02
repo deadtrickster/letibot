@@ -1,19 +1,11 @@
 //! **`letibot --migrate`, end to end, with a fake ssh and two fake remotes.**
 //!
-//! What this proves is the orchestration and every byte that crosses: the ssh argv (`-i`,
-//! `IdentitiesOnly`, `BatchMode`, a ControlMaster per host, `-N -L` for the forward), the git
-//! bundle both ways, the store export and import — run by the FAR SIDE's own binary, which here
-//! is this build's binary behind a shim — the marker on both ends, and the record a head reads.
+//! What this proves is the orchestration and every byte that crosses: the ssh argv, the git
+//! bundle both ways, the store export and import - run by the FAR SIDE's own binary, which here
+//! is this build's behind a shim - the marker on both ends, and the record a head reads.
 //!
-//! What is NOT proved here, because it needs a real machine: a real `ssh -L` carrying a live
-//! daemon's socket, a real `cargo build --release` on a host, and a head attached through the
-//! forward. The fake `cargo` makes the two binaries the move expects, and the fake `harnessd`
-//! records its argv instead of starting a daemon — no test may start a real one, and none may
-//! need a network.
-//!
-//! The fake ssh runs each "remote" command against a temp home of its own, chosen by the ssh
-//! target, so `lab2x1` and `lubuntu1` are two machines as far as every path in the move is
-//! concerned.
+//! NOT proved, because it needs a real machine: a real `ssh -L` carrying a live daemon's socket,
+//! a real `cargo build --release` on a host, and a head attached through the forward.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -86,10 +78,8 @@ impl Fixture {
     }
 
     fn write_hosts(&self) {
-        // **`mise = false`, because these hosts are fakes on this box.** The default is *find the
-        // host's mise and wrap every command in `mise exec`* — which on a developer's Mac would
-        // find the real `/opt/homebrew/bin/mise` behind the fake ssh and put it in front of every
-        // assertion here. A fixture says what it means.
+        // **`mise = false`, because these hosts are fakes on this box**: the default would find
+        // the real `mise` behind the fake ssh and wrap every command in `mise exec`.
         std::fs::write(
             &self.hosts,
             "[host.lab2x1]\nhostname = \"lab2x1\"\nuser = \"dead\"\nroot = \"~/letibot-remote\"\n\
@@ -98,11 +88,8 @@ impl Fixture {
              root = \"~/letibot-remote\"\nmise = false\n",
         )
         .unwrap();
-        // **The two facts a connection is refused without**, and both are letibot's own rather
-        // than the operator's: a dedicated key per host under the config directory (the default
-        // when the file says nothing), and the host key already accepted in letibot's own
-        // known-hosts file. A migration that did not have them would be refused by
-        // `Ssh::connect` before it moved a byte — which is the behaviour its own test asserts.
+        // **The two facts a connection is refused without**, both letibot's own: a dedicated key
+        // per host and the host key accepted in letibot's known-hosts file.
         let paths = letibot_tools::remote::Paths::in_home(&self.home);
         std::fs::create_dir_all(paths.keys()).unwrap();
         let mut known = String::new();
@@ -245,9 +232,8 @@ impl Fixture {
     }
 
     /// **The two hosts**: a home each, and the `cargo` a move would find there. The fake cargo
-    /// writes the two binaries the move copies out of `target/release`: a `letibot` that IS this
-    /// build (so the far side's export/import/mark are real code) and a `harnessd` that records
-    /// its argv and exits — no test starts a daemon.
+    /// writes a `letibot` that IS this build - so the far side's export/import/mark are real code -
+    /// and a `harnessd` that records its argv and exits, because no test starts a daemon.
     fn make_remotes(&self) {
         for name in ["lab2x1", "lubuntu1"] {
             let home = self.remotes.join(name);
@@ -304,10 +290,9 @@ impl Fixture {
         ]
     }
 
-    /// **The runtime dir has to be SHORT.** A unix socket path is bounded by `SUN_LEN` (104 here),
-    /// and a per-user temp dir under `/var/folders/…` plus `letibot/migrated-<36 chars>.sock` is
-    /// past it — the bind fails with `path must be shorter than SUN_LEN`, which reads like a
-    /// launcher bug and is a filesystem limit.
+    /// **The runtime dir has to be SHORT**: a unix socket path is bounded by `SUN_LEN` (104 here),
+    /// and `/var/folders/…` plus `letibot/migrated-<36 chars>.sock` is past it. The bind then
+    /// fails with `path must be shorter than SUN_LEN`, which reads like a launcher bug.
     fn short_run(name: &str) -> PathBuf {
         PathBuf::from("/tmp").join(format!("rh4-{}-{name}", std::process::id()))
     }
@@ -663,18 +648,9 @@ fn a_host_without_provider_keys_is_refused_unless_the_keys_are_copied() {
     assert_eq!(mode, 0o600, "the keys land mode 600, not 644");
 }
 
-/// **A step that gets no answer is killed at its bound** — rule 1, measured on the second caller of
-/// an ssh call.
-///
-/// The fake ssh sleeps for ever. The verb's first call to the destination is `test -f
-/// providers.toml` (`Retried::Never`, one attempt), so the whole run is one [`STEP_BOUND`] — and
-/// the sentence names the step, the host and the bound. Twenty seconds is what the bound IS; a test
-/// that made it shorter would measure a number nothing in production uses.
-///
-/// What this does **not** measure is the breaker, and it cannot: every invocation of
-/// `letibot --migrate` is its own process, and the breaker — like the call records — is per
-/// process. The two are measured where they live: `letibot_tools::rpc`'s own tests for the state
-/// machine, and `remote_hosts.rs` for the same state reached through a real backend.
+/// **A step that gets no answer is killed at its bound** - rule 1, measured on the second caller of
+/// an ssh call. The fake ssh sleeps for ever, so the whole run is one `STEP_BOUND`. The breaker is
+/// NOT measured here: every invocation is its own process, and the breaker is per process.
 #[test]
 fn a_step_that_never_answers_is_killed_at_its_bound() {
     use std::time::Instant;

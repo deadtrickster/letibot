@@ -70,10 +70,8 @@ use letibot_sessionlog::activity::Activity;
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, NOTE_SESSION_CLOSED, ServerFrame};
 use letibot_tokencore::store::{ImportInto, SessionTransfer, Store};
-// **One `hosts.toml` reader and one ssh argv, shared with RH1.** This module used to spell both
-// itself — `parse_hosts`, `hosts_path`, `ssh_argv` — as a deliberately small copy that "whichever
-// landed second can delete". It landed: the copy is gone, and the only thing a migration reads
-// about a host is what `crates/tools` reads about it.
+// **One `hosts.toml` reader and one ssh argv, shared with RH1**: the only thing a migration
+// reads about a host is what `crates/tools` reads about it.
 use letibot_tools::remote::{Host, Hosts, Paths, Ssh};
 use letibot_tools::rpc::{Outcome, Retried};
 
@@ -84,49 +82,30 @@ use crate::launcher;
 pub const LOCAL: &str = "local";
 
 /// **How long a move waits for a session to go quiet before refusing.** A minute: a tool call or
-/// a model round can be long, and a migration that gave up in ten seconds would refuse the
-/// ordinary case of *"I asked it something and now I want it on the host"*. Past it the operator
-/// is told what the session is still waiting on, rather than being left with a verb that never
-/// returns.
+/// a model round can be long. Past it the operator is told what the session is still waiting on,
+/// rather than being left with a verb that never returns.
 pub const QUIESCE_PATIENCE: Duration = Duration::from_secs(60);
 
-/// **How long the far side's `cargo build` is given**, when the operator does not say.
-///
-/// Thirty minutes, and the number is the difference between two kinds of step: everything else this
-/// verb runs on a host is a `cat`, a `git fetch` or a move of a file and belongs inside
-/// [`letibot_tools::remote::STEP_BOUND`]'s twenty seconds, while a **cold** `cargo build --release`
-/// of this tree is tens of minutes on a slow machine and its duration is the work's business.
-/// `--build-timeout SECS` is the door for a host that needs more; nothing here is unbounded, which
-/// is the rule the whole verb is written to.
+/// **How long the far side's `cargo build` is given**, when the operator does not say. Thirty
+/// minutes: every other step on a host belongs inside `STEP_BOUND`, while a **cold** `cargo build
+/// --release` of this tree is tens of minutes. `--build-timeout SECS` is the door for more.
 pub const BUILD_BOUND: Duration = Duration::from_secs(30 * 60);
 
 /// How often a running build says the last thing it said. Ten seconds: long enough not to fill a
 /// scrollback, short enough that a person watching a move can tell *still working* from *wedged*.
 const BUILD_PROGRESS: Duration = Duration::from_secs(10);
 
-// -------------------------------------------------------------------------------------------
-// hosts.toml
-// -------------------------------------------------------------------------------------------
-//
-// The reader is `letibot_tools::remote::Hosts`'s — one file read one way on this box, whether it
-// is a session's tools or its daemon that goes to the host.
+// --- hosts.toml -----------------------------------------------------------------------------
+// Read by `letibot_tools::remote::Hosts`: one file read one way on this box, whether it is a
+// session's tools or its daemon that goes to the host.
 
 // -------------------------------------------------------------------------------------------
 // An endpoint: a store, a checkout and a daemon, reached directly or over ssh
 // -------------------------------------------------------------------------------------------
 
 /// **One place a session can live.** `local` is this box; anything else is a host from
-/// `hosts.toml`, reached through the ssh connection in [`Endpoint::ssh`].
-///
-/// A move has exactly two, and every step below is written ONCE against this type — which is what
-/// makes *host → host* the same code path as *laptop → host*, rather than a second one that would
-/// have to be kept in step with the first.
-///
-/// **The connection is `letibot_tools::remote::Ssh` and not this module's own argv.** RH4 spelled
-/// its own flags here, and the two spellings had already drifted from RH1's: neither passed
-/// `-F`, so both read the operator's ssh client config, and neither checked the host key it was
-/// about to trust. There is one ssh policy in this tree now, and this is the second of its two
-/// callers.
+/// `hosts.toml`. Every step below is written ONCE against this type, which is what makes host to
+/// host the same code path. **The ssh is `letibot_tools::remote::Ssh`** - one policy in this tree.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
     /// `local`, or the host's table name — the spelling the marker column stores.
@@ -182,16 +161,9 @@ impl Endpoint {
         format!("{}/.letibot/bin", self.root)
     }
 
-    /// A command that runs `script` on this endpoint, with stdin/stdout/stderr as the caller sets
-    /// them. **The script is one argv element**, which is exactly what ssh hands to the far
-    /// side's shell — so nothing in it is re-quoted on the way, and everything it names goes
-    /// through [`sh_quote`] here.
-    ///
-    /// **The command is wrapped by the backend's own [`Ssh::remote_command`]** and not by a
-    /// spelling of this module's: the host's `path` list in front of `PATH`, the login shell, and
-    /// `mise exec` around both when the host has a toolchain pinned that way. A move runs `cargo`
-    /// on the far side, so *which* `cargo` is not a detail — and one wrapper for both callers is
-    /// what keeps a migration building with the toolchain a session would build with.
+    /// A command that runs `script` on this endpoint, with stdio as the caller sets it. **The
+    /// script is one argv element**, so everything it names goes through [`sh_quote`], and it is
+    /// wrapped by [`Ssh::remote_command`] - the host's `path`, login shell and `mise exec`.
     fn command(&self, script: &str) -> Command {
         if self.is_local() {
             let mut c = Command::new("sh");
@@ -246,12 +218,9 @@ impl Endpoint {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// **One script on this endpoint, bounded, recorded, and inside the breaker** — rules 5, 7 and
-    /// the retry class, for the second caller in this tree.
-    ///
-    /// The three are here rather than at the call sites for the same reason they are in
-    /// [`letibot_tools::rpc`] for the backend: a caller that has to remember them is a caller that
-    /// will forget one, and this module has twelve call sites.
+    /// **One script on this endpoint, bounded, recorded, and inside the breaker** - rules 5, 7 and
+    /// the retry class. Here rather than at the call sites because a caller that has to remember
+    /// them is a caller that will forget one, and this module has twelve call sites.
     fn run_classed(
         &self,
         script: &str,
@@ -329,11 +298,9 @@ impl Endpoint {
         }
     }
 
-    /// **Write a local file's bytes to `path` on this endpoint**, streamed — a bundle and a
-    /// transfer file run to hundreds of megabytes and neither belongs in memory.
-    ///
-    /// The bytes go over as base64 on stdin and are decoded on the far side: no scp, no second
-    /// protocol, and nothing shaped like a path inside the data.
+    /// **Write a local file's bytes to `path` on this endpoint**, streamed: a bundle runs to
+    /// hundreds of megabytes and does not belong in memory. Base64 on stdin, decoded on the far
+    /// side - no scp, no second protocol, and nothing shaped like a path inside the data.
     fn write_from(&self, local: &Path, path: &str) -> Result<(), String> {
         if self.is_local() {
             return std::fs::copy(local, path)
@@ -446,10 +413,9 @@ impl Endpoint {
         Ok(())
     }
 
-    /// **Wait for a streamed transfer, or kill it at the deadline.** The two streamed steps
-    /// ([`Endpoint::write_from`], [`Endpoint::read_to`]) hand their bytes through pipes, so they are
-    /// not [`letibot_tools::rpc::run_bounded`]'s shape — but they are still an ssh connection to
-    /// another machine, and a transfer nobody bounds is the hang the contract's rule 1 is about.
+    /// **Wait for a streamed transfer, or kill it at the deadline.** Pipes are not
+    /// [`letibot_tools::rpc::run_bounded`]'s shape, but this is still an ssh connection to another
+    /// machine, and a transfer nobody bounds is the hang the contract's rule 1 is about.
     fn await_within(
         &self,
         child: &mut std::process::Child,
@@ -588,10 +554,9 @@ pub struct Move {
     pub session: String,
     pub from: Endpoint,
     pub to: Endpoint,
-    /// **This box's endpoint, even when neither end of the move is here.** It is what makes a
-    /// `lab2x1 -> lubuntu1` hop keep the laptop's row truthful: that row is the index of record
-    /// every surface reads, and a hop that left it naming the first host would send the next
-    /// attach and the next `--sessions` to a machine the session has left.
+    /// **This box's endpoint, even when neither end of the move is here**: the local row is the
+    /// index of record, so a host-to-host hop that left it naming the first host would send the
+    /// next attach and the next `--sessions` to a machine the session has left.
     pub local: Endpoint,
     pub patience: Duration,
     /// Copy `~/.config/letibot/providers.toml` to the destination when it has none.
@@ -681,10 +646,9 @@ impl Move {
         // (`None`); the source's says where it went.
         self.mark(&self.to, None)?;
         self.mark(&self.from, Some(&self.to.name))?;
-        // **And the laptop's row, when the move did not touch this box.** It is not one of the
-        // two ends of a host-to-host hop, but it is the row `--sessions` and `--continue` read
-        // here — so leaving it naming the first host would be a signpost to a machine the
-        // session has left.
+        // **And the laptop's row, when the move did not touch this box**: it is the row
+        // `--sessions` and `--continue` read here, so leaving it naming the first host would be a
+        // signpost to a machine the session has left.
         if !self.from.is_local() && !self.to.is_local() {
             self.mark(&self.local, Some(&self.to.name))?;
         }
@@ -800,9 +764,7 @@ impl Move {
         let ws = sh_quote(&facts.workspace)?;
 
         // A folder that is not a repository has no HEAD to send, and copying it would be a
-        // different product — `docs/remote-hosts.md` refuses that in this slice. Both questions
-        // below only READ, so they are [`Retried::Once`]'s: a question asked again is the same
-        // question (`Endpoint::read_step`).
+        // different product. Both questions below only READ, so they are `Retried::Once`'s.
         let inside = self.from.read_step(&format!(
             "cd {ws} 2>/dev/null && git rev-parse --is-inside-work-tree 2>/dev/null || true"
         ))?;
@@ -841,11 +803,9 @@ impl Move {
         // **The bundle, through a temp file on this box.** A session's HEAD can be hundreds of
         // megabytes, and holding one in memory to relay it would be a way to run out of it.
         let bundle = temp_path("tree")?;
-        // **Two paths, and they are deliberately different.** A bundle made on THIS box is
-        // already here. One made on a host is written into that host's own root and then pulled
-        // back to a temp file here — the relay the module header owns up to — and naming the two
-        // the same would make the cleanup below delete the copy just fetched on any machine whose
-        // "remote" is this one.
+        // **Two paths, and they are deliberately different**: a bundle made on a host is written
+        // into that host's root and pulled back here, and naming the two the same would make the
+        // cleanup below delete the copy just fetched on any machine whose "remote" is this one.
         let plant = if self.from.is_local() {
             bundle.display().to_string()
         } else {
@@ -1092,13 +1052,9 @@ impl Move {
         Ok(())
     }
 
-    /// **The host must run the SAME build as this one.** A migrated session's rows were written
-    /// by this build's schema; a daemon from another commit would refuse them, migrate them
-    /// differently, or — worse — read them and write something this build cannot read back.
-    ///
-    /// Bundled and built there, **offline**: if the host has no cargo registry cache the build
-    /// fails and that is said in the build's own words. Nothing is installed behind the operator's
-    /// back and the network is never used.
+    /// **The host must run the SAME build as this one.** A migrated session's rows were written by
+    /// this build's schema, and a daemon from another commit would refuse them or write something
+    /// this build cannot read back. Built there, **offline**, never behind the operator's back.
     fn ensure_build(&self, endpoint: &Endpoint, say: &mut Say<'_>) -> Result<(), String> {
         let want = self.local_commit()?;
         let stamp = format!("{}/.letibot/build-commit", endpoint.root);
@@ -1166,11 +1122,9 @@ impl Move {
             stamp = sh_quote(&stamp)?,
             want = sh_quote(&want)?,
         );
-        // **The build is the one step whose duration is not ours to guess** — a cold `cargo
-        // build` of this tree is minutes, and on a slow host more. So it gets its own bound
-        // ([`BUILD_BOUND`], or `--build-timeout`) and **progress**: while it runs, the last thing
-        // cargo said is printed every ten seconds, so a move that is working looks like one and a
-        // move that is wedged is told apart from it by what it stopped saying.
+        // **The build is the one step whose duration is not ours to guess**, so it gets its own
+        // bound ([`BUILD_BOUND`], or `--build-timeout`) and **progress**: the last thing cargo
+        // said is printed every ten seconds, which tells a working move from a wedged one.
         let build = self.build_on(endpoint, &script, say)?;
         if !build.status.success() {
             let err = String::from_utf8_lossy(&build.stderr);
@@ -1193,17 +1147,9 @@ impl Move {
         Ok(())
     }
 
-    /// **The far side's build, bounded and watched** — [`Move::build_bound`] on the clock, and the
-    /// last thing cargo said reported every [`BUILD_PROGRESS`].
-    ///
-    /// This is the one step of a move that runs longer than [`letibot_tools::remote::STEP_BOUND`]
-    /// and the only one that says anything while it runs, so it has its own runner rather than
-    /// borrowing `rpc::run_bounded`: a caller waiting on a build needs *the bound* and *what it is
-    /// doing*, and a function that returned only at the end could give neither.
-    ///
-    /// **The whole process group is killed at the deadline**, like every other bounded call here:
-    /// a killed `ssh` leaves cargo writing into a pipe nobody reads, and this side's reader then
-    /// blocks for as long as the build would have taken.
+    /// **The far side's build, bounded and watched** - [`Move::build_bound`] on the clock, and the
+    /// last thing cargo said every [`BUILD_PROGRESS`]. Its own runner, because a caller waiting on
+    /// a build needs the bound AND what it is doing. **The whole group dies at the deadline.**
     fn build_on(
         &self,
         endpoint: &Endpoint,
@@ -1376,10 +1322,9 @@ impl Move {
         Ok(())
     }
 
-    /// **The socket a head reaches that daemon on**, forwarded to this box over `ssh -L`
-    /// (OpenSSH's unix-socket forwarding). A forward is a process, so it is started once and left:
-    /// it does not belong to this verb's lifetime — a head attaches an hour later from a different
-    /// terminal. A dropped one is re-established by the next attach ([`Move::reattach`]).
+    /// **The socket a head reaches that daemon on**, forwarded to this box over `ssh -L`. A
+    /// forward is a process started once and left: it does not belong to this verb's lifetime, and
+    /// a dropped one is re-established by the next attach ([`Move::reattach`]).
     fn forward(&self, endpoint: &Endpoint, session: &str, say: &mut Say<'_>) -> Result<(), String> {
         if endpoint.is_local() {
             return Ok(());
@@ -1414,16 +1359,14 @@ impl Move {
         Ok(())
     }
 
-    /// **Where a moved session is recorded** — beside the launcher's own daemon records, so a head
-    /// finds it where it finds any daemon: by looking in the rundir. Named by the SESSION and not
-    /// by a workspace hash, because a forward is not a folder's daemon — the folder's daemon may
-    /// well still be running for the sessions that stayed.
+    /// **Where a moved session is recorded** - beside the launcher's own daemon records, so a head
+    /// finds it by looking in the rundir. Named by the SESSION, not by a workspace hash: a forward
+    /// is not a folder's daemon, which may still be running for the sessions that stayed.
     fn record(&self, landed: &Landed, say: &mut Say<'_>) -> Result<(), String> {
         let path = record_path(&self.session);
-        // **A session that came home has no forward to record.** The record is what makes a
-        // HEAD go to the forwarded socket; leaving it behind after a move back would send the
-        // next attach to a socket nothing listens on, and the re-establish would ask a host
-        // that no longer holds the session. Removed, not rewritten: there is nothing to say.
+        // **A session that came home has no forward to record**: leaving the record behind would
+        // send the next attach to a socket nothing listens on and re-establish against a host that
+        // no longer holds the session.
         if self.to.is_local() {
             match std::fs::remove_file(&path) {
                 Ok(()) => say(&format!(
@@ -1534,12 +1477,8 @@ fn socket_reachable(path: &Path) -> bool {
 }
 
 /// **Wait until the session is quiet, or refuse by name**, leaving the connection attached so the
-/// caller can shut the session on the same one.
-///
-/// Attaches as a head of kind `migration`, so the session's log says who was watching, and reads
-/// [`Activity`] — the daemon's own answer to *will this act again by itself?* — rather than timing
-/// anything. A session stopped on a card is refused at once: waiting for it would wait for a
-/// person, which is the one wait a verb must not fake.
+/// caller can shut the session on the same one. It attaches as a head of kind `migration` and
+/// reads [`Activity`] rather than timing anything; a session on a card is refused at once.
 fn quiesce(
     socket: &Path,
     session: &str,
@@ -1738,11 +1677,9 @@ fn now_ns() -> u128 {
 // The verb
 // -------------------------------------------------------------------------------------------
 
-/// **The sub-verbs the FAR SIDE of a move runs** — a host's own `letibot`, against its own
-/// store. They are internal (no launcher passes them, nothing invokes them by a program name)
-/// and they exist so that the half of a move that touches another machine's store is done by
-/// THAT machine's binary at THAT machine's commit, rather than by a second SQL implementation
-/// spoken over ssh.
+/// **The sub-verbs the FAR SIDE of a move runs** - a host's own `letibot`, against its own store,
+/// so the half of a move that touches another machine's store is done by THAT machine's binary at
+/// THAT machine's commit, rather than by a second SQL implementation spoken over ssh.
 pub const FAR_VERBS: [&str; 5] = [
     "--export-session",
     "--import-session",
@@ -2031,10 +1968,9 @@ fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
         store: String::new(),
         root: host.root.clone(),
     };
-    // `~` is the shell's, and this is the one place it is allowed to be: after this the root is
-    // an absolute path. **Expanded to `$HOME/…` rather than left as `~`** — a tilde inside double
-    // quotes is a literal character, so `cd "~/letibot-remote"` creates a directory named `~`
-    // beside wherever the command happened to run, and every path after it is nonsense.
+    // `~` is the shell's, and this is the one place it is allowed: **expanded to `$HOME/…`**,
+    // because a tilde inside double quotes is a literal character and `cd "~/x"` makes a directory
+    // named `~` beside wherever the command ran.
     let root = match host.root.strip_prefix("~/") {
         Some(rest) => format!("\"$HOME/{rest}\""),
         None if host.root == "~" => "\"$HOME\"".to_string(),
