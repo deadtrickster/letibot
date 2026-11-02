@@ -43,14 +43,13 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R112 - The harness reads the box's home for instructions and skills, so a test's prompt depends on the host - **OPEN, filed 2026-11-02**
+## R112 - The harness reads the box's home for instructions and skills, so a test's prompt depends on the host - **CLOSED on branch `remote/02482000`, filed 2026-11-02**
 
-`compact::a_child_session_compacts_on_a_tool_result_overrun_and_finishes` fails on lab2x1 on main (`3566df43`) and passes on lubuntu1 and xmg. The child's prompt there is 8341 tokens of a 32765 window, so the compaction cannot make room and the task ends in `ContextWall`. lab2x1 has `~/.claude/CLAUDE.md` (8.5 kB) and a user skill in `~/.claude/skills`; lubuntu1 has neither. The harness asks `BoxDirs::for_this_box()` (`$HOME`) at three places in `crates/harnessd/src/harness.rs`, and `crates/tools/src/builtins/skill.rs` reads `$HOME/.config/letibot/skills` and `$HOME/.claude/skills`, so an in-process test cannot hand them a clean box.
+`compact::a_child_session_compacts_on_a_tool_result_overrun_and_finishes` fails on lab2x1 on main (`3566df43`) and passes on lubuntu1 and xmg. The child's prompt there is 8341 tokens of a 32765 window, so the compaction cannot make room and the task ends in `ContextWall`. lab2x1 has `~/.claude/CLAUDE.md` (8.5 kB) and a user skill in `~/.claude/skills`; lubuntu1 has neither. The harness asked `BoxDirs::for_this_box()` (`$HOME`) at three places in `crates/harnessd/src/harness.rs`, and `crates/tools/src/builtins/skill.rs` reads `$HOME/.config/letibot/skills` and `$HOME/.claude/skills`, so an in-process test could not hand them a clean box.
 
-Fix after the `harness.rs` split lands: the harness `Config` carries the box directories (instructions and skills), the daemon fills them from `$HOME`, and test fixtures pass an empty box as `standing_notes.rs`'s `no_box` already does.
-
-**Done when**: the compact test passes on lab2x1 with its `CLAUDE.md` and skills in place, and no harnessd test reads `$HOME` for instructions or skills.
-**Still open?** `grep -n for_this_box crates/harnessd/src` finds a call outside the daemon's startup.
+**Landed (2026-11-02, branch `remote/02482000`): the box is data on the harness `Config`.** `Config::box_dirs` carries `leticode_config::BoxDirs` — the config dir, and the home `~/.claude/CLAUDE.md` hangs off — and `Config::box_skills` the box's skill roots. `Config::read_the_box()` is the one reader of `$HOME` and `$XDG_CONFIG_HOME`, called at a daemon's startup (`for_the_daemon`) and by the `m1` measurement, which is a live session and not a fixture. `Config::global_notes()` and `Config::skill_dirs()` are the two derivations, the project's skill roots taken from each session's own workspace so a child in a worktree reads that tree's; the five readers take them off the config — `Parts::load`, the prompt composed at `Harness::open`, `reseat_candidate`'s, the notes offer's, and the `notes` tool's scope. `Config::for_this_box`, which every fixture builds on, names an EMPTY box, and `standing_notes::global_dir()` is gone with its last reader. The same class of defect in the fixture git helpers — a box whose global config sets `commit.gpgsign` signed, and so refused, every fixture commit — was closed in the same pass: `letibot_tools::testing::git` and the fixtures that now use it.
+**Done when**: the compact test passes on this host with an 8.5 kB `~/.claude/CLAUDE.md` and a `~/.claude/skills` skill in place — measured red before the change and green after, the same binary and the same home — and no harnessd code below the daemon's startup reads `$HOME` for instructions, box notes or skills.
+**Still open?** `grep -rn 'BoxDirs::for_this_box\|SkillDirs::for_this_box' crates/harnessd/src` answers only `read_the_box`, where the call wraps onto a second line; `Config::for_this_box` is the fixture constructor and reads no home.
 
 ---
 
