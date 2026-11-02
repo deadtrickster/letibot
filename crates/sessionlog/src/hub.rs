@@ -1734,6 +1734,18 @@ impl Hub {
             .any(|c| matches!(c.kind, CommandKind::Interrupt { .. }))
     }
 
+    /// Take a queued stop, leaving every other command where it is - a wait a person ended must
+    /// not eat the prompt they typed beside it. `None` when nobody asked for a stop.
+    pub fn take_queued_interrupt(&self) -> Option<String> {
+        let mut g = self.lock();
+        let i = (0..g.commands.len())
+            .find(|&i| matches!(g.commands[i].kind, CommandKind::Interrupt { .. }))?;
+        match g.commands.remove(i)?.kind {
+            CommandKind::Interrupt { reason } => Some(reason),
+            _ => None,
+        }
+    }
+
     /// The next mode change a running turn can act on: `/mode` is what an operator reaches for
     /// while being asked, so it has to be reachable mid-turn.
     pub fn try_mode_command(&self) -> Option<QueuedCommand> {

@@ -3,6 +3,15 @@
 //! around it, and the restart restore that starts a turn nobody typed for.
 use super::*;
 
+/// How a wait ended: the time passed, the session is going away, or the operator asked for a stop.
+/// A store write waits through a stop (rows in memory would be lost) and a retry does not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Waited {
+    Out,
+    Closed,
+    Interrupted,
+}
+
 /// A `LogSink` that also hands back the item ids it saw, so a row's body can be paired with the
 /// id the event named. It forwards everything unchanged: a sink that filtered would make the head's
 /// view depend on which daemon published it.
@@ -1581,8 +1590,20 @@ impl Harness {
                 // Nothing is published here, and that is the change: this used to raise a row per attempt, three in
                 // three seconds for one endpoint. The attempt is in the outage's count, and the row is written when
                 // the outage ends.
-                if !self.sleep_unless_closed(wait) {
-                    break Err(TurnFailure::Http(e));
+                match self.sleep_unless_closed(wait) {
+                    Waited::Out => {}
+                    Waited::Closed => break Err(TurnFailure::Http(e)),
+                    // **The stop is the news, not the endpoint**: the ladder stops where it is,
+                    // since taking the round again spends another wait on an answer the person
+                    // has already given up on.
+                    Waited::Interrupted => {
+                        let reason = self.hub.take_queued_interrupt().unwrap_or_default();
+                        self.settle_outage(false);
+                        return Err(HarnessError::Endpoint {
+                            said: stopped_in_the_wait(&reason, &ladder, &e),
+                            cause: e,
+                        });
+                    }
                 }
             };
             // The outage this round was in, if any, is over, and it is said ONCE here where the count is final: a
@@ -2764,18 +2785,27 @@ impl Harness {
     }
 
     /// The database enforces the append-only property itself, so a divergence between the ledger and the store is
-    /// a failed INSERT rather than a quiet inconsistency. And this waits, unless the session is going away: `false`
-    /// means the hub closed and there is nobody left to answer. Sliced, so a daemon asked to stop is not held here.
-    fn sleep_unless_closed(&self, total: std::time::Duration) -> bool {
+    /// a failed INSERT rather than a quiet inconsistency. And this waits, unless the session is going away or the
+    /// operator asked for a stop - `Waited` names which, since a stop must not abandon a store write but must end a
+    /// retry. Sliced, so a daemon asked to stop is not held here.
+    fn sleep_unless_closed(&self, total: std::time::Duration) -> Waited {
         let slice = std::time::Duration::from_millis(250);
         let deadline = std::time::Instant::now() + total;
-        while std::time::Instant::now() < deadline {
+        loop {
             if self.hub.is_closed() {
-                return false;
+                return Waited::Closed;
             }
-            std::thread::sleep(slice.min(deadline - std::time::Instant::now()));
+            // A person pressing stop ends the wait: the retry ladder's can be sixteen seconds, and
+            // watching only the daemon's own closure left them waiting it out.
+            if self.hub.has_queued_interrupt() {
+                return Waited::Interrupted;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Waited::Out;
+            }
+            std::thread::sleep(slice.min(deadline - now));
         }
-        !self.hub.is_closed()
     }
 
     pub(crate) fn persist(&mut self) -> Result<(), HarnessError> {
@@ -2822,7 +2852,10 @@ impl Harness {
                             compaction: None,
                         });
                     }
-                    if !self.sleep_unless_closed(std::time::Duration::from_secs(5)) {
+                    if !matches!(
+                        self.sleep_unless_closed(std::time::Duration::from_secs(5)),
+                        Waited::Out | Waited::Interrupted
+                    ) {
                         return Err(HarnessError::Store(format!(
                             "{what}: {e} — the session closed while waiting for the store"
                         )));
@@ -2847,7 +2880,9 @@ impl Harness {
         let rows = self.session.ledger.rows();
         let start = self.persisted;
         let total = rows.len().saturating_sub(start) as u64;
-        let started = std::time::Instant::now();
+        // The patience is measured from the FIRST busy chunk, not from the call: a long transcript
+        // that wrote for twenty minutes before the store wedged has not spent its budget.
+        let mut first_busy: Option<std::time::Instant> = None;
         let mut said_at: Option<std::time::Instant> = None;
         while self.persisted < rows.len() {
             let from = self.persisted;
@@ -2872,6 +2907,7 @@ impl Harness {
             match store.append_items(&self.transcript_id, from as u32, chunk) {
                 Ok(()) => {
                     self.persisted = to;
+                    first_busy = None;
                     progress((to - start) as u64, total);
                 }
                 // A busy store is waited for, never died of: the store has already retried for a minute, and past that
@@ -2885,7 +2921,9 @@ impl Harness {
                         self.persisted = (n as usize).clamp(from, rows.len());
                     }
                     let at = self.persisted;
-                    let waited = started.elapsed();
+                    let waited = first_busy
+                        .get_or_insert_with(std::time::Instant::now)
+                        .elapsed();
                     if waited >= STORE_BUSY_PATIENCE {
                         return Err(HarnessError::Store(format!(
                             "row {at}: {e} — still busy after waiting {}s; nothing from row \
@@ -2907,7 +2945,10 @@ impl Harness {
                             compaction: None,
                         });
                     }
-                    if !self.sleep_unless_closed(std::time::Duration::from_secs(5)) {
+                    if !matches!(
+                        self.sleep_unless_closed(std::time::Duration::from_secs(5)),
+                        Waited::Out | Waited::Interrupted
+                    ) {
                         return Err(HarnessError::Store(format!(
                             "row {at}: {e} — the session closed while waiting for the store"
                         )));
@@ -3099,6 +3140,22 @@ fn fallback_notice(
          because a new model's first request has to follow a user message: {on} Nothing was \
          recorded by the turn that failed. `/models` moves the session back, and the list is in \
          `[fallback] models` in providers.toml."
+    )
+}
+
+/// The ending for a turn somebody stopped while the retry ladder was waiting: the stop is the
+/// news, and the count says how far the ladder had got before they pressed it.
+fn stopped_in_the_wait(
+    reason: &str,
+    ladder: &letibot_http::retry::Ladder,
+    e: &letibot_turn::HttpError,
+) -> String {
+    format!(
+        "stopped while the retry was waiting: {reason}. The ladder had called the model {} \
+         time(s) over {}, and the last of them said {e}. Nothing was recorded by the turn that \
+         failed, so your next message goes to the same model.",
+        ladder.attempts(),
+        crate::restart::span(ladder.waited())
     )
 }
 

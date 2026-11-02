@@ -476,4 +476,45 @@ fn what_is_retryable_and_what_the_operator_is_told() {
         said.contains(UNAVAILABLE),
         "and the provider's own sentence, for the bug report: {said}"
     );
+
+    // ── F. A stop during a retry's wait ends the turn at once ────────────────────────────
+    // The wait watched only the daemon's own closure, so a person who pressed interrupt waited out
+    // the whole ladder. The interrupt lands during the second wait and the turn must end at once,
+    // saying a stop ended it rather than that the endpoint gave up.
+    endpoint.refuse(100, Refusal::Unavailable);
+    let stub = endpoint.clone();
+    let before = endpoint.seen();
+    let cfg = config(&scratch, "stopped-in-the-wait", 5);
+    let rec = drive(&parts, cfg, move |client, rx, _hub, rec| {
+        client.prompt(0, PROMPT).expect("the prompt is accepted");
+        // Two calls means the ladder's second wait (2s) is the one running.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while stub.seen() - before < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            stub.seen() - before,
+            2,
+            "the ladder never took the round twice"
+        );
+        let pressed = Instant::now();
+        client
+            .interrupt(0, "the operator stopped it")
+            .expect("the interrupt is accepted");
+        watch(rx, rec, |rec| !rec.failed.is_empty());
+        let took = pressed.elapsed();
+        assert!(
+            took < Duration::from_secs(2),
+            "the turn took {took:?} to come back after the interrupt, so the wait outlived it"
+        );
+    });
+    let said = &rec.failed[0];
+    assert!(
+        said.contains("stopped") && said.contains("the operator stopped it"),
+        "the ending says the stop ended it, and whose words they were: {said}"
+    );
+    assert!(
+        !said.contains("gave up"),
+        "the ladder was not exhausted, so it must not claim to have given up: {said}"
+    );
 }
