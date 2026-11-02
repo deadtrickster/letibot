@@ -30,9 +30,9 @@ query-plan question. Where the analogy stops: attention is position-dependent th
 
 On a harness built on OpenAI-shaped requests against GLM-5.3-Flash on llama.cpp: **reasoning was not
 replayed**, so every turn diverged from its own cache entry; **compaction cold-prefilled by
-construction**, at 144,436 tokens and cache hit 0, about 13 minutes to the first summary token; **the
+construction** at 144,436 tokens and cache hit 0, about 13 minutes to the first summary token; **the
 output cap was silent**, so an empty result was recorded as success. Replaying reasoning moved `f_keep`
-p10 from **0.000 to 0.999**, and nobody surveyed has warm compaction on the default path.
+p10 from **0.000 to 0.999**.
 
 ## 3. Model targets
 
@@ -70,8 +70,7 @@ A **run** is one microVM and everything created for it, and its lifetime is a cg
 process tree, "because a process tree cannot express what a run owns". Root is overlayfs layers, so
 nothing is copied per run, and the guest is untrusted by construction. **The harness must not reinvent
 any of this**, and it must say how it composes: session to run? subagent to child run? who owns
-lifetime? firecode is the operator's own repo and changes to it are allowed, so specify the change
-rather than routing around it.
+lifetime? Changes to firecode are allowed, so specify the change rather than routing around it.
 
 ## 6. Adjudication - pluggable, not doctrinal
 
@@ -166,9 +165,8 @@ call**, and a miss should be self-correcting within the same call.
 *"A big window is a higher tolerance, not immunity. So minimising context occupation is a quality
 measure, not a speed one."* §4 pushes the other way: reasoning was **51.7%** of one measured
 conversation's content, so replaying it roughly doubles occupancy. Keep the **shape** append-only and
-byte-stable and make the **content** dense - return what is needed, spill rather than truncate, no
-restated framing - and reclaim occupancy at compaction rather than by reshaping history mid-flight. If
-occupation is a quality measure, **compaction is the primary quality lever**, not cost control.
+byte-stable and make the **content** dense, and reclaim occupancy at compaction rather than by reshaping
+history mid-flight. If occupation is a quality measure, **compaction is the primary quality lever**.
 
 ## 11. The server is ours - fuse to it
 
@@ -191,13 +189,11 @@ rewriting the edge; record the cost and do not hedge against it.
 
 **The payoff is bigger than the deletion.** Without OpenAI wire compatibility the harness need not speak
 `/v1/chat/completions` at all, and llama.cpp's native `/completion` takes `prompt` as a **token array**:
-the harness renders the chat template itself, which makes prefix stability something it constructs
-rather than hopes for, and `POST /apply-template` becomes the verification oracle - run the server's
-renderer, diff against ours, and a divergence fails CI instead of leaking cache. That check is
-**required**, because rendering locally means tracking template changes.
-
-So the dialect section is about **renderers we own**: what a dialect implements, how it is validated
-against the shipped jinja, and what happens when a model ships a template change.
+the harness renders the chat template itself, which makes prefix stability something it constructs rather
+than hopes for, and `POST /apply-template` becomes the verification oracle - run the server's renderer,
+diff against ours, and a divergence fails CI instead of leaking cache. So the dialect section is about
+**renderers we own**: what a dialect implements, how it is validated against the shipped jinja, and what
+happens when a model ships a template change.
 
 ### 11.3 What fusion unlocks
 
@@ -225,26 +221,17 @@ against the shipped jinja, and what happens when a model ships a template change
 
 llama.cpp matches on longest common prefix and destroys a cached entry contained in the new prompt. That
 is **policy**, and changeable. The deeper constraint is **physical**: KV entries are position-dependent
-through RoPE, so inserting or removing a segment mid-conversation invalidates everything after it
-whatever the indexing looks like.
+through RoPE, so inserting or removing a segment mid-conversation invalidates everything after it.
 
-**Finer-grained cross-session sharing is real and available** - block-hash addressing or a radix tree
-lets branches share rather than only extend, which matters because N subagents behind one system prompt
-currently pay for that prefix N times as separate resident sequences. The honest limit: **the 436.7 MiB
-recurrent state is not token-proportional and no block scheme can share it.**
-
-**Composing arbitrary blocks out of order is blocked by physics**: a block's KV depends on its own
-tokens, every preceding token and its absolute position, which is why a block hash **chains the parent**,
-and "send blocks A, F, Q plus new text" cannot work as stated. What a handle protocol *would* buy, so
-nobody over-invests: not prefill compute, not bandwidth, but **an explicit, verifiable cache hit instead
-of a discovered one** - the EXPLAIN idea moved into the wire format, which is the argument for building
-it.
-
-**Routes past the position problem, to measure and not assume**: *position shifting* (the primitive
-exists, and the hazard is measured and model-specific - it corrupted recurrent state on GLM, fixed by
-content-based invalidation), *stitching* (recompute a fraction of tokens, where **the recompute fraction
-is the entire economics and it is unknown for MLA + DSA**), or *accepting the cost* (a re-prefill from
-the swap point - cheap at the tail, total at the head).
+**Finer-grained cross-session sharing is real and available** - block-hash addressing or a radix tree lets
+branches share rather than only extend, which matters because N subagents behind one system prompt
+currently pay for that prefix N times. The honest limit: **the 436.7 MiB recurrent state is not
+token-proportional and no block scheme can share it.** **Composing blocks out of order is blocked by
+physics**: a block hash chains the parent, so "send blocks A, F, Q plus new text" cannot work. What a
+handle protocol *would* buy is **an explicit, verifiable cache hit instead of a discovered one** - the
+EXPLAIN idea moved into the wire format, which is the argument for building it. The routes past the
+position problem - shifting, stitching, or accepting the re-prefill - are to measure, not assume: **the
+recompute fraction is the entire economics and it is unknown for MLA + DSA.**
 
 ### 11.6 Track discipline
 
