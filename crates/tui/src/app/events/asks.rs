@@ -54,6 +54,11 @@ impl App {
                 subagent,
                 ..
             } => {
+                // **An answer is already on its way**, and this say is a replay or a resync: putting
+                // the card back would let the next Enter send the same answer a second time.
+                if self.answering.iter().any(|a| a.decision.req_id == req_id) {
+                    return Disposition::Rendered;
+                }
                 // **A card the operator put away stays away** when its question is said again
                 // (a replay, a second head's resync): refreshed in place, still not on screen.
                 if let Some(a) = self.away.iter_mut().find(|a| a.decision.req_id == req_id) {

@@ -818,3 +818,16 @@ fn the_payload_window_keeps_the_arrows_from_a_decision_card() {
     assert_eq!(a.sel, 0, "the arrow did not move a ladder nobody aimed at");
     assert_eq!(a.payload_page, 10, "it paged the window under the card");
 }
+
+/// An answer has left and its settlement has not: the same ask said again - a replay, a second
+/// head's resync - must not put the card back, or the next Enter sends the answer twice.
+#[test]
+fn a_replayed_decision_does_not_reopen_the_card_it_answered() {
+    let mut a = app();
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    assert_eq!(a.key(Key::Enter), answer("r1", "allow"));
+    assert!(a.open.is_empty(), "the card closed when the answer left");
+    ask(&mut a, 2, testing::requested("r1", "rm"));
+    assert!(a.open.is_empty(), "the answered card did not come back");
+    assert_eq!(a.key(Key::Enter), None, "and a second Enter sends nothing");
+}
