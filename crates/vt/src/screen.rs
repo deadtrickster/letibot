@@ -1,25 +1,15 @@
 //! The grid, the cursor, the modes, and the sequences that act on them.
 //!
-//! A terminal's display half: bytes in, rows of cells out. No pty, no file descriptor, no thread, no
-//! clock, so a test is a `feed` and an assertion.
-//!
-//! Cursor addressing, erase, line and character edits, scrolling regions, the common modes, the pen
-//! through [`crate::attr`], and a scrollback ring on the main screen only.
-//!
-//! Absent, and named where it is dropped: mouse reporting is recorded and never performed, bracketed
-//! paste and synchronised output are consumed, hyperlinks and truecolour paint nothing, fonts and
-//! italic and underline do not exist here, and no sequence is ever answered. Line reflow does not
-//! exist either: a row is a row, and a program told about the new size redraws its own.
+//! A terminal's display half: bytes in, rows of cells out, with a scrollback ring on the main screen
+//! only. Mouse reporting is recorded and never performed, no sequence is ever answered, and there
+//! is no line reflow -- a row is a row.
 
 use crate::attr::{Attr, apply_sgr};
 use crate::parser::{Csi, Event, Parser};
 use crate::width::char_width;
 
-/// One cell of the grid.
-///
-/// A cell is one *column*, not one character: a wide glyph is a lead cell and the tail beside it,
-/// and the tail is never written on its own. [`Cell::is_wide_tail`] is how a reader tells the
-/// halves apart, and [`Cell::is_wide_lead`] how it knows the next cell belongs to this one.
+/// One cell of the grid: one *column*, not one character. A wide glyph is a lead cell and the tail
+/// beside it, and the tail is never written on its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
     /// The character in this cell. A space for a blank cell, and for the tail of a wide glyph.
@@ -40,10 +30,8 @@ impl Cell {
         }
     }
 
-    /// Whether this cell is the trailing half of a wide glyph.
-    ///
-    /// **The glyph is in the cell to the left**, and a reader that draws this cell's `ch` draws a
-    /// space over half of it.
+    /// Whether this cell is the trailing half of a wide glyph. The glyph is in the cell to the
+    /// left, so a reader drawing this cell's `ch` paints a space over half of it.
     pub fn is_wide_tail(&self) -> bool {
         self.wide_tail
     }
@@ -66,20 +54,13 @@ impl Default for Cell {
     }
 }
 
-/// **How many rows the scrollback keeps** — see the module header's *The scrollback*.
-///
-/// Two thousand, against the one other bound a pane's history already has: the daemon replays at
-/// most 256 KiB of what a program wrote to a head that attaches (`letibot_harnessd`'s
-/// `SCREEN_LOG`), which at a typical 60–120 bytes a line is two to four thousand lines. A ring
-/// much longer than what an attach can refill would be a history that a head switching away and
-/// back loses most of, which is a scrollback that depends on whether you looked away.
+/// How many rows the scrollback keeps: two thousand, against the 256 KiB a head's attach replays.
+/// A ring much longer than an attach can refill would be a history that depends on whether you
+/// looked away.
 pub const HISTORY_ROWS: usize = 2000;
 
-/// **Which mouse reports the program asked for** — `?9`, `?1000`, `?1002`, `?1003`, recorded by
-/// [`Screen::mouse`] and acted on by the head.
-///
-/// The levels are xterm's and they nest: a program that asked for [`MouseTracking::Drag`] is
-/// sent everything [`MouseTracking::Press`] is, and motion while a button is held.
+/// Which mouse reports the program asked for, recorded by [`Screen::mouse`] and acted on by the
+/// head. The levels are xterm's and they nest.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum MouseTracking {
     /// The program asked for nothing: a click is the head's.
@@ -109,11 +90,8 @@ struct Pos {
     col: usize,
 }
 
-/// One screen: the cells, and everything about them that the alternate screen keeps its own copy
-/// of.
-///
-/// This is a struct rather than a pile of fields on [`Screen`] because `?1049h`/`?1049l` swap two
-/// of them, and the whole of the "restored intact" promise is that the swap moves all of it.
+/// One screen: the cells, and everything about them the alternate screen keeps its own copy of.
+/// A struct because `?1049h` swaps two of them, and "restored intact" means the swap moves all.
 #[derive(Clone, Debug)]
 struct Face {
     cells: Vec<Cell>,
@@ -149,11 +127,8 @@ impl Face {
     }
 }
 
-/// A terminal screen.
-///
-/// `Debug` and not `Clone`: a head that wants a copy of the glass is a head that wants a *snapshot*
-/// of a moment, and what it should keep is the rows it drew rather than a second screen it could
-/// feed behind the first one's back.
+/// A terminal screen. `Debug` and not `Clone`: a head that wants a copy of the glass wants the rows
+/// it drew, not a second screen it could feed behind the first one's back.
 #[derive(Debug)]
 pub struct Screen {
     rows: usize,
@@ -184,11 +159,8 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// A blank screen of `rows` × `cols`.
-    ///
-    /// **A zero is clamped to one**, because the alternative is a panic inside a head at a
-    /// degenerate window size — a terminal that has told us nothing useful, reported as a crash in
-    /// the parser.
+    /// A blank screen of `rows` × `cols`. A zero is clamped to one, because the alternative is a
+    /// panic inside a head at a degenerate window size.
     pub fn new(rows: usize, cols: usize) -> Screen {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -220,21 +192,9 @@ impl Screen {
         }
     }
 
-    /// Change the shape, keeping what is on the screen and **keeping the state**.
-    ///
-    /// A pane is reshaped when the operator resizes the head's window. The program inside is told
-    /// about it (`TIOCSWINSZ`) and redraws — **but the screen's state is not something a program
-    /// re-sends**: `mc` sends `?1049h` once, so a pane that threw its screen away and made a new
-    /// one would decide it was drawing the transcript while the program was still drawing its own
-    /// panels. That is the operator's own sentence broken by a window drag, which is why this is
-    /// an operation on the screen rather than a second call to [`Screen::new`].
-    ///
-    /// So: the cells that still fit are kept, from the top-left; the cursor and the scrolling
-    /// region are clamped into the new shape; the pen, the modes and the parked main screen are
-    /// untouched, and a wide glyph cut by the new right edge loses both halves rather than half of
-    /// one. **What is past the new edge is gone** — a row longer than the new width is cut and
-    /// rows below the new height are dropped — and nothing is re-wrapped, because this crate has no
-    /// line model: a row is a row.
+    /// Change the shape, keeping what is on the screen and keeping the state: a program does not
+    /// re-send its state, so a pane that threw its screen away would draw the transcript while the
+    /// program drew its panels.
     pub fn resize(&mut self, rows: usize, cols: usize) {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -248,10 +208,9 @@ impl Screen {
         }
         self.rows = rows;
         self.cols = cols;
-        // **The deferred wrap is dropped**, because the cursor's column means something different
-        // in the new shape: `pending_wrap` says "the next character wraps", which was true of the
-        // old right margin and is a lie about the new one. A program that has been resized redraws
-        // its own frame, so there is nothing to carry.
+        // The deferred wrap is dropped: `pending_wrap` says "the next character wraps", which
+        // was true of the old right margin and is a lie about the new one. A resized program
+        // redraws its own frame.
         self.face.pending_wrap = false;
         // A cut at the new right edge can leave half a glyph, and the invariant is not negotiable.
         for row in 0..rows {
@@ -259,9 +218,7 @@ impl Screen {
         }
     }
 
-    /// The visible grid, one slice per row.
-    ///
-    /// The count of rows is `rows().len()`; [`Screen::size`] is the shape, for a caller that wants
+    /// The visible grid, one slice per row. [`Screen::size`] is the shape, for a caller that wants
     /// both without walking.
     pub fn rows(&self) -> std::slice::Chunks<'_, Cell> {
         self.face.cells.chunks(self.cols)
@@ -272,13 +229,8 @@ impl Screen {
         (self.rows, self.cols)
     }
 
-    /// One row as text, with the trailing blanks trimmed — the reader's convenience, and what the
-    /// tests assert on.
-    ///
-    /// A wide glyph contributes its one character, and its tail cell contributes nothing: the
-    /// string is what a person sees, and it is `cols` columns wide only when the row is full. A
-    /// row the screen does not have is an empty string rather than a panic, the same posture as
-    /// [`Screen::new`]'s clamp.
+    /// One row as text, trailing blanks trimmed: a wide glyph contributes one character and its
+    /// tail none. A row the screen does not have is an empty string rather than a panic.
     pub fn line(&self, row: usize) -> String {
         if row >= self.rows {
             return String::new();
@@ -301,10 +253,8 @@ impl Screen {
         (self.face.cursor.row, self.face.cursor.col)
     }
 
-    /// Whether the program wants a cursor on the glass (`?25h`/`?25l`).
-    ///
-    /// **This is what the program asked for and not what the head should draw.** A pane shows a
-    /// cursor only when the pane has the focus, which is a fact this crate does not have.
+    /// Whether the program wants a cursor on the glass. What the program asked for, not what the
+    /// head should draw: a pane shows a cursor only when it has the focus.
     pub fn cursor_visible(&self) -> bool {
         self.face.visible
     }
@@ -324,11 +274,8 @@ impl Screen {
         (self.face.top, self.face.bottom)
     }
 
-    /// **What the program asked the mouse to report**, and in which encoding.
-    ///
-    /// The head's question, asked on every report the operator's terminal sends: a program that
-    /// asked for nothing is not sent the operator's click (it would arrive as text at a shell's
-    /// prompt — R67 item 6), and one that asked is sent it, translated to the pane.
+    /// What the program asked the mouse to report. A program that asked for nothing is not sent
+    /// the operator's click, which would otherwise arrive as text at its prompt.
     pub fn mouse(&self) -> MouseMode {
         self.mouse
     }
@@ -350,17 +297,8 @@ impl Screen {
         self.history.len()
     }
 
-    /// **The rectangle as it stood `back` rows ago**: exactly `rows` rows, the last `back` of the
-    /// scrollback followed by the top of the screen.
-    ///
-    /// `back` is clamped to [`Screen::history_len`], so a head that scrolled further than there is
-    /// sees the oldest row at the top rather than a short rectangle, and `back == 0` is
-    /// [`Screen::rows`]. A history row kept at a wider shape is cut at this one's right edge —
-    /// and a wide glyph the cut would halve is dropped whole, the invariant [`Screen::resize`]
-    /// keeps for the grid.
-    ///
-    /// **The alternate screen has no history**, and this does not pretend otherwise: with it up,
-    /// the scrollback is the main screen's and is not under this canvas, so this is the canvas.
+    /// The rectangle as it stood `back` rows ago, `back` clamped to the history. The alternate
+    /// screen has no history, and with it up this is the canvas.
     pub fn view(&self, back: usize) -> Vec<&[Cell]> {
         let back = if self.alt {
             0
@@ -504,10 +442,8 @@ impl Screen {
                 7 => self.face.wrap = set,
                 // DECTCEM.
                 25 => self.face.visible = set,
-                // **The alternate screen, in the three spellings that occur.** 1049 is what
-                // `xterm`'s terminfo sends and 47 what an older one sends; the difference between
-                // them is what the alternate screen's *contents* are on the way out, and a pane
-                // that owns its own buffer has nothing to preserve there. See `switch_screen`.
+                // The alternate screen: 1049 is what xterm's terminfo sends and 47 what an older
+                // one sends. A pane with its own buffer preserves nothing on the way out.
                 47 | 1047 | 1049 => self.switch_screen(set),
                 // **The mouse, recorded.** Resetting any of the tracking levels turns tracking
                 // off, which is xterm's rule: they are one setting with three spellings, not
@@ -596,17 +532,14 @@ impl Screen {
     fn print(&mut self, ch: char) {
         let w = char_width(ch);
         if w == 0 {
-            // A combining mark or a zero-width character. **It has no cell and this crate has no
-            // cluster model to attach it to**, so it is dropped — the one place a program's byte
-            // does not reach the grid. The cost is stated in `crate::width`: `e` + U+0301 draws as
-            // `e`, and a ZWJ sequence draws as its parts.
+            // A combining mark or a zero-width character has no cell and there is no cluster
+            // model to attach it to, so it is dropped -- the one place a program's byte does not
+            // reach the grid.
             return;
         }
         if self.face.pending_wrap {
-            // **The deferred wrap.** The cursor sat in the last column and the *next* character is
-            // what wraps — so a program that fills the last column and then addresses the cursor
-            // elsewhere gets no extra line, which is what makes a frame drawn edge to edge come
-            // out as a frame.
+            // The deferred wrap: the cursor sat in the last column and the NEXT character
+            // wraps, so a frame drawn edge to edge comes out as a frame.
             self.carriage_return();
             self.line_feed();
         }
@@ -655,11 +588,8 @@ impl Screen {
         }
     }
 
-    /// Blank one cell — **and the other half of the wide glyph it belongs to, if it is one half**.
-    ///
-    /// Half a glyph is not a glyph: a terminal asked to erase one column of a two-column character
-    /// either draws a broken box or drops the whole thing, and the grid's rule is that a wide
-    /// character is a lead and its tail or it is nothing.
+    /// Blank one cell, and the other half of the wide glyph it belongs to. Half a glyph is not a
+    /// glyph: the grid's rule is a wide character is a lead and its tail or it is nothing.
     fn clear_glyph(&mut self, row: usize, col: usize) {
         if col >= self.cols {
             return;
@@ -693,12 +623,8 @@ impl Screen {
         }
     }
 
-    /// **Restore the grid's invariant after a shift**: a wide glyph is a lead and its tail, or
-    /// neither.
-    ///
-    /// `ICH` and `DCH` move cells along a row and can leave half a glyph at either edge, which is
-    /// the one thing a reader cannot draw. The repair is a pass over the row rather than a special
-    /// case in the shift, because the shift's boundary arithmetic is where a bug would live.
+    /// Restore the grid's invariant after a shift: `ICH` and `DCH` can leave half a glyph at
+    /// either edge. The repair is a pass over the row, not a case in the shift's arithmetic.
     fn repair(&mut self, row: usize) {
         let base = row * self.cols;
         for c in 0..self.cols {
@@ -819,10 +745,8 @@ impl Screen {
                     self.blank_row(row);
                 }
             }
-            // `ED 3` is the scrollback — `clear`'s `E3`, which is what a person means by *clear
-            // it all*. The screen goes too: that is what `clear` asks for in the same breath, and
-            // a terminal that left the glass when told to forget its history would be keeping the
-            // one half nobody asked about.
+            // `ED 3` is the scrollback, which is what a person means by clearing it all. The
+            // screen goes too: that is what `clear` asks for in the same breath.
             3 => {
                 self.history.clear();
                 for row in 0..self.rows {
@@ -849,10 +773,9 @@ impl Screen {
         self.blank_range(r, c, c.saturating_add(n).saturating_sub(1));
     }
 
-    /// A scroll of the region, and **the one place a row enters the scrollback**: a line feed at
-    /// the bottom margin of a region that starts at the top row of the main screen. See the module
-    /// header for why only that one — `DL` at the top row moves the same cells and keeps nothing,
-    /// because deleting a line is an edit and not a line printed past the glass.
+    /// A scroll of the region, and the one place a row enters the scrollback: a line feed at the
+    /// bottom margin of a region starting at the top row. `DL` moves the same cells and keeps
+    /// nothing, because deleting a line is an edit and not a line printed past the glass.
     fn scroll_up(&mut self, n: usize) {
         if !self.alt && self.face.top == 0 {
             let n = n.min(self.face.bottom + 1);
@@ -1023,11 +946,8 @@ mod tests {
         (0..s.size().0).map(|r| s.line(r)).collect()
     }
 
-    /// **The grid's own invariants, after whatever a test just did.**
-    ///
-    /// Two of them, and both are things a reader would draw wrongly rather than fail on: every row
-    /// is exactly `cols` cells, and a wide glyph is a lead and its tail or neither — never half of
-    /// one, which is a glyph a terminal draws as a broken box.
+    /// The grid's invariants, after whatever a test just did: every row is exactly `cols` cells,
+    /// and a wide glyph is a lead and its tail or neither.
     fn assert_well_formed(s: &Screen) {
         let (rows, cols) = s.size();
         assert_eq!(s.rows().len(), rows);
@@ -1050,11 +970,9 @@ mod tests {
         }
     }
 
-    /// **A sequence split across two `feed` calls is one sequence.**
-    ///
-    /// The classic bug, and the reason the parser is a state machine: `ESC [ 1 2 ; 3 4 H` arriving
-    /// in two pieces must address one cell, not print `[12;34` and then move the cursor somewhere
-    /// else. The assertion is on the rows that come out, because that is what a person sees.
+    /// A sequence split across two `feed` calls is one sequence -- the classic bug, and the reason
+    /// the parser is a state machine. The assertion is on the rows, because that is what a person
+    /// sees.
     #[test]
     fn a_sequence_split_across_two_feeds_lands_where_it_was_addressed() {
         let mut s = screen(4, 10);
@@ -1082,12 +1000,8 @@ mod tests {
         assert_eq!(lines(&drip), want);
     }
 
-    /// **A character split across two feeds is one character**, and a sequence split inside a long
-    /// parameter list is still one sequence.
-    ///
-    /// The two together, because they are the same defect at two levels: bytes that mean nothing
-    /// alone. The wide character is here as well, because its *cell* arithmetic is the part a split
-    /// would corrupt.
+    /// A character split across two feeds is one character, and a sequence split inside a long
+    /// parameter list is still one sequence: bytes that mean nothing alone.
     #[test]
     fn a_character_split_across_two_feeds_is_one_character() {
         let bytes = "\u{65e5}\u{672c}\u{8a9e}".as_bytes();
@@ -1102,10 +1016,9 @@ mod tests {
             assert_eq!(s.cursor(), (0, 6));
             assert_well_formed(&s);
         }
-        // A long parameter list, split inside it: the parameters survive, the extended colour is
-        // consumed whole, and nothing of it is printed. The list is deliberately long — a reset, a
-        // run of parameters this pen has no field for, an extended colour, and a colour after it —
-        // because a split inside it is where a per-chunk parse reads the tail as text.
+        // A long parameter list split inside it: the parameters survive, the extended colour is
+        // consumed whole, and nothing of it is printed -- a per-chunk parse would read the tail as
+        // text.
         let sgr = b"\x1b[0;1;2;3;4;5;6;7;8;9;38;5;167;31mX";
         let mut want = screen(2, 8);
         want.feed(sgr);
@@ -1120,15 +1033,9 @@ mod tests {
         }
     }
 
-    /// **The pane the operator asked for, drawn and then given back.**
-    ///
-    /// *"if i run `mc` the conversation window replaced by mc but prompt area stays"*: the
-    /// transcript is the main screen, `mc` takes the alternate one, and on the way out the
-    /// transcript's rows are **byte for byte** what they were — which is the whole reason the main
-    /// screen is parked rather than thrown away.
-    ///
-    /// The frame is drawn the way `mc` draws one on a terminal without Unicode: `ESC ( 0` for the
-    /// box, ASCII for the content, and a path bar addressed onto the last line.
+    /// The pane the operator asked for, drawn and then given back: the transcript is the main
+    /// screen, `mc` takes the alternate, and on the way out the transcript's rows are byte for
+    /// byte what they were.
     #[test]
     fn a_full_screen_program_replaces_the_transcript_and_gives_it_back_intact() {
         let mut s = screen(8, 24);
@@ -1221,11 +1128,8 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **A wide character occupies two cells, and both halves are one glyph.**
-    ///
-    /// This is the test for the fifth thing the brief asked about: a CJK character is two columns,
-    /// the cell beside it is its tail, and the grid's invariant holds — including when a wide glyph
-    /// is written over, erased at one edge, or pushed off the end of a row by an insert.
+    /// A wide character occupies two cells and both halves are one glyph, including when it is
+    /// written over, erased at one edge, or pushed off a row by an insert.
     #[test]
     fn a_wide_character_occupies_two_cells() {
         let mut s = screen(3, 8);
@@ -1324,10 +1228,8 @@ mod tests {
         assert_eq!(s.line(1), "h");
     }
 
-    /// **`DECSTBM`, and scrolling at the region's boundaries.**
-    ///
-    /// The region is what makes a full-screen program's status line stay put: `mc` sets one, and a
-    /// line feed at the bottom of it scrolls the region rather than the screen.
+    /// `DECSTBM`, and scrolling at the region's boundaries: a region is what keeps a full-screen
+    /// program's status line still.
     #[test]
     fn a_scroll_region_scrolls_and_the_lines_outside_it_stay_put() {
         let mut s = screen(5, 6);
@@ -1437,13 +1339,9 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **A cell keeps the background the program gave it**, and the slot is what is kept: what `44`
-    /// looks like is the reader's theme and not this crate's.
-    ///
-    /// This is the property `mc`'s panels and `nano`'s status bar stand on. It was dropped once —
-    /// consumed and not carried — and the cost was stated at the time, which is why the assertion
-    /// here is on the *cell* rather than only on the pen: the walk setting the slot is not the same
-    /// claim as the grid keeping it.
+    /// A cell keeps the background the program gave it, and the slot is what is kept: what `44`
+    /// looks like is the reader's theme. The assertion is on the cell, because the walk setting the
+    /// slot is not the same claim as the grid keeping it.
     #[test]
     fn a_cell_keeps_the_background_the_program_gave_it() {
         let mut s = screen(2, 6);
@@ -1579,12 +1477,8 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **A resize keeps the state, and that is the whole reason it is not `Screen::new` again.**
-    ///
-    /// The operator drags the window: the pane's screen changes shape and the program is told and
-    /// redraws — but the state a program does **not** re-send has to survive, or a pane would decide
-    /// it was drawing the transcript while `mc` was still drawing its panels. `?1049h`, the scroll
-    /// region, the cursor's visibility and the parked main screen are all asserted here.
+    /// A resize keeps the state, which is why it is not `Screen::new` again: `?1049h`, the scroll
+    /// region, the cursor's visibility and the parked main screen all survive the drag.
     #[test]
     fn a_resize_changes_the_shape_and_keeps_the_state() {
         let mut s = screen(6, 10);
@@ -1668,12 +1562,8 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **R60 item 1: a line the program scrolled off the top is kept, and can be read back.**
-    ///
-    /// *"No scrollback. A program that scrolls off the pane's rectangle is gone."* — `!term cat
-    /// big.log`, or `!term bash` and anything that prints more than a screen. The rows go into the
-    /// ring in order, [`Screen::view`] reads them back as a rectangle of the screen's own height,
-    /// and the live screen is untouched by looking.
+    /// A line the program scrolled off the top is kept and can be read back: the rows go into the
+    /// ring in order and [`Screen::view`] reads them as a rectangle of the screen's own height.
     #[test]
     fn a_line_scrolled_off_the_top_is_kept_and_can_be_read_back() {
         let mut s = screen(3, 10);
