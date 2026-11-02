@@ -274,7 +274,7 @@ impl ExternalWiring {
                 detail: format!(
                     "{} is attached and mounted 0 tools into this role. A server that \
                      advertises more tools than the role's remaining budget is refused \
-                     with its tool list rather than truncated (§8.4).",
+                     with its tool list rather than truncated.",
                     self.mcp
                 ),
                 active: false,

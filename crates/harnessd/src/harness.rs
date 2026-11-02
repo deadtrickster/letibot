@@ -648,7 +648,7 @@ impl letibot_tools::adjudicate::AdmissionSink for HubAdmissions {
             .unwrap_or_else(|e| e.into_inner())
             .push(format!(
                 "admitted without asking — `{}` {} · inside the measured boundary ({}, \
-                 {}), D16 · the row and `/gate` carry the full reason",
+                 {}), the row and `/gate` carry the full reason",
                 notice.tool,
                 notice
                     .summary
@@ -4310,9 +4310,11 @@ mod gate_admissions {
         assert_eq!(
             said[0],
             "admitted without asking — `bash` wants exec access to `cargo test --offline` · \
-             inside the measured boundary (bubblewrap 0.11.1, writes allowed), D16 · the row \
+             inside the measured boundary (bubblewrap 0.11.1, writes allowed), the row \
              and `/gate` carry the full reason"
         );
         assert_eq!(said[0].lines().count(), 1, "a notice is one line");
+        // A review number is not a name the model can look up, and this line is read by it.
+        assert!(!said[0].contains("D16"), "{}", said[0]);
     }
 }

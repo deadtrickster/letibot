@@ -222,8 +222,8 @@ pub fn mount(
             report.refused.push(MountRefusal {
                 server: server.name.clone(),
                 why: format!(
-                    "it advertises {} tool(s) and {left} seat(s) are left under §8.4's \
-                     ceiling; it is refused whole rather than truncated",
+                    "it advertises {} tools and {left} are left in the seat's budget; it \
+                     is refused whole rather than truncated",
                     server.tools.len()
                 ),
                 tools: names,
@@ -348,6 +348,14 @@ mod tests {
         assert_eq!(r.refused.len(), 1);
         assert_eq!(r.refused[0].tools, vec!["a", "b", "c"]);
         assert!(r.refused[0].why.contains('3'), "{}", r.refused[0].why);
+        // The refusal is read by the model: no document section and no placeholder plural.
+        for internal in ["§", "(s)"] {
+            assert!(
+                !r.refused[0].why.contains(internal),
+                "{}",
+                r.refused[0].why
+            );
+        }
     }
 
     #[test]

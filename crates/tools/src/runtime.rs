@@ -729,7 +729,7 @@ impl Gate for NoBoundary {
                 "`{}` declares {} access and no adjudicator is attached to this session, \
                  so there is nobody to decide whether it may run. The gate fails closed: \
                  nothing was executed and nothing on disk changed. This is not a denial — \
-                 nobody decided. Attach an adjudicator (§11) to make this callable.",
+                 nobody decided. Attach an adjudicator to this session to make this callable.",
                 call.name,
                 call.access.as_str()
             ),

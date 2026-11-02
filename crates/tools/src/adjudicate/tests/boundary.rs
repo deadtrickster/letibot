@@ -162,7 +162,7 @@ fn inside_a_measured_boundary_a_command_is_admitted_without_a_card() {
         assert_eq!(g.log[0].effect, "admit");
         assert_eq!(last_by(&g), "gate:boundary");
         assert!(
-            last_basis(&g).starts_with("admitted: inside the measured boundary (D16)"),
+            last_basis(&g).starts_with("admitted: inside the measured boundary"),
             "the row has to say why in the ruling's own words: {}",
             last_basis(&g)
         );
@@ -504,8 +504,8 @@ fn the_card_narrows_the_ladder_and_says_why() {
         "the card has to say what and why: {note}"
     );
     assert!(
-        note.contains("R98"),
-        "the note names the ruling it is applying: {note}"
+        !note.contains("R98"),
+        "a review number is not a name the reader can act on: {note}"
     );
 
     // A command that is not the project's code keeps its full ladder, or this would pass on a

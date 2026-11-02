@@ -546,10 +546,9 @@ impl ExecBackend for HostBackend {
             // Unchanged for every backend that did not ask to be executable, and
             // unchanged in what it says: the boundary is still not here.
             return Err(BackendError::Unsupported(
-                "this session's backend cannot start processes (HostBackend::new / \
-                 ::writable); a session that may run commands opens it with \
-                 HostBackend::executable, and §11.4's guest boundary is still not \
-                 what that gives",
+                "this session's backend cannot start processes, so nothing was run. Opening \
+                 a session on a backend that does is a decision about the session, and such \
+                 a session also gets a confinement boundary the run happens inside",
             ));
         };
         use crate::exec::{ProcessHost, ScopeKind, SpawnRequest, Waited};
@@ -1170,7 +1169,11 @@ mod tests {
                 env: vec![],
             })
             .unwrap_err();
-        assert!(format!("{e}").contains("11.4"), "{e}");
+        assert!(format!("{e}").contains("cannot start processes"), "{e}");
+        // The model reads this: a Rust type name or a document section is not a name it can act on.
+        for internal in ["HostBackend", "§", "11.4"] {
+            assert!(!format!("{e}").contains(internal), "{e}");
+        }
     }
 
     /// A containment escape the namespaces do NOT make moot: `canonicalize` fails on a path that

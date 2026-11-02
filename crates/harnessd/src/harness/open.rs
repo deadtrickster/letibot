@@ -1814,7 +1814,7 @@ impl Harness {
                         "[permissions] ask_unconfined_code is ON{}: a session with no measured \
                          boundary asks about every test runner, build and project script, every \
                          time — no session grant, no approved shape and no `permission` rule \
-                         settles one (R98). Only the per-call answer does",
+                         settles one. Only the per-call answer does",
                         match cfg.leticode.path.as_deref() {
                             Some(p) => format!(" ({})", p.display()),
                             None => String::new(),

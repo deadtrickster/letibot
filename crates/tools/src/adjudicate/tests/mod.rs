@@ -179,6 +179,7 @@ mod card;
 mod gate;
 mod grants;
 mod history;
+mod internals;
 mod memory;
 mod outcomes;
 mod supervised;

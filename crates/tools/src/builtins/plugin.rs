@@ -189,7 +189,7 @@ impl Tool for PluginTool {
                     "hook": {
                         "type": "string",
                         "enum": ["pane", "notice", "on_tool_call", "on_tool_result", "condition"],
-                        "description": "scaffold: the hook kind to answer. `pane` is drawn by a head; the other four are the patch points of docs/plugins-plan.md §4.1–4.4, each wired where the host does that thing. `plugin_hooks` has the contract for each."
+                        "description": "scaffold: the hook kind to answer. `pane` is drawn by a head; the other four patch what the host does at a call, at a result, at a notice it says, and at a watch's firing. `plugin_hooks` has the contract for each."
                     },
                     "input": {
                         "type": "object",
@@ -462,6 +462,22 @@ mod tests {
 
     fn plugin(rec: &Arc<Recorder>) -> (ToolRuntime, crate::backend::tempdir::TempDir) {
         runtime(Box::new(PluginTool::new(rec.clone())))
+    }
+
+    /// The schema is the model's only description of the five hooks: it may not send it to a
+    /// design document, which is a name it cannot open.
+    #[test]
+    fn the_hook_description_names_no_document() {
+        let rec = Arc::new(Recorder::default());
+        let schema = PluginTool::new(rec).schema();
+        let said = schema.parameters.to_string();
+        for internal in ["§", "docs/", ".md"] {
+            assert!(
+                !said.contains(internal),
+                "the description names `{internal}`:\n{said}"
+            );
+        }
+        assert!(said.contains("plugin_hooks"), "{said}");
     }
 
     #[test]

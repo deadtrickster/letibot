@@ -423,18 +423,7 @@ impl Grant {
     /// binding the key instead is exactly what the rule forbids.
     pub fn agent_from_env(why: impl Into<String>) -> Result<Grant, ExecError> {
         let Some(sock) = std::env::var_os("SSH_AUTH_SOCK") else {
-            return Err(ExecError::NoCredentialMechanism(
-                "`SSH_AUTH_SOCK` is not set, so there is no agent to forward. A key \
-                 file is NOT an alternative: binding `~/.ssh/id_rsa` into the view \
-                 would make it readable, and a readable key is one `cat` away from \
-                 the transcript — which `docs/boundary-and-adjudication.md` §3 calls \
-                 blocked, with no context and no authorisation that promotes \
-                 it. Start an agent and load the key (`eval $(ssh-agent); ssh-add \
-                 <key>`); letibot forwards the agent, never the key. Note that an \
-                 authorised `ssh` needs a SECOND decision as well: `Egress::Host`, \
-                 because the default network namespace has no route out."
-                    .to_string(),
-            ));
+            return Err(ExecError::NoCredentialMechanism(no_agent_said()));
         };
         let path = PathBuf::from(sock);
         // Guard the fact, not the proxy: it has to be a socket. A regular file called
@@ -461,6 +450,18 @@ impl Grant {
             why: why.into(),
         })
     }
+}
+
+/// Why an `ssh` with no agent cannot run, for the model: what to do instead, and no argument
+/// about the rule's source, which the reader can neither look up nor act on.
+pub(crate) fn no_agent_said() -> String {
+    "`SSH_AUTH_SOCK` is not set, so there is no agent to forward. A key file is NOT an \
+     alternative: binding a private key into the view would make it readable, and a \
+     readable key is one `cat` away from the transcript. Start an agent and load the key \
+     (`eval $(ssh-agent); ssh-add <key>`); letibot forwards the agent, never the key. An \
+     authorised `ssh` also needs a second decision, to reach a host, because the default \
+     network namespace has no route out."
+        .to_string()
 }
 
 /// Where a forwarded agent socket appears inside the view. Fixed, so that
@@ -2552,9 +2553,12 @@ mod tests {
         let m = format!("{e}");
         assert!(m.contains("ssh-add"), "{m}");
         assert!(m.contains("never the key"), "{m}");
-        assert!(m.contains("blocked"), "{m}");
-        // And it names the SECOND decision the authorised case needs.
-        assert!(m.contains("Egress::Host"), "{m}");
+        // And it names the SECOND decision the authorised case needs, in words a model can act
+        // on rather than the enum it is built from.
+        assert!(m.contains("second decision"), "{m}");
+        for internal in ["Egress::Host", "§"] {
+            assert!(!m.contains(internal), "{m}");
+        }
 
         // A real socket is accepted and bound at a fixed path, so the operator's
         // `/run/user/<uid>` path does not travel.

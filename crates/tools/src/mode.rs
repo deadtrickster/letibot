@@ -311,10 +311,10 @@ impl Mode {
         requires: &[Prereq::WritableBackend, Prereq::ReachableAdjudicator],
         summary: "writes go through without asking, and so does a command inside a \
                   confinement letibot has measured — one that crosses nothing and stays in \
-                  the checkout (D16). What still asks is what crosses: the network, a path \
+                  the checkout. What still asks is what crosses: the network, a path \
                   outside the project, the always-ask list — and, where no boundary was \
                   measured, any command that runs the project's own code, every time, if \
-                  `[permissions] ask_unconfined_code` is on (R98; off by default).",
+                  `[permissions] ask_unconfined_code` is on (off by default).",
     };
 
     /// The model adjudicates within `MayApprove`. Selectable and it refuses, which is the

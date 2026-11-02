@@ -1809,7 +1809,7 @@ impl AdjudicatedGate {
                 note: Some(format!(
                     "asks every time: it runs code the agent wrote ({runs}), and this host has \
                      no boundary — a grant cannot stand in for the file that will exist by the \
-                     next run (R98)"
+                     next run"
                 )),
             };
         }
@@ -1975,7 +1975,8 @@ impl AdjudicatedGate {
                      asked for and refused — {why}"
                 ),
                 (None, None) => {
-                    "the host filesystem is not sandboxed; §11.4's boundary arrives with firecode"
+                    "the host filesystem is not sandboxed; a confinement boundary arrives with \
+                     firecode"
                         .to_string()
                 }
             });
@@ -2657,8 +2658,8 @@ impl Gate for AdjudicatedGate {
         // every symlink, for a file that may not exist yet.
         let refused = never_hit(call.args).map(|hit| {
             format!(
-                "`{hit}` is on the never-write list (§11.4); no adjudicator is consulted and \
-                 none can override it"
+                "`{hit}` is on the never-write list: no adjudicator is consulted and none \
+                 can override it"
             )
         });
         let refused = refused.or_else(|| {
@@ -2762,7 +2763,7 @@ impl Gate for AdjudicatedGate {
             && let Some(boundary) = &self.boundary
         {
             let basis = format!(
-                "admitted: inside the measured boundary (D16). {} entered the namespaces that \
+                "admitted: inside the measured boundary. {} entered the namespaces that \
                  ARE the boundary, both seals were tested and held, egress is denied, this call \
                  crosses nothing (it names no network intent and no path outside the checkout), \
                  and it is not on the always-ask list. A ruling about this command would \
@@ -2786,7 +2787,7 @@ impl Gate for AdjudicatedGate {
                     boundary: boundary.mechanism.clone(),
                 });
             }
-            self.advise_on_a_settled_call(&req, "inside a measured boundary (D16)".into());
+            self.advise_on_a_settled_call(&req, "inside a measured boundary".into());
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }
