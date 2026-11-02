@@ -145,7 +145,7 @@ impl Rig {
         }
     }
 
-    /// **What the fake `firecode` was asked**, one entry per call, the verb first.
+    /// What the fake `firecode` was asked, one entry per call, the verb first.
     fn asked(&self) -> Vec<String> {
         std::fs::read_to_string(&self.asked)
             .unwrap_or_default()
@@ -349,7 +349,7 @@ impl Rig {
     }
 }
 
-/// **A host with no `firecode` is refused by name**, before anything is arranged there.
+/// A host with no `firecode` is refused by name, before anything is arranged there.
 #[test]
 fn a_host_without_firecode_is_refused_by_name() {
     let rig = Rig::new("nofirecode", false);

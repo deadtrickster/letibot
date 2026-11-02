@@ -62,7 +62,7 @@ fn rows(payload: &str) -> Vec<&str> {
     payload.lines().filter(|l| l.starts_with("  ")).collect()
 }
 
-/// **The same work on three hosts, and three rows that all say it worked.**
+/// The same work on three hosts, and three rows that all say it worked.
 #[test]
 fn every_host_runs_and_answers_a_row() {
     let rig = Rig::new("all-ok", &["fake1", "fake2", "fake3"]);

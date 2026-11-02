@@ -110,7 +110,7 @@ fn a_runs_start_is_read_off_its_id() {
 // at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
 // for ever.
 #[cfg(target_os = "linux")]
-/// **A stand-in firecracker**: a script NAMED `firecracker`, run with `--id RUN`, that ignores
+/// A stand-in firecracker: a script NAMED `firecracker`, run with `--id RUN`, that ignores
 /// SIGTERM the way a jailed VM (pid 1 of its namespace) does. Returns the child and its pid.
 fn stubborn_firecracker(dir: &Path, run: &str) -> std::process::Child {
     let script = dir.join("firecracker");
@@ -213,7 +213,7 @@ fn a_vm_that_ignores_down_is_killed_and_seen_gone() {
 // at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
 // for ever.
 #[cfg(target_os = "linux")]
-/// **A VM `down` brings down is `Down`, and nothing is killed.**
+/// A VM `down` brings down is `Down`, and nothing is killed.
 #[test]
 fn a_vm_that_down_brings_down_is_not_killed() {
     let dir = tmp("down");
@@ -238,7 +238,7 @@ fn a_vm_that_down_brings_down_is_not_killed() {
 // at all and answers `Down` at once, leaving the stand-in it should have killed to be waited on
 // for ever.
 #[cfg(target_os = "linux")]
-/// **A pid that is no longer this run's firecracker is never signalled** — a pid reused by
+/// A pid that is no longer this run's firecracker is never signalled — a pid reused by
 /// something else between the listing and the reap is not the VM.
 #[test]
 fn a_pid_that_is_not_the_runs_firecracker_is_left_alone() {

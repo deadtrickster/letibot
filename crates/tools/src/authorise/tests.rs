@@ -77,7 +77,7 @@ fn an_operator_can_declare_what_their_guard_answers_about() {
     assert!(e.contains("write_file"), "the names are printed: {e}");
     assert!(OracleScope::declared(&[], Some("the-moon"), &[]).is_err());
 
-    // **The floor covers `unknown` too**, because `unknown` is the table declining to
+    // The floor covers `unknown` too, because `unknown` is the table declining to
     // answer rather than an intent to withhold. The reach is what still bounds this: the
     // line below is unchanged and `External` is refused whatever the intents say.
     let floor = OracleScope::narrowest("test fixture, not a calibration");

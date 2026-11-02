@@ -161,7 +161,7 @@ impl Watch {
         }
     }
 
-    /// **The longest this watch may live** — [`MAX_TTL`], or its condition's own cap.
+    /// The longest this watch may live — [`MAX_TTL`], or its condition's own cap.
     pub fn max_ttl(&self) -> Duration {
         match self {
             Watch::Custom(c) => c.0.max_ttl().unwrap_or(MAX_TTL),
@@ -185,7 +185,7 @@ pub enum Fired {
     Expired { after: Duration, last_seen: String },
     /// Somebody retired it by name.
     Cancelled { by: String, after: Duration },
-    /// **Its owning scope ended, so it went with it.** This is the reaping half
+    /// Its owning scope ended, so it went with it. This is the reaping half
     /// of T24 applied to watchers: a monitor whose owner is gone is not something
     /// anybody is coming back for.
     OwnerEnded { scope: ScopeId, after: Duration },
@@ -221,7 +221,7 @@ impl Fired {
 /// One declared watch.
 #[derive(Debug)]
 pub struct Monitor {
-    /// **The name is the caller's**, and it is the identity T24 requirement 4
+    /// The name is the caller's, and it is the identity T24 requirement 4
     /// enforces one waiter per.
     pub name: String,
     /// Who owns its lifetime. There is no constructor without one: T24
@@ -268,7 +268,7 @@ enum Probe {
     Scope(ScopeId),
     Path {
         path: PathBuf,
-        /// Behind a lock so a **continuous** monitor can re-baseline at the new
+        /// Behind a lock so a continuous monitor can re-baseline at the new
         /// state after each firing.
         baseline: Mutex<PathFacts>,
     },
@@ -286,7 +286,7 @@ impl std::fmt::Debug for Probe {
     }
 }
 
-/// What a path looked like when the monitor was declared. The **baseline** — a
+/// What a path looked like when the monitor was declared. The baseline — a
 /// path monitor with no baseline could only report existence, and "it changed"
 /// is the question people actually have.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,7 +365,7 @@ impl Monitor {
         self.repeat
     }
 
-    /// T24 requirement 5's other half: an **explicit** renewal. Nothing renews a
+    /// T24 requirement 5's other half: an explicit renewal. Nothing renews a
     /// monitor by looking at it, because a monitor that lives as long as somebody
     /// keeps listing it is a monitor with no bound.
     fn renew(&self, ttl: Duration) {
@@ -514,7 +514,7 @@ impl Monitor {
 /// Why a monitor was not declared. Every variant hands over what the retry needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitorError {
-    /// **One waiter per name.** T24 requirement 4, and the fleet's own words:
+    /// One waiter per name. T24 requirement 4, and the fleet's own words:
     /// *two processes under one reader means the roster shows a seat attached
     /// while the real one hears nothing.*
     NameTaken {
@@ -597,14 +597,14 @@ impl std::error::Error for MonitorError {}
 #[derive(Default)]
 pub struct Monitors {
     inner: Mutex<Registry>,
-    /// Woken when a monitor settles. **This is the wake seam** — see
+    /// Woken when a monitor settles. This is the wake seam — see
     /// [`Monitors::wait_for_any`].
     settled: Condvar,
     /// Woken by a blockable condition (push) so the poller re-polls immediately
     /// instead of waiting out [`TICK`]. Guarded by [`Monitors::wake_guard`].
     wake: Condvar,
     wake_guard: Mutex<()>,
-    /// **The plugin conditions this session may arm** (`docs/plugins-plan.md` §4.4), wired by the
+    /// The plugin conditions this session may arm (`docs/plugins-plan.md` §4.4), wired by the
     /// daemon. `None` in a test or a daemon that serves no plugins.
     plugins: Mutex<Option<Arc<dyn PluginConditions>>>,
 }
@@ -660,7 +660,7 @@ impl Monitors {
         }
     }
 
-    /// **Push**: a blockable condition calls this when it changes, so the poller
+    /// Push: a blockable condition calls this when it changes, so the poller
     /// wakes now rather than on the next [`TICK`]. Cheap and idempotent — a wake
     /// with nothing new to look at costs one re-poll.
     pub fn signal(&self) {
@@ -904,7 +904,7 @@ impl Monitors {
             let event = m.firing(ending);
             let mut reg = self.inner.lock().expect("monitors");
             if m.repeat && is_fire {
-                // **Continuous**: the monitor persists — it does not die and get
+                // Continuous: the monitor persists — it does not die and get
                 // re-declared. It re-baselines its probe for the next occurrence and
                 // keeps watching; the firing is one message in the stream.
                 m.rearm();
@@ -1136,7 +1136,7 @@ fn parse_number(text: &str) -> Option<f64> {
         .find_map(|w| w.trim_end_matches(['C', 'c', 's', 'm']).parse::<f64>().ok())
 }
 
-/// A log tail: fires on each new line that matches a filter. A **continuous**
+/// A log tail: fires on each new line that matches a filter. A continuous
 /// monitor's example — the condition is stateless between firings except for how
 /// far it has read, which `rearm` advances.
 #[derive(Debug)]

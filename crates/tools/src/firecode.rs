@@ -53,7 +53,7 @@ pub fn firecode_available_at(bin: PathBuf) -> Result<PathBuf, String> {
         .ok_or_else(|| "there is no `firecode` on this host's PATH (nor $FIRECODE_BIN)".to_string())
 }
 
-/// **The firecode this host would place a subagent with**: where it is, and whether it can
+/// The firecode this host would place a subagent with: where it is, and whether it can
 /// give a copy its source's layers. The daemon asks once at start and says it in the banner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
@@ -108,7 +108,7 @@ pub struct Probe {
     pub inherit: bool,
 }
 
-/// **Ask `bin` what it can do.** The verbs are read off its own `layer` usage line, which
+/// Ask `bin` what it can do. The verbs are read off its own `layer` usage line, which
 /// names every subcommand it has — no version number to keep in step with.
 pub fn probe(bin: &Path) -> Probe {
     // Bounded ([`CLIENT_TIMEOUT`]): a client call asked once at start, and the banner it feeds
@@ -242,11 +242,11 @@ pub struct FirecodeBackend {
     layers: Option<String>,
     /// [`FirecodeSpec::verify`], kept to name the check beside its verdict.
     verify: Option<String>,
-    /// **Whether this backend brought the VM up and so brings it down.** `false` for a session
+    /// Whether this backend brought the VM up and so brings it down. `false` for a session
     /// attached to an ancestor's VM ([`FirecodeBackend::attach`]): the VM is the ancestor's, and a
     /// child that ends must not take its parent's machine with it.
     owns: bool,
-    /// **The project is the source itself, mounted, never a copy** ([`mounts`]): a git worktree
+    /// The project is the source itself, mounted, never a copy ([`mounts`]): a git worktree
     /// on a Mac, which firecode shares into the guest read-write. Nothing of it is ever removed
     /// here, and its work is where it always was.
     mounted: bool,
@@ -289,7 +289,7 @@ pub fn mounts(source: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// **Where the VM of a session placed on `source` holds its project** — the source itself when it
+/// Where the VM of a session placed on `source` holds its project — the source itself when it
 /// is mounted ([`mounts`]), the session's copy under the cache otherwise. What a child attaching
 /// to that VM names it by.
 pub fn project_for(source: &Path, session_id: &str) -> PathBuf {
@@ -300,7 +300,7 @@ pub fn project_for(source: &Path, session_id: &str) -> PathBuf {
     }
 }
 
-/// **The run of a VM already up with `folder` itself mounted read-write**, if there is one - asked
+/// The run of a VM already up with `folder` itself mounted read-write, if there is one - asked
 /// of firecode (`info --json`, whose `mount` says how a run holds its project), so a VM holding a
 /// COPY of the folder is never mistaken for one holding the folder.
 fn running_rw(bin: &Path, folder: &Path) -> Option<String> {
@@ -432,7 +432,7 @@ impl FirecodeBackend {
             }
             None => firecode_available().map_err(BackendError::Io)?,
         };
-        // **The folder itself, read-write**: joined if a VM already holds it mounted, booted with
+        // The folder itself, read-write: joined if a VM already holds it mounted, booted with
         // `--mount-rw` otherwise. Never a copy, never removed - it is the operator's folder.
         if spec.mount_rw
             && let Some(run) = running_rw(&bin, &spec.source)
@@ -527,7 +527,7 @@ impl FirecodeBackend {
         let up = match crate::rpc::run_bounded(&bin, &args, UP_TIMEOUT) {
             crate::rpc::Ended::Answered(out) => out,
             crate::rpc::Ended::TimedOut => {
-                // **A boot nobody can see the end of is not a VM to hand to a session.** The run
+                // A boot nobody can see the end of is not a VM to hand to a session. The run
                 // may exist, so the unwind below is told to bring one down — bounded since
                 // [`CLIENT_TIMEOUT`] is what `down` is given — and the copy goes with it.
                 unwind.vm = true;
@@ -647,7 +647,7 @@ impl FirecodeBackend {
         Ok(b)
     }
 
-    /// **Where a session's own VM's copy lives** — the project `up` names after it.
+    /// Where a session's own VM's copy lives — the project `up` names after it.
     pub fn project_of(session_id: &str) -> PathBuf {
         FirecodeSpec::new(PathBuf::new(), session_id)
             .cache
@@ -672,7 +672,7 @@ impl FirecodeBackend {
         &self.run
     }
 
-    /// **The deadline this backend gives one control command in the guest**, as a test may set
+    /// The deadline this backend gives one control command in the guest, as a test may set
     /// it — production never calls this, which is why the default is the constant rather than a
     /// field a caller has to fill in (the same shape as [`crate::remote::Ssh::with_bound`]).
     #[cfg(test)]
@@ -817,7 +817,7 @@ impl FirecodeBackend {
     /// on is removed afterwards: the result directory beside it is the record,
     /// and a copy per child would otherwise accumulate under the cache.
     pub fn down(&self) {
-        // **Not ours to bring down**: an attached session's VM is its ancestor's.
+        // Not ours to bring down: an attached session's VM is its ancestor's.
         if !self.owns {
             return;
         }
@@ -1740,12 +1740,12 @@ mod tests {
         std::fs::write(p, vec![b'x'; bytes]).unwrap();
     }
 
-    /// **`down_all` brings down every live backend in the process**, other tests' included - so
+    /// `down_all` brings down every live backend in the process, other tests' included - so
     /// the test of it and a test that asserts a VM stays up must not run at the same time. The
     /// attach test failed about one run in five on the parent's VM being "downed" under it.
     static DOWN_ALL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// **A stub firecode**: `<root>/bin/firecode`, a shell script whose `case "$1"` arms are
+    /// A stub firecode: `<root>/bin/firecode`, a shell script whose `case "$1"` arms are
     /// `arms`, with `<root>/runs/` beside it the way the real checkout lays them out (the
     /// backend finds a run's record there through the binary's own path). Returns the binary.
     fn stub_firecode(root: &Path, arms: &str) -> PathBuf {
@@ -1775,7 +1775,7 @@ mod tests {
         spec
     }
 
-    /// **A child in its parent's VM never brings it down** — the operator: *"children live in
+    /// A child in its parent's VM never brings it down — the operator: *"children live in
     /// the _same_ vm"*. An attached backend runs in the parent's project and reports that it
     /// does not own the VM; dropping it calls no `down`, and the parent's own drop still does.
     #[test]
@@ -1809,7 +1809,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **A placement that fails leaves no copy behind** — FIRECODE-NOTES: *"A failed spawn leaks
+    /// A placement that fails leaves no copy behind — FIRECODE-NOTES: *"A failed spawn leaks
     /// its copy. The very first attempt left 286 MB in ~/.cache/letibot/firecode/; the error
     /// path remove_dir_alls on a refused status but not on a spawn error."*
     #[test]
@@ -1830,7 +1830,7 @@ mod tests {
         );
     }
 
-    /// **A VM's jobs can be watched** (R92.1): the owned process host is the same one `processes`
+    /// A VM's jobs can be watched (R92.1): the owned process host is the same one `processes`
     /// lends. Before, `processes_arc` fell to the trait default `None`, so the harness built no
     /// job watcher for a firecode session and a finished background job was never announced.
     #[test]
@@ -1871,7 +1871,7 @@ mod tests {
         );
     }
 
-    /// **No `layer inherit` is a missing convenience, not a missing VM** — FIRECODE-NOTES item 4:
+    /// No `layer inherit` is a missing convenience, not a missing VM — FIRECODE-NOTES item 4:
     /// *"degrade where only a convenience is missing ("no layer inheritance; the guest builds on
     /// base-image toolchains") and refuse only what is genuinely required."*
     #[test]
@@ -1921,7 +1921,7 @@ mod tests {
         );
     }
 
-    /// **The record names where the work went**, so the backend does not have to guess from
+    /// The record names where the work went, so the backend does not have to guess from
     /// the directory names beside the copy.
     #[test]
     fn down_takes_the_delivered_path_from_the_run_record() {
@@ -1945,7 +1945,7 @@ mod tests {
         );
     }
 
-    /// **A worktree is mounted, a submodule and a plain tree are copied** - both a worktree and a
+    /// A worktree is mounted, a submodule and a plain tree are copied - both a worktree and a
     /// submodule have a `.git` file, and only a worktree's names `worktrees/`.
     #[cfg(target_os = "macos")]
     #[test]
@@ -1974,7 +1974,7 @@ mod tests {
         );
     }
 
-    /// **A mounted placement copies nothing and never deletes the worktree** - the project IS the
+    /// A mounted placement copies nothing and never deletes the worktree - the project IS the
     /// operator's worktree, so the copy-and-clean-up path must not reach it, on success or after
     /// `down`, and the answer says the work is in the worktree rather than in a copy.
     #[cfg(target_os = "macos")]
@@ -2007,7 +2007,7 @@ mod tests {
         assert!(answer.contains("Nothing was copied"), "{answer}");
     }
 
-    /// **`--vm`'s folder is mounted read-write and never copied or removed** - booted with
+    /// `--vm`'s folder is mounted read-write and never copied or removed - booted with
     /// `--mount-rw` on the folder itself, nothing under the cache, the folder intact after close,
     /// and the answer says the work is already there.
     #[test]
@@ -2052,7 +2052,7 @@ mod tests {
         assert!(answer.contains("already there"), "{answer}");
     }
 
-    /// **A VM already up with the folder mounted is joined, not doubled** - and a joiner neither
+    /// A VM already up with the folder mounted is joined, not doubled - and a joiner neither
     /// boots one nor brings the joined one down. One holding only a COPY of the folder is not
     /// joined: its tree is not the folder.
     #[test]
@@ -2093,7 +2093,7 @@ mod tests {
         }
     }
 
-    /// **The parent's acceptance check reaches `firecode up`**, as `--verify <command>`, so it is
+    /// The parent's acceptance check reaches `firecode up`, as `--verify <command>`, so it is
     /// firecode - not the child - that runs it when the VM comes down.
     #[test]
     fn the_acceptance_check_is_handed_to_firecode_up() {
@@ -2125,7 +2125,7 @@ mod tests {
         );
     }
 
-    /// **A failed check is the answer's headline**, beside where the work is - read from
+    /// A failed check is the answer's headline, beside where the work is - read from
     /// firecode's record of the run, not from anything the child said.
     #[test]
     fn the_answer_carries_the_checks_verdict_and_where_the_work_is() {
@@ -2158,7 +2158,7 @@ mod tests {
         }
     }
 
-    /// **A failed copy-out is said as one**, and points at the copy that is now the only place
+    /// A failed copy-out is said as one, and points at the copy that is now the only place
     /// the work is - it used to fall through to "nothing appeared within 10 s".
     #[test]
     fn a_failed_copy_out_is_reported_as_a_failure_not_as_silence() {
@@ -2207,7 +2207,7 @@ mod tests {
         drop(b);
     }
 
-    /// **What the installed firecode can do, asked once** — for the daemon's start-up banner.
+    /// What the installed firecode can do, asked once — for the daemon's start-up banner.
     #[test]
     fn the_probe_says_whether_layer_inherit_is_there() {
         let root = tmp("probe");
@@ -2385,7 +2385,7 @@ mod tests {
             "the sentence does not say what a reviewer may do next: {said}"
         );
 
-        // **Nothing survives it.** The client is the direct child; the `sleep` is its own child and
+        // Nothing survives it. The client is the direct child; the `sleep` is its own child and
         // shares its process group, which is what the group kill takes. A client-only kill leaves
         // the ghost the reviewer's next call queues behind.
         let recorded = std::fs::read_to_string(&pids).expect("the stub never ran");

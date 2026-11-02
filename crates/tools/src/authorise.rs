@@ -88,7 +88,7 @@ pub enum TrailProvenance {
         messages_scanned: usize,
         operator_messages: usize,
     },
-    /// Nobody looked. **Not** an empty trail.
+    /// Nobody looked. Not an empty trail.
     NotCollected { why: String },
 }
 
@@ -336,7 +336,7 @@ impl ModelBrief {
         }
     }
 
-    /// The witness, taken by value. An oracle can call this **once**, which is also
+    /// The witness, taken by value. An oracle can call this once, which is also
     /// the right number of widenings per request.
     pub fn adjudicable(&mut self) -> Option<Adjudicable> {
         self.witness.take()
@@ -1190,7 +1190,7 @@ impl Breaker {
         }
     }
 
-    /// Record a refusal. Returns the state **after** counting it.
+    /// Record a refusal. Returns the state after counting it.
     pub fn refused(&mut self, d: &TaskDirection) -> BreakerState {
         let k = d.key();
         let n = self.counts.entry(k.clone()).or_insert(0);

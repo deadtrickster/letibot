@@ -1,5 +1,5 @@
 //! [`ProcessHost`]: the seam the tools reach the world through, and the host
-//! implementation of it. Waiting takes a **handle** and never a pattern, so a loop
+//! implementation of it. Waiting takes a handle and never a pattern, so a loop
 //! that could match its own waiter cannot be spelled ([`Waited`], [`super::predicate`]).
 
 use std::io::Read;
@@ -41,8 +41,8 @@ pub struct Protected {
 pub struct SpawnRequest {
     /// The command text, exactly as the model wrote it.
     pub command: String,
-    /// **The name the caller gave this work**, or `None` when nobody said one: the
-    /// agent's own stated intent, **never a parse of the command line**, because the
+    /// The name the caller gave this work, or `None` when nobody said one: the
+    /// agent's own stated intent, never a parse of the command line, because the
     /// command is already on the row and a guessed name earns nothing ([`Job::slug`]).
     pub slug: Option<String>,
     /// Relative to the backend root.
@@ -54,17 +54,17 @@ pub struct SpawnRequest {
     pub background: bool,
     /// Additions to the environment, in a fixed order so a run is reproducible.
     pub env: Vec<(String, String)>,
-    /// **Does this run meet the world the operator's own console gives a command?**
+    /// Does this run meet the world the operator's own console gives a command?
     /// A property of who reads the bytes: a pty on all three descriptors, their
     /// interactive shell, their variables, and an answerable stdin ([`super::console`]).
     pub tty: bool,
-    /// **The memory cap the caller decided, in bytes**, or `None` for no cap: the
+    /// The memory cap the caller decided, in bytes, or `None` for no cap: the
     /// operator's own run. The host does not choose a number; it only makes the kernel
     /// hold the one the tool chose.
     pub memory: Option<u64>,
 }
 
-/// How a wait ended. **Three outcomes and they are never conflated**: a deadline reported as a
+/// How a wait ended. Three outcomes and they are never conflated: a deadline reported as a
 /// completion would make every wait a lie.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Waited {
@@ -75,7 +75,7 @@ pub enum Waited {
         /// How long the wait actually took.
         took: Duration,
     },
-    /// The deadline passed quietly and the thing is **still running**. Carries the
+    /// The deadline passed quietly and the thing is still running. Carries the
     /// progress facts, not a liveness bit.
     Deadline {
         took: Duration,
@@ -92,13 +92,13 @@ pub enum Waited {
 /// thread holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobView {
-    /// **The memory cap the job runs under** and **what the kernel counted**: the peak so
+    /// The memory cap the job runs under and what the kernel counted: the peak so
     /// far while it runs, and as recorded at the settle once it has ended.
     pub memory_cap: MemoryCap,
     pub memory: Option<super::scope::MemoryUse>,
     pub id: JobId,
     pub command: String,
-    /// **The name the caller gave this job**, or `None` when nobody said one: the stated
+    /// The name the caller gave this job, or `None` when nobody said one: the stated
     /// intent, never a derivation from the command. On the view because a listing and a
     /// tool resolving a name back to a handle must read the same string.
     pub slug: Option<String>,
@@ -110,23 +110,23 @@ pub struct JobView {
     pub cwd: String,
     pub pid: u32,
     /// How this job came to be in the background, or `None` if it never was.
-    /// **Not a bool**: "the model asked" and "the runtime moved it" are the
+    /// Not a bool: "the model asked" and "the runtime moved it" are the
     /// difference between a listing the model recognises and one it does not.
     pub background: Option<Backgrounding>,
     pub state: JobState,
     pub elapsed: Duration,
-    /// How long the job ran, from its own stamps, or `None` while it is running. **This** is the
+    /// How long the job ran, from its own stamps, or `None` while it is running. This is the
     /// number a settlement reports; `elapsed` is a live clock and keeps counting.
     pub ran_for: Option<Duration>,
     pub produced: u64,
     pub since_last_output: Option<Duration>,
-    /// **Where the whole of this job's output is also going**, for every run nothing bounds,
+    /// Where the whole of this job's output is also going, for every run nothing bounds,
     /// and `None` for a run that still has one. The window above is bounded, this is not, and
     /// a reader told only about the window loses a long build's first half ([`OutputFile`]).
     pub output_file: Option<OutputFile>,
 }
 
-/// **What a job is called**: the caller's name and the id, or just the id when nobody
+/// What a job is called: the caller's name and the id, or just the id when nobody
 /// named one. A free function as well as a method because a settlement outlives the view
 /// it was read from, and the name is flattened to one line however it was typed.
 pub fn job_label(slug: Option<&str>, id: &str) -> String {
@@ -140,7 +140,7 @@ pub fn job_label(slug: Option<&str>, id: &str) -> String {
 }
 
 impl JobView {
-    /// **One clause about this job's memory**, or `None` unless there is something to say:
+    /// One clause about this job's memory, or `None` unless there is something to say:
     /// it was killed at its cap, came within a tenth of it, or ran uncapped against an ask.
     pub fn memory_clause(&self) -> Option<String> {
         match (&self.memory_cap, &self.memory) {
@@ -158,7 +158,7 @@ impl JobView {
         }
     }
 
-    /// **What this job is called**: [`job_label`], which is this method's body. Four
+    /// What this job is called: [`job_label`], which is this method's body. Four
     /// readers need the same string, and a settlement has the name and the id but no
     /// view to hang a method on.
     pub fn label(&self) -> String {
@@ -174,7 +174,7 @@ pub struct Promotion {
     /// The command, kept here because a promotion record read an hour later has
     /// to identify something. `/proc` will not still say.
     pub command: String,
-    /// **The name the caller gave this job**, or `None` when nobody said one, for the same
+    /// The name the caller gave this job, or `None` when nobody said one, for the same
     /// reason the command is here: a promotion read back an hour later is a sentence about a
     /// job, and the name is certain only at the promotion.
     pub slug: Option<String>,
@@ -190,7 +190,7 @@ pub struct Promotion {
     pub migration: Option<Migration>,
     pub at: SystemTime,
     pub note: Option<String>,
-    /// **The file the run's output keeps going into from here on**, when this session has a
+    /// The file the run's output keeps going into from here on, when this session has a
     /// scratch directory to put it in. `None` where there is nowhere to spill, and then the
     /// run's output is exactly what it was before: the window.
     pub output_file: Option<OutputFile>,
@@ -232,18 +232,18 @@ impl Promotion {
 /// The seam. Host today; a firecode guest owns its processes by owning the VM,
 /// and nothing above this line changes when that is what is underneath.
 pub trait ProcessHost: Send + Sync {
-    /// One line for `EXPLAIN`. Must say what it does **not** confine, because a
+    /// One line for `EXPLAIN`. Must say what it does not confine, because a
     /// disclosure that only lists the guarantees reads as a claim about the rest.
     fn describe(&self) -> String;
 
     fn spawn(&self, req: &SpawnRequest) -> Result<JobId, ExecError>;
 
-    /// **Arm a run's deadline, so that something other than the run enforces it.** Required
+    /// Arm a run's deadline, so that something other than the run enforces it. Required
     /// rather than defaulted: a default that did nothing would leave the timeout silently the
     /// caller's problem, which is the shape this method exists to end.
     fn arm_deadline(&self, job: &JobId, after: Duration);
 
-    /// Block on a **handle**, never a pattern. `job` waits for one job to leave
+    /// Block on a handle, never a pattern. `job` waits for one job to leave
     /// `Running`; `scope` waits for a cgroup to empty, and applies the
     /// presence-before-absence rule itself.
     fn wait_job(&self, job: &JobId, deadline: Duration) -> Result<Waited, ExecError>;
@@ -258,12 +258,12 @@ pub trait ProcessHost: Send + Sync {
         self.kill_job_as(job, "job_kill")
     }
 
-    /// The same, with **who ended it** as an argument: what [`JobState::Killed`] carries and
+    /// The same, with who ended it as an argument: what [`JobState::Killed`] carries and
     /// every reader is shown. A sentence about the cause, not a label, because *the model
     /// asked* and *its deadline passed* are different things to have happened.
     fn kill_job_as(&self, job: &JobId, by: &str) -> Result<Reaping, ExecError>;
 
-    /// **Take a job this backend did not start, and make it one of its own.** The caller is
+    /// Take a job this backend did not start, and make it one of its own. The caller is
     /// a restarted daemon, and everything above this layer is written against the backend's
     /// own job table; a host that cannot identify a pid must answer *I cannot*.
     fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
@@ -274,7 +274,7 @@ pub trait ProcessHost: Send + Sync {
         )))
     }
 
-    /// **End every run this host still has, and say why.** The daemon's shutdown is the caller: a
+    /// End every run this host still has, and say why. The daemon's shutdown is the caller: a
     /// stop that arrives while a run holds the worker must end that run rather than wait out its
     /// deadline. One reap record per run ended, so an empty answer says nothing was running.
     fn end_running(&self, by: &str) -> Vec<Reaping> {
@@ -292,7 +292,7 @@ pub trait ProcessHost: Send + Sync {
     /// End a scope: kill everything under it, and record it.
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError>;
 
-    /// **Move a running job into a scope that outlives the turn**, and record what moved: the
+    /// Move a running job into a scope that outlives the turn, and record what moved: the
     /// one verb behind the runtime's threshold and a person promoting from a head. A
     /// [`Promotion`] and never a bool, because a process that did not move makes that false.
     ///
@@ -316,7 +316,7 @@ pub trait ProcessHost: Send + Sync {
         how: Backgrounding,
     ) -> Result<Promotion, ExecError>;
 
-    /// **Every promotion this session made.** The same falsifier as
+    /// Every promotion this session made. The same falsifier as
     /// [`ProcessHost::reap_log`]: a promotion that moved nothing and a job that was already
     /// where it needed to be are different facts.
     fn promotions(&self) -> Vec<Promotion>;
@@ -325,7 +325,7 @@ pub trait ProcessHost: Send + Sync {
     /// An invisible watcher is an unreapable one.
     fn scopes(&self) -> Vec<ScopeId>;
 
-    /// **What every ended scope killed.** The falsifier: a reaper whose zero is
+    /// What every ended scope killed. The falsifier: a reaper whose zero is
     /// unfalsifiable is the empty-haystack bug one layer up.
     fn reap_log(&self) -> Vec<Reaping>;
 
@@ -342,7 +342,7 @@ pub trait ProcessHost: Send + Sync {
         None
     }
 
-    /// **Where the whole of a job's output lives, as the HOST spells it**, or `None` when it
+    /// Where the whole of a job's output lives, as the HOST spells it, or `None` when it
     /// lives nowhere but this process's window ([`JobView::output_file`] is the other half: a
     /// path a reader here can open). One caller: [`crate::fleet`], for a fanout branch's record.
     fn job_log(&self, job: &JobId) -> Option<String> {
@@ -358,9 +358,9 @@ pub trait ProcessHost: Send + Sync {
         None
     }
 
-    /// **The processes this job has right now**, by pid, when the host can say. One reader:
+    /// The processes this job has right now, by pid, when the host can say. One reader:
     /// [`super::ask`], whose question is asked of the run's processes and which therefore has
-    /// to name them. **An empty list means *this host cannot say*, not *nothing is running*.**
+    /// to name them. An empty list means *this host cannot say*, not *nothing is running*.
     fn job_pids(&self, job: &JobId) -> Vec<u32> {
         let _ = job;
         Vec::new()
@@ -372,14 +372,14 @@ pub trait ProcessHost: Send + Sync {
     /// The scope a foreground command belongs to, opened on demand.
     fn scope_for(&self, kind: ScopeKind, name: Option<&str>) -> Result<ScopeId, ExecError>;
 
-    /// **What bounds the view**, for a tool that has to explain its own result. `None` means
+    /// What bounds the view, for a tool that has to explain its own result. `None` means
     /// this host has no opinion, which is neither [`super::confine::Unconfined`] (nobody asked)
     /// nor [`super::confine::NoConfinement`] (asked for and missing).
     fn confinement_summary(&self) -> Option<String> {
         None
     }
 
-    /// **What a command could not see, read off the boundary**: the sentences the model is
+    /// What a command could not see, read off the boundary: the sentences the model is
     /// given, the same paths for a caller that can act on them, and whether the launcher itself
     /// failed. Empty for a host with no boundary, which is not the same as nothing being absent.
     fn absence_notes(&self, _output: &str) -> Vec<String> {
@@ -394,7 +394,7 @@ pub trait ProcessHost: Send + Sync {
         None
     }
 
-    /// **Hold a handle that stands for work running somewhere else** ([`Aggregate`]). The
+    /// Hold a handle that stands for work running somewhere else ([`Aggregate`]). The
     /// default is a refusal and not a no-op: a backend that answered `Ok` and then settled
     /// nothing would leave a handle a model waits on for ever.
     fn hold(&self, place: &JobId, agg: Arc<dyn Aggregate>) -> Result<(), ExecError> {
@@ -406,29 +406,29 @@ pub trait ProcessHost: Send + Sync {
         ))
     }
 
-    /// **What a settling job wants to say for itself, beyond its state and its numbers.**
+    /// What a settling job wants to say for itself, beyond its state and its numbers.
     /// `None` for every ordinary job, because a settlement carries its ending and not its
     /// output; an [`Aggregate`]'s result IS its output, so it answers with that text.
     fn settlement_note(&self, _job: &JobId) -> Option<String> {
         None
     }
 
-    /// **A name a job of jobs may answer to, made unique against every name this host has
-    /// handed out** ([`JobView::slug`]), so two fanouts in one session cannot be reached by one
+    /// A name a job of jobs may answer to, made unique against every name this host has
+    /// handed out ([`JobView::slug`]), so two fanouts in one session cannot be reached by one
     /// word. The default hands the name back unchanged, for a backend with no such record.
     fn claim_name(&self, asked: &str) -> String {
         asked.to_string()
     }
 }
 
-/// **A job of jobs**: one handle in the session's own table that stands for work running on
+/// A job of jobs: one handle in the session's own table that stands for work running on
 /// other machines and settles when that work does. `state` is the truth once it is not
 /// `Running`, and `output` is an append-only journal, so an offset stays meaningful.
 pub trait Aggregate: Send + Sync {
     /// The row's command column: what this job of jobs *is*, in one line. There is no single
     /// command line, and inventing one from the first branch would be a claim about all of them.
     fn command(&self) -> String;
-    /// **The name the caller would use for it**, if it has one: the same slug a `bash` job may
+    /// The name the caller would use for it, if it has one: the same slug a `bash` job may
     /// carry, so the tools take a word as well as a handle.
     fn slug(&self) -> Option<String>;
     fn state(&self) -> JobState;
@@ -440,17 +440,17 @@ pub trait Aggregate: Send + Sync {
     /// The last time a branch said something, so a wait can report progress and not a bit.
     fn since_last_output(&self) -> Option<Duration>;
     fn output(&self, from: u64, limit: usize) -> OutputSlice;
-    /// **Block until it settles**, at most `within`. `None` is *still running*, never a guess.
+    /// Block until it settles, at most `within`. `None` is *still running*, never a guess.
     fn wait(&self, within: Duration) -> Option<JobState>;
-    /// **End every branch, on its own host, through its own process group**, and answer what
+    /// End every branch, on its own host, through its own process group, and answer what
     /// was there before the kill, so the record is a measurement and not a claim.
     fn kill(&self, by: &str) -> Vec<Reaped>;
-    /// **The table**, for the settlement that wakes the model: the same text the blocking form
+    /// The table, for the settlement that wakes the model: the same text the blocking form
     /// answers with. Empty while it is still running.
     fn report(&self) -> String;
 }
 
-/// **The run's deadline, and the thread that enforces it.** It gets a thread of its own and
+/// The run's deadline, and the thread that enforces it. It gets a thread of its own and
 /// ends the run's cgroup, so it reaches a root `sudo` and everything the run forked even when
 /// the run's own thread is stuck; the loop's own check stays as the fast path.
 pub struct Deadlines {
@@ -462,7 +462,7 @@ pub struct Deadlines {
     /// What the watchdog did, so a caller can read back *the deadline ended this run*, the same
     /// reason `reaps` exists beside it.
     fired: Mutex<Vec<DeadlineFired>>,
-    /// **The host is gone, so the watchdog is too**: set by [`Deadlines::close`] from
+    /// The host is gone, so the watchdog is too: set by [`Deadlines::close`] from
     /// `HostProcesses`' `Drop`, under `inner`'s lock so the watchdog cannot miss it between its
     /// check and its wait. Without it the thread held its own `Arc` and never ended.
     closed: std::sync::atomic::AtomicBool,
@@ -499,7 +499,7 @@ impl Deadlines {
             closed: std::sync::atomic::AtomicBool::new(false),
         });
         let watch = Arc::clone(&d);
-        // **A failure to spawn is not swallowed.** A host whose watchdog could not start is a
+        // A failure to spawn is not swallowed. A host whose watchdog could not start is a
         // host with no deadline at all, so it is said on stderr where a daemon's operator
         // already reads, and the loop's own check remains the only enforcement.
         if let Err(e) = std::thread::Builder::new()
@@ -526,7 +526,7 @@ impl Deadlines {
         self.armed.notify_all();
     }
 
-    /// **End the watchdog**: its host is being dropped, so nothing it could fire for has an
+    /// End the watchdog: its host is being dropped, so nothing it could fire for has an
     /// owner left. The flag is set under the list's lock and the condvar rung after, so a
     /// watchdog asleep in either wait wakes, reads it and returns, dropping its `Arc`.
     fn close(&self) {
@@ -541,7 +541,7 @@ impl Deadlines {
         self.fired.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// **The watchdog.** Sleeps until the earliest armed deadline, then ends that run's cgroup
+    /// The watchdog. Sleeps until the earliest armed deadline, then ends that run's cgroup
     /// on this thread, which is not the run's. Returns when [`Deadlines::close`] says its host
     /// is gone.
     fn run(&self, tree: Arc<dyn ScopeTree>) {
@@ -577,7 +577,7 @@ impl Deadlines {
                 due
             };
             for d in due {
-                // **The run is ended the same way `job_kill` ends one**, and only while it is
+                // The run is ended the same way `job_kill` ends one, and only while it is
                 // still running: a job that exited a moment before its deadline finished, and
                 // reaping its cgroup would report an empty scope as the deadline's doing.
                 if !d.job.state().is_running() {
@@ -604,7 +604,7 @@ impl Deadlines {
 /// The host implementation: real processes, real cgroups.
 pub struct HostProcesses {
     tree: Arc<dyn ScopeTree>,
-    /// What bounds the process's **view**, as against its lifetime. Not an `Option`: the three
+    /// What bounds the process's view, as against its lifetime. Not an `Option`: the three
     /// answers ([`super::confine::Bwrap`], `NoConfinement`, [`Unconfined`]) are genuinely
     /// different. Behind a lock because a grant replaces it, by re-probing.
     confine: std::sync::RwLock<Box<dyn Confinement>>,
@@ -614,15 +614,15 @@ pub struct HostProcesses {
     turn: Mutex<Option<ScopeId>>,
     /// Every job this host ever ran, in spawn order, which is the order `jobs()` lists.
     jobs: Mutex<Vec<Arc<Job>>>,
-    /// **The same jobs, by id.** `find` (every wait, output read, kill, deadline arm and pane
+    /// The same jobs, by id. `find` (every wait, output read, kill, deadline arm and pane
     /// read) would otherwise scan `jobs`, which only grows. Written beside `jobs` at the one
     /// place a job is added ([`HostProcesses::spawn`]).
     by_id: Mutex<std::collections::HashMap<JobId, Arc<Job>>>,
-    /// **Every slug this host has handed out**, so the next one is unique. A record of its own
+    /// Every slug this host has handed out, so the next one is unique. A record of its own
     /// rather than a scan of `jobs`, because a spawn decides its slug before it pushes it and
     /// two spawns can be in flight at once. A name is claimed once and never released.
     claimed_slugs: Mutex<Vec<String>>,
-    /// **The deadlines, and the thread that enforces them.** See [`Deadlines`].
+    /// The deadlines, and the thread that enforces them. See [`Deadlines`].
     deadlines: Arc<Deadlines>,
     reaps: Mutex<Vec<Reaping>>,
     /// Every promotion, for the same reason `reaps` exists: a lifetime that
@@ -639,28 +639,28 @@ pub struct HostProcesses {
     /// A directory put in FRONT of the pinned `PATH`: the daemon's shims, so a
     /// `sudo` the session runs is the one that asks the head instead of a tty.
     path_prefix: Mutex<Option<String>>,
-    /// The monitors this session declared. **On the host, not beside it**, because a monitor's
+    /// The monitors this session declared. On the host, not beside it, because a monitor's
     /// owner is one of this host's scopes and the reaping path has to take its watchers with it.
     monitors: Arc<Monitors>,
     protected: Mutex<Vec<Protected>>,
     /// Bytes retained per job. Beyond this the ring drops from the front and says so
     /// ([`super::jobs::OutputSlice::denominator`]).
     capture_bytes: usize,
-    /// **Where a run with no deadline's output keeps going**: the session's scratch directory.
+    /// Where a run with no deadline's output keeps going: the session's scratch directory.
     /// Behind a lock because the daemon sets it after the host is built and the host is shared
     /// with every tool. `None` on a host nobody wired one to, which spills nothing.
     scratch: Mutex<Option<PathBuf>>,
     /// The shell a command is handed to.
     shell: Vec<String>,
-    /// **The shell the OPERATOR's own command is handed to**, which is theirs and interactive
+    /// The shell the OPERATOR's own command is handed to, which is theirs and interactive
     /// ([`super::console::shell`]). Only a run whose [`SpawnRequest::tty`] is set reaches it. A
     /// field for the same reason `shell` is: a host with no shell has no console shell either.
     console_shell: Vec<String>,
-    /// **The handles that stand for work running elsewhere** ([`Aggregate`]), by id. A table of
+    /// The handles that stand for work running elsewhere ([`Aggregate`]), by id. A table of
     /// its own rather than a field on [`Job`], because a job of jobs has no process, no cgroup
     /// and no waiter thread; the two tables are read together, which is why `jobs()` lists both.
     aggregates: Mutex<std::collections::HashMap<JobId, Arc<dyn Aggregate>>>,
-    /// What this host calls its session scope. **Unique per host, not the constant `s`**: two
+    /// What this host calls its session scope. Unique per host, not the constant `s`: two
     /// sessions in one daemon share a cgroup root, so a fixed name would put both sessions'
     /// processes in one cgroup and ending either would reap the other's jobs.
     session_name: String,
@@ -690,12 +690,12 @@ impl std::fmt::Debug for HostProcesses {
 /// enough that a runaway `yes` cannot take the box.
 pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
-/// **How much SETTLED output one host keeps, across all its jobs**: 64 MiB, eight full captures.
+/// How much SETTLED output one host keeps, across all its jobs: 64 MiB, eight full captures.
 /// The capture of a settled job has done its work, so past this budget the oldest are released
 /// ([`super::jobs::Capture::release`]) and the row and its counts stay. A running job keeps its.
 pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
 
-/// **A job this host did not start**: a restarted daemon's record of one, as this layer needs it.
+/// A job this host did not start: a restarted daemon's record of one, as this layer needs it.
 /// See [`HostProcesses::adopt`].
 pub struct Adopted {
     pub handle: String,
@@ -703,14 +703,14 @@ pub struct Adopted {
     pub slug: Option<String>,
     pub cwd: String,
     pub pid: u32,
-    /// **What makes a reused pid not this process**: `start:<n>` on this box, which is what the
+    /// What makes a reused pid not this process: `start:<n>` on this box, which is what the
     /// process record holds and [`super::procs`] answers.
     pub identity: String,
     /// The owner scope as the record spells it: `session.<name>`, `turn.<name>`, `explicit.<name>`.
     pub scope: String,
 }
 
-/// **A record's scope spelling back into the two things a cgroup needs**, with the conservative
+/// A record's scope spelling back into the two things a cgroup needs, with the conservative
 /// answer for a word this build does not know: the session, which is where a background job lives.
 /// A guess that widened a job's lifetime would keep it alive past its reaper.
 fn scope_kind_of(scope: &str) -> (super::scope::ScopeKind, String) {
@@ -724,7 +724,7 @@ fn scope_kind_of(scope: &str) -> (super::scope::ScopeKind, String) {
 }
 
 impl HostProcesses {
-    /// **Hold settled output to `budget` bytes, releasing the oldest first** ([`SETTLED_CAPTURE_BUDGET`]).
+    /// Hold settled output to `budget` bytes, releasing the oldest first ([`SETTLED_CAPTURE_BUDGET`]).
     /// Called at each spawn, the only moment the set can have grown past a bound. Newest first, so
     /// the output a model is most likely to page through again is the output still held.
     fn release_settled_captures(&self, budget: usize) {
@@ -746,12 +746,12 @@ impl HostProcesses {
 
     /// A host with a real cgroup tree, rooted under `root` on the filesystem. Returns the
     /// probe's own error when there is no cgroup v2 to delegate, rather than falling back to an
-    /// unowned spawn: **a process with no owner is the leak**, so the substrate refuses to exist.
+    /// unowned spawn: a process with no owner is the leak, so the substrate refuses to exist.
     pub fn new(root: impl Into<PathBuf>) -> Result<HostProcesses, ExecError> {
         Ok(Self::with_tree(root, super::scope::host_tree()?))
     }
 
-    /// The confined constructor: a real cgroup tree **and** a measured boundary. Both halves
+    /// The confined constructor: a real cgroup tree and a measured boundary. Both halves
     /// fail closed and for different reasons, so the error names which; nothing turns a failure
     /// here into an unconfined run.
     pub fn confined(
@@ -766,7 +766,7 @@ impl HostProcesses {
         let h = HostProcesses {
             deadlines: Deadlines::new(Arc::clone(&tree)),
             tree,
-            // **Not asked for**, and named as such rather than left absent, so a
+            // Not asked for, and named as such rather than left absent, so a
             // reader of `describe()` cannot mistake silence for a boundary.
             confine: std::sync::RwLock::new(Box::new(Unconfined::because(
                 "this host was built by `HostProcesses::with_tree` / \
@@ -805,7 +805,7 @@ impl HostProcesses {
         self
     }
 
-    /// **Widen this session's view, by re-probing.** The confinement handed in was measured the
+    /// Widen this session's view, by re-probing. The confinement handed in was measured the
     /// same way the first one was, and only then does it take the slot. The caller builds it:
     /// this layer is a mechanism and must not learn what to bind, which is a decision.
     pub fn replace_confinement(&self, confine: Box<dyn Confinement>) {
@@ -832,7 +832,7 @@ impl HostProcesses {
             .cloned()
     }
 
-    /// **The argv a `!term` pane is started inside, so it gets the boundary a `bash` call gets**,
+    /// The argv a `!term` pane is started inside, so it gets the boundary a `bash` call gets,
     /// read off the confinement as it stands now so a grant made since the session opened is in
     /// it. `wrap_terminal` and not `wrap`: the pane's pty is its controlling terminal.
     pub fn terminal_wrap(
@@ -856,13 +856,13 @@ impl HostProcesses {
         self
     }
 
-    /// **Where a run with no deadline's output goes on living.** The daemon calls this once with
+    /// Where a run with no deadline's output goes on living. The daemon calls this once with
     /// the session's scratch directory, and only the session's own opener knows it.
     pub fn set_scratch_dir(&self, dir: impl Into<PathBuf>) {
         *self.scratch.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.into());
     }
 
-    /// **Give a run that nothing bounds a file keeping everything it prints**, in the session's
+    /// Give a run that nothing bounds a file keeping everything it prints, in the session's
     /// scratch directory as `job-<id>.out`; a run with a deadline keeps the 8 MiB window instead,
     /// and `None` means an ended run, no scratch directory, or an open that failed on stderr.
     fn spill_output(&self, job: &Job) -> Option<OutputFile> {
@@ -899,15 +899,15 @@ impl HostProcesses {
         }
     }
 
-    /// **The shell a command is handed to**, `/bin/sh -c` unless this says otherwise.
-    /// Non-interactive and non-login, so **no rc file is read** and a bare name resolves through
+    /// The shell a command is handed to, `/bin/sh -c` unless this says otherwise.
+    /// Non-interactive and non-login, so no rc file is read and a bare name resolves through
     /// the pinned `PATH` and nothing else. This is what a model's command is read by.
     pub fn with_shell(mut self, shell: Vec<String>) -> Self {
         self.shell = shell;
         self
     }
 
-    /// **The shell the operator's own command is handed to.** See the field and
+    /// The shell the operator's own command is handed to. See the field and
     /// [`super::console::shell`].
     pub fn with_console_shell(mut self, shell: Vec<String>) -> Self {
         self.console_shell = shell;
@@ -943,7 +943,7 @@ impl HostProcesses {
         self.protect_with(pid, why.into(), false);
     }
 
-    /// Declare a pid that **cannot exit while this session runs**: the model server serving the
+    /// Declare a pid that cannot exit while this session runs: the model server serving the
     /// turn is the case this exists for. A waiter on one of these is a deadlock, not a slow wait.
     pub fn protect_outliving(&self, pid: u32, why: impl Into<String>) {
         self.protect_with(pid, why.into(), true);
@@ -958,7 +958,7 @@ impl HostProcesses {
         let mut p = self.protected.lock().expect("protected");
         if let Some(e) = p.iter_mut().find(|e| e.pid == pid) {
             e.outlives_the_turn |= outlives;
-            // **Reasons accumulate.** One pid can be protected for two reasons, and dropping the
+            // Reasons accumulate. One pid can be protected for two reasons, and dropping the
             // second because the first got there first leaves a refusal naming the less useful
             // one, which the model reasonably reads as a broken guard.
             if !e.why.contains(why.trim_end_matches('.')) {
@@ -986,7 +986,7 @@ impl HostProcesses {
         *self.path_prefix.lock().unwrap_or_else(|e| e.into_inner()) = dir;
     }
 
-    /// Resolve a **listening TCP port** to the pid holding it, and protect it: the model can see
+    /// Resolve a listening TCP port to the pid holding it, and protect it: the model can see
     /// `:8080` in a config and has no way to know which pid that is. `None` is a real answer,
     /// since another user's `/proc/<pid>/fd` may not be readable from here.
     pub fn protect_listener(
@@ -1004,14 +1004,14 @@ impl HostProcesses {
         self.by_id.lock().expect("jobs by id").get(id).cloned()
     }
 
-    /// **The job of jobs held under this id**, if one is: the lookup every read path in
+    /// The job of jobs held under this id, if one is: the lookup every read path in
     /// [`ProcessHost`] makes before it goes looking for a process.
     fn aggregate(&self, id: &JobId) -> Option<Arc<dyn Aggregate>> {
         self.aggregates.lock().expect("aggregates").get(id).cloned()
     }
 
-    /// **The row a job of jobs answers with.** Two fields are said rather than faked: **`pid` is
-    /// 0**, because there is no process to name; and **`scope` has no cgroup path**, because the
+    /// The row a job of jobs answers with. Two fields are said rather than faked: `pid` is
+    /// 0, because there is no process to name; and `scope` has no cgroup path, because the
     /// work is in other machines' groups and a path here would be a cgroup a kill could empty.
     fn aggregate_view(&self, id: &JobId, agg: &dyn Aggregate) -> JobView {
         JobView {
@@ -1024,7 +1024,7 @@ impl HostProcesses {
             owner: self.session_scope_id(),
             cwd: String::new(),
             pid: 0,
-            // **`Asked` and not `Promoted`.** A fanout the model backgrounded is the model's own
+            // `Asked` and not `Promoted`. A fanout the model backgrounded is the model's own
             // request; it was never in the foreground for anybody to move.
             background: Some(Backgrounding::Asked),
             state: agg.state(),
@@ -1046,7 +1046,7 @@ impl HostProcesses {
         }
     }
 
-    /// **The slug this spawn takes, made unique against every name this session has handed out**:
+    /// The slug this spawn takes, made unique against every name this session has handed out:
     /// `release-build`, then `release-build-2` and so on until one is free. Nothing here derives
     /// anything from the command, and a request that named nothing gets nothing.
     fn claim_slug(&self, asked: &str) -> String {
@@ -1087,7 +1087,7 @@ impl HostProcesses {
         }
     }
 
-    /// **What the deadline watchdog has ended, oldest first.** The read-back half of the
+    /// What the deadline watchdog has ended, oldest first. The read-back half of the
     /// mechanism: *the deadline ended this run* is a claim, and a claim nothing can check is the
     /// unfalsifiable zero this substrate refuses everywhere else.
     pub fn deadlines_fired(&self) -> Vec<DeadlineFired> {
@@ -1119,7 +1119,7 @@ impl HostProcesses {
 }
 
 impl ProcessHost for HostProcesses {
-    /// **Read off the state, both halves**: the sentence comes from [`Confinement::describe`],
+    /// Read off the state, both halves: the sentence comes from [`Confinement::describe`],
     /// which comes from a boundary measured from inside itself, rather than from a banner that
     /// asserts a property of the session.
     fn describe(&self) -> String {
@@ -1177,7 +1177,7 @@ impl ProcessHost for HostProcesses {
 
         let cwd = self.root.join(req.cwd.trim_start_matches('/'));
 
-        // **The boundary is decided before the cgroup is committed to.** A session that asks for
+        // The boundary is decided before the cgroup is committed to. A session that asks for
         // confinement and has none refuses here, and refusing after the `mkdir` would leave an
         // empty scope directory that a later listing reads as somebody's work.
         let confined = self.confine.read().expect("confinement");
@@ -1192,7 +1192,7 @@ impl ProcessHost for HostProcesses {
             }
         };
 
-        // **The cap goes on before any process joins**, so there is no instant in which the
+        // The cap goes on before any process joins, so there is no instant in which the
         // command runs uncapped. A cap the tree cannot set does not refuse the command: the job
         // runs, and its result says UNCAPPED and why ([`MemoryCap::Uncapped`]).
         let memory_cap = match req.memory {
@@ -1204,7 +1204,7 @@ impl ProcessHost for HostProcesses {
         };
 
         let procs = Cgroup2::procs_path(&cgroup);
-        // **The join token, which is the evidence and belongs to the daemon.** A path this
+        // The join token, which is the evidence and belongs to the daemon. A path this
         // process owns, passed to the wrapper as `$2` and created only on the branch that joined
         // the cgroup: a file the command's output cannot reach, so `joined` is OBSERVED, not read.
         let token = std::env::temp_dir().join(format!("letibot-joined-{}", id.0));
@@ -1215,13 +1215,13 @@ impl ProcessHost for HostProcesses {
             .arg("letibot-scope")
             .arg(&procs)
             .arg(&token);
-        // **The order is load-bearing.** `join_script` writes `$$` into `cgroup.procs` and only
+        // The order is load-bearing. `join_script` writes `$$` into `cgroup.procs` and only
         // then `exec`s `"$@"`, so the join happens on the HOST before any namespace exists:
         // `/sys/fs/cgroup` is not in the mount view, so joining from inside would fail.
         for a in &wrap {
             cmd.arg(a);
         }
-        // **Their shell for their own run, the host's for everything else.** `bash -ic` reads
+        // Their shell for their own run, the host's for everything else. `bash -ic` reads
         // `~/.bashrc`, which is where `alias ls='ls --color=auto'` lives, and without it the
         // colour does not exist ([`super::console`]).
         let shell = if req.tty {
@@ -1234,7 +1234,7 @@ impl ProcessHost for HostProcesses {
         }
         cmd.arg(&req.command);
         cmd.current_dir(&cwd);
-        // **stdin, which the pty branch below replaces whenever there is a pty to give the run.**
+        // stdin, which the pty branch below replaces whenever there is a pty to give the run.
         // What is set here is the fallback: the pipe that keeps the operator's own run answerable,
         // and `/dev/null` for everything else, so a reader gets EOF rather than waiting.
         cmd.stdin(if req.tty {
@@ -1242,21 +1242,21 @@ impl ProcessHost for HostProcesses {
         } else {
             Stdio::null()
         });
-        // **A terminal on the output side, for the operator's own run** ([`super::pty`]). A box
+        // A terminal on the output side, for the operator's own run ([`super::pty`]). A box
         // where the pty cannot be opened falls back to pipes rather than refusing: the terminal
         // is what the operator's colour needs, not what the command needs.
         let mut pty: Option<super::pty::Pty> = None;
         if req.tty {
             match super::pty::Pty::open() {
-                // **One pty on all three descriptors**, so the capture ring is fed by the master
+                // One pty on all three descriptors, so the capture ring is fed by the master
                 // and the command's input is the same terminal its output is on.
                 Ok(p) => match (p.stdio(), p.stdio(), p.stdio()) {
                     (Ok(inp), Ok(out), Ok(err)) => {
-                        // **`ECHO` off, before anything runs.** The daemon is the writer on this
+                        // `ECHO` off, before anything runs. The daemon is the writer on this
                         // terminal, and an echoing terminal would put every `!send` line into the
                         // run's output, which is a transcript row. Not fatal if it fails.
                         let _ = p.no_echo();
-                        // **And the terminal becomes the child's controlling terminal**, which is
+                        // And the terminal becomes the child's controlling terminal, which is
                         // what makes bash a job-control shell and silences the two lines it printed
                         // on every row ([`super::pty::controlling_terminal`]).
                         super::pty::controlling_terminal(&mut cmd, p.slave_fd());
@@ -1274,7 +1274,7 @@ impl ProcessHost for HostProcesses {
         } else {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
-        // **On macOS the scope IS the process group** (`scope::ProcessGroups`), so a run without
+        // On macOS the scope IS the process group (`scope::ProcessGroups`), so a run without
         // a pty (the pty branch's `setsid` already made it a leader) must lead a group of its own,
         // or the `$$` the wrapper records names a group it is not in.
         #[cfg(target_os = "macos")]
@@ -1282,7 +1282,7 @@ impl ProcessHost for HostProcesses {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
-        // **Env hygiene: the environment is cleared before anything is set**, so `PATH` is the
+        // Env hygiene: the environment is cleared before anything is set, so `PATH` is the
         // pinned one and a bare name resolves through nothing else. The four names below are then
         // dropped from the session's pairs too, because bash sources `$BASH_ENV` unasked.
         cmd.env_clear();
@@ -1319,20 +1319,20 @@ impl ProcessHost for HostProcesses {
             ExecError::Spawn(e.to_string())
         })?;
         let pid = child.id();
-        // **The parent's own copies of the slave close HERE, and this is load-bearing.** A pty
+        // The parent's own copies of the slave close HERE, and this is load-bearing. A pty
         // whose slave is open anywhere does not report the child's exit, so the drains below would
         // block for ever. `Stdio::null` here is a drop, not a redirection.
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
 
-        // **The run's input: a second handle on the master of its own terminal**, taken here because
+        // The run's input: a second handle on the master of its own terminal, taken here because
         // it stops being available once `into_master` consumes the pty. A `dup` that failed is
         // swallowed: the run keeps its terminal and has no handle, so `Stdin::is_open` is false.
         let input = pty
             .as_ref()
             .and_then(|p| p.input().ok().map(|m| (m, p.slave_path().to_string())));
-        // **`child.stdin` is the fallback's pipe and `None` whenever the pty was used**: a run
+        // `child.stdin` is the fallback's pipe and `None` whenever the pty was used: a run
         // with a terminal is answered through the terminal, and a run with neither is one nobody
         // can answer ([`super::jobs::Stdin::none`]).
         let stdin = match (input, child.stdin.take()) {
@@ -1345,14 +1345,14 @@ impl ProcessHost for HostProcesses {
             Job::new(
                 id.clone(),
                 req.command.clone(),
-                // **The name, decided here and never again.** The claim is made where this spawn
+                // The name, decided here and never again. The claim is made where this spawn
                 // can no longer be refused for a reason that leaves no job behind, and fixed on
                 // the record, so a listing an hour later reads the same string.
                 req.slug.as_deref().map(|s| self.claim_slug(s)),
                 Lifetime {
                     scope: cgroup,
                     owner: parent.clone(),
-                    // **`Asked` only when the model asked.** A foreground command starts with
+                    // `Asked` only when the model asked. A foreground command starts with
                     // `None`, and a promotion fills this in, so a job the runtime moved can never
                     // be read back as one the model requested.
                     background: req.background.then_some(Backgrounding::Asked),
@@ -1365,8 +1365,8 @@ impl ProcessHost for HostProcesses {
             .with_memory_cap(memory_cap),
         );
 
-        // **A run nothing bounds gets its file here, before a single byte is drained**, and one
-        // that already has it keeps it. **Not for a run with a deadline**: an 8 MiB window is what
+        // A run nothing bounds gets its file here, before a single byte is drained, and one
+        // that already has it keeps it. Not for a run with a deadline: an 8 MiB window is what
         // bounds a foreground `yes` ([`HostProcesses::spill_output`]).
         if req.background || req.tty {
             self.spill_output(&job);
@@ -1374,7 +1374,7 @@ impl ProcessHost for HostProcesses {
 
         let out = child.stdout.take();
         let err = child.stderr.take();
-        // **The slave handle goes now, once the child holds its own copy.** A slave this process
+        // The slave handle goes now, once the child holds its own copy. A slave this process
         // keeps open never closes, so the master would never report the exit. macOS holds one
         // across the exit so the tail is not discarded, released by the waiter below.
         #[cfg(target_os = "macos")]
@@ -1391,7 +1391,7 @@ impl ProcessHost for HostProcesses {
             .name(format!("letibot-job-{id}"))
             .spawn(move || {
                 // Drain BEFORE reaping, so every byte is in the capture by the time the state stops
-                // saying `Running`. **macOS reaps first**, because its guard holds a slave that the
+                // saying `Running`. macOS reaps first, because its guard holds a slave that the
                 // master would otherwise wait on.
                 #[cfg(target_os = "macos")]
                 let status = child.wait();
@@ -1405,7 +1405,7 @@ impl ProcessHost for HostProcesses {
                 if let Some(h) = b {
                     let _ = h.join();
                 }
-                // **Both drains have joined, so the file's last byte is in.** The descriptor goes
+                // Both drains have joined, so the file's last byte is in. The descriptor goes
                 // now rather than at the host's death: the file is still on disk and still named,
                 // and fifty backgrounded builds must not hold fifty descriptors.
                 waiter.close_spill();
@@ -1419,7 +1419,7 @@ impl ProcessHost for HostProcesses {
                 }
                 let state = match status {
                     Ok(s) => match s.code() {
-                        // **The wrapper's marker, and not the number alone**: 125 is a legitimate
+                        // The wrapper's marker, and not the number alone: 125 is a legitimate
                         // exit code, so a command that chose it would read as never having run. A
                         // command that printed the marker itself ran, and 125 is its own answer.
                         Some(EXIT_NOT_SCOPED) if launcher_failed(&waiter) && !token.exists() => {
@@ -1434,11 +1434,11 @@ impl ProcessHost for HostProcesses {
                         by: format!("the harness lost track of it: {e}"),
                     },
                 };
-                // **The token is consumed here, once, by the only reader**: a settled job must
+                // The token is consumed here, once, by the only reader: a settled job must
                 // not leave it behind, and removing it after the read keeps `present` and
                 // `joined` the same fact for the whole of one job.
                 let _ = std::fs::remove_file(&token);
-                // **Read the kernel's counters before the state settles**: a reader woken by
+                // Read the kernel's counters before the state settles: a reader woken by
                 // the settle builds the result, and the result is where the peak is said.
                 if let Some(used) = super::scope::memory_use_of(&waiter.lifetime().scope) {
                     waiter.record_memory(used);
@@ -1447,7 +1447,7 @@ impl ProcessHost for HostProcesses {
             })
             .map_err(|e| ExecError::Spawn(e.to_string()))?;
 
-        // **Do not return until the process is IN its cgroup, or is finished.** Without it, a
+        // Do not return until the process is IN its cgroup, or is finished. Without it, a
         // background run followed by `job_kill` reads an empty cgroup and kills nothing. The loop
         // ends on either half because a fast command can finish before it is ever a member.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1491,7 +1491,7 @@ impl ProcessHost for HostProcesses {
         Ok(id)
     }
 
-    /// **Take a job the daemon did not start, and make it one of this host's.** Everything above
+    /// Take a job the daemon did not start, and make it one of this host's. Everything above
     /// reads the host's own job table, so the record becomes a [`Job`]. The cgroup name is derivable,
     /// which makes the re-open exact; a vanished process settles as [`JobState::Dead`], never `Exited`.
     fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
@@ -1523,7 +1523,7 @@ impl ProcessHost for HostProcesses {
             .expect("jobs by id")
             .insert(id.clone(), Arc::clone(&job));
         self.jobs.lock().expect("jobs").push(Arc::clone(&job));
-        // **The record's identity is the whole of the evidence that this is the same process.** A
+        // The record's identity is the whole of the evidence that this is the same process. A
         // pid alone would settle a stranger's job, or keep one running for ever, on a box that had
         // reused the number.
         let identity = a.identity.clone();
@@ -1548,11 +1548,11 @@ impl ProcessHost for HostProcesses {
         Ok(id)
     }
 
-    /// **Give this run a deadline, and hand its enforcement to the host.** The tool that starts a
+    /// Give this run a deadline, and hand its enforcement to the host. The tool that starts a
     /// run knows how long it may live, so it arms this; what it must not do is enforce it, which is
     /// the whole of [`Deadlines`]: the run's own thread reports, this thread ends the run.
     fn arm_deadline(&self, job: &JobId, after: Duration) {
-        // **A job of jobs arms nothing**: every branch carries its own deadline in its own process
+        // A job of jobs arms nothing: every branch carries its own deadline in its own process
         // record, where the supervisor enforces it on the machine that runs it, and a second clock
         // here would be a second answer to *when is it out of time*.
         if self.aggregate(job).is_some() {
@@ -1563,7 +1563,7 @@ impl ProcessHost for HostProcesses {
         }
     }
 
-    /// **Take a handle that stands for work running elsewhere** ([`Aggregate`]). The name it answers
+    /// Take a handle that stands for work running elsewhere ([`Aggregate`]). The name it answers
     /// to is the aggregate's own ([`Aggregate::slug`]), claimed through this host's slug record, so
     /// nothing here has to know what a fanout is.
     fn hold(&self, place: &JobId, agg: Arc<dyn Aggregate>) -> Result<(), ExecError> {
@@ -1589,7 +1589,7 @@ impl ProcessHost for HostProcesses {
     }
 
     fn wait_job(&self, id: &JobId, deadline: Duration) -> Result<Waited, ExecError> {
-        // **A job of jobs settles here, not in a cgroup**: one wait, N branches, each watched by
+        // A job of jobs settles here, not in a cgroup: one wait, N branches, each watched by
         // the thread that started it, so the answer is *it happened* only when every one has ended.
         if let Some(agg) = self.aggregate(id) {
             let started = Instant::now();
@@ -1622,7 +1622,7 @@ impl ProcessHost for HostProcesses {
         })
     }
 
-    /// **Presence, then absence, and never absence alone.** An empty cgroup at t=0 is a boot
+    /// Presence, then absence, and never absence alone. An empty cgroup at t=0 is a boot
     /// window, not a finish, so this waits up to a quarter of the deadline (at most two seconds)
     /// to see the scope populated, and otherwise returns [`Waited::NeverStarted`].
     fn wait_scope(&self, scope: &ScopeId, deadline: Duration) -> Result<Waited, ExecError> {
@@ -1670,7 +1670,7 @@ impl ProcessHost for HostProcesses {
             .iter()
             .map(|j| Self::view(j))
             .collect();
-        // **A job of jobs is a row like any other**, after the runs, because it stands for work those
+        // A job of jobs is a row like any other, after the runs, because it stands for work those
         // runs are not: a listing that interleaved the two would suggest the parent was one more
         // process on this box.
         let aggs: Vec<(JobId, Arc<dyn Aggregate>)> = self
@@ -1687,7 +1687,7 @@ impl ProcessHost for HostProcesses {
     }
 
     fn output(&self, id: &JobId, from: u64, limit: usize) -> Result<OutputSlice, ExecError> {
-        // **The journal, not a table** ([`Aggregate::output`]).
+        // The journal, not a table ([`Aggregate::output`]).
         if let Some(agg) = self.aggregate(id) {
             return Ok(agg.output(from, limit));
         }
@@ -1697,7 +1697,7 @@ impl ProcessHost for HostProcesses {
     }
 
     fn kill_job_as(&self, id: &JobId, by: &str) -> Result<Reaping, ExecError> {
-        // **A job of jobs is ended branch by branch**, on each branch's own host through that
+        // A job of jobs is ended branch by branch, on each branch's own host through that
         // host's own process group: there is no cgroup of ours holding them, and a `kill -TERM`
         // here would reach processes this box cannot see.
         if let Some(agg) = self.aggregate(id) {
@@ -1747,7 +1747,7 @@ impl ProcessHost for HostProcesses {
                 });
             }
         }
-        // **The watchers go with the scope**, because a monitor that merely stopped being polled
+        // The watchers go with the scope, because a monitor that merely stopped being polled
         // would look exactly like one whose condition never fired.
         self.monitors.retire_under(scope);
         if scope.kind == ScopeKind::Turn {
@@ -1760,7 +1760,7 @@ impl ProcessHost for HostProcesses {
         Ok(self.record(r))
     }
 
-    /// **The order is load-bearing, and it is not the obvious one**: open the new cgroup, migrate,
+    /// The order is load-bearing, and it is not the obvious one: open the new cgroup, migrate,
     /// measure, and only then change the job's recorded lifetime, or `job_list` says `session` about
     /// processes the turn scope is about to kill. The output file comes after the migration.
     fn promote(
@@ -1775,7 +1775,7 @@ impl ProcessHost for HostProcesses {
         let ran_for = job.elapsed();
         let target = self.scope_for(to, name)?;
 
-        // **Already there.** A caller that promoted the same job twice is told the second call
+        // Already there. A caller that promoted the same job twice is told the second call
         // moved nothing. The file is still the answer to *where does its output go*, and this may
         // be the first promotion that could make one.
         if life.owner == target {
@@ -1848,7 +1848,7 @@ impl ProcessHost for HostProcesses {
             background: Some(how.clone()),
         });
 
-        // **And the bytes get somewhere unbounded to go**, now that the run really has outlived the
+        // And the bytes get somewhere unbounded to go, now that the run really has outlived the
         // turn (see this method's header).
         let output_file = self.spill_output(&job);
 
@@ -1938,12 +1938,12 @@ impl ProcessHost for HostProcesses {
     }
 }
 
-/// **The reaper lives at the creation site**, which is here: a sweeper cannot tell debris from a
+/// The reaper lives at the creation site, which is here: a sweeper cannot tell debris from a
 /// deliberate long-lived resource, and the thing that starts processes is the thing that ends them.
-/// The session scope goes, and every turn scope and job under it; an **explicit** scope does not.
+/// The session scope goes, and every turn scope and job under it; an explicit scope does not.
 impl Drop for HostProcesses {
     fn drop(&mut self) {
-        // **The deadline watchdog goes with its host** (see `Deadlines::closed`).
+        // The deadline watchdog goes with its host (see `Deadlines::closed`).
         self.deadlines.close();
         let session = self.session.lock().expect("session scope").clone();
         if let Some(s) = session {
@@ -1955,9 +1955,9 @@ impl Drop for HostProcesses {
     }
 }
 
-/// **Did the WRAPPER fail to put the process in its scope?** The evidence is the sentence
+/// Did the WRAPPER fail to put the process in its scope? The evidence is the sentence
 /// [`super::scope::join_script`] writes to stderr, so the script and the check cannot drift, and
-/// **not the exit code**: 125 is legitimate, so `exit 125` would read as never having run.
+/// not the exit code: 125 is legitimate, so `exit 125` would read as never having run.
 fn launcher_failed(job: &Job) -> bool {
     job.capture
         .lock()
@@ -1966,7 +1966,7 @@ fn launcher_failed(job: &Job) -> bool {
 }
 
 /// A reader thread that appends one stream into the job's capture. Stdout and stderr go into
-/// **one** buffer, in arrival order, which is what a terminal shows; the ordering *between* the two
+/// one buffer, in arrival order, which is what a terminal shows; the ordering *between* the two
 /// is approximate, because two pipes have no shared clock.
 fn drain<R: Read + Send + 'static>(
     stream: Option<R>,
@@ -1994,7 +1994,7 @@ fn signal_of(status: &std::process::ExitStatus) -> i32 {
     status.signal().unwrap_or(0)
 }
 
-/// A pid's parent, from `/proc/<pid>/stat`. Field 4 is `ppid`, read by splitting on the **last**
+/// A pid's parent, from `/proc/<pid>/stat`. Field 4 is `ppid`, read by splitting on the last
 /// `)` rather than on whitespace: field 2 is the executable name in parentheses and may hold spaces.
 #[cfg(target_os = "macos")]
 pub(crate) fn parent_of(pid: u32) -> Option<u32> {
@@ -2039,7 +2039,7 @@ fn listen_inodes(port: u16) -> Vec<String> {
     inodes
 }
 
-/// **Is anything listening on this TCP port?** What [`super::monitor::Watch::Port`] asks each
+/// Is anything listening on this TCP port? What [`super::monitor::Watch::Port`] asks each
 /// tick. It reads the kernel's own socket table and never a process name, so no string here can
 /// match the shell asking.
 #[cfg(not(target_os = "macos"))]
@@ -2181,7 +2181,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             .unwrap_or_default()
     }
 
-    /// **A dropped host takes its deadline watchdog with it.** The watchdog was an endless loop
+    /// A dropped host takes its deadline watchdog with it. The watchdog was an endless loop
     /// holding its own `Arc<Deadlines>`, so every host ever built left a thread behind for the life
     /// of the process. The `Weak` frees exactly when that thread leaves `run`; the tid is checked too.
     #[test]
@@ -2289,7 +2289,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
     }
 
-    /// **Settled output is held to a budget, oldest released first, and a running job's never.**
+    /// Settled output is held to a budget, oldest released first, and a running job's never.
     /// Without it a host kept every job's whole capture for its life, so a session's job table grew
     /// with every `bash` it ever ran.
     #[test]
@@ -2357,8 +2357,8 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **A run with no deadline has its file from the spawn, and `from` is 0 because nothing had
-    /// been printed yet**, not because a constant said so. A run that still has a deadline gets none:
+    /// A run with no deadline has its file from the spawn, and `from` is 0 because nothing had
+    /// been printed yet, not because a constant said so. A run that still has a deadline gets none:
     /// the 8 MiB window is what bounds a runaway `yes`. The ring here is sixteen bytes.
     #[test]
     fn a_background_job_has_a_file_from_its_spawn_and_a_foreground_one_does_not() {
@@ -2371,7 +2371,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         };
         let root = std::env::temp_dir().join(format!("letibot-spawn-spill-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        // **A fixture scratch directory, never the box's own**: the same rule the promotion tests
+        // A fixture scratch directory, never the box's own: the same rule the promotion tests
         // follow, and the reason `set_scratch_dir` takes one at all.
         let scratch =
             std::env::temp_dir().join(format!("letibot-spill-dir-{}", std::process::id()));
@@ -2421,7 +2421,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
              was opened"
         );
 
-        // **Read from the disk, not through the harness**: a test that asked the tool whether it
+        // Read from the disk, not through the harness: a test that asked the tool whether it
         // wrote is a test of the tool's opinion of itself.
         let on_disk = std::fs::read(&f.path).expect("the scratch file exists");
         assert_eq!(
@@ -2434,7 +2434,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             "the count is the file's own, and it is final once the drains have joined"
         );
 
-        // **The window still dropped the front, and says so**: the two are different facts, and the
+        // The window still dropped the front, and says so: the two are different facts, and the
         // file is the answer to the first one.
         let slice = h.output(&id, 0, 1024).expect("the row stays");
         assert_eq!((slice.dropped, slice.retained), (8, 16));
@@ -2444,7 +2444,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             "the window is the last sixteen bytes and nothing else"
         );
 
-        // **A run that still has a deadline keeps the window as its only copy**: an unbounded file
+        // A run that still has a deadline keeps the window as its only copy: an unbounded file
         // behind every `bash` call would remove the bound the 8 MiB window exists to be.
         let foreground = spawn("true", false);
         let _ = h.wait_job(&foreground, Duration::from_secs(30));
@@ -2460,7 +2460,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&scratch).ok();
     }
 
-    /// **A promotion of a run that already has a file keeps it, byte for byte.** `spill_to`
+    /// A promotion of a run that already has a file keeps it, byte for byte. `spill_to`
     /// truncates, so a second promotion that opened the file again would cut a run's output at the
     /// moment somebody asked where the rest of it goes. This job is in the "already there" arm.
     #[test]
@@ -2535,12 +2535,12 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&scratch).ok();
     }
 
-    /// **A name is unique within the session, and it never moves**: two jobs the caller named
-    /// `tests` are `tests` and `tests-2`. **And a request that named nothing gets nothing**: no
+    /// A name is unique within the session, and it never moves: two jobs the caller named
+    /// `tests` are `tests` and `tests-2`. And a request that named nothing gets nothing: no
     /// derivation, no fallback word.
     #[test]
     fn a_slug_is_made_unique_within_the_session_and_never_invented() {
-        // **The cgroup is apparatus**: a container with no delegatable cgroup v2 subtree is a fact
+        // The cgroup is apparatus: a container with no delegatable cgroup v2 subtree is a fact
         // about the machine and not a failure of this claim.
         let Some(_) = letibot_tokencore::apparatus::present(
             "a process-lifetime tree (cgroup v2; process groups on macOS)",
@@ -2584,7 +2584,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             None,
             "nobody named this run, so it has no name — not `tests-4` and not a guess"
         );
-        // **Stable for the job's life**: nothing above moved a name that was already taken.
+        // Stable for the job's life: nothing above moved a name that was already taken.
         assert_eq!(slug_of(&first).as_deref(), Some("tests"));
         std::fs::remove_dir_all(&root).ok();
     }
@@ -2593,7 +2593,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
     fn a_bash_env_planted_in_the_parent_never_reaches_the_child() {
         // The spawn clears the environment before setting its own pairs, so nothing planted in
         // this process, `BASH_ENV` included, can reach the child, and `PATH` is the pinned one.
-        // **The cgroup is apparatus**: a container without a delegatable subtree has none to give.
+        // The cgroup is apparatus: a container without a delegatable subtree has none to give.
         let Some(_) = letibot_tokencore::apparatus::present(
             "a process-lifetime tree (cgroup v2; process groups on macOS)",
             letibot_tools::host_tree().is_ok(),
@@ -2639,7 +2639,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         );
         let out = h.output(&id, 0, 4096).unwrap();
         let text = String::from_utf8(out.bytes).unwrap();
-        // **Restored before anything can fail**, because the variables are the whole process's:
+        // Restored before anything can fail, because the variables are the whole process's:
         // every other test that starts a shell without clearing its environment inherited
         // `SHELLOPTS=xtrace` from here, where `/bin/sh` is bash and honours it.
         unsafe {
@@ -2650,12 +2650,12 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **The operator's own run can be ANSWERED**: the command reads its stdin, the handle comes out
-    /// of the job the spawn returned, and a line goes in. The assertion is **the exact capture**, so
+    /// The operator's own run can be ANSWERED: the command reads its stdin, the handle comes out
+    /// of the job the spawn returned, and a line goes in. The assertion is the exact capture, so
     /// the typed `Y` must not be echoed, and with `tty: false` the send must be refused instead.
     #[test]
     fn the_operators_own_run_has_a_stdin_a_line_can_be_sent_to() {
-        // **The cgroup is apparatus**: a container without a delegatable subtree has none to give,
+        // The cgroup is apparatus: a container without a delegatable subtree has none to give,
         // which is a fact about the machine and not a failure of this claim.
         let Some(_) = letibot_tokencore::apparatus::present(
             "a process-lifetime tree (cgroup v2; process groups on macOS)",
@@ -2700,7 +2700,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
 
         // ---- The operator's own run: its own terminal, and the line reaches the command.
         let id = spawn(true);
-        // **And the host can NAME the run's processes**, the other half of the detection: `ask`
+        // And the host can NAME the run's processes, the other half of the detection: `ask`
         // reads each one's `/proc/<pid>/fd/0` and its `wchan`, so a host that cannot list them would
         // make every operator run look like one that is not asking (`ask::Waiting::Unreadable`).
         let pids = h.job_pids(&id);

@@ -14,7 +14,7 @@ use std::process::Stdio;
 pub struct Pty {
     master: File,
     slave: File,
-    /// **The slave's own name** - `/dev/pts/N`, from `ptsname_r` at open.
+    /// The slave's own name - `/dev/pts/N`, from `ptsname_r` at open.
     /// It is what answers *is this process's fd 0 the terminal we are holding?*; the
     /// master's name (`/dev/ptmx`) is the same for every pty on the box and answers nothing.
     slave_path: String,
@@ -59,7 +59,7 @@ impl Pty {
         if slave_fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // **`FD_CLOEXEC` on both ends, and the slave is the one that matters.** Neither
+        // `FD_CLOEXEC` on both ends, and the slave is the one that matters. Neither
         // call sets it and `Command::spawn` forks the whole process, so an unmarked
         // descriptor reaches other jobs' children; `dup2` clears it on the child's copy.
         if unsafe { libc::fcntl(slave_fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
@@ -74,7 +74,7 @@ impl Pty {
         Ok(pty)
     }
 
-    /// **`\n` stays `\n`.** `ONLCR` would turn every newline the command writes into
+    /// `\n` stays `\n`. `ONLCR` would turn every newline the command writes into
     /// `\r\n`, and `\r` is a control byte this tree's sanitiser turns into a space on
     /// every line of every payload. Cleared on the device, so no `stty` has to exist.
     fn plain_newlines(&self) -> io::Result<()> {
@@ -90,35 +90,35 @@ impl Pty {
         Ok(())
     }
 
-    /// The slave end, for a `Command`'s stdin, stdout or stderr - **one clone per call**,
+    /// The slave end, for a `Command`'s stdin, stdout or stderr - one clone per call,
     /// because a `Stdio` takes ownership of the descriptor it is given. All three: stdin
     /// is what makes the child's terminal its controlling one, see [`controlling_terminal`].
     pub fn stdio(&self) -> io::Result<Stdio> {
         Ok(Stdio::from(self.slave.try_clone()?))
     }
 
-    /// **The slave's own descriptor**, for [`controlling_terminal`].
+    /// The slave's own descriptor, for [`controlling_terminal`].
     /// The field is private because nothing outside should do I/O on this end, and this
     /// process must keep none of it after `spawn` - a caller needs the number, not the file.
     pub fn slave_fd(&self) -> std::os::fd::RawFd {
         self.slave.as_raw_fd()
     }
 
-    /// **A second handle on the master, for writing to the run** - what `!send` and the
+    /// A second handle on the master, for writing to the run - what `!send` and the
     /// prompt card's answer travel down ([`super::jobs::Stdin`]). A `dup`, because the
     /// other handle is blocked in `read`. A master, never a slave: the secret card is not here.
     pub fn input(&self) -> io::Result<File> {
         self.master.try_clone()
     }
 
-    /// **The name of the device this pty's slave is** - `/dev/pts/N` on this box.
+    /// The name of the device this pty's slave is - `/dev/pts/N` on this box.
     /// [`super::ask`] reads it: *the run is blocked reading its terminal* is only a fact
-    /// if the terminal is **this** one, and `/dev/ptmx` answers nothing.
+    /// if the terminal is this one, and `/dev/ptmx` answers nothing.
     pub fn slave_path(&self) -> &str {
         &self.slave_path
     }
 
-    /// **`ECHO` off, and `ECHONL` with it** - the terminal stops repeating what is written
+    /// `ECHO` off, and `ECHONL` with it - the terminal stops repeating what is written
     /// to it into its own output, which keeps the daemon's own writes (a secret card's
     /// answer) out of the transcript. A pane keeps echo on: there a person is typing.
     pub fn no_echo(&self) -> io::Result<()> {
@@ -135,13 +135,13 @@ impl Pty {
     }
 
     /// The master end, with this process's own slave handle closed.
-    /// Call it **after** `spawn`, once the child holds its own copy, or the parent's open
+    /// Call it after `spawn`, once the child holds its own copy, or the parent's open
     /// slave is a drain that never ends.
     pub fn into_master(self) -> File {
         self.master
     }
 
-    /// **macOS: a hold on the run's last words**, taken before [`Pty::into_master`].
+    /// macOS: a hold on the run's last words, taken before [`Pty::into_master`].
     /// XNU discards what is still unread in a pty the moment its last slave closes, where
     /// Linux keeps it readable, so a quick command's tail raced the drain. See the guard.
     #[cfg(target_os = "macos")]
@@ -189,7 +189,7 @@ impl std::fmt::Debug for Pty {
     }
 }
 
-/// **Make the child a session leader whose controlling terminal is the pty slave on `fd`.**
+/// Make the child a session leader whose controlling terminal is the pty slave on `fd`.
 /// `setsid` first, then `TIOCSCTTY`, because a process may not acquire a terminal it
 /// already has; `fd` is the device, not `0`. Neither failure is fatal, so both are ignored.
 pub fn controlling_terminal(cmd: &mut std::process::Command, fd: std::os::fd::RawFd) {
@@ -212,7 +212,7 @@ mod tests {
     use std::io::Read;
 
     /// Read a pty's master until the last slave closes.
-    /// **`Err` is the ending, not a failure**: Linux returns `EIO` once every slave is
+    /// `Err` is the ending, not a failure: Linux returns `EIO` once every slave is
     /// closed, which is the pty's EOF - the rule `host::drain` follows for the same reason.
     fn read_to_close(mut master: File) -> String {
         let mut got = String::new();
@@ -242,7 +242,7 @@ mod tests {
             .expect("sh starts")
     }
 
-    /// **A slave handle the parent still holds is a master read that never ends.** A
+    /// A slave handle the parent still holds is a master read that never ends. A
     /// `Command` keeps every `Stdio` it is given, so `host::spawn` must drop its own copies
     /// after `spawn`: the drain never ends, the waiter never reaps, the job stays `Running`.
     #[test]
@@ -281,7 +281,7 @@ mod tests {
         );
     }
 
-    /// **Neither end of the pair leaks into a child that is not the one it is for.**
+    /// Neither end of the pair leaks into a child that is not the one it is for.
     /// `posix_openpt` and `open` hand back a descriptor without `FD_CLOEXEC`, and this
     /// process forks for every job, so the flag is asserted - it is the mechanism.
     #[test]
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(seen, "yes\n", "the intended child lost its terminal");
     }
 
-    /// **The property this module exists for**: a child writing to the slave is writing to
+    /// The property this module exists for: a child writing to the slave is writing to
     /// a terminal, which is the whole of what `ls --color=auto` asks. The pipe is the
     /// control, and `"tty\n"` also pins that [`Pty::plain_newlines`] left the `\n` alone.
     #[test]
@@ -354,7 +354,7 @@ mod tests {
         );
     }
 
-    /// **The slave end is a terminal, and a pipe is not.** `isatty` is the syscall `ls`,
+    /// The slave end is a terminal, and a pipe is not. `isatty` is the syscall `ls`,
     /// `grep` and `cargo` all make, so asserting it is asserting the mechanism. The master
     /// is a tty too on Linux, so a pipe is the control.
     #[test]
@@ -378,7 +378,7 @@ mod tests {
         }
     }
 
-    /// **A slave the parent still holds open is a drain that never ends**: the child exits
+    /// A slave the parent still holds open is a drain that never ends: the child exits
     /// and the master read returns only once the parent's copy is gone, so
     /// [`Pty::into_master`] dropping it is what lets `host`'s drain finish and the job settle.
     #[test]
@@ -415,7 +415,7 @@ mod tests {
         }
     }
 
-    /// Spawn `script` with **all three** descriptors on the pty, and with
+    /// Spawn `script` with all three descriptors on the pty, and with
     /// [`controlling_terminal`] called or not — the two halves of one question.
     fn run_three(pty: &Pty, script: &str, controlling: bool) -> std::process::Child {
         let mut cmd = std::process::Command::new("/bin/sh");
@@ -431,7 +431,7 @@ mod tests {
         cmd.spawn().expect("sh starts")
     }
 
-    /// **The child's terminal IS its controlling terminal**, which is what makes bash a
+    /// The child's terminal IS its controlling terminal, which is what makes bash a
     /// job-control shell. Not *a controlling terminal exists*, which a test run from an
     /// operator's terminal satisfies for free, but *`/dev/tty` and fd 0 are one device*.
     #[test]
@@ -474,7 +474,7 @@ mod tests {
         );
     }
 
-    /// **`no_echo` is what keeps the daemon's own writes out of the run's output.** The
+    /// `no_echo` is what keeps the daemon's own writes out of the run's output. The
     /// program reads one line and prints it, so the control - the same pty with echo left
     /// on - is what tells *nothing was echoed* from *nothing was written*.
     #[test]
@@ -519,7 +519,7 @@ mod tests {
         );
     }
 
-    /// **The name on the child's fd 0 is the name of the device we hold the master of**,
+    /// The name on the child's fd 0 is the name of the device we hold the master of,
     /// which is the whole of the comparison [`super::ask`] makes. The control is a second
     /// pty in the same test: two ptys must not share a name.
     #[test]
@@ -539,7 +539,7 @@ mod tests {
         );
 
         let mut child = run_three(&p, "readlink /proc/self/fd/0", true);
-        // Read the name **before** the pty is consumed: `into_master` takes the handle.
+        // Read the name before the pty is consumed: `into_master` takes the handle.
         let named = p.slave_path().to_string();
         let master = p.into_master();
         let seen = read_to_close(master);

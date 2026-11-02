@@ -522,7 +522,7 @@ impl HostBackend {
 }
 
 impl ExecBackend for HostBackend {
-    /// **The boundary this backend's commands run inside**, read off the process host rather
+    /// The boundary this backend's commands run inside, read off the process host rather
     /// than off the constructor that was called: a grant replaces the confinement, so the
     /// measured one is the one that answers.
     fn boundary(&self) -> Option<crate::exec::Boundary> {
@@ -1026,7 +1026,7 @@ mod tests {
         // The property the second question exists for: a relative path starts here,
         // not at `/`.
         assert_eq!(b.cwd(), dir.as_path());
-        // **A confined seat has the two equal, which is why this hid.** With
+        // A confined seat has the two equal, which is why this hid. With
         // `root == workspace` the two accessors agree, so the wrong one looks right.
         let c = HostBackend::new(&dir).expect("a project-rooted backend");
         assert_eq!(c.root_path(), c.workspace_path());
@@ -1135,7 +1135,7 @@ mod tests {
         assert_eq!(b.resolve("~").unwrap(), d.path().canonicalize().unwrap());
     }
 
-    /// The promote channel the daemon wires from the hub is read **and cleared** by
+    /// The promote channel the daemon wires from the hub is read and cleared by
     /// the `bash` wait loop, so a head's Ctrl+B is honoured once.
     #[test]
     fn a_promote_request_is_taken_not_merely_read() {
@@ -1329,7 +1329,7 @@ mod tests {
         entries.iter().map(|e| e.path.as_str()).collect()
     }
 
-    /// A backend that is the tree in memory, with **no** `list_tree` of its own: the
+    /// A backend that is the tree in memory, with no `list_tree` of its own: the
     /// trait's default drives it one directory at a time, and the count of `list`
     /// calls is what says so.
     struct TreeFake {
@@ -1364,7 +1364,7 @@ mod tests {
         }
     }
 
-    /// The same shape with `list_tree` **defined**, as firecode defines it. An
+    /// The same shape with `list_tree` defined, as firecode defines it. An
     /// override that quietly fell back on the loop would still return entries, so the
     /// counts are the assertion and the entries alone are not.
     struct OneCallFake {
@@ -1491,7 +1491,7 @@ mod tests {
         assert_eq!(paths(&few_find), vec!["/w/a b", "/w/empty"]);
     }
 
-    /// A backend whose `read` is counted and whose `read_many` is the **default**: the
+    /// A backend whose `read` is counted and whose `read_many` is the default: the
     /// shape of every backend that has not said its `read` is a round trip.
     struct PerFileReads {
         read_calls: AtomicUsize,
