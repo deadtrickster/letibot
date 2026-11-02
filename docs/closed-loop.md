@@ -20,7 +20,6 @@ and known:
 |---|---|
 | a memory entry saying a self-matching `pkill` is a trap, **and T21 is an open item about it** | self-matched `pkill` three times |
 | *"guard the fact, not the proxy"* in the seat brief | counted runner starts with `grep -c` against a journal holding 4 lines, got `0`, published it to four boxes |
-| *"every value sits beside its denominator"* | fed a bare `0` into a decision |
 
 **A prompt is a prior, not a constraint.**
 
@@ -39,8 +38,7 @@ The last two are enforcement. The first two are not, and they are the half that 
 
 The `grep -c` failure was not an enforcement failure. No limit needed to fire; the sensor lied, so no
 error signal was generated, so nothing looked wrong. A machine with a perfect current limit and a dead
-encoder is safe and still in the wrong place. Build limits first and you get a harness that cannot
-catch fire and cannot hit its position either.
+encoder is safe and still in the wrong place - so instrumentation precedes enforcement.
 
 The concrete form is a return type rather than a discipline:
 
@@ -58,16 +56,11 @@ none were the operator's" and "0" are different facts (`crates/tools/src/authori
 ## 4. "Corrects itself to an extent" - the tolerance band is the design decision
 
 Inside the band, correct silently: re-measure, re-read, retry. Outside it, **fault and surface to the
-human.** Both ends cost:
-
-- **Too loose** is §1 - drift, published as fact.
-- **Too tight** is a refusal on a legitimate command against the seat's own wedged service, already
-  dropped from the pool, zero cost to restart.
-
-The second is the more dangerous failure in the long run, because a fault that can *only* be routed
-around teaches people to route around faults. So the exception must be **grantable and logged, not
-absent**: a driver whose current limit can be raised on the record is a mechanism; one that gets
-bypassed with a jumper is a mechanism in name.
+human.** Too loose is §1 - drift published as fact. Too tight is a refusal on a legitimate command
+against the seat's own wedged service, and it is the more dangerous failure in the long run, because a
+fault that can *only* be routed around teaches people to route around faults. So the exception must be
+**grantable and logged, not absent**: a driver whose current limit can be raised on the record is a
+mechanism; one that gets bypassed with a jumper is a mechanism in name.
 
 ## 5. Losing the encoder is its own declared state
 
@@ -83,13 +76,11 @@ offline (claiming a row through the door - replay is not harmless); anything who
 
 ## 6. The payoff runs opposite to how this is usually sold
 
-Closed loop does not exist to restrict the motor. It exists so you can run it closer to the limit:
-open loop you over-spec torque margin and derate everything, because a stall is invisible. A harness
-that only *enforces* forces the model to be locked down; one that *measures* lets it be loosened,
-because the miss is caught. **Feedback is what buys latitude.**
-
-That is also what makes self-modification tractable: it is frightening open-loop, and gated on the
-acceptance suite it is a closed loop with a fault output.
+Closed loop does not exist to restrict the motor. It exists so you can run it closer to the limit: open
+loop you over-spec torque margin and derate everything, because a stall is invisible. A harness that
+only *enforces* forces the model to be locked down; one that *measures* lets it be loosened, because the
+miss is caught. **Feedback is what buys latitude** - which is also what makes self-modification
+tractable: it is frightening open-loop.
 
 ## 7. What it subsumes
 
@@ -106,10 +97,10 @@ acceptance suite it is a closed loop with a fault output.
 ## 8. What it does not solve
 
 Questions with no oracle anywhere: is this the right design, is this explanation true, is this
-measurement worth taking. The harness can force the **form** - demand a baseline, demand the unverified
-list, refuse a conclusion citing no measurement - but not supply the answer. And an encoder is right
-about the *class* and can be wrong about the *case*, so any design here that does not carry a grantable
-exception is trading one failure mode for a worse one.
+measurement worth taking. The harness can force the **form** - demand a baseline, the unverified list,
+refuse a conclusion citing no measurement - but not supply the answer. And an encoder is right about the
+*class* and can be wrong about the *case*, so any design here that does not carry a grantable exception
+is trading one failure mode for a worse one.
 
 ## 9. Open
 
@@ -146,12 +137,10 @@ that rate move with context state?** A measurement campaign, tracked like MTP ac
 ### The hypothesis worth falsifying: adherence decays across compaction, quality does not
 
 Falsifier B measured **task quality** against depth and found nothing - 0.875 at 20k, 1.000 at 60k,
-0.900 at 150k, Fisher p = 1.000, with the *shallowest* condition worst. Depth does not hurt.
-
-**It did not measure rule adherence, and that is a different quantity.** The three failures in §1 all
-occurred in a session that had been compacted repeatedly, with every rule still loaded - because a rule
-file is re-injected while the salience around it is destroyed: the recent instance, the reason it
-mattered, the cost of getting it wrong.
+0.900 at 150k, Fisher p = 1.000, with the *shallowest* condition worst. It did not measure rule
+adherence, which is a different quantity: the failures in §1 all occurred in a session that had been
+compacted repeatedly, with every rule still loaded, because a rule file is re-injected while the
+salience around it is destroyed.
 
 | | context | isolates |
 |---|---|---|
@@ -159,7 +148,6 @@ mattered, the cost of getting it wrong.
 | B | deep, never compacted | depth alone - expected null, per Falsifier B |
 | C | same depth, post-compaction | **compaction as the variable** |
 
-If C ≈ B, compaction is exonerated and §1 is just sampling. If **C > B**, the loss is compaction's, and
-it becomes a direct argument for `docs/compaction.md` §4: a structural map preserves the *events* that
-a prose summary flattens into English and drops. Neither has been measured. Class 1 first; it is the
-encoder, and §3 says the encoder comes first.
+If C ≈ B, compaction is exonerated and §1 is just sampling. If **C > B**, it is a direct argument for
+`docs/compaction.md` §4: a structural map preserves the *events* a prose summary flattens and drops.
+Neither has been measured, and Class 1 comes first - it is the encoder.

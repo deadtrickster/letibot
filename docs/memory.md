@@ -17,9 +17,9 @@ Passive memory that contains the answer and never offers it has failed, even tho
 ## 2. What a real loss looks like
 
 Work done in a conversation, with its measurements and its negative results, was lost across a
-compaction cycle in that same conversation, and recovered only because the operator said it was in
-the transcript. Nothing was missing. Recovery required guessing which word would appear in it - which
-is passive memory working exactly as designed and being useless anyway.
+compaction cycle in that same conversation, and recovered only because the operator said it was in the
+transcript. Nothing was missing - which is passive memory working exactly as designed and being useless
+anyway.
 
 ## 3. Why this needs the whole backend
 
@@ -48,14 +48,10 @@ So do not inject. Append a suggestion to the user turn, and carry a **handle, no
 ```
 
 Twenty tokens. The model then decides whether to pull it, through a `recall(segment_id)` tool. Four
-properties follow:
-
-- **Non-destructive** - the prefix is intact.
-- **Refusable** - a bad suggestion costs twenty tokens the model ignores, so retrieval *precision*
-  matters far less than it would otherwise.
-- **Structurally distinguishable for free** - it rides with the user turn as metadata, so it cannot be
-  mistaken for something the model itself concluded (§5's third requirement, by construction).
-- **Model-directed** - we nominate, it selects.
+properties follow: it is **non-destructive** (the prefix is intact); **refusable** (a bad suggestion
+costs twenty tokens the model ignores, so precision matters far less); **structurally distinguishable
+for free** (it rides with the user turn as metadata, so it cannot be mistaken for the model's own
+conclusion - §5's third requirement by construction); and **model-directed** (we nominate, it selects).
 
 ### This decouples active memory from composable KV
 
@@ -93,16 +89,14 @@ Two consequences:
 ## 6. What exists to build on
 
 - **`SegmentMark`** (`crates/transcript/src/lib.rs`) is a zero-width delimiter that renders to nothing,
-  carrying `{segment_id, label, kind, edge: Open|Close}`, so per-segment decay, user-assisted
-  compaction and agentic memory have something to address. If they never arrive it has cost one row
-  and zero rendered bytes.
+  carrying `{segment_id, label, kind, edge: Open|Close}`, so per-segment decay, user-assisted compaction
+  and agentic memory have something to address.
 - **`crates/tokencore`** already content-addresses: the ledger chains
   `h_k = H(h_{k-1} ‖ tokens(item_k))`, so every item has a stable identity.
 - **The suggestion form exists for standing notes**: `crates/harnessd/src/notes_offer.rs` composes an
   offer at the tail of the request, never in the prefix and never as a row, from a lexical score over
-  the note's abstract, title and headings, behind a floor of 0.18 that the take-up log moved it to.
-  That is the mechanism a segment suggester would reuse, and it is lexical rather than an embedder -
-  local, deterministic, not a resemblance score dressed as relevance.
+  the note's abstract, title and headings, behind a floor of 0.18. That is the mechanism a segment
+  suggester would reuse - lexical, local, deterministic, not a resemblance score dressed as relevance.
 
 ## 7. What is missing
 
@@ -114,7 +108,5 @@ Two consequences:
 
 ## 8. Status
 
-A concept note, not a plan, but no longer a blocked one: it needs a `SegmentMark` producer, a
-retrieval policy and a `recall` tool, and none of those wait on composable KV. What still depends on
-it is only how much the *pull* costs - `recall` returns text forever and active memory still works,
-priced as a tool call rather than as a composition.
+A concept note, not a plan, but no longer a blocked one: it needs a `SegmentMark` producer, a retrieval
+policy and a `recall` tool, and none of those wait on composable KV.
