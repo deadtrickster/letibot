@@ -1,12 +1,10 @@
-//! One long-lived shell per session: one pty, an interactive shell on the far end of it,
-//! and a `!` line typed at that shell rather than a fresh `/bin/sh -c`. Once it exists the
-//! shell is the authority for the cwd, the environment and the exit status, and it lives in
-//! the session's cgroup, so a background job started in it dies with the conversation.
+//! One long-lived shell per session, with a terminal, whose state is the shell's: a `!` line
+//! is a line typed at that shell, not a `/bin/sh -c` for it, and the shell answers for the
+//! cwd, the status and the environment - [`ShellSession::cwd`] never remembers one.
 //!
-//! Framing is a sentinel, not a prompt: a prompt is not a protocol, because it can appear
-//! inside a command's own output. `run` writes the line and then a marked trailer and reads
-//! until the trailer arrives. The line written for `run("ls")` is two lines:
-//!
+//! A prompt is not a protocol: it is a string the operator's rc chooses, it can appear inside
+//! a command's own output, and an interactive shell prints one before it reads each line. So
+//! the framing is a sentinel - the line sent for `run("ls")` is the command and then this:
 //! ```text
 //!   ls
 //!   __lt_end_<nonce>
@@ -20,12 +18,9 @@
 //!   }
 //! ```
 //!
-//! The trailer is one OSC sequence, so a command cannot forge it, `$?` and `$PWD` are the
-//! shell's own answer read in one place, and a screen consumes it whole. A timeout
-//! desynchronises the session, so `run` refuses afterwards and `resync` is the way back.
-//!
-//! Two rules: `run` executes a line a person submitted and never a model's turn, and nothing
-//! the trailer carries (`$PWD`, `$?`, the environment) is ever printed.
+//! **The model may propose a line but never run one**: a line here is one a person typed.
+//! **A secret stays a person's card**: the trailer's `$PWD` and `$?` are read back, and the
+//! exported environment is never printed, never on the wire and never in `Debug`.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -36,35 +31,37 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use super::Pty;
 use super::scope::{Cgroup2, Reaping, ScopeId, ScopeTree, join_script};
 
-/// The OSC introducer every trailer starts with. `OSC 1337` is the range terminals reserve
-/// for private use, and a screen consumes such a sequence whole while a program cannot emit
-/// one by accident.
+/// **The OSC introducer every trailer starts with.** `OSC 1337` is the range terminals
+/// reserve for private use, and the bytes are chosen because a screen consumes them whole
+/// and a program cannot produce them by accident.
 const MARK_OPEN: &str = "\x1b]1337;letibot;";
 
-/// What ends a trailer: BEL, the short spelling of an OSC terminator.
+/// What ends a trailer — BEL, the short spelling of an OSC's terminator.
 const MARK_CLOSE: u8 = 0x07;
 
 /// How long a session waits for the shell to come up and answer its first trailer.
 pub const READY: Duration = Duration::from_secs(10);
 
-/// How long a line gets before the session is called desynchronised. A caller may override it
-/// per line; this default matches a tool call's budget, because a build is a command a person
-/// typed.
+/// How long a line gets before the session is called desynchronised. The caller may override
+/// it per line; this is what a `!` line uses, and it is the same order as the 300 s budget a
+/// tool call gets because a build is a command a person typed.
 pub const WAIT: Duration = Duration::from_secs(300);
 
-/// How many bytes one turn may accumulate before it is called a runaway: a bound on what this
-/// module holds while scanning for a trailer that may never come, not a cap on what a command
-/// may print.
+/// How many bytes of shell output one turn may accumulate before it is called a runaway: a
+/// bound on what this module holds while it scans for a trailer that may never come, not a
+/// cap on what a command may print. Hitting it desynchronises the session.
 const MAX_TURN: usize = 32 * 1024 * 1024;
 
-/// Why a session did not answer. Local to this module on purpose: nothing here is a tool
-/// call, so a caller should not have to read a variant that talks about commands and gates.
+/// **Why a session did not answer.** Small and local on purpose: this is not an
+/// [`ExecError`], because nothing here is a tool call and a caller should not have to read a
+/// variant that talks about commands and gates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellError {
-    /// The shell is not there: it exited, or the pty's far end closed.
+    /// The shell is not there — it exited, or the pty's far end closed.
     Gone(String),
-    /// The trailer did not arrive inside the deadline. The session is desynchronised: the
-    /// trailer for this line is still coming, and the next `run` would read it as its own.
+    /// The trailer did not arrive inside the deadline. **The session is desynchronised**: the
+    /// trailer for this line is still coming, and the next `run` would read it and call it
+    /// the next line's answer.
     Timeout(Duration),
     /// A previous timeout, or a runaway turn, left a trailer in flight.
     Desynchronised(String),
@@ -99,25 +96,28 @@ impl std::fmt::Display for ShellError {
 
 impl std::error::Error for ShellError {}
 
-/// How to start a session: everything a caller must decide, with the defaults a `!` line
-/// wants. `Clone` and not `Debug`, because the scope tree is a trait object with no `Debug`.
+/// **How to start a session.** Everything a caller must decide, in one place, with the
+/// defaults a `!` line wants. `Clone` and not `Debug`: the scope tree is a trait object that
+/// carries no `Debug`.
 #[derive(Clone)]
 pub struct ShellConfig {
-    /// The shell and its flags. [`super::console::shell`] is the operator's; tests pass
-    /// `--norc` so an assertion is about this module and not about what an rc prints.
+    /// The shell and its flags. [`super::console::shell`] is the operator's — `/bin/bash -ic`
+    /// — and the tests pass `--norc` so an assertion is about this module and not about
+    /// whatever the operator's rc prints.
     pub shell: Vec<String>,
-    /// Pairs put in front of the shell's environment: what a *session* adds on top of the
-    /// console's own, `TERM` above all, because a shell on a pty without one cannot colourise.
+    /// Pairs put in front of the shell's environment. The daemon's own environment is the
+    /// console's (`super::console`'s argument), so this is what a *session* adds — `TERM`
+    /// above all, because a shell on a pty without one is a shell that cannot colourise.
     pub env: Vec<(String, String)>,
-    /// Where the session starts. A startup fact, not a report: once the shell runs,
-    /// [`ShellSession::cwd`] is the answer and this is history.
+    /// Where the session starts. **A startup fact, not a report** — see the module header:
+    /// once the shell is running, [`ShellSession::cwd`] is the answer and this is history.
     pub cwd: PathBuf,
-    /// The pty's size in columns and rows: the pane's rectangle at opening.
-    /// [`ShellSession::resize`] moves it after that.
+    /// The pty's size, in columns and rows. The head's pane rectangle at the moment of
+    /// opening; [`ShellSession::resize`] moves it after that.
     pub cols: usize,
     pub rows: usize,
-    /// The scope the session lives in, and the tree that will end it. `None` is a session
-    /// nobody owns, which a test uses and [`ShellSession::close`] says so.
+    /// **The scope the session lives in**, and the tree that will end it. `None` is a session
+    /// nobody owns — a test's, and named as such by [`ShellSession::close`].
     pub scope: Option<ScopeId>,
     pub tree: Option<Arc<dyn ScopeTree>>,
     /// How long the first trailer gets.
@@ -139,28 +139,28 @@ impl Default for ShellConfig {
     }
 }
 
-/// One line's answer, and the facts the shell is the authority for.
+/// **One line's answer**, and the facts the shell is the authority for.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Turn {
     /// Everything the shell wrote between the previous trailer and this one, with the echo of
-    /// the trailer's own line removed. The pane's feed: raw bytes, escapes and all.
+    /// the trailer's own line removed. **This is the pane's feed** — raw bytes, escapes and
+    /// all, because a screen is what consumes them.
     pub bytes: Vec<u8>,
     /// `$?`, read at the top of the trailer's function body, where it is still the status of
     /// the line that was sent.
     pub status: i32,
-    /// `$PWD`, the shell's own answer. A caller may not report a cwd it remembered; only this
-    /// field is a report.
+    /// `$PWD`, the shell's own answer. **A caller may not report a cwd it remembered.**
     pub cwd: String,
-    /// The exported environment the shell held when it wrote this trailer, as `NAME=value;`
-    /// pairs; [`trailer_definition`] is the filter. Never printed and never on the wire: a
-    /// credential can be in it, so the one reader masks it wherever it is shown.
+    /// **The exported environment the shell held when it wrote this trailer**, as
+    /// `NAME=value;` pairs - see [`trailer_definition`] for the filter. It is never printed
+    /// and never travels: the one reader is `intent::env::SessionEnv::observe`.
     pub env: String,
 }
 
 impl std::fmt::Debug for Turn {
     /// A `Turn` may hold a credential in [`Turn::env`], so this prints the status and the cwd
-    /// and says the environment is there without printing it. `derive(Debug)` would put every
-    /// exported token into whatever formatted the turn.
+    /// and **says the environment is there without printing it**: `derive(Debug)` would put
+    /// every exported token into whatever formatted the turn.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Turn")
             .field("bytes", &format_args!("{} byte(s)", self.bytes.len()))
@@ -174,8 +174,9 @@ impl std::fmt::Debug for Turn {
     }
 }
 
-/// A nonce, unique per session on this box: the pid separates two sessions, the clock two
-/// sessions in one process, and the counter two in one nanosecond, which is what a test does.
+/// A nonce, unique per session on this box. The pid makes two sessions on one host differ; the
+/// clock makes two sessions in one process differ; the counter makes two sessions in one
+/// nanosecond differ, which is what a test does.
 fn nonce() -> String {
     static N: AtomicU64 = AtomicU64::new(0);
     let t = SystemTime::now()
@@ -190,25 +191,26 @@ fn nonce() -> String {
     )
 }
 
-/// The name of the function that writes the trailer, which carries the nonce. In the *name*
-/// and not only in the environment, so the echoed line carries a name [`strip_echo`] can remove
-/// exactly rather than a value it would have to guess at.
+/// **The name of the function that writes the trailer**, which carries the nonce. In the
+/// name and not only in the environment, because the shell echoes the line we send: an echo
+/// carrying `$LETIBOT_MARK` unexpanded is harmless, and the name makes [`strip_echo`] exact.
 fn end_fn(mark: &str) -> String {
     format!("__lt_end_{mark}")
 }
 
-/// How many names one trailer may carry. The shell enforces this as it emits and
-/// `intent::env::SessionEnv` on the way in: a report over either cap is refused whole rather
-/// than truncated, because half an environment silently resolved is worse than none.
+/// **How many names one trailer may carry.** The shell enforces this as it emits and
+/// `intent::env::SessionEnv` on the way in: a report over the cap is refused whole, because
+/// half an environment silently resolved is worse than none.
 pub const ENV_PAIRS: usize = 64;
 
-/// How many bytes of value one trailer may carry, for the reason [`ENV_PAIRS`] gives: four of
-/// the longest value `intent::env::ENV_VALUE` carries, so a long `PATH` fits beside the rest.
+/// **How many bytes of value one trailer may carry**, for the reason [`ENV_PAIRS`] gives.
+/// Four of the longest value `intent::env::ENV_VALUE` carries, so a long `PATH` fits and
+/// still leaves room for the rest.
 pub const ENV_BYTES: usize = 16384;
 
-/// The line written once at session start, defining the trailer's functions. `$?` is read at
-/// the top of the body, still the status of the line before the call, and only a value that is
-/// already one plain word is carried, so the report needs no de-quoter and no escaping.
+/// **The line written once, at session start, that defines the trailer's functions.**
+/// `$?` is read at the top of the body, where it is still the status of the line before the
+/// call. The environment half prints only a value that is already one plain word ([`PLAIN`]).
 pub fn trailer_definition(fn_name: &str) -> String {
     let env_fn = format!("{fn_name}_env");
     format!(
@@ -229,14 +231,14 @@ pub fn trailer_definition(fn_name: &str) -> String {
     )
 }
 
-/// The characters a value may hold and still be carried: the set
-/// `intent::parameters::as_one_word` splices back. The shell function is generated from it, so
-/// both filters are one list, and the hyphen is last so it is a character and not a range.
+/// **The characters a value may hold and still be carried** - the set
+/// `intent::parameters::as_one_word` splices back, generated into the shell function so the
+/// two filters are one list. `-` is last: a bracket expression reads it as a character there.
 pub const PLAIN: &str = "A-Za-z0-9_./:@%,-";
 
-/// What to run, and with what. Pure, so the wrapper's ordering is asserted without a process
-/// starting. With a scope it is `/bin/sh -c <join_script> ...` in front of the shell, so the pid
-/// we hold is a member of the cgroup and the shell `exec`s into that same pid.
+/// **What to run, and with what.** With a scope it is `/bin/sh -c <join_script>` in front of
+/// the shell, so **the pid we hold is a member of the cgroup** and the shell `exec`s into it;
+/// a session that could not join is not run ([`join_script`]'s `exit 125`). Pure.
 pub fn argv(cfg: &ShellConfig) -> Result<(String, Vec<String>), ShellError> {
     let mut it = cfg.shell.iter().cloned();
     let prog = it
@@ -253,9 +255,9 @@ pub fn argv(cfg: &ShellConfig) -> Result<(String, Vec<String>), ShellError> {
                 // `$0` for the wrapper, which is only ever a name in a message.
                 "letibot-shell".to_string(),
                 Cgroup2::procs_path(scope).display().to_string(),
-                // `$2` is the join token `host.rs` uses as evidence it can observe. The
-                // trailer is this module's answer, so the wrapper's `: > "$2"` goes to the
-                // null device, named rather than silently passed.
+                // `$2` is the join token the host uses as *evidence* it can observe; this
+                // module has the trailer instead, so the wrapper's `: > "$2"` is pointed at
+                // the null device - named rather than silently passed.
                 "/dev/null".to_string(),
             ];
             args.push(prog);
@@ -265,9 +267,9 @@ pub fn argv(cfg: &ShellConfig) -> Result<(String, Vec<String>), ShellError> {
     }
 }
 
-/// Find a trailer in `buf` and take the turn out of it. `Ok(None)` means not yet: the marker is
-/// absent, or its terminator has not arrived, which is the same instruction to read more. Pure,
-/// so the scan is testable against hand-written bytes.
+/// **Find a trailer in `buf` and take the turn out of it.**
+/// `Ok(None)` means *not yet*: no marker, or a marker whose terminator has not arrived - both
+/// are the same instruction, to read more. Pure, so the scan is testable on hand-written bytes.
 pub fn take_turn(buf: &mut Vec<u8>, mark: &str) -> Result<Option<Turn>, ShellError> {
     let open = format!("{MARK_OPEN}{mark};");
     let open = open.as_bytes();
@@ -280,9 +282,9 @@ pub fn take_turn(buf: &mut Vec<u8>, mark: &str) -> Result<Option<Turn>, ShellErr
         return Ok(None);
     };
     let raw = String::from_utf8_lossy(&buf[body..body + rel]).into_owned();
-    // `<status>;<cwd>` then a newline then `<env>`. The split is on the FIRST newline because
-    // neither the status nor a plain-word value can hold one, so a cwd that contains `;` still
-    // survives; a trailer with no newline answers with no environment rather than mis-splitting.
+    // **`<status>;<cwd>` then a newline then `<env>`**: only the cwd can contain a newline,
+    // so the split is on the FIRST one and the head parses as it did before the third field
+    // existed. No newline is a shell this build did not generate - cwd and status, no env.
     let (head, env) = match raw.split_once('\n') {
         Some((head, env)) => (head, env),
         None => (raw.as_str(), ""),
@@ -306,9 +308,9 @@ pub fn take_turn(buf: &mut Vec<u8>, mark: &str) -> Result<Option<Turn>, ShellErr
     }))
 }
 
-/// Take the echo of the trailer's own line out of a turn: the operator's line stays, because a
-/// terminal shows what was typed, and this one is machinery nobody typed that would otherwise
-/// print `__lt_end_<nonce>` above every command's output. The nonce makes the match exact.
+/// **Take the echo of the trailer's own line out of a turn.** The operator's line stays: a
+/// terminal shows the command that ran. The trailer's line is machinery nobody typed, and the
+/// name carries the nonce, so this removes exactly one string.
 pub fn strip_echo(bytes: &mut Vec<u8>, fn_name: &str) {
     let name = fn_name.as_bytes();
     let mut i = 0usize;
@@ -337,24 +339,25 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     (0..=hay.len() - needle.len()).find(|i| &hay[*i..*i + needle.len()] == needle)
 }
 
-/// One shell, one pty, one cgroup.
+/// **One shell, one pty, one cgroup.** The pty is the terminal, the cgroup is the lifetime.
 pub struct ShellSession {
     /// The master end. Reads are the shell's output; writes are its input.
     master: std::fs::File,
-    /// The shell's pid, which is the pid the scope wrapper `exec`ed into, so it is a member of
-    /// the session's cgroup.
+    /// The shell's pid — which is the pid the scope wrapper `exec`ed into, so it is a member
+    /// of the session's cgroup.
     pid: i32,
     mark: String,
     fn_name: String,
-    /// Bytes read and not yet consumed by a trailer scan. Carried between turns, so a marker
-    /// split across two reads is one marker and a prompt after a turn belongs to the next one.
+    /// Bytes read and not yet consumed by a trailer scan. **Carried between turns**, so a
+    /// marker split across two reads is one marker and the prompt that follows a turn belongs
+    /// to the next one.
     pending: Vec<u8>,
     /// The last cwd the SHELL reported. `None` until a trailer has been read, because a
     /// starting directory is not an answer.
     cwd: Option<String>,
-    /// The last environment the SHELL reported, as the trailer's `NAME=value;` pairs. `None`
-    /// until a trailer is read, and `None` for a report this build refused. It replaces rather
-    /// than accumulates, so an `unset` needs no rule of its own.
+    /// **The last environment the SHELL reported**, as the trailer's `NAME=value;` pairs.
+    /// `None` until a trailer is read, and `None` for a report this build refused. It
+    /// **replaces** rather than accumulates: the report is the whole environment.
     env: Option<String>,
     scope: Option<ScopeId>,
     tree: Option<Arc<dyn ScopeTree>>,
@@ -370,7 +373,7 @@ impl std::fmt::Debug for ShellSession {
             .field("pid", &self.pid)
             .field("mark", &self.mark)
             .field("cwd", &self.cwd)
-            // A count, never the report: a credential can be in it. See [`Turn::env`].
+            // **A count, never the report.** See [`Turn::env`]: a credential can be in it.
             .field("env", &self.env.as_ref().map(|e| e.matches('=').count()))
             .field("scope", &self.scope)
             .field("blocked", &self.blocked)
@@ -379,9 +382,9 @@ impl std::fmt::Debug for ShellSession {
 }
 
 impl ShellSession {
-    /// Start the session: one pty, one shell on the far end, one cgroup if the caller named
-    /// one, and a first trailer read before this returns, so a caller never holds a session that
-    /// has not answered.
+    /// **Start the session.** One pty, one shell on the far end of it, one cgroup if the
+    /// caller named one, and a first trailer read before this returns — so a caller never
+    /// holds a session that has not answered anything.
     pub fn open(cfg: &ShellConfig) -> Result<ShellSession, ShellError> {
         let (prog, args) = argv(cfg)?;
         let pty = Pty::open().map_err(|e| ShellError::Start(format!("no pty: {e}")))?;
@@ -394,9 +397,9 @@ impl ShellSession {
         // The mark the trailer's function reads. In the environment rather than in the
         // definition, so the line the shell echoes carries the *name* and not the value.
         cmd.env("LETIBOT_MARK", &mark);
-        // No inherited shell options: `SHELLOPTS=xtrace` turns tracing on before the rc runs, and
-        // the trace of the trailer's own functions then lands inside the trailer. Removed from
-        // `cfg.env` too, so a caller naming one cannot re-arm what this removes.
+        // **No inherited shell options.** `SHELLOPTS=xtrace` traces the trailer's own
+        // functions INTO the trailer, so the report is `+ for n in ...` instead of
+        // `NAME=value;`. Filtered from `cfg.env` too: a caller must not re-arm it.
         cmd.env_remove("SHELLOPTS").env_remove("BASHOPTS");
         for (k, v) in &cfg.env {
             if k == "SHELLOPTS" || k == "BASHOPTS" {
@@ -404,7 +407,8 @@ impl ShellSession {
             }
             cmd.env(k, v);
         }
-        // A terminal on all three: the shell reads the lines a person types at it.
+        // **A terminal on all three**, which is the difference between this and the row path:
+        // the shell reads the lines a person types at it.
         let (a, b, c) = (
             pty.stdio().map_err(|e| ShellError::Start(e.to_string()))?,
             pty.stdio().map_err(|e| ShellError::Start(e.to_string()))?,
@@ -412,15 +416,15 @@ impl ShellSession {
         );
         cmd.stdin(a).stdout(b).stderr(c);
 
-        // `setsid` and `TIOCSCTTY` here rather than in `pty.rs`, because a shell session wants
-        // job control and a row command does not. Failure is not fatal: a shell without a
-        // controlling terminal still runs, it just has no job control and says so in two lines.
+        // **`setsid` and `TIOCSCTTY`, here rather than in `pty.rs` on purpose**: this is the
+        // one path that wants a session leader with a controlling terminal. Failure is not
+        // fatal - a shell without one still runs, it just has no job control.
         unsafe {
             use std::os::unix::process::CommandExt;
             cmd.pre_exec(|| {
                 if libc::setsid() < 0 {
-                    // Already a group leader, which a forked child is not, so this is a
-                    // failure we do not understand and the shell still runs.
+                    // Already a group leader, which a forked child is not — so this is a
+                    // failure we do not understand, and the shell still runs.
                 }
                 let _ = libc::ioctl(0, libc::TIOCSCTTY as _, 0);
                 Ok(())
@@ -431,13 +435,14 @@ impl ShellSession {
             .spawn()
             .map_err(|e| ShellError::Start(format!("{prog}: {e}")))?;
         let pid = child.id() as i32;
-        // The parent's own slave handles go now: a slave this process still holds open is a
-        // master read that never reports the child's exit.
+        // **The parent's own slave handles go now.** A slave this process still holds open is
+        // a master read that never reports the child's exit — `pty.rs`'s own test measures
+        // thirty seconds of that.
         let master = pty.into_master();
         drop(cmd);
 
-        // The size before the first byte, so `$COLUMNS` and any program that asks are right
-        // from the start rather than from the first resize.
+        // **The size before the first byte**, so the shell's `$COLUMNS` and any program that
+        // asks are right from the start rather than right from the first resize.
         set_size(&master, cfg.cols, cfg.rows);
 
         // A reaper, so a shell that exits is a fact rather than a zombie.
@@ -466,9 +471,9 @@ impl ShellSession {
             exit,
             blocked: None,
         };
-        // The session is not open until it has answered: defining the function and calling it is
-        // also the readiness probe, so a shell that never comes up is a `Start` failure here
-        // rather than a mystery on the first `run`.
+        // **The session is not open until it has answered.** Defining the function and
+        // calling it is also the readiness probe: a shell that never comes up is a `Start`
+        // here rather than a mystery on the first `run`, and the two lines go together.
         let setup = format!(
             "{}\n{}\n",
             trailer_definition(&session.fn_name),
@@ -494,28 +499,28 @@ impl ShellSession {
         &self.mark
     }
 
-    /// The shell's pid. A member of the session's cgroup, because the wrapper joined before
-    /// `exec`.
+    /// The shell's pid. **A member of the session's cgroup**, because the wrapper joined
+    /// before `exec`.
     pub fn pid(&self) -> i32 {
         self.pid
     }
 
-    /// The last cwd the shell reported, or `None` before it has reported one. `None` is not
-    /// "assume the workspace": it is this session has not answered yet, and a caller holding one
-    /// has a [`ShellConfig::cwd`] and a startup fact rather than a directory.
+    /// **The last cwd the shell reported**, or `None` before it has reported one.
+    /// `None` is not "unknown, assume the workspace": it is *this session has not answered
+    /// yet*, and a caller with a `None` has a [`ShellConfig::cwd`], a startup fact.
     pub fn cwd(&self) -> Option<&str> {
         self.cwd.as_deref()
     }
 
-    /// The last environment the shell reported, as `NAME=value;` pairs: the input
-    /// `intent::env::SessionEnv::observe` takes. `None` before the first trailer and `None` again
-    /// if a report was refused, which is the fail-closed answer. See [`Turn::env`].
+    /// **The last environment the shell reported**, as `NAME=value;` pairs - the input
+    /// `intent::env::SessionEnv::observe` takes. `None` before the first trailer and `None`
+    /// again if a report was refused: fail-closed. See [`Turn::env`].
     pub fn env(&self) -> Option<&str> {
         self.env.as_deref()
     }
 
-    /// The report from a turn, dropped whole when it is empty: a trailer with no third field (a
-    /// shell this build did not generate) must not wipe an environment that was observed.
+    /// The report from a turn, dropped whole when it is empty — a trailer with no third field
+    /// (a shell this build did not generate) must not wipe an environment that was observed.
     fn take_env(&mut self, turn: &Turn) {
         if !turn.env.is_empty() {
             self.env = Some(turn.env.clone());
@@ -535,13 +540,13 @@ impl ShellSession {
         }
     }
 
-    /// Run one line, and answer with what the shell wrote and what the shell said. `line` is
-    /// written verbatim, because a second grammar in front of the shell is a second answer to
-    /// what a line means, and it must be a line a person submitted, never a model's turn.
+    /// **Run one line, and answer with what the shell wrote and what the shell said.**
+    /// `line` is written verbatim: a grammar in front of the shell would be a second answer
+    /// to what a line means. It **must be one a person submitted**; there is no timer here.
     pub fn run(&mut self, line: &str, wait: Duration) -> Result<Turn, ShellError> {
-        // A shell that has left outranks anything this session was told before: a line that
-        // timed out blocks as desynchronised, and if the shell then exited, "there is no shell"
-        // is the truer answer for the next call.
+        // **A shell that has left outranks everything this session was told before.** A line
+        // that timed out sets `blocked` to `Desynchronised`, and if the shell then *exited*
+        // the truth is simpler and stronger: there is no shell.
         if let Some(code) = self.exited() {
             let e = ShellError::Gone(format!("the shell exited with {code}"));
             self.blocked = Some(e.clone());
@@ -560,9 +565,9 @@ impl ShellSession {
         Ok(turn)
     }
 
-    /// Read the trailer that is still in flight, after a timeout. A timeout does not lose it:
-    /// the line is still running, so the session is behind rather than broken, and the turn this
-    /// returns is the one that timed out. `false` means it is still not here.
+    /// **Read the trailer that is still in flight**, after a timeout. The session is not
+    /// broken, it is *behind*, and the turn returned is the one that timed out. `false` means
+    /// it is still not here.
     pub fn resync(&mut self, wait: Duration) -> bool {
         match self.read_turn(wait) {
             Ok(t) => {
@@ -575,15 +580,16 @@ impl ShellSession {
         }
     }
 
-    /// Move the pty's size. The kernel raises `SIGWINCH` for the foreground process group, so a
-    /// program that redraws on a resize does.
+    /// **Move the pty's size.** The kernel raises `SIGWINCH` for the pty's foreground process
+    /// group, so a program that redraws on a resize does. Nothing yet carries the head's pane
+    /// rectangle to this call.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         set_size(&self.master, cols, rows);
     }
 
-    /// End the session. With a scope this is `ScopeTree::end`: the cgroup is killed, everything
-    /// under it dies with it, and the record says what was seen before and after. Without one the
-    /// fallback is `SIGHUP` to the shell, which reaches its jobs but nothing daemonised away.
+    /// **End the session.** With a scope, `ScopeTree::end` kills the cgroup, **everything
+    /// under it dies with it**, and the record carries what survived. Without one the fallback
+    /// is `SIGHUP` to the shell, which **is not the mechanism**: it reaches no daemonised job.
     pub fn close(&mut self) -> Option<Reaping> {
         match (&self.tree, &self.scope) {
             (Some(tree), Some(scope)) => {
@@ -609,8 +615,9 @@ impl ShellSession {
             .map_err(|e| ShellError::Gone(format!("the pty would not take the line: {e}")))
     }
 
-    /// Read until a trailer, or until the deadline. The whole of the framing is here: scan what
-    /// has arrived, and if there is no trailer, wait for more bytes with a bounded `poll`.
+    /// **Read until a trailer, or until the deadline.** The whole of the framing: scan what
+    /// has arrived, and if there is no trailer, wait for more bytes with a bounded `poll` and
+    /// append them. Nothing about a prompt, and nothing about how many reads it takes.
     fn read_turn(&mut self, wait: Duration) -> Result<Turn, ShellError> {
         let deadline = Instant::now() + wait;
         let mut buf = [0u8; 8192];
@@ -620,8 +627,9 @@ impl ShellSession {
             }
             if self.pending.len() > MAX_TURN {
                 let n = self.pending.len();
-                // Blocked as behind, not as this call failed: what the next call needs to know
-                // is that a trailer is in flight.
+                // **Blocked as *behind*, not as *this call failed*.** The two are different
+                // facts and only one of them is about the caller's line: what the next call
+                // needs to know is that a trailer is in flight.
                 self.blocked = Some(ShellError::Desynchronised(format!(
                     "a turn grew to {n} bytes with no trailer in it"
                 )));
@@ -650,8 +658,9 @@ impl ShellSession {
                     return Err(e);
                 }
                 Ok(n) => self.pending.extend_from_slice(&buf[..n]),
-                // `EIO` is this platform's end-of-pty, not a failure: it is what a read on the
-                // master returns once the last slave is closed.
+                // **`EIO` is this platform's end-of-pty**, not a failure: it is what a read
+                // on the master returns once the last slave is closed, and `pty.rs`'s own
+                // drain treats it the same way.
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => {
                     let e = ShellError::Gone(self.gone_why());
                     self.blocked = Some(e.clone());
@@ -676,8 +685,8 @@ impl ShellSession {
 }
 
 impl Drop for ShellSession {
-    /// A session nobody closed is still a session that must not leak. See
-    /// [`ShellSession::close`].
+    /// **A session nobody closed is still a session that must not leak.** See
+    /// [`ShellSession::close`] for what the two paths do.
     fn drop(&mut self) {
         if self.blocked.is_none() {
             self.close();
@@ -685,9 +694,9 @@ impl Drop for ShellSession {
     }
 }
 
-/// `TIOCSWINSZ` on the master. Failure is ignored: a pty that will not take a size shows the
-/// default, which is cosmetic. `pub(crate)` because [`super::term`] is the second caller and two
-/// `ioctl` wrappers would be two places for the clamp to be wrong.
+/// `TIOCSWINSZ` on the master. Failure is ignored: a pty that will not take a size is one
+/// whose programs see the default, which is cosmetic and not a reason to lose a session.
+/// **`pub(crate)` because [`super::term`] is the second caller**: one answer, one clamp.
 pub(crate) fn set_size(master: &std::fs::File, cols: usize, rows: usize) {
     use std::os::fd::AsRawFd;
     let ws = libc::winsize {
@@ -701,8 +710,8 @@ pub(crate) fn set_size(master: &std::fs::File, cols: usize, rows: usize) {
     }
 }
 
-/// Is there anything to read, inside `d`? `Ok(false)` is a timeout and not an error: the caller
-/// loops, because the deadline is the caller's and not the poll's.
+/// Is there anything to read, inside `d`? `Ok(false)` is a timeout and not an error — the
+/// caller loops, because the deadline is the caller's and not the poll's.
 fn wait_readable(f: &std::fs::File, d: Duration) -> std::io::Result<bool> {
     use std::os::fd::AsRawFd;
     let mut p = libc::pollfd {
@@ -725,8 +734,9 @@ mod tests {
 
     use super::super::scope::ScopeKind;
 
-    /// The shell the tests drive, with `--norc --noprofile` so an assertion here is about this
-    /// module's framing and not about what an operator's rc prints.
+    /// **The shell the tests drive.** `--norc --noprofile` on purpose: an assertion here is
+    /// about this module's framing, and the operator's rc is a file that prints things. The
+    /// production default is [`super::super::console::shell`], the same argv shape.
     fn shell() -> Vec<String> {
         if Path::new("/bin/bash").exists() {
             vec![
@@ -748,7 +758,7 @@ mod tests {
         }
     }
 
-    /// A scratch directory, per test and per process.
+    /// A scratch directory, per test and per process — the tree's own pattern.
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("letibot-shell-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -764,8 +774,9 @@ mod tests {
     /// not hold the suite: every wait ends when the trailer arrives.
     const LONG: Duration = Duration::from_secs(30);
 
-    /// A session answers a line, and the status is the shell's own: the `42` is the half that
-    /// matters, because a module that always answered zero would pass a `0`.
+    /// **A session answers a line, and the status is the shell's own answer.** The two halves
+    /// are the whole of the framing: the bytes between two trailers, and `$?` read where it is
+    /// still the status of the line sent. The `42` is the half that matters.
     #[test]
     fn a_session_answers_a_line_and_reports_the_shells_status() {
         let dir = tmp("status");
@@ -785,8 +796,9 @@ mod tests {
         assert_eq!(t.status, 0);
     }
 
-    /// One session, two lines, and the state carried between them. `cd` is the case a fresh
-    /// `sh -c` per line cannot do however many flags it is given.
+    /// **The slice: one session, two lines, and the state carried between them.** `cd` is the
+    /// case (`! cd /x` then `! ls` lists `/x`), and the one a fresh `sh -c` per line cannot do
+    /// however many flags it is given.
     #[test]
     fn the_working_directory_survives_between_two_lines() {
         let dir = tmp("cwd");
@@ -811,9 +823,9 @@ mod tests {
             text(&t)
         );
 
-        // The head's notion follows the shell because it IS the shell's answer: the assertion
-        // that matters is the negative one, that the session is not reporting its startup
-        // directory.
+        // **And the head's notion follows the shell, because it IS the shell's answer.** The
+        // assertion that matters is the negative: the session is not reporting the directory
+        // it was opened in.
         assert_eq!(t.cwd, sub.to_str().unwrap());
         assert_eq!(s.cwd(), Some(sub.to_str().unwrap()));
         assert_ne!(
@@ -823,7 +835,8 @@ mod tests {
         );
     }
 
-    /// `export`, a function and an alias survive too: an environment variable, a shell function,
+    /// **`export`, a function and an alias survive too** — the other three things the operator
+    /// named, and each is a different mechanism: an environment variable, a shell function,
     /// and a name the shell expands at read time.
     #[test]
     fn an_export_a_function_and_an_alias_survive() {
@@ -847,8 +860,9 @@ mod tests {
             "an alias is read at the next line, and the next line is a new read: {:?}",
             text(&t)
         );
-        // And the environment came out in a trailer: the adjudicator reads a command against
-        // what the shell really holds, so the shell says what that is after every line.
+        // **And the environment came out in a trailer.** The adjudicator reads a command
+        // against what the shell really holds, so the shell says what that is after every
+        // line. `LT_CARRIED` was set two lines above.
         let report = s.env().expect("every trailer carries the environment");
         assert!(
             report.split(';').any(|p| p == "LT_CARRIED=carried"),
@@ -856,9 +870,9 @@ mod tests {
         );
     }
 
-    /// A shell option asked for cannot trace the trailer. It goes through `cfg.env` rather than
-    /// the process environment, so this test cannot do to its neighbours what a process-wide
-    /// `SHELLOPTS=xtrace` does.
+    /// **A shell option asked for cannot trace the trailer.** Through `cfg.env` rather than
+    /// the process environment, so this test cannot do to its neighbours what `host.rs`'s
+    /// `SHELLOPTS=xtrace` did to `an_export_a_function_and_an_alias_survive`.
     #[test]
     fn shellopts_xtrace_does_not_reach_the_trailer() {
         let dir = tmp("xtrace");
@@ -880,9 +894,9 @@ mod tests {
         );
     }
 
-    /// The filter the shell applies is the set the resolver accepts: the trailer drops every
-    /// value that is not one plain word ([`PLAIN`]) and `as_one_word` writes back only such a
-    /// value, so this asks a real shell about a battery of them.
+    /// **The filter the shell applies is the set the resolver accepts, measured both ways.**
+    /// [`PLAIN`] and `intent::parameters::as_one_word` must be the same set, or the daemon
+    /// would resolve with values the trailer could never send. This runs the real shell.
     #[test]
     fn the_plain_class_is_exactly_the_set_the_resolver_accepts() {
         let dir = tmp("plain");
@@ -900,9 +914,9 @@ mod tests {
             ("LT_F", "a*b"),
             ("LT_G", "a;b"),
             ("LT_H", ""),
-            // A tilde is not in the plain set, and it is quoted so the shell keeps it as a
-            // character rather than expanding it. A tab cannot be sent at all: an interactive
-            // bash reads through readline, where TAB is completion.
+            // A tilde is not in the plain set, and it is quoted here so the shell keeps it
+            // as a character rather than expanding it. (A tab cannot be sent at all: an
+            // interactive bash reads the line through readline, where TAB is completion.)
             ("LT_I", "~"),
         ];
         for (n, v) in carried.iter().chain(dropped.iter()) {
@@ -923,8 +937,9 @@ mod tests {
         }
     }
 
-    /// A credential is carried and the session does not print it: the report holds the value
-    /// because the shell really holds it, and every spelling a reader could reach masks it.
+    /// **A credential is carried, and the session does not print it.** The report holds the
+    /// value, because the shell really holds it, and every spelling a reader could reach
+    /// masks it.
     #[test]
     fn a_credential_is_carried_and_never_printed() {
         let dir = tmp("credential");
@@ -936,7 +951,7 @@ mod tests {
             report.contains("LT_TOKEN=ghp_0123456789abcdef4c"),
             "the shell holds it and the report is the shell's answer: {report}"
         );
-        // And nothing a person or a log reads prints it.
+        // **And nothing a person or a log reads prints it.**
         assert!(
             !format!("{s:?}").contains("ghp_"),
             "the session's Debug: {s:?}"
@@ -953,8 +968,9 @@ mod tests {
         );
     }
 
-    /// A prompt is not a protocol: a command whose output is a prompt must not end the turn, or
-    /// a framing that watched for one would hand back half a line.
+    /// **A prompt is not a protocol, and this is the test that says so.** A command whose
+    /// *output* is a prompt must not end the turn: a framing that watched for one would stop
+    /// here and hand back half a line.
     #[test]
     fn output_that_looks_like_a_prompt_is_not_a_boundary() {
         let dir = tmp("prompt");
@@ -966,9 +982,9 @@ mod tests {
         assert!(text(&t).contains("second"), "{:?}", text(&t));
     }
 
-    /// A command cannot forge the trailer: the introducer is never in the text it could print,
-    /// because the nonce is in the function's name and in `$LETIBOT_MARK`, and a name is not the
-    /// sequence.
+    /// **A command cannot forge the trailer**, because the introducer is never in the text it
+    /// could print: the nonce is in the function's *name* and in `$LETIBOT_MARK`, and a name
+    /// is not the sequence.
     #[test]
     fn a_command_cannot_forge_a_trailer() {
         let dir = tmp("forge");
@@ -989,8 +1005,9 @@ mod tests {
         assert!(text(&t).contains("still here"), "{:?}", text(&t));
     }
 
-    /// The echo of the trailer's own line is removed and the echo of the operator's stays: the
-    /// first is machinery nobody typed, the second is what a terminal shows.
+    /// **The echo of the trailer's own line is removed, and the echo of the operator's line
+    /// stays.** The first is machinery nobody typed; the second is what a terminal shows, and
+    /// the pane is a terminal.
     #[test]
     fn the_trailer_lines_echo_is_removed_and_the_operators_is_kept() {
         let dir = tmp("echo");
@@ -1008,9 +1025,9 @@ mod tests {
         );
     }
 
-    /// A deadline does not answer the wrong line: the trailer for the line that timed out is
-    /// still coming, so the next `run` would read it as its own. The session says so instead,
-    /// and `resync` is the way back.
+    /// **A deadline does not answer the wrong line.** The trailer for the line that timed out
+    /// is still coming, so the next `run` would read it and attribute it to the wrong command
+    /// - an answer that looks exactly like a right one. `resync` is the way back.
     #[test]
     fn a_timeout_desynchronises_the_session_rather_than_answering_the_wrong_line() {
         let dir = tmp("timeout");
@@ -1024,8 +1041,8 @@ mod tests {
             .expect_err("a desynchronised session must refuse");
         assert!(matches!(e, ShellError::Desynchronised(_)), "{e}");
 
-        // And it is not dead: catching up puts the session back in step, and the turn it
-        // returns is the one that timed out.
+        // **And it is not dead.** The trailer that was in flight arrives, and catching up
+        // puts the session back in step — the turn it returns is the one that timed out.
         assert!(
             s.resync(LONG),
             "the trailer that was in flight never arrived"
@@ -1034,8 +1051,9 @@ mod tests {
         assert!(text(&t).contains("back"), "{:?}", text(&t));
     }
 
-    /// The shell has a terminal, and a controlling one, which is what makes job control work and
-    /// what silences bash's two lines about it.
+    /// **The shell has a terminal, and a controlling one.** The second is what makes job
+    /// control work and what silences bash's two lines about it; [`super::super::pty`] carries
+    /// the mechanism.
     #[test]
     fn the_shell_has_a_terminal_and_a_controlling_one() {
         let dir = tmp("tty");
@@ -1051,9 +1069,9 @@ mod tests {
             "the shell is not reading a terminal: {:?}",
             text(&t)
         );
-        // `(exec 9</dev/tty)` and not `test -r /dev/tty`: that is a mode check on a device node
-        // and never an open, so it answers yes on a session with no controlling terminal at all.
-        // The open is the question `nano` asks, and the one that fails without one.
+        // **`(exec 9</dev/tty)` and NOT `test -r /dev/tty`, which measures nothing**: that is
+        // a mode check on a device node and never an open, so it answers *yes* on a session
+        // with no controlling terminal. The open is the question `nano` asks.
         let t = s
             .run(
                 "if (exec 9</dev/tty) 2>/dev/null; then echo has-controlling; else echo none; fi",
@@ -1072,8 +1090,9 @@ mod tests {
         );
     }
 
-    /// Two sessions do not share a nonce: one mark for two sessions would make the trailer
-    /// forgeable and the echo unremovable at once.
+    /// **Two sessions do not share a nonce.** The mark is what makes a trailer unforgeable
+    /// and an echo removable, and one mark for two sessions would make both of those false at
+    /// once.
     #[test]
     fn two_sessions_have_two_marks() {
         let dir = tmp("marks");
@@ -1083,9 +1102,9 @@ mod tests {
         assert_ne!(a.pid(), b.pid());
     }
 
-    /// The scope wrapper goes in front of the shell and the shell is last. Pure, so the ordering
-    /// is asserted without a cgroup: [`join_script`] writes `$$` into `cgroup.procs` and only
-    /// then `exec`s, so the pid this module holds is a member of the scope.
+    /// **The scope wrapper goes in front of the shell, and the shell is last.** Pure, so the
+    /// ordering is asserted without a cgroup existing: [`join_script`] writes `$$` into
+    /// `cgroup.procs` and only then `exec`s, so the pid we hold is a member of the scope.
     #[test]
     fn the_scope_wrapper_goes_in_front_of_the_shell() {
         let scope = ScopeId {
@@ -1125,7 +1144,7 @@ mod tests {
         assert_eq!(args, vec!["-ic".to_string()]);
     }
 
-    /// An empty shell is a refusal and not a spawn of nothing.
+    /// **An empty shell is a refusal and not a spawn of nothing.**
     #[test]
     fn an_empty_shell_is_refused_by_name() {
         let cfg = ShellConfig {
@@ -1135,8 +1154,9 @@ mod tests {
         assert!(matches!(argv(&cfg), Err(ShellError::Config(_))));
     }
 
-    /// The scan on hand-written bytes: the split marker, the two facts, and a cwd that contains
-    /// the separator. Pure, so this is the framing's own test rather than a test of bash.
+    /// **The scan, on hand-written bytes** — the split marker, the two facts, and the cwd
+    /// that contains the separator. Pure, so this is the framing's own test rather than a
+    /// test of bash.
     #[test]
     fn the_scan_waits_for_a_split_marker_and_takes_both_facts() {
         let mark = "abc";
@@ -1161,13 +1181,14 @@ mod tests {
         assert_eq!(t.status, 3);
         assert_eq!(t.cwd, "/a;b");
 
-        // A trailer with no terminator yet is not yet, not a failure.
+        // A trailer with no terminator yet is *not yet*, not a failure.
         let mut buf = b"\x1b]1337;letibot;m;0;/w".to_vec();
         assert!(take_turn(&mut buf, "m").expect("a scan").is_none());
     }
 
-    /// A trailer this module cannot read is a refusal, not a guess: a guess would be a status or
-    /// a directory no shell ever reported.
+    /// **A trailer this module cannot read is a refusal, not a guess.** The two malformed
+    /// shapes are the two fields, and a guess here would be a status or a directory that no
+    /// shell ever reported.
     #[test]
     fn a_malformed_trailer_is_refused_rather_than_guessed() {
         let mut buf = b"\x1b]1337;letibot;m;nope;/w\x07".to_vec();
@@ -1177,13 +1198,13 @@ mod tests {
         );
         let mut buf = b"\x1b]1337;letibot;m;0\x07".to_vec();
         assert!(take_turn(&mut buf, "m").is_err(), "no separator at all");
-        // And a trailer for a different session's nonce is not this session's trailer.
+        // And a trailer for a *different* session's nonce is not this session's trailer.
         let mut buf = b"\x1b]1337;letibot;other;0;/w\x07".to_vec();
         assert!(take_turn(&mut buf, "m").expect("a scan").is_none());
     }
 
-    /// The echo removal takes the name and not the text around it, so a name that appeared twice
-    /// does not take the command's own output with it.
+    /// **The echo removal takes the name and not the text around it.** A name that appeared
+    /// twice would otherwise take the command's own output with it.
     #[test]
     fn the_echo_removal_is_exact() {
         let fn_name = end_fn("beef");
@@ -1196,8 +1217,8 @@ mod tests {
         );
     }
 
-    /// A session that is closed says so, rather than blocking a read on a pty whose far end is
-    /// gone.
+    /// **A session that is closed says so**, rather than blocking a read on a pty whose far
+    /// end is gone.
     #[test]
     fn a_closed_session_refuses_rather_than_hanging() {
         let dir = tmp("closed");
@@ -1210,15 +1231,16 @@ mod tests {
         // Dropping it again is not a second kill: `Drop` sees the block and does nothing.
     }
 
-    /// A shell that exits is a fact and not a zombie: the reaper makes the next `run` say the
-    /// shell exited rather than wait out a deadline on a pty whose far end has closed.
+    /// **A shell that exits is a fact and not a zombie.** The reaper thread is what makes the
+    /// next `run` say *the shell exited with N* rather than waiting out a deadline on a pty
+    /// whose far end has closed.
     #[test]
     fn a_shell_that_exits_is_reported_and_not_waited_on() {
         let dir = tmp("exits");
         let mut s = ShellSession::open(&config(&dir)).expect("a shell session");
-        // The trailer is written by the function before the shell processes `exit`, so this turn
-        // can succeed or fail depending on which line the shell read first, and either ending is
-        // honest. What must not happen is a hang.
+        // The trailer is written by the function *before* the shell processes `exit`, so this
+        // turn can succeed or fail depending on which line the shell read first — and either
+        // ending is honest. What must not happen is a hang.
         let _ = s.run("exit 3", Duration::from_secs(5));
         let deadline = Instant::now() + Duration::from_secs(10);
         while s.exited().is_none() && Instant::now() < deadline {
