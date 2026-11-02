@@ -130,7 +130,7 @@ of them cannot be.
 A head and a bridge head are clients of the daemon, so they cannot see a room event the daemon chose not
 to turn into a turn; what they keep is the pane, the transcript row and the turn.
 
-## The coordinator
+## The coordinator (slice 2, as built)
 
 The room is a whole `harnessd --room` (`crates/harnessd/src/room/coordinator.rs`), serving
 `letibot_room::Server`: an accept loop, one read loop per connection, `Hello` at the door, and the room
@@ -165,7 +165,7 @@ and says what it is; `--room --stop` stops it. A start that fails is said, not s
 coordinator's last words are read out of its log. No model flags are passed, so the arbiter is
 `providers.toml`'s default or deepseek and a provider session needs no GGUF.
 
-## The pane
+## The pane (slice 3)
 
 `plugins/builtin/room` draws the queues per tag from the `room` feed
 (`crates/harnessd/src/plugins/room_feed.rs`), built from the session's own connection
@@ -184,7 +184,7 @@ its question is the `a` panel. The manifest gates both doors to a verb:
 `actions = ["claim", "release", "abandon", "rule"]`, and `View::validate_for` refuses a row whose `enter`
 OR whose letter names a verb that is not in it, which the daemon runs before a pane is drawn.
 
-### The restart, and what it says about itself
+### The restart (slice 4), and what it says about itself
 
 | what | where it is |
 |---|---|

@@ -265,12 +265,17 @@ arms one with the existing `monitor` tool: `{"plugin":"coderabbit","args":{"pr":
 An `exec` look runs under the layer's `exec:<program>` capability (checked first: a program the layer did not
 declare is not a call anybody adjudicates) and, for a layer nobody pinned, through `Gate::admit_unasked`
 without asking, because the look runs on the session's monitor thread and a card would park that thread and
-the watch with it. It is `admit` stopped at the card: admitted by a `permission` rule, a standing grant, the
-point the session sits at or a measured boundary (D16) it runs; a gate busy with somebody else's call
-*defers* it to the next tick; a call that would have gone to a person does not run and the layer is told
-*would need your approval* with the card's reason, once per (layer, program, reason); a rule the operator
-wrote says *denied*, which is a different fact from *would ask*; and a session with no gate at all runs
-nothing, because *no gate* is not *every gate open*. A look consults no guard model, writes no grant and leaves the consecutive-refusal breaker where it was, so a
+the watch with it. That entry is `admit` stopped at the card:
+
+- admitted by a `permission` rule, a standing grant, the point the session sits at, or a measured boundary
+  (D16): the look runs;
+- the gate is busy with somebody else's call: the look is *deferred* to the next tick;
+- a call that would have gone to a person: it does not run, the layer is told *would need your approval* with
+  the card's reason, once per (layer, program, reason);
+- a rule the operator wrote: the layer is told *denied*, which is a different fact from *would ask*;
+- a session with no gate at all runs nothing, because *no gate* is not *every gate open*.
+
+A look consults no guard model, writes no grant and leaves the consecutive-refusal breaker where it was, so a
 watch polling a refused program cannot close the session's own gate.
 
 ### 4.5 `digest`: tool output before the model reads it
