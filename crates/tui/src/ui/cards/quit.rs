@@ -6,25 +6,9 @@ use crate::ui::render::row_strings;
 use rano::agent::quit::QuitCard;
 
 impl App {
-    /// The mode card: the daemon's own mode names, in the ask card's slot at
-    /// the bottom of the screen — the transcript stays visible above it, the
-    /// way approvals sit, instead of the card taking the whole body the way
-    /// the session picker does.
-    ///
-    /// The names are `SettingRow::choices` verbatim — the head keeps no list
-    /// of its own, because a second copy of a list is a copy that drifts. A
-    /// daemon that sent none gets one dim line saying so, and `/mode NAME`
-    /// keeps working for an operator who knows the name anyway.
-    ///
-    /// The card's shape is load-bearing: the first line is the title and the
-    /// second is the first choice, because the click arithmetic in `screen`
-    /// counts on it. No blank between them.
-    /// The quit card's rows: what Enter does, and the consequence of it.
-    ///
-    /// The consequence is on the row rather than in a footnote because it is
-    /// the whole reason the card exists — one of these two is cheap and the
-    /// other is not, and a card that made them look alike would be a card that
-    /// answered for the operator.
+    /// The quit card's rows: what Enter does, and the consequence of it. The consequence rides the
+    /// row because it is the whole reason the card exists - the two choices are not alike, and a
+    /// card that drew them alike would answer for the operator.
     #[cfg(test)]
     pub(crate) fn quit_choices(&self) -> [(&'static str, String); 2] {
         self.quit_view().choices()

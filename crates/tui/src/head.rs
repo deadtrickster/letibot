@@ -1,25 +1,6 @@
-//! `letibot-tui` as a FUNCTION, so more than one binary can be it.
-//!
-//! The head is the role a person meets, and it is also the one a SUBSTITUTE speaks
-//! for: `scripts/letibot` hands the head `--socket S --identity U [--resume ID |
-//! --new-session TITLE]`, and leticl's Common Lisp head is a head that speaks that
-//! same contract. So this function's argument handling is the contract, and it is
-//! moved rather than rewritten — the flags parse exactly as they did.
-//!
-//! # What being a function changed
-//!
-//! The arguments arrive as a parameter, and `main`'s own `std::process::exit(n)`
-//! became `return n` so the caller decides whether the process ends.
-//!
-//! **One exit IS left inside a helper** — `replay`'s, for a demo that cannot read its
-//! input. It is named here rather than hidden: the alternative is threading a code
-//! through the replay path for no observable difference, and the exit code and the
-//! message are the interface.
-//!
-//! The non-interactive paths are what a dispatcher can get wrong, and they were
-//! captured from the binary before this move and compared after: `--version` 0,
-//! `--help` 2, an unknown flag 2, a missing socket on `--list-sessions` 1 and on
-//! `--probe` 2, a flag with no value 2.
+//! `letibot-tui` as a function, so more than one binary can be it: the head is the role a person meets and the one
+//! a substitute speaks for. The launcher hands it a socket, an identity and at most a session to resume or a title,
+//! and everything else it learns from the daemon.
 
 //! The TUI head (§13.4, row one).
 //!
@@ -70,10 +51,8 @@ struct Args {
     /// before it pkills.
     interrupt_all: bool,
     list_sessions: bool,
-    /// **Print the version and exit.** An installer has to be able to prove the binary it just copied
-    /// runs, and the cheapest proof is a question it can answer without a socket, a model or a store
-    /// — see `harnessd`'s arm for the full reason. `CARGO_PKG_VERSION` is the WORKSPACE's version,
-    /// which is the number the release tag must agree with.
+    /// Print the version and exit: an installer has to be able to prove the binary it just copied runs, and the
+    /// cheapest proof is a question answered without a socket, a model or a store.
     version: bool,
     theme_template: bool,
     /// How long `--interrupt-all` waits for the turns to end.
@@ -86,18 +65,8 @@ struct Args {
     probe: bool,
 }
 
-/// **`args` is a parameter, and that is the whole point of the move.**
-///
-/// The first version of this left `parse()` reading `std::env::args().skip(1)` —
-/// so `run(args)` received the arguments and then ignored them. MEASURED, and it is
-/// why the check has TWO arms: `letibot-render`-style calls worked (the process's
-/// argv was right by luck, since the symlink is invoked with no role word), while
-/// `letibot tui --version` answered `unknown argument tui` — because `parse()` read
-/// the process's argv, which still began with the role word.
-///
-/// A function that takes its arguments and then reaches past them for the real ones
-/// is the defect the whole extraction exists to avoid: the binary works and the
-/// dispatcher cannot.
+/// `args` is a parameter, and that is the point of the move: the first version left `parse()` reading the process's
+/// own arguments, so `run(args)` received them and then ignored them.
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut a = Args {
         socket: default_socket_path(),
@@ -168,10 +137,8 @@ fn usage() -> String {
         .into()
 }
 
-/// Run the head over `args`, returning the process exit code.
-///
-/// `args` is what followed the program name — the launcher and `letibot tui`
-/// both arrive here identically, which is the point.
+/// Run the head over `args`, returning the process exit code. `args` is what followed the program name, so the
+/// launcher and `letibot tui` arrive here identically.
 pub fn run(args: &[String]) -> i32 {
     let args = match parse(args) {
         Ok(a) => a,
@@ -219,15 +186,8 @@ pub fn run(args: &[String]) -> i32 {
         return probe(&args);
     }
 
-    // **The id, on stdout, as the last thing this head says.** The launcher `exec`s the head,
-    // so this stream IS the launcher's stdout — the one place an exit can leave something for
-    // the next command to read. What else an exit says (a farewell, a stopped daemon's
-    // apology) goes to stderr and stays there.
-    //
-    // `--no-tty` is the one head that leaves no line: its stdout is documented as ONE frame,
-    // and an id appended to a screen is a line a pipeline would read as part of the render.
-    // The id is still available there by the route a script should be using anyway —
-    // `harnessd --latest-session`.
+    // The id, on stdout, as the last thing this head says: the launcher execs the head, so this stream is the
+    // launcher's, and it is the one place an exit can leave something for the next command to read.
     match live(&args, cfg) {
         Ok(served) => {
             if !args.no_tty
@@ -245,28 +205,8 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-/// **The id this head was serving, as the one line an exit leaves on stdout.**
-///
-/// # Why the head prints it and not the daemon
-///
-/// The launcher `exec`s this head, so a head's stdout is the launcher's stdout — the terminal
-/// the person is sitting at. The daemon's stdout is not: `scripts/letibot` starts it detached
-/// with `>>"$LOG"`, so an id printed there lands in a log file nobody reads, and the operator's
-/// ask — *"on exit you have to print main session id to stdout too"* — would be met on paper and
-/// nowhere else.
-///
-/// # Why exactly one line, and why it is the session it was SERVING
-///
-/// The id is the thing the next command needs: `letibot --session <id>` reopens it when the
-/// automatic pick is wrong, and a person reads it off the screen and pastes it. So it goes out
-/// alone, on stdout, with nothing beside it — everything else an exit says is a sentence on
-/// stderr, which a pipeline ignores.
-///
-/// It is the session the head was **in** at exit, not the daemon's first session and not its
-/// root: the operator may have switched with ctrl-s, and resuming the child they were actually
-/// looking at is a thing `--session` supports. A head that never got a `Hello` — the wait was
-/// interrupted — has no id and says nothing at all, because an empty line is a line a script
-/// would take for one.
+/// The id this head was serving, as the one line an exit leaves on stdout. The head prints it because the launcher
+/// execs it, so a head's stdout is the terminal the person is sitting at, where the daemon's is not.
 fn print_exit_session<W: std::io::Write>(out: &mut W, served: &str) -> std::io::Result<()> {
     if served.is_empty() {
         return Ok(());
@@ -274,54 +214,13 @@ fn print_exit_session<W: std::io::Write>(out: &mut W, served: &str) -> std::io::
     writeln!(out, "{served}")
 }
 
-/// How long the head waits for the daemon's `Hello` before giving up.
-///
-/// The `Hello` carries the whole snapshot, so this has to allow for a big session on a
-/// busy daemon — but it is bounded because the alternative is what the operator hit: a
-/// daemon that accepts the connection and never answers, and a head that waits for ever
-/// with no screen telling them so. Long enough for a slow snapshot, short enough that a
-/// hung daemon is reported rather than endured.
+/// How long the head waits for the daemon's `Hello` before giving up: the `Hello` carries the whole snapshot, so
+/// this allows for a big session on a busy daemon, and it is bounded because a daemon that accepted a connection
+/// and never answered is what the person gets stuck on.
 const ATTACH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// **Is there a daemon here, and can this build attach to it?**
-///
-/// `0` when there is and it answers, `1` when there is and it refuses (with the
-/// daemon's own refusal on stderr), `2` when there is not. A version skew is no
-/// longer a refusal from a current daemon — it accepts the attach and states its own
-/// number in the `Hello`, so a skewed probe is exit `0` and the launcher routes to
-/// the head, which seats read-only against an older daemon and says so. Exit `1` on
-/// a version skew is now the mark of a daemon built **before** that acceptance: its
-/// bare `Bye` is exactly what this arm prints.
-///
-/// # Why this is not `--no-tty`
-///
-/// `~/bin/letibot` asks this on every start, to tell "no daemon, start one" from
-/// "a daemon is here but a different build is, so starting one would unlink its
-/// socket" — the second of which is a live daemon holding every session and must
-/// not be routed around. It did that with `--no-tty --since 0`, which is a whole
-/// head: it builds the config, reads the prefs, applies a transcript of thousands of
-/// rows and renders a frame, none of which the question is about. **Measured
-/// 2026-09-20 on a session of 1397 rows: 0.14 s that way, 0.02 s as a probe**, on the
-/// path that runs before anything is on the screen.
-///
-/// So: attach, drop the connection, report. What is left is the handshake, which is
-/// the only part that answers the question.
-///
-/// # What this does *not* save, measured rather than assumed
-///
-/// The daemon still builds and sends a snapshot, and `since_seq` does not change
-/// that: a `since` past the end is a **resync**, and `Hub::attach` answers a resync
-/// with `view.snapshot` — the same `Hello` a fresh attach gets, `resumed_from` and
-/// all. Measured by asserting it, not by reading the code: the first version of this
-/// probe asked for `u64::MAX` *and* a test claimed the snapshot was skipped. Both
-/// were wrong, so the constant is gone and the `since` is the plain 0 the launcher
-/// always used.
-///
-/// **The whole 0.12 s is the client side** — building the config, reading the prefs,
-/// applying a transcript of thousands of rows and drawing a frame that nothing
-/// reads. Skipping the snapshot on the wire as well would be a protocol change (a
-/// cap meaning "I only want the version"), and it is not worth one: what is left
-/// after this is the handshake, which is the part that answers the question.
+/// Is there a daemon here, and can this build attach to it? `0` when there is and it answers, `1` when there is and
+/// it refuses, `2` when there is not, and a version skew is not a refusal from a current daemon.
 fn probe(args: &Args) -> i32 {
     match HeadClient::attach(
         &args.socket,
@@ -340,12 +239,8 @@ fn probe(args: &Args) -> i32 {
             eprintln!("letibot-tui: the daemon refused the attach: {reason}");
             1
         }
-        // **A daemon that is here and cannot be talked to is exit 1, not 2.** The
-        // launcher reads 2 as *no daemon* and starts one, which unlinks the socket of
-        // the daemon that is very much there — which is the hazard this whole probe
-        // exists for, and a version skew is exactly the shape of it. A `Hello` this
-        // build cannot parse, or an answer that is not a `Hello` at all, both mean
-        // "somebody is on this socket and it is not this build".
+        // A daemon that is here and cannot be talked to is exit 1 and not 2: the launcher reads 2 as *no daemon* and
+        // starts one, which unlinks the socket of the daemon that is there, which is the hazard the probe exists for.
         Err(e @ ClientError::Protocol(_)) => {
             eprintln!("letibot-tui: {e}");
             1
@@ -459,15 +354,8 @@ fn replay(args: &Args, cfg: RenderConfig) {
     }
 }
 
-/// This daemon's sessions, one TSV line each, for `letibot --ls`.
-///
-/// Reuses `discover` — which learns the ids from the daemon's own refusal of a
-/// bogus one — so it needs no session id from the caller, and `ask_sessions`,
-/// which is the same round trip `--interrupt-all` already makes.
-///
-/// TSV rather than a drawn table: the caller composes this with every other
-/// daemon's answer and does the aligning, and a format a shell can cut is worth
-/// more here than one a person can read.
+/// This daemon's sessions, one TSV line each, for `--ls`. It reuses `discover`, which learns the ids from the
+/// daemon's refusal of a bogus one, so no session id is needed from the caller.
 fn list_sessions(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let held = discover(&args.socket)?;
     let Some(first) = held.first() else {
@@ -506,16 +394,8 @@ fn list_sessions(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A session title as ONE TSV field.
-///
-/// A title is the first words of a prompt, so it is arbitrary text: it can hold
-/// tabs and newlines, and a reader splitting on tabs then sees a title as three
-/// columns and the next session's row as a continuation of this one. Measured
-/// the first time `letibot --ls` was run against this box — seventy sessions
-/// rendered as shredded half-lines.
-///
-/// The EMITTER guarantees the format. A consumer cannot un-split a field, and
-/// asking every caller to quote correctly is how one of them does not.
+/// A session title as one TSV field: a title is the first words of a prompt, so it can hold tabs and newlines, and
+/// a reader splitting on tabs would see one title as three columns.
 fn one_line(title: &str) -> String {
     if title.trim().is_empty() {
         return "-".into();
@@ -562,19 +442,8 @@ pub enum Interrupted {
     Ended(usize),
 }
 
-/// Interrupt every session whose turn is running, through the same frame an
-/// Esc-Esc sends, and wait for the turns to end.
-///
-/// This is `letibot --stop --force`'s first half — and the head's own force path's
-/// ([`force_stop`]). The daemon's own signal handler deliberately has no force path —
-/// its comment calls a kill "a way to lose the last turn's rows" — and this is the
-/// shape that loses none: each running turn is asked to stop over the protocol, the
-/// abort is recorded like any other, and the daemon is left to a plain SIGTERM, which
-/// it can now take promptly because nothing is mid-turn.
-///
-/// `each` is told every session id as its interrupt goes out. `reason` is what the abort is
-/// recorded as — the command that asked. An `Err` is a daemon that could not be asked, or turns
-/// still running when `wait` ran out.
+/// Interrupt every session whose turn is running, through the same frame an Esc-Esc sends, and wait for the turns
+/// to end. This is `--stop --force`'s first half and the head's own force path's.
 pub fn interrupt_turns(
     socket: &std::path::Path,
     wait: Duration,
@@ -582,10 +451,8 @@ pub fn interrupt_turns(
     mut each: impl FnMut(&str),
 ) -> Result<Interrupted, Box<dyn std::error::Error>> {
     let deadline = Instant::now() + wait;
-    // **Each question gets its own time to be answered** (R92.21). The list was asked with the
-    // OVERALL deadline, so the ask after it had passed timed out at once and the intended
-    // "N turn(s) still running" could never be printed — the operator read "timed out waiting for
-    // the session list" instead.
+    // Each question gets its own time to be answered: the list was asked with the OVERALL deadline, so an ask after
+    // it had passed timed out at once and the count of turns still running could never be printed.
     let ask_by = || Instant::now() + SESSION_LIST_WAIT;
     let held = discover(socket)?;
     if held.is_empty() {
@@ -653,10 +520,8 @@ pub struct ForceTarget {
     /// `App::daemon_pid` — the process at the other end of this head's socket, from
     /// `SO_PEERCRED`. `None` and no signal is sent at all.
     pub pid: Option<i32>,
-    /// **When that process started**, read when the stop began. Re-read before every signal:
-    /// a pid that now names a process that started at a different time is not the daemon
-    /// this head attached to — the daemon went and the number was handed on — and it is not
-    /// signalled.
+    /// When that process started, read when the stop began and re-read before every signal: a pid that now names a
+    /// process that started at a different time is not the daemon this head attached to, and it is not signalled.
     pub started: Option<u64>,
 }
 
@@ -669,22 +534,8 @@ pub const FORCE_INTERRUPT_WAIT: Duration = Duration::from_secs(3);
 /// `wait_gone "$p" 4`, four half-second steps.
 pub const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
 
-/// **`letibot --stop --force`, in process** — what the head runs itself when the daemon is
-/// an older build, or when an ordinary stop did not finish.
-///
-/// The operator: *"yeah when i exited letidb and chose to stop daemon too - it couldnt. had
-/// to --stop --force"*; asked whether the head should detect an older daemon and take the
-/// force path itself with a line saying why: *"yes"*.
-///
-/// The same steps as `scripts/letibot --stop --force`, in the same order and with the same
-/// waits: [`interrupt_turns`] (the protocol half, so no turn's rows are lost), then SIGTERM —
-/// which `harnessd` takes as `Registry::close` — then, if the process is still there
-/// [`FORCE_TERM_GRACE_MS`](crate::app::FORCE_TERM_GRACE_MS) later, SIGKILL.
-///
-/// **It signals only [`ForceTarget::pid`], and only while that pid is still the process it
-/// was** (its start time, re-read before each signal), never this process itself, and never
-/// a process that is already gone. Blocking: the driver runs it on its own thread so the
-/// screen stays live.
+/// `--stop --force`, in process: what the head runs itself when the daemon is an older build, or when an ordinary
+/// stop did not finish. It is the head's own act, made only after the deadline passed with the process still there.
 pub fn force_stop(t: &ForceTarget, signal: &Signaller) -> crate::app::ForceOutcome {
     use crate::driver::{process_gone, process_started};
     let mut said: Vec<String> = Vec::new();
@@ -772,12 +623,8 @@ pub fn force_stop(t: &ForceTarget, signal: &Signaller) -> crate::app::ForceOutco
     finish(said, g)
 }
 
-/// Which sessions does the daemon hold?
-///
-/// No frame lists sessions without a seat — `ListSessions` reads the seat's
-/// registry — but the ATTACH refusal for an unknown id is a **Bye that lists
-/// what is held**, so the refusal is the directory. A probe attach costs one
-/// round trip and names no session anybody wanted.
+/// Which sessions does the daemon hold? No frame lists them without a seat, but the ATTACH refusal for an unknown
+/// id is a `Bye` that lists what is held, so the refusal is the directory and a probe costs one round trip.
 fn discover(path: &std::path::Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     match HeadClient::attach(path, "\0probe", 0, "remote", "stop-force", Caps::default()) {
         // A daemon that accepted the probe id would be one that mints sessions
@@ -822,58 +669,22 @@ fn ask_sessions(
     }
 }
 
-/// **Run the head until it quits, and return the session it was serving.**
-///
-/// The id is the exit's one piece of output — see [`print_exit_session`], which the caller
-/// writes it with once this function has returned. It is returned rather than printed here
-/// because returning is what drops the `Terminal`: the alternate screen is torn down as this
-/// function's locals go out of scope, and a line printed before that lands on a screen that is
-/// about to be erased.
-///
-/// Empty means *this head never seated a session* — the attach was refused, the `Hello` never
-/// came, or the person quit during the wait. There is no id to give then, and the caller says
-/// nothing rather than an empty line.
+/// Run the head until it quits, and return the session it was serving. The id is returned rather than printed here
+/// so the caller can write it after the terminal is restored. See [`print_exit_session`].
 fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Error>> {
     let mut app = App::new(cfg);
     app.load_prefs();
 
-    // **Take the screen and draw chrome before the round trip.**
-    //
-    // `HeadClient::attach` blocks until the daemon's `Hello` arrives, and the `Hello`
-    // carries the **whole snapshot** — so the head used to spend the entire attach
-    // accumulating a transcript it could not yet draw, on a terminal it had not yet
-    // taken over, leaving the operator's previous screen up for the duration. Measured
-    // on this workspace's own daemon: 0.17 s of attach and 0.08 s of first frame, of
-    // which the 0.01 s the process takes to start is the only part that was ever
-    // visible as *letibot*.
-    //
-    // What a head knows before it asks is its own composer, its key bindings and its
-    // layout, and drawing those is the difference between "it started" and "it did
-    // nothing". The body is left blank rather than showing the empty-transcript
-    // banner, which would be claiming the session has said nothing when the truth is
-    // that nobody has told this head yet — `App::begin_attach` is that distinction.
-    //
-    // The terminal is entered before the attach, so a failed attach has to leave the
-    // screen as it found it: `Terminal`'s `Drop` restores the termios and leaves the
-    // alternate screen, and it does so *before* printing its own reports, so the error
-    // from a refused attach lands on a terminal that is already restored.
+    // Take the screen and draw chrome before the round trip: `attach` blocks until the `Hello` arrives, and that
+    // carries the whole snapshot, so a head that waited drew nothing at all for the length of a big session's.
     let term = if args.no_tty {
         None
     } else {
         Terminal::enter_with(any_motion()).ok()
     };
-    // **The handshake goes to a thread, and the cat walks while it waits.**
-    //
-    // A `Hello` carries the whole snapshot, so on a big session this is a real wait.
-    // The reader thread starts inside `Link::open` and the first frame it hands over is
-    // the `Hello`, so the wait below is an ordinary read on an ordinary channel — which
-    // is also what makes a *re*-attach look like the first one: same frame, same path.
-    //
-    // The Attach is sent here rather than on the thread, so a refused attach — a
-    // daemon built before the acceptance change refusing on the version, or an
-    // unknown session — is known before anything is drawn, and a head that cannot
-    // attach never claims the screen. A *socket* error is still only discoverable
-    // on the connect, so this reports one.
+    // The handshake goes to a thread and the cat walks while it waits: a `Hello` carries the whole snapshot, so on
+    // a big session this is a real wait. The reader thread starts inside `Link::open` and its first frame is the
+    // `Hello`.
     let mut link = Link::open(
         &args.socket,
         &args.session,
@@ -891,25 +702,9 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
         t.draw_with_cursor(&frame, app.cursor());
     }
 
-    // Wait for the `Hello`. **With a screen, draw the cat as the clock moves**; without
-    // one — the `--no-tty` path — block properly rather than sleeping in 120 ms steps
-    // for a frame nobody will see.
-    //
-    // # The wait has to be escapable, and it was not
-    //
-    // This loop draws the cat while `HeadClient` waits for a `Hello`. The first version
-    // read nothing from the terminal, so **keys went nowhere**: the main loop — the only
-    // place the terminal was read — had not started, and the terminal is in raw mode,
-    // so Ctrl-C is a key event rather than a signal. The operator, on a daemon that
-    // accepted the connection and then died without answering:
-    //
-    //     asking the daemon for this session
-    //                                    3m09s
-    //
-    // *"stuck waiting for daemon and no way to exit"*. Three things were wrong and all
-    // three are fixed here: keys are read and handled, a wait that outlives its budget
-    // gives up, and the frame says so once the wait has gone on long enough to be worth
-    // a sentence.
+    // Wait for the `Hello`: with a screen, draw the cat as the clock moves, and without one block properly rather
+    // than sleeping in 120 ms steps for a frame nobody sees. The wait has to be escapable, which is why the keys are
+    // read while it runs.
     let hello: Option<Inbound> = match &term {
         None => link.frames().recv().ok(),
         Some(t) => {
@@ -923,10 +718,8 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
                         break;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // **Keys first.** Two Ctrl-Cs on an empty composer quit, which is
-                        // what the hint bar under this frame has promised the operator
-                        // since before there was a frame: a hint that names a key the
-                        // wait does not read is a hint that lies.
+                        // Keys first: two Ctrl-Cs on an empty composer quit, which is what the hint bar under this
+                        // frame has promised since before there was a frame.
                         for k in read_keys(t) {
                             let _ = app.key(k);
                         }
@@ -994,14 +787,8 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
         Some(term) => {
             let mut draw = |lines: &[String], cursor| term.draw_with_cursor(lines, cursor);
             while !app.should_quit() {
-                // **The read, as rano's events, and routed.** The editor pane takes its share —
-                // every key while it has the keyboard, every mouse report inside it — and what
-                // comes back is this head's keys, exactly as `read_keys` would have made them.
-                //
-                // **The wait is the editor's when the editor needs it sooner.** `events` waits
-                // ~100 ms for a key, which is the head's pace and too slow for a file streaming
-                // into rano or a prefix card coming due; so with a pane open the loop polls for
-                // rano's `next_wakeup` first and reads only when something is there.
+                // The read, as rano's events and routed: the editor pane takes every key while it has the keyboard
+                // and every mouse report inside it, and what comes back is this head's keys.
                 let (keys, raw) = read_routed(&term, &mut app);
                 let size = term.size();
                 if app.take_redraw() {
@@ -1011,28 +798,16 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
                 // The window title, after the tick: `draw` holds the terminal while `tick` holds
                 // the app, so it is read here — once a tick, written only when it changed.
                 outside_the_frame(&term, &mut app);
-                // **Getting back is this loop's job, because the socket is this
-                // layer's.** The head knows *that* the link is down and how long it
-                // has been; only here is there a socket path to open and a `Link` to
-                // replace. `app.seq` is the read mark, which is what makes the new
-                // `ATTACH` a resume: the daemon answers the gap with events, or with a
-                // `Resync` when the gap is larger than it still holds.
-                //
-                // The attempt is not waited on: the `ATTACH` goes out here and the
-                // `Hello` arrives on the pump like any other frame, so the head keeps
-                // drawing — and keeps taking keys — through the whole recovery.
+                // Getting back is this loop's job, because the socket is this layer's: the head knows that the link
+                // is down and how long, and only here is there a path to open and a `Link` to replace.
                 if app.should_reconnect() {
                     match link.reconnect(&args.socket, app.seq) {
-                        // **The attempt is out, so the head waits for its answer.** The
-                        // `ATTACH` is on a live socket and the `Hello` is a moment away;
-                        // asking again in the meantime would open a second socket and
-                        // close the first, which is the one about to be answered.
+                        // The attempt is out, so the head waits for its answer: the `ATTACH` is on a live socket and
+                        // the `Hello` a moment away, and asking again would open a second socket and close the first.
                         Ok(()) => {
                             app.reconnect_sent();
-                            // A reconnect is a new connection, so the daemon at the far
-                            // end can be a different process — a restart, or a different
-                            // build entirely. Re-read rather than letting `/status` show
-                            // the pid of the daemon that just went away.
+                            // A reconnect is a new connection, so the daemon at the far end can be a different
+                            // process; the pid is re-read rather than letting `/status` show the old one.
                             app.set_daemon_pid(link.daemon_pid());
                         }
                         // Said and counted, then tried again after the backoff. A
@@ -1043,34 +818,21 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
             }
         }
     }
-    // **A detach is for a head that is leaving a daemon it is not stopping.** R30: while a
-    // stop is in flight the daemon is on its way out and this head has already asked; a
-    // `Detach` here would be a second, contradictory instruction racing the first, and the
-    // connection closing is itself one of the facts the wait is reading.
+    // A detach is for a head leaving a daemon it is not stopping: while a stop is in flight the head has already
+    // asked, and a `Detach` here would be a second, contradictory instruction racing the first.
     if app.wants_detach() {
         link.detach();
     }
-    // **After the terminal is back**, because this is the one message that must
-    // outlive the screen: the alternate screen has been torn down by now, so a
-    // reason said into the transcript is gone and the head looks like it crashed.
-    //
-    // **R30's third part, and the reason it is on stderr and not on the screen.** The
-    // operator chose *stop the daemon*, and if it did not stop they have to learn that from
-    // this head rather than from `ps` a day later — which is exactly how the orphan this
-    // rule exists for was found. It cannot be a note in the transcript: the transcript goes
-    // down with the alternate screen, and the head is about to be gone. So it is said here,
-    // once, on the terminal the operator is looking at.
+    // After the terminal is back, because this is the one message that must outlive the screen: the alternate
+    // screen is torn down by now, so a reason said into the transcript is gone and the head looks like it crashed.
     if let Some(said) = app.stop_farewell() {
         eprintln!("letibot: {said}");
     }
     if let Some(reason) = app.farewell() {
         eprintln!("letibot: the daemon ended this head — {reason}");
     }
-    // **The id, read last and read live.** A head that switched with ctrl-s — or that was
-    // switched by a `--resume` at attach — was serving something other than the daemon's first
-    // session, and the id the next command needs is the one it was actually in. The terminal is
-    // already back (the `Some(term)` arm above dropped it), so this is a line on the operator's
-    // own screen rather than a row of a frame that is about to be erased.
+    // The id, read last and read live: a head that switched with ctrl-s, or was switched by a `--resume` at
+    // attach, served something other than the daemon's first session, and the next command needs the one it was in.
     Ok(app.session_id().to_string())
 }
 
@@ -1078,12 +840,8 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
 mod exit_tests {
     use super::*;
 
-    /// **The exit line is the id and nothing else.**
-    ///
-    /// This is the whole of the operator's second ask — *"on exit you have to print main
-    /// session id to stdout too"* — so it is asserted on the bytes rather than described: the
-    /// next command is `letibot --session <id>`, and a person copies the line off the terminal.
-    /// A sentence on the same line would make it a line to edit rather than one to paste.
+    /// The exit line is the id and nothing else, so it is asserted on the bytes rather than described: the next
+    /// command is `letibot` in a shell, and it reads this stream.
     #[test]
     fn the_exit_prints_the_id_it_was_serving_and_nothing_else() {
         let mut out: Vec<u8> = Vec::new();
@@ -1148,10 +906,8 @@ mod probe_tests {
         }
     }
 
-    /// **A turn that does not end in time is said as one, under the command that asked**
-    /// (TODO R92.21). The list used to be asked with the deadline already past, so this answered
-    /// "timed out waiting for the session list"; and every interrupt was recorded as
-    /// `letibot --stop --force`.
+    /// A turn that does not end in time is said as one, under the command that asked: the list used to be asked with
+    /// the deadline already past, so this answered *timed out waiting for the session list*.
     #[test]
     fn a_turn_still_running_at_the_deadline_is_counted_and_the_reason_is_the_callers() {
         let (hub, h) = start("running");
@@ -1196,13 +952,8 @@ mod probe_tests {
         assert_eq!(probe(&args_for(p)), 2);
     }
 
-    /// **A peer that answers with a frame this build cannot read is a daemon that is
-    /// here and is not this build — which is a `1`, and it must never be a `2`.**
-    ///
-    /// The launcher reads `2` as *no daemon* and starts one, which unlinks the socket
-    /// the live daemon is listening on. A version skew is exactly the shape of
-    /// anyway-there, so the exit code is the load-bearing part here; the sentence on
-    /// stderr is `Unreadable::said`, which names both builds.
+    /// A peer that answers with a frame this build cannot read is a daemon that is here and is not this build, which
+    /// is a `1` and must never be a `2`: the launcher reads `2` as no daemon and starts one over the live socket.
     #[test]
     fn a_hello_this_build_cannot_read_is_a_one_not_a_two() {
         let path = socket_path("skew");
@@ -1234,10 +985,8 @@ fn any_motion() -> rano::term::Options {
     }
 }
 
-/// **Everything the head writes to the terminal that is not the frame**: the window title, the
-/// tab's progress bar, a desktop notification, a clipboard copy. Once a tick, after the tick —
-/// the app decides what each should be, and the terminal writes only what changed and only
-/// what it speaks (see `rano::term::features`).
+/// Everything the head writes to the terminal that is not the frame: the window title, the tab's progress bar, a
+/// notification, a clipboard copy. Once a tick, after it, and only what changed.
 fn outside_the_frame(term: &Terminal, app: &mut App) {
     term.set_title(&app.window_title());
     term.set_progress(app.progress());
@@ -1271,16 +1020,8 @@ fn read_keys(term: &Terminal) -> Vec<crate::app::Key> {
         .collect()
 }
 
-/// **One read of the terminal with the editor pane's share taken out**, then rano's work
-/// between events: what comes back is this head's keys, exactly as [`read_keys`] would have
-/// made them, and the raw bytes a `!term` pane reads. The live loop and `--replay` both read
-/// through here, so the acceptance suite (`tests/acceptance/`) drives the pane the way a
-/// session does.
-///
-/// **The wait is the editor's when the editor needs it sooner.** `events` waits ~100 ms for a
-/// key, which is the head's pace and too slow for a file streaming into rano or a prefix card
-/// coming due; so with a pane open this polls for rano's `next_wakeup` first and reads only
-/// when something is there.
+/// One read of the terminal with the editor pane's share taken out, then rano's work between events: what comes
+/// back is this head's keys and the raw bytes a `!term` pane reads. The live loop and `--replay` both read here.
 fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>) {
     // **Keys a click typed come first**, and stand for this read: a click on `esc closes` is the
     // Esc key, by the route a keypress takes (see `app::keyhints`), and the terminal is read
@@ -1293,20 +1034,16 @@ fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>
     }
     let (events, raw) = match app.editor_wait() {
         Some(wait) if wait < crate::app::READ_PACE && !term.poll(wait) => (Vec::new(), Vec::new()),
-        // **The same read, as bytes.** The pane is a terminal and its program reads the bytes
-        // the operator's terminal sent, not this head's decoding of them — and `ctrl-\`, the
-        // pane's one way out, is a byte `key_of` maps to nothing, so this head never sees it
-        // as a `Key`. See `Terminal::raw_input`.
+        // The same read as bytes: the pane's program reads what the person's terminal sent and not this head's
+        // decoding of it, and `ctrl-\` is a byte `key_of` maps to nothing, so this head never sees it.
         _ => {
             let events = term.events();
             (events, term.raw_input())
         }
     };
     let (keys, rano_took) = app.route(events);
-    // **Bytes rano read are not a `!term` pane's.** `ctrl-\` is rano's replace, and a byte
-    // the editor consumed must not reach the pane's way-out scan as though the operator's
-    // terminal had sent it at a pane (see `Link::tick`, where the scan lives and where a
-    // read the composer consumed has no way out in it at all).
+    // Bytes rano read are not a `!term` pane's: `ctrl-\` is rano's replace, and a byte the editor consumed must not
+    // reach the pane's way-out scan as though the terminal had sent it at a pane.
     let raw = if rano_took { Vec::new() } else { raw };
     // rano's work between events, before the frame — rano's rule for a host.
     app.editor_tick(Instant::now());

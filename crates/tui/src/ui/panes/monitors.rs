@@ -50,10 +50,9 @@ impl App {
         row_strings(&content.lines, self.cfg.palette())
     }
 
-    /// **Enter: the monitor under the cursor, whole** — the operator: *"i want to see monitor
-    /// command in the details"*. What it watches and its facts in full, and the `monitor` call
-    /// that armed it, as the model made it, found in the conversation by its name. Opened over the
-    /// pane; Esc comes back to it.
+    /// Enter: the monitor under the cursor, whole - what it watches and its facts in full, and the
+    /// `monitor` call that armed it as the model made it, found in the conversation by its name.
+    /// Opened over the pane; Esc comes back to it.
     pub(crate) fn open_monitor_details(&mut self) -> bool {
         let Some(m) = self.monitors_view().selected_monitor().cloned() else {
             return false;

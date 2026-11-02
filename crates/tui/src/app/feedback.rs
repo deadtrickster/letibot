@@ -1,19 +1,6 @@
-//! **The operator's marks** (TODO R81, `docs/metrics.md` §2.5): `/fb`, `/fb+`, `/fb-`, and the
-//! two keys the operator chose — alt-g marks the current turn good, alt-b bad (decision 4).
-//!
-//! A mark is one [`Action::Feedback`], sent as its own frame (`PROTOCOL_VERSION` 45) and answered
-//! on the daemon's connection thread — never queued behind a busy worker. The daemon places it on
-//! the turn running now; when the view is scrolled back, on the row the view is anchored to, which
-//! is this head's nearest thing to "a selected past row" (there is no row cursor to put an `f`
-//! on). The confirmation comes back as a routine `feedback` warning, drawn like any other.
-//!
-//! **alt-b is readline's word-left**, and this head has always decoded it so. It is a mark only
-//! on an EMPTY composer with nothing in front of the conversation — the `ctrl-e` rule, where a
-//! motion key has nothing to move over — and word-left everywhere else; `ctrl-left` is word-left
-//! always. alt-g was nobody's, and marks whenever no card owns the keys.
-//!
-//! **A second press within five seconds opens the note**: the composer is filled with `/fb- ` or
-//! `/fb+ ` so the word that explains the mark is one sentence away, not a command to remember.
+//! The operator's marks: `/fb`, `/fb+`, `/fb-`, and alt-g / alt-b for the turn running now.
+//! alt-b is readline's word-left everywhere except an empty composer with nothing in front of the
+//! conversation, where it marks; a second press within five seconds opens the note.
 
 use super::*;
 
@@ -21,7 +8,7 @@ use super::*;
 const AGAIN_MS: u64 = 5_000;
 
 impl App {
-    /// **`/fb`, `/fb+`, `/fb-`** — `None` when `cmd` is not one of them (the caller goes on to
+    /// `/fb`, `/fb+`, `/fb-` - `None` when `cmd` is not one of them (the caller goes on to
     /// the other verbs), `Some(action)` when it is.
     pub(crate) fn feedback_command(&mut self, cmd: &str) -> Option<Option<Action>> {
         let rest = cmd.trim().strip_prefix("fb")?;
@@ -44,7 +31,7 @@ impl App {
         Some(self.mark(polarity, note))
     }
 
-    /// **alt-g / alt-b**, settled: a mark, or (twice within five seconds) the composer opened
+    /// alt-g / alt-b, settled: a mark, or (twice within five seconds) the composer opened
     /// on the note for it.
     pub(crate) fn feedback_key(&mut self, good: bool) -> Option<Action> {
         let now = letibot_sessionlog::event::now_ms();

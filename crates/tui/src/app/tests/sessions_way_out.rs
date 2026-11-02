@@ -1,17 +1,6 @@
-//! **The way out** — `docs/plugins-plan.md` §7 step 10's last paragraph: *"the session picker is
-//! the way out of a broken session, so it must not depend on a plugin"*.
-//!
-//! Every other pane may fail into a sentence on the screen. This one cannot: a person whose
-//! session is wedged has exactly one keystroke left, and it opens this list. So the list is drawn
-//! from three sources, and each one catches the one above:
-//!
-//! | the stack says | what is drawn |
-//! |---|---|
-//! | a layer answers | the layer's list (`sessions_list`) |
-//! | nothing answers — no layer, a trap, fuel, a view the host refuses | the head's own tree (`session_list`) |
-//!
-//! The tests here stand each failure in, and each of them also presses the keys: a list that draws
-//! and does not switch is not a way out.
+//! The way out: a person whose session is wedged has one keystroke left and it opens this list, so
+//! the list must not depend on a plugin. It is drawn from three sources, each catching the one
+//! above, and every test here stands a failure in and then presses the keys.
 
 use super::*;
 use letibot_plugins::{Capability, Loader, Module, Stack};
@@ -37,10 +26,9 @@ impl Module for Trap {
     }
 }
 
-/// **A loader that traps anything on disk and answers nothing at all**: the built-ins come through
-/// the real engine (so the list below the broken layer is the real one), and every file-backed
-/// layer fails. That is the measured shape of a layer whose Rust does not compile into a working
-/// module.
+/// A loader that traps anything on disk and answers nothing at all: the built-ins come through the
+/// real engine, so the list below the broken layer is the real one, and every file-backed layer
+/// fails - the shape of a layer whose Rust does not compile into a working module.
 struct TrapOnDisk {
     real: crate::app::sessions_pane::RanoLoader,
 }

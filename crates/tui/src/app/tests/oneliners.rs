@@ -1,7 +1,5 @@
-//! **Every notice is ONE line, and its details a click — or alt-n — away** (R89).
-//!
-//! The operator's standing rule: *"make them the usual one liners"*, *"one line + popup"*. These
-//! are the walls the review of 2026-10-12 measured on real rows, drawn through the whole head.
+//! Every notice is ONE line, and its details a click - or alt-n - away. These are the walls the
+//! review measured on real rows, drawn through the whole head.
 
 use super::redcard::{holds, popup_text, rows_with, with_notice, with_warning};
 use super::*;
@@ -11,8 +9,8 @@ fn rows(screen: &[String], needle: &str) -> usize {
     rows_with(screen, needle).len()
 }
 
-/// **The worst row the review found** — one `Tool call X was not executed` sentence for each of
-/// 6,902 truncated calls, 13,800 screen rows — is one line, and a click opens it whole.
+/// The worst row the review found - one sentence for each of thousands of truncated calls - is one
+/// line, and a click opens it whole.
 #[test]
 fn a_length_cap_salvage_is_one_line_and_a_click_opens_it() {
     let mut text = String::from(
@@ -45,13 +43,13 @@ fn a_length_cap_salvage_is_one_line_and_a_click_opens_it() {
     a.key(Key::Click { x: 10, y: y as u16 });
     let whole = popup_text(&mut a);
     assert!(holds(&whole, "Tool call read was not executed"), "{whole}");
-    // **The popup's title is the card's**, not a bare `notice` in red.
+    // The popup's title is the card's, not a bare `notice` in red.
     let top = a.screen(160, 40).join("\n");
     assert!(top.contains("length cap · 41 calls not executed"), "{top}");
 }
 
-/// **A plan check that does not fold, and the stale prompt's paragraph after it, are two
-/// notices — two lines**, the stale one the same card the `prefix_stale` warning draws.
+/// A plan check that does not fold, and the stale prompt's paragraph after it, are two notices - two
+/// lines - the stale one the same card the `prefix_stale` warning draws.
 #[test]
 fn a_plan_check_and_the_stale_paragraph_under_it_are_two_lines() {
     let text = "[todo check] this turn is finished and one item is not done (1 more open):\n  - \
@@ -80,8 +78,8 @@ fn a_plan_check_and_the_stale_paragraph_under_it_are_two_lines() {
     assert_eq!(newest_notice(&mut a), text, "the popup is the row whole");
 }
 
-/// **A System row is one line** — a compaction's summary was drawn whole, ~190 screen rows of
-/// the model's own record — and alt-n opens the newest notice, this one, whole.
+/// A System row is one line - a compaction's summary was drawn whole, hundreds of screen rows of the
+/// model's own record - and alt-n opens the newest notice, this one, whole.
 #[test]
 fn a_system_row_is_one_line_and_alt_n_opens_it() {
     let mut a = app();
@@ -122,8 +120,8 @@ fn a_system_row_is_one_line_and_alt_n_opens_it() {
     assert_eq!(newest_notice(&mut a), summary);
 }
 
-/// **A folded `[task]` row is clickable** — eight finished children were eight lines with no
-/// way to the notice behind them.
+/// A folded `[task]` row is clickable - eight finished children were eight lines with no way to the
+/// notice behind them.
 #[test]
 fn a_folded_task_row_opens_its_notice() {
     let text = "[task] a subagent you started has finished:\n  - `s-1-sub-2` done: all green.\n\
@@ -140,8 +138,8 @@ fn a_folded_task_row_opens_its_notice() {
     assert_eq!(newest_notice(&mut a), text);
 }
 
-/// **A `[job]` and a `[monitor]` in one wake keep the job's two lines and give the monitor
-/// one** — the monitor was not folded, so the WHOLE row fell to raw.
+/// A `[job]` and a `[monitor]` in one wake keep the job's two lines and give the monitor one: the
+/// monitor was not folded, so the WHOLE row fell to raw.
 #[test]
 fn a_job_beside_a_monitor_keeps_both_compact() {
     let text = "[job] a job you backgrounded has ended:\n  - `build · j7` exited 0 after 4.4s, \
@@ -162,8 +160,8 @@ fn a_job_beside_a_monitor_keeps_both_compact() {
     assert!(!joined.contains("Only a FIRED watch"), "{joined}");
 }
 
-/// **A warning no card reads is one line in its register, clickable, its code said once** — it
-/// was three wrapped lines and `… +N lines · /notes` that nothing could open.
+/// A warning no card reads is one line in its register, clickable, its code said once - it was three
+/// wrapped lines and a `+N lines` tail that nothing could open.
 #[test]
 fn a_warning_no_card_reads_is_one_clickable_line() {
     let detail = "`deadtrickster` asked this daemon to stop. Every head detaches, the socket \
@@ -193,7 +191,7 @@ fn a_warning_no_card_reads_is_one_clickable_line() {
     );
 }
 
-/// **The hint is the last thing a narrow screen cuts** — the facts go first.
+/// The hint is the last thing a narrow screen cuts - the facts go first.
 #[test]
 fn a_narrow_screen_cuts_the_facts_and_keeps_the_hint() {
     let mut a = with_notice(
@@ -211,7 +209,7 @@ fn a_narrow_screen_cuts_the_facts_and_keeps_the_hint() {
     }
 }
 
-/// **alt-n with nothing to open says so**, and opens nothing.
+/// alt-n with nothing to open says so, and opens nothing.
 #[test]
 fn alt_n_with_no_notice_says_so() {
     let mut a = app();

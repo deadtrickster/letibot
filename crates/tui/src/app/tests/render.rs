@@ -2,18 +2,9 @@
 
 use super::*;
 
-/// **R29 part two: the reader's own input refused is a THIRD register**, and it is
-/// neither of the two above.
-///
-/// The operator, on a red note for a mistyped `/qwe` sitting in the same colour as
-/// `ledger_chain_mismatch`: *"red is stop the world event … a mistyped /qwe is not a
-/// session in trouble."* The census is 7 of 46 failure codes (`Class`'s docs), and this
-/// asserts what the *head* does with them: its own mark, the notice colour, and neither
-/// of the two things the other registers use.
-///
-/// **All three in one frame**, because the defect is a *comparison* — a reader learns the
-/// register by seeing two notes side by side — and a test that drew them one at a time
-/// could pass while they looked identical.
+/// The reader's own refused input is a third register, neither the failure nor the routine one:
+/// its own mark, the notice colour, and neither of the two things those use. All three are drawn
+/// in one frame, because the defect is a comparison between notes.
 #[test]
 fn the_three_registers_are_three_marks() {
     const RED: &str = "\u{1b}[31m";
@@ -56,10 +47,9 @@ fn the_three_registers_are_three_marks() {
         line("slash_refused"),
         line("ledger_chain_mismatch"),
     );
-    // The three marks, and they are three DIFFERENT marks — which is what survives a
-    // `--replay`, a pipe and a light theme, where the colours do not.
-    // The routine register's mark is the `·` of the frame's own `session ·` (R89: every note is
-    // a card's one line in that frame, and a second `·` read as a stutter).
+    // Three different marks, which is what survives `--replay`, a pipe and a light theme where
+    // the colours do not. The routine register's mark is the separator of the frame's own
+    // `session` line, and a second one there would read as a stutter.
     assert!(routine.contains("session · "), "{routine:?}");
     assert!(
         !routine.contains("! compacted") && !routine.contains("× compacted"),
@@ -86,19 +76,9 @@ fn the_three_registers_are_three_marks() {
     assert_ne!(refused, routine);
 }
 
-/// **The operator's real payload is painted in the palette's own roles, and not one byte of
-/// `ls`'s sequence reaches the glass as text.**
-///
-/// The first cut's tests all used a synthetic payload, and the real one differs in the two
-/// ways the fixture could not show: a line with no escape on it (`total 124`), and `ls`'s
-/// own reset *before* the colour (`\u{1b}[0m\u{1b}[01;34m`) rather than only a close after it.
-/// Neither defeats the painter — which is the assertion — and the point of pinning it here
-/// is that the *proof* is now on the bytes the operator was looking at.
-///
-/// `ctrl-v` is pressed because the fold draws the payload's **first** line and `ls -la`'s
-/// first line is `total 124`, the one line of the payload with no colour in it; the window
-/// is what puts the directory rows on the screen. That is a property of the fold and not of
-/// the paint, and it is why the header says `4 lines` beside one shown row.
+/// The operator's real `ls -la` payload is painted in the palette's own roles, and not one byte
+/// of `ls`'s sequence reaches the glass as text - the two shapes a synthetic fixture never makes:
+/// an uncoloured line, and `ls`'s own reset before the colour rather than only a close after it.
 #[test]
 fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
     let mut a = App::new(RenderConfig {
@@ -148,13 +128,9 @@ fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
     }
 }
 
-/// **An escape at the START of a payload line, and one mid-line** — the two shapes named,
-/// and neither defeats the painter.
-///
-/// A line that opens with a colour is the case a fixture built as `"text\u{1b}[31mred…"`
-/// never produces, and it is the shape `ls` writes for a *run* of coloured names. The
-/// mid-line case is the same colour after text, which is `grep --color`'s shape. Both go
-/// through one `item_lines` call with the fold open, so the body path is the one under test.
+/// An escape at the START of a payload line and one mid-line: the first is `ls`'s shape for a run
+/// of coloured names and the second is `grep --color`'s. Both go through one `item_lines` call
+/// with the fold open, so the body path is the one under test.
 #[test]
 fn a_colour_at_the_start_of_a_payload_line_and_one_mid_line_both_become_roles() {
     let blue = rano::style::Palette::Colour.open(Role::Subheading);
@@ -199,13 +175,9 @@ fn a_colour_at_the_start_of_a_payload_line_and_one_mid_line_both_become_roles() 
     }
 }
 
-/// **The same real payload, and everything that is NOT SGR is still removed whole.**
-///
-/// The colour path is the new reader; §3.1's guarantee is the old one and it is not
-/// weakened by the new one existing. A mode string, an OSC title, a C1 CSI/ST and a DEL
-/// are all still gone — as escapes *and* as text — on the very payload the operator was
-/// looking at, with `ls`'s own `\u{1b}[0m` in the middle of a line where a parser that
-/// mis-read a reset would leave `[0m` behind.
+/// The same real payload, and everything that is not SGR is still removed whole: a mode string,
+/// an OSC title, a C1 CSI/ST and a DEL are gone as escapes and as text, on a payload whose own
+/// reset mid-line is where a parser that mis-read it would leave `[0m` behind.
 #[test]
 fn the_real_payload_still_loses_every_byte_that_is_not_a_colour() {
     let mut a = App::new(RenderConfig {
@@ -239,21 +211,9 @@ fn the_real_payload_still_loses_every_byte_that_is_not_a_colour() {
     );
 }
 
-/// **The same hostile payload on a head that DOES emit colour** — and this is the half the
-/// colourless test cannot reach.
-///
-/// The operator's own `! ls -la` is meant to look on the screen as it looks in their console,
-/// so the SGR their command wrote has to survive as **a role this head already has** rather
-/// than as a byte from the program. That is the one thing §3.1's sanitiser could not be asked
-/// for before: the old guarantee was *no escape reaches the frame*, and it is now *no escape
-/// reaches the frame that this head did not choose* — which is the same guarantee stated in
-/// the only form that can be true of a head that colours its own rows.
-///
-/// So the assertions are three: the payload's `\u{1b}[01;34m` arrives as [`Role::Subheading`]'s
-/// own sequence (the same bytes `ls`'s directory colour means here); every other escape on
-/// every row is in [`head_vocabulary`]; and not one byte of the hostile sequences — the mode
-/// strings, the OSC title, the C1 controls, the DEL — is anywhere in the frame, which is the
-/// existing guarantee re-asserted where the colour now enters.
+/// The same hostile payload on a head that DOES emit colour, which is the half the colourless
+/// test cannot reach: the SGR the command wrote has to survive as a role this head already has,
+/// never as a byte from the program - no escape reaches the frame that this head did not choose.
 #[test]
 fn on_a_head_that_emits_colour_a_foreign_escape_arrives_as_a_role_and_nothing_else() {
     let mut a = App::new(RenderConfig {
@@ -297,13 +257,9 @@ fn on_a_head_that_emits_colour_a_foreign_escape_arrives_as_a_role_and_nothing_el
     }
 }
 
-/// **A colour that runs to the end of a payload line does not tint the next one.**
-///
-/// A terminal carries SGR state across a newline; a row list must not. Each payload line is
-/// drawn with this head's own two-column gutter in front of it, and a colour that leaked would
-/// paint that gutter — and then the whole of the next line — in a colour the command never
-/// asked for there. The assertion is on the row that holds the second line: it must carry
-/// none of the first line's colour.
+/// A colour that runs to the end of a payload line does not tint the next one: a terminal carries
+/// SGR state across a newline and a row list must not, or the head's own gutter and the whole of
+/// the next line get painted in a colour the command never asked for there.
 #[test]
 fn a_colour_that_runs_to_the_end_of_a_payload_line_does_not_tint_the_next_one() {
     let mut a = App::new(RenderConfig {
@@ -312,10 +268,9 @@ fn a_colour_that_runs_to_the_end_of_a_payload_line_does_not_tint_the_next_one() 
         ..RenderConfig::default()
     });
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-    // The first line opens a colour and never closes it — which is what a program that
-    // is killed mid-write does, and what `ls` does at the end of its last entry.
-    // Three lines, so the row has a rest to open: a folded row draws one line and the
-    // seam, and this test needs the line AFTER the coloured one on the screen.
+    // The first line opens a colour and never closes it, which is what a program killed mid-write
+    // does. Three lines, so the row has a rest to open: a folded row draws one line and the seam,
+    // and this test needs the line after the coloured one on the screen.
     bang_rows(
         &mut a,
         2,
@@ -348,29 +303,9 @@ fn a_colour_that_runs_to_the_end_of_a_payload_line_does_not_tint_the_next_one() 
     );
 }
 
-/// **A row the person ran is the model's row with their own mark on it** — the one fact a
-/// settled tool row could not say, and the whole of what the operator was missing.
-///
-/// MEASURED on a live head, and it is why this is a test about the PAINT: `! ls` and
-/// `! ls -la` produced their two rows, the result was drawn, folded and visible at every
-/// rung, and the report on it was *"no colors tho?"*. Read rather than assumed, the answer
-/// is that every role on that header is chosen from `outcome`, `name`, the payload and the
-/// fold and **nothing in the arm ever read `origin`** — so the operator's row and the
-/// model's were already byte for byte the same, and what was absent is the one fact only
-/// `origin` carries: who acted.
-///
-/// So two properties, and the first is what makes the second mean anything:
-///
-///  * **The registers are the model's, byte for byte.** Take the provenance off the
-///    operator's header and it IS the model's header — same `Faint` glyph and verb, same
-///    `Plain` subject, same outcome role, same count, same fold, same body — asserted on the
-///    painted rows, because the words are identical either way and the register is the whole
-///    of the claim.
-///  * **The provenance is readable with and without colour.** The `▌` bar in
-///    [`Role::UserAccent`]: the glyph and the role `user_block` already gives the operator's
-///    own words, and the one their `!` line is wearing two rows above this one. Under
-///    [`Palette::None`] the bar is what survives, which is the whole reason the mark is a
-///    glyph and not only a colour.
+/// A row the person ran is the model's row with their own mark on it: every role on that header
+/// comes from `outcome`, `name`, the payload and the fold, and nothing in the arm reads `origin`.
+/// So the registers stay the model's byte for byte, and a bar in the user-accent role says who.
 #[test]
 fn an_operators_tool_row_is_the_models_row_with_the_persons_own_mark_on_it() {
     let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
@@ -431,14 +366,9 @@ fn an_operators_tool_row_is_the_models_row_with_the_persons_own_mark_on_it() {
     );
 }
 
-/// **And it is on the SCREEN, which is where the report came from.**
-///
-/// The two tests above hold the row `item_lines` builds; this one holds the row the operator
-/// actually met — the same two rows fed the way the daemon appends them, through the walk and
-/// the frame, with the palette on because the mark is a role as well as a glyph. **Both
-/// halves**, because one half alone is the defect: the operator's row must wear the bar, and
-/// the model's row must not, or the mark is decoration on every tool row rather than
-/// provenance on this one.
+/// And it is on the SCREEN, where the report came from: both rows fed the way the daemon appends
+/// them, through the walk and the frame, with the palette on. Both halves, because one alone is
+/// the defect - the operator's row must wear the bar and the model's must not.
 #[test]
 fn the_persons_mark_reaches_the_screen_and_only_their_own_row_wears_it() {
     let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
@@ -478,21 +408,9 @@ fn the_persons_mark_reaches_the_screen_and_only_their_own_row_wears_it() {
     );
 }
 
-/// **§3.1's falsification half, and the reason it exists is that this head had the
-/// fix and none of the tests.**
-///
-/// The operator: *"leticl has two that would catch a regression and you have none,
-/// so nothing proves YOUR sanitising would notice if it stopped working."* So this
-/// feeds the real vocabulary through **every** surface that renders text this head
-/// did not author and asserts what a terminal would be handed.
-///
-/// # Why the colourless half is the sharper one
-///
-/// With `color: false` the head emits **no escapes at all** — that is the
-/// `--replay`/pipe/CI case and it is asserted elsewhere — so any `ESC` in a row is
-/// proof that somebody else's text got through, SGR pair and all. With colour on,
-/// the head's own sequences are present by design and the assertion narrows to the
-/// ones it never writes.
+/// The falsification half: the real vocabulary through every surface that renders text this head
+/// did not author. The colourless run is the sharper one - with `color: false` the head emits no
+/// escapes at all, so any `ESC` in a row is somebody else's text getting through.
 #[test]
 fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
     use letibot_transcript::{
@@ -698,21 +616,16 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
             title: format!("my session{HOSTILE}"),
         },
     )));
-    // **A note with hostile text in it, drawn through the real producer.** The
-    // listing's contract is that its rows are *already-composed lines* — a note's row
-    // is built by `note_lines_unfolded`, which guards the daemon's `detail` as it
-    // composes it — so a test that pushed raw foreign text into `slash_out` would be
-    // testing a contract no producer has. (The first version of this did exactly that,
-    // and the regression commit is what exposed it.)
+    // A note with hostile text in it, through the real producer: a note's row is built by
+    // `note_lines_unfolded`, which guards the daemon's `detail` as it composes it, so pushing raw
+    // foreign text into `slash_out` would test a contract no producer has.
     b.note(Note::Warned(Warned {
         code: "gate".into(),
         detail: format!("refused{HOSTILE}"),
         ts: 0,
     }));
-    // **One pane at a time, because `screen` draws one.** The first version of this
-    // loop set four panes at once and said "the jobs pane" for all four, while
-    // `slash_out` won the screen every time — a label that described the loop rather
-    // than the frame, which is the same defect the test exists to catch.
+    // One pane at a time, because `screen` draws one: four panes at once and `slash_out` wins the
+    // screen every time, which is a label describing the loop rather than the frame.
     for (name, only) in [
         ("jobs", 0usize),
         ("subagents", 1),
@@ -750,18 +663,9 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
     }
 }
 
-/// **A carried row is done, not pending, and the colour has to say so.**
-///
-/// `progress::bar` paints `processed` with `Role::Pending` and `cache` with
-/// `Role::Success`. That split is the prefill's, where yellow means being
-/// computed now and costing you. A row carry spends nothing — a filled cell
-/// is a row that has arrived — so yellow was the wrong register: *"that one
-/// is yellow"*.
-///
-/// Asserted on the glyphs rather than on escapes, because `Palette::None` is
-/// the replay and CI case and the split survives it: `bar` uses a different
-/// GLYPH per band for exactly that reason. `█` is the settled band, `▓` the
-/// pending one.
+/// A carried row is done, not pending, and the colour has to say so: a row carry spends nothing,
+/// so the prefill's yellow - computed now, costing you - is the wrong register. Asserted on the
+/// glyphs, because `Palette::None` is the replay and CI case and the split survives it.
 #[test]
 fn landed_rows_paint_as_settled_and_not_as_pending() {
     // The fill's one line in the status row (`ui::progress_row`): three of four rows landed.
@@ -782,10 +686,9 @@ fn landed_rows_paint_as_settled_and_not_as_pending() {
     );
 }
 
-/// [`Palette::None`] is not a monochrome theme, it is the `--replay`, pipe and
-/// CI case: **no sequences at all**. The accent glyphs are what survive it, and
-/// they are why the hierarchy above is carried by a step and a word rather than
-/// by a colour.
+/// [`Palette::None`] is not a monochrome theme, it is the `--replay`, pipe and CI case: no
+/// sequences at all. The accent glyphs are what survive it, and they are why the hierarchy is
+/// carried by a step and a word rather than by a colour.
 #[test]
 fn the_plain_palette_emits_no_escapes_and_keeps_the_glyphs() {
     let mut a = app();
@@ -910,19 +813,9 @@ fn a_big_result_weighs_more_than_a_small_one_and_costs_no_cube_colour() {
     }
 }
 
-/// **R18's regression, reproduced on the bytes: a listing must not strip the colour
-/// the head composed into it.**
-///
-/// `81990b3` applied the §3.1 sanitiser to the slash listing's rows. But a `/notes`
-/// row is **the head's own composed text** — `note_lines_unfolded` paints it with
-/// `sgr::RED` — so the sanitiser stripped the head's own escape. And because
-/// `without_control` replaced the `ESC` with a space and left the rest behind, the
-/// row read ` [31m… [0m`: an invisible sequence turned into five columns of visible
-/// garbage, which is also why the wrapping broke.
-///
-/// Asserted on the bytes rather than the look, and **both halves**: the body of an
-/// escape must not appear as text, and the head's own colour must still be there —
-/// stripping it would be a different bug from leaving garbage.
+/// A listing must not strip the colour the head composed into it: a `/notes` row is the head's
+/// own composed text, so the sanitiser removed the head's own escape and, leaving the rest
+/// behind, turned it into visible garbage. Both halves - no escape as text, and the colour kept.
 #[test]
 fn a_slash_listing_does_not_strip_the_colour_the_head_composed_into_it() {
     let mut a = App::new(RenderConfig {
@@ -957,21 +850,9 @@ fn a_slash_listing_does_not_strip_the_colour_the_head_composed_into_it() {
     );
 }
 
-/// **The header is facts: no accent bar, no emphasis, both halves in one quiet register** —
-/// R51 item 10, and it SETTLES a deliberate divergence rather than adding a preference.
-///
-/// leticl recorded this as its own choice against letibot (`4110e7b`: *"This DEPARTS from
-/// letibot, whose `header_line` paints the bar `UserAccent` and the title `Strong`"*). The
-/// operator is now asking for it here too, so the divergence goes in favour of the new register.
-///
-/// **`▌` in the user-accent register is how both heads say *a person said this*.** On the row
-/// the reader crosses on every return to the field, it made the session's own name read as
-/// somebody's sentence — the operator: *"the project directory and session name are pinned in the
-/// first row with the same blue bar we use for my messages. very confusing. just make both gray
-/// and remove the bar."*
-///
-/// Asserted on the ESCAPES, because the words are identical either way and the register is the
-/// whole of what changed: the row must carry the faint code and neither the bold nor the accent.
+/// The header is facts: no accent bar, no emphasis, both halves in one quiet register. The accent
+/// bar is how both heads say a person said this, and on the row the reader crosses on every
+/// return to the field it made the session's own name read as somebody's sentence.
 #[test]
 fn the_header_has_no_bar_and_no_emphasis() {
     let mut a = app();
@@ -1044,31 +925,18 @@ fn a_users_own_message_is_a_block_with_a_bar_and_the_time_it_was_sent() {
             .is_some_and(|t| t.len() == 8 && t.contains(':')),
         "no timestamp on the row: {row:?}"
     );
-    // The block is padded to the full **content** width, or the background
-    // stops mid-row and reads as damage. Content width is the terminal less
-    // both gutters; the right one is empty by design, and `term::paint` erases
-    // it with the row.
+    // The block is padded to the full content width, or the background stops mid-row and reads as
+    // damage. Content width is the terminal less both gutters; the right one is empty by design.
     assert_eq!(line_width(row), 80 - App::GUTTER, "{row:?}");
 }
 
-// **The model picker greens the rows this box can actually take** — the operator's ask of
-// 2026-10-04: *"model peeker should green models we have keys for."*
-//
-// The fact is the daemon's (`MODEL_KEYS_KEY`), because whether a preset resolves a key is a
-// fact about this box's files and environment — a head that guessed would green exactly the
-// rows that refuse at the first turn. Beyond the colour, two honesty rules are asserted:
-// **`local` is green for a reason of its own** (nothing to authenticate, and an uncoloured
-// `local` would read as *no key* about the one row that never wanted one), and **the meaning
-// is said in words**, because `Palette::None` is the `--replay`, pipe and CI case where a
-// colour says nothing at all.
-//
-// The greening tests are `session.rs`'s now.
+// The model picker greens the rows this box can take. The fact is the daemon's (`MODEL_KEYS_KEY`),
+// because whether a preset resolves a key is a fact about this box's files and environment, and a
+// head that guessed would green exactly the rows that refuse at the first turn.
 
-/// **A declared local model is ready, and the daemon is what says so.**
-///
-/// The operator, 2026-10-05: *"dense78 needs a key this box does not hold."* It
-/// needs none — a LAN box, no key, no meter. `local` used to be greened by a
-/// hardcoded literal, which worked exactly as long as it was the only keyless row.
+/// A declared local model is ready, and the daemon is what says so: `local` needs no key and no
+/// authentication, so greening it by a hardcoded literal worked exactly as long as it was the
+/// only keyless row.
 #[test]
 fn a_declared_local_model_is_ready_without_a_key() {
     use letibot_sessionlog::protocol::{MODEL_KEYLESS_KEY, MODEL_KEYS_KEY, SettingRow};

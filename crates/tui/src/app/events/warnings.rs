@@ -39,13 +39,9 @@ impl App {
     pub(crate) fn on_warning(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         match e {
             SessionEvent::Warning { code, detail, .. } => {
-                // `turn_failed` is the log's grep-able record of the same fact
-                // `TurnFailed` puts under the turn, and the daemon publishes both
-                // on purpose — one is state, the other is history. On a *screen*
-                // they are the same sentence twice, three lines apart, so this head
-                // renders the terminal state and counts the warning as filtered.
-                // Counted, not dropped: the status line's `filtered` is what makes
-                // "I chose not to show this" different from "nothing happened".
+                // The daemon publishes both this and `TurnFailed` on purpose - one is
+                // state, one history - but on a screen they are one sentence twice.
+                // Counted as filtered, not dropped: `filtered` says "chose not to show".
                 if code == "turn_failed" {
                     return Disposition::Filtered;
                 }
@@ -55,56 +51,40 @@ impl App {
                     self.redraw = true;
                     return Disposition::Filtered;
                 }
-                // **This daemon is a build behind its own store, and it says so in red.** A state
-                // rather than a row, for `daemon_starting`'s reason one step up and for the
-                // operator's own: they asked for a line *where the Responding text is shown*,
-                // which is a row that is redrawn every frame rather than a note that scrolls
-                // away. The daemon re-says it on every attach, so a head that arrives late gets
-                // it too; nothing has to clear it, because the only thing that ends it is a
-                // restart — which ends this head's connection as well.
+                // A state rather than a row: it must sit where the Responding text is
+                // drawn, and it needs no clearing because only a restart ends it. The
+                // daemon re-says it on every attach, so a late head gets it too.
                 if code == STORE_NEWER {
                     self.store_newer = Some(detail.to_string());
                     self.redraw = true;
                     return Disposition::Filtered;
                 }
-                // **R16, the two halves of a fork.** `auto_compact` is published
-                // *before* the fork and says the conversation is about to be
-                // replaced; `compacted`/`reseated` are published after it and say it
-                // has been. An echo in the air across those two lines was waiting for
-                // a row the fork summarised away, so it is resolved here rather than
-                // left saying `queued` for the rest of the session.
+                // The fork has two halves: this warning precedes it, `compacted` and
+                // `reseated` follow. Resolving at the first half stops an echo saying
+                // `queued` for ever over a row the fork summarised away.
                 if code == "auto_compact" {
                     self.mark_fork();
                 }
                 // `cleared` is the third fork's report (`/clear`), and the same resolution.
                 if code == "compacted" || code == "reseated" || code == "cleared" {
                     self.resolve_fork();
-                    // **And the fold is over, so the line that walks stops walking.** The
-                    // progress event is ephemeral by construction — it has no "done" — so
-                    // what ends it is this: the durable warning that says the fork landed.
-                    // `auto_compact_failed` clears it too, below: a fold that failed is not
-                    // a fold that is still running, and a line that outlives its operation is
-                    // the stale measurement this file's `ToolStarted` arm already refuses.
+                    // The progress event is ephemeral - it carries no "done" - so the
+                    // durable warning that the fork landed is what ends the walking line.
+                    // A fold that failed ends it too, below: not a fold still running.
                     self.compacting = None;
                 }
                 if code == "auto_compact_failed" {
                     self.compacting = None;
                 }
-                // **A restore that failed is not a restore still running, and this head must stop
-                // saying it is.** The line that says *the store holds N rows and they are being
-                // loaded* is the head's own claim (see [`App::restoring`]), and the daemon's
-                // `resume_failed` is the one fact that ends it without rows: the warning says what
-                // went wrong, and a line beside it promising the conversation is on its way would
-                // be the stale progress this file refuses everywhere else.
+                // The "N rows are being loaded" line is this head's own claim, so the
+                // daemon's `resume_failed` is the one fact that ends it without rows. A
+                // line promising a conversation still on its way would be stale.
                 if code == "resume_failed" {
                     self.restoring = None;
                 }
-                // **The reseat card** (`app::reseat`) — the operator: *"when on abstain keep
-                // reseat select open. this way i keep reseat in mind because it stares at me yet
-                // can continue at my risk"*. `prefix_stale` raises it (and is still filed as the
-                // note row it always was, for `/notes` and the record); `prefix_current` and
-                // `reseated` take it down — every head hears those, so a reseat chosen on one
-                // head clears the card on all of them; `reseat_refused` lets alt-r send again.
+                // The reseat card (`app::reseat`): `prefix_stale` raises it and is still
+                // filed as a note row for `/notes`; `prefix_current`/`reseated` take it
+                // down on every head, and `reseat_refused` lets alt-r send again.
                 if code == "prefix_stale" {
                     self.prefix_stale(detail.clone());
                 }
@@ -121,19 +101,15 @@ impl App {
                     self.prefix_current();
                     return Disposition::Filtered;
                 }
-                // **The guard's finding becomes a state this head holds.** The
-                // warning is the live half of the channel — this head was
-                // attached to see the guard fire — and `auto_compact_off` is
-                // what the resident line and `/status` read. The settings row is
-                // the other half, for a head that attaches later; see the
-                // `Settings` arm.
+                // This warning is the live half of the channel, and `auto_compact_off` is
+                // what the resident line and `/status` read. The settings row is the other
+                // half, for a head that attaches later - see the `Settings` arm.
                 if code == "auto_compact_no_progress" {
                     self.auto_compact_off = Some(format!("auto-compaction is off: {detail}"));
                 }
-                // **The operator's `/nag pause`, and its end** — the live half of
-                // `nags_paused`. The row's prose is the daemon's and is not parsed: the line is
-                // drawn at once, and the settings are asked for so it names the pause's end in
-                // the daemon's own words (the `nags` row). A resume clears it outright.
+                // The live half of `nags_paused`; the daemon's prose is not parsed. The
+                // settings are asked for so the line names the pause's end in the
+                // daemon's own words. A resume clears it outright.
                 if code == "nags_paused" {
                     if self.nags_paused.is_none() {
                         self.nags_paused = Some(String::new());
@@ -143,17 +119,14 @@ impl App {
                 if code == "nags_resumed" {
                     self.nags_paused = None;
                 }
-                // **A model switch waiting for a turn to end**, and its two answers — the same
-                // shape as the nag pause above, and a state for the same reason: until it lands,
-                // *did my `/models` take?* is the question the screen owes an answer to, and the
-                // `slash` reply that answers it scrolls away inside the turn it is about. The
-                // daemon's own sentence is kept verbatim: it is the one that says WHEN.
+                // Until the switch lands, "did my `/models` take?" needs an answer that
+                // does not scroll away with the turn it is about, so it is a state. The
+                // daemon's sentence is kept verbatim: it is the one that says when.
                 if code == "model_switch_pending" {
                     self.model_pending = Some(detail.clone());
-                    // **And not filed in the conversation**: this head draws it on the status
-                    // row instead, and a pending switch is a thing about to happen rather than an
-                    // event in the history — the applied/not-applied row that follows is the
-                    // record.
+                    // Drawn on the status row rather than filed: a pending switch is
+                    // something about to happen, and the applied/not-applied row that
+                    // follows is the record.
                     self.redraw = true;
                     return Disposition::Filtered;
                 }
@@ -161,10 +134,9 @@ impl App {
                     self.model_pending = None;
                     self.queued.push(Action::Settings);
                 }
-                // A slash LISTING opens the pane; a slash sentence stays a note.
-                // The daemon sends both under one code — `detail` is the command
-                // it echoes back, then the reply — so the head splits them by the
-                // only thing that distinguishes them, which is length.
+                // A slash LISTING opens the pane and a slash sentence stays a note. Both
+                // arrive under one code with `detail` = the echoed command then the reply,
+                // so length is the only thing that tells them apart.
                 if code == "slash" || code == "slash_refused" {
                     let (echo, body) = detail.split_once('\n').unwrap_or((&detail, ""));
                     let lines: Vec<String> = body.lines().map(without_control).collect();
@@ -174,13 +146,9 @@ impl App {
                         return Disposition::Rendered;
                     }
                 }
-                // **A refused read a completion notice asked for is the notice's answer** —
-                // the head asked on its own, for a row's second line, and a refusal of THAT is
-                // not something the operator did and has to be told about in the record. The
-                // notice says it instead (its popup shows the daemon's words). Matched by the
-                // handle the refusal names, or — for a refusal that names none (*this session
-                // has no process host*) — every notice ask still pending, when no pane is
-                // waiting on a read of its own.
+                // A refusal of a read the head made for a notice's second line is the
+                // notice's answer, not the operator's business: the notice shows the
+                // daemon's words. Matched by handle, else every pending notice ask.
                 if code == "job_output_refused" {
                     use crate::ui::transcript::job_card::JobTail;
                     let pending: Vec<String> = self
@@ -216,10 +184,9 @@ impl App {
                         return Disposition::Filtered;
                     }
                 }
-                // A refused job-output read is answered **in the pane that asked**,
-                // which is still open — otherwise it would sit at `reading…` for
-                // ever, waiting for a window that is not coming. The conversation
-                // gets the note as well.
+                // Answered in the pane that asked, which is still open: left alone it
+                // would sit at `reading...` for ever, waiting for a window that is not
+                // coming. The conversation gets the note as well.
                 if code == "job_output_refused"
                     && let Some(v) = self.job_out.as_mut()
                 {
@@ -228,21 +195,9 @@ impl App {
                     v.error = Some(detail.clone());
                     self.redraw = true;
                 }
-                // **A note about the weather goes on the edge, not in the record.**
-                //
-                // The operator, on `model_slow_first_byte`: *"it is important diagnostics -
-                // we have a yellow triangle for that. both heads should not emit it inside
-                // conversation."* So the diagnostic is kept and its PLACEMENT is moved: the
-                // count moves a counter, the triangle comes up, and `/status` is where the
-                // number lives. `warning::ALARM_ONLY` is the rule and the docstring there
-                // says why a compaction stays a row and this does not.
-                //
-                // **Counted, and `Filtered` rather than dropped.** `Filtered` is what makes
-                // "I chose not to show this" different from "nothing happened" — the same
-                // distinction the `turn_failed` arm above is refused for. And if this head
-                // has no register for a code the tree says is edge-bound, it says so rather
-                // than swallowing it: a note that reaches neither the record nor a counter
-                // is a note nobody has.
+                // Weather notes go on the edge (`warning::ALARM_ONLY`): a counter and the
+                // triangle, with `/status` holding the number. Counted as `Filtered`, and
+                // an unregistered code is said out loud rather than swallowed.
                 if letibot_sessionlog::warning::to_the_alarm(&code) {
                     if !self.count_edge_note(&code) {
                         self.note(Note::Warned(Warned {

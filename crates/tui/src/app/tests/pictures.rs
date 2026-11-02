@@ -1,9 +1,6 @@
-//! **A pasted picture, drawn** — the operator, from a fresh session with an image pasted and sent:
-//! *"pasted, sent, model started toolcalling (yellow counter), clicked on the tools counter —
-//! empty panel, Esc brings me back. image doesnt render"*.
-//!
-//! Two halves: the thumbnail under the chip (and the terminal's own gate on it), and the panel a
-//! click on the tool-call counter opens **while the calls are still running**.
+//! A finished subagent's line is a door to that child. The line stays what it was - one line per
+//! settlement, the glance - and the click becomes the dive: `Act::Switch`, so the child's
+//! conversation is on the screen and `esc` comes back up to the parent. The popup is still `alt-n`.
 
 use super::*;
 
@@ -236,10 +233,9 @@ fn the_operators_words_are_not_the_picture() {
     );
 }
 
-/// **A picture behind tmux crosses as the wrapped form** — a kitty sequence inside a multiplexer
-/// goes as a DCS payload with its escapes doubled, and an unwrapped one is swallowed with nothing
-/// said. The one place that decides is `Proto::wrap`, and every upload this head makes passes
-/// through it.
+/// A picture behind tmux crosses as the wrapped form: a kitty sequence inside a multiplexer goes as
+/// a DCS payload with its escapes doubled, and an unwrapped one is swallowed with nothing said.
+/// `Proto::wrap` is the one place that decides, and every upload this head makes passes through it.
 #[test]
 fn behind_tmux_a_picture_is_uploaded_as_the_wrapped_form() {
     let mut a = a_prompt_with_a_picture();

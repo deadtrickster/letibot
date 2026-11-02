@@ -1,28 +1,12 @@
-//! **The head's own preferences**, on disk: `~/.config/letibot/head.toml`.
-//!
-//! What a head chooses about how it draws — the diff shape, the folds, raw
-//! tool calls — used to live in the process and die with it, and was moved by
-//! slash commands nobody remembered. The operator's ask (2026-09-16): *"i'd
-//! prefer a config option and a pane with runtime-able configurations
-//! editable"*. So the choices are a file beside `modes.tsv`, `permission.json`
-//! and `providers.toml`, read at start, and written whenever the config pane
-//! changes one.
-//!
-//! The format is the same flat `key = "value"` subset `providers.toml` already
-//! uses, parsed by hand for the same reason: four keys do not earn a
-//! dependency, and a file a person edits with `vi` must survive a comment and
-//! a key this build does not know. Unknown lines are kept on write.
+//! The head's own preferences, on disk: `~/.config/letibot/head.toml`, a flat `key = "value"`
+//! subset parsed by hand because four keys do not earn a dependency, and a file a person edits with
+//! `vi` must survive a comment and a key this build does not know. Unknown lines are kept on write.
 
 use std::path::{Path, PathBuf};
 
-/// **How many retired notes one head remembers.**
-///
-/// A cap on *this reader's memory*, not on the log: the notes themselves are in
-/// the session log whatever is here, and `/notes` lists every one the head still
-/// holds. What falls off the end is a dismissal, so a note that fell off would
-/// come back on the next snapshot — which is why the number is far above what any
-/// session produces (R10's wall was 2 notes, and the head holds 64 in memory at
-/// a time) rather than tuned to it.
+/// How many retired notes one head remembers. A cap on this reader's memory, not on the log: what
+/// falls off the end is a dismissal, so it is far above what any session produces rather than
+/// tuned to it.
 pub const RETIRED_CAP: usize = 512;
 
 /// Everything the head persists. Each field is a runtime-editable row in the
@@ -32,22 +16,17 @@ pub struct HeadPrefs {
     /// `split` — two panels — or `unified` always. The toggle is the whole
     /// choice; the width is the renderer's business.
     pub diff: DiffPref,
-    /// **A new project's starter todos** — leticl's `todo_template`, copied. `false` is off (the
-    /// default); `true` reads the default template file beside this file
-    /// (`todo-template.md`); a path string names another file. See `app`'s `seed_todos` — the
-    /// items of that TODO.md are copied onto the operator's half of the board once per project.
+    /// A new project's starter todos: `false` is off (the default), `true` reads the default
+    /// template file beside this file, and a path names another. `app`'s `seed_todos` copies its
+    /// items onto the operator's half of the board once per project.
     pub todo_template: TodoTemplate,
-    /// **The projects that have had their starter todos**, hashed workspace paths — leticl's
-    /// `todo_seed` table, held here as the same comma-list shape `retired` uses because this head
-    /// has no database of its own. A record and not an *is the list empty* test: a starter row the
-    /// operator deletes must not come back, and a project that re-seeds is the duplicate defect
-    /// leticl extracted this feature from.
+    /// The projects that have had their starter todos, as hashed workspace paths - a comma list
+    /// like `retired`, because this head has no database. A record and not an empty-list test: a
+    /// starter row the operator deletes must not come back.
     pub todo_seed: Vec<String>,
-    /// **The git field's template** — leticl's `git_format`, copied: `None` is the shipped
-    /// default (`app::gitfield::GIT_FORMAT_DEFAULT`), `Some(t)` is the operator's own. A QUOTED
-    /// template in the file; `false` for the default; `true` is refused by name, because it is
-    /// a switch's word in a template's place and reading it as anything would be a guess at
-    /// what somebody meant.
+    /// The git field's template: `None` is the shipped default, `Some(t)` the operator's own. A
+    /// QUOTED template; `false` for the default, and `true` is refused by name, since it is a
+    /// switch's word in a template's place and reading it as anything would be a guess.
     pub git_format: Option<String>,
     /// `open` or `folded`.
     pub thinking: String,
@@ -55,44 +34,21 @@ pub struct HeadPrefs {
     pub tools: String,
     /// Show the model's `<function=…>` markup under each call.
     pub raw_calls: bool,
-    /// **The todos pane has the done group FOLDED** — the operator: *"we need to be able to hide
-    /// done todo items"*, and then, once the done rows had a group of their own: *"`d` folds and
-    /// unfolds it"*. The pane's `d` flips it and this is what makes the answer outlive the head: a
-    /// board whose done rows are the noise is a board the reader wants the same way tomorrow, and a
-    /// switch that forgets is a switch they keep re-making.
-    ///
-    /// **The KEY on disk is `todos_hide_done`, and it stays that name.** It is the spelling every
-    /// `head.toml` on the box already carries from the days when the switch hid the rows in place,
-    /// and a rename would be a setting silently reset for every head that had ever been asked;
-    /// the fold is what the old name was always reaching for, so the file keeps it and the code
-    /// says what it does.
+    /// The todos pane has the done group FOLDED: a board whose done rows are the noise is one the
+    /// reader wants the same way tomorrow, and a switch that forgets is one they keep re-making.
+    /// The KEY on disk stays `todos_hide_done`, because every `head.toml` already carries it.
     pub todos_fold_done: bool,
-    /// **Which rung of the ladder this head draws at** (R37/R38) — `conversation`, `terse`,
-    /// `normal` or `loud`.
-    ///
-    /// The operator: *"make versbosity a config option so it persists headrestarts."* It was
-    /// the one setting the card could change and the file did not keep, so a reader who chose
-    /// `conversation` got `normal` back on every restart — a setting that forgets is a setting
-    /// the reader has to keep re-making.
-    ///
-    /// A `String` rather than the ladder's own enum, because this module is deliberately free
-    /// of the app's vocabulary: it is a reader and writer of one word, and which words that word
-    /// may be is [`crate::app::Visibility::parse`]'s to say — the same reader this head reads the
-    /// file with, the card chooses with and the verb takes. A name this build does not know is
-    /// kept in the file and reported, exactly as an unknown key is.
+    /// Which rung of the ladder this head draws at. The one setting the card could change and the
+    /// file did not keep, so a reader who chose `conversation` got `normal` on every restart. A
+    /// `String` because this module is free of the app's vocabulary: `Visibility::parse` reads it.
     pub verbosity: String,
-    /// **The notes this reader has retired**, by key (R10).
-    ///
-    /// Written as one comma-separated value because a key is built to contain no
-    /// comma and no whitespace — see `app::note_key`, which hashes the detail
-    /// rather than quoting it, so a warning whose text runs to paragraphs does not
-    /// have to be escaped into this file. Order is oldest first, and the list is
-    /// truncated to [`RETIRED_CAP`] on the way in and on the way out.
+    /// The notes this reader has retired, by key. One comma-separated value, because a key is built
+    /// to contain no comma and no whitespace - `app::note_key` hashes the detail rather than quoting
+    /// it - so a warning whose text runs to paragraphs needs no escaping. Oldest first.
     pub retired: Vec<String>,
-    /// **The theme this head draws with** — `theme = NAME`, the file
-    /// `themes/NAME.toml` beside this one (`terminal`, or no key, is the terminal's own
-    /// palette). Read here and written back as the line it was: `save` does not own it,
-    /// so a hand-edited theme line survives the config pane. See `rano::theme`.
+    /// The theme this head draws with: `themes/NAME.toml` beside this file (`terminal`, or no key,
+    /// is the terminal's own palette). `save` does not own it, so a hand-edited theme line survives
+    /// the config pane. See `rano::theme`.
     pub theme: Option<String>,
     /// `color.ROLE = "look"` lines, in file order: one role overridden on top of the theme.
     /// Kept as written; `rano::theme::resolve` reads and reports them.
@@ -105,10 +61,8 @@ pub enum DiffPref {
     Unified,
 }
 
-/// `todo_template`'s three shapes, as one type: off, the default file beside this one, or a path
-/// the operator named. An enum and not a string so `true` cannot be mistaken for a path called
-/// "true" — leticl's ruling, in its own reader: *"`todo_template = "typo.md"` must not silently
-/// mean `on, using the default`"*.
+/// `todo_template`'s three shapes as one type, so `true` cannot be mistaken for a path called
+/// "true": `todo_template = "typo.md"` must not silently mean `on, using the default`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TodoTemplate {
     Off,
@@ -169,11 +123,9 @@ impl Default for HeadPrefs {
             thinking: "folded".into(),
             tools: "folded".into(),
             raw_calls: false,
-            // **On: the done group starts folded.** The operator: *"d collapses - so that means i
-            // want done collapsed by default"* (2026-10-28). The pane still says how many are
-            // there — `done (3) · d shows them` — so nothing is missing on the first look, which
-            // is what this comment used to argue for the other default: the count is on the row,
-            // and the rows are one key away.
+            // On: the done group starts folded, and the pane still says how many are there, so
+            // nothing is missing on the first look - the count is on the row and the rows are one
+            // key away.
             todos_fold_done: true,
             // The rung the head has always started at when nothing said otherwise.
             verbosity: "normal".into(),
@@ -221,20 +173,9 @@ fn parse(text: &str) -> Vec<Line> {
         .collect()
 }
 
-/// **One file, every head on the box — so a save is a UNION and never a replacement.**
-///
-/// Measured 2026-09-22, which is the whole reason this exists: two `letibot-tui`
-/// processes were running (pids 2076943 and 2350959, 1d15h and 8h45m old) against the
-/// one `~/.config/letibot/head.toml` that `path()` names. Each loads `retired` **once,
-/// at startup**, and each save wrote its own list back whole. So head A dismisses a
-/// note, head B saves for its own reasons, and A's key is gone from the file — leaving
-/// the two disagreeing, and the notes A had dismissed coming back the next time anything
-/// read the file. *"i dismissed letibot notes but they stay."*
-///
-/// The union is the correct write for a shared record: a dismissal is an assertion that
-/// a key is retired, and no other head's save is evidence to the contrary. `restore`
-/// still empties the list, because it empties its own and saves, and a file with no keys
-/// unions to nothing.
+/// One file, every head on the box - so a save is a UNION and never a replacement. Each head loads
+/// `retired` once at startup, and a save that wrote its own list back whole would discard what
+/// another head retired since. `restore` still empties the list: no keys unions to nothing.
 pub fn merge_retired(path: &Path, ours: &[String]) -> Vec<String> {
     let (existing, _) = load(path);
     let mut out = existing.retired;
@@ -250,10 +191,9 @@ pub fn merge_retired(path: &Path, ours: &[String]) -> Vec<String> {
     out
 }
 
-/// The seeded-projects record, unioned with whatever the file already holds — `merge_retired`'s
-/// twin, for the same reason: two heads share this file, each loads once, and a replacement write
-/// from either drops the other's projects. A dropped record is a project that re-seeds, which is
-/// the duplicate defect this feature exists to avoid, so the union is not a courtesy.
+/// The seeded-projects record, unioned with what the file holds - `merge_retired`'s twin, for the
+/// same reason. A dropped record is a project that re-seeds, which is the duplicate this feature
+/// exists to avoid, so the union is not a courtesy.
 pub fn merge_todo_seed(path: &Path, ours: &[String]) -> Vec<String> {
     let (existing, _) = load(path);
     let mut out = existing.todo_seed;
@@ -296,9 +236,9 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 "false" | "no" | "off" => p.raw_calls = false,
                 _ => notes.push(format!("head.toml: raw_calls = {v:?} is not true or false")),
             },
-            // The todos pane's fold, in the same two words — one spelling for every boolean this
-            // file holds, so a person editing it by hand has one rule to remember. **The key is
-            // the historical one** (`HeadPrefs::todos_fold_done` says why).
+            // The todos pane's fold, in the same two words - one spelling for every boolean this
+            // file holds, so a person editing it by hand has one rule. The key is the historical
+            // one (`HeadPrefs::todos_fold_done` says why).
             "todos_hide_done" => match v.as_str() {
                 "true" | "yes" | "on" => p.todos_fold_done = true,
                 "false" | "no" | "off" => p.todos_fold_done = false,
@@ -306,25 +246,14 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                     "head.toml: todos_hide_done = {v:?} is not true or false"
                 )),
             },
-            // **A set, read by the ONE function this head reads a set with.**
-            //
-            // `Visibility::parse` takes a profile name, a bare switch, or a whole `custom …` set —
-            // and this check used to be a hand-written list of four profile names kept for the
-            // purpose. That list refused two things this head happily WRITES: `read-edits` (a
-            // profile the list never had, so the row could not even be drawn on the card) and every
-            // `custom …` set. So a reader chose a set, the file kept it, and the next start fell
-            // back to the default in silence — the operator's report, and the whole of why this is
-            // one reader rather than two: *"it is not saved - when i do /verbosity there is no
-            // custom"*.
-            //
-            // An unknown word is still reported by name and LEFT IN THE FILE — a set this build
-            // cannot read gets the default and a sentence saying which word it was, in the parse's
-            // own words.
+            // A set, read by the ONE function this head reads a set with: `Visibility::parse` takes
+            // a profile name, a bare switch, or a whole `custom ...` set, where a hand-written list
+            // of names refused what this head WRITES. An unknown word is reported and kept in file.
             "verbosity" => match crate::app::Visibility::parse(&v) {
                 Ok(_) => p.verbosity = v,
                 Err(said) => notes.push(format!("head.toml: {said}")),
             },
-            // **The starter-todo switch, in its three shapes** — see `TodoTemplate`. A value this
+            // The starter-todo switch, in its three shapes - see `TodoTemplate`. A value this
             // build cannot read is reported and left in the file, exactly as `verbosity`'s is.
             "todo_template" => match TodoTemplate::parse(&v) {
                 Some(t) => p.todo_template = t,
@@ -333,9 +262,8 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 ),
             },
             // The once-per-project record. Same comma-list shape as `retired`, same cap, and the
-            // cap is the same trade: a key that falls off after `RETIRED_CAP` projects would
-            // re-seed that project — 512 projects in, on a box whose operator runs a handful at
-            // a time, is a corner rather than a plan.
+            // same trade: a key that falls off after `RETIRED_CAP` projects would re-seed that
+            // project - 512 projects in, on a box that runs a handful at a time, is a corner.
             "todo_seed" => {
                 p.todo_seed = v
                     .split(',')
@@ -344,11 +272,9 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                     .map(str::to_string)
                     .collect();
             }
-            // **The git field's template: a quoted template, or `false` for the default.** leticl's
-            // own refusal is copied with it — `true` is a switch's word in a template's place, and
-            // a reader that took it for `the default, please` would be guessing at a sentence
-            // somebody may have mistyped. An empty value is the default too (a blank line is no
-            // template), and is not reported — it is indistinguishable from the key's absence.
+            // The git field's template: a quoted template, or `false` for the default. `true` is a
+            // switch's word in a template's place, and a reader that took it for `the default,
+            // please` would be guessing. An empty value is the default too, and is not reported.
             "git_format" => match v.trim() {
                 "" | "false" | "no" | "off" => p.git_format = None,
                 "true" | "yes" | "on" => notes.push(
@@ -371,9 +297,9 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                     p.retired.drain(..over);
                 }
             }
-            // **The theme, and single-role overrides on top of it.** Their values are read by
+            // The theme, and single-role overrides on top of it. Their values are read by
             // `rano::theme::resolve` when the head applies them, which is where a bad role or a
-            // bad look is reported — so here they are only kept.
+            // bad look is reported - so here they are only kept.
             "theme" => p.theme = (!v.is_empty()).then_some(v),
             k if k.starts_with("color.") => {
                 p.colors.push((k["color.".len()..].to_string(), v));
@@ -443,12 +369,9 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     }
     let mut body = out.join("\n");
     body.push('\n');
-    // **Through a temporary file, then one rename.** `fs::write` truncates and then
-    // writes, so a second process reading at the wrong moment sees a PARTIAL list —
-    // and a head that loaded a partial `retired` would then save the partial one back,
-    // which is how a dismissal gets lost with nothing to point at. A rename is atomic
-    // on any filesystem this runs on, so a reader sees either the old file or the new
-    // one and never a half of either.
+    // Through a temporary file, then one rename: `fs::write` truncates and then writes, so a
+    // second process reading at the wrong moment sees a PARTIAL list - and a head that loaded a
+    // partial `retired` would save it back. A rename is atomic, so a reader sees one file.
     let tmp = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => path.with_file_name(format!(".{n}.tmp")),
         None => {
@@ -465,8 +388,8 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
 
-    /// **A theme line and colour lines are read, not reported, and a save keeps them** — the
-    /// config pane rewrites this file, and a hand-edited theme must survive it.
+    /// A theme line and colour lines are read, not reported, and a save keeps them - the config
+    /// pane rewrites this file, and a hand-edited theme must survive it.
     #[test]
     fn a_theme_and_its_colour_lines_are_read_and_survive_a_save() {
         let path = tmp("theme");
@@ -502,13 +425,9 @@ mod tests {
         d.join("head.toml")
     }
 
-    /// **A save leaves no half-written file behind, and no debris beside it.**
-    ///
-    /// `fs::write` truncates then writes, so a second head reading at the wrong moment
-    /// sees a partial `retired` list — and a head that loaded a partial one would save the
-    /// partial one back, which is how a dismissal gets lost with nothing to point at. The
-    /// write goes through a temporary file and one rename; this asserts the rename
-    /// happened and the temporary is gone.
+    /// A save leaves no half-written file behind, and no debris beside it: the write goes through a
+    /// temporary file and one rename, so a reader sees the old file or the new one. This asserts
+    /// the rename happened and the temporary is gone.
     #[test]
     fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
         let p = tmp("atomic");
@@ -541,13 +460,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// **A key another head recorded survives this head's save.**
-    ///
-    /// The file is one file for every head on the box — measured 2026-09-22, two
-    /// `letibot-tui` processes against one `~/.config/letibot/head.toml` — and each head
-    /// loads it once. A save that wrote its own list back whole would discard whatever
-    /// the other had retired since, which is the shape of *"i dismissed letibot notes but
-    /// they stay."*
+    /// A key another head recorded survives this head's save: the file is one file for every head
+    /// on the box, and each loads it once, so a save that wrote its own list back whole would
+    /// discard what the other retired since.
     #[test]
     fn a_merge_keeps_both_heads_keys_and_stays_capped() {
         let p = tmp("merge");
@@ -589,7 +504,7 @@ mod tests {
             thinking: "open".into(),
             tools: "folded".into(),
             raw_calls: true,
-            // The rung, which is the operator's *"persists headrestarts"*.
+            // The rung, which is the setting that has to outlive a restart.
             verbosity: "conversation".into(),
             // R10's half of the round trip, in one key: the comma is the separator
             // and the key contains none, which is what makes this one line.
@@ -638,9 +553,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
-    /// **`todo_template`'s three shapes round-trip**, and a shape this build cannot read is
-    /// reported rather than guessed at — leticl's own refusal, copied: an empty value is
-    /// neither off nor a path.
+    /// `todo_template`'s three shapes round-trip, and a shape this build cannot read is reported
+    /// rather than guessed at: an empty value is neither off nor a path.
     #[test]
     fn todo_template_round_trips_its_three_shapes() {
         let dir = std::env::temp_dir().join(format!("letibot-tpl-{}", std::process::id()));
@@ -673,8 +587,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The seeded-projects record unions on write** — `merge_retired`'s twin, and for its
-    /// reason: two heads share this file, and a dropped record is a project that re-seeds.
+    /// The seeded-projects record unions on write - `merge_retired`'s twin, and for its reason: two
+    /// heads share this file, and a dropped record is a project that re-seeds.
     #[test]
     fn todo_seed_unions_across_heads() {
         let dir = std::env::temp_dir().join(format!("letibot-seedrec-{}", std::process::id()));

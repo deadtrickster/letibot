@@ -1,10 +1,6 @@
-//! **A link on the frame is a target** — the operator, 2026-10-30: *"why links are not clickable
-//! and ghostty doesnt detect them either?"*.
-//!
-//! The answer this file pins: the head takes the mouse (`rano::term::Mouse::Any`), so Ghostty
-//! forwards the click instead of opening the link — and a link the head drew had no target, so
-//! the click did nothing. Here it opens, the URL is the one the frame drew, the copy path is
-//! still the visible text, and a row with no link records nothing.
+//! A link on the frame is a target. The head takes the mouse (`rano::term::Mouse::Any`), so the
+//! terminal forwards the click rather than opening the link, and a link the head drew with no
+//! target did nothing: here it opens the URL the frame drew, and a row with no link records nothing.
 
 use super::*;
 use std::path::PathBuf;

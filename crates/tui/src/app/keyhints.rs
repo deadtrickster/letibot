@@ -1,28 +1,11 @@
-//! **Every key hint on the screen is a button** — a click on `esc closes`, `ctrl-g subagents`,
-//! `↑↓`, `C-o write out` or `/help` is that key, typed.
-//!
-//! The operator, 2026-10-11: *"say i open diff popup by clicking - i cant close it by clicking -
-//! make at least Esc keymap entry clickable as well as maybe others. generally - all keymap items
-//! anywhere must be clickable"*.
-//!
-//! # How, in one place
-//!
-//! The hints are drawn by a dozen renderers — the hint bar, every pane's footer, the popup's and
-//! the editor's edges, the cards — so they are not recorded by each of them. After a frame is
-//! composed, its rows are read back as text ([`scan`]) and every `key label` segment of a hint
-//! line becomes a [`KeyHint`]: where it is, and the bytes a terminal sends for that key. A click
-//! on one queues those bytes ([`App::press_hint`]), and the head's next read takes them as if
-//! they had been typed (`head::read_routed`) — so the key reaches whatever has the keyboard by
-//! exactly the route a keypress takes, and nothing here has to know what any key does.
-//!
-//! **Not the conversation and not the composer.** Their text is the model's and the operator's,
-//! and a `p reads` in somebody's prose is not a button: rows the conversation is drawn on, the
-//! composer's boxed rows, and the editor's own text are never scanned.
+//! Every key hint on the screen is a button: a click on `esc closes` types that key. Hints come
+//! from a dozen renderers, so a composed frame is read back as text ([`scan`]) and each
+//! `key label` segment becomes a [`KeyHint`] whose bytes are queued for the head's next read.
 
 use super::*;
 use std::ops::ControlFlow;
 
-/// **One key hint on the last frame**: its cells, and what pressing it types.
+/// One key hint on the last frame: its cells, and what pressing it types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KeyHint {
     pub(crate) y: usize,
@@ -30,9 +13,9 @@ pub(crate) struct KeyHint {
     pub(crate) w: usize,
     /// The bytes a terminal sends for the key.
     pub(crate) bytes: Vec<u8>,
-    /// **A hint on the editor's frame** — rano's keys: the editor takes the keyboard first.
+    /// A hint on the editor's frame - rano's keys: the editor takes the keyboard first.
     pub(crate) editor: bool,
-    /// **A `/command`**, typed only into an empty prompt: into a half-written one it would land
+    /// A `/command`, typed only into an empty prompt: into a half-written one it would land
     /// in the middle of somebody's sentence.
     pub(crate) command: bool,
 }
@@ -41,7 +24,7 @@ pub(crate) struct KeyHint {
 /// the whole word is a command.
 type Piece = (usize, usize, Vec<u8>, bool);
 
-/// **One frame row, and the key hints read off it** — the cache [`App::scan_hints`] keeps so an
+/// One frame row, and the key hints read off it - the cache [`App::scan_hints`] keeps so an
 /// unchanged row is not read twice. `key` is whether the row was skipped and whether it is the
 /// editor's frame, which can change while the text does not.
 #[derive(Debug, Clone, Default)]
@@ -58,8 +41,8 @@ impl HintRow {
     }
 }
 
-/// **A row's cells, as text**: escape sequences (CSI, OSC) dropped, one entry per column — a wide
-/// character takes two, the second a placeholder — so a column in the vector is a column on the
+/// A row's cells, as text: escape sequences (CSI, OSC) dropped, one entry per column - a wide
+/// character takes two, the second a placeholder - so a column in the vector is a column on the
 /// glass.
 pub(crate) fn cells(row: &str) -> Vec<char> {
     let mut out = Vec::with_capacity(row.len());
@@ -100,10 +83,9 @@ pub(crate) fn cells(row: &str) -> Vec<char> {
     out
 }
 
-/// **The bytes one key token stands for**, or `None` for a word that is not a key. The token is
-/// spelled the way this head's and rano's hints spell keys: `esc`, `enter`, `tab`, `ctrl-x` and
-/// `alt-x`, rano's `C-x`, `M-x` and `<name>`, the arrows, the page keys, a `/command`, or one
-/// letter (`p reads its output`).
+/// The bytes one key token stands for, or `None` for a word that is not a key. Tokens are
+/// spelled as this head and rano spell them: `esc`, `ctrl-x`, `alt-x`, `C-x`, `M-x`, `<name>`,
+/// the arrows, the page keys, a `/command`, or one letter (`p reads its output`).
 fn key_bytes(token: &str) -> Option<(Vec<u8>, bool)> {
     let lower = token.to_ascii_lowercase();
     let seq = |s: &str| Some((s.as_bytes().to_vec(), false));
@@ -188,9 +170,9 @@ fn key_bytes(token: &str) -> Option<(Vec<u8>, bool)> {
     }
 }
 
-/// **The key hints on one row** of text cells, at row `y`: every ` · `-separated segment that
-/// starts with a key. A segment's first key takes the whole segment (`esc closes` is one button);
-/// a segment that is only keys (`↑↓ PgUp PgDn Home End`, `pgup/pgdn`) gives each its own cells.
+/// The key hints on one row of text cells, at row `y`: every ` · `-separated segment that starts
+/// with a key. A segment's first key takes the whole segment (`esc closes` is one button); a
+/// segment that is only keys (`↑↓ PgUp PgDn Home End`, `pgup/pgdn`) gives each its own cells.
 pub(crate) fn scan_row(y: usize, cs: &[char]) -> Vec<KeyHint> {
     let mut out = Vec::new();
     // Columns of the one-letter hints, kept only if the row proves to be a hint line.
@@ -306,7 +288,7 @@ pub(crate) fn scan_row(y: usize, cs: &[char]) -> Vec<KeyHint> {
             });
         }
     }
-    // **A one-letter key needs company**: `p reads its output` is a hint on a line that also has
+    // A one-letter key needs company: `p reads its output` is a hint on a line that also has
     // `esc` or a `ctrl-` key, and the same shape in a sentence (`a sentence · with …`) is prose.
     let sure = out.iter().enumerate().any(|(n, _)| !letters.contains(&n));
     if !sure {
@@ -316,14 +298,12 @@ pub(crate) fn scan_row(y: usize, cs: &[char]) -> Vec<KeyHint> {
 }
 
 impl App {
-    /// **The key hints on a finished frame** — every row but the conversation's, the composer's
-    /// and the editor's own text. Called by `screen` once the frame is whole.
+    /// The key hints on a finished frame - every row but the conversation's, the composer's and
+    /// the editor's own text. Called by `screen` once the frame is whole.
     pub(crate) fn scan_hints(&mut self, frame: &[String]) {
-        // **Only the rows that changed are read.** A frame equal to the last one costs this
-        // function no allocation at all — the frame test holds the head to that — so each row's
-        // hints are kept beside the row they were read from, and a row is read again only when
-        // its text moved. Which rows are scanned at all can change without the text changing (a
-        // pane opening over the conversation), so the skip rule is part of the cache's key.
+        // Only rows that changed are read: an unchanged frame costs no allocation at all, so each
+        // row's hints are kept beside the row they were read from. Which rows are scanned can
+        // change while the text does not (a pane opening over the conversation), so that is keyed.
         let convo: Vec<(usize, usize)> = self
             .hits
             .iter()
@@ -386,10 +366,9 @@ impl App {
             .find(|k| x >= k.x && x < k.x + k.w)
     }
 
-    /// **A click on a key hint: the key, typed.** Queued for the head's next read, which takes it
-    /// ahead of the terminal (`take_injected`). A hint on the editor's frame gives the editor the
-    /// keyboard first — those are rano's keys — and a `/command` is typed only into an empty
-    /// prompt.
+    /// A click on a key hint: the key, typed. Queued for the head's next read, which takes it
+    /// ahead of the terminal (`take_injected`). A hint on the editor's frame focuses the editor
+    /// first, and a `/command` is typed only into an empty prompt.
     pub(crate) fn press_hint(&mut self, k: KeyHint) -> ControlFlow<Option<Action>> {
         if k.command && !self.editor.text().is_empty() {
             let cmd = String::from_utf8_lossy(&k.bytes).trim_end().to_string();
@@ -410,7 +389,7 @@ impl App {
         ControlFlow::Break(None)
     }
 
-    /// **The keys a click typed**, for the head's read to take before the terminal's.
+    /// The keys a click typed, for the head's read to take before the terminal's.
     pub fn take_injected(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.injected)
     }

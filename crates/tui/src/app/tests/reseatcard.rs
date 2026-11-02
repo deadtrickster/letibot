@@ -1,14 +1,6 @@
-//! **The reseat card: a select that stays on the screen until the prompt is current.**
-//!
-//! The operator, 2026-10-12: *"regarding reseat - since it is important id suggest to show me
-//! "select" with one option - reseat and abstain and then when on abstain keep reseat select
-//! open. this way i keep reseat in mind because it stares at me yet can continue at my risk"*.
-//!
-//! So a `prefix_stale` raises a card with exactly two rows — reseat now, not now — whose first
-//! row is the bare `/reseat` as typing it would send it; `not now` (and Esc, and typing) pins the
-//! card as a strip above the composer that stays while the operator works; alt-p opens it again,
-//! alt-r reseats from anywhere; and only the daemon's word that the prompt is current takes it
-//! down.
+//! The reseat card: a select that stays on the screen until the prompt is current. A stale prompt
+//! raises a card with two rows - reseat now, not now - whose first row is the bare `/reseat`;
+//! `not now`, Esc or typing pins it as a strip above the composer, and only a current prompt ends it.
 
 use super::*;
 
@@ -321,10 +313,9 @@ const TOO_BIG: &str = "carrying this conversation verbatim would put 901221 toke
                        fits; `/reseat summarise` summarises and fits, and `/compact` does the \
                        same without changing the prompt. Nothing was changed.";
 
-/// **A reseat that cannot fit verbatim offers the one that can** — the operator pasted the card
-/// offering `alt-r reseats now` under the daemon's refusal that a verbatim reseat does not fit:
-/// the choice it stared at them with could not be taken. After that refusal the card's first
-/// row is a reseat with a summary, alt-r sends that, and the card opens again to say so.
+/// A reseat that cannot fit verbatim offers the one that can: after the daemon's refusal the card's
+/// first row is a reseat with a summary, alt-r sends that, and the card opens again to say so. A
+/// choice that cannot be taken is worse than none.
 #[test]
 fn a_reseat_too_big_to_carry_verbatim_offers_one_with_a_summary() {
     let (mut a, hub) = stale();
@@ -394,10 +385,9 @@ fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
     ));
 }
 
-/// **A digit on the reseat card moves the mark; it does not reseat** (R90.6). The digit chose at
-/// once, so `1` typed as the first character of a line sent `/reseat` and forked the conversation
-/// while the card's own line said *"enter chooses"*. The card's other rule — a typed line pins it
-/// and goes to the composer — is what the words after that digit get.
+/// A digit on the reseat card moves the mark; it does not reseat. Choosing on the digit meant `1`
+/// as the first character of a line forked the conversation while the card's own line said enter
+/// chooses. A typed line pins the card and goes to the composer.
 #[test]
 fn a_digit_on_the_reseat_card_marks_the_row_and_reseats_nothing() {
     let (mut a, _hub) = stale();
@@ -458,10 +448,9 @@ fn the_reseat_rows_wrap_on_a_narrow_screen() {
     }
 }
 
-/// **A reseat asked for during a turn says it waits for the turn** — the operator: *"PROMPT IS
-/// STALE yellow thing doesnt go away even when i answered reseat … maybe it will go away when the
-/// turn ends"*. It does: the daemon runs a reseat on its queue, between turns, never inside one.
-/// The strip and the second ask now say so rather than *"waiting for the daemon"*.
+/// A reseat asked for during a turn says it waits for the turn: the daemon runs a reseat on its
+/// queue, between turns, never inside one, so the strip and the second ask say that rather than
+/// waiting for the daemon.
 #[test]
 fn a_reseat_asked_for_during_a_turn_says_it_runs_when_the_turn_ends() {
     let (mut a, hub) = stale();

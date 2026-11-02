@@ -1,23 +1,6 @@
-//! **A call the turn is still drawing is a door, in both the shapes it is drawn in** — the
-//! operator, 2026-11-01: *"why running tool call rendered in yellow is no longer clickable? it is
-//! similar degradation that happened to git status"*.
-//!
-//! The precedent is the header's git field, and the shape is the same one: a thing is DRAWN and
-//! the click map has no rectangle for it, so a click falls through to whatever is behind and
-//! answers nothing. Here the thing is a call in flight, and it is drawn twice depending on the
-//! rung:
-//!
-//! * **the counter** — `[1 tool call]`, glued to the sentence that introduced the call
-//!   (`live_joins`), at the rungs that hide the working. `marker_rows_in` resolved a clause's run
-//!   by finding the first hidden row at or after the row it sits on, and the work in flight has
-//!   no row at all — so the lookup answered `None` and the clause was dropped. The counter was a
-//!   door only when a hidden row happened to exist under it.
-//! * **the card** — `◐ Running · 12s`, at the rungs that show the working. It is drawn by
-//!   `push_turn_pane`, which recorded no rectangle at all: every click map in the head is built
-//!   by walking the history's spans, and the live pane is below them.
-//!
-//! Both are one rule: **what the frame draws for a call is a door to that call, at the columns
-//! the frame drew it in**, and the door performs what the same call's row performs once it lands.
+//! A call the turn is still drawing is a door, in both shapes it is drawn in: the counter at the
+//! rungs that hide the working, and the card at the rungs that show it. Both are one rule - what
+//! the frame draws for a call is a door to that call, at the columns the frame drew it in.
 
 use super::*;
 
@@ -151,14 +134,9 @@ fn clause_on(a: &App, y: u16) -> Option<&crate::app::runclick::MarkerHit> {
     a.marker_rows.iter().find(|m| m.y == usize::from(y) - top)
 }
 
-/// **The counter with nothing under it is a door** — the operator's *"running tool call rendered
-/// in yellow is no longer clickable"*, in the state where it is the only thing on the screen that
-/// stands for the call.
-///
-/// It fails on the tree before this change, and it fails at the first assertion: `marker_rows` is
-/// empty, because the clause's run was resolved by looking for a hidden row and the work in
-/// flight has none. The click then falls through the conversation's rectangle and nothing at all
-/// happens — no panel, no sentence.
+/// The counter with nothing under it is a door: a clause's run was resolved by finding the first
+/// hidden row at or after it, and the work in flight has no row, so the record was empty and a
+/// click fell through the conversation and answered nothing.
 #[test]
 fn the_counter_of_a_call_with_no_row_under_it_opens_the_calls() {
     let mut a = a_call_in_flight("bash");
@@ -192,13 +170,9 @@ fn the_counter_of_a_call_with_no_row_under_it_opens_the_calls() {
     );
 }
 
-/// **A click on the counter lands where the counter is drawn** — the defect the git field had, in
-/// the same file: the clause's columns are the row's own and a click's `x` is a terminal cell, and
-/// the frame pads every row with the gutter after composing it.
-///
-/// Fails on the tree before this change in the second half: the record sat two columns left of
-/// what it drew, so a click on the clause's last drawn column landed past its end and answered
-/// nothing.
+/// A click on the counter lands where the counter is drawn: a clause's columns are the row's own,
+/// a click's `x` is a terminal cell, and the gutter is padded onto every row after composing, so a
+/// record built without it sits two columns left of what was drawn.
 #[test]
 fn the_counters_columns_are_the_cells_it_was_drawn_in() {
     let mut a = a_call_in_flight("bash");
@@ -245,14 +219,9 @@ fn the_counters_columns_are_the_cells_it_was_drawn_in() {
     );
 }
 
-/// **The card is a target, and it says what it cannot open** — the rung that shows the working
-/// draws a card instead of a counter, and the head has no rectangle for a card.
-///
-/// It fails on the tree before this change at the first assertion: `call_rows` is empty, and the
-/// click falls through to the conversation and answers nothing at all — which is what the
-/// operator saw. The sentence is the honest half: a call that has not returned has no body
-/// (`call_card`'s note: `ToolFinished` carries digests and byte counts, never a payload), so
-/// there is nothing to open yet — and the head says so instead of doing nothing.
+/// The card is a target, and it says what it cannot open: the head had no rectangle for a card,
+/// and a call that has not returned has no body to open (`ToolFinished` carries digests and byte
+/// counts, never a payload), so the head says that instead of doing nothing.
 #[test]
 fn a_running_calls_card_is_a_target_and_says_there_is_nothing_yet() {
     let mut a = a_call_in_flight("bash");
@@ -284,11 +253,8 @@ fn a_running_calls_card_is_a_target_and_says_there_is_nothing_yet() {
     );
 }
 
-/// **A card carrying a change opens exactly what the same call's row opens** — the deliverable's
-/// own assertion, both ways round: the popup the click on the card leaves is the popup the click
-/// on the landed row leaves.
-///
-/// Fails on the tree before this change at `card_body`: the click on the card opens nothing.
+/// A card carrying a change opens exactly what the same call's row opens: the popup a click on
+/// the card leaves is the popup a click on the landed row leaves.
 #[test]
 fn a_cards_change_opens_the_popup_its_landed_row_opens() {
     let mut a = a_finished_change();

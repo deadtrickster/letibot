@@ -33,33 +33,9 @@ pub(crate) fn last_line(raw: &str, cfg: &RenderConfig) -> String {
     trim_to(l.trim(), cfg.width.saturating_sub(4))
 }
 
-/// The columns everything the model *does* is set in, under everything anybody
-/// *says*.
-///
-/// # A turn had no shape
-///
-/// The operator's words: *"user message, then a flat wall of cards. Nothing says
-/// this is one assistant turn, nothing separates thinking from acting from
-/// answering, and assistant prose has no home of its own."* Every row started in
-/// the same column, so a question, a file listing and the answer were three
-/// things of equal weight in a stack.
-///
-/// What separates them here is a **step**, not a new glyph. The operator's
-/// question and the model's answer sit at the body's own column — they are the
-/// conversation. Thinking and acting are indented one step under them: they are
-/// how the answer was arrived at, and they are subordinate to it. The turn's
-/// footer rule closes the block at the outer column again.
-///
-/// That gives a turn four readable levels out of the vocabulary already on the
-/// screen — `▌` for the question, a step in for the working, the answer flush
-/// left, `──` to close — and costs no colour, so it survives [`Palette::None`]
-/// and a copy-paste, which is the same argument the reasoning rail makes.
-///
-/// **Two columns, matching the reasoning rail's width** (`card::REASONING_RAIL_WIDTH`)
-/// and the frame's own gutter, so the page reads as one repeated step rather than
-/// as three unrelated indents. Given up below sixty columns, where two columns
-/// out of every line is a bigger fraction than the hierarchy is worth — the same
-/// trade `App::gutter` makes at forty.
+/// The columns everything the model does is set in, under everything anybody says. The question
+/// and the answer sit at the body's column; thinking and acting are indented one step under them,
+/// as how the answer was arrived at. Two columns match the reasoning rail; none below 60 wide.
 pub(crate) fn activity_indent(w: usize) -> usize {
     if w >= 60 {
         card::REASONING_RAIL_WIDTH
@@ -92,14 +68,9 @@ pub(crate) enum RowClass {
     Other,
 }
 
-/// Everything one transcript row needs to know about where it sits.
-///
-/// A struct rather than seven positional parameters because two of the seven are
-/// round-scoped and one is row-scoped, and a caller passing them in the wrong
-/// order is exactly the defect this file has just finished fixing.
-/// Rows an open payload window leaves for everything else on the screen: the header, the
-/// row's own heading, the composer and its rows. Generous rather than exact — a window a
-/// line short of the screen is read whole; one a line too tall has lost its first line.
+/// Rows an open payload window leaves for everything else on the screen: the header, the row's own
+/// heading, the composer and its rows. Generous rather than exact - a window a line short of the
+/// screen is read whole; one a line too tall has lost its first line.
 pub(crate) const WINDOW_CHROME: usize = 10;
 
 pub(crate) struct ItemCtx<'a> {
@@ -135,61 +106,38 @@ pub(crate) struct ItemCtx<'a> {
     /// **The session's workspace**, which a citation's path is relative to — read to tell whether
     /// the cited lines still say what they said. Empty where there is no file to compare with.
     pub(crate) workspace: &'a str,
-    /// The echo this head bound to this row, when the row is a `user` row whose body
-    /// has not arrived. See `App::bound_prompts`: it is drawn **in the row's place**,
-    /// which is what puts the prompt above the reply it caused instead of below it
-    /// and tagged `queued`.
+    /// The echo this head bound to this row, when the row is a `user` row whose body has not
+    /// arrived. Drawn in the row's place, which is what puts the prompt above the reply it caused
+    /// instead of below it, tagged `queued`. See `App::bound_prompts`.
     pub(crate) bound: Option<&'a str>,
-    /// **Which mark a bound echo carries** — `queued` or `unconfirmed` (R16).
-    ///
-    /// On the context rather than derived from `bound`, because whether a snapshot could
-    /// resolve this echo is a fact about the *head's* history and not about the text: the
-    /// same words are `queued` when a row is expected and `unconfirmed` when a snapshot
-    /// has already replaced the transcript without carrying it. Only `App` knows which.
+    /// Which mark a bound echo carries - `queued` or `unconfirmed`. On the context and not derived
+    /// from `bound`: the same words are `queued` when a row is expected and `unconfirmed` when a
+    /// snapshot already replaced the transcript without it, and only `App` knows which.
     pub(crate) echo_mark: &'a str,
     /// **Whether an echo is drawn in full or as its elided headline** (R33).
     pub(crate) echo_open: bool,
-    /// **Which set of switches this row is being drawn for** (R37).
-    ///
-    /// On the context rather than read from the app, because `item_lines` is a free function
-    /// and the walk holds the app apart — the same reason every other field here is passed.
-    ///
-    /// **A set and not a rung**, and that is this slice's one new drawing: `keeps` is the
-    /// ladder's answer with the edit card's exception, and the renderer and the run finder ask
-    /// it here rather than asking the ladder and patching its answer afterwards.
+    /// Which set of switches this row is drawn for. On the context because `item_lines` is a free
+    /// function and the walk holds the app apart. A SET and not a rung: `keeps` is the ladder's
+    /// answer with the edit card's exception, so the renderer and the run finder cannot disagree.
     pub(crate) vis: Visibility,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
     pub(crate) diff_split: bool,
-    /// How far into a row's payload the reader has paged, and which row that is.
-    ///
-    /// A pair because "the view is open" and "how far down it is" have to agree about
-    /// *which* row — several payloads can be unfolded on one screen, and a bare offset
-    /// would page all of them together. Keyed on the **item id**, which is what
-    /// `item_lines` holds; keying it on the call id is a mismatch that leaves the view
-    /// silently closed, and it was: the first version did exactly that and the test
-    /// caught it (the seam said `ctrl-t pages` while `ctrl-t` had been pressed).
+    /// How far into a row's payload the reader has paged, and which row that is. A pair because
+    /// several payloads can be open on one screen and a bare offset would page them all together;
+    /// keyed on the ITEM id, which is what `item_lines` holds - the call id leaves it closed.
     pub(crate) payload_view: Option<(&'a str, usize)>,
     /// Where the draw records the open window's furthest full page (see `App::payload_max`).
     pub(crate) payload_max: Option<&'a std::cell::Cell<usize>>,
-    /// **The most rows an open payload window may take**: the screen's, less the chrome.
-    /// The window's budget is a fixed forty rows, and on a shorter terminal its top was
-    /// above the screen — the first twenty lines of a result opened to be read, unreachable
-    /// while the window held the keys. `usize::MAX` where there is no screen to fit.
+    /// The most rows an open payload window may take: the screen's, less the chrome. A fixed
+    /// forty-row budget put the top of a long result above a shorter terminal, unreachable while
+    /// the window held the keys. `usize::MAX` where there is no screen to fit.
     pub(crate) window_rows: usize,
-    /// **The one row `ctrl-t` can act on**, or `None` when no result is long enough
-    /// to have a rest to read.
-    ///
-    /// The seam names a chord, and a chord may only be named where it acts. There is
-    /// no cursor in this head, so exactly one row can be addressed — the newest long
-    /// result — and it is *this* row; every other row's seam names `/t` instead,
-    /// which is the verb that does reach an older row's payload. R10's other half:
-    /// the chord used to flip the whole conversation's fold AND seed this one row's
-    /// window, so a seam that read per-row announced a wall.
+    /// The one row `ctrl-t` can act on, or `None` when no result is long enough to have a rest.
+    /// There is no cursor in this head, so exactly one row can be addressed - the newest long
+    /// result - and every other row's seam names `/t`, the verb that does reach an older payload.
     pub(crate) payload_newest: Option<&'a str>,
-    /// **The row drawn just before this one, when it is the session's question to a person**
-    /// (`asked: …`, `asked_card`) — what an operator's row right under it answers. The operator:
-    /// *"my reply doesnt have any hint on the question. lets mention the question i replied
-    /// to"*. `None` everywhere else.
+    /// The row drawn just before this one, when it is the session's question to a person (`asked:`,
+    /// `asked_card`) - what an operator's row right under it answers. `None` everywhere else.
     pub(crate) replied_to: Option<&'a str>,
 }
 
@@ -210,21 +158,9 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         vis,
         ..
     } = *ctx;
-    // **The set, before anything else** (R37). A row this set does not keep renders to
-    // nothing, and the walk already treats a row that renders to nothing as no row at all —
-    // no separator, no span, no height — so a hidden row costs this function one early
-    // return.
-    //
-    // **And it is the SAME question the run finder asks** ([`row_drawn_at`]): an edit card
-    // kept by `read-edits` is a row here and a drawn row there, and the two agreeing is what
-    // stops a marker being drawn beside a row that is still on the screen.
-    //
-    // **R37 AMENDED, and the two are not alternatives.** A row inside an OPEN run arrives here
-    // as the lifted set, because opening a run is the rung lifted for its rows and nothing
-    // else — so this function does not know about runs at all. A row inside a CLOSED run is
-    // never drawn as a row: the walk answers that one line for the whole run, at the run's
-    // first row ([`hidden_run_lines`]), and the rows behind it render to nothing here. That is
-    // one line per RUN, which is what the amendment asks for and is not a placeholder per row.
+    // The set, before anything else: a row this set does not keep renders to nothing, and the walk
+    // treats that as no row at all, so it costs one early return. It is the SAME question the run
+    // finder asks, and an OPEN run arrives here already lifted - this function knows no runs.
     if let Some(item) = it.item.as_ref()
         && !vis.keeps(item)
     {
@@ -236,37 +172,18 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
     let newest = payload_newest == Some(it.item_id.as_str());
     let ind = activity_indent(cfg.width);
     let Some(item) = &it.item else {
-        // **A row with no body — unless this head has bound an echo to it.**
-        //
-        // The announcement carries an id and a kind and no text, and the body follows
-        // on its own channel. For a `user` row that is this head's own prompt the head
-        // already holds the words, so the row is drawn from them here — in the row's
-        // own place, which is above the reply the model is already streaming. See
-        // `App::bound_prompts` for why the binding is a guess and why the block keeps
-        // the echo's `queued` shape rather than taking the settled one: the
-        // announcement cannot say whether this row is this head's prompt at all, and
-        // `queued` is exactly the word for "bound, not yet confirmed by content".
+        // A row with no body - unless this head has bound an echo to it. The announcement carries an
+        // id and a kind and no text, and the head already holds the words of its own prompt: drawn
+        // in the row's own place, above the reply, keeping the echo's `queued` shape.
         if let Some(text) = bound {
             return (
                 RowClass::Speech,
                 queued_lines(text, cfg, echo_mark, echo_open),
             );
         }
-        // **The announcement arrived and the body has not — so draw nothing.**
-        //
-        // This used to render `[kind — waiting for the body of s-…]`, one line per
-        // row, which was tolerable when the state lasted a frame in the middle of a
-        // turn. A fork made it intolerable: `/reseat` carries the whole conversation
-        // across and publishes an announcement for every item before a single body
-        // follows, so the operator got thousands of them at once — *"i again so
-        // insane amount of grainess with s- and whatever tool lines"*.
-        //
-        // A row with no body is not information, and a screen full of identical
-        // placeholders is not a diagnostic — it is noise with the shape of one. What
-        // IS worth saying is how far along the carry is, and that is one line of the
-        // status row with the bar the prefill already uses; see
-        // `App::progresses`. Both callers drop a render with no lines, so
-        // returning none is how a row says "not yet".
+        // The announcement arrived and the body has not, so draw nothing: a placeholder per row was
+        // tolerable for a frame, and a fork publishes every announcement before any body follows.
+        // What is worth saying is how far the carry is, and that is one line of the status row.
         return (RowClass::Other, Vec::new());
     };
     match item {
@@ -287,11 +204,9 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
     }
 }
 
-/// **A row the system wrote into the conversation, drawn** — ONE line (R89): `system ·
-/// compacted summary (18.7k chars) · click for details`, the text whole in the popup. A
-/// compaction's summary was drawn whole, up to 190 screen rows of the model's own record, at every
-/// rung that shows system rows. On its own so the notice measurement (`walls`) reads exactly what
-/// the transcript draws.
+/// A row the system wrote into the conversation, drawn as ONE line: `system`, what it says, and
+/// `click for details` with the text whole in the popup - drawn whole it ran to 190 screen rows.
+/// On its own so `walls` measures exactly what the transcript draws.
 pub(crate) fn system_row_lines(
     text: &str,
     origin: letibot_transcript::SystemOrigin,

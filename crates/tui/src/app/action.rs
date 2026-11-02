@@ -11,11 +11,9 @@ pub enum Disposition {
     Control,
 }
 
-/// **One message to send** — the words and whatever the composer chipped into them.
-///
-/// A struct rather than two fields on the variant so that the overwhelming majority of prompts —
-/// no chips at all — keep the shape they had: [`Prompt::new`] is the door with nothing attached,
-/// and it is what every caller that has no composer reads.
+/// One message to send: the words and whatever the composer chipped into them. A struct rather
+/// than two fields on the variant, so the overwhelming majority of prompts with no chips keep
+/// [`Prompt::new`] as the door with nothing attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
     /// The words, chips and all — the same string the operator saw in the composer.
@@ -42,10 +40,9 @@ impl Prompt {
     }
 }
 
-/// **A message with nothing attached, from its words** — so the thirty call sites that have never
-/// heard of attachments keep the spelling they had (`Action::Prompt("hi".into())`), and the tests
-/// that compare against one are asserting *no chips* as well as the words, without a second field
-/// to forget.
+/// A message with nothing attached, from its words, so the call sites that have never heard of
+/// attachments keep their spelling and a test that compares against one is asserting no chips as
+/// well as the words.
 impl From<&str> for Prompt {
     fn from(text: &str) -> Self {
         Prompt::new(text)
@@ -73,10 +70,9 @@ impl PartialEq<&str> for Prompt {
     }
 }
 
-/// **A message reads as its words.** Every reader of a `Prompt` that is not sending it — a test
-/// checking what the composer said, the log line, the echo — wants the sentence and nothing else,
-/// and `prompt.starts_with(..)` is that sentence. The attachments are the second thing a caller
-/// asks for when it is asking about them.
+/// A message reads as its words: every reader that is not sending it wants the sentence, and
+/// `prompt.starts_with(..)` is that sentence. The attachments are the second thing a caller asks
+/// for when it is asking about them.
 impl std::ops::Deref for Prompt {
     type Target = str;
 
@@ -94,12 +90,9 @@ impl std::fmt::Display for Prompt {
 /// Something the head wants the daemon to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// **The operator's words, with the chips they put beside them** — the pictures and files the
-    /// composer attached (`PROTOCOL_VERSION` 50).
-    ///
-    /// The attachments ride the action rather than a field on the app, because the action IS the
-    /// message: a driver that read them off `App` afterwards would be reading a second copy, and a
-    /// refusal between the submit and the send would have to undo it.
+    /// The operator's words, with the chips they put beside them.
+    /// The attachments ride the action rather than a field on the app because the action IS the
+    /// message: a second copy could be read after a refusal and would have to be undone.
     Prompt(Prompt),
     Interrupt(String),
     /// Move the running command to the background (Ctrl+B), like Claude Code.
@@ -115,19 +108,9 @@ pub enum Action {
         /// label promised this and nothing carried it.
         note: Option<String>,
     },
-    /// **Answer a `question`** (§1.7), which is a different frame from `Answer` for a
-    /// reason this tree already records: `Answer` grants or denies a **permission**,
-    /// whose failure mode is *something runs*, while a question answers *which way
-    /// should I go*, whose failure mode is *a person is quoted as saying something
-    /// they did not*. So the two vocabularies stay two frames and two types, and this
-    /// is the head's half of the one that had no sender.
-    ///
-    /// The head could not answer a question **at all** before this: `answer_marked`
-    /// returned `None` for an empty `options`, a question always carries
-    /// `options: []` with the model's offered choices in `choices`, and nothing in
-    /// this crate constructed `ClientFrame::AnswerQuestion`. A question rendered as a
-    /// headline over an empty ladder and *"this ask offers no options — your line is
-    /// held"*.
+    /// Answer a `question`, a different frame from `Answer` because their failure modes differ:
+    /// a permission's is that something runs, a question's is that a person is quoted as saying
+    /// what they did not. So the two vocabularies stay two frames and two types.
     AnswerQuestion {
         req_id: String,
         answer: letibot_sessionlog::question::QuestionAnswer,
@@ -145,21 +128,9 @@ pub enum Action {
     ListSessions,
     /// Ask for this session's todo list — the pane's bootstrap read.
     ListTodos,
-    /// **The operator's half of the board, replaced wholesale** — R51 item 18's write half, and
-    /// the frame that had no sender until now — **plus the state moves they asked for on rows that
-    /// are not theirs.**
-    ///
-    /// The daemon stores and serves these rows and hands them to the model as part of one union;
-    /// what it cannot do is invent one, because the words are the operator's. So the head owns them
-    /// and sends the whole list on every change, which is the shape `TodoBoard::set_operator`
-    /// documents: *"a delta protocol for a list of tens of items would be a second source of truth
-    /// about them."*
-    ///
-    /// **`moved` is one act, not a second list.** `/todo postpone|resume` can name a row the MODEL
-    /// wrote — a row that waits on the operator's own hand, which `todo_write` refuses to silence
-    /// and which the pane's numbers never reach — and a state move is the whole of it. It rides this
-    /// action because both halves are *the board as the operator wants it*, and two frames for one
-    /// act is how a head's copy and the store come to disagree.
+    /// The operator's half of the board, replaced wholesale, plus the state moves they asked for
+    /// on rows that are not theirs. The whole list, because a delta for tens of items would be a
+    /// second source of truth; one action, because two frames for one act let the copies drift.
     SetOperatorTodos {
         items: Vec<letibot_sessionlog::event::TodoEntry>,
         moved: Vec<letibot_sessionlog::event::TodoState>,
@@ -167,14 +138,9 @@ pub enum Action {
     /// Ask the daemon for its job table. The head renders the answer; it does
     /// not decide what is in it.
     ListJobs,
-    /// **Ask the daemon for the standing notes, one row each.** The pane's bootstrap read,
-    /// and the jobs pane's shape one mailbox over: the corpus and the form each file has —
-    /// verbatim, or an index because it did not fit what was left of the budget — are decided
-    /// by the module that assembles the section, with the session's own token counter. A head
-    /// holds no counter and draws what it is given.
-    ///
-    /// Asked on every pane-open rather than held: the notes are the operator's own files, and
-    /// this is the read that makes a note written a minute ago a row.
+    /// Ask the daemon for the standing notes, one row each: the corpus and each file's form are
+    /// decided by the module that assembles the section, with the session's token counter, and a
+    /// head holds no counter. Asked on every open, so a note written a minute ago is a row.
     ListNotes,
     /// **Ask what this session can be handed** — the `/skills` pane's bootstrap read. Rows only:
     /// the name, its one line and where it was found. A body travels on [`Action::LoadSkill`],
@@ -196,22 +162,12 @@ pub enum Action {
     NewSession(String),
     /// Move this connection to another session.
     Switch(String),
-    /// Read a subagent's output without leaving this session: the daemon answers
-    /// with `Peeked`, and the pane the tree's read key opens is built from it —
-    /// `p` on a subagent row, and `/peek ID` for the typed spelling.
-    /// Lazy — nothing is read until this is sent.
+    /// Read a subagent's output without leaving this session: the daemon answers with `Peeked`
+    /// and the pane is built from it. Lazy - nothing is read until this is sent.
     Peek(String),
-    /// **Ask the daemon for one row's body, by session ordinal.**
-    ///
-    /// The head sends this for exactly one reason so far: a snapshot arrived with rows it
-    /// announced and never filled, and the question *is this row a hole in the snapshot or a
-    /// hole in the world* can only be answered by the one door that reads the STORE when the
-    /// daemon's in-memory view cannot (`ClientFrame::FetchRow`, whose server arm falls through
-    /// to its `RowSource` for a row with no body). A head that guessed at the answer instead
-    /// would be telling the operator to run a verb on the strength of an assumption — see
-    /// [`Bulk`](crate::app::Bulk).
-    ///
-    /// Answered with `ServerFrame::RowFetched`, on the pump like every other ask.
+    /// Ask the daemon for one row's body, by session ordinal. Sent for a snapshot row it announced
+    /// and never filled: only the door that reads the STORE can say whether that is a hole in the
+    /// snapshot or in the world, and a guess would send the operator to run a verb on it.
     FetchRow {
         session: String,
         /// The row's position in the session — `items_dropped` plus the index the head holds
@@ -220,29 +176,18 @@ pub enum Action {
         at: usize,
         len: usize,
     },
-    /// Read one background job's output into a pane, without leaving this session
-    /// and without posting a slash to the conversation. Answered with a
-    /// `SessionEvent::JobOutput` on the log, and the pane is built from it. The
-    /// jobs pane's Enter sends this instead of `/job ID` — the operator asked for
-    /// exactly that: *"when i press enter on jobs pane im not shown the job output
-    /// im brought back to the main conversation with /job <id> posted - this is not
-    /// what i want"*.
+    /// Read one background job's output into a pane, without leaving this session and without
+    /// posting a slash to the conversation. Answered with a `SessionEvent::JobOutput`, and the
+    /// pane is built from it.
     ReadJobOutput {
         job: String,
         /// Where the window starts. 0 is the first byte; the pane pages by asking
         /// at the offset the previous answer named.
         offset: u64,
     },
-    /// **Open a plugin's pane** — the head just opened it, so the daemon runs the pane's look
-    /// now and answers with `SessionEvent::PluginPane`. Asked on every open, because a view is
-    /// a moment: the one this head holds may be an hour old.
-    ///
-    /// `w` and `h` are the rectangle the pane is drawn in (protocol 51). **The open can only
-    /// guess it**: the room a pane gets depends on the chrome above it, which `main_area` knows
-    /// and a key handler does not. So the guess is the last rectangle this head sent — a screen
-    /// rarely changes between one open and the next — and the frame that actually draws the pane
-    /// sends the real one, through the same change detector `Action::TermResize` uses. A head
-    /// that has never drawn a pane sends `0, 0`, which the daemon reads as *use your default*.
+    /// Open a plugin's pane: the daemon runs the look now and answers with `PluginPane`, because
+    /// a view this head holds may be an hour old. `w`/`h` can only be guessed here - the room a
+    /// pane gets depends on chrome a key handler does not know - so `0, 0` means the default.
     PaneOpen {
         pane: String,
         w: u32,
@@ -254,10 +199,9 @@ pub enum Action {
     PaneClose {
         pane: String,
     },
-    /// **One key of one stop, back to the pane that drew it** — the `event` word its action
-    /// named, or `"look"`. A `say` never travels here: it is a line to the session's model, so
-    /// it goes through [`Action::Prompt`] and the composer's own path, attributed to the
-    /// operator who pressed the key.
+    /// One key of one stop, back to the pane that drew it - the `event` word its action named, or
+    /// `"look"`. A `say` never travels here: it is a line to the session's model, so it goes
+    /// through [`Action::Prompt`], attributed to the operator who pressed the key.
     PaneAction {
         pane: String,
         item: String,
@@ -282,23 +226,16 @@ pub enum Action {
         /// Summarise as well, replacing the conversation. The default carries it.
         summarise: bool,
     },
-    /// Move this session's project to a named point, persisted by the daemon.
-    /// See `D13`.
-    /// `consented` is the operator's answer to the unconfined-`allow-all`
-    /// confirmation. False for every other point, and false for `allow-all`
-    /// until they say yes — the daemon reads it only where it matters and treats
-    /// a missing answer as no.
+    /// Move this session's project to a named point, persisted by the daemon. `consented` is the
+    /// operator's answer to the unconfined-`allow-all` confirmation: false for every other point,
+    /// and the daemon treats a missing answer as no.
     Mode {
         name: String,
         consented: bool,
     },
-    /// **A person's answer to a confirmation ANOTHER head asked for** (`PROTOCOL_VERSION` 54,
-    /// B8) — `leticode_mode` asking for `allow-all` on a package's session.
-    ///
-    /// Its own action rather than a second spelling of [`Action::Mode`], because the frame is a
-    /// different one: `Mode` sets a point and says *the person confirmed it*, while this settles
-    /// a request by its id and says nothing about the point except through the daemon's record
-    /// of what was asked.
+    /// A person's answer to a confirmation ANOTHER head asked for. Its own action rather than a
+    /// second spelling of [`Action::Mode`], because this settles a request by its id and says
+    /// nothing about the point except through the daemon's record of what was asked.
     ModeConsent {
         req_id: String,
         yes: bool,
@@ -319,64 +256,32 @@ pub enum Action {
         note: String,
         item_id: Option<String>,
     },
-    /// **The operator's own tool call through the door** — R24 part two, R31, R34.
-    ///
-    /// `name` is the TOOL's spelling (`web_search`), never the typed verb; the hyphen is a
-    /// keyboard transform and this is the wire. `arguments` is the JSON object the head
-    /// built from the field the daemon published, and the head knows nothing else about the
-    /// tool — see [`App::head_run_call`].
-    ///
-    /// **`execute` is true and there is no result to send back.** This head has no tool
-    /// runtime and no HTTP client, so the daemon runs it, in this session, with the byte
-    /// caps and spill policy a model's call gets. That is not a convenience: a head that
-    /// fetched a page itself would write a corpus row saying *the operator ran `web_fetch`*
-    /// about another program's answer. See `ClientFrame::OperatorCall::execute`.
+    /// The operator's own tool call through the door. `name` is the TOOL's spelling, never the
+    /// typed verb - the hyphen is a keyboard transform and this is the wire - and `execute` is
+    /// true with no result to send back: the daemon runs it, so no head writes a corpus row.
     HeadRun {
         name: String,
         arguments: String,
     },
-    /// **The operator's own shell line** — a submitted line that began with `!`.
-    ///
-    /// The line travels verbatim, bang included: the daemon strips it (one rule, at the
-    /// execution site) and the row the operator gets back is the words they typed. The
-    /// daemon runs it in this session's workspace through the `bash` path — confine, sudo
-    /// askpass and byte caps identical to a model's call — and appends two rows: this
-    /// line as the operator's own, and the output as a `bash` result the head folds and
-    /// pages like every other tool row. See [`App::submit`]'s `!` arm for the typing
-    /// surface and `ClientFrame::OperatorShell` for the wire.
+    /// The operator's own shell line - a submitted line that began with `!`. The line travels
+    /// verbatim, bang included, and the daemon strips it at the execution site, so the row the
+    /// operator gets back is the words they typed.
     OperatorShell {
         line: String,
     },
-    /// **A link the operator clicked, opened by the platform.** The one act in this enum that
-    /// the daemon knows nothing about: a URL is not a session's, and the head is the process with
-    /// the operator's desktop on it.
-    ///
-    /// It carries the URL the FRAME drew — `app::links` reads it back off the finished row, so
-    /// the words and the destination cannot disagree — and the driver hands it to `open` (macOS)
-    /// or `xdg-open` (elsewhere) and says so when neither is there. A `file://` link never
-    /// reaches this action: the head opens those in its own editor pane ([`App::open_link`]).
+    /// A link the operator clicked, opened by the platform: the one act here the daemon knows
+    /// nothing about, since a URL is not a session's and the head is the process with the desktop
+    /// on it. It carries the URL the FRAME drew, so words and destination cannot disagree.
     OpenUrl(String),
-    /// **`!term <command>` — open the pane and run a screen program in it.**
-    ///
-    /// `line` travels verbatim, `!term` first, exactly as [`Action::OperatorShell`]'s does: the
-    /// daemon strips the verb (one rule, at the execution site) and the head has already
-    /// checked at the composer that there *is* a command after it — see [`App::submit`].
-    ///
-    /// **The rectangle is not on this action and cannot be**: it is the terminal's, and the
-    /// driver is the thing that knows it. `Link::tick` sends the frame with the size it was
-    /// handed, which is also what makes a pane opened after a resize open at the right size
-    /// rather than at the default of 80×24.
+    /// `!term <command>`: open the pane and run a screen program in it. The line travels verbatim
+    /// and the daemon strips the verb, one rule at the execution site. The rectangle is not here
+    /// and cannot be: it is the terminal's, and the driver is what knows it.
     TermOpen {
         line: String,
     },
-    /// **The operator's keys, verbatim, to the pane's program.** Bytes and not a `Key`: the
-    /// pane is a terminal and the head is not the thing that reads it — see
-    /// [`ClientFrame::TermInput`](letibot_sessionlog::protocol::ClientFrame::TermInput) for why
-    /// a decoded-and-re-encoded arrow would be a different byte string to a program that asked
-    /// for the application-cursor spelling.
-    ///
-    /// `pane` is the daemon's number for the pane this head is drawing (protocol 44): a session
-    /// may hold several.
+    /// The operator's keys, verbatim, to the pane's program. Bytes and not a `Key`, because the
+    /// pane is a terminal and the head is not the thing that reads it: a decoded-and-re-encoded
+    /// arrow would be a different byte string to a program asking for application-cursor.
     TermInput {
         pane: u32,
         bytes: Vec<u8>,
@@ -388,41 +293,19 @@ pub enum Action {
         cols: usize,
         rows: usize,
     },
-    /// **End the pane.** The head's own act, and it is sent **only after the operator has
-    /// confirmed it** — the confirmation card is [`App::term_ask`], and the verb that raises it
-    /// is `!term close`.
-    ///
-    /// **`ctrl-\` no longer sends this.** It detaches — the rectangle goes, the conversation
-    /// comes back, and **nothing is sent at all** — which is the operator's own correction:
-    /// *"but i dont want it to exit"*. Two acts, one frame, and the destructive one is the one
-    /// that has to be spelled out. See [`TermPane`].
-    ///
-    /// `pane` is the one the card named — see [`TermAsk::pane`].
+    /// End the pane: the head's own act, sent only after the operator confirmed it, because the
+    /// destructive one is the one that has to be spelled out. `ctrl-\` detaches instead and sends
+    /// nothing at all.
     TermClose {
         pane: u32,
     },
-    /// **Ask what this session's pane is running.** The answer is
-    /// `ServerFrame::TermStatus`, and this is the read that lets a head which is **not drawing**
-    /// the pane say that something is running in it — **without a transcript row**, because a
-    /// detach is not an event. See [`App::term_fact`].
-    ///
-    /// Asked on attach (a head that has just switched sessions has no pane of its own and the
-    /// pane is the session's), and asked before a `!term close` the head cannot answer from what
-    /// it holds.
+    /// Ask what this session's pane is running, so a head that is not drawing it can say that
+    /// something is running there - without a transcript row, because a detach is not an event.
+    /// Asked on attach, and before a `!term close` the head cannot answer from what it holds.
     TermStatus,
-    /// **Ask the model to propose `!` completions for a prefix** — the smart half of
-    /// the `!` completion. The history is this head's own and is the first answer;
-    /// this is asked for only when the history has no match for the prefix (or its
-    /// cycle is exhausted).
-    ///
-    /// `client_request_id` is minted here, by the head, because the answer comes back
-    /// on the pump and the head has to recognise it: the id is the correlation, and a
-    /// head that could not tell one answer from another would cache a suggestion under
-    /// the wrong prefix. The daemon echoes it back in `ShellSuggestions`.
-    ///
-    /// **Nothing here submits.** The answer is a list of candidate lines for the
-    /// composer, drawn as candidates with their provenance, and Enter is still the
-    /// operator's.
+    /// Ask the model to propose `!` completions for a prefix: the history is the first answer and
+    /// this is asked only when it has no match. The head mints `client_request_id`, because the
+    /// answer comes back on the pump; nothing here submits, so Enter is still the operator's.
     SuggestShell {
         prefix: String,
         client_request_id: String,
@@ -432,26 +315,16 @@ pub enum Action {
         req_id: String,
         secret: Option<String>,
     },
-    /// **The operator's answer to a command of their own that asked them something.**
-    ///
-    /// The card is raised by the daemon when the run is **blocked reading the device the
-    /// daemon holds for it** — a reading of the process and not of its words, see
-    /// `letibot_tools::exec::ask` — and this is the line the person typed into it.
-    ///
-    /// **Not `Action::Secret` and not a path to one.** A password has its own card, its own
-    /// masked field and its own frame, and the two are separate variants on purpose: this one
-    /// is drawn in the open and what it carries is a line for a program's stdin. See
-    /// [`App::prompt_lines`].
+    /// The operator's answer to a command of their own that asked them something, raised when the
+    /// run is blocked reading the device the daemon holds for it. Not `Action::Secret` and not a
+    /// path to one: this is drawn in the open, and what it carries is a line for stdin.
     PromptAnswer {
         req_id: String,
         line: String,
     },
-    /// **One line to the running command, on demand** — the `!send` verb.
-    ///
-    /// The manual floor under the card: a person watching the stream can answer whether or
-    /// not anything looked like a question, so this needs no card, no request id and no
-    /// signal at all. It addresses *whatever operator command this session is running right
-    /// now*, which the daemon knows and this head does not.
+    /// One line to the running command, on demand - the `!send` verb, the manual floor under the
+    /// card: a person watching can answer whether or not anything looked like a question, so this
+    /// needs no card, no request id and no signal. It addresses whatever command is running now.
     SendLine {
         line: String,
     },

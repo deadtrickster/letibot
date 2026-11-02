@@ -20,12 +20,8 @@ fn a_summary_that_does_not_end_in_its_target_is_left_alone() {
     );
 }
 
-/// **`/reseat` keeps the conversation; only `/reseat summarise` spends it.**
-///
-/// The operator flipped this: *"id say flip it - reset is loseless and reset
-/// summarize will be not"*. The bare verb is the one people type without
-/// reading, so it is the one that must not cost them anything they cannot
-/// get back.
+/// `/reseat` keeps the conversation; only `/reseat summarise` spends it. The bare verb is the one
+/// people type without reading, so it is the one that must not cost them what they cannot get back.
 #[test]
 fn a_bare_reseat_is_the_lossless_one() {
     let mut a = app();
@@ -58,12 +54,9 @@ fn a_bare_reseat_is_the_lossless_one() {
 
 #[test]
 fn ctrl_c_clears_the_composer_and_only_a_double_tap_asks() {
-    // The old rule quit an idle head on one press and interrupted a running
-    // one, so there was no way to abandon a half-typed prompt and a stray
-    // Ctrl+C killed the head. opencode's rule, via `letibot_ui::editor`.
-    //
-    // The double tap now opens the quit card rather than leaving outright —
-    // see `the_quit_card_offers_both_exits_and_defaults_to_the_cheap_one`.
+    // One press would quit an idle head or interrupt a running one, leaving no way to abandon a
+    // half-typed prompt, and a stray Ctrl+C killed the head. The double tap opens the quit card
+    // instead, so the exit is chosen rather than taken.
     let mut a = app();
     a.clock(1_000);
     typed(&mut a, "half a question I am still");
@@ -92,9 +85,8 @@ fn the_quit_card_offers_both_exits_and_defaults_to_the_cheap_one() {
     // The consequence is ON the row, not in a footnote: the two answers are
     // not alike and the card must not make them look it.
     assert!(screen.contains("prefills cold"), "{screen}");
-    // **AND NO WORK IS CLAIMED TO BE RUNNING** — the warning is the running
-    // work's, not the row's furniture, so an idle session's card reads as
-    // idle. The words below are the warning's own; their absence here is
+    // No work is claimed to be running: the warning is the running work's, not the row's
+    // furniture, so an idle session's card reads as idle, and the absence of the words below is
     // the assertion.
     assert!(
         !screen.contains("stop with the daemon"),
@@ -109,20 +101,9 @@ fn the_quit_card_offers_both_exits_and_defaults_to_the_cheap_one() {
     assert_eq!(a.key(Key::Enter), Some(Action::Quit));
 }
 
-/// **The cat's centre does not move while it animates.**
-///
-/// The operator, watching it: *"why dont you fix cats center during
-/// animation"*. Padding the frames to a common slot fixed the block's left
-/// edge and left the face inside it growing and shrinking — `(=^.^=)` is
-/// seven columns, `(=^.-.=)` is eight — so the thing the eye tracks still
-/// moved half a column every frame.
-///
-/// Four claims, and the first two are what "centre" means here: one width for
-/// every frame, the face's fixed glyphs in the same columns in every frame,
-/// the expression at the face's own centre, and the tail outside the face
-/// where it cannot push it. The last claim is that the animation still
-/// animates — a single frame repeated eight times would satisfy everything
-/// above.
+/// The cat's centre does not move while it animates: `(=^.^=)` is seven columns and `(=^.-.=)`
+/// eight, so padding the frames to a common slot fixed the left edge and left the face inside it
+/// growing and shrinking. One width, the face's glyphs in fixed columns, and it still animates.
 #[test]
 fn cat_frames_are_one_width_with_the_face_in_one_place() {
     let w = CAT_FRAMES[0].len();

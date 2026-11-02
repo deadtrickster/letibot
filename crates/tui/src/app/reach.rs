@@ -1,42 +1,6 @@
-//! **The model a sent message would go to, checked before it goes** — and the chooser when it
-//! cannot be reached.
-//!
-//! The operator, 2026-10-18, after `leticode` on a box with no local model refused with
-//! *"nothing serving on 127.0.0.1:8080 ... or a cloud provider instead: --provider
-//! deepseek|glm|grok"*: *"idk why i even have to do --provider. horrible ux - we already have
-//! models chooser and keys asker"*. So the launcher stopped gating (see "THE LAUNCHER NEVER GATES
-//! ON A MODEL" in `scripts/letibot`) and the question moved here, to the two things that were
-//! already built for it: the `/models` card ([`Pick::Model`]) and its key card ([`KeyAsk`]).
-//!
-//! # Why at the first message, and not at open
-//!
-//! **The message is what is at risk, and the check is per attempt.** At open there is no hook —
-//! the settings rows the check reads arrive whenever the daemon answers, and a session reopened to
-//! READ it would get a card over the transcript it came to read. At send there is one place every
-//! prompt passes ([`App::submit`]), the message can be held while the check runs and sent the
-//! moment it passes, and a local server that comes up later simply answers the next message:
-//! nothing is latched, every send while the session sits on a local model asks again.
-//!
-//! # What "cannot be reached" means, and who answers each half
-//!
-//! * **no local model on this box at all** — the session is on the local route and its `vocab`
-//!   row is `none`: the daemon was started with no GGUF and no provider (`Parts::load`), and a
-//!   llama-server cannot read the byte ids it would be sent. Known from the rows; no probe.
-//! * **nothing serving the local model** — the `endpoint` row's `/health` does not answer 2xx.
-//!   Probed on a thread of its own, the way [`App::refresh_git`] reads git: a LAN box that is
-//!   down costs a connect timeout, and the loop never waits on it.
-//! * **a provider whose key is missing** — NOT here. The daemon already asks for it on the first
-//!   turn, on the masked card sudo's password uses, and saves it (0600) with that provider as
-//!   the default (`Harness::obtain_key`). A second ask in the head would be the same question
-//!   from two places.
-//!
-//! # What taking a row does with the held message
-//!
-//! A cloud row is switched to, made `[default]` (`/default-model`, so the question is asked once
-//! per box — the daemon's own key card does the same with the first key), and the held message
-//! is sent after it. A row with no key goes through the key card first, and the message waits
-//! there too. Anything else — a local row, `esc` on either card — puts the words back in the
-//! composer, where enter sends them (and checks again).
+//! The model a sent message would go to, checked before it goes: at the first message rather than
+//! at open, because the message is what is at risk and a local server that comes up later answers
+//! the next send. Unreachable is the `vocab` row saying `none`, or the endpoint's `/health` failing.
 
 use super::*;
 
@@ -93,10 +57,9 @@ enum Check {
 }
 
 impl App {
-    /// **Which check a message sent now needs**, from the daemon's rows. `None` sends at once: a
-    /// provider (its missing key is the daemon's card), or a daemon that has not said enough —
-    /// no `model` or `endpoint` row is a daemon older than them, or not answered yet, and a check
-    /// that guessed would hold messages it had no reason to hold.
+    /// Which check a message sent now needs, from the daemon's rows. `None` sends at once: a
+    /// provider, whose missing key is the daemon's own card, or a daemon that has not said enough -
+    /// a check that guessed would hold messages it had no reason to hold.
     fn reach_check(&self) -> Option<Check> {
         let row = |k: &str| self.settings.iter().find(|r| r.key == k);
         let model = row("model")?;
@@ -111,11 +74,9 @@ impl App {
         (!ep.is_empty()).then_some(Check::Probe(ep))
     }
 
-    /// **Hold `text` for the model check, or say it can go now.** `true` is held: the probe is
-    /// started (or the chooser is already up) and the message goes when it passes.
-    ///
-    /// Not while a turn runs: the model is answering, or being retried, and a line typed then
-    /// is steering that the daemon merges into the turn — holding it would reorder it.
+    /// Hold `text` for the model check, or say it can go now. `true` is held: the probe is started
+    /// (or the chooser is already up) and the message goes when it passes. Not while a turn runs -
+    /// the model is answering or being retried, and a line typed then is steering that turn.
     pub(crate) fn hold_for_model(&mut self, text: &str) -> bool {
         // **A second message while the first is held joins it**, as steering joins a running
         // turn: one held message, sent once.
@@ -226,14 +187,9 @@ impl App {
         true
     }
 
-    /// **A cloud row was taken from the chooser this check opened**: make it the box's default
-    /// and send the held message after the switch. Queued, so they leave after the switch the
-    /// caller returns — the daemon takes a connection's frames in order.
-    ///
-    /// `/default-model` and not a write here: the daemon owns providers.toml, and its verb
-    /// refuses a default nothing can authenticate — which, after the switch stored the key, it
-    /// can. A declared fleet name is not a preset and is not made the default; the verb would
-    /// refuse it.
+    /// A cloud row was taken from the chooser this check opened: make it the box's default and send
+    /// the held message after the switch. Both are queued, so they leave after the switch the caller
+    /// returns. `/default-model` and not a write here - the daemon owns providers.toml.
     pub(crate) fn took_cloud_row(&mut self, choice: &str) {
         if self.reach.reason.is_none() {
             return;

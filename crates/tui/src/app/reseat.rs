@@ -1,32 +1,6 @@
-//! **The reseat card**: a session whose prompt is stale asks the operator, and keeps asking.
-//!
-//! The operator, 2026-10-12: *"regarding reseat - since it is important id suggest to show me
-//! "select" with one option - reseat and abstain and then when on abstain keep reseat select
-//! open. this way i keep reseat in mind because it stares at me yet can continue at my risk"*.
-//!
-//! # The two states, and what moves between them
-//!
-//! * **Open** — a card in the ask slot above the composer: what changed (the daemon's
-//!   `prefix_stale` sentence, short, the whole of it one `tab` away) and two rows,
-//!   [`RESEAT_NOW`] and [`NOT_NOW`]. It opens when the daemon says `prefix_stale` — on every
-//!   attach to a stale session, and live when a restart's open finishes after the head is
-//!   already watching — unless the operator has words in the composer, in which case it
-//!   arrives pinned rather than taking their Enter.
-//! * **Pinned** — one warning-coloured line above the composer, [`App::reseat_strip`], drawn on
-//!   every frame while the prompt is stale: `PROMPT IS STALE … · alt-r reseats now · alt-p
-//!   shows the card`. Both key hints are buttons (`app::keyhints`), so the strip is clickable.
-//!
-//! `Not now` and Esc put the open card into the pinned state — **abstaining never dismisses
-//! it**. Typing into an empty composer does the same and the key goes to the composer, so the
-//! card never stands between the operator and the line they started. `alt-p` (or a click on
-//! the strip's hint) opens it again; `alt-r` reseats from anywhere.
-//!
-//! **Only the daemon takes it down**: `prefix_current` (the sentence was cleared — a re-seat,
-//! or any fork onto the seated prompt) or `reseated`, which every head attached hears, so a
-//! reseat chosen on one head clears the card on all of them. A `Hello` forgets it too, because
-//! the daemon says `prefix_stale` again on every attach while it is still true — which is what
-//! makes the card survive a head reattach and a daemon restart without this head remembering
-//! anything.
+//! The reseat card: a session whose prompt is stale asks the operator, and keeps asking. `Not now`
+//! pins it to a warning-coloured line above the composer rather than dismissing it, and only the
+//! daemon takes it down (`prefix_current`, `reseated`) - so it survives a head reattach.
 
 use super::*;
 use std::ops::ControlFlow;
@@ -88,10 +62,9 @@ impl App {
         }
     }
 
-    /// **A reseat was refused** — the card is still true, and alt-r may send again. A refusal
-    /// because the conversation does not fit verbatim (the daemon's sentence names
-    /// `/reseat summarise` as what fits) turns the card's reseat into that one, and opens the
-    /// card so the new choice is seen rather than discovered on the next alt-r.
+    /// A reseat was refused: the card is still true and alt-r may send again. A refusal because the
+    /// conversation does not fit verbatim turns the card's reseat into the `/reseat summarise` the
+    /// daemon names, and opens the card so the new choice is seen rather than discovered later.
     pub(crate) fn reseat_refused(&mut self, said: &str) {
         let empty = self.editor.text().is_empty();
         if let Some(c) = self.reseat.as_mut() {
@@ -105,14 +78,9 @@ impl App {
         }
     }
 
-    /// **Something else holds the ask slot** — a decision, a prompt, a password, a picker, the
-    /// quit card. The reseat card waits behind every one of them and is drawn as the strip
-    /// meanwhile, so it is never off the screen.
-    ///
-    /// **And an open surface takes it too** (R90.1): a pane's keys are the pane's. With the card
-    /// up over the todos pane, Enter on a row sent `/reseat` and `1` in the session picker
-    /// reseated, while the bar named the pane's keys. While a pane has the keyboard the card is
-    /// the strip, and it comes back when the pane closes.
+    /// Something else holds the ask slot - a decision, a prompt, a password, a picker, the quit
+    /// card, or an open surface, whose keys are its own. The card waits behind every one of them
+    /// and is drawn as the strip meanwhile, so it is never off the screen.
     pub(crate) fn slot_taken(&self) -> bool {
         self.focused_surface().is_some()
             || self.secret.is_some()
@@ -173,11 +141,9 @@ impl App {
         }
     }
 
-    /// **Open the card again** (`alt-p`, or a click on the strip's hint).
-    ///
-    /// **While something else holds the slot nothing would visibly happen** (R90.21) — the card
-    /// would pop up later, maybe in front of an Enter meant for something else — so it says so
-    /// and stays pinned.
+    /// Open the card again (`alt-p`, or a click on the strip's hint). While something else holds
+    /// the slot nothing would visibly happen - the card would pop up later, maybe in front of an
+    /// Enter meant for something else - so it says so and stays pinned.
     pub(crate) fn reseat_expand(&mut self) {
         let taken = self.slot_taken();
         match self.reseat.as_mut() {
@@ -193,12 +159,9 @@ impl App {
         }
     }
 
-    /// **The open card's keys**, while it is the card on the screen and the composer is empty.
-    ///
-    /// ↑↓ and a row number move the mark, Enter chooses, Tab shows the whole sentence, Esc is
-    /// `Not now`. **Anything typed pins the card and goes to the composer** — the operator
-    /// continuing to work is the abstention, and their key is not swallowed for it — except the
-    /// one digit that marks a row.
+    /// The open card's keys, while it is the card on the screen and the composer is empty: arrows
+    /// and a row number move the mark, Enter chooses, Tab shows the whole sentence, Esc is
+    /// `Not now`. Anything else typed pins the card and goes to the composer, except a row's digit.
     pub(crate) fn key_reseat_card(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if !self.reseat_card_up() {
             return ControlFlow::Continue(());
@@ -232,11 +195,9 @@ impl App {
                 choose(self, at)
             }
             _ if !typing && digit_row(k, 2).is_some() => {
-                // **A row number MARKS the row; Enter answers it** (R90.6, R90.2's rule) — the
-                // digit chose at once, so a `1` typed as the first character of a line sent
-                // `/reseat` and forked the conversation while this card's own line said
-                // *"enter chooses"*. One rule for every numbered card: a digit moves the mark,
-                // and the answer is the deliberate Enter.
+                // A row number MARKS the row and Enter answers it: a digit that chose at once sent
+                // `/reseat` from the first character of a typed line. One rule for every numbered
+                // card - a digit moves the mark, and the answer is the deliberate Enter.
                 if let Some(c) = self.reseat.as_mut() {
                     c.sel = digit_row(k, 2).expect("just checked");
                 }

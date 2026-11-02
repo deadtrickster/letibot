@@ -1,12 +1,6 @@
-//! **The repository's own references, made links** — the operator: *"any chance to infer github
-//! branch names and prs?"*.
-//!
-//! A word on the screen that names something in the session's GitHub repository becomes a link to
-//! it (OSC 8, where the terminal speaks it): `owner/repo#12` always (it says which repository),
-//! `#12` in the session's repository, a commit hash this repository has, a branch name it has. What
-//! is checked is what the repository itself holds — its `origin`, its refs, its commits — read in
-//! the background like the header's git field ([`App::refresh_github_refs`]), so a guess never
-//! becomes a link: random hex is not a commit, and a word that only looks like a branch is not one.
+//! The repository's own references, made links: a word on the screen that names something in the
+//! session's GitHub repository becomes a link to it. What is checked is what the repository holds
+//! - its origin, its refs, its commits - so a guess never becomes a link.
 
 use std::collections::HashSet;
 
@@ -17,7 +11,7 @@ const REFS_EVERY_MS: u64 = 60_000;
 /// How many commits are kept to recognise a hash by — the newest, every ref's history.
 const COMMITS_KEPT: usize = 20_000;
 
-/// **What the session's repository holds, as words can name it.**
+/// What the session's repository holds, as words can name it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GitRefs {
     /// `owner/repo` on GitHub.
@@ -42,7 +36,7 @@ fn git(dir: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// **`owner/repo` of a GitHub remote URL** — `https://github.com/o/r(.git)` or
+/// `owner/repo` of a GitHub remote URL - `https://github.com/o/r(.git)` or
 /// `git@github.com:o/r(.git)`; `None` for any other host.
 pub(crate) fn github_slug(url: &str) -> Option<String> {
     let rest = url
@@ -56,7 +50,7 @@ pub(crate) fn github_slug(url: &str) -> Option<String> {
     (!o.is_empty() && !r.is_empty() && parts.next().is_none()).then(|| format!("{o}/{r}"))
 }
 
-/// **Read a repository's references** — `None` when it is not a GitHub repository.
+/// Read a repository's references; `None` when it is not a GitHub repository.
 pub(crate) fn read_refs(dir: &str) -> Option<GitRefs> {
     let slug = github_slug(&git(dir, &["remote", "get-url", "origin"])?)?;
     let mut branches = HashSet::new();
@@ -98,8 +92,8 @@ pub(crate) fn read_refs(dir: &str) -> Option<GitRefs> {
 }
 
 impl GitRefs {
-    /// **The link a word on the screen names**, or `None` for a word this repository does not
-    /// know. Allocates only for a word it links.
+    /// The link a word on the screen names, or `None` for a word this repository does not know.
+    /// Allocates only for a word it links.
     pub(crate) fn url_of(&self, word: &str) -> Option<String> {
         // `owner/repo#12` — says which repository, so it is linked whatever this one is.
         if let Some((repo, n)) = word.rsplit_once('#')
@@ -140,7 +134,7 @@ impl GitRefs {
 }
 
 impl App {
-    /// **Keep the repository's references current**, read off the UI thread — the repository the
+    /// Keep the repository's references current, read off the UI thread: the repository the
     /// header's git field reads (the followed one in a workspace of several), every
     /// [`REFS_EVERY_MS`].
     pub(crate) fn refresh_github_refs(&mut self) {

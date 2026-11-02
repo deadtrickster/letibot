@@ -1,11 +1,6 @@
-//! **D17's ladder, from the operator's own seat** — `/plugin` and `/plugin trust NAME`.
-//!
-//! The operator, 2026-10-31: *"Only the builtins run freely; anything I place later needs a pin."*
-//! The ladder itself is `letibot_plugins::Trust` and it is enforced where a layer reaches the
-//! world (`crates/harnessd/src/plugins/{tool,conditions}.rs`). What is here is the ONE act that
-//! puts a placed layer on the free side of it, and the listing that says which side each one is
-//! on — the door a person has, and not one a model has: the `plugin` tool has no `trust` verb,
-//! because a layer that could pin itself would run freely because it said so.
+//! The ladder from the operator's own seat: `/plugin` and `/plugin trust NAME`. What is here is the
+//! one act that puts a placed layer on the free side of it, a door a person has and a model does
+//! not, so the `plugin` tool has no `trust` verb: a layer that pinned itself would run freely.
 
 use super::*;
 
@@ -88,11 +83,9 @@ fn a_head_over(project: &Path) -> (App, Arc<letibot_plugins::Trust>) {
     (a, trust)
 }
 
-/// **`/plugin trust NAME` pins what is on disk and says which hash it pinned.**
-///
-/// Three facts, and each is a clause of the requirement: the pin is recorded (the book has it),
-/// the answer names the hash, and the layer this head is holding is FREE from that moment — the
-/// same stack re-decided, not a claim about a file somebody has to go and read.
+/// `/plugin trust NAME` pins what is on disk and names the hash it pinned. The pin is about the
+/// bytes the stack HOLDS, not the file on disk, so the same stack must re-decide and the layer be
+/// free from that moment - a claim about a file somebody has to go and read would be neither.
 #[test]
 fn plugin_trust_pins_what_is_on_disk_and_reports_the_hash() {
     let project = a_project("pin");

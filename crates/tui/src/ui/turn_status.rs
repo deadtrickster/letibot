@@ -11,36 +11,9 @@ use rano::render::{Line, Role};
 pub(crate) const TRANSIENT_MIN: usize = 12;
 
 impl App {
-    /// The turn's status, inlaid in the composer's bottom border and pinned
-    /// right: the spinner, what phase the turn is in, and — once anything has
-    /// arrived — how much. Empty when nothing is running.
-    ///
-    /// §5.6's prefill progress is the thing nothing surveyed reports, and it is
-    /// not a small difference: both projects read for `letibot-ui` talk to a
-    /// metered API and have **no prefill number at all**, so their in-flight line
-    /// can only say `Responding… 15s`. `PromptProgress { total, cache, processed,
-    /// time_ms }` supports a three-segment bar that answers *how far along* and
-    /// *how much of this did the prefix cache save me* at once, which is the
-    /// number §10 says the whole prompt pipeline exists to move.
-    ///
-    /// The arithmetic is `progress::Prefill`'s and the module header is worth
-    /// reading before touching it: `processed` **includes** `cache`, so the
-    /// fraction is `processed / total` and the work done is `processed - cache`.
-    /// Read the other way a 90 %-cached prompt shows as 10 % done and then jumps
-    /// to 100 %, which is the classic progress-bar lie; and the throughput has to
-    /// divide by the computed tokens or it reports a cache hit as a speed in the
-    /// hundreds of thousands.
-    ///
-    /// # The spinner runs on this head's clock
-    ///
-    /// It used to be keyed off `t.last_ms`, the last event's timestamp, and the
-    /// defect was visible: a spinner that only moves when a token or a prefill
-    /// batch arrives is not a spinner, it is a snapshot of one — a tool running
-    /// thirty silent seconds froze it on one glyph. The phase is `now_ms` now,
-    /// which the driver advances every tick whether or not anything arrived.
-    /// The duration is measured against the same clock: head and daemon share
-    /// the machine, which is the assumption the stuck line below already makes
-    /// when it diffs `now_ms` against an event timestamp.
+    /// The turn's status, inlaid in the composer's bottom border: spinner, phase, and how much
+    /// once anything arrived. `Prefill`'s `processed` INCLUDES `cache`, so the fraction is
+    /// `processed / total` and the work `processed - cache`. Spinner and clock run on `now_ms`.
     #[cfg(test)]
     pub(crate) fn turn_status(&self, w: usize) -> String {
         row(&self.turn_line(w), self.cfg.palette())
@@ -50,10 +23,9 @@ impl App {
     fn turn_line(&self, w: usize) -> Line {
         let t = match self.turn.as_ref() {
             Some(t) if self.turn_busy() => t,
-            // **No turn running, but the session is not idle either** — it is waiting on a job the
-            // work depends on, on a settlement it is owed, on a monitor, or on a person. The row is
-            // reserved whether or not a turn runs (`rano::agent::fit`), so this is drawn in the slot
-            // `Responding…` uses and takes no line from the conversation.
+            // No turn running, but the session is not idle either: it waits on a job, a
+            // settlement, a monitor or a person. The row is reserved whether or not a turn runs,
+            // so this takes no line from the conversation.
             _ => return self.activity_line(w),
         };
         let status = TurnStatus {
@@ -122,10 +94,9 @@ impl App {
     /// repeats, and the singular forms (`job j8032`, `monitor ci`, `child …`) are unchanged.
     fn activity_line(&self, w: usize) -> Line {
         let mut text = self.waiting_words();
-        // **A switch waiting for a turn reads here too**, for the one case where it is true of an
-        // idle session: a head that attached mid-turn folds the daemon's `model_switch_pending`
-        // out of the replayed log, and for that moment the switch is both pending and nothing is
-        // generating. Same state, same words, whichever line has the room.
+        // A switch waiting for a turn reads here too, for the one idle case: a head that
+        // attached mid-turn folds `model_switch_pending` out of the replayed log. Same state,
+        // same words, whichever line has the room.
         if let Some(pending) = self.model_pending.clone() {
             if text.is_empty() {
                 text = pending;
@@ -142,21 +113,9 @@ impl App {
         line
     }
 
-    /// **The daemon's list in a person's words** — the whole of [`App::activity_line`]'s text, and
-    /// the one place that decides how a [`Waiting`] is spelled on the screen.
-    ///
-    /// Two rules, and both are the operator's report rather than a preference:
-    ///
-    /// * **A child is named, not numbered** — [`App::child_label`], which is the subagents pane's
-    ///   own [`crate::app::child_name`]: the slug the model gave it, then the short id. A session
-    ///   id is forty-odd characters of digits that name nothing a person can hold on to.
-    /// * **A kind that repeats is counted** — `3 subagents`, `2 monitors`. The count is the fact a
-    ///   reader acts on (*how many are still out*), and listing the ids is the wall the operator
-    ///   reported. One of a kind keeps the singular spelling this line has always had.
-    ///
-    /// The order is the daemon's (`Waiting::rank`, which
-    /// [`Activity::of`](letibot_sessionlog::activity::Activity::of) fixes), and grouping
-    /// keeps it: the same set of facts must spell the same line here as on the wire.
+    /// The daemon's list in a person's words: the whole of [`App::activity_line`]'s text and the
+    /// one place a [`Waiting`] is spelled. A child is named by its slug, not its id, and a kind
+    /// that repeats is counted - the order stays the daemon's (`Waiting::rank`).
     fn waiting_words(&self) -> String {
         let list = self.activity.waiting_on();
         if list.is_empty() {
@@ -190,38 +149,9 @@ impl App {
         }
     }
 
-    /// **The status row whole: the turn's words, then a progress, then the transients** — and what
-    /// a click on the row opens, `(title, text)`, when the row left something out: a cut flash
-    /// notice (`Target::FlashNotice`, R89), or a progress whose one-line form is not all of it.
-    ///
-    /// The operator, 2026-10-14: *"it showed me "resync..." in violet and "reading job output"
-    /// very nice! but they were on their bottom lines and conversation was jumping back and forth.
-    /// can we show such things [...] where Responding... line lives - it is preallocated and
-    /// fixed"*. Each of those used to be a row of its own above the composer (the flash notice,
-    /// counted by the fit ladder as `notice`) or at the foot of the conversation (the boot step),
-    /// so it took a line from the transcript when it appeared and handed it back when it went —
-    /// and with the jobs pane re-reading once a second against a daemon that acknowledges each
-    /// read, that was a jump every second. And then, the same day: *"yes, move the compacting
-    /// progress blocks too"* — the fill, fold and announced-rows blocks, which did the same thing
-    /// on the operations that last minutes ([`crate::ui::progress_row`]).
-    ///
-    /// This row is the one that never changes height: the fit ladder reserves it whether or not a
-    /// turn runs (`rano::agent::fit`, *"the row is RESERVED, not conditional"*). So the transients
-    /// and the progress are drawn IN it and the transcript's budget is the same with or without
-    /// them. The rules:
-    ///
-    /// * **A turn is running**: everything follows the turn's clock after ` · `
-    ///   (`⠸ Responding · 2m30s · Compacting half 1 of 2 · ▐██░░▌ 40% · …`), and the turn's own
-    ///   words are never cut for any of it.
-    /// * **Idle**: the progress leads behind a spinner of its own, then the transients.
-    /// * **The progress gives way piece by piece** — the clock, then the counts, then the bar —
-    ///   to keep the transients after it whole, and never gives up its label: a flash notice is
-    ///   over in seconds and the progress gets its numbers back when it goes.
-    ///
-    /// The transients' order is how much a reader loses by losing it: the link being down, then
-    /// the daemon's boot step, then the notice. One that does not fit whole is cut to the room
-    /// left if at least [`TRANSIENT_MIN`] columns remain, and dropped otherwise; nothing after it
-    /// is drawn.
+    /// The status row whole - the turn's words, then a progress, then the transients - and what a
+    /// click opens when the row left something out. The fit ladder reserves this row whether or
+    /// not a turn runs, so the transients are drawn IN it and the transcript loses no line.
     pub(crate) fn status_row(&self, w: usize) -> (String, Option<(String, String)>) {
         let turn = self.turn_line(w);
         let progress = self.progress_shown();
@@ -314,26 +244,9 @@ impl App {
         (line, notice_cut, whole)
     }
 
-    /// **The transient one-line statuses, in the order the status row gives them up last-first**:
-    /// `(text, colour, is the flash notice)`. See [`App::status_row`].
-    ///
-    /// * The link while it is down and the head has not yet grown impatient — the ordinary
-    ///   reconnect across a daemon restart, over in a second or two. Past [`LINK_IMPATIENT_MS`]
-    ///   the outage is a state, not a blip, and it gets its resident lines above the composer
-    ///   with the advice ([`App::link_line`]).
-    /// * The daemon's boot step (`daemon_starting`, R92.2), which used to be a row at the foot of
-    ///   the conversation.
-    /// * The flash notice ([`App::say`]) — `resync: …`, `reading output of job …`, every
-    ///   acknowledgement and refusal — prefixed `· ` as it always was, in its own violet.
-    ///
-    /// **And FIRST of all, because it outranks everything above: this daemon is a build behind
-    /// the store it is serving** ([`App::store_newer`]). The operator's ask, 2026-10-26: *an older
-    /// binary should keep working when the newer schema only ADDED things, and must say so in red
-    /// on the head's usual status line*. Red is `Role::Failure` — the register
-    /// `warning.rs`'s `store_newer` row is in — and the position is the one every transient is in,
-    /// so it is the row `Responding…` uses and it costs the conversation no line at all. First
-    /// because a cut row drops from the END: whatever else is being shouted about, *restart this
-    /// daemon* is the sentence that most needs its room.
+    /// The transient one-liners, in the order the row gives them up last-first: the store being
+    /// newer than this daemon first (a cut row drops from the END, and "restart this daemon" most
+    /// needs its room), then the link, the boot step, the switch, the notice.
     pub(crate) fn transients(&self) -> Vec<(String, Role, bool)> {
         let mut out = Vec::new();
         if let Some(said) = &self.store_newer {
@@ -349,14 +262,9 @@ impl App {
         if let Some(step) = &self.booting {
             out.push((format!("daemon {step}"), Role::Pending, false));
         }
-        // **A switch in flight, which is the screen's own subject while it lasts.** The rows on
-        // the screen are the session being LEFT (a switch cannot draw the one it is going to
-        // before the daemon has sent it), so without this line the head says nothing at all
-        // about the only thing happening — and the operator read that as the head ignoring the
-        // key: *"pressed enter on its row — main session visible (you) and then subagent session
-        // loaded"*, *"some async action finishes sometimes and meanwhile something else is
-        // shown"*. Above the notice because it is a state and the notice is an acknowledgement
-        // that expires; it goes when the `Hello` for that session lands.
+        // A switch in flight: the rows on screen are the session being LEFT, so without this the
+        // head says nothing about the only thing happening. Above the notice, being a state
+        // rather than an acknowledgement; it goes when that session's `Hello` lands.
         if let Some(to) = self.switching_to() {
             out.push((format!("switching to {to}…"), Role::Pending, false));
         }
@@ -380,13 +288,9 @@ impl App {
         }
     }
 
-    /// **What the daemon is holding back from the model, in a few words** — `held: 2 jobs · 1
-    /// subagent`, `held: 1 job (failed)` — or `None` when nothing is held.
-    ///
-    /// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
-    /// held - somewhere close to Responding ...."*. Faint, after the turn's own words on its
-    /// status row, because it is a fact about the turn that is running: results are held only so
-    /// a running turn is not interrupted, and they are delivered when it ends.
+    /// What the daemon is holding back from the model, in a few words (`held: 2 jobs · 1
+    /// subagent`), or `None`. Results are held only so a running turn is not interrupted, so it
+    /// sits after the turn's own words.
     pub(crate) fn held_label(&self) -> Option<String> {
         let (jobs, subagents, failed) = self.held?;
         let n = |k: u64, one: &str, many: &str| match k {
@@ -412,16 +316,9 @@ impl App {
         Some(format!("held: {}{failed}", kinds.join(" · ")))
     }
 
-    /// **The turn is slow**: the model should be emitting and nothing has arrived for
-    /// [`SLOW_AFTER_MS`]. It turns the Responding row yellow and says nothing else — the
-    /// operator, 2026-10-08: *"I dont want notification that it is slow yet we continue"*. The
-    /// sentence that used to sit above the composer (*"nothing received for 17s. The turn is
-    /// still marked running"*) was there because a FAILED turn used to look like this; it ends
-    /// with `TurnFailed` now, so silence here is only ever slowness.
-    ///
-    /// **`turn_generating` and deliberately NOT `turn_busy`**: a `cargo test` that runs silently
-    /// for two minutes is a call, not a slow model, and gated on busy the row would go yellow
-    /// through every long command — the false alarm that trains a reader to ignore it.
+    /// The turn is slow: the model should be emitting and nothing has arrived for
+    /// [`SLOW_AFTER_MS`]. Gated on `turn_generating` and NOT `turn_busy`, because a silent
+    /// `cargo test` is a call, not a slow model, and a yellow row through it trains readers off.
     pub(crate) fn turn_slow(&self) -> bool {
         self.turn.is_some()
             && self.turn_generating()
@@ -430,14 +327,9 @@ impl App {
     }
 }
 
-/// **A kind's plural, for the count** — `3 subagents`, `2 monitors`, `2 jobs`.
-///
-/// **A child is a `subagent` when there is more than one of it**, and the daemon's word is `child`:
-/// the singular stays `child <name>` because that is the form this line has always had and the form
-/// the wire's own [`Waiting::label`] spells, while the count is a number of *things out there* —
-/// the subagents pane's word, the composer's `held: 2 subagents`, the attention line's. Written as
-/// a `match` over the enum rather than over [`Waiting::kind`]'s string so a new kind cannot arrive
-/// without a word for it.
+/// A kind's plural, for the count: `3 subagents`, `2 monitors`, `2 jobs`. The singular stays the
+/// daemon's `child <name>`, while a count is a number of things out there. A `match` over the
+/// enum, so a new kind cannot arrive without a word.
 fn plural(w: &Waiting) -> &'static str {
     match w {
         Waiting::Turn => "turns",

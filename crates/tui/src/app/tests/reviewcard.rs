@@ -1,8 +1,5 @@
-//! **A review's outcome, one line a notice, and the whole of it one click away.**
-//!
-//! The operator, after the red-target card landed, pasting a reviewer's *could not decide* that
-//! drew as dozens of lines: *"same story about reviews - … one line + popup"*. See
-//! `ui::transcript::review_card` and `ui::transcript::line_cards`.
+//! A review's outcome: one line a notice, and the whole of it one click away in a popup.
+//! See `ui::transcript::review_card` and `ui::transcript::line_cards`.
 
 use super::redcard::{holds, popup_text, rows_with, with_notice, with_warning};
 use super::*;

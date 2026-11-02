@@ -1,5 +1,5 @@
-//! **Events about the turn**: it started, streamed, generated tokens, compacted, finished, failed
-//! or was interrupted.
+//! Events about the turn: it started, streamed, generated tokens, compacted, finished, failed or
+//! was interrupted.
 
 use super::*;
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent};
@@ -7,31 +7,21 @@ use letibot_sessionlog::view::TurnState;
 use letibot_ui::text::without_control_lines;
 
 impl App {
-    /// **The turn**: started, streaming, tokens, compaction, finished, failed, interrupted. One family of
-    /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
+    /// The turn: started, streaming, tokens, compaction, finished, failed, interrupted. `event`
+    /// hands this function only these variants.
     pub(crate) fn on_turn_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         match e {
-            // **A fill the daemon NAMED (R6).** `what` is the operation in the daemon's
-            // own words and `done`/`total` are its own count in the `unit` it named — so
-            // the head draws the fact instead of inferring a cause from a symptom.
-            // Counting the rows still lacking a body would draw *"N rows announced and
-            // never filled in"* three seconds into a healthy generation (see
-            // `BODY_PATIENCE`), and — worse — would name the wrong operation: an ordinary
-            // reply is not a carry.
-            //
-            // Ephemeral (`scrub::is_interactive`), so a late head never replays a tick.
-            // On the last one the line goes: the daemon's durable finish note is what
-            // says the operation ended, and a bar left at `total of total` would sit on
-            // the screen for ever.
+            // A fill the daemon NAMED: `what` is the operation in its own words and `done`/`total`
+            // its own count, so the head draws the fact rather than inferring a cause - counting
+            // rows still lacking a body would name the wrong operation. The line goes at the last.
             SessionEvent::Filling {
                 what,
                 unit,
                 done,
                 total,
             } => {
-                // **A new operation starts the clock; a tick of the same one does not.** The
-                // fork names its render and its write separately (`re-seating: rendering …`, then
-                // `re-seating: writing …`), and each is its own bar from zero.
+                // A new operation starts the clock; a tick of the same one does not. The fork names
+                // its render and its write separately, and each is its own bar from zero.
                 if done < total && self.filling.as_ref().is_none_or(|f| f.0 != what) {
                     self.filling_since = self.now_ms;
                 }
@@ -39,19 +29,16 @@ impl App {
                 self.redraw = true;
                 Disposition::Rendered
             }
-            // **What the session is waiting on** (`PROTOCOL_VERSION` 52): the daemon's own answer
-            // to *will this act again by itself*. Folded whole — the last value is the truth, and
-            // the daemon publishes it only when it changes — and drawn as one muted line on the
-            // status row ([`App::activity_line`]). No transcript row: it is a fact about now, and a
-            // row is a fact about when.
+            // What the session is waiting on: the daemon's own answer to *will this act again by
+            // itself*. The last value is the truth - it publishes only on change - and it is drawn as
+            // one muted line on the status row, never a transcript row: a fact about now, not when.
             SessionEvent::ActivityChanged { activity } => {
                 self.activity = activity;
                 self.redraw = true;
                 Disposition::Control
             }
-            // **The held counts, replaced whole** — the daemon sends the set as it is now every
-            // time it changes, so the last one is the truth and all zeros is nothing held.
-            // Ephemeral, so a late head never replays a stale count.
+            // The held counts, replaced whole: the daemon sends the set as it is now every time it
+            // changes, so the last one is the truth and all zeros is nothing held.
             SessionEvent::HeldResults {
                 jobs,
                 subagents,
@@ -69,11 +56,9 @@ impl App {
                 written,
                 unit,
             } => {
-                // **Stored in its own field, which is the whole point of the event.** This
-                // must not touch `self.turn.progress`: that slot is the SESSION's turn, and
-                // a scratch summary's numbers landing there is exactly the mislabel the
-                // old suppression traded away the progress line to avoid. Nothing else
-                // writes `self.compacting`, so the two cannot be confused.
+                // Stored in its own field, which is the point of the event: `self.turn.progress` is
+                // the SESSION's turn, and a scratch summary's numbers landing there is the mislabel the
+                // progress line was once traded away to avoid. Nothing else writes this one.
                 if self.compacting.is_none() {
                     self.compacting_since = self.now_ms;
                 }
@@ -92,11 +77,9 @@ impl App {
                 turn_id,
                 model,
                 ledger_head: _,
-                // **The WHOLE turn's start, when the emitter knows it.** This event fires once
-                // per ROUND, so `started_ms: ts` below restarted the header's clock at every
-                // round — `2.1s` a minute into a turn. `began_ms` is the prompt's own stamp and
-                // is used when present; `ts` stays as the fallback for a turn nobody measured
-                // (a snapshot, or a test that emits the event by hand).
+                // The WHOLE turn's start, when the emitter knows it: this event fires once per ROUND,
+                // so a clock taken from `ts` restarted the header at every round. `ts` stays the
+                // fallback for a turn nobody measured - a snapshot, a hand-emitted test event.
                 began_ms,
             } => {
                 // Asked *before* the pane is replaced. The rows that stop being
@@ -104,19 +87,9 @@ impl App {
                 // there is nothing left to ask which they were.
                 let stale_from = self.turn_first_row();
                 let previous = self.turn.as_ref();
-                // **A boundary the head has ALREADY HAD, taken again.** The frame is an event like
-                // any other and may be delivered twice — and rebuilding the pane here is not
-                // idempotent: the round's own stream (its text, its reasoning, its proposed calls)
-                // is state the event does not describe and cannot restore, so a second copy of one
-                // boundary would throw the round's work away and re-open a run that is already
-                // open.
-                //
-                // `turn_id` is the key that can say so, and it is a sound one: `run_turn_steered`
-                // mints it as `{transcript_id}#{turn_seq}` with `turn_seq += 1` per round, and a
-                // restored session starts that counter at the number of restored items precisely
-                // so that *"within one transcript the ids never repeat"* (`crates/turn/src/
-                // resume.rs`, "`turn_seq` is a watermark, not a turn count"). So an equal
-                // non-empty `turn_id` is one round, and this event has already been folded in.
+                // A boundary the head has ALREADY HAD: a frame may arrive twice, and rebuilding the
+                // pane is not idempotent - the round's stream is state the event cannot restore, so a
+                // second copy throws its work away. `turn_id` is minted per round: equal ids are one.
                 if !turn_id.is_empty() && previous.is_some_and(|t| t.turn_id == turn_id) {
                     return Disposition::Filtered;
                 }
@@ -124,50 +97,16 @@ impl App {
                 // Stamped, so the header can prefer this over a settings row it read
                 // earlier at attach. See `model_from_turn_at`.
                 self.model_from_turn_at = self.seq;
-                // **Which boundary is this?** — and only one of the answers is *a new run*.
-                //
-                // [`TurnPane::turn_rows`] hangs the run on `began_ms`, because it is stamped once
-                // per prompt and carried by every round of it: the one thing on the wire that
-                // distinguishes *the next round of this prompt* from *a new prompt*. What the head
-                // then does with it is the defect this closes, and the mistake is asking the wrong
-                // question — *does this number match* rather than *may I start a new run here*.
-                //
-                // A boundary the head cannot MATCH is not a boundary it can tell APART. `began_ms:
-                // None` means *nobody measured this one*, and two very different events carry it: a
-                // turn that began before this head attached, and **a turn the daemon ran without
-                // stamping its clock at all.** The second is real and reachable —
-                // `harnessd::sessions::run_prompt` calls `begin_turn_clock` and
-                // `Sessions::wake` does not, so the turn a job's settlement or a monitor's firing
-                // opens arrives with no start in it (`harnessd/src/sessions.rs`: `run_prompt` vs
-                // `wake`).
-                //
-                // Read as a new run, such a boundary emptied `turn_rows` and moved `started_ms` to
-                // the event's own `ts`: the run the work is still in stopped reading as this turn's,
-                // so `live_here` and `walk_carried_live` both answered no, the pane drew its OWN
-                // marker beside the walk's, and the `Responding` clock restarted. The operator's
-                // report, in their words: *"it looks like turn end or some other border is
-                // misinterpreted and Responding timer resets and I get new line with `[N thinking
-                // lines]` which then gets merged to the previous `[N tools, M thinking]`"* — and the
-                // merge is the next row landing, which puts a row of the turn back into
-                // `turn_rows`.
-                //
-                // **So an unmeasured boundary over a turn that is still RUNNING is the same run.**
-                // The head is drawing that turn right now; nothing the reader can see has separated
-                // the work before the event from the work after it; and the row filter, not this
-                // event, is what actually ends a run on the screen ([`row_drawn`]) — a new prompt
-                // is preceded by the operator's own message, which is a drawn row and ends the run
-                // by itself. A head that says *new run* here is inventing a border out of an event
-                // that carries no evidence for one, which is exactly the second `Responding` the
-                // operator watched appear.
+                // Which boundary is this? `began_ms` is the only thing on the wire that tells the
+                // next ROUND of a prompt from a new PROMPT, so an unmeasured one (a wake turn) over
+                // a turn still RUNNING is the same run: the operator's own row ends a run, not this.
                 let same_turn = match began_ms {
                     Some(b) => previous.is_some_and(|t| t.started_ms == b),
                     None => previous.is_some_and(|t| matches!(t.state, Some(TurnState::Running))),
                 };
-                // **The clock is never restarted by an event that carries no clock.** Same rule, on
-                // the one field the operator watches move: a boundary with no `began_ms` leaves the
-                // base where it was, so the row keeps counting from the prompt that is actually
-                // running rather than from the frame that arrived. `ts` stays the base for a turn
-                // nobody measured at all — the first `TurnStarted` of a head that joined late.
+                // The clock is never restarted by an event that carries no clock: a boundary with no
+                // `began_ms` leaves the base where it was, so the row counts from the prompt that is
+                // running. `ts` is the base only for a turn nobody measured at all.
                 let started = match (began_ms, same_turn) {
                     (Some(b), _) => b,
                     (None, true) => previous.map(|t| t.started_ms).unwrap_or(ts),
@@ -186,28 +125,15 @@ impl App {
                     turn_rows,
                     ..TurnPane::default()
                 });
-                // **A new round's pane starts at the default, and a new TURN drops any panel.**
-                //
-                // The operator's *"then all subsequent turns go with think open"*, and the brief's
-                // *"no latching across rounds"*. Two facts and not one:
-                //
-                // * **The pane's half goes on every boundary, unconditionally.** `TurnStarted` is
-                //   one event per ROUND, and the pane is that round's — a lift addressed at
-                //   [`runclick::LIVE_RUN`] belongs to the turn that is over and must not be read
-                //   against the next one. No heuristic decides this, because `same_turn` below is
-                //   a guess about `began_ms` (a wake turn arrives unstamped) and a state reset
-                //   must not rest on one.
-                // * **A panel on a run of ROWS is the reader's**, and only a new prompt — a new
-                //   subject — closes it. A further round of the same prompt leaves it where they
-                //   put it (`carry_live_open` moved its address there at the round's end).
+                // The pane's half goes on EVERY boundary: a lift on `LIVE_RUN` belongs to the round
+                // that is over, and `same_turn` is a guess a state reset must not rest on. A panel on
+                // a run of ROWS is the reader's, and only a new prompt - a new subject - closes it.
                 if !same_turn || self.payload_sel.as_deref() == Some(runclick::LIVE_RUN) {
                     self.drop_lift();
                 }
-                // A new turn takes the pane away from the previous one, so the
-                // previous one's rows now own everything they proposed. Same
-                // reason as the terminal states above: the history is cached —
-                // from the first row that pane owned, which is the only part of
-                // it that can render differently now.
+                // The pane leaving hands its calls back to the previous turn's rows, which now own
+                // everything they proposed. The history is cached, so it is invalidated from the first
+                // row that pane owned - the only part of it that can render differently now.
                 if let Some(k) = stale_from {
                     self.invalidate_history_from(k);
                 }
@@ -229,11 +155,9 @@ impl App {
                 if t.turn_id != turn_id {
                     return Disposition::Filtered;
                 }
-                // **The counter it used to move is no longer drawn** — see `turn_status`: the
-                // operator does not want the number to read. The event still counts as
-                // `Rendered`, because it is a frame in which the turn is plainly alive: the
-                // spinner beside the clock moves on it, and that is the row's whole business
-                // now. It also counts as liveness for the stuck line, the same way a delta does.
+                // The counter this event used to move is no longer drawn. It still counts as
+                // `Rendered` - the spinner beside the clock moves on it, which is the row's whole
+                // business now - and as liveness for the stuck line, the same way a delta does.
                 let _ = tokens;
                 Disposition::Rendered
             }
@@ -259,65 +183,42 @@ impl App {
                 }
                 match target {
                     DeltaTarget::Text => {
-                        // **§3.1: model prose is content this head did not author**, and
-                        // this is where it enters — every streamed chunk that becomes the
-                        // answer goes through here and ends up as a row `paint_full`
-                        // writes verbatim. A control byte the model emits (or copies out
-                        // of a file it read) is an instruction to the operator's
-                        // terminal: `ESC ] 0 ; … BEL` sets the window title, `ESC [ 2 J`
-                        // clears the screen.
-                        //
-                        // Sanitised here rather than at the renderer because
-                        // `IncrementalMarkdown` is a frozen-prefix lexer (§13.3): a
-                        // control byte that reaches it is frozen into the stable half
-                        // and cannot be removed later without re-lexing. The trade is
-                        // `without_control`'s own — one space per control byte, so the
-                        // character count `arrived_chars` keeps is unchanged.
+                        // Model prose is content this head did not author: a control byte it emits
+                        // or copies out of a file is an instruction to the operator's terminal. It is
+                        // sanitised here because the frozen-prefix lexer cannot un-freeze a byte.
                         let text = without_control_lines(&text);
                         t.text.push(&text);
                         Disposition::Rendered
                     }
                     DeltaTarget::Reasoning => {
-                        // **Accumulated at every rung, drawn only where the rung shows it.**
-                        //
-                        // The guard used to be on the accumulation, which is the same mistake
-                        // R37's marker made one layer up: `conversation` *hides* the working and
-                        // does not *discard* it — the rung is a view — so the text has to be
-                        // here to be counted, to be drawn when the reader opens the run, and to
-                        // be there the moment they change rung. Found by the marker's own test:
-                        // at `conversation` nothing accumulated, so the streamed thinking the
-                        // operator was watching could not be counted.
+                        // Accumulated at every rung, drawn only where the rung shows it: `conversation`
+                        // hides the working, it does not discard it, so the text has to be here to be
+                        // counted, drawn when the reader opens the run, and there when they change rung.
                         if t.think_started_ms == 0 {
                             t.think_started_ms = ts;
                         }
                         t.think_last_ms = ts;
-                        // The same rule as the answer above, for the same reason: reasoning is
-                        // the model's own text and it reaches the glass through the markdown
-                        // renderer. **And it counts**, for the reason the field gives: on a
-                        // `messages` backend this is the channel that streams from the first
-                        // second, and it was the one the row's number could not see.
+                        // The same rule as the answer above: reasoning is the model's own text and
+                        // reaches the glass through the markdown renderer. And it counts - on a
+                        // `messages` backend this is the channel that streams from the first second.
                         let text = without_control_lines(&text);
                         t.reasoning.push(&text);
-                        // **The `thinking` switch, not a rung comparison** — it is the same
-                        // question (`>= Normal` meant *the reasoning rows are drawn*, and at the
-                        // bottom rung they are not) asked of the set, so a set that hides the
-                        // reasoning cannot count it as rendered.
+                        // The `thinking` switch, not a rung comparison: a set that hides the reasoning
+                        // rows cannot count them as rendered, which `>= Normal` got wrong at the bottom
+                        // rung.
                         if self.visibility.shows(Show::Thinking) {
                             Disposition::Rendered
                         } else {
                             Disposition::Filtered
                         }
                     }
-                    // Never `t.text`. This is the markup, and the whole point of
-                    // the channel is that the default view does not show it — see
-                    // `letibot_sessionlog::event::DeltaTarget`. It *is* reachable
-                    // through `ctrl-x`, so it is sanitised where it is drawn
-                    // (`raw_call_lines`) rather than here.
+                    // Never `t.text`: this is the markup, and the channel exists because the default
+                    // view does not show it. It is reachable through `ctrl-x`, so it is sanitised where
+                    // it is drawn (`raw_call_lines`) rather than here.
                     DeltaTarget::ToolCall => {
-                        // **The other channel that arrives and that the row could not see**, and
-                        // the one an agentic round is *made of*: a call's arguments come as deltas,
-                        // and on the backend that produced the measurement above the row sat at a
-                        // frozen number while thousands of tokens of exactly this went by.
+                        // The other channel that arrives and that the row could not see - and the one
+                        // an agentic round is made of: a call's arguments come as deltas, and the row
+                        // sat at a frozen number while thousands of tokens of this went by.
                         t.raw_call.push_str(&text);
                         t.writing_call = true;
                         Disposition::Rendered
@@ -330,30 +231,22 @@ impl App {
                 timings,
                 ..
             } => {
-                // Kept on the head, not only on the pane: the session header says
-                // how much context this conversation is carrying, and that question
-                // is asked between turns, when the pane may have been superseded by
-                // the transcript. The timings are kept with it — the header now
-                // carries the turn's rate and duration too, which is why the footer
-                // no longer does. The turn measured its own cache, so the
-                // percentage is real.
+                // Kept on the head, not only on the pane: the header says how much context the
+                // conversation carries, and that is asked between turns, when the pane may have been
+                // superseded by the transcript. The turn measured its own cache, so the number is real.
                 self.usage = Some(usage);
-                // Summed as the turns land. A turn with no cost — the local
-                // server, or a metered model nothing prices — adds nothing and
-                // does not light the meter: free and unpriced are both "no
-                // number", and `$0.0000` on every local header would be noise.
+                // Summed as the turns land. A turn with no cost - a local server, or a metered model
+                // nothing prices - adds nothing and does not light the meter: free and unpriced are
+                // both "no number", and `$0.0000` on every local header would be noise.
                 if let Some(c) = usage.cost_micros_usd {
                     self.spent_micros += c;
                     self.spent_seen = true;
                 }
                 self.usage_cache_measured = true;
                 self.last_timings = Some(timings);
-                // **And the count is re-read at the turn's end** (R51 item 5's third moment). A job
-                // that was already running when this head attached is announced by no event at all:
-                // the `ToolFinished` that started it happened before the attach, and a `JobSettled`
-                // may be an hour away. The turn boundary is the moment the head knows it has been
-                // through a round without hearing about it, so it is where the count gets its chance
-                // to be right.
+                // The count is re-read at the turn's end: a job already running when this head
+                // attached is announced by no event at all - the `ToolFinished` that started it came
+                // before the attach, and a `JobSettled` may be an hour away.
                 self.queued.push(Action::ListJobs);
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
@@ -363,24 +256,17 @@ impl App {
                         timings,
                     });
                 }
-                // **What the live pane had lifted stays lifted on the rows this round left.**
+                // What the live pane had lifted stays lifted on the rows this round left.
                 self.carry_live_open();
-                // A terminal state can hand a call back to the transcript.
-                // While the pane is drawing a turn, that turn's assistant rows do
-                // not draw their own unsettled calls; once it stands down they
-                // must, or a call the turn was interrupted in the middle of leaves
-                // the screen with nothing said about it. The rendered history is
-                // cached, so it has to be told — from the first row this pane
-                // owns, which is the only part of it that can render differently
-                // now.
+                // A terminal state hands the turn's calls back to the transcript, which does not draw
+                // them while the pane is up. The history is cached, so it is invalidated from the first
+                // row the pane owned - the only part that can render differently now.
                 self.invalidate_turn_rows();
                 Disposition::Rendered
             }
-            // §4.5's terminal event, which did not exist. The head used to be told
-            // a `Warning` and nothing else, so `TurnState` stayed `Running` and the
-            // spinner span at a dead turn until somebody closed the window; the
-            // "nothing received for 17.0s" line below is the *disclosure* that
-            // covered for it, and it stays as the backstop for a genuine stall.
+            // The terminal event for a failed turn. Without it `TurnState` stayed `Running` and the
+            // spinner span at a dead turn; the "nothing received for" line below stays as the
+            // disclosure that covers a genuine stall.
             SessionEvent::TurnFailed {
                 turn_id,
                 error,
@@ -395,14 +281,9 @@ impl App {
                         partial_kept,
                     });
                 }
-                // A terminal state can hand a call back to the transcript.
-                // While the pane is drawing a turn, that turn's assistant rows do
-                // not draw their own unsettled calls; once it stands down they
-                // must, or a call the turn was interrupted in the middle of leaves
-                // the screen with nothing said about it. The rendered history is
-                // cached, so it has to be told — from the first row this pane
-                // owns, which is the only part of it that can render differently
-                // now.
+                // A terminal state hands the turn's calls back to the transcript, which does not draw
+                // them while the pane is up. The history is cached, so it is invalidated from the first
+                // row the pane owned - the only part that can render differently now.
                 self.invalidate_turn_rows();
                 Disposition::Rendered
             }
@@ -418,14 +299,9 @@ impl App {
                         partial_kept,
                     });
                 }
-                // A terminal state can hand a call back to the transcript.
-                // While the pane is drawing a turn, that turn's assistant rows do
-                // not draw their own unsettled calls; once it stands down they
-                // must, or a call the turn was interrupted in the middle of leaves
-                // the screen with nothing said about it. The rendered history is
-                // cached, so it has to be told — from the first row this pane
-                // owns, which is the only part of it that can render differently
-                // now.
+                // A terminal state hands the turn's calls back to the transcript, which does not draw
+                // them while the pane is up. The history is cached, so it is invalidated from the first
+                // row the pane owned - the only part that can render differently now.
                 self.invalidate_turn_rows();
                 Disposition::Rendered
             }

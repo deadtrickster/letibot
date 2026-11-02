@@ -1,38 +1,12 @@
-//! **A link on the frame is a target** — the operator, 2026-10-30: *"why links are not clickable
-//! and ghostty doesnt detect them either?"*.
-//!
-//! # Why the terminal cannot answer this one
-//!
-//! The head takes the mouse: `rano::term::Mouse::Any` is `CSI ?1003h` and `CSI ?1006h`
-//! (`head.rs`), so every motion and every click is reported to this program and Ghostty's own
-//! link detection never runs — its hover underline, and its `cmd`+click, which the SGR protocol
-//! cannot even carry (the Command key has no modifier bit, so a forwarded `cmd`+click arrives as
-//! a plain click). A link drawn well is therefore still not clickable unless THIS program makes
-//! it one. So it does: [`crate::app::hits::Target::Link`] is recorded for every link the finished
-//! frame draws, and a click on one opens it.
-//!
-//! # What is a link, and who decides
-//!
-//! The frame is read back for `OSC 8` pairs ([`osc8_spans`]) — the same shape as
-//! `App::scan_hints`, which reads the key hints back off the frame — so a link is whatever the
-//! frame drew as one, whichever renderer drew it: rano's markdown label, a `file_url` span from
-//! `ui::render::path_span`, the `http(s)` pass and the repository's own words in
-//! `ui::screen::App::draw_links`.
-//!
-//! The one detection this file adds is `path:line`, and it exists because rano's `link_words`
-//! cannot see one: its word is `[alnum /#-_.]`, so `src/main.rs:120` arrives as the word
-//! `src/main.rs` with `:120` beside it as a word of its own. The head does the split — the half
-//! only it knows, exactly as `ui::render::path_span` says — and rano's `file_url` still decides
-//! what URL a path is. **The generalisation rano would need to own this instead is one character
-//! (`:` in `link_words`'s word), and it was left alone: rano is pinned by four manifests and a
-//! rev bump is its own step.**
+//! A link on the frame is a target: the head takes the mouse, so Ghostty's own link detection never
+//! runs and a click is this program's to answer. The frame is read back for `OSC 8` pairs, and
+//! `path:line` is the one detection this file adds, because rano's `link_words` cannot see a colon.
 
 use super::*;
 
-/// **Every `OSC 8` link on a finished row, as the columns it covers** — `(from, to, url)`, half
-/// open, 0-based, in the row's own cells (a link is zero columns, so the escapes do not count).
-///
-/// The escape walk is `app::pointer`'s — one walker for the head's frames, not a third.
+/// Every `OSC 8` link on a finished row, as the columns it covers - `(from, to, url)`, half open,
+/// 0-based, in the row's own cells (a link is zero columns, so the escapes do not count). The
+/// escape walk is `app::pointer`'s: one walker for the head's frames, not a third.
 pub(crate) fn osc8_spans(row: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     let mut open: Option<(String, usize)> = None;
@@ -76,13 +50,9 @@ fn osc8_uri(seq: &str) -> Option<&str> {
     body.split_once(';').map(|(_, uri)| uri)
 }
 
-/// **`path:line` in a row, made a link** — `Some` only when the row changed, like rano's own
-/// `link_words`, so the common row costs no copy.
-///
-/// A candidate is a run of [`path_char`]s, a `:`, and digits; the text before the colon must hold
-/// a `/` or a `.` (prose is not a file listing — `and:12` is not a path), and
-/// [`rano::term::links::file_url`] must accept it. The line rides on the URL as `:N`, which is
-/// how this head reads it back ([`file_target`]). Text inside a link already drawn is left alone.
+/// `path:line` in a row, made a link; `Some` only when the row changed, like rano's own
+/// `link_words`, so the common row costs no copy. The text before the colon must hold a `/` or a
+/// `.` (prose is not a file listing), and the line rides on the URL as `:N` ([`file_target`]).
 pub(crate) fn link_path_lines(row: &str, root: &str) -> Option<String> {
     let ps = pointer::pieces(row);
     let mut found: Vec<(usize, usize, String)> = Vec::new();
@@ -172,12 +142,9 @@ fn render(ps: &[pointer::Piece<'_>]) -> String {
     out
 }
 
-/// **The file a `file://` URL names, and the line it names** — `("…/src/main.rs", 120)`.
-///
-/// The URL is rano's (`file://<host><percent-encoded path>`) with this head's `:N` on the end
-/// ([`link_path_lines`]). The host is not compared: the head that drew the link is this process,
-/// so the path is this machine's — which is what `file_url`'s host exists to keep true across
-/// `ssh`, where the head runs on the far end and its own paths are the near end's.
+/// The file a `file://` URL names, and the line it names - `(".../src/main.rs", 120)`. The URL is
+/// rano's (`file://<host><percent-encoded path>`) with this head's `:N` on the end. The host is not
+/// compared: the head that drew the link is this process, so the path is this machine's.
 pub(crate) fn file_target(url: &str) -> Option<(String, usize)> {
     let rest = url.strip_prefix("file://")?;
     // `file://host/path` — the host has no `/` in it, so the first one starts the path.
@@ -213,13 +180,9 @@ fn percent_decode(p: &str) -> String {
 }
 
 impl App {
-    /// **A link, opened** — a `file://` link in the editor pane this head already opens files
-    /// with (`App::open_in_editor`, at the line the URL names), and anything else handed to the
-    /// platform's opener as [`Action::OpenUrl`], which is the driver's to run.
-    ///
-    /// The file arm is not a second opener: it is the door an edit row, a cited line and a
-    /// standing note already come through. A web URL has no such door in this head — nothing in
-    /// the tree opened one before this — so the click hands it to the one process that can.
+    /// A link, opened: a `file://` link in the editor pane this head already opens files with, at
+    /// the line the URL names, and anything else handed to the platform's opener as
+    /// [`Action::OpenUrl`]. The file arm is the door an edit row already comes through.
     pub(crate) fn open_link(&mut self, url: &str) -> Option<Action> {
         if let Some((path, line)) = file_target(url) {
             self.open_in_editor(&FileRef {

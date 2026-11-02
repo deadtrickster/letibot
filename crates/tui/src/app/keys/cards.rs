@@ -1,33 +1,13 @@
-//! **Keys a card owns**: while a card is up — a confirmation, a draft, a secret, an ask, a
-//! decision's ladder, the quit card, a setting's values — its keys are its own.
+//! Keys a card owns: while a card is up - a confirmation, a draft, a secret, an ask, a decision's
+//! ladder, the quit card, a setting's values - its keys are its own.
 
 use super::*;
 use std::ops::ControlFlow;
 
 impl App {
-    /// **The `allow-all` confirmation owns the keyboard too**, and for the same
-    /// reason the password field does: a question this consequential must not be
-    /// answered by a keystroke the operator aimed at the composer.
-    ///
-    /// **`y` and Enter both confirm.** It was `y` alone, on the fail-closed
-    /// argument that a mistyped answer should be a no — which is right about
-    /// stray keys and wrong about Enter, the key every other card in this file
-    /// confirms with (the quit card takes it, the ladder takes it, the pickers
-    /// take it). The operator, 2026-09-20: *"i did allow-all and even got to
-    /// that giant red warning"* — and the session was still at
-    /// `automode-edits` afterwards, because the natural keystroke on a
-    /// confirmation silently cancelled it. A card that names two keys and
-    /// means one of them is a card that lies.
-    ///
-    /// Everything else still cancels, Esc included, so a key aimed at the
-    /// composer is still a no.
-    ///
-    /// **The pointer is not a key, and it answers nothing** (R67 item 7). A wheel step and a
-    /// click arrive through the same `Key` as a keystroke, and this card used to take them as
-    /// "no": `/mode allow-all`, then a scroll up to reread what allow-all means, and the card
-    /// said *allow-all cancelled*. The wheel now goes on to scroll whatever it scrolls with the
-    /// card still up, and a click is swallowed with the card still up — it is not an answer,
-    /// and letting it through could act on a surface under a question this consequential.
+    /// The `allow-all` confirmation owns the keyboard, as the password field does: a question this
+    /// consequential must not be answered by a key aimed at the composer. `y` and Enter both
+    /// confirm, everything else is a no, and the pointer answers nothing - a wheel scrolls on.
     pub(crate) fn key_mode_confirm(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.mode_confirm.is_some() {
             match k {
@@ -36,10 +16,9 @@ impl App {
                 _ => {}
             }
             let name = self.mode_confirm.take().unwrap();
-            // **Which card this was, and it decides which frame goes out.** The operator's own
-            // `/mode allow-all` is a point THEY asked for and is sent as `Mode { consented }`;
-            // a card another head asked for (B8) is that head's request and is answered by its
-            // id, so the daemon can settle the one request the person was shown and no other.
+            // Which card this was decides which frame goes out: the operator's own `/mode allow-all`
+            // is a point THEY asked for and goes as `Mode { consented }`, while a card another head
+            // asked for is answered by its id, so the daemon settles only the request shown.
             let asked = self.mode_asked.take();
             self.redraw = true;
             let yes = matches!(k, Key::Char('y') | Key::Char('Y') | Key::Enter);
@@ -71,13 +50,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **A password field owns the keyboard.** While `sudo` is waiting, every
-    /// key is the password's: characters and pastes go into the buffer, Enter
-    /// sends it, Esc or Ctrl+C refuses. Nothing reaches the composer, the
-    /// ladder or the scrollback, so a password cannot land in a prompt.
-    /// **The new-todo card owns the keyboard**, ahead of the composer and behind nothing else
-    /// that is modal. Three keys are its own; everything else is the composer's, so the title and
-    /// the description are typed, edited and pasted with the keys the operator already has.
+    /// The new-todo card owns the keyboard, ahead of the composer and behind nothing else that is
+    /// modal. Three keys are its own; everything else is the composer's, so the title and the
+    /// description are typed, edited and pasted with the keys the operator already has.
     pub(crate) fn key_todo_draft(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.todo_draft.is_some() {
             match k {
@@ -85,11 +60,9 @@ impl App {
                     let live = self.input().to_string();
                     let mut shown = String::new();
                     if let Some(draft) = self.todo_draft.as_mut() {
-                        // The composer's text goes into the field being LEFT, and the field being
-                        // entered comes out — leticl's `%todo-draft-focus`, one order. **The text is
-                        // read BEFORE the focus moves**: `shown` answers with the composer's live
-                        // text for the field that is focused, so asking after the move answers with
-                        // the field we just left and the composer would come up empty.
+                        // The composer's text goes into the field being LEFT and the field entered
+                        // comes out. It is read BEFORE the focus moves: `shown` answers for the focused
+                        // field, so asking after the move would answer with the one just left.
                         draft.take(&live);
                         let next = draft.next();
                         shown = draft.shown("", next);
@@ -118,10 +91,9 @@ impl App {
                         text.push_str(" — ");
                         text.push_str(draft.detail.trim());
                     }
-                    // **The title cap, with the card still up.** The same rule `/todo TEXT` and
-                    // `todo_write` keep, asked of the COMPOSED row so the card and the typed door
-                    // measure the same string: what is capped is the title, and the Detail field is
-                    // where the rest of it goes — which is why this refuses rather than trimming.
+                    // The title cap, with the card still up: the rule `/todo TEXT` and `todo_write`
+                    // keep, asked of the COMPOSED row so both doors measure one string. What is capped
+                    // is the title, and the detail field is where the rest goes.
                     if let Some(why) = title_refusal(&text) {
                         self.todo_draft = Some(draft);
                         self.say(&why);
@@ -136,17 +108,9 @@ impl App {
                         })
                     };
                     self.set_composer("");
-                    // **The row is filed HERE, not by handing the card's words to the verb parser.**
-                    //
-                    // The add used to go through `todo_command`, on the argument that a card and a
-                    // typed line must not become different acts. They still are one act — this
-                    // writes the same row, tagged the same way, as `SetOperatorTodos`, and echoes
-                    // it on the same path — but the WORDS are not re-read as a command line, and
-                    // that matters more with three fields than it did with two: a title reading
-                    // `done 2` or `when 1 j7` was taken for the verb by that door and would move or
-                    // condition a row the reader never named. A form's fields are fields; the three
-                    // verbs stay the typed door, which is the other one the operator asked for
-                    // (*"or via a form, when I file a todo"*).
+                    // The row is filed HERE, not by handing the card's words to the verb parser: a
+                    // title reading `done 2` would be taken for the verb and move a row the reader
+                    // never named. A form's fields are fields; the verbs stay the typed door.
                     let mut mine = self.operator_todos();
                     mine.push(letibot_sessionlog::event::TodoEntry {
                         content: text,
@@ -178,6 +142,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
+    /// A password field owns the keyboard: while `sudo` is waiting, characters and pastes go into
+    /// the buffer, Enter sends it and Esc or Ctrl+C refuses. Nothing reaches the composer, the
+    /// ladder or the scrollback, so a password cannot land in a prompt.
     pub(crate) fn key_secret(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if let Some(ask) = &self.secret {
             let req_id = ask.req_id.clone();
@@ -214,26 +181,17 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **The confirmation that ends a pane owns the keys while it is up**, and it is checked
-    /// ahead of the prompt card so the two can never both be answered by one keystroke — see
-    /// [`TermAsk`] for why the yes is `y` and not Enter, and why every other key cancels.
-    ///
-    /// **A detach never asks**, because it ends nothing: this card exists only for a
-    /// `!term close` the operator typed, and only while a program is running (see
-    /// [`App::begin_close`]).
+    /// The confirmation that ends a pane owns the keys while it is up, checked ahead of the prompt
+    /// card so one keystroke cannot answer both. A detach never asks - it ends nothing - so this
+    /// card exists only for a `!term close` the operator typed while a program is running.
     pub(crate) fn key_term_ask(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if let Some(ask) = self.term_ask.take() {
             self.redraw = true;
             return ControlFlow::Break(match k {
                 Key::Char('y') | Key::Char('Y') => {
-                    // **An ending is on its way.** The keys stop here from now on — a byte written
-                    // into a pty whose program is being signalled is a byte nobody will read —
-                    // and the row the ending becomes is filed when the daemon's `TermEnded`
-                    // lands, with `closed: true` so the register is the operator's own act.
-                    //
-                    // **Nothing is said here.** The card coming down is the act, and the row the
-                    // ending files a moment later is the disclosure: a notice on top of the two
-                    // would be the third copy of one fact, and it is the one that fades.
+                    // An ending is on its way, so the keys stop here: a byte written into a pty whose
+                    // program is being signalled is a byte nobody reads. The row is filed when the
+                    // daemon's `TermEnded` lands, and nothing is said here - that row is the disclosure.
                     if let Some(p) = self.term.as_mut()
                         && p.pane == Some(ask.pane)
                     {
@@ -256,23 +214,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **A command of the operator's own asked them something, and this owns the
-    /// keyboard** — the password field's rule one card over, and for the same reason:
-    /// while a card is up, a character typed is an answer to it and not the first letter
-    /// of the next thing the operator meant to say.
-    ///
-    /// **Enter sends and Esc puts the card away, and the two are not the same act.**
-    /// Enter answers the command: the line goes down the frame the daemon writes into the
-    /// run's stdin. **Esc does NOT refuse anything** — the command is still running and
-    /// still waiting, and there is nothing to refuse — it only takes this head's card off
-    /// the screen, which is what a person wants when they would rather type the answer as
-    /// a `!send` line or watch the stream for a moment longer. The daemon keeps the
-    /// request open and the run keeps waiting; the card does not come back, because the
-    /// run has not asked a new question.
-    ///
-    /// **An empty line is a real answer** and Enter on an empty field sends it: `Continue?
-    /// [Y/n]` takes Enter as its default, and a person accepting a default must not have
-    /// to type a letter to say so.
+    /// A command of the operator's own asked them something, and this owns the keyboard: a typed
+    /// character answers the card, not the next thing. Enter sends - an empty line included, since
+    /// `Continue? [Y/n]` defaults - and Esc only puts the card away, refusing nothing.
     pub(crate) fn key_prompt(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if let Some(ask) = &self.prompt
             && !self.prompt_away
@@ -293,10 +237,9 @@ impl App {
                 }
                 Key::Esc | Key::CtrlC => {
                     self.prompt_buf.clear();
-                    // **Put away, not closed.** The daemon keeps the request open and the run
-                    // keeps waiting, and [`App::submit`] reads `self.prompt` for exactly that
-                    // reason: a bare line typed while it is away must not become a prompt for
-                    // the model. See [`App::prompt_away`].
+                    // Put away, not closed: the daemon keeps the request open and the run keeps
+                    // waiting, which is why `App::submit` reads `self.prompt` - a bare line typed
+                    // while the card is away must not become a prompt for the model.
                     self.prompt_away = true;
                     self.redraw = true;
                     self.say(
@@ -313,13 +256,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **A key the picker asked for owns the keyboard**, exactly as the password field
-    /// does and for the same reason: characters and pastes go into the buffer, Enter does
-    /// both things in one verb — `/models CHOICE --key K` stores the key (mode 600, the
-    /// file the daemon reads) AND takes the row, which is the round trip the typed
-    /// spelling already is — and Esc cancels with nothing stored. Nothing reaches the
-    /// composer, so a key cannot land in a prompt, and the composer's own box draws a dot
-    /// per character while this is up (`composer_rows`).
+    /// A key the picker asked for owns the keyboard as the password field does: characters and
+    /// pastes go into the buffer, Enter does both things in one verb - stores the key and takes the
+    /// row - and Esc cancels with nothing stored. The composer draws a dot per character meanwhile.
     pub(crate) fn key_key_ask(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if let Some(ask) = self.key_ask.clone() {
             match k {
@@ -368,35 +307,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **An open decision owns Up/Down and a bare Enter.**
-    ///
-    /// Before the composer, because while a prompt is on the screen those keys mean
-    /// the ladder and cannot sensibly mean anything else -- the same argument the
-    /// picker arm above already makes for a bare row number.
-    ///
-    /// **Up/Down move the ladder whether or not a line is being typed**, and
-    /// this used to require an empty composer so that "a half-typed line still
-    /// scrolls and still edits". The cost of that was not visible until the
-    /// operator hit it: a permission arrives while you are typing, and the only
-    /// way to reach the menu is to empty the composer first — so the words you
-    /// were writing are the price of choosing an option. Their words,
-    /// 2026-09-20: *"suppose i type a prompt and permission ask arrives — until
-    /// i press down arrow I wont get into the permissions menu, by which time
-    /// my prompt is erased and gone"*.
-    ///
-    /// The quit card and the jobs pane in this same file take Up/Down
-    /// unconditionally — they no longer gate Enter, which is now every
-    /// pane's (see the arm that closes the composer to it below); the ladder
-    /// was the odd one out for the arrows.
-    /// Nothing is taken from the composer, because a one-line composer does not
-    /// edit with Up/Down — what moves aside is scrollback scrolling, for as long
-    /// as an ask is open, and PageUp/PageDown still do that.
-    ///
-    /// Enter and the digits keep the empty-composer guard, and for a reason that
-    /// is the opposite of this one: with a typed line, Enter is `submit`'s, which
-    /// answers the marked row and HOLDS the words — a permission arriving
-    /// mid-typing must not turn Enter into "send the half-thought" — and a line
-    /// being typed keeps its digits.
+    /// An open decision owns Up/Down and a bare Enter, before the composer: while a prompt is up
+    /// those keys mean the ladder, and Up/Down move it even with a line being typed, because
+    /// emptying the composer must not be the price of choosing. Enter and digits keep the guard.
     pub(crate) fn key_decision(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         // **Not while a draft card is drawn in front of it** (R90.16): ↑↓ and the digits moved a
         // ladder the operator could not see.
@@ -404,19 +317,9 @@ impl App {
             let n = decision_rows(&self.open[0]);
             let typing = !self.editor.text().is_empty();
             match k {
-                // **Esc puts a QUESTION card away and answers nothing** — see
-                // [`App::put_question_away`]. The operator: *"i want to be able to escape the
-                // selection card. sometimes i need time to think and just let the card stay"*.
-                //
-                // The rule, typed words or not: Esc had no meaning inside the card before this
-                // (ctrl-c is what clears a typed line; Esc only reached the editor as the first
-                // half of the esc-esc interrupt), so there is nothing to keep for the typed case
-                // — the words leave WITH the card and alt-a brings both back. **And this press
-                // is not handed to the editor**: a second Esc must not interrupt the turn the
-                // operator only meant to step away from — the trap a subagent's Esc already fell
-                // into (*"pressed esc and it didnt work, pressed second time - subagent stopped
-                // lol"*). **A permission card is put away the same way** (R90.5): its Esc fell
-                // through and armed exactly that interrupt.
+                // Esc puts a question card away and answers nothing: the words leave WITH the card
+                // and alt-a brings both back. The press is not handed to the editor, or a second Esc
+                // would interrupt a turn the operator meant only to step away from.
                 Key::Esc => {
                     self.put_question_away();
                     return ControlFlow::Break(None);
@@ -442,10 +345,9 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
-                // **A row number MARKS the row; Enter answers it** (R90.2). It answered at once,
-                // on rows that drew no numbers: `16` typed as a free answer to "how many
-                // workers?" answered choice 1. The numbers are drawn now (`numbered`), and a
-                // digit is a move like ↑↓ — the answer is still one deliberate Enter.
+                // A row number MARKS the row; Enter answers it. Answering on the digit took a `16`
+                // typed as a free answer to "how many workers?" for choice 1 - the numbers are drawn
+                // now, so a digit is a move like the arrows and the answer is one deliberate Enter.
                 _ if !typing && digit_row(k, n).is_some() => {
                     self.sel = digit_row(k, n).unwrap();
                     self.redraw = true;
@@ -457,19 +359,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **An open mode picker owns Up and Down, and Enter on an empty line.**
-    ///
-    /// The session picker's twin, one question narrow: the mode this session
-    /// runs under. It sits after the session picker, which keeps precedence
-    /// while both are up — though neither ever is, each opener closing the
-    /// other — and after the decision ladder for the same reason. The
-    /// empty-composer rule is the ladder's own: a half-typed line's Enter
-    /// still means the line, and the typed path lands in `pick_mode` through
-    /// `submit`.
-    /// **The quit card owns the keys while it is open**, ahead of every other
-    /// list: it was opened by a key that means "I am leaving", and a stray
-    /// arrow landing in the transcript under it would be a keystroke the
-    /// operator aimed at the card.
+    /// The quit card owns the keys while it is open, ahead of every other list: it was opened by a
+    /// key that means "I am leaving", and a stray arrow landing in the transcript under it would be
+    /// a keystroke the operator aimed at the card.
     pub(crate) fn key_quit_card(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.quit_card {
             match k {
@@ -478,12 +370,9 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
-                // **A row number MARKS the row; Enter answers it** (R90.6, R90.2's rule) — it
-                // answered at once, so a `2` typed as the first character of a line left the
-                // head and stopped the daemon with every job in it, while the bar under the
-                // card said *"1/2 or ↑↓ then enter"*. The digits are a move now, like ↑↓, and
-                // the answer stays one deliberate Enter — with the guard below for the line
-                // that was being typed when the card opened (R90.30).
+                // A row number MARKS the row; Enter answers it. Answering on the digit let a `2`
+                // typed as the first character of a line stop the daemon with every job in it, while
+                // the bar said "1/2 or up/down then enter". A digit is a move now, and Enter answers.
                 _ if self.editor.text().is_empty() && digit_row(k, 2).is_some() => {
                     self.quit_sel = digit_row(k, 2).expect("just checked");
                     self.redraw = true;
@@ -523,6 +412,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
+    /// An open picker owns Up/Down and Enter on an empty line, after the decision ladder for the
+    /// same reason. The empty-composer rule is the ladder's own: a half-typed line's Enter still
+    /// means the line, and the typed path lands in `pick_mode` through `submit`.
     pub(crate) fn key_pick(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if let Some(subject) = self.pick {
             let choices = self

@@ -1,10 +1,6 @@
-//! **A question to a person is one line, and their answer says what it answers.**
-//!
-//! The operator, pasting an `ask_user_question` card, the `session · asked:` row with three
-//! paragraphs of question and its options, and their own answer under it: *"again, too much on
-//! my screen, i saw the resulting selector anyway. but what is interesting - my reply doesnt
-//! have any hint on the question. lets mention the question i replied to"*. See
-//! `ui::transcript::asked_card`.
+//! A question to a person is one line, and their answer says what it answers. The card's
+//! question is collapsed to a row and its options are behind it, because a three-paragraph
+//! question and its options filled the screen - see `ui::transcript::asked_card`.
 
 use super::redcard::{holds, popup_text, rows_with};
 use super::*;

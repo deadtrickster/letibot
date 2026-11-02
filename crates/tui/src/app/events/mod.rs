@@ -83,29 +83,19 @@ impl App {
         // the reason the turn in flight is: a head that attached between two rounds has seen no
         // `ActivityChanged`, and the round-level turn would draw it as idle while a call runs.
         self.activity = s.activity.clone();
-        // The rows are replaced — but a snapshot renumbers nothing, so the rows that come back
-        // under the same ids are the rows a collapse was made on. The pairings are PRUNED below,
-        // where the new rows are known, and not cleared here: clearing them was the event that
-        // un-collapsed every notice (a `/resync`, a reattach, a switch back).
-        // **The same conversation, or a different one**, read once and at the top: the
-        // session id is assigned a few lines down, and three things here ask the
-        // question — what is carried over, and (R19) which of this head's own notes keep
-        // the seam they were filed at.
+        // A snapshot renumbers nothing, so the ids a collapse was made on come back, and the pairings are
+        // pruned below where the new rows are known. Clearing them here was the event that un-collapsed every
+        // notice. The same session or a different one is read once at the top, since three things ask.
         let same_session = self.session_id == s.session_id;
         // **This head's own todo cards are put away before the open list is replaced** (R90.14)
         // — under the session they were asked in, which is still `self.session_id` here.
         self.stash_todo_cards();
-        // Everything session-scoped goes, not just the transcript. A snapshot is a
-        // *replacement*, and this is also the switch path: carrying the previous
-        // session's model name or a tool target keyed by a call id that only
-        // existed over there is how a switched head shows the right conversation
-        // with the wrong facts attached to it.
+        // Everything session-scoped goes, not just the transcript: a snapshot is a replacement and this is
+        // also the switch path, and carrying the previous session's model name or a tool target keyed by a call
+        // id that only existed over there shows the right conversation with the wrong facts on it.
         if !same_session {
-            // **The one switch goes with the session it was thrown in.** It names a run by an
-            // item id, and an id is per-transcript: carried across a switch it names another
-            // conversation's row, and the pane's half of it (`lifted`) would go on opening a
-            // thinking block nobody asked for in a session that never had one. See
-            // `app::runclick`.
+            // The one switch goes with the session it was thrown in: it names a run by an item id, and an id is
+            // per-transcript, so carried across a switch it names another conversation's row. See `app::runclick`.
             self.drop_lift();
             self.call_targets.clear();
             self.call_ms.clear();
@@ -120,66 +110,26 @@ impl App {
             self.model.clear();
             self.turn = None;
             self.heads = 0;
-            // **The pane goes with the session it was opened in.**
-            //
-            // A screen belongs to the conversation it was drawn over: carried across a switch it
-            // would be another session's program drawn in this one's rectangle, which is the
-            // same lie a carried-over model name is. **The daemon's pane is not closed here**,
-            // and it cannot be — a `TermClose` sent now would arrive *after* the `Switch`, on
-            // the new session's hub, and kill the wrong thing. So the program is left running
-            // for the session it belongs to, and it ends when the daemon stops or when a head in
-            // that session leaves it. **And a head that switches back finds it again**: a bare
-            // `!term` attaches to the pane this session has, and the daemon — which held the
-            // screen all along — replays it. That is the half this rectangle's own TODO used to
-            // say was missing (*"a head that switches back does not find its pane again, it
-            // finds the transcript"*).
+            // The pane goes with the session it was opened in: the daemon's pane is not closed here, since a
+            // `TermClose` now would arrive after the `Switch` on the new session's hub and kill the wrong thing.
             self.term = None;
-            // **And the plugin panes go with it.** A view is the daemon's answer about THIS
-            // session's layers and looks; carried across a switch it would draw another
-            // session's dashboard in this one's rectangle, which is the same lie a carried
-            // model name is. The daemon publishes them for the session it publishes anything
-            // for, so the new session's own arrive as it opens panes.
+            // The plugin panes go with the session too: a view is the daemon's answer about this
+            // session's layers, so a carried one draws another session's dashboard in this one's
+            // rectangle. The new session's own arrive as it opens panes.
             self.plugin_panes.clear();
             self.plugin_open = None;
             self.plugin_screen = Default::default();
             self.plugin_sel = 0;
             self.plugin_detail = None;
-            // **And what this head believed about the pane is the session's, not this head's.**
-            // A `Hello` re-asks (see that arm), and until the answer lands the fact is
-            // `Unasked` — which is the state that makes `!term close` hold its line rather than
-            // guess. Carrying the previous session's answer across a switch would be a
-            // confirmation naming another session's program.
+            // What this head believed about the pane is the session's, not this head's: a `Hello`
+            // re-asks, and until the answer lands the fact is `Unasked`, which is what makes
+            // `!term close` hold its line rather than guess.
             self.term_fact = PaneFact::Unasked;
             self.term_ask = None;
             self.close_pending = false;
-            // The subagent tree is the PARENT's fact. Carried across a switch it
-            // put "1 subagent running" on the composer of the very subagent being
-            // looked at (measured 2026-09-16), and Enter in the pane there would
-            // have switched to itself.
-            //
-            // **So the rows are REPLACED, by this session's own children out of the
-            // snapshot — not cleared, and not carried.** The snapshot's rows are the
-            // parent's fact and nobody else's: the view they are cut from is per-session,
-            // so a head that switches into `s-sub-1` is handed `s-sub-1`'s children and
-            // not `s`'s, and the rule above is kept by construction rather than by a
-            // clear. See `Snapshot::subagents` for the measurement that put them there.
-            //
-            // **This is the fix for a count that flapped.** The clear this replaces was
-            // what turned a live child into a finished one on the way back: the rows were
-            // gone, and the only thing left to rebuild them from was the daemon's session
-            // list — whose `running` is *a turn is generating in that session at this
-            // instant*, and `false` for a child parked on its own background job. So the
-            // operator's `N subagents running` segment went away on a switch and came back
-            // when some later list reply happened to catch the child generating, over a
-            // subagent that ran throughout (*"so the counter is gone"* … *"yep and now it
-            // is back. wtf"*). A switch sends `since_seq = 0`, so nothing is replayed and
-            // the snapshot is the only route by which the head can be told what it watched
-            // — see the `Subagent` arm in `letibot_sessionlog::view`.
-            //
-            // **What the clear was protecting is still protected.** A row can no longer
-            // arrive from a session the head is not in: this is the snapshot's list, keyed
-            // by the session the snapshot is of. And the fold below still refuses to emit a
-            // row for a child whose brief belongs to somebody else.
+            // The subagent tree is the parent's fact, replaced by this session's own children out of the
+            // snapshot rather than cleared: the daemon's list says a turn is generating now, which is false for a
+            // child parked on a job, so the count flapped over a child that ran throughout.
             self.subagents = s
                 .subagents
                 .iter()
@@ -202,20 +152,15 @@ impl App {
                 })
                 .collect();
             self.subagents_sel = 0;
-            // Jobs are the session's, the same way. The rows survived a switch
-            // and kept drawing the old session's ids with the old session's byte
-            // counts — and now that Enter on a row asks THIS session for that id,
-            // a carried row is a question about a job that was never here.
+            // Jobs are the session's, the same way: a carried row is a question about a job that
+            // was never in this session, since Enter on it asks this session for that id.
             self.jobs.clear();
             self.jobs_sel = 0;
             // And its monitors: a carried row would retire a watch in a session not on screen.
             self.monitors.clear();
             self.monitors_sel = 0;
-            // The queue is the old session's. Whatever was queued there stays
-            // queued *there* — the hub drains it into that session's transcript —
-            // but this head is no longer looking at that session, and an echo of
-            // words belonging to a conversation that is no longer on the screen is
-            // the same lie a carried-over model name is.
+            // The queue is the old session's: the hub drains it into that session's transcript, and an echo of
+            // words from a conversation no longer on the screen is the same lie a carried model name is.
             self.pending_prompts.clear();
             self.unconfirmed.clear();
             // **And the viewport's place, which is a place in the rows that just went**
@@ -230,30 +175,13 @@ impl App {
         self.session_id = s.session_id;
         self.seq = s.seq;
         self.dropped = self.dropped.max(s.dropped);
-        // **And the subagent rows are rebuilt from the snapshot's own children, then
-        // overlaid with the daemon's list.**
-        //
-        // Here, and not in the `Subagent` event arm, because this IS the late-join path
-        // and the resync path at once (see the docstring above) — and a seed that ran
-        // somewhere else would be a second way for the pane to be filled, which is how
-        // the two come to disagree. Called for a same-session resync as well as a switch:
-        // the fold is a rebuild from the current facts and is the same answer either way,
-        // and a resync is exactly when a head's own list may be the stale one.
-        //
-        // The rows themselves were seeded by the `!same_session` block above, from
-        // `Snapshot::subagents` — the parent's own view of its children, which is what a
-        // switch can carry and a session list cannot. This call then folds the list over
-        // them: the list's `running` is the one measurement of NOW either half has.
-        //
-        // `self.sessions` is already the fresh list by now — the `Hello` arm assigns it
-        // before calling this — so the fold is reading the daemon's word and not the
-        // previous session's.
+        // The subagent rows are rebuilt from the snapshot's own children and overlaid with the daemon's list,
+        // here because this is the late-join and the resync path at once; a seed anywhere else would be a second
+        // way to fill the pane. `self.sessions` is already the fresh list.
         self.fold_subagents();
-        // A resync of the *same* session keeps the queue — the hub's command
-        // queue survives a resync, and a prompt queued behind a running turn is
-        // still behind that turn — but anything the snapshot's transcript already
-        // holds has landed, and its echo stands down the way `record_item` would
-        // have stood it down had the row arrived live.
+        // The hub's queue survives a resync of the same session, but anything the snapshot's
+        // transcript already holds has landed, so its echo stands down here as `record_item`
+        // would have stood it down had the row arrived live.
         for it in &s.items {
             if let Some(TranscriptItem::User { parts, .. }) = &it.item {
                 for text in parts.iter().filter_map(|p| match p {
@@ -264,33 +192,17 @@ impl App {
                 }
             }
         }
-        // **And what the snapshot could not resolve stops claiming `queued`** — R16's
-        // third mark, and the claim the head can actually support.
-        //
-        // `pending_prompts` says *the daemon owes me a row for this*. A snapshot
-        // **replaces** the transcript, so after one, an echo the snapshot does not carry
-        // is either a row still coming or a row that a fork replaced — and from the head
-        // those two are the same picture. Leaving it at `queued` asserts the first when
-        // it might be the second; dropping it silently loses the operator's words. So it
-        // is `unconfirmed`, and it retires normally when a row does land.
-        //
-        // **Where this is marked, and why here rather than at the fork.** A snapshot is
-        // the only route by which the transcript is replaced — `reconnect`, `/resync`,
-        // `Switch`, an import — so marking at the snapshot catches every one of them
-        // instead of the two that happened to be thought of. `App::resolve_fork` handles
-        // the fork the head *asked for*, where it knows the row will never arrive.
-        //
-        // An echo queued AFTER this point is untouched: it is added to
-        // `pending_prompts` by a later `submit`, so it is not in the set being marked.
+        // What the snapshot could not resolve stops claiming `queued`: an echo it does not carry is either a row
+        // still coming or one a fork replaced. Marked here because a snapshot is the only route by which the
+        // transcript is replaced.
         for q in &self.pending_prompts {
             if !self.unconfirmed.iter().any(|u| u == q) {
                 self.unconfirmed.push(q.clone());
             }
         }
-        // The snapshot's in-flight calls are **not** seeded into `call_targets`.
-        // They reach the screen as `TurnPane::calls`, which carries each call's own
-        // target on the row that is about to draw it; putting them in an id-keyed
-        // table as well is how a live `call_0` came to relabel a settled one.
+        // The snapshot's in-flight calls are not seeded into `call_targets`: they reach the screen as
+        // `TurnPane::calls` with each call's own target, and an id-keyed table as well is how a live `call_0`
+        // relabelled a settled one.
         if let Some(TurnState::Finished { usage, timings, .. }) = s.turn.as_ref().map(|t| &t.state)
         {
             // A turn that finished measured its own cache, so the percentage is
@@ -299,18 +211,8 @@ impl App {
             self.usage_cache_measured = true;
             self.last_timings = Some(*timings);
         }
-        // **The reader's place, taken BEFORE the rows go** (R36).
-        //
-        // A snapshot is a transcript boundary, and the ids are per-transcript
-        // (`{transcript_id}.{n}`, `engine.rs`) — so after this line the id the viewport is
-        // holding names a different place, or nothing at all. The two things that can still
-        // be asked of the transcript that arrives are the row's own WORDS and the LINE the
-        // reader was at, and both have to be taken here, while the rows they describe are
-        // still here to be asked. See [`App::carry`] and [`App::repair_anchor`], which spends
-        // it: the row is placed again under its new id, or the tail is where the reader goes
-        // and the sentence says so.
-        //
-        // A switch takes none of it: the rows that went belong to another conversation.
+        // The reader's place, taken before the rows go: the ids are per transcript, so what survives is the
+        // row's own words and the line, both taken while the rows are still here. See [`App::repair_anchor`].
         self.carry = same_session.then(|| Carry {
             words: self.held_row_words(),
             line: self.held_line(),
@@ -320,63 +222,29 @@ impl App {
             arriving: false,
         });
         self.items = s.items;
-        // **A collapse is about a ROW, so it goes only with the rows that went.** The pairing is
-        // keyed by `item_id` (see [`App::absorbed`]), and a snapshot hands back the same ids for
-        // the same rows — a `/resync`, a reattach and a switch back all carry the conversation it
-        // was made on. Clearing the map here instead drew every collapsed notice in full again,
-        // which is the operator's *"after certain events all collapsed notifications reappear"*.
-        //
-        // **And a retired one outlives even the session it was made in.** A switch away takes the
-        // rows and with them the pairing — but a note the reader retired is a hide they asked
-        // for, and coming back to a session drew the wall they cleared. The key set is the
-        // head's own (`dismissed`, one list for every session, capped), so an entry it still
-        // names is kept; an evicted one is dropped with the rows. An id is
-        // `{transcript}.{n}` and no two transcripts share one, so a kept id can only ever mean
-        // the row it was made on.
+        // A collapse is about a row, so it goes only with the rows that went: the pairing is keyed by `item_id`
+        // and a snapshot hands the same ids back. A retired one outlives even the session, since a hide the
+        // reader asked for must not come back when they return.
         self.absorbed.retain(|id, key| {
             self.items.iter().any(|r| &r.item_id == id) || self.dismissed.contains(key)
         });
-        // **And whether this session's store row holds a conversation the head has not got.**
-        // Asked here because this is where the rows are replaced, and asked of both sources in
-        // one place: a snapshot can be the empty one a session the daemon has registered but
-        // not yet opened is handed. See [`App::rows_the_store_holds`].
+        // And whether this session's store row holds a conversation the head has not got: asked where the rows
+        // are replaced, since a snapshot can be the empty one a registered but unopened session is handed. See
+        // [`App::rows_the_store_holds`].
         self.restoring = self.rows_the_store_holds();
         // A snapshot replaces the rows, so everything derived from them — the `!`
         // candidates and the model's suggestions — is stale and goes with them.
         self.the_rows_moved();
-        // **And the fill's bar goes with the stream that carried it.**
-        //
-        // A `Filling` tick rides the event stream and its ONLY exit is a tick whose `done` has
-        // reached `total` — so a stream that stops carrying ticks leaves the bar standing for
-        // the rest of the session. That is not hypothetical: a republish of 2000 rows overruns
-        // a head's 1024-event queue, the hub **demotes** the head rather than blocking
-        // (`Inner::append_and_fan`), and from that moment every tick is skipped — the final one
-        // included, because a demoted head is not written to at all. The head is handed a
-        // snapshot instead, and this line is the head taking it: **the view it was watching is
-        // gone, so the progress it was reporting belongs to a stream that no longer exists.**
-        // Measured on the operator's own head, 2026-10-04: it stood at `897 of 2000 rows —
-        // restoring the stored conversation` and did not move.
-        //
-        // **A fill that is genuinely still running is not lost by this.** Its next tick re-arms
-        // the line, and ticks come one per 64 rows — so clearing here can cost one tick of a
-        // bar that is still going, and buys the end of one that never will. The bar must end by
-        // FACT rather than by a clock (that is why `republish_after` publishes its completion
-        // unconditionally), and the fact here is that the head was just told its queue was
-        // thrown away.
+        // The fill's bar goes with the stream that carried it: its only exit is a tick whose `done` reached
+        // `total`, and a republish that overruns a head's queue demotes the head, so every later tick is skipped.
+        // A fill still running is not lost, since its next tick re-arms the line and the bar ends by fact.
         self.filling = None;
         // **The two maps keyed by a row's id are pruned to the rows that are still here.**
         // One rule, two doors onto a replacement — this one and [`App::rows_replaced`].
         self.prune_to_the_rows();
-        // The snapshot's turn carries its calls **with their edit excerpts**, and
-        // the rows it appended in order — the same two facts the live hand-off
-        // used when it moved a card's excerpt into `call_edits` as the row landed.
-        // Only the live path filled that map, so a restarted head drew every
-        // landed edit panel-less even though the wire had just handed it the
-        // excerpt (operator, 2026-09-17: past edits lose their diff panels on
-        // restart). Seed it the same way the live arm does: positionally, the
-        // Nth tool_result row is the Nth call. Rows from turns before this one
-        // are not on the wire — the view keeps one turn's calls — and render as
-        // they always did.
+        // The snapshot's turn carries its calls with their edit excerpts and the rows it appended in order,
+        // and only the live path filled `call_edits`, so a restarted head drew every landed edit panel-less.
+        // Seeded positionally: the Nth tool_result row is the Nth call.
         if let Some(t) = &s.turn {
             let kinds: std::collections::HashMap<&str, &str> = self
                 .items
@@ -396,11 +264,9 @@ impl App {
             }
         }
         self.invalidate_history();
-        // **The cards the operator put away stay away** across a snapshot (a resync, a re-attach):
-        // a model's question still open on the daemon is refreshed and kept off the screen, one
-        // the snapshot no longer holds was settled meanwhile and goes; a todo row's card is this
-        // head's own and survives for its session. A switch to another session takes away
-        // nothing — each card keeps the session it was asked in.
+        // The cards the person put away stay away across a snapshot: a model's question still open is refreshed
+        // and kept off the screen, one the snapshot no longer holds was settled meanwhile and goes, and a todo
+        // row's card is this head's own. A switch takes away nothing.
         let mut open = s.open_decisions;
         // R90.29: the snapshot is the truth about what is still open — a card whose answer was
         // in flight comes back if the daemon still holds its question, and goes if it does not.
@@ -421,33 +287,16 @@ impl App {
         if let Some(d) = self.open.first() {
             self.sel = self.sel.min(decision_rows(d).saturating_sub(1));
         }
-        // A permission settles on the call it gated, so it rides the call's card
-        // rather than the note list; a question — or a log recorded before the field
-        // existed — has no call to ride and stays a note. The live arm makes the same
+        // A permission settles on the call it gated, so it rides the call's card rather than the
+        // note list; a question has no call to ride and stays a note. The live arm makes the same
         // split, and the two have to agree.
         let (call_bound, notes_bound): (Vec<SettledDecision>, Vec<SettledDecision>) = s
             .settled_decisions
             .into_iter()
             .partition(|d| d.call_id.is_some());
-        // **A snapshot's notes are HISTORY, and this head's own are not** (R19).
-        //
-        // Until this, everything the snapshot carried was planted at anchor 0 —
-        // *everything in a snapshot is history and none of it is anchored* — which is
-        // right about where it goes and wrong about what it is: a fresh head showed
-        // nothing, so replaying hours of announcements as though they had just happened
-        // put them above a conversation they did not precede. The operator restarted a
-        // head and was met by twelve red lines: *"i dont want to see that on restart."*
-        //
-        // So the two kinds are sorted rather than merged. This head's own notes keep
-        // their seam — it filed them while watching, at rows of this very conversation —
-        // and what the snapshot adds is [`Placed::Before`]: listed by `/notes`, counted
-        // by `/status`, and not drawn, because a head that has just attached has shown
-        // nothing and the log is where these facts live.
-        //
-        // **A seam the new transcript no longer has is not a seam.** A compaction or a
-        // reseat forks the conversation, so a note filed at row 200 of a 250-row
-        // transcript is no longer between any two rows of this one; it joins the history
-        // rather than being drawn at a place that has stopped existing.
+        // A snapshot's notes are history and this head's own are not, so the two are sorted rather than
+        // merged: notes this head filed keep their seam, and what the snapshot adds is [`Placed::Before`],
+        // listed and counted and not drawn. A seam the new transcript lacks is not a seam.
         let mut mine: Vec<(Placed, Note)> = if same_session {
             std::mem::take(&mut self.notes)
                 .into_iter()
@@ -464,11 +313,8 @@ impl App {
         };
         let mut before: Vec<(Placed, Note)> = Vec::new();
         for w in s.warnings {
-            // Same rule as the live arm: `turn_failed` is the log's record of what
-            // the turn's own terminal state already says on the screen. Filtering
-            // it here as well is what stops a *snapshot* from putting it back —
-            // which is exactly what happened the first time, and is the reason the
-            // live path and the snapshot path have to agree about every filter.
+            // Same rule as the live arm: `turn_failed` is the log's record of what the turn's own terminal state
+            // already says on the screen, so filtering it here is what stops a snapshot putting it back.
             if w.code == "turn_failed" {
                 continue;
             }
@@ -483,11 +329,8 @@ impl App {
             before.push((Placed::Before, n));
         }
         for d in notes_bound {
-            // **The same split the live arm makes, through the same function.** A
-            // question has no ladder and no verdict, so its settled row is its own note
-            // rather than rano's four permission words — and a head that reattached
-            // would otherwise draw `cancelled` over an answer somebody gave. See
-            // [`Note::settled`] and [`Note::Answered`].
+            // The same split the live arm makes, through the same function: a question has no ladder, so its
+            // settled row is its own note rather than rano's four permission words. See [`Note::settled`].
             let n = Note::settled(d);
             if holds(&mine, &n) {
                 continue;
@@ -499,14 +342,9 @@ impl App {
         before.append(&mut mine);
         self.notes = before;
         self.note_upto = 0;
-        // The settled rows this snapshot carries are history, and a decision that
-        // gated one of them has to ride that row rather than vanish with the live
-        // card. The snapshot's decisions are keyed by call id, which is
-        // round-positional, so the match is best-effort: walking the rows newest
-        // first, each decision goes to the most recent tool_result row that carries
-        // its id, and a decision is spent on the first row it matches. Rows older
-        // than the snapshot's decision window render without the approval — the same
-        // `Replayed` rule the duration and the edit pair follow.
+        // A decision that gated a settled row rides that row rather than vanishing with the live card. The
+        // ids are round-positional, so the match is best-effort: walking newest first, each decision goes to the
+        // most recent result row carrying its id, and rows older than the window render without the approval.
         {
             let mut by_call: std::collections::HashMap<String, SettledDecision> =
                 std::collections::HashMap::new();
@@ -550,34 +388,23 @@ impl App {
                     .collect(),
                 progress: t.progress,
                 state: Some(t.state),
-                // Which rows this turn produced. Without it a head that joined late
-                // cannot tell that the transcript already holds the answer, and
-                // renders it twice — measured on a second head attached to a
-                // finished turn, where the whole reply appeared above itself.
+                // Which rows this turn produced. Without it a head that joined late cannot tell the transcript
+                // already holds the answer, and renders it twice.
                 appended: t.appended,
-                // **`turn_rows` is deliberately NOT here, because it is not on the wire.** A head
-                // that attaches mid-turn gets the current round's `appended` from the snapshot and
-                // starts with no history of the turn's earlier rounds, so for the window between
-                // attaching and the next `TurnStarted` it can draw the duplicate this field exists
-                // to prevent. Said rather than hidden: closing it needs a daemon field, and the
-                // window is one attach rather than every round.
+                // `turn_rows` is deliberately not here, because it is not on the wire: a head attaching mid-turn
+                // gets the current round's `appended` and no history of the earlier rounds, so it can draw the
+                // duplicate this field prevents until the next `TurnStarted`. Closing that needs a daemon field.
                 ..TurnPane::default()
             };
             // The snapshot carries the accumulated text **once**. Everything after
             // this is an increment. That is §13.3's wire half, arriving.
             pane.text.push(&t.text);
             pane.reasoning.push(&t.reasoning);
-            // A head joining mid-call gets the markup too, so the raw chord shows
-            // the same thing on a reattach as it does on the head that watched it.
-            // `writing_call` stays false: a snapshot cannot say whether the block
-            // is still open, and inventing a spinner that never stops is worse
-            // than not showing one.
+            // A head joining mid-call gets the markup too, so the raw chord shows the same thing. `writing_call`
+            // stays false: a snapshot cannot say whether the block is still open.
             pane.raw_call = t.raw_calls;
-            // A permission settles on the call it gated, so the snapshot attaches
-            // it to the call's card the way the live arm does. A decision whose call
-            // is not in this turn — a log recorded before the field existed, or a
-            // call the snapshot did not carry — has nowhere to ride and is dropped
-            // here rather than rendered twice.
+            // A permission settles on the call it gated, so the snapshot attaches it to the call's card. A
+            // decision whose call is not in this turn has nowhere to ride and is dropped rather than drawn twice.
             for d in call_bound {
                 let cid = d.call_id.clone().unwrap_or_default();
                 if let Some(c) = pane.calls.iter_mut().find(|c| c.call_id == cid) {
@@ -586,25 +413,9 @@ impl App {
             }
             pane
         });
-        // **And the prose the rows it just handed us already hold is not ours to draw again.**
-        //
-        // A snapshot's turn carries the round's accumulated text beside the rows that hold it —
-        // the daemon's view never trims `TurnView::text` when a row lands, and the head's own
-        // handover (`record_item`) fires on a BODY EVENT, which this head was not there for. So a
-        // head that re-attaches, resyncs or switches back mid-turn drew one paragraph twice: the
-        // row where it belongs, then the pane's copy under every row that landed after it — the
-        // operator's own prompt, which is what made it read as *"the reply started before my
-        // question was visible and then duplicated after"*. See [`TurnPane::prose_taken_over`].
-        //
-        // **The same door needs the working, and it is the SAME question the reply asks.** A
-        // snapshot's turn carries the round's accumulated reasoning (`Snapshot::turn`) beside the
-        // rows that hold it — the daemon never trims `TurnView::reasoning` when a row lands — and
-        // this head was not there for the body event that would have handed it over
-        // ([`TurnPane::hand_over_reasoning`]). Both doors call that one method, so a re-attach
-        // mid-round cannot end up counting, or drawing, thinking that is a row above it.
-        //
-        // The calls have their own mark and it is the loop `record_item` runs, verbatim: one
-        // definition of *the transcript has this call* (`round_answered`), asked at both doors.
+        // The prose a snapshot's rows already hold is not ours to draw again: the daemon never trims
+        // `TurnView::text` when a row lands, and the head's handover fires on a body event it was not there for.
+        // The working goes through the same door, so a re-attach cannot count a row that is above it.
         if let Some(t) = self.turn.as_mut() {
             let answered = round_answered(t, &self.items);
             while t
@@ -665,10 +476,8 @@ impl App {
             | SessionEvent::TranscriptContent { .. }
             | SessionEvent::Citations { .. }
             | SessionEvent::TranscriptForked { .. }) => self.on_transcript_event(e, ts),
-            // **A plugin pane's view** — held by name, drawn when the operator opens it
-            // (`app::plugin`). It carries no transcript row and changes no conversation: it is
-            // a screen's content, which is why it is dispatched straight to the pane's own
-            // handler rather than through a fold.
+            // A plugin pane's view, held by name and drawn when the operator opens it: it carries no transcript
+            // row and changes no conversation, so it goes straight to the pane's own handler.
             e @ (SessionEvent::PluginPane { .. } | SessionEvent::PluginPaneGone { .. }) => {
                 self.on_plugin_event(e)
             }
@@ -676,28 +485,13 @@ impl App {
         }
     }
 
-    /// **A page or a wheel over a TAIL-ORIGIN overlay**, which both of them are.
-    ///
-    /// `sub_out` and `job_out` window their content from the end — a subagent's answer
-    /// and a running job's newest bytes are what those panes are opened for — so their
-    /// `scroll` counts rows hidden **below** the bottom and moving toward the beginning
-    /// ADDS to it. That is the opposite of `pane_scroll`, which counts rows hidden above
-    /// the top because a `help`/`todos`/`slash` pane is read from its head.
-    ///
-    /// One function, because the two must agree about the sign — and because the second
-    /// one was **forgotten**: the page keys and the wheel reached this overlay's
-    /// transcript instead of the overlay, which is the defect the subagent view had
-    /// already been fixed for one arm above (`"a wheel in the subagent output view
-    /// scrolled the conversation underneath it"`). One arm is a place to forget.
-    ///
-    /// Returns whether an overlay took the key, so the caller can fall through to the
-    /// transcript when none did.
+    /// A page or a wheel over a tail-origin overlay: `sub_out` and `job_out` window their content from the
+    /// end, so moving toward the beginning adds to their `scroll`, the opposite of `pane_scroll`. One function,
+    /// because the second overlay was forgotten. Returns whether an overlay took the key.
     pub(crate) fn scroll_tail_overlay(&mut self, up: bool, by: usize) -> bool {
-        // **A closure over the value, not a binding to the struct.** The two overlays
-        // are different types (`SubOut`, `JobOut`) that happen to share a field name, so
-        // an `if let … else if let …` binding one `&mut` for both arms does not compile —
-        // which is the compiler saying the obvious thing: there is no shared type here,
-        // only a shared rule.
+        // A closure over the value and not a binding to the struct: the two overlays are different types that
+        // share a field name, so one `&mut` for both arms does not compile, which is the compiler saying there is
+        // no shared type here, only a shared rule.
         let moved = |scroll: usize| {
             if up {
                 scroll.saturating_add(by)
@@ -716,39 +510,20 @@ impl App {
         true
     }
 
-    /// **The conversation is about to be replaced** (R16): remember what is in the
-    /// air, so the fork can resolve those echoes rather than orphan them.
-    ///
-    /// Clone rather than a flag, because the list has to survive the echoes being
-    /// retired normally in between — a prompt whose row lands before the fork needs
-    /// no help from this, and one still waiting does.
+    /// The conversation is about to be replaced: remember what is in the air, so the fork can resolve those
+    /// echoes rather than orphan them. Cloned rather than flagged, since the list must survive the echoes being
+    /// retired normally in between.
     pub(crate) fn mark_fork(&mut self) {
         self.fork_pending = self.pending_prompts.clone();
     }
 
-    /// **The two maps keyed by a row's id, pruned to the rows that are still here.**
-    ///
-    /// Both are promises about a row — `bulk` is *the daemon announced this id and has not
-    /// sent its body*, `bound_prompts` is *this echo is drawn on this row* — and a row that is
-    /// gone, or whose body has landed, has nothing left for either to stand for.
-    ///
-    /// **Pruned rather than cleared**, which is the whole of the rule and the reason this is a
-    /// method: a replacement that carries the same rows back under the same ids (a resync
-    /// mid-prompt, where the reply is racing the prompt) must not drop a binding for one frame
-    /// and put the echo back at the tail, and must not forget an announcement it is still owed
-    /// bodies for. One rule, two doors: [`App::load`] and [`App::rows_replaced`].
-    ///
-    /// **A snapshot records the bulk announcement; a live append never does.** The rows a
-    /// snapshot carries without bodies are a *carry* — a fork, a reseat, a resume, an import,
-    /// or an attach to a daemon mid-carry. The rows a live `TranscriptAppended` adds are the R2
-    /// window of an ordinary message, and putting them here is exactly the defect this
-    /// replaces: a trigger built on "some row lacks a body" fires on every healthy turn.
+    /// The two maps keyed by a row's id, pruned to the rows that are still here: a row that is gone or whose
+    /// body landed has nothing for either promise to stand for. Pruned and not cleared, so a replacement
+    /// carrying the same rows back drops no binding and forgets no announcement.
     pub(crate) fn prune_to_the_rows(&mut self) {
-        // **The probe's answers are PRUNED, not cleared**, the same rule the two id-keyed
-        // maps keep and for the same reason: a resync that carries the same rows back under
-        // the same ids must not make this head ask the store the same three questions again,
-        // and must not forget that it already knows the answer. An id that left the
-        // transcript takes its answer with it.
+        // The probe's answers are pruned, not cleared, the same rule the two id-keyed maps keep: a resync that
+        // carries the same rows back must not make this head ask the store again, and an id that left takes its
+        // answer with it.
         let (held, absent, asked) = match self.bulk.take() {
             Some(b) => (b.held, b.absent, b.asked),
             None => Default::default(),
@@ -779,73 +554,14 @@ impl App {
             .retain(|id, _| bodyless.contains(id.as_str()));
     }
 
-    /// **The rows this head holds that are numbered in a transcript the session has left** —
-    /// the head's half of [`SessionEvent::TranscriptForked`].
-    ///
-    /// A fork — a `/reseat`, a `/compact`, a re-seat onto a rebuilt prompt — opens a new
-    /// transcript and carries the conversation into it, so every carried row is published under
-    /// new ids (`{transcript_id}.{n}`, `engine.rs`) and **not one of the ids the replaced
-    /// transcript's rows are held under is in the carry**. The daemon names that transcript; this
-    /// is what a head does with it, and it is deliberately the smallest thing that makes the rule
-    /// true: the rows that went, gone, and the rows that follow are the whole of the conversation.
-    ///
-    /// # Why only the parent's rows, and not every row held
-    ///
-    /// A row's id names the transcript it is numbered in, and a head can hold rows of **more than
-    /// one**. A resume republishes the tail of the transcripts a compaction put behind the current
-    /// one (`Harness::ancestor_tail`) — on purpose, so that a reader can scroll above the summary
-    /// they resumed onto, and `TODO.md`'s R19.1 is the rest of that story. Those rows are *not*
-    /// what the fork replaced, and the transcript that arrives does not carry them: dropping them
-    /// would lose the history the resume went to the trouble of restoring — the operator's
-    /// *"conversation was gone — only a small recent portion was displayed"*, arriving one verb
-    /// later. What a fork replaces is named on the event, so this drops exactly that.
-    ///
-    /// # Why this is not `load`
-    ///
-    /// `load` is the other door onto a replacement, and it takes a `Snapshot` — a resync and a
-    /// `Hello` carry one, and it is why those two are the same path. A fork cannot: its rows travel
-    /// as [`SessionEvent::TranscriptAppended`], so there is no snapshot to load, and a snapshot cut
-    /// at the fork would be the OLD transcript's rows. So the replacement is stated, and this is
-    /// the head's side of it.
-    ///
-    /// # What it does NOT do, and why each is named rather than left out
-    ///
-    /// * **The reader's place, and this is where it is TAKEN.** Where the viewport goes when the
-    ///   row under it stops existing is `App::repair_anchor`'s question, and the `App::carry` it
-    ///   spends is taken here — the live half of what `load` does for a snapshot. It has to be
-    ///   here: this statement is the only thing that says a boundary happened, and after the
-    ///   `retain` below the row the reader was on is not there to be asked for its words. A
-    ///   carry taken only in `load` is one a fork never takes, and the reader is then left to an
-    ///   ordinal measured in the transcript that just went — one row off, with a sentence.
-    /// * **The echoes.** A prompt this head queued is still owed a row, and a fork carries the
-    ///   conversation rather than dropping it — so the echo retires the ordinary way, when the
-    ///   carried row's body lands and `retire_pending` matches it by its words. A compaction that
-    ///   really did drop the row is answered by `resolve_fork`, on the warning that says so; a head
-    ///   that retired echoes here would take a sentence off the screen that is still coming.
-    /// * **The notes' seams.** A note is filed at the row count of its moment ([`App::file_note`]),
-    ///   and `load` re-places a seam the new transcript is too short for. It cannot be done here:
-    ///   the new transcript's rows have not arrived, so every seam would be re-placed to `Before` —
-    ///   and on a lossless re-seat, where the conversation and therefore every seam survives, that
-    ///   would be a worse lie than the one it fixes. A seam past the end of the rows is not drawn,
-    ///   so nothing on the screen depends on this; what is left is a place `/notes` still names.
-    ///   Recorded rather than guessed at.
+    /// The rows this head holds that are numbered in a transcript the session has left: the head's half of
+    /// `TranscriptForked`, whose carried rows are all published under new ids, so not one held id is in the
+    /// carry. The smallest thing that makes the rule true: the rows that went, gone.
     pub(crate) fn rows_replaced(&mut self, transcript_id: &str, parent_id: &str) {
         let gone = format!("{parent_id}.");
-        // **The reader's place, taken BEFORE the rows go** (R36).
-        //
-        // The live door onto a replacement, and the one `load` cannot answer: a fork's rows
-        // travel as appends, so there is no snapshot to load and `load`'s carry is never taken.
-        // What the reader is holding is a row of the transcript this statement replaces, and
-        // after the line below it is not there to be asked for its words — so the two things
-        // that cross a boundary, the row's own WORDS and the LINE the reader was at, are taken
-        // here. See [`App::carry`] and [`App::repair_anchor`], which spends it: the row is
-        // placed again under its new id, or the tail is where the reader goes and the sentence
-        // says so.
-        //
-        // `arriving` is the one thing a snapshot knows and a fork does not: a snapshot's rows
-        // come with it, and a fork's follow the statement on the wire — so a head that hears the
-        // statement first (a resume inside the carry, and every fixture that writes it first)
-        // takes a carry that can only ever be PLACED, never concluded. See [`Carry::arriving`].
+        // The reader's place, taken before the rows go: the live door onto a replacement and the one `load`
+        // cannot answer, since a fork's rows travel as appends. The row's own words and the line are taken here,
+        // while the row is still there to be asked. See [`App::repair_anchor`].
         let arriving = {
             let here = format!("{transcript_id}.");
             !self
@@ -866,37 +582,17 @@ impl App {
             .position(|r| r.item_id.starts_with(gone.as_str()))
             .unwrap_or(self.items.len());
         self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
-        // **So the one thing this head keeps by row INDEX goes with the rows** — the seams its
-        // notes were filed at. pg-noop, 2026-10-16: a `target_red` warning filed at seam 566 of
-        // `#t50` had absorbed that transcript's `EMERGENCY` notice, row 566; two compactions later
-        // row 566 of `#t52` was the operator's *"how we are doing"*, which drew nothing, and the
-        // red card stood where it should have been with a time seven hours old — *"my latest
-        // message simply not rendered"*. A seam into the rows that went joins the history
-        // (`/notes` lists it), the rule `load` applies to a seam the new transcript no longer has.
-        //
-        // **The pairings do not go with the indices, because they are not keyed by one.** They
-        // are keyed by the row's own id (see [`App::absorbed`]), and the `retain` above has
-        // already taken the rows that went — so what is left is a pairing whose row is still
-        // here, under an id a fork does not reuse. Pruned, not cleared: a `/reseat` carries the
-        // conversation across, and the collapse of its notice has to cross with it.
+        // The one thing this head keeps by row INDEX goes with the rows: the seams its notes were filed at. A
+        // seam into the rows that went joins the history, which is the rule `load` applies to a seam the new
+        // transcript no longer has.
         for (place, _) in &mut self.notes {
             if matches!(place, Placed::Seam(at) if *at > kept) {
                 *place = Placed::Before;
             }
         }
-        // **And the offset goes with the rows it was measured against.**
-        //
-        // `scroll` is lines hidden below the window, so it is the barest offset this head keeps
-        // — and it was measured from the bottom of the transcript that just went. A replacement
-        // that shortens (a compaction) leaves it too large, and one that lengthens leaves it
-        // pointing at a different row; either way the reader is placed by a number that means
-        // nothing here. `load` has always zeroed it at the end (its own last two lines), which
-        // is why the snapshot path lands on the tail when the row is not carried; the live door
-        // did not, so a `/reseat` left the reader on the old count — *"it also broke my scroll -
-        // i was scrolled up and it showed me thousands of lines 'below'"*. Zero is *following*,
-        // which is what the window falls back to when the carry concludes the row is gone; when
-        // it does not, the frame places the window from the row instead ([`App::repair_anchor`])
-        // or holds the line while the carry lands.
+        // And the offset goes with the rows it was measured against: `scroll` is lines hidden below the
+        // window, measured from the bottom of the transcript that just went. `load` has always zeroed it; the
+        // live door did not, so a `/reseat` left the reader placed by a number that means nothing here.
         self.scroll = 0;
         // A row went, so everything derived from the rows — the `!` candidates and the model's
         // suggestions — is stale, by the same rule the live append follows.
@@ -909,89 +605,28 @@ impl App {
         self.prune_to_the_rows();
     }
 
-    /// **The fork happened** (R16): retire the echoes that were waiting on a
-    /// transcript that no longer exists.
-    ///
-    /// The echo's prompt is in the ledger — a fork summarises everything said
-    /// before it, which is why the summary exists — so what is retired is the
-    /// *mark*, not the words: the conversation above already holds them, as prose
-    /// in the summary, and the row that would have carried them was replaced.
-    ///
-    /// **Only the marked ones.** An echo queued after the fork began belongs to the
-    /// new transcript and its row is still coming; retiring it would take a sentence
-    /// off the screen that has not landed, which is the defect `pending_prompts`
-    /// exists for.
+    /// The fork happened: retire the echoes that were waiting on a transcript that no longer exists. The
+    /// prompt's words are in the ledger, as prose in the summary, so what is retired is the mark. Only the
+    /// marked ones, since an echo queued after the fork began has its row still coming.
     pub(crate) fn resolve_fork(&mut self) {
         for text in std::mem::take(&mut self.fork_pending) {
             self.retire_pending(&text);
         }
-        // **A fork answers the question a snapshot could only raise.** The marks here were
-        // `unconfirmed` because the head could not tell *still coming* from *replaced*; a
-        // fork the head itself asked for is the second, and the echo is gone with it. Same
-        // intersection, so a mark whose echo survived a piece-of-the-row retirement (the
-        // engine split the run across a notice) stays until its own row lands.
+        // A fork answers the question a snapshot could only raise: the marks were `unconfirmed` because the
+        // head could not tell *still coming* from *replaced*, and a fork it asked for is the second. The same
+        // intersection, so a mark whose echo survived a piece retirement stays until its own row lands.
         let queue: std::collections::HashSet<String> =
             self.pending_prompts.iter().cloned().collect();
         self.unconfirmed.retain(|u| queue.contains(u));
     }
 
-    /// Stand down the echo of a queued prompt whose row has landed.
-    ///
-    /// **The unit is a LINE, not a message, and that is the whole of the fix.** The
-    /// old rule asked whether the landing row *was* the echo, or began with it, and
-    /// both questions are about whole strings while the thing being compared is a
-    /// **run of prompts**: the engine merges the operator's consecutive prompts into
-    /// ONE user item joined by newlines (`SteeringMessage::to_item`), and a head only
-    /// sometimes does the same joining itself ([`App::submit`]'s coalescing is
-    /// conditional on a turn it thinks is running). So the shapes that meet are
-    /// "six prompts in the queue, one six-line row" and "two prompts joined in the
-    /// queue, one five-line row" — and against a whole-string rule every one of them
-    /// compares NO, which leaves the echo on the screen for the rest of the session.
-    ///
-    /// Measured on this head, 2026-09-23: six `queued ·` echoes of the R27
-    /// instruction's six paragraphs, every one of them answered, none retired —
-    /// because the row that answered them was their **join** (2752 characters, six
-    /// lines) while the queue held two hundred-to-five-hundred characters per entry.
-    ///
-    /// So: a row's lines are consumed, once each, by the pending pieces that equal
-    /// them as **whole lines**, from the front of the queue backwards. A piece that
-    /// consumes nothing keeps its place; an entry left with nothing retires. The
-    /// word *whole* is the correctness: a prompt `second thing` is NOT retired by a
-    /// row reading `first thing\nsecond thing-guess`, which is the failure that
-    /// matters — a head that swallows a prompt the daemon has not answered has put a
-    /// sentence the operator typed where nobody will ever see it.
-    ///
-    /// **What is deliberately not done: matching a substring, or matching pieces out
-    /// of order.** A piece is claimed only by a whole line at or after the last line
-    /// claimed, so a queue whose pieces appear reversed in a row keeps them (an echo
-    /// left standing costs a stale line; an echo wrongly retired costs the
-    /// sentence), and a piece that is a *fragment* of a line claims nothing at all.
-    ///
-    /// A prompt coincidentally EQUAL to one whole line of a longer prompt the
-    /// operator typed separately would still retire. That residue is accepted and
-    /// older than this fix — it is the same risk [`App::retire_pending`]'s old
-    /// front-piece branch carried, and the alternative (never retiring a piece) is
-    /// the defect measured above.
-    ///
-    /// **This is the only thing that retires an echo, and it takes content.** The
-    /// announcement of a user row says nothing about whose words it carries — a
-    /// harness notice and another head's prompt are the same item — so a head that
-    /// retired on [`SessionEvent::TranscriptAppended`] would lose the echo of a
-    /// prompt still sitting in the hub's queue, and the operator would watch their
-    /// own sentence vanish. See [`App::bound_prompts`] for the half that *is* drawn
-    /// from an announcement.
+    /// Stand down the echo of a queued prompt whose row has landed. The unit is a LINE and not a message,
+    /// since the engine merges the person's consecutive prompts into one item joined by newlines while the
+    /// head only sometimes joins them itself, and whole-string equality answers no to every such pair.
     pub(crate) fn retire_pending(&mut self, row: &str) {
-        // **An echo that is not in the queue is not in the unconfirmed set either.**
-        // An intersection, not a removal of the row's text.
-        //
-        // Measured on this surface, 2026-09-23, in leticl's words and true here for the
-        // same structural reason: *"an unconfirmed echo's text is never a queued text"*,
-        // so `unconfirmed.retain(|u| u != row)` matches nothing — the row's text is the
-        // engine's JOIN, not the echo — and an echo marked unconfirmed by an earlier
-        // snapshot **whose row later landed inside a merged item** would be retired from
-        // the queue and stay in this set for ever. The set is not the echo's text; it is a
-        // mark ON an echo, so the only honest update is to keep the marks whose echo is
-        // still there.
+        // An echo that is not in the queue is not in the unconfirmed set either: an intersection, not a
+        // removal of the row's text. The row's text is the engine's join, so `retain(|u| u != row)` matches
+        // nothing and a mark whose row landed inside a merged item would stay for ever.
         let lines: Vec<&str> = row.split('\n').collect();
         // **A line is spent once.** Two prompts that say the same thing stay queued
         // separately until each of their rows lands — the property the equality rule
@@ -1014,36 +649,16 @@ impl App {
                 }
             }
         }
-        // **The intersection, taken AFTER the loop.** Building it before is the same
-        // defect inverted, and it is how the first version of this fix leaked: the set
-        // held the queue as it was when the row arrived, so an echo that had just stood
-        // down was still in it — a mark outliving the thing it was a mark on, which is
-        // precisely the leak the intersection exists to close. Found by the assertion
-        // below this call, on the first run.
+        // The intersection, taken after the loop: building it before held the queue as it was when the row
+        // arrived, so an echo that had just stood down was still in it, a mark outliving the thing it marked.
         let queue: std::collections::HashSet<String> =
             self.pending_prompts.iter().cloned().collect();
         self.unconfirmed.retain(|u| queue.contains(u));
     }
 
-    /// **Bind the oldest unbound echo to a row that has just been announced.**
-    ///
-    /// Called for a body-less `user` row, which is the shape of this head's own
-    /// prompt *and* of a steering notice, a §5.7 salvage notice and another head's
-    /// prompt. The announcement cannot tell them apart, so this is a guess: what it
-    /// buys is that the row is drawn from the words the head already holds, at the
-    /// position the transcript gave it — above the reply it caused — instead of
-    /// being invisible until its body catches up while the reply streams above it.
-    ///
-    /// Oldest first, and never an echo already bound: several prompts in the air at
-    /// once is the normal case behind a running turn, and their rows are announced
-    /// in the order they were sent. The echo **stays in `pending_prompts`** — this
-    /// binds a drawing, it does not retire anything (see [`App::retire_pending`]).
-    ///
-    /// The order is: a `BTreeMap`-free [`HashMap`] lookup, one scan of the pending
-    /// list, and one clone of the text being bound. `pending_prompts` is one to a few
-    /// entries — behind a running turn the engine merges consecutive operator
-    /// messages, so it is ordinarily *one* — and this runs once per announced row,
-    /// so it is nothing next to the render it is feeding.
+    /// Bind the oldest unbound echo to a row that has just been announced. A body-less `user` row is this
+    /// head's own prompt and also a steering notice, a salvage notice or another head's prompt, so this is a
+    /// guess: the row is drawn from the words the head holds, at the position the transcript gave it.
     pub(crate) fn bind_echo(&mut self, item_id: &str) {
         if self.pending_prompts.is_empty() {
             return;
@@ -1061,25 +676,9 @@ impl App {
         self.bound_prompts.insert(item_id.to_string(), text);
     }
 
-    /// The echo texts a **body-less row on screen is already drawing**, so the tail
-    /// must not draw them a second time.
-    ///
-    /// Owned rather than borrowed, because the caller holds it across the frame's
-    /// disjoint borrow of `self`. It is one entry per prompt in the air — ordinarily
-    /// one — and it is built once per frame.
-    ///
-    /// Derived from `items` on every frame rather than counted, for the reason
-    /// [`App::bulk`] gives: `items` is replaced wholesale by a snapshot, so anything
-    /// remembered about the rows it replaced describes rows that no longer exist. A
-    /// binding whose row has been trimmed out of the view, or replaced by a snapshot,
-    /// draws nothing — and this then draws the echo at the tail again, which is the
-    /// honest answer: the words are still this head's to show.
-    ///
-    /// **As LINES, not as whole texts** (R51 item 15). The tail does not ask *is this
-    /// entry already on screen* — that question is answered NO for any entry that grew
-    /// after it was bound, and the whole entry is then drawn twice. What it needs is the
-    /// pieces being drawn, so it can take exactly those out. See [`unclaimed_prompts`],
-    /// which is the walk that spends them.
+    /// The echo texts a body-less row on screen is already drawing, so the tail must not draw them again.
+    /// Owned, since the caller holds it across the frame's disjoint borrow, and derived from `items` every
+    /// frame because a snapshot replaces them wholesale. See [`App::bulk`].
     pub(crate) fn echoes_on_screen(&self) -> Vec<(String, Vec<String>)> {
         self.items
             .iter()
@@ -1089,28 +688,16 @@ impl App {
             .collect()
     }
 
-    /// **Move the running command to the background** — `ctrl-o` and `/promote`.
-    ///
-    /// The fact to guard is a command running, and the check used to ask whether the
-    /// TURN was running instead. They come apart: a terminal turn state can leave a call
-    /// unsettled — the comment on the `TurnFinished` arm says so in as many words, and
-    /// the engine emits `TurnFinished` on the interrupt paths while a tool is still
-    /// executing. The operator, looking at a `◐ Running "cargo test …"` card while the
-    /// head said otherwise: *"nothing is running to move to the background"* /
-    /// *"how come"*.
-    ///
-    /// So it asks the calls. The daemon honours a promote inside `bash`'s own wait loop,
-    /// which exists only while a command is executing, so a running call is not a proxy
-    /// for the thing being promoted — it IS it.
+    /// Move the running command to the background: `ctrl-o` and `/promote`. The guard is a command running
+    /// and not the turn, since a terminal turn state can leave a call unsettled, which is how the head came to
+    /// say *nothing is running to move* over a running card. So it asks the calls.
     pub(crate) fn promote(&mut self) -> Option<Action> {
         if self.running_call().is_some() {
             self.say("moving the running command to the background");
             return Some(Action::Promote);
         }
-        // Two different silences, and a head that said the same thing for both sent the
-        // operator looking for a command that had not been started yet. **Busy, not generating**: a
-        // turn waiting on a call is still working, and *the model is still working* is the true
-        // sentence for it.
+        // Two different silences, and one sentence for both sent the person looking for a command that had
+        // not started. Busy, not generating: a turn waiting on a call is still working.
         if self.turn_busy() {
             self.say("the model is still working — there is no command running to move yet");
         } else {
@@ -1119,10 +706,9 @@ impl App {
         None
     }
 
-    /// **The command running right now**, whatever the turn's own state says.
-    ///
-    /// Ctrl+O's precondition, and deliberately not [`App::turn_busy`] either: this asks for a
-    /// command the daemon is *executing*, which is a fact about ONE call and not about the turn.
+    /// The command running right now, whatever the turn's own state says. Ctrl+O's precondition, and
+    /// deliberately not [`App::turn_busy`]: this asks for a command being executed, which is a fact about one
+    /// call.
     pub(crate) fn running_call(&self) -> Option<&CallRow> {
         self.turn
             .as_ref()?
@@ -1134,19 +720,13 @@ impl App {
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
-        // **A reasoning row takes over the reasoning it carries** — see
-        // [`TurnPane::hand_over_reasoning`], which is called at the end of this method, once the
-        // body is IN `items` for it to read. It used to advance a byte mark here, before the body
-        // was placed, which is why the mark could only ever trim the COUNT: the drawing read the
-        // whole buffer and the fold, opened, showed what the number had already spent.
+        // A reasoning row takes over the reasoning it carries ([`TurnPane::hand_over_reasoning`]), called
+        // once the body is in `items` for it to read. It used to advance a byte mark before the body was placed,
+        // which is why the mark could only trim the count.
         let reasoning = matches!(item, TranscriptItem::Reasoning { .. });
-        // **Content ends the binding, either way.** Confirmed: the row renders from
-        // its real body and the echo retires by text below. Contradicted: the row was
-        // never this head's prompt — a steering notice, a §5.7 salvage notice,
-        // another head's prompt — and the echo is still in `pending_prompts`, so it
-        // goes back to the tail where it belongs. Either way the guess has served its
-        // purpose, and neither branch may retire on the announcement instead — see
-        // `App::retire_pending`.
+        // Content ends the binding either way. Confirmed, the row renders from its real body and the echo
+        // retires by text; contradicted, the row was never this head's prompt and the echo goes back to the
+        // tail. Neither branch may retire on the announcement.
         self.bound_prompts.remove(item_id);
         // **A body landing takes its id off the bulk announcement**, so the count follows
         // the evidence and not a clock — and an empty set means the carry is complete and
@@ -1157,18 +737,9 @@ impl App {
                 self.bulk = None;
             }
         }
-        // A user row with body is the transcript taking a queued prompt over. The
-        // steering path appends the operator's words verbatim
-        // (`SteeringMessage::to_item`: "a plain `User` item with exactly its own
-        // text"), so the text is the match — and one row retires one entry, so two
-        // prompts that say the same thing stay queued separately until each of
-        // their rows lands.
-        // **Every text part, like [`App::load`].** This read only the FIRST part, and
-        // the snapshot path read every one — so the two paths could retire different
-        // things from the same row, which is the drift leticl measured on its own head
-        // (*"the live arm read only the FIRST text part where the snapshot path reads
-        // every part"*). One call site each; the common case is one part holding the
-        // engine's join, and a two-part item is two things said.
+        // A user row with a body is the transcript taking a queued prompt over, so the text is the match, and
+        // one row retires one entry. Every text part, like [`App::load`], since reading only the first let the
+        // two paths retire different things from one row.
         if let TranscriptItem::User { parts, .. } = &item {
             for text in parts.iter().filter_map(|p| match p {
                 UserPart::Text { text } => Some(text.as_str()),
@@ -1178,19 +749,9 @@ impl App {
             }
         }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
-            // **A body with no row to land on — counted, never silent** (R17).
-            //
-            // This used to be a bare `return`, and it is the third way a row the
-            // ledger has can be missing from the screen: the announcement was
-            // replaced by a snapshot that no longer carries this id, so the words
-            // arrive with nowhere to go and are thrown away. Nothing said so, and
-            // nothing could — the row is not in `items`, so there is not even a
-            // placeholder to notice.
-            //
-            // It is counted rather than made to work because there is nothing to
-            // recover: an out-of-order body for a row nobody has is exactly the
-            // case a snapshot exists to resolve. What can be wrong here is the
-            // *frequency*, and a number is how that becomes visible.
+            // A body with no row to land on is counted and never silent: the announcement was replaced by a
+            // snapshot that no longer carries this id, so the words arrive with nowhere to go. Counted rather
+            // than made to work, because there is nothing to recover.
             self.orphan_bodies += 1;
             self.note(Note::Warned(Warned {
                 code: "orphan_body".into(),
@@ -1207,25 +768,9 @@ impl App {
             return;
         };
         self.items[idx].item = Some(item);
-        // **A landed tool-result BODY is what hands a live card over to the transcript.**
-        //
-        // Not the announcement: a row with no body renders zero rows, so a pane that stood
-        // down at the announcement left the call in *neither half* for the frames between
-        // `TranscriptAppended` and `TranscriptContent` — the card erased, the settled row not
-        // drawable yet, the whole window re-derived around the hole. That one-frame gap is the
-        // operator's *"periodic flicker while diff card settles"*: on a terminal that does not
-        // composite a paint (no mode 2026), the erase sweep is also what showed the hardware
-        // caret inside the card's rows. Doing it here puts the pane's stand-down and the row's
-        // first drawing in ONE frame, the card on screen throughout.
-        //
-        // The boundary is [`round_answered`]'s — the calls this round's landed bodies have
-        // answered, keyed on the row's own `call_id` — because that is also the marker's
-        // (`live_work`: *"it advances when the row's BODY lands"*), and the pane's cards, the
-        // marker's number and the marker's colour are three readers of one frontier that have
-        // to agree. The frontier still advances one call at a time in invocation order, so a
-        // body that lands out of order (or a row for a call this pane does not hold, R31's
-        // operator deposit) claims nothing it should not: it lands in `answered` and the loop
-        // stops at the first frontier call no landed row answers.
+        // A landed tool-result body is what hands a live card over. Not the announcement: a row with no body
+        // renders zero rows, so a pane that stood down there left the call in neither half for the frames
+        // between the two events, which is the flicker the operator saw.
         if matches!(
             self.items[idx].item,
             Some(TranscriptItem::ToolResult { .. })
@@ -1248,44 +793,17 @@ impl App {
                 t.settled_calls += 1;
             }
         }
-        // **A body landing is the transcript moving too.** The row was announced with no
-        // content, so it carried no tool calls a moment ago: a `!` candidate list built
-        // then is missing every command this row ran, and a model asked then was asked
-        // about a row that had not arrived. See [`App::the_rows_moved`].
+        // A body landing is the transcript moving too: the row carried no tool calls a moment ago, so a `!`
+        // candidate list built then is missing every command this row ran. See [`App::the_rows_moved`].
         self.the_rows_moved();
-        // The row's rendered form changed, so the history cache from that row
-        // on is stale. From that row on, and not from row zero: this is the
-        // hottest of the invalidations — one per transcript row, so one per
-        // row per session — and re-rendering the rows above a row whose body
-        // just arrived is the whole session, again, for every row in it. From
-        // the head of its ROUND, because a round is what renders as a unit; see
-        // `round_head`.
+        // The row's rendered form changed, so the history from that row on is stale, and from the head of its
+        // ROUND: this is the hottest invalidation, one per transcript row, and re-rendering above it is the
+        // whole session for every row in it.
         let k = self.round_head(idx).min(self.run_head(idx));
         self.invalidate_history_from(k);
-        // The pane's accumulated prose, handed over the same way its calls are.
-        //
-        // `TurnPane::text` is every `Delta { target: Text }` of the whole turn, and
-        // a turn's prose is committed to the transcript one ROUND at a time. So
-        // once a round's assistant row has its body, the sentence the model wrote
-        // before its first tool call is on the screen twice — in history where it
-        // belongs and again in the pane below the cards. Measured at 60x34 on the
-        // operator's session: "I'll take a look at what's in the tree first."
-        // appearing above the round's cards and again under them.
-        //
-        // Clearing rather than counting bytes, because that is what "the
-        // transcript has taken this over" means, and because `IncrementalMarkdown`
-        // is a frozen-prefix lexer — slicing it would mean re-lexing what it has
-        // already frozen, which is the §13.3 rule this head is built around.
-        //
-        // Safe against a race only because the engine appends a round's assistant
-        // row before generating the next round (`harnessd::harness`), so no delta
-        // of round N+1 can arrive before round N's row.
-        //
-        // **And the same question is asked at the other door** — a snapshot, which is where the
-        // rows arrive already holding their bodies and no event will ever say so
-        // ([`TurnPane::prose_taken_over`], and `App::load`). The identity test below is the
-        // stronger of the two and stays first: *this row is one this pane appended* is a fact,
-        // while *this row's words are mine* is a comparison of two strings.
+        // The pane's accumulated prose, handed over the same way its calls are: a turn's prose is committed a
+        // round at a time, so once a round's assistant row has its body the sentence is on the screen twice.
+        // Clearing rather than counting, since the row is the copy.
         if prose
             && let Some(t) = self.turn.as_mut()
             && (t.appended.iter().any(|a| a == item_id) || t.prose_taken_over(&self.items))
@@ -1293,29 +811,18 @@ impl App {
             t.text = IncrementalMarkdown::new();
             t.text_cache = BlockCache::new();
         }
-        // **And the thinking, by the same rule and at the same moment** — the row's body is in
-        // `items` by now, so the walk that spends what this round's rows hold can read it. That is
-        // what stops a landed thought being drawn twice with the fold open (`ctrl-r`), and it is
-        // what makes the count (`live_work`) and the fold agree: both read the one buffer that is
-        // left. See [`TurnPane::hand_over_reasoning`] for the walk and for what the frozen prefix
-        // forced (a re-seat, not a slice).
+        // And the thinking, by the same rule and at the same moment: the row's body is in `items` by now, so
+        // the walk that spends what the round's rows hold can read it. That is what stops a landed thought
+        // being drawn twice with the fold open. See [`TurnPane::hand_over_reasoning`].
         if reasoning && let Some(t) = self.turn.as_mut() {
             t.hand_over_reasoning(&self.items);
         }
     }
 }
 
-/// **One pending echo against one landing row**: what of the echo is still owed.
-///
-/// `None` when the row says nothing about this echo — no whole line of it is a whole
-/// piece of the echo. `Some("")` when the echo is fully accounted for. `Some(rest)`
-/// when a run of its lines landed and the rest has not.
-///
-/// `claimed` and `cursor` are the row's lines, spent across the whole queue in one
-/// call: each line of the row answers at most one piece, and only in the order the
-/// queue holds them, which is the order the daemon appended them in. See
-/// [`App::retire_pending`] for why the unit is a line and why the two guards —
-/// whole-line equality and no going backwards — are what make it safe.
+/// One pending echo against one landing row: what of the echo is still owed. `None` when no whole line of
+/// the row is a whole piece of the echo, `Some("")` when it is fully accounted for, `Some(rest)` when a run
+/// of its lines landed. `claimed` and `cursor` are spent across the whole queue in order.
 pub(crate) fn strip_landed(
     entry: &str,
     lines: &[&str],
@@ -1342,14 +849,9 @@ pub(crate) fn strip_landed(
             None => kept.push(piece),
         }
     }
-    // **What is left is the WORDS still owed, not the blank scaffolding around them.**
-    // The blank pieces are kept in the walk above (a blank line matches nothing, so it can
-    // never be *claimed* and must not be dropped mid-compare), but they are not content:
-    // an entry whose only remaining pieces are blank has had every word of it accounted
-    // for, and joining them back would hand the caller a string that is truthy and empty
-    // — so the echo would stay on the screen for the rest of the session showing nothing.
-    // Found by replaying the operator's own rows through this rule
-    // (`docs/evidence/queued-echoes-2026-09-23.py`), where the entry's tail was a blank.
+    // What is left is the words still owed and not the blank scaffolding: a blank piece is kept in the walk
+    // (it can never be claimed) but is not content, so an entry whose remaining pieces are blank has been
+    // accounted for and joining them would hand back a string that is truthy and empty.
     let rest = kept
         .iter()
         .filter(|p| !p.is_empty())
@@ -1359,39 +861,9 @@ pub(crate) fn strip_landed(
     hit.then_some(rest)
 }
 
-/// **The queue as the tail must DRAW it** — R51 item 15, and it is `strip_landed`'s
-/// read-only twin.
-///
-/// # The defect
-///
-/// A body-less `user` row is drawn from the echo this head bound to it ([`App::bound_prompts`]),
-/// and the tail draws the rest of the queue. The two were kept apart by comparing WHOLE
-/// STRINGS — the tail skipped a pending entry whose text was exactly one a row was drawing —
-/// and **an entry that GREW after it was bound defeats that**: bound as `"A"`, it becomes
-/// `"A\nB\nC"` as the operator keeps typing (the coalescing item 14 requires), so the text no
-/// longer matches and the tail draws **the whole entry again** — `A` on the screen twice, once
-/// in the row's own place and once in the queue below it.
-///
-/// # The rule
-///
-/// **The unit of drawing is the entry; the unit of claiming is the piece.** Each whole line a
-/// bound row is drawing is spent once against the queue (the walk is [`strip_landed`]'s, so a
-/// claim here and a claim by a landing row cannot disagree about what a claim IS), and what is
-/// left of an entry is joined back and returned as ONE block.
-///
-/// Returns, per entry the tail still owes something for: **the index into `pending`, the
-/// remainder to draw, and the ORIGINAL text whose drawing claimed it** (`None` when nothing did).
-///
-/// # Why the third field, which is not about drawing at all
-///
-/// The `unconfirmed` mark is a sentence about the prompt this head sent — *the snapshot replaced
-/// the transcript, so I can no longer tell `still coming` from `replaced`* — and it is looked up
-/// **by text**. The row above looks it up under the text IT is drawing (the bound one), so a tail
-/// that looked it up under the ENTRY's text would answer differently for the same prompt the moment
-/// the entry grew: `unconfirmed` on one row and `queued` on the next, which is two statements about
-/// one fact. **The claiming text is returned so the remainder can carry the mark its own row
-/// carries** — the row in the transcript's own place is the senior drawing, and the tail's
-/// remainder is its tail.
+/// The queue as the tail must draw it, the read-only twin of `strip_landed`. Comparing whole strings kept the
+/// tail and a bound row apart, and an entry that GREW after it was bound defeats that, so `A` was drawn twice.
+/// The unit is the piece, so the line a row is drawing is spent and the rest is drawn as one block.
 pub(crate) fn unclaimed_prompts(
     pending: &[String],
     bound: &[(String, Vec<String>)],
@@ -1399,12 +871,9 @@ pub(crate) fn unclaimed_prompts(
     if pending.is_empty() {
         return Vec::new();
     }
-    // One pass over the queue, in the order the daemon will append the rows — the same rule
-    // `retire_pending` keeps, and for the same reason: an entry may not claim a line that an
-    // earlier entry already claimed.
-    //
-    // Flattened into one line list with a flag per bound drawing, so the walk below can report
-    // which drawing spent a line as well as that it did.
+    // One pass over the queue in the order the daemon will append the rows, the same rule `retire_pending`
+    // keeps: an entry may not claim a line an earlier one already claimed. Flattened into one list with a flag
+    // per bound drawing, so the walk can report which drawing spent a line.
     let mut lines: Vec<&str> = Vec::new();
     for (_, text_lines) in bound {
         for l in text_lines {

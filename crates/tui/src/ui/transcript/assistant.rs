@@ -29,17 +29,9 @@ pub(crate) fn assistant_row_lines(
     else {
         unreachable!("assistant_row_lines is handed only Assistant rows");
     };
-    // **Model prose is content this head did not author** (§3.1). It is the
-    // largest unsanitised surface in this file: it goes through the markdown
-    // lexer and comes out as rows the head paints, and `paint_full` writes a row
-    // verbatim — so a control byte the model emitted (or copied out of a file it
-    // read) was an instruction to the operator's terminal. `ESC ] 0 ; … BEL` sets
-    // the window title and `ESC [ 2 J` clears the screen.
-    //
-    // Sanitised **before** the lexer rather than after the renderer, so the
-    // lexer, the wrapper and the width arithmetic all work on one string: a
-    // control byte becomes a space, which keeps every column count the same and
-    // is the same trade `without_control`'s doc records for tool payloads.
+    // Model prose is content this head did not author, and `paint_full` writes a row verbatim - so a
+    // control byte the model emitted is an instruction to the operator's terminal. Sanitised BEFORE
+    // the lexer, so lexer, wrapper and width arithmetic all work on one string.
     let text = without_control_lines(text);
     // **The lines it cited, in the fences that name them** — before the lexer, so rano draws them
     // as a citation (see `cite`). A row that cites nothing is borrowed straight through.
@@ -56,15 +48,9 @@ pub(crate) fn assistant_row_lines(
     let prose = cache.lines(&md, cfg, cfg.budget.body_lines);
     let spoke = !prose.iter().all(|l| l.trim().is_empty());
     let mut out = prose;
-    // **The pictures the reply's markdown named**, under it, where the terminal can
-    // draw them — the operator's first test of inline images was a model that wrote a
-    // PNG and said `![sunset](/Users/dead/sunset.png)`, and the head drew the alt text.
-    // Only what the upload pass has already read and sent; see `render::reply_image`.
-    //
-    // **At the reference, not at the end** — the operator, looking at the first one: the
-    // `![…]` line was near the top and the picture below the reply's last paragraph.
-    // Each goes after the first line, past the previous picture, that shows its
-    // reference; one whose reference is on no line goes at the end.
+    // The pictures the reply's markdown named, drawn where the terminal can show them, and only for
+    // what the upload pass has already read and sent. Each goes after the first line, past the
+    // previous picture, that shows its reference; one with no reference goes at the end.
     if cfg.images {
         let box_cols = rano::term::graphics::image_box(cfg.width);
         let mut from = 0;
@@ -86,21 +72,9 @@ pub(crate) fn assistant_row_lines(
     // (R37). The prose above is kept and the call rows below are not, which is the
     // same line the ladder draws everywhere else.
     for c in tool_calls.iter().filter(|_| !vis.hides_the_working()) {
-        // ONE ROW PER CALL. A call whose result is on the screen is drawn
-        // by that result and not here.
-        //
-        // This row used to draw `→ Read foo.rs` for every call it made and
-        // the result row then drew `▸ Read foo.rs · ok · 21 lines` for the
-        // same call three lines below, which is two rows and one fact: the
-        // proposal says a call is coming, and once the result has settled
-        // nothing is coming. That doubling is most of why a turn read as a
-        // wall — four calls cost eight rows of a thirty-four-row screen
-        // before any output was shown.
-        //
-        // What survives is the case the proposal line is actually FOR: a
-        // call with no result. The turn was interrupted, the round is still
-        // running, or the body has not arrived. `→` now means exactly
-        // "asked for, nothing came back", which is a fact worth a row.
+        // ONE ROW PER CALL: a call whose result is on the screen is drawn by that result, not here,
+        // because a proposal row plus the settled row is two rows for one fact. What survives is the
+        // case the proposal line is for - a call with no result, so the arrow means asked and unanswered.
         if answered.contains(&c.id) || drawn_live {
             if raw && !c.arguments.is_empty() {
                 out.extend(raw_call_lines(cfg, &format!("{} {}", c.name, c.arguments)));
@@ -108,17 +82,9 @@ pub(crate) fn assistant_row_lines(
             continue;
         }
         let verb = card::Verb::of(&c.name);
-        // Derived from the arguments **on this row**, never looked up by
-        // call id. The row is holding the very bytes the rule reads, and it
-        // is the only copy of them that is guaranteed to belong to this
-        // round — an id-keyed lookup was how `→ Read TODO.md` came to sit
-        // above a card whose payload was `README.md`.
-        //
-        // It is the same function the engine puts on the wire,
-        // `letibot_sessionlog::display_target`, so a call watched live and
-        // one reconstructed from the transcript still render identically;
-        // a second copy of the rule here is what would make a switched head
-        // disagree with the head it switched away from.
+        // Derived from the arguments on this row, never looked up by call id: this row holds the
+        // bytes the rule reads, and an id-keyed lookup once put a call above a card about another
+        // file. It is the engine's own `display_target`, so a live call and a replayed one agree.
         let target = letibot_sessionlog::display_target(&c.arguments);
         let subject = if target.is_empty() {
             // The call id earns its columns only when there is nothing
@@ -139,12 +105,9 @@ pub(crate) fn assistant_row_lines(
             ),
             p,
         ));
-        // The settled row's half of `ctrl-x`. A live turn shows the raw
-        // markup from the `ToolCall` deltas; once the row is committed the
-        // markup is gone and the arguments the parser read out of it are
-        // what remain, so that is what the chord shows here. Different
-        // bytes, same question — and saying which one you are looking at is
-        // the difference between evidence and a guess.
+        // The settled row's half of `ctrl-x`: a live turn shows the raw markup from the `ToolCall`
+        // deltas, and once the row is committed only the parsed arguments remain. Different bytes,
+        // same question - and saying which one you are looking at is evidence rather than a guess.
         if raw && !c.arguments.is_empty() {
             out.extend(raw_call_lines(cfg, &format!("{} {}", c.name, c.arguments)));
         }

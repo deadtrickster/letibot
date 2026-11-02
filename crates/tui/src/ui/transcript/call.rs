@@ -15,14 +15,9 @@ use rano::style::Role;
 #[cfg(test)]
 pub(crate) use rano::agent::text::{ellipsise_left, header_names_the_file, shorten_subject};
 
-/// The one mapping from engine types to display types.
-///
-/// `crates/ui/DESIGN.md` §1: the display side (`rano::agent` now) deliberately does not
-/// depend on `letibot-transcript`, so a rendering primitive can be tested without the
-/// transcript and a head that wants to draw something the transcript does not
-/// model does not have to fork it. The cost is this function, and it is the right
-/// place for the cost to land — it is four lines and it is where the two
-/// vocabularies are reconciled *once*.
+/// The one mapping from engine types to display types. The display side deliberately does
+/// not depend on `letibot-transcript`, so the cost of reconciling the two vocabularies lands
+/// here, once, rather than in every rendering primitive.
 pub(crate) fn display_outcome(o: &letibot_transcript::ToolOutcome) -> Outcome {
     use letibot_transcript::ToolOutcome as O;
     match o {
@@ -32,24 +27,13 @@ pub(crate) fn display_outcome(o: &letibot_transcript::ToolOutcome) -> Outcome {
         O::Abstained { reason } => Outcome::Abstained(reason.clone()),
         O::Failed { reason } => Outcome::Failed(reason.clone()),
         O::Denied { req_id } => Outcome::Denied(format!("the call was denied ({req_id})")),
-        // **Lossless, and it used to collapse three outcomes into `Failed` with a sentence in the
-        // reason** — which is how the word changed as a row landed: the live card said
-        // `failed · timed out` and the settled row said `timeout`, for one call. See
-        // [`Outcome::word`]. The reason is the SENTENCE, and it is this head's: the card owns
-        // the word and the head owns what it says about it.
+        // Lossless: folding these into `Failed` with a sentence made the word change as a row
+        // landed. The card owns the word, the head owns what it says about it.
         O::Timeout => Outcome::Timeout,
         O::NotRun { why } => Outcome::NotRun(why.clone()),
-        // Not `Failed`, which would put a retry in front of the operator for a
-        // command that is still working, and not `Ok`, which would read as a
-        // finish. The handle is in the reason because the handle is what makes
-        // it reachable.
-        // **One sentence, carrying both halves the two spellings had apart.** The card said *in the
-        // background as `j4` after 0.4s* — and `ran_for_ms`' own docstring says why that number is
-        // there: *"the number that makes a promotion legible rather than mysterious."* The
-        // transcript said *as `j4` — /job j4 out*, and `next`' own docstring says why THAT is
-        // there: *"the call that gets its output, ready to make. 'Errors carry the fix', applied to
-        // something that is not an error."* Neither is decoration, so the one sentence keeps both,
-        // in the transcript's shape because that is the one the operator has been reading here.
+        // Not `Failed` (a retry offered for a command still working), not `Ok` (that reads as
+        // a finish). One sentence with both halves: how long it ran, and the call that reaches
+        // its output.
         O::Backgrounded {
             handle,
             ran_for_ms,
@@ -69,23 +53,9 @@ pub(crate) fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &'static str 
     display_outcome(o).word()
 }
 
-/// **The register a settled call's row is drawn in** — R51 item 9.
-///
-/// Through [`display_outcome`] and then the display side's own [`Outcome::row_role`], so there
-/// is ONE outcome→register mapping in this tree and this row cannot disagree with the card the
-/// live call was drawn as.
-///
-/// **What it replaces.** The row asked its own question, `bad = !matches!(outcome, Ok)`, and drew
-/// every non-`ok` outcome in `Failure`. So a `backgrounded` call — a process still working, with a
-/// handle to reach it — was red, and read as something to retry, and a `denied` or `abstained` call
-/// read as a malfunction rather than as a decision. The operator, looking at the backgrounding
-/// message: *"why on earth backgrounding message is in red"*.
-///
-/// **One local decision layered on the mapping, and it is this head's own.** `ok` is drawn FAINT
-/// rather than `Success`: a green line under every command is a colour that says nothing, and the
-/// boring case is most of them. That is a decision about one row rather than about the mapping —
-/// leticl keeps it faint for the same reason — so it is applied here, on top, and never by
-/// rewriting the mapping.
+/// The register a settled call's row is drawn in: through [`display_outcome`] and then the
+/// display side's own [`Outcome::row_role`], so there is ONE outcome-to-register mapping and
+/// this row cannot disagree with the card the live call was drawn as.
 #[cfg(test)]
 pub(crate) fn outcome_role(o: &letibot_transcript::ToolOutcome) -> Role {
     // The one local decision above (`ok` faint) is rano's `row_role` now, beside the mapping
@@ -93,30 +63,16 @@ pub(crate) fn outcome_role(o: &letibot_transcript::ToolOutcome) -> Role {
     display_outcome(o).row_role()
 }
 
-/// The affordance that stands in for a tool call while the model is writing it.
-///
-/// The defect this replaces: *"tool calls — i see `<function…` like strings first,
-/// then closing tag arrives and it becomes a toolcall."* The markup was being
-/// rendered as prose because it arrived as prose, which is fixed one layer down
-/// (`DeltaTarget::ToolCall`). What is left is the question that markup was
-/// accidentally answering — *is something happening?* — and this answers it
-/// without showing anybody a half-written `<parameter=`.
-///
-/// The spinner is driven off the log's own clock, like every other moving thing
-/// here, so a replayed session animates the same way the live one did.
+/// The affordance that stands in for a tool call while the model is writing it: the
+/// half-written markup never reaches the screen, and the spinner runs off the log's own clock
+/// so a replayed session animates as the live one did.
 pub(crate) fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
     row(&WritingCall { now_ms }.line(cfg.width), cfg.palette())
 }
 
-/// The raw, unparsed text of a tool call, behind `ctrl-x`.
-///
-/// Rendered as a labelled block rather than inline, because the whole point is
-/// that this is *not* the assistant speaking. Faint and fenced: it is evidence,
-/// and evidence that looks like prose is how the defect started.
-///
-/// **Sanitised at the draw, because this is the only place it is drawn** (§3.1): `ctrl-x`
-/// shows the model's own markup, and a parameter's value is a string the model chose.
-/// `RawCall` cleans it before it is wrapped.
+/// The raw, unparsed text of a tool call, behind `ctrl-x`. Fenced and faint because it is
+/// evidence rather than the assistant speaking, and sanitised at the draw, this being the only
+/// place it is drawn.
 pub(crate) fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     row_strings(
         &RawCall {
@@ -127,15 +83,9 @@ pub(crate) fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     )
 }
 
-/// **A file edit's before/after, as `rano::agent` takes it**: rano's own edit view (split or
-/// unified, the operator's `/diff` toggle) at `width`, and the excerpt's cap.
-///
-/// **§3.1: a diff's two sides are a file's bytes, and this head did not write them.** The
-/// excerpt is read off disk — a build artefact, somebody else's source, a file another
-/// process is writing — and a row is written to the terminal verbatim, so an escape in the
-/// file is an escape on the operator's terminal. Sanitised **before the diff is taken**, not
-/// after it is rendered, so the two sides the differ compares are the two sides the reader
-/// sees; a `\r` left in would move the cursor inside a row the renderer had already measured.
+/// A file edit's before/after as `rano::agent` takes it: rano's own edit view at `width`.
+/// Sanitised before the diff is taken, not after it is rendered, so the two sides the differ
+/// compares are the two the reader sees and a `\r` cannot move the cursor inside a row.
 pub(crate) fn edit_diff(
     e: &letibot_transcript::ToolEditExcerpt,
     width: usize,
@@ -172,12 +122,9 @@ pub(crate) fn edit_diff(
     }
 }
 
-/// **The tool a row is drawn as**: `notes` drawn as the `edit` (or `write`) it is when it hands
-/// back a change of its own. `rano` reads the verb from the tool's name, so a `notes replace`
-/// was a `Ran`-shaped row: the target, the tool's `replaced …` sentence and the diff's path line
-/// named the file three times, and the panel closed on *"detected afterwards — not made by
-/// `edit`"*, which is false when the tool itself wrote it. The operator: *"what i want is it to
-/// behave like a regular diff card - clickable/enterable to diff popup"*.
+/// The tool a row is drawn as: `notes` drawn as the `edit` (or `write`) it is when it hands
+/// back a change of its own. `rano` reads the verb from the name, so the plain name drew a
+/// `Ran` row that named the file three times and hid the diff.
 pub(crate) fn drawn_as<'a>(
     name: &'a str,
     edit: Option<&letibot_transcript::ToolEditExcerpt>,
@@ -189,26 +136,9 @@ pub(crate) fn drawn_as<'a>(
     }
 }
 
-/// **The rows a change DETECTED after a command draws** — the panel a real edit gets, for the
-/// verb `rano::agent` will not draw one for.
-///
-/// `rano` draws an [`EditDiff`] only when the verb is an edit (`Verb::is_an_edit`), and that
-/// gate is right for the HEADER: a shell command's verb is `Ran`, and rendering it as `Edited`
-/// would be exactly the lie `crates/tools/src/detect.rs` refuses to tell. It is wrong for the
-/// BODY. The pair is on the row so that the change can be *read* — the note says *"the diff
-/// beside it"* — and a row that holds both sides and draws neither is a promise with nothing
-/// behind it. That is the operator's report in their own words: *"right, but i didnt see the
-/// diff"*, about a `python3` heredoc whose edit the harness had detected correctly.
-///
-/// So the head draws the panel itself, through the same renderer ([`edit_diff`]) and under the
-/// same rule rano uses for a real edit's: [`EditDiff::rows_under`] the target, so the path line
-/// is dropped where the header already names the file; the first eight rows while the row is
-/// folded and all of them when it is open; and the count of what is left, because an elision
-/// without its denominator is a silent cut.
-///
-/// **The fold is asked even when the row is folded**, and that is the point rather than an
-/// oversight: the operator's row was folded, and a diff that appears only once you unfold a
-/// row you did not know held one is the same no diff. A real edit's panel is drawn folded too.
+/// The rows a change DETECTED after a command draws: rano draws an [`EditDiff`] only for an
+/// edit verb, which is right for the header and wrong for the body. Drawn even while folded,
+/// because a diff behind a fold the reader did not know about is no diff.
 pub(crate) fn detected_diff_rows(
     e: &letibot_transcript::ToolEditExcerpt,
     target: &str,
@@ -239,13 +169,9 @@ pub(crate) fn detected_diff_rows(
             cfg.palette(),
         ));
     }
-    // **Folded, the panel says how it was obtained itself** (R67 item 20). The tool's own
-    // sentence — *"the diff beside it was detected afterwards, not made by `edit`"* — is a
-    // `[note]` line in the row's payload, and a folded row shows the payload's FIRST line only.
-    // Any note ahead of it hides it: MEASURED on a head whose daemon shares its cgroup, the
-    // first line was the `memory: ran UNCAPPED` note and the provenance was `… +1 lines`, so
-    // the folded row drew a diff under `Ran` with nothing saying the command had made it.
-    // Open, the payload's note is on the screen and is not said twice.
+    // Folded, the row says how the diff was obtained itself: the tool's sentence is a `[note]`
+    // in the payload, a folded row shows the payload's FIRST line only, and any note ahead of
+    // it hides the provenance.
     if !fold.is_open() {
         out.extend(row_strings(
             &[rano::agent::text::one(
@@ -291,20 +217,9 @@ pub(crate) fn model_advice(a: &letibot_sessionlog::event::ModelAdvice) -> Advice
     }
 }
 
-/// One live tool call, as a card.
-///
-/// This was `call_line`, which produced `● edit(call_7) — ok · 214 B` and could
-/// produce nothing else. A card keeps the disclosure and adds the three things a
-/// person watching a call is actually looking for: how long it has been running,
-/// what it last said, and — for a spill — what happened to the rest of the
-/// output.
-///
-/// **The body is empty while a call is in flight, and that is deliberate.**
-/// `ToolFinished` carries digests and byte counts, never a payload; the payload
-/// reaches a head only through `TranscriptItem::ToolResult` in a snapshot or a
-/// reconciliation. See `crates/ui/DESIGN.md` §4.2 — it is a defensible design (an
-/// event fans out to every head; a 480 KB payload should not) and it is why
-/// `Phase` distinguishes running from settled at all.
+/// One live tool call, as a card: how long it has been running, what it last said, and what
+/// happened to the rest of a spill. The body is empty while a call is in flight, because a
+/// finished call carries digests and the payload arrives only through the transcript.
 pub(crate) fn call_card(
     c: &CallRow,
     cfg: &RenderConfig,
@@ -318,13 +233,9 @@ pub(crate) fn call_card(
             note: c.note.clone(),
         },
         CallState::Running => {
-            // **The clock the caller chose, and the anchor that goes with it**
-            // (R13). `call_card` is handed *one* clock: the head's when this call
-            // has an anchor, the log's when it does not (see the pane). Subtracting
-            // `started_ms` either way would mix the two frames — the log's start
-            // against the head's now — and report the time since the `ToolStarted`
-            // event rather than since the call started, which is a *smaller* number
-            // and so reads like progress.
+            // The clock the caller chose, and the anchor that goes with it: subtracting
+            // `started_ms` from the head's clock would mix the two frames and report a smaller
+            // number, which reads like progress.
             let from = if c.started_at > 0 {
                 c.started_at
             } else {
@@ -385,11 +296,8 @@ pub(crate) fn call_card(
         fold: fold.into(),
     };
     let mut out = row_strings(&call.lines(cfg.width), cfg.palette());
-    // **The same panel the settled row draws, for the same reason** — a change DETECTED after
-    // a command, on a call whose verb is `Ran`. The card is on screen until the row's body
-    // lands, and a diff that appeared only when the card settled would be the hand-over
-    // flickering: one frame with the change and one without, for one call. See
-    // [`detected_diff_rows`].
+    // The same panel the settled row draws, for the same reason: a diff that appeared only
+    // when the card settled would flicker one frame with the change and one without.
     if let Some(e) = edit.filter(|_| !verb.is_an_edit()) {
         out.extend(detected_diff_rows(
             e,
@@ -403,15 +311,9 @@ pub(crate) fn call_card(
     out
 }
 
-/// Why it ended that way, when there is a why. Goes in the body, where it wraps.
-///
-/// **Through [`display_outcome`] and then the card**, so this row's reason and the live card's are
-/// one string for one call. It was a second list of sentences, and it disagreed with the card's on
-/// two of the seven outcomes: `denied, req_1` against `the call was denied (req_1)`, and the
-/// backgrounded sentence, where each spelling carried a fact the other dropped — see
-/// `display_outcome`, which now builds one sentence out of both rather than picking a winner. Where
-/// the two simply disagreed about phrasing, the transcript's is kept: it is the one the operator has
-/// been reading on this row all along, and the card is the newer surface.
+/// Why it ended that way, when there is a why. Through [`display_outcome`] and then the card,
+/// so this row's reason and the live card's are one string for one call rather than two
+/// spellings that disagree.
 #[cfg(test)]
 pub(crate) fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
     display_outcome(o).reason().map(str::to_string)

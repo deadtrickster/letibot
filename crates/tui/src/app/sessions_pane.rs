@@ -1,35 +1,6 @@
-//! **The session list, drawn from a plugin** — `docs/plugins-plan.md` §7 step 10: the built-in
-//! `sessions` layer decides the groups, the names, the counts and the keys, and the head draws
-//! what it answers through rano's one tree list.
-//!
-//! # Why the head runs the layer
-//!
-//! Every other pane is answered by the daemon (`crates/harnessd/src/plugins.rs`) and reaches a head
-//! as a `PluginPane` frame. This one cannot be: the session list is how a person gets OUT of a
-//! broken session, and a picker that needs a round trip through the daemon is a picker that is
-//! unavailable exactly when it is wanted. The head already holds every fact the list is drawn from
-//! (the `Sessions` frame), and — through `rano`, which it links for its terminal, its syntax and its
-//! widgets — it already has the engine. So the stack is built here, from the same scopes and the
-//! same crates, and the layer answers in-process.
-//!
-//! # What the head still owns
-//!
-//! The **fold state**, keyed by row id: the layer says which rows fold and how they start, and the
-//! person's own answer travels back in `Input::folded` on the next call. A row that cannot fold
-//! (`Fold::Fixed`) carries no act on Enter at all, so nothing in the head has to know that `mine`
-//! is the group which never closes.
-//!
-//! And the **acts**: `switch` goes through [`App::switch_to`], `fold` toggles [`App::picker_folds`],
-//! `event` asks the pane again. A layer can reach no others, because `plugin.toml` declares the
-//! verbs and `View::validate_for` refuses the rest.
-//!
-//! # The way out
-//!
-//! [`App::sessions_list`] answers `None` for a stack with no `sessions` layer, one whose module will
-//! not load, one that traps or runs out of fuel, and one whose answer is not a list this head can
-//! draw. The picker then draws the head's own tree ([`App::session_list`]) — the same rano
-//! primitive, the same rows, the same shape — which is the escape hatch that must never depend on
-//! this file.
+//! The session list, drawn from a plugin: the built-in `sessions` layer decides the groups, names,
+//! counts and keys, and the head draws its answer through rano's one tree. The head runs the layer
+//! in process, because the list is how a person gets out of a broken session.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -104,21 +75,14 @@ impl List {
     }
 }
 
-/// **The head's stack for its panes**, built once and kept: discovering layers reads the disk,
-/// and a list drawn every frame cannot afford it.
-///
-/// **One stack, every hook.** The session list and the queue pane ask *different* hooks of the
-/// same layers (`pane_sessions`, `pane_queue`), and they must: a layer the person approved for
-/// one pane is a layer that is in force, and a second `Stack` would be a second answer to that
-/// question — plus a second compile of every built-in module. So the host is keyed by HOOK
-/// where a hook is not `pane_sessions`: the cache, the fold-free state and the declared acts are
-/// all per hook, because two panes sharing one `state` would hand each other's answers back.
+/// The head's stack for its panes, built once and kept: discovery reads the disk, and a list
+/// drawn every frame cannot afford it. One stack serves every hook - the cache, the state and the
+/// acts are keyed by hook, because two panes sharing one `state` would swap answers.
 pub(crate) struct Host {
     stack: Stack,
-    /// **The last answer, by the input that asked for it.** The list is drawn once per frame and
-    /// read several times within it (the bar, the click map, the keys), so one wasm call per
-    /// distinct input is the difference between a pane that costs microseconds and one that costs
-    /// a compile.
+    /// The last answer, by the input that asked for it. The list is drawn once per frame and read
+    /// several times within it (the bar, the click map, the keys), so this is the difference
+    /// between a pane that costs microseconds and one that costs a compile.
     cache: Mutex<Cached>,
     /// What each hook's layer answered with last time, handed back to it (§1, principle 5: state
     /// belongs to the host). Keyed by hook, so the queue pane's answer and the session list's
@@ -130,13 +94,9 @@ pub(crate) struct Host {
     problem: Mutex<Option<String>>,
     /// The folder this host was built for; a head that moves to another one gets another stack.
     workspace: PathBuf,
-    /// **When this host next looks for a rebuilt layer**, on the head's clock.
-    ///
-    /// A pane the HEAD draws is a pane the daemon's `plugin load` cannot refresh: that applies the
-    /// layer to the DAEMON's stack, and this one is not it. So the head watches its own scopes —
-    /// the same `Stack::poll_changes` the daemon's hot-reload tick uses, a stat per layer — and a
-    /// `plugin build` (or a `plugin load`, whose gate builds first) is a pane that redraws with no
-    /// rebuild of either binary and no restart. See [`Host::reload_if_due`].
+    /// When this host next looks for a rebuilt layer, on the head's clock. The daemon's
+    /// `plugin load` cannot refresh a pane the HEAD draws, so the head watches its own scopes with
+    /// `Stack::poll_changes` and a rebuild redraws with no restart. See `Host::reload_if_due`.
     next_poll: u64,
 }
 
@@ -159,24 +119,9 @@ pub(crate) struct Answered {
 }
 
 impl Host {
-    /// **One `command_` hook through this host's stack** — the seam a slash command asks a layer
-    /// by, over the same stack the pane draws from: one stack per head, so a layer the person
-    /// approved for the pane is the layer that answers their command.
-    ///
-    /// The hook name is built from the VERB (`todo` → `command_todo`), because the prefix is the
-    /// whole of what makes a verb a layer's: a second command a layer owns is a second word here
-    /// and no new mechanism, the same way a pane's next act is one more word in `actions`.
-    ///
-    /// The answer is the raw [`Resolved`](letibot_plugins::Resolved): what an `act` means is the
-    /// CALLER's to validate, because the caller is what performs it. The head understands exactly
-    /// one act name (`add_todo`) and ignores every other, which is the half of the trust story
-    /// `plugin.toml`'s `actions` is the other end of.
-    ///
-    /// **A layer that failed is kept, once.** The stack already skipped it and asked the layer
-    /// below (§1, principle 4: fail down, loudly), and `Resolved::failures` carries the sentence —
-    /// but the caller that says it is the one with a screen, and by the time a command's answer is
-    /// read the `Resolved` may already be dropped. So the first failure also lands in `problem`,
-    /// where [`App::take_sessions_failure`] finds it, exactly as a pane's does.
+    /// One `command_` hook through this host's stack, so the layer approved for the pane is the
+    /// one that answers the command; the hook is built from the verb (`todo` -> `command_todo`).
+    /// The answer is raw - the CALLER validates an `act` - and a failure is kept for its screen.
     pub(crate) fn command(
         &self,
         verb: &str,
@@ -206,12 +151,9 @@ impl Host {
         self.problem.lock().ok().and_then(|mut p| p.take())
     }
 
-    /// **A host with exactly this stack** — what a test needs to stand in a broken one, and the
-    /// shape `docs/plugins-plan.md` §7 step 10's last paragraph is about: past the built-in, the
-    /// head draws its own list.
-    ///
-    /// The stack's own refusals come with it, because a layer the stack would not load is news the
-    /// person is owed and this host is the last place that can say it.
+    /// A host with exactly this stack - what a test stands a broken one in with. The stack's own
+    /// refusals come with it, because a layer that would not load is news the person is owed and
+    /// this host is the last place that can say it.
     #[cfg(test)]
     pub(crate) fn with_stack(stack: Stack, workspace: PathBuf) -> Host {
         let problem = would_not_load(&stack);
@@ -225,11 +167,9 @@ impl Host {
         }
     }
 
-    /// **A host for this session's folder, with the binary's own layers at the bottom.**
-    ///
-    /// One door for the head ([`App::plugin_host`]) and public in the crate because a test stands
-    /// the real build in for a head whose folder it cannot create: `docs/plugins-plan.md` §7 step
-    /// 10's built-in scope is only proved by the module this binary carries.
+    /// A host for this session's folder, with the binary's own layers at the bottom. One door for
+    /// the head, and crate-visible because a test stands the real build in for a folder it cannot
+    /// create.
     pub(crate) fn build(session: &str, workspace: &Path) -> Host {
         let mut stack = Stack::discover(
             session_plugins_dir(session).as_deref(),
@@ -237,14 +177,9 @@ impl Host {
             user_config_dir().as_deref(),
             Arc::new(RanoLoader),
         );
-        // **D17's book, and the head is where a pin is TAKEN** — `/plugin trust NAME` writes it,
-        // and the daemon's stack reads the same file at its next poll, so one person's answer is
-        // in force in both processes. Discovery happens first and `set_trust` re-decides every
-        // placed layer against it, so a layer pinned before this head started is free here too.
-        // **And a pin whose bytes moved while this head was not running is SAID**, once: the same
-        // rule the daemon's tick follows (`PluginHost::with_trust`), because the head has no
-        // warning stream of its own and a layer that quietly stopped being yours is the state the
-        // ladder exists to make impossible to miss.
+        // The trust book, and the head is where a pin is TAKEN: the daemon's stack reads the same
+        // file at its next poll, so one answer is in force in both processes. `set_trust`
+        // re-decides every placed layer, and a pin whose bytes moved is SAID once.
         let mut broke: Vec<String> = stack
             .set_trust(letibot_plugins::Trust::open_default())
             .into_iter()
@@ -257,13 +192,9 @@ impl Host {
                 )
             })
             .collect();
-        // **The built-in scope at the bottom of the stack, and a failure here is SAYABLE.**
-        //
-        // The head still draws its own list when a built-in will not load — that is the way out
-        // (`docs/plugins-plan.md` §7 step 10's last paragraph) — but it must not be SILENT: a
-        // binary whose own layer is broken is a defect, and the person opening the list is owed
-        // the sentence. It is recorded once, at build time, because a layer that never loads is
-        // never asked and so has no call to fail in.
+        // The built-in scope at the bottom of the stack, and a failure here is SAYABLE: the head
+        // still falls back to its own list, but a binary whose own layer is broken is a defect and
+        // the person is owed the sentence. Recorded once, at build time - it is never asked.
         if let Some(builtin) = install_builtins(&mut stack) {
             broke.push(builtin);
         }
@@ -281,20 +212,9 @@ impl Host {
         }
     }
 
-    /// **Pick up a layer that was rebuilt on disk**, at most every [`POLL_MS`].
-    ///
-    /// This is the live-iteration loop for a pane the head draws, and it is the same mechanism the
-    /// daemon's hot-reload tick uses (`PluginHost::gate_now` → `Stack::poll_changes` +
-    /// `Stack::apply`), one step shorter: the head does not run the shadow gate, because the head
-    /// has no `Builder` and — the reason this is not a hole — it does not gate the session-scope
-    /// layers it DISCOVERS either (`Stack::discover` loads what is on disk at build time). A module
-    /// the operator rebuilt is the same trust as a module the operator wrote before the head
-    /// started; the gate is the daemon's `plugin load`, which is what a change should pass before
-    /// anybody believes it.
-    ///
-    /// **The cache goes with it.** It is keyed by the input, and the point of a reload is that the
-    /// same input now answers differently — keeping it would draw the old view until something
-    /// else changed the input, which reads as a reload that did not happen.
+    /// Pick up a layer that was rebuilt on disk, at most every `POLL_MS` - the live-iteration loop
+    /// for a pane the head draws. No shadow gate: the head gates nothing it discovers, and the
+    /// gate a change must pass is the daemon's `plugin load`. The cache goes with the reload.
     fn reload_if_due(&mut self, now_ms: u64) {
         if now_ms != 0 && now_ms < self.next_poll {
             return;
@@ -328,20 +248,16 @@ impl Host {
         }
     }
 
-    /// **The layers a person could pin, with what the book says about each** — `/plugin`'s listing,
-    /// and the answer `/plugin trust NAME` reports back.
-    ///
-    /// A built-in is not in it: it runs freely by definition, and a list of things that need no
-    /// decision is a list that hides the ones that do.
+    /// The layers a person could pin, with what the book says about each - `/plugin`'s listing and
+    /// the answer `/plugin trust NAME` reports. A built-in is not in it: a list of things that need
+    /// no decision hides the ones that do.
     pub(crate) fn placed(&self) -> Vec<letibot_plugins::Layer> {
         self.stack.placed().into_iter().cloned().collect()
     }
 
-    /// **Pin a layer's bytes as they are now** — the operator's one act in D17's ladder.
-    ///
-    /// The pin is taken through the head's own book (`Trust`), so the file is written once and
-    /// the daemon reads it; and this stack is re-decided immediately, so the pane the person is
-    /// looking at does not wait for a poll to agree.
+    /// Pin a layer's bytes as they are now. The pin is taken through the head's own book, so the
+    /// file is written once and the daemon reads it, and this stack is re-decided immediately so
+    /// the pane does not wait for a poll to agree.
     pub(crate) fn pin(&mut self, name: &str) -> Result<(letibot_plugins::Pin, String), String> {
         let layer = self.stack.layer_named(name).cloned().ok_or_else(|| {
             let names: Vec<String> = self
@@ -395,12 +311,9 @@ impl Host {
         Ok(pin)
     }
 
-    /// **The layer a pane's hook would ask.** A head with a `queue` layer that does not read the
-    /// queue feed is not that pane's: it may answer, but it would be drawing rows from data it
-    /// never asked for.
-    ///
-    /// The feed is the declaration the manifest carries, so this is one predicate over both:
-    /// the hook the pane is asked by and the feed it says it reads.
+    /// The layer a pane's hook would ask. A head with a `queue` layer that does not read the queue
+    /// feed is not that pane's: it may answer, but it would draw rows from data it never asked
+    /// for, so the hook and the feed are one predicate.
     pub(crate) fn reader(&self, hook: &str, feed: Feed) -> Option<&letibot_plugins::Layer> {
         self.stack.layers().iter().find(|l| {
             !l.disabled
@@ -417,11 +330,9 @@ impl Host {
             .unwrap_or_default()
     }
 
-    /// **Ask `hook`**, one call per distinct (hook, input).
-    ///
-    /// The failure sentence names the pane the caller is drawing, because one host now answers
-    /// two: *a plugin layer could not draw the session list* is the right sentence for the picker
-    /// and the wrong one for a queue, and a person reading it is being told where to look.
+    /// Ask `hook`, one call per distinct (hook, input). The failure sentence names the pane the
+    /// caller is drawing, because one host answers two: the wrong name sends the reader to the
+    /// wrong place.
     pub(crate) fn ask(&self, hook: &str, pane: &str, input: &Input) -> Answered {
         let key = format!(
             "{hook}\n{}",
@@ -480,19 +391,9 @@ impl Host {
     }
 }
 
-/// **Put the binary's own layers at the bottom of `stack`, and say so when one will not go.**
-///
-/// Every failure is answered as one sentence naming the layer and the reason, or `None` when the
-/// whole table installed. A build cannot produce an empty table (`crates/builtins/build.rs` stops
-/// with a sentence rather than shipping one), so a failure here means a module the engine refused
-/// at load — which a person has to be told, because what they will see otherwise is a list that
-/// quietly stopped being the layer's.
-///
-/// **The sentence names no particular question**, because it now reaches two: the session list
-/// (which the head then draws itself) and a slash command (`/todo`, which the head then answers in
-/// its own words). It used to say *so the session list is drawn by the head itself*, which was true
-/// while the picker was the only reader of this slot — and would have been a lie on the screen of
-/// somebody typing `/todo` in a binary whose wasm is broken.
+/// Put the binary's own layers at the bottom of `stack`, and answer one sentence naming the layer
+/// and the reason when one will not go; `None` when the whole table installed. The sentence names
+/// no particular question, because it now reaches the session list and a slash command both.
 fn install_builtins(stack: &mut Stack) -> Option<String> {
     let failed = letibot_builtins::install(stack);
     if failed.is_empty() {
@@ -540,18 +441,9 @@ fn user_config_dir() -> Option<PathBuf> {
 }
 
 impl App {
-    /// **The head's plugin stack, built for this session's folder if it is not there yet** — one
-    /// door, so the picker and a slash command ask the SAME stack.
-    ///
-    /// It was the picker's alone (`sessions_list` built it on the first draw), and that was the
-    /// hole this package found: `/todo` in a head that had never opened the list found no host and
-    /// answered in the head's own words, so the built-in `todo` layer was installed and never
-    /// asked — a layer that answers only after somebody presses a key that has nothing to do with
-    /// it. The command asks for the host now, and the cost is the one the picker already paid:
-    /// discovery reads the disk and the modules compile, once per head per folder.
-    ///
-    /// A head that moves to another folder gets another stack (`Host::workspace` is what the
-    /// staleness is measured against), because a project's layers belong to the project.
+    /// The head's plugin stack, built for this session's folder if it is not there yet - one door,
+    /// so the picker and a slash command ask the SAME stack, and a layer installed is a layer
+    /// asked. A head that moves to another folder gets another stack: layers belong to a project.
     pub(crate) fn plugin_host(&self) -> std::cell::Ref<'_, Option<Host>> {
         let workspace = self.workspace_path();
         {
@@ -610,14 +502,9 @@ impl App {
         })
     }
 
-    /// **The sentence a layer's failure owes the person**, once — taken by whoever opens the list.
-    ///
-    /// Taken rather than drawn: the picker is a list, and a failure line in a list of sessions is a
-    /// row nobody asked for. It goes where every other one-off sentence in this head goes. Three
-    /// kinds arrive here and each says what it is: a layer that failed a pane call (and was skipped
-    /// for the one below), a layer that failed a `/todo` (same, said at the command —
-    /// `Host::command`), and a built-in that would not load at all (and was skipped for the head's
-    /// own words) — see [`install_builtins`].
+    /// The sentence a layer's failure owes the person, once, taken by whoever opens the list: a
+    /// failure line in a list of sessions is a row nobody asked for. Three kinds arrive - a pane
+    /// call, a `/todo`, and a built-in that would not load at all.
     pub(crate) fn take_sessions_failure(&mut self) -> Option<String> {
         let slot = self.sessions_host.get_mut().as_ref()?;
         slot.problem.lock().ok().and_then(|mut p| p.take())
@@ -652,19 +539,9 @@ impl App {
         }
     }
 
-    /// The daemon's session list as the feed spells it — one object per session, every field the
-    /// list's rows are made of.
-    ///
-    /// **The tree's two facts are computed HERE and not by the layer.** `project` and `system` are
-    /// what a row's place in the tree is decided by ([`App::session_rows`]), and they are facts
-    /// about the whole list — a project's name depends on the other projects, and a reviewer is
-    /// known by the chain it hangs from. A guest that recomputed them would be a second opinion
-    /// about where a session goes, which is the one thing the layer must not have: it decides what
-    /// a row SAYS, the head decides where it sits.
-    ///
-    /// **The feed the pane is drawn from, as this head builds it.** `pub(crate)` because it is the
-    /// one place a removal meets the built-in layer: a test that asserts the layer drops a removed
-    /// row has to be able to read the input it was given (`app::tests::removal`).
+    /// The daemon's session list as the feed spells it, one object per session. `project` and
+    /// `system` are computed HERE: they are facts about the whole list, and a guest that
+    /// recomputed them would be a second opinion about where a row goes. The layer says what.
     pub(crate) fn sessions_feed(&self) -> Value {
         let place = self.placements();
         let projects = self.projects(&place);
@@ -718,10 +595,9 @@ impl App {
             // **The one home the head shortens against** — the same value its own list uses, so
             // a plugin's rows and the head's rows cannot disagree about what `~` means.
             "home": self.home,
-            // **The host's clock** — a guest compiled for wasm has no `SystemTime`, so an age is
-            // the host's fact and the layer's arithmetic (`docs/plugins-plan.md` §4.9). The
-            // daemon's own feed carries the same field, and this one so that the two feeds are one
-            // shape rather than two.
+            // The host's clock: a guest compiled for wasm has no `SystemTime`, so an age is the
+            // host's fact and the layer's arithmetic. The daemon's feed carries the same field, so
+            // the two feeds are one shape rather than two.
             "now": letibot_sessionlog::registry::now_ms(),
         })
     }
@@ -753,12 +629,9 @@ impl App {
         match act {
             RowAct::Switch { session } => self.switch_to(session.clone()),
             RowAct::Fold { .. } => {
-                // **The new state is the opposite of what is DRAWN**, not of what the fold map
-                // holds: a node closed by DEFAULT (every node, now) has no entry in the map until
-                // somebody opens one, so reading the map alone turned the first click into a
-                // second "open". The drawn answer is the only one that knows about the two
-                // exceptions a default cannot cover — the project holding `here`, and the chain
-                // down to it.
+                // The new state is the opposite of what is DRAWN, not of what the fold map holds: a
+                // node closed by DEFAULT has no entry until somebody opens one, so reading the map
+                // alone turns the first click into a second "open". Drawn knows the two exceptions.
                 let open = !matches!(self.drawn_open(id), Some(Fold::Open));
                 self.set_row_fold(id, open);
                 None
@@ -894,12 +767,9 @@ impl App {
         }
     }
 
-    /// **A session's name on its row** — its slug when it has one, `WAITING ON YOU` when it is
-    /// waiting, and paused nags when they are. The layer's `name_of` is this same sentence, and
-    /// the two are held together by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
-    ///
-    /// **A title is somebody's text, so its control characters are drawn as spaces** — see
-    /// [`clean`].
+    /// A session's name on its row - its slug when it has one, `WAITING ON YOU` when it is
+    /// waiting, and paused nags when they are. The layer's `name_of` is this same sentence, held
+    /// together by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
     fn row_name(&self, i: usize) -> String {
         let s = &self.sessions[i];
         let name = if s.title.is_empty() {
@@ -1003,13 +873,9 @@ impl App {
             .and_then(|r| r.open)
     }
 
-    /// **Open or close a row that folds** — one door for Enter, the arrows and a click, so a fold
-    /// is one act however it was asked for.
-    ///
-    /// The state is the head's (`picker_folds`, keyed by row id) for the list that is DRAWN, and
-    /// it is ALSO written into `expanded` — the head's own tree reads that one, so the way out (a
-    /// head whose layer is broken) starts from the state the person left rather than from the
-    /// default.
+    /// Open or close a row that folds - one door for Enter, the arrows and a click, so a fold is
+    /// one act however it was asked for. It is ALSO written into `expanded`, because the head's
+    /// own tree reads that one: the way out starts from the state the person left.
     pub(crate) fn set_row_fold(&mut self, id: &str, open: bool) {
         self.picker_folds.insert(id.to_string(), open);
         let at = self.expanded.iter().position(|e| e == id);
@@ -1035,12 +901,9 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
     let mut rows = Vec::new();
     for (depth, row) in pv::rows_deep(&tree.rows) {
         let id = row.id().to_string();
-        // **The host's fold state wins over the plugin's** — which is what makes a fold instant:
-        // pressing it changes this map and the next draw, and the layer never remembers anything.
-        //
-        // **Three rows it does not reach**: one that said nothing about folding (a leaf), one that
-        // said `fixed` (a group that cannot fold — a glyph there is the lie `Fold` exists to make
-        // unsayable), and one the map has never been asked about.
+        // The host's fold state wins over the plugin's, which is what makes a fold instant: the
+        // press changes this map and the next draw, and the layer remembers nothing. Three rows it
+        // does not reach: a leaf, a `fixed` group, and one the map was never asked about.
         let open = match (row.open, folds.get(&id)) {
             (Some(pv::Fold::Fixed), _) => Some(Fold::Fixed),
             (Some(_), Some(true)) => Some(Fold::Open),
@@ -1094,14 +957,9 @@ fn enter_action(act: &RowAct, open: Option<Fold>) -> Option<TreeAction> {
     Some(TreeAction::new("enter", words))
 }
 
-/// **Control characters out of a row's words**: a title and a workspace are somebody's, and an
-/// escape in one would be measured one way and drawn another.
-///
-/// **This is the sessions layer's own rule, spelled twice on purpose.** The layer is a GUEST — a
-/// `cdylib` compiled for wasm with no dependency of the host's — so it cannot call this function,
-/// and the host cannot call its. Two spellings of one rule are what the equality test
-/// (`the_heads_list_and_the_plugins_list_draw_the_same_rows`) exists to keep in step: a title with
-/// an escape in it drew a space from one list and the raw byte from the other.
+/// Control characters out of a row's words: a title and a workspace are somebody's, and an escape
+/// in one would be measured one way and drawn another. The layer spells this rule too, because a
+/// guest cannot call the host; the equality test is what keeps the two in step.
 fn clean(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -1172,13 +1030,9 @@ fn listed(view: &pv::View, app: &App) -> Vec<Listed> {
     out
 }
 
-/// **The one `Loader` in this binary**: rano compiles the module, this answers a hook.
-///
-/// The daemon's copy is `crates/harnessd/src/plugins/rano.rs`, and the duplication is deliberate:
-/// `letibot_plugins` talks to a module through a trait so it can stay free of a wasm engine, and
-/// the two binaries that run a layer — the daemon, and now the head, for the one pane that must not
-/// depend on the daemon — each bring their own rather than making a third crate that pulls a JIT
-/// into everything that links it.
+/// The one `Loader` in this binary: rano compiles the module, this answers a hook. The duplication
+/// with the daemon's copy is deliberate - `letibot_plugins` stays free of a wasm engine, and each
+/// binary that runs a layer brings its own rather than pulling a JIT into everything.
 pub(crate) struct RanoLoader;
 
 impl Loader for RanoLoader {
@@ -1274,15 +1128,9 @@ mod tests {
         );
     }
 
-    /// **The built-in `todo` layer is installed and answers the head's command** — the other half
-    /// of §7 step 10, and the one a person actually types: `/todo title:"x" body:"y"` is a row
-    /// because this binary carries a module that reads the line, and not because the head guessed.
-    ///
-    /// `install_builtins` is the function under test as much as the module is: the table is
-    /// generated from `plugins/builtin/` at build time, so a layer that was added to the tree and
-    /// not to the binary — or a manifest whose `hooks` and exports disagree, which
-    /// `Manifest::admit` refuses — fails HERE, with the layer named, rather than as a command that
-    /// quietly answers in the head's own words.
+    /// The built-in `todo` layer is installed and answers the head's command, which is the one a
+    /// person actually types. `install_builtins` is under test as much as the module: the table is
+    /// generated at build time, so a layer in the tree and not in the binary fails HERE, named.
     #[test]
     fn the_builtin_todo_layer_is_installed_and_answers_the_heads_command() {
         let tmp = std::env::temp_dir().join(format!("letibot-head-todo-{}", std::process::id()));
@@ -1344,10 +1192,9 @@ mod tests {
         assert_eq!(host.take_problem(), None, "and nothing was owed a sentence");
     }
 
-    /// **A built-in that will not load is SAID, not silently skipped.** The head still falls back
-    /// to its own list — that is the way out — but a binary whose own layer is broken is a defect,
-    /// and the sentence names the layer and the reason. (A build cannot ship an EMPTY table: the
-    /// build script stops with one sentence, which its own run demonstrates.)
+    /// A built-in that will not load is SAID, not silently skipped: the head still falls back to
+    /// its own list, but a binary whose own layer is broken is a defect. A build cannot ship an
+    /// empty table - the build script stops with one sentence.
     #[test]
     fn a_builtin_that_cannot_load_is_a_sentence_and_not_a_silence() {
         struct Refuses;

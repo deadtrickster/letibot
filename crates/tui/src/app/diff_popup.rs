@@ -1,11 +1,6 @@
-//! **The diff popup**: a change, read in its whole file, over the conversation.
-//!
-//! The operator, 2026-10-08: *"I dont need the full rano chrome when I look on the full edit,
-//! but i do need the context - so full file with diff and cursor placement at the beginning of
-//! the first diff. preferably in a popup and of course Esc must just close it"*. A click on an
-//! edit or write row used to open the rano editor — title bar, function bar, status line — on
-//! a review view, and Esc dropped into the file's text rather than closing anything. Reading a
-//! change is not editing a file: this is a viewer, with the editor one key away (`ctrl-]`).
+//! The diff popup: a change read in its whole file, over the conversation. Reading a change is not
+//! editing a file, so this is a viewer, with the cursor at the first diff and Esc closing it, and
+//! the editor is one key away.
 
 use std::ops::ControlFlow;
 
@@ -32,13 +27,9 @@ pub struct DiffPopup {
     pub(crate) room: usize,
 }
 
-/// **What a popup over the conversation holds.**
-///
-/// A change is the first thing it held. The second is a job's completion notice — the operator,
-/// asking for the notice to be two lines in the transcript: *"click behaves similar to diff
-/// click - popup with full card"*. One popup and not two, because what the reader does with it is
-/// the same — read, scroll, Esc — and a second overlay would be a second set of keys, a second
-/// entry in `drawn()` and a second place the cursor has to be hidden.
+/// What a popup over the conversation holds: a change, a job's completion notice, a picture.
+/// One popup rather than three, because the act is the same (read, scroll, Esc) and a second
+/// overlay would be a second set of keys, a second `drawn()` entry, a second cursor hiding.
 #[derive(Debug, Clone)]
 pub(crate) enum PopupBody {
     /// An edit or write, read in its whole file.
@@ -55,13 +46,9 @@ pub(crate) enum PopupBody {
         /// longer carries), a System row's, the flash notice's. `None` reads it from the text.
         title: Option<(String, Role)>,
     },
-    /// **A picture, larger** — the operator's own attachment, opened from its thumbnail by a click
-    /// or by Enter ([`App::open_picture`]).
-    ///
-    /// It rides in this popup rather than in one of its own because what the reader does with it is
-    /// what they do with a change or a notice: read it, scroll it, Esc out. A second overlay would
-    /// be a second set of keys, a second entry in `drawn()` and a second place the cursor has to be
-    /// hidden.
+    /// A picture, larger: the operator's own attachment, opened from its thumbnail by a click
+    /// or Enter. It rides in this popup because the reader does what they do with a change -
+    /// read, scroll, Esc out - and a second overlay would double the keys and the hit map.
     Picture {
         /// The image id the thumbnail's bytes were uploaded under — the same id, so opening a
         /// picture is a *placement* at a bigger box and never a second upload.
@@ -137,12 +124,9 @@ impl App {
         }
     }
 
-    /// **Open row `k`'s completion notice whole** — the click on its compact lines. A job whose
-    /// output this head has not asked for yet is asked for now, so the popup fills in when the
-    /// answer lands. Does nothing for a row that is not a notice this head can read.
-    ///
-    /// **A card's notice opens the same way** (`line_cards`) — a red target's, a review's: its
-    /// text whole, the gate's output or the reviewer's reasons with it, and no jobs under it.
+    /// Open row `k`'s completion notice whole. A job's output this head does not hold is asked
+    /// for now, so the popup fills in when the answer lands. A card's notice opens the same
+    /// way; a row that is not a notice this head can read does nothing.
     pub(crate) fn open_notice_popup(&mut self, k: usize) {
         let Some(it) = self.items.get(k) else {
             return;
@@ -163,10 +147,9 @@ impl App {
         let Some(mut text) = agent_row_text(it) else {
             return;
         };
-        // **A note that points at the summary carries it** — the operator: *"continue from the
-        // summary above (click for details). well i clicked - no summary"*. The summary is the
-        // compacted transcript's first row, a System row that can be far above and is hidden
-        // entirely at the `conversation` rung; the click on the note is where they look for it.
+        // A note pointing at the summary carries it: the summary is the compacted transcript's
+        // first row, a System row that can be far above and is hidden entirely at the
+        // `conversation` rung, so the click on the note is where a reader looks for it.
         if text.starts_with("Continue from the summary above")
             && let Some(summary) = self.items[..k].iter().rev().find_map(|it| {
                 system_row_text(it)
@@ -260,14 +243,9 @@ impl App {
         out
     }
 
-    /// **Ask for the end of each job's output that this head does not hold yet** — `(handle,
-    /// bytes it wrote)`. Once per job: an answer, a refusal and a pending ask all leave a mark
-    /// in `job_tails`, so a notice that stays on the screen is not a read per frame. A job that
-    /// wrote nothing needs no read to say so.
-    ///
-    /// **The tail, not the head.** The offset is [`TAIL_BYTES`] before the end, because a
-    /// build or a test run says how it went in its last lines; the first line of such a window
-    /// may be cut, which is why only its LAST line is drawn on the row.
+    /// Ask for the end of each job's output this head does not hold yet, `(handle, bytes it
+    /// wrote)`. The tail and not the head, because a build says how it went in its last lines;
+    /// once per job, since a mark in `job_tails` stops a notice on screen being a read a frame.
     pub(crate) fn ask_tails(&mut self, asks: Vec<(String, Option<u64>)>) {
         if self.session_id.is_empty() {
             return;
@@ -312,10 +290,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The notice rows among lines `start..end` of the conversation**, as `(row of the window,
-    /// index of the row in `items`)` — [`App::file_rows_in`]'s walk, for the other row a click
-    /// opens. Asks for the tails of the jobs those rows name, so the rows on the screen are the
-    /// ones whose output is read.
+    /// The notice rows among lines `start..end`, as `(row of the window, index in `items`)` -
+    /// [`App::file_rows_in`]'s walk, for the other row a click opens. Asks for the tails of the
+    /// jobs those rows name, so the rows on the screen are the ones whose output is read.
     pub(crate) fn notice_rows_in(&mut self, start: usize, end: usize) -> Vec<(usize, usize)> {
         let end = end.min(self.hist_lines.len());
         let mut out = Vec::new();
@@ -361,24 +338,9 @@ impl App {
         out
     }
 
-    /// **Which rows of the window are a finished subagent's line, and which child each names** —
-    /// `(row of the window, the child's session id)`.
-    ///
-    /// [`App::notice_rows_in`]'s walk, for the one act a notice row has that is not the popup: a
-    /// click on a settlement's line goes to that child's session, which is where its conclusions
-    /// are. The operator: *"when subagent finished main session gets notification and it is
-    /// clickable. but the card shown is completely useless - i want the click to bring me to the
-    /// subagent session instead, so i can read its conclusions"*.
-    ///
-    /// **The id is the drawing's, not a second read of the row.** [`session_row_children`] is the
-    /// same function that drew the line, so the id beside line `n` is the child line `n` names —
-    /// and a list that does not match the row's drawn height (a line that wrapped after all) is
-    /// refused outright rather than shifting every line after it onto a neighbour's child.
-    ///
-    /// **A child this head cannot go to is not a row here.** The daemon's list is the answer to
-    /// *does that session exist* — a child the head still knows is switchable even when it has
-    /// finished (`switch_to` resumes it from the store) — and a card whose child is gone keeps the
-    /// popup its click always had rather than switching to nothing.
+    /// Which rows of the window are a finished subagent's line, and which child each names:
+    /// `(row of the window, session id)`. The id comes from [`session_row_children`], the same
+    /// function that drew the line, so a height mismatch is refused rather than shifted.
     pub(crate) fn task_rows_in(&self, start: usize, end: usize) -> Vec<(usize, String)> {
         let end = end.min(self.hist_lines.len());
         let mut out = Vec::new();
@@ -397,12 +359,9 @@ impl App {
                     let item = self.items.get(sp.row);
                     let text = item.and_then(agent_row_text);
                     let mut ids = match (item, text) {
-                        // **Only a row that holds a `[task]` group can name a child**, and the
-                        // check is a substring because a held batch (`[meanwhile]`) and a
-                        // restart's deliveries carry their groups inside a bigger notice. A
-                        // frame of the conversation is mostly rows that hold none, and this is
-                        // the difference between re-folding every row and the ones that could
-                        // answer.
+                        // Only a row holding a `[task]` group can name a child, and the check
+                        // is a substring because a held batch and a restart's deliveries carry
+                        // their groups inside a bigger notice.
                         (Some(it), Some(t)) if t.contains("[task] ") => session_row_children(
                             &t,
                             it.ts,
@@ -509,10 +468,9 @@ impl App {
         }
     }
 
-    /// **The popup's rows at `width`**: the whole file as a diff against itself before the
-    /// edit, so every line has its context and the change sits where it is in the file. When
-    /// the file is no longer what the edit left (edited since, or gone), the edit's own excerpt
-    /// is shown instead, and the note says so.
+    /// The popup's rows at `width`: the whole file diffed against itself before the edit, so
+    /// every line has its context and the change sits where it is. A file no longer what the
+    /// edit left (edited since, or gone) shows the edit's own excerpt, and the note says so.
     pub(crate) fn diff_popup_layout(&self, f: &FileRef, width: usize) -> Layout {
         use letibot_ui::text::without_control_lines;
         let split = self.diff_split;
@@ -524,10 +482,9 @@ impl App {
             intra_line: true,
             max_rows: usize::MAX,
         };
-        // **A popup is opened only on a row that carries a change** — `file_rows` is built from
-        // finished edits and writes, and every `FileRef` in it has one — so a place with no
-        // change is not a state this head reaches. It says so rather than drawing a file diffed
-        // against nothing.
+        // A popup opens only on a row that carries a change - `file_rows` holds finished edits
+        // and writes - so this is not a state the head reaches; it says so rather than drawing
+        // a file diffed against nothing.
         let Some(c) = &f.change else {
             return Layout {
                 width,
@@ -587,15 +544,9 @@ impl App {
         }
     }
 
-    /// **The popup's rows for a picture at `width`**: the picture's placeholders in a box cut to
-    /// the frame, and nothing where the terminal cannot draw one — the edge says why, so an empty
-    /// box is never drawn without a reason beside it.
-    ///
-    /// **The box is the frame's, not the thumbnail's**: the point of opening a picture is to see
-    /// more of it, so this is most of the width where the thumbnail was half. The height cap is the
-    /// protocol's ([`rano::term::graphics::IMAGE_MAX_ROWS`]) and not the popup's, because the layout
-    /// must not depend on how many rows the frame happened to give it — a layout that did would be
-    /// re-made on every resize.
+    /// The popup's rows for a picture at `width`: its placeholders in a box cut to the frame,
+    /// and nothing where the terminal cannot draw one - the edge says why. The box is the
+    /// frame's, not the thumbnail's, since the point of opening is to see more of it.
     pub(crate) fn picture_popup_layout(
         &self,
         id: u32,
@@ -631,17 +582,9 @@ impl App {
         }
     }
 
-    /// **The popup owns the keyboard while it is open**: the arrows and the paging keys read
-    /// it, `ctrl-]` hands the same change to the editor, and Esc closes it — and nothing else.
-    ///
-    /// **Except while a decision is open** (R67 item 4). The card is drawn in the chrome under
-    /// the popup and the bar says *a row number answers*, and this handler — placed below the
-    /// cards and asks precisely so a question arriving mid-read stays answerable — returned
-    /// `Break` for every key ahead of `key_decision`: digits, ↑↓ and Enter scrolled the diff or
-    /// vanished, and the turn waited on a card nobody could answer. With a decision open the
-    /// popup keeps only what cannot be the card's — Esc and `ctrl-c` (close the popup, never
-    /// a refusal), `ctrl-]`, the wheel and the page keys — and everything else goes on to the
-    /// card and the composer, the typed answer included.
+    /// The popup owns the keyboard while it is open: arrows, the paging keys, `ctrl-]` to the
+    /// editor, Esc to close. Except while a decision is open, when it keeps only the keys that
+    /// cannot be the card's (Esc, `ctrl-c`, `ctrl-]`, wheel, paging), or the card is unanswerable.
     pub(crate) fn key_diff_popup(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         let deciding = !self.open.is_empty();
         let Some(p) = self.diff_popup.as_mut() else {
@@ -689,20 +632,16 @@ impl App {
             // land in the composer underneath, unseen.
             _ => {}
         }
-        // **No `self.redraw`.** That flag is a full repaint — `ESC[2J` and every row again — and
-        // the frame is built and diffed on every tick anyway, so a scroll costs exactly the rows
-        // it moved. Setting it here erased the whole screen on every wheel notch: the operator,
-        // 2026-10-09, *"if i scroll here back and forth very fast, the very bottom keymap starts
-        // to flicker"*.
+        // No `self.redraw`: that flag is a full repaint (`ESC[2J` and every row again) while the
+        // frame is built and diffed every tick anyway, so a scroll costs exactly the rows it
+        // moved. Setting it would erase the screen on every wheel notch, which reads as a flicker.
         ControlFlow::Break(None)
     }
 }
 
-/// A row that shows a change: one carrying the diff's added or removed tint.
-///
-/// **Or the sign column**, because the tint is a colour and a head drawing without colour
-/// (`Palette::None`) has no roles on its rows at all: the `-`/`+` the diff writes in its own
-/// span is the same fact in both.
+/// A row that shows a change: one carrying the diff's added or removed tint, or the sign
+/// column - the tint is a colour, and a head drawing without colour (`Palette::None`) has no
+/// roles at all, while the `-`/`+` span is the same fact in both.
 fn changed(l: &Line) -> bool {
     let tint = |r: Role| matches!(r, Role::Added | Role::Removed);
     l.style.roles().any(tint)

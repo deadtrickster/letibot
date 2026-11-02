@@ -73,10 +73,9 @@ fn running_child(a: &mut App) {
     )));
 }
 
-/// **The bar and the help are the table, read as words**: every binding that says something is
-/// on the bar while its surface is in front, and in the help row for its surface. Generated, so
-/// this is the check that the generation reads every binding — a binding added later with words
-/// cannot be missing from either.
+/// The bar and the help are the table read as words: every binding that says something is on the
+/// bar while its surface is in front and in the help row for its surface. Generated, so a binding
+/// added later with words cannot be missing from either.
 #[test]
 fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
     let help = help_lines(&app().cfg, 400).join("\n");
@@ -88,10 +87,9 @@ fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
         let bar = a.hint_bar(1000);
         let row = App::surface_help(s);
         for b in s.bindings() {
-            // **What each binding says on the bar**, by the same route the bar takes: a `Text`
-            // says itself, a `Switch` asks the head which way it stands — and a `Switch` whose
-            // act the head has no words for is a binding the bar silently drops, which is the
-            // drift this test exists to catch.
+            // What each binding says on the bar, by the route the bar takes: a `Text` says itself
+            // and a `Switch` asks the head which way it stands - so one the head has no words for
+            // is a binding the bar silently drops, which is the drift this test catches.
             let says = match b.says {
                 Says::Text(t) => t.to_string(),
                 Says::Switch(help) => {

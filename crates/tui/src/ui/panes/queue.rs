@@ -1,21 +1,6 @@
-//! **The merge queue, hosted** - the pane on this surface is the `queue` layer's answer
-//! (`plugins/builtin/queue`, drawn through `app::queue_pane`). This file keeps what a host owes
-//! it: the input routing (the cursor, the verbs, `tab`, the reviewer door), the feed, and the
-//! reading of the snapshot that the composer's edge draws on every screen.
-//!
-//! # What stayed here, and why
-//!
-//! * **The standings** (`standings_where`) - the composer's bottom edge is not the pane: it is
-//!   drawn on every screen, host-side, from the same snapshot.
-//! * **The scope** (`QueueScope`/`Filter`) - the head is what knows which repository this session
-//!   is in, and both the feed and the edge are cut by it.
-//! * **The verbs** (`verb_moves`) - the daemon's own rule, mirrored once: the feed carries the
-//!   answer so the layer never re-derives it, and the keys ask it before sending.
-//! * **The gate tails** (`track_gate_tails`) - whether a step's output has MOVED is a fact about
-//!   two snapshots, and the head is the only reader of two. It goes into the feed as `still_ms`.
-//!
-//! The rows, the chrome, the alarms and the row read whole are the layer's drawing; the one-line
-//! facts it needs (marks, owners, `gate running on ...`) are produced here as feed material.
+//! The merge queue, hosted: the pane is the `queue` layer's answer, and this file keeps what a host
+//! owes it - the routing, the feed, and the reading of the snapshot the composer's edge draws. The
+//! standings, the scope and the gate tails stay here, because only the head knows them.
 
 use crate::app::*;
 use crate::ui::render::row_strings;
@@ -51,12 +36,9 @@ impl App {
         self.queues.at_ms.saturating_add(since)
     }
 
-    /// **Note when each running gate's tail last CHANGED** - called once per snapshot, because
-    /// the answer to *is it stuck?* is a comparison and the daemon sends only one half of it.
-    ///
-    /// A step whose tail is byte-for-byte what it was keeps the stamp it already had; a step whose
-    /// tail grew, or a step this head has not seen before, starts now. A step that is gone drops out
-    /// of the record, so a gate that ends and starts again is not read as *quiet for an hour*.
+    /// Note when each running gate's tail last CHANGED, once per snapshot: whether a step is stuck is
+    /// a comparison and the daemon sends one half of it. A step whose tail is unchanged keeps its
+    /// stamp, a new or grown one starts now, and a step that is gone drops out.
     pub(crate) fn track_gate_tails(&mut self) {
         let now = self.queue_now();
         let mut fresh: std::collections::HashMap<String, GateTail> = Default::default();
@@ -91,24 +73,17 @@ impl App {
         self.gate_tails = fresh;
     }
 
-    /// **The edge's standings: this session's repository only** - whatever scope the pane is
-    /// showing, the composer's edge is about the project this session works in. A session of no
-    /// repository has none; a daemon too old to say which repository the session is in gets every
-    /// repository's, as before.
+    /// The edge's standings: this session's repository only, whatever scope the pane is showing. A
+    /// session of no repository has none; a daemon too old to say which repository it is in gets
+    /// every repository's.
     pub(crate) fn queue_standings(&self) -> Standings {
         let f = self.queue_filter(&QueueScope::Here);
         standings_where(&self.queues_all, self.queue_now(), |r| f.keeps(r))
     }
 
-    /// **Ask for a fresh snapshot, on the pane's own clock** - the rows AND the detail, because a
-    /// screen showing a running gate is a screen whose whole point is that the numbers move.
-    ///
-    /// **The detail asks for itself.** It is a surface of its own (`Surface::QueueEntry`) and
-    /// `main_area` draws exactly one surface, so the ask inside [`Self::queue_lines`] never ran
-    /// while a row was open: no `Queues` frame arrived, `App::track_gate_tails` froze, and
-    /// `queue_now()` went on advancing - so the layer's detail would say *may be stuck* about a
-    /// gate that was writing. The clock is the same five seconds, and `queues_asked_ms` is one
-    /// field, so two surfaces on one frame ask once.
+    /// Ask for a fresh snapshot on the pane's own clock - the rows AND the detail, because a screen
+    /// showing a running gate is one whose point is that the numbers move. The detail asks for
+    /// itself: it is a surface of its own, so `queue_lines` never runs while a row is open.
     fn ask_for_queues(&mut self) {
         if self.now_ms.saturating_sub(self.queues_asked_ms) >= REFRESH_MS {
             self.queues_asked_ms = self.now_ms;
@@ -118,13 +93,9 @@ impl App {
         }
     }
 
-    /// **The pane - the `queue` layer's answer, hosted.** Everything the person reads on this
-    /// surface is the plugin's drawing; what is left here is the host's own state: a snapshot that
-    /// has not arrived is nobody's to draw (an empty `reviews` would read as an empty queue), and a
-    /// layer that did not answer is said in the host's words with the way out.
-    ///
-    /// Records `queue_stop_rows` either way, so the arrows, Enter and a click always read what was
-    /// drawn - or read nothing, when nothing was.
+    /// The pane: the `queue` layer's answer, hosted. A snapshot that has not arrived is nobody's to
+    /// draw - an empty `reviews` would read as an empty queue - and a layer that did not answer is
+    /// said in the host's words with the way out. `queue_stop_rows` is recorded either way.
     pub(crate) fn queue_lines(&mut self, w: usize) -> Vec<String> {
         self.ask_for_queues();
         let mut out = PaneLines::new();
@@ -157,10 +128,9 @@ impl App {
         row_strings(&out.lines, self.cfg.palette())
     }
 
-    /// **The entry read whole - the plugin's `detail`, hosted.** The layer writes the prose on the
-    /// row; the host finds the row by the id Enter opened and re-asks on every draw, so a gate that
-    /// writes while the overlay is up is drawn writing (the ask is the pane's own five-second
-    /// clock, [`Self::ask_for_queues`]).
+    /// The entry read whole: the plugin's `detail`, hosted. The layer writes the prose on the row;
+    /// the host finds the row by the id Enter opened and re-asks on the pane's own clock, so a gate
+    /// that writes while the overlay is up is drawn writing.
     pub(crate) fn queue_out_lines(&mut self, w: usize) -> Vec<String> {
         self.ask_for_queues();
         let Some(id) = self.queue_open.clone() else {
@@ -227,12 +197,9 @@ impl App {
         self.queue_plugin_stops
     }
 
-    /// **The entry the row under the cursor NAMES** - what `/queue approve` and the overlay take,
-    /// and what the person's `a`/`v`/`r`/`d` act on.
-    ///
-    /// A plugin row answers with the entry its own act carries (`{"verb":…,"id":…}`), which is
-    /// the whole point of `Act::Verb`: a row can draw one entry and mean it, whatever the host's
-    /// own enumeration would have put there.
+    /// The entry the row under the cursor NAMES: what `/queue approve` and the overlay take, and what
+    /// the person's `a`/`v`/`r`/`d` act on. A plugin row answers with the entry its own act carries,
+    /// which is the point of `Act::Verb`: a row can draw one entry and mean it.
     pub(crate) fn queue_selected_id(&self) -> Option<String> {
         self.queue_plugin_entry()
     }
@@ -276,10 +243,9 @@ impl App {
     }
 }
 
-/// **The tail a gate's step had when this head last looked, and when it last CHANGED** - the
-/// daemon's snapshot says what the tail is now; only a reader that has seen two of them can say
-/// whether it moved, and the head is that reader. Keyed by `entry#step`, so a step moving on starts
-/// its own clock rather than inheriting the last one's.
+/// The tail a gate's step had when this head last looked, and when it last CHANGED. Only a reader
+/// that has seen two snapshots can say whether it moved, and the head is that reader. Keyed by
+/// `entry#step`, so a step moving on starts its own clock rather than inheriting the last one's.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GateTail {
     pub text: String,
@@ -348,17 +314,9 @@ pub(crate) fn gates_running(
     out
 }
 
-/// **What the queue is DOING, in six words** - drawn on the composer's bottom edge, and the
-/// subject of [`standings_where`]'s reading of the snapshot: the four columns (what a reviewer has,
-/// what is being landed, what is stuck, what landed today) and the two things a TARGET can be that
-/// no row of either queue can say - red, and unjudged.
-///
-/// **`stuck` is the operator's word**, and **the store's words are untouched** - the rename is the
-/// COLUMN's: what a person reads, not what the queue records.
-///
-/// **The fourth is `landed`, and it counts a DAY** - the same window the pane's done list uses
-/// ([`RECENT_MS`]): a queue that has worked all week reads as today's work, and the number falls
-/// back to zero on its own.
+/// What the queue is DOING, in six words, drawn on the composer's bottom edge: the four columns and
+/// the two things a TARGET can be that no row can say - red, and unjudged. `stuck` is the column's
+/// word, not the store's; `landed` counts a day, the window the pane's done list uses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Standings {
     pub(crate) review: usize,
@@ -378,20 +336,9 @@ pub(crate) struct Standings {
 }
 
 impl Standings {
-    /// **The words, and a count of nothing is not a word.**
-    ///
-    /// A word is drawn when it has a count, so a repository whose only live fact is a red target
-    /// reads `1 red` and not four zeros.
-    ///
-    /// **The order is the pane's, and `red` leads it.** The edge is cut from its right end
-    /// (`rano`'s `truncate`, through `box_edge`), so the leftmost word is the last one a narrow
-    /// terminal loses - and the emergency is the word that must survive. Then a target nobody
-    /// could judge, then the four columns in the order they have always had.
-    ///
-    /// **The merge column is worded by what the gate is doing**: `1 gating (step 3 of 4)` while
-    /// this repository's target is being gated, `1 being merged` otherwise. Same count either
-    /// way, but the word says the machine is working. The step is in parentheses and last, so a
-    /// terminal too narrow for it loses the step and keeps the standing.
+    /// The words, and a count of nothing is not a word: a repository whose only live fact is a red
+    /// target reads `1 red` and not four zeros. The order is the pane's and `red` leads it, because
+    /// the edge is cut from its right end. The step is parenthesised and last, so it is lost first.
     pub(crate) fn words(&self) -> Option<String> {
         let mut words: Vec<String> = Vec::new();
         if self.red > 0 {
@@ -430,28 +377,9 @@ impl Standings {
     }
 }
 
-/// **The standings of the rows `keep` admits by repository**, as of `now` - the snapshot's own
-/// clock carried forward (`App::queue_now`), because the landed column asks about a window and
-/// the snapshot's `at_ms` is a moment, not a clock.
-///
-/// # The snapshot is the wire's whole history, and these counters are a reading of it
-///
-/// The snapshot carries every row the store has, in every state, because nothing in this tree
-/// deletes one. So the terminal rows are in it, and a counter that takes them at face value is a
-/// counter about the past drawn where the reader is asking about now. The counting:
-///
-/// * **`in review`** - `waiting` and `reviewing`, the review queue's open states.
-/// * **`being merged`** - `queued` and `gating`, the merge queue's working states. Drawn as
-///   **`gating (step N of M)`** when this repository's target is on a gate right now
-///   ([`Standings::gate`]).
-/// * **`stuck`** - open and stopped: a review that could not be RUN (`blocked`) or whose reviewer
-///   said `needs_human` (`cannot_decide`), and a landing whose gate was red (`failed`), ran out
-///   of time (`timed_out`), would not rebase (`conflict`) or could not be started (`blocked`).
-/// * **`landed`** - the store's own `state`, and its own `state_ms` inside [`RECENT_MS`].
-///
-/// **Every other state is terminal and is counted nowhere**: a terminal row never inflates a live
-/// column. A target's own red-tip review is not counted once that target is green again - the
-/// alarm clears with the target, not with whoever withdraws the row.
+/// The standings of the rows `keep` admits, as of `now` - the snapshot's clock carried forward,
+/// because `landed` asks about a window and `at_ms` is a moment. The snapshot holds every row the
+/// store ever had, so a terminal row inflates no live column: `stuck` is open-and-stopped only.
 pub(crate) fn standings_where(
     q: &QueueSnapshot,
     now: u64,

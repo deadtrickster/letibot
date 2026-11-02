@@ -12,26 +12,9 @@ use letibot_transcript::TranscriptItem;
 type DrawnNote = (Vec<String>, Option<(String, (String, rano::style::Role))>);
 
 impl App {
-    /// **The conversation while a switch is in flight** — the wait, and nothing of the session
-    /// being left.
-    ///
-    /// `body_window` used to push the cat *after* every row of the session being left, which is
-    /// right for a first attach (there are no rows) and wrong for a switch: the operator pressed
-    /// Enter on a subagent's row and the pane he was looking at was the parent's conversation,
-    /// with a spinner under it — *"on this build I \"Entered\" sub agents and still see you —
-    /// main session"*. On this box a switch is seconds, so that is seconds of the wrong session
-    /// presented as though it were the answer.
-    ///
-    /// So the wait REPLACES the conversation rather than following it, and it says which two
-    /// sessions it is about: the one on the screen and the one asked for. What is drawn is
-    /// rano's `attaching` (the cat, the clock, and the way out once it is late) plus one system
-    /// row naming both.
-    ///
-    /// # The click maps go with the rows
-    ///
-    /// `file_rows`, `notice_rows` and the rest are *places on this frame*, recorded by the walk
-    /// over the rows it drew. Nothing here drew them, so a click must not open a file from a row
-    /// that is no longer on the glass.
+    /// The conversation while a switch is in flight: the wait, and nothing of the session being left. The cat used
+    /// to be pushed after every row of the session being left, which reads as the parent's conversation with a
+    /// wait squeezed under it.
     fn switch_wait(&mut self, room: usize, cfg: &RenderConfig) -> Vec<String> {
         self.file_rows.clear();
         self.notice_rows.clear();
@@ -62,11 +45,9 @@ impl App {
             ),
             cfg.palette(),
         ));
-        // **The frame keeps the tail, because the sentence is the point.** `attaching` pads
-        // itself to `room / 2` blanks above the cat, which is a centring that only holds while
-        // nothing follows it; `main_area` truncates what it is given to the body's height, so a
-        // body longer than the pane would lose the row that says which session this is. The
-        // padding goes instead.
+        // The frame keeps the tail, because the sentence is the point: `attaching` pads itself to `room / 2`
+        // blanks above the cat, which only holds while nothing follows it, and `main_area` truncates to the body's
+        // height. The padding goes instead.
         let over = rows.len().saturating_sub(room);
         rows.drain(..over);
         self.body_len = rows.len();
@@ -82,39 +63,14 @@ impl App {
             self.hist_width = cfg.width;
             self.invalidate_history();
         }
-        // **A switch is a wait, and the rows this head holds belong to the session it is leaving.**
-        // The whole walk below renders THOSE rows, so while a switch is in flight none of it is
-        // the frame: what the operator is looking at is the wait, and it says so. See
-        // [`App::switch_wait`] for the report this answers and for why the click maps go with the
-        // rows.
+        // A switch is a wait, and the rows this head holds belong to the session it is leaving: the walk below
+        // renders those rows, so while a switch is in flight none of it is the frame. See [`App::switch_wait`].
         if self.leaving() {
             return self.switch_wait(room, &cfg);
         }
-        // Rows and notes, interleaved in the order they happened. A note anchored
-        // at row N renders between row N-1 and row N, which is where it was when it
-        // arrived.
-        //
-        // Destructured rather than indexed through `self`, so a row can be rendered
-        // *while* the rendered lines are being appended and the tool-target table
-        // is being read — three disjoint fields, one borrow each, no clone of a row
-        // per frame.
-        // Does the transcript already own this turn's content? If so the live pane
-        // is a duplicate of history and only its summary line survives — otherwise
-        // the answer is on the screen twice, once in the wrong order.
-        //
-        // Computed before the walk, because the walk needs it: it is the
-        // difference between "the pane below is drawing this call" and "nothing
-        // is".
-        //
-        // **And not while a call is still running.** The turn's text and its
-        // proposals are recorded before the calls run, so "the transcript owns the
-        // content" is true the moment the model stops speaking — minutes before
-        // a `task` call returns. Retiring on that fact handed the screen to the
-        // transcript row, which draws a call from its RESULT row, and the daemon
-        // appends the round's results as one batch after the last call. Measured
-        // 2026-09-17: a `todo_write` that finished in a millisecond stayed
-        // `→ no result` for the fifteen minutes the subagent behind it ran. The
-        // pane stands down when nothing is in flight, which is the fact.
+        // Rows and notes interleaved in the order they happened: a note anchored at row N renders between rows
+        // N-1 and N. Destructured rather than indexed through `self`, so a row renders while the lines are being
+        // appended and the tool-target table read.
         let superseded = !matches!(
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running) | None
@@ -130,56 +86,21 @@ impl App {
                     .iter()
                     .all(|c| matches!(c.state, CallState::Finished { .. }))
         });
-        // **A conversation too big to walk is rendered from its end, and the held row is
-        // rendered down to it** (R36) — the frame's half of [`App::render_held`], which is
-        // the one place the bootstrap lives now so that a scroll key between frames can
-        // run the same two steps. See that method for the second caller's story.
+        // A conversation too big to walk is rendered from its end and the held row rendered down to it: the
+        // frame's half of [`App::render_held`], which is where the bootstrap lives now so a scroll key between
+        // frames can run the same two steps.
         self.render_held(room);
         // **The one row `ctrl-t` can act on**, read once here rather than per row inside
         // the walk below — and before the walk's own borrow of `self`, which is why it is
         // not beside the rest of the tail's inputs. See [`ItemCtx::payload_newest`].
         let newest_payload = self.newest_payload_row();
-        // The rows the live pane is still drawing. An assistant row in this set
-        // does **not** draw its own unsettled calls: the pane below is drawing
-        // them, with a spinner and a running clock, and `→ Read foo.rs · no result`
-        // above a `◐ Reading foo.rs` is both a duplicate and, while the call is
-        // still running, false.
-        //
-        // Empty once the pane has stood down, which is what stops a call the turn
-        // was interrupted in the middle of from vanishing off the screen entirely:
-        // nothing is drawing it, so the assistant row draws it, and says it never
-        // came back.
+        // The rows the live pane is still drawing. An assistant row in this set does not draw its own unsettled
+        // calls: the pane below draws them with a spinner and a clock, and both above and below would be a
+        // duplicate and, while the call runs, false.
         let live = live_work(self.turn.as_ref(), &self.items, &self.cfg, superseded);
-        // **A CHANGE IN THE LIVE COUNTS PUTS THEM IN A CACHED ROW, SO IT INVALIDATES THAT ROW.**
-        //
-        // The walk bakes its marker — the counts and all — into `hist_lines`, which is the cache of
-        // RENDERED rows, and that cache is only rebuilt from the row something changed at. Nothing
-        // in it moves when the live counts move, because the counts are not rows: a reasoning delta
-        // arrives, `live.think_lines` goes up, and every line of the walk is served unchanged from
-        // the cache with the number it was rendered with.
-        //
-        // The operator, watching it: *"you started replying with `[1 tool call]`. then response
-        // line appeared and then that `[1 tool call]` became `[1 tool call, 52 thinking lines]` —
-        // so unlike in leticl thinking count is not live and backfilled after the first
-        // non-thinking line."* Every word of that is this: the number is **backfilled**, and what
-        // fills it is the arrival of a ROW — the first non-thinking line — which invalidates the
-        // cache and re-renders the marker with whatever the counts had become.
-        //
-        // The pane's own marker is not affected, and that is why the two halves looked different:
-        // it is pushed fresh every frame from the same `live`. This is the fix for the other half.
-        //
-        // Cheap and targeted: the counts change at most once per delta, and what is invalidated is
-        // one run — the one the live work belongs to — not the transcript.
-        // **`running` is in the key and must be: it is the YELLOW.** `marker_carries_live` is
-        // `live.running > 0`, so a call that starts or stops executing changes what the marker
-        // paints without changing either count. Left out, the invalidation above missed exactly the
-        // case the operator reported next: *"i didnt see yellow toolcalls for a while. maybe the
-        // same problem"* — and it was. The plain marker was in the cache, the call started running,
-        // the counts did not move, and the yellow had nothing to rebuild it.
-        // **One value, compared once.** [`MarkerFacts`] is everything the marker draws about NOW
-        // plus the row the work is in, and it is the SAME value [`hidden_run_marker`] is handed —
-        // so a fact the marker draws is a fact this comparison holds. See the field for the two
-        // omissions this replaces (`running`, then the run).
+        // A change in the live counts puts them in a cached row, so it invalidates that row: the walk bakes the
+        // marker into `hist_lines` and nothing in that cache moves when the counts move, since the counts are not
+        // rows.
         let facts = MarkerFacts {
             live,
             run: self.newest_run_row(&live),
@@ -187,17 +108,14 @@ impl App {
         if facts != self.marker_facts {
             let left = self.marker_facts.run;
             self.marker_facts = facts;
-            // **From the EARLIER of the two rows.** A rebuild is *from row k onward*, so rewinding to
-            // the row the colour was on re-renders both it and the run that now owns the work — and
-            // the rows between them, which is the price of one invalidation rather than a second
+            // From the EARLIER of the two rows: a rebuild is from row k onward, so rewinding to the row the
+            // colour was on re-renders it and the run that now owns the work, which is cheaper than a second
             // mechanism for taking one colour off one row.
             if let Some(row) = [left, facts.run].into_iter().flatten().min()
                 && !self.items.is_empty()
             {
-                // **Clamped, because the run the live work belongs to may have no row yet.**
-                // `newest_unseen_run` answers `items.len()` for the work in flight with nothing
-                // committed under it — the one index past the end, which is its own spelling of
-                // *there is no row* — and that is not a row to hand to `round_head`.
+                // Clamped, because the run the live work belongs to may have no row yet:
+                // `newest_unseen_run` answers `items.len()`, its own spelling of *there is no row*.
                 let row = row.min(self.items.len() - 1);
                 let from = self.round_head(row);
                 self.invalidate_history_from(from);
@@ -229,19 +147,9 @@ impl App {
             &turn_rows,
         );
 
-        // **A marker with no row joins the sentence above it, and the joining happens HERE.**
-        //
-        // The pane pushes the marker while `hist_lines` is lent to the frame, and the join is
-        // a mutation of that buffer's last line — so it is decided now, one statement before
-        // the borrow. The rule is the walk's own: the row above must be the MODEL's prose.
-        // Without this the counts stood a blank line under the sentence that introduced them,
-        // which is a row rather than a continuation — the same defect the operator reported
-        // for their own message, in the one place the walk could not reach it.
-        // **Last frame's join is UNDONE first**, so this is a set and not an append — see
-        // [`App::live_join`] for what appending cost. The search is by the marker's own text
-        // rather than by an index, because the cache may have been truncated and rebuilt since;
-        // a line that no longer carries the marker needs no undo, and one that does is the line
-        // this put it on.
+        // A marker with no row joins the sentence above it, and the joining happens here: the pane pushes the
+        // marker while `hist_lines` is lent to the frame, so the mutation of that buffer's last line is decided
+        // one statement before the borrow. The row above must be the model's prose.
         if let Some((original, marker)) = self.live_join.take()
             && let Some(at) = self
                 .hist_lines
@@ -250,20 +158,8 @@ impl App {
         {
             self.hist_lines[at] = original;
         }
-        // **Has the walk already carried the in-flight counts?** The walk folds them into the run
-        // the current turn is working in — the `live_here` question — and if it has, a marker here
-        // would be a SECOND one for one turn's work: `[1 tool call]` from the walk and
-        // `[1 thinking line]` from the pane, which is the duplicate caught in a tmux sample of the
-        // live head. Asked here, before the destructure below lends `items` out.
-        //
-        // **`LETIBOT_MARKER_DEBUG=1` prints the decision this guard makes.** The operator has
-        // twice caught a turn's work drawn by two markers — *"just saw = [1 tool call] [1 tool
-        // call] that later merge to [2 tool calls]"* — and neither state could be rebuilt from the
-        // code: a test written for the closest one passes, which means the state is one of the
-        // combinations nobody has described yet. So the two facts are printed at the moment of the
-        // decision, and the next occurrence says which one it was instead of inviting a third
-        // guess. The same technique the marker-doubling hunt used (`scripts/headwatch.sh` and the
-        // captured frames in `docs/evidence/`), applied to the predicate rather than to the screen.
+        // Has the walk already carried the in-flight counts? It folds them into the run the current turn is
+        // working in, and if it has, a marker here would be a second one for one turn's work.
         let walk_carried_live = live.work() > 0
             && facts.run.is_some_and(|start| {
                 unseen_run_at(
@@ -299,16 +195,8 @@ impl App {
                     .unwrap_or_default(),
             );
         }
-        // **And not when the walk has already carried the counts** — the same guard the standalone
-        // push below carries, and its absence here is what the pair was. The two paths are two
-        // ways of drawing ONE marker, so a guard on one of them is a guard on neither: with the
-        // walk's marker already on the screen, this joined a second copy to the end of the line it
-        // was on, and the operator's screen read
-        //
-        //   `let me check that for you: [2 tool calls, 2 thinking lines] [2 thinking lines]`
-        //
-        // — one line, two markers, and their report of the same shape (*"[1 tool call] [1 tool
-        // call]"*).
+        // And not when the walk has already carried the counts, the same guard the standalone push below carries:
+        // the two paths are two ways of drawing one marker, so a guard on one is a guard on neither.
         let live_joins = live.work() > 0
             && !superseded
             && !walk_carried_live
@@ -347,22 +235,16 @@ impl App {
             }
         }
 
-        // **Scrolling up back-fills.** A belt to `scroll_up`'s braces: that key renders what
-        // its own press needs, and this catches anything that moved the scroll without going
-        // through a key — a click, a restore, a test that sets `scroll` directly. It asks for
-        // a screen beyond `scroll` for the same reason `scroll_up` does.
-        //
-        // Before the borrows below, because it needs the whole `App`.
+        // Scrolling up back-fills: a belt to `scroll_up`'s braces, catching anything that moved the scroll
+        // without a key — a click, a restore, a test setting `scroll` directly. It asks for a screen beyond
+        // `scroll`, as that key does.
         if self.scroll > 0 && self.hist_floor > 0 {
             self.fill_backward(self.scroll + room + TAIL_SLACK);
         }
 
-        // **One walk, two numbers, and the numerator cannot exceed its denominator.**
-        // How many rows have ARRIVED, out of how many there are — both counted off the
-        // same pass over `items`, so the difference is a count of rows that are genuinely
-        // missing and never a number larger than the whole. The version this replaces kept
-        // a high-water mark and reported `peak - pending`: on a replaced item vector the
-        // peak was stale and the line said **`97 of 4 rows`**.
+        // One walk, two numbers, and the numerator cannot exceed its denominator: how many rows have arrived out
+        // of how many there are, both counted off one pass over `items`. The version this replaces kept a
+        // high-water mark and reported `97 of 4 rows`.
         let arrived = self.items.iter().filter(|i| i.item.is_some()).count();
         let outstanding = self.items.len() - arrived;
         // **Nothing missing means the bulk announcement is complete**, so the trigger
@@ -372,21 +254,13 @@ impl App {
         }
         let now_ms = self.now_ms;
 
-        // **The anchor, before the frame borrows anything** (R36).
-        //
-        // Two things, and both need `&mut self`: a held row that the replacement took away
-        // has to be **found again by its own words or said to be gone**, and the reader has
-        // to be moved to the tail when the new transcript does not carry it. Here rather
-        // than beside the placement below, because a note is written on the head and the
-        // head is lent to the frame from the next line on.
+        // The anchor, before the frame borrows anything: a held row the replacement took away is found again by
+        // its own words or said to be gone, and the reader is moved to the tail when the new transcript does not
+        // carry it. Both need `&mut self`.
         self.repair_anchor();
 
-        // **A carry in flight, and the line the window holds while it lands** (R36).
-        //
-        // Read before the disjoint borrow below, for the same reason `now_ms` is: the
-        // anchor's own arm needs it, and it is a field of `self` that arm cannot reach.
-        // `Some` only between a snapshot that replaced the rows and the frame that places
-        // the held row again — see [`App::carry`].
+        // A carry in flight, and the line the window holds while it lands: read before the disjoint borrow below
+        // because the anchor's own arm needs it and it is a field that arm cannot reach. See [`App::carry`].
         let carrying = self.carry.as_ref().map(|c| c.line);
 
         // Read before the disjoint borrow below, for the same reason: it asks the rows
@@ -412,59 +286,29 @@ impl App {
             ..
         } = self;
         let vis = *visibility;
-        // **Room for the segments this frame will actually push.** A live frame adds the gap, the
-        // echo block, the pane and the chrome — a handful — and `vec![…]` starts at capacity 1, so
-        // the pushes past the first few are reallocations on a per-frame path. The number is a
-        // guess and a cheap one: too small only means one reallocation.
+        // Room for the segments this frame will actually push: a live frame adds the gap, the echo block, the
+        // pane and the chrome, and `vec![…]` starts at capacity 1, so the pushes past the first few are
+        // reallocations on a per-frame path. A guess, and a cheap one.
         let mut segs: Vec<Seg<'_>> = Vec::with_capacity(8);
         segs.push(Seg::Borrowed(hist_lines));
-        // The history no longer ends with a blank — separators go *before* a row
-        // now, so the last row of the transcript is the last line of it. The live
-        // pane therefore brings its own.
-        // `vec![String::new()]` allocated a heap `Vec` to hold ONE empty line. An array on the
-        // stack is the same slice without that allocation: `String::new()` itself allocates
-        // nothing, so the only thing that was being bought was the Vec's buffer.
-        //
-        // **One line, not zero.** The gap is the blank that separates the transcript from the
-        // echo and the live pane — emptying it would move every row below by one, which is the
-        // class of defect the comment above this block is about.
+        // The history no longer ends with a blank, since separators go before a row now, so the live pane brings
+        // its own. An array on the stack rather than a `Vec` holding one empty line, and `String::new()` allocates
+        // nothing.
         let gap: [String; 1] = [String::new()];
         if !hist_lines.is_empty() {
             segs.push(Seg::Borrowed(&gap));
         }
 
-        // **THE QUEUED ECHO IS SPLIT BY ONE FACT, AND THE FACT DECIDES WHERE IT IS DRAWN.**
-        //
-        // **Words nothing has taken yet go to the TAIL — below the live pane.** The operator's own
-        // screen, 2026-10-05: *"queued above thinking"* — their words, and directly under them the
-        // turn's reasoning, which reads as though that working were the answer to words the daemon
-        // has not been given yet. There is no answer to those words, so nothing below them may
-        // look like one.
-        //
-        // **Words a row is already drawing stay HERE, glued above the pane.** That rule is the one
-        // this block used to apply to *everything*, and it is right for exactly this half: the row
-        // is committed above the pane and the reply to it streams below, so a prompt whose reply
-        // can already be streaming has to sit above that reply. The report it answers: *"a message
-        // was queued to harnessd, delivered to model, reply started streaming above the queued
-        // message and then some tick goes off and queued message dequeued and rendered rightfully
-        // above the reply. pure ui desync."*
-        //
-        // **The fact is `claimed_by`, and it is the same fact the MARK reads** — a row is drawing
-        // these words, or nothing is. So a remainder stays with its row while an untaken entry
-        // waits at the tail, and the words move exactly once: at the moment the daemon takes them,
-        // which is a change of state and not a rendering artefact. Nothing else about the two
-        // blocks differs — both are `queued_lines` through the same marks.
+        // The queued echo is split by one fact and the fact decides where it is drawn: words nothing has taken
+        // go to the tail, below the live pane, because nothing under them is an answer to them; once the daemon
+        // takes them they move into their row's own place.
         let mut tail_echo: Vec<String> = Vec::new();
         // The prompts this head has sent that the transcript does not hold yet. See
         // `pending_prompts` for why this is the head's own queue and not the hub's.
         if !self.pending_prompts.is_empty() {
-            // **THE AIR GOES AFTER THE ECHO, NOT BEFORE IT** — because that is where a landed row's
-            // air is. `hist_lines` is followed by `gap`, and a row that has LANDED is part of
-            // `hist_lines`, so a committed row has its blank BELOW it. The echo's blank used to be
-            // in front, which put the echo one row higher than the row that replaces it and moved
-            // every row between them when the announcement arrived — the same desync, one row out.
-            // Measured: with the blank in front, the announcement lifts the echo by one; with it
-            // behind, the frame is identical.
+            // The air goes after the echo and not before it, because that is where a landed row's air is: a row in
+            // `hist_lines` has its blank below it, and an echo's blank in front put it one row higher than the row
+            // that replaces it.
             let mut taken: Vec<String> = Vec::new();
             let open = self.echo_open;
             let unconfirmed = self.unconfirmed.clone();
@@ -476,52 +320,24 @@ impl App {
                 .as_ref()
                 .map(|(what, ..)| what.clone())
                 .or_else(|| self.compacting.as_ref().map(|_| "compacting".to_string()));
-            // **The pieces the rows above are already drawing, taken out of the queue** —
-            // R51 item 15. Computed once for the whole queue rather than asked per entry,
-            // because a claim is spent: two entries that read the same must not both claim
-            // the one line a row is drawing.
+            // The pieces the rows above are already drawing, taken out of the queue: computed once for the whole
+            // queue, since a claim is spent and two entries reading the same must not both claim one line.
             for (i, drawn, claimed_by) in
                 unclaimed_prompts(&self.pending_prompts, &echoes_on_screen)
             {
-                // **The mark follows the words this row is drawing.** A remainder is drawing what
-                // the row above does not — the same prompt — so it asks `unconfirmed` under the
-                // text that claimed it, which is the text the row itself asked under. Asking
-                // under the remainder's own words would answer differently from the row beside it
-                // the moment an entry grew, and asking under the ENTRY's would too. See
-                // [`unclaimed_prompts`] for why that would be two statements about one fact.
+                // The mark follows the words this row is drawing: a remainder draws what the row above does not,
+                // so it asks under the text that claimed it, as the row itself did. Its own words would answer
+                // differently the moment the entry grew.
                 let key = claimed_by.as_deref().unwrap_or(&self.pending_prompts[i]);
-                // **`queued` is not true once the row is on screen, and the mark is about the row.**
-                //
-                // R2: *"nothing the model says in reply may reach the screen before the prompt that
-                // caused it"* — and the two reach the head on channels with different latencies.
-                // The reply streams (`Delta` carries its text); the prompt's row is announced in a
-                // frame that carries NO text and its body follows later. So for as long as the body
-                // is in flight, the answer to a prompt was on the screen above an echo still
-                // labelled `queued` — the state lagging the fact, in the operator's words:
-                // *"my message | your line | and only then unqueued."*
-                //
-                // `claimed_by` is the answer: a row is drawing these words, so the words are not in
-                // a queue any more, they are on the screen this reader is looking at. What the head
-                // still owes is the BODY — whether the row's own text will match what was bound —
-                // and that is exactly what `unconfirmed` says. So the remainder of a claimed entry
-                // takes that mark, and the two are one statement rather than two: *queued* (nothing
-                // has it), *unconfirmed* (a row has it and the body is still coming), unmarked (it
-                // landed).
-                // **A remainder of a claimed entry is not the same question as the walk's row.**
-                // The walk draws a row that HAS landed, so it carries no claim. This draws the part
-                // of the entry no row is drawing yet, and the daemon still owes it — but it is owed
-                // *as part of an entry a row already covers*, so whether it lands with that row's
-                // body or needs one of its own is exactly what the head cannot say. That is
-                // `unconfirmed`'s own definition, so that is the mark.
+                // `queued` is not true once the row is on screen, and the mark is about the row: the reply streams
+                // as `Delta` and the prompt's row is announced as an id, so the reply is always the faster one.
                 let mark = match claimed_by {
                     Some(_) => UNCONFIRMED,
                     None => echo_mark(&unconfirmed, key, false),
                 };
-                // **And WHAT it is queued behind, when the daemon has said.** The rano session,
-                // 2026-10-12: a `/reseat` held the worker for 6.5 minutes and the operator's
-                // `pull` sat under a bare `queued` the whole time, which reads exactly like a
-                // daemon that stopped listening. While the daemon is naming a fill
-                // (`SessionEvent::Filling`), an untaken prompt waits behind THAT, and says so.
+                // And what it is queued behind, when the daemon has said: a `/reseat` can hold the worker for
+                // minutes, and a bare `queued` under it reads like a daemon that stopped listening. While a fill is
+                // named, the line says so.
                 let mark = match claimed_by {
                     Some(_) => mark.to_string(),
                     // **A prompt typed while the daemon boots runs once it has started**
@@ -569,41 +385,20 @@ impl App {
             );
         }
 
-        // **THE UN-TAKEN WORDS WAIT BELOW THE PANE**, and the leading blank is what keeps them
-        // from reading as the last line of the working. See the split's own comment above: the
-        // pane's rows are the turn in flight and nothing in them is an answer to words the daemon
-        // has not taken, so those words belong under them — where the reader put them, and next to
-        // the composer they are waiting at. The moment the daemon takes them they move up into
-        // their row instead, and both reports this ordering answers are quoted at that comment.
+        // The un-taken words wait below the pane, and the leading blank is what keeps them from reading as the
+        // last line of the working: nothing in the pane is an answer to words the daemon has not taken.
         if !tail_echo.is_empty() {
             segs.push(Seg::Owned(vec![String::new()]));
             segs.push(Seg::Owned(tail_echo));
         }
 
-        // **The daemon is still starting** (R92.2), **a fill the daemon named, a fold, and a
-        // snapshot's announced rows still arriving** are all drawn in the status row now
-        // (`App::status_row`, `ui::progress_row`), not as rows here. Each was a line or a block of
-        // two or three at the foot of the conversation that came when the operation started,
-        // changed height when a fold went from reading to writing, and went when it ended — and a
-        // row at the foot that comes and goes moves every row above it. The operator, 2026-10-14:
-        // *"yes, move the compacting progress blocks too"*.
+        // The daemon still starting, a named fill, a fold and a snapshot's announced rows are all drawn in the
+        // status row now, not as rows here: each was a block at the foot of the conversation that changed height
+        // as the operation went.
 
-        // **The wait, as a walking cat at the centre of the conversation.**
-        //
-        // This is the frame the head draws while it is still asking the daemon —
-        // `HeadClient::attach` blocks on a `Hello` that carries the whole snapshot, so
-        // on a big session there is a real wait with nothing to show. A spinner is
-        // the usual answer and it is the right one *here*: the work is client-side and
-        // the head genuinely cannot say more, because it has been told nothing.
-        //
-        // It is drawn rather than the empty-transcript banner because that banner is
-        // a **claim about the session** ("this session has said nothing yet"), and a
-        // head that has not been answered is in no position to make one. See
-        // `attaching`.
-        //
-        // Dead centre: horizontally by padding to the width, vertically by the same
-        // arithmetic `centred` uses for the panes, so it sits in the middle of
-        // whatever room the walk left rather than two rows under the header.
+        // The wait, as a walking cat at the centre of the conversation: `attach` blocks on a `Hello` that carries
+        // the whole snapshot, so on a big session there is a real wait with nothing to show, and the work is the
+        // head's own rather than a program's.
         let waiting;
         if self.attaching {
             let elapsed = self.now_ms.saturating_sub(self.attach_started_ms);
@@ -618,20 +413,9 @@ impl App {
             segs.push(Seg::Borrowed(&waiting));
         }
 
-        // Nothing has happened yet. An empty screen with a status line under it is
-        // indistinguishable from a head that attached to the wrong socket.
-        //
-        // **Unless the head has not been told yet** — that case has the cat above,
-        // and this banner would assert that the session is empty when the truth is
-        // that nobody has reported yet.
-        //
-        // **And unless the daemon has said the rows EXIST and have not been loaded**
-        // (`self.restoring`): the same false claim, one source further on. MEASURED
-        // 2026-10-26 — `leticode --session ID` against a daemon that was already up drew
-        // this banner over a conversation of 166 stored rows, because the restore was
-        // queued behind another session's turn and the switch's snapshot was empty. The
-        // line that replaces it is the same row shape a `system` item is drawn in, so it
-        // reads as part of the conversation and goes when the conversation arrives.
+        // Nothing has happened yet, and an empty screen with a status line is indistinguishable from a head that
+        // attached to the wrong socket. Two cases are not this one: a head that has not been told yet has the cat
+        // above, and a session whose store rows are still being restored says so.
         let opening;
         let restoring;
         if segs.iter().all(|s| s.len() == 0) && !self.attaching {
@@ -662,19 +446,8 @@ impl App {
 
         let total: usize = segs.iter().map(Seg::len).sum();
         self.body_len = total;
-        // Clamped so the window stays **full**, not so the last line stays on
-        // screen. It was `total - 1`, which meant scrolling to the top left a
-        // one-line window — and since the banner below overwrites the last line of
-        // the window, the whole screen went blank with `── scrolled back · 56 lines
-        // below` at the top of it. Found by pressing PageUp six times under tmux,
-        // which is a thing a person does and no test did.
-        // **R36: the viewport is placed from the ROW it is holding, not from a count.**
-        //
-        // This is the one place the anchor becomes lines, and it happens after everything
-        // that can move a line: the history walk, the fill above it, the live pane and the
-        // tail block are all in `total` by now. A count from the bottom would have been
-        // invalidated by every one of them — content arriving below moves `total`, and the
-        // window moves with it, which is the defect exactly.
+        // Clamped so the window stays full, not so the last line stays on screen: `total - 1` left a one-line
+        // window at the top, and the banner below overwrites the last line, so the screen went blank.
         if let Some(held) = anchor.as_ref() {
             let span = spans.iter().find(|sp| {
                 items.get(sp.row).map(|i| i.item_id.as_str()) == Some(held.item_id.as_str())
@@ -684,35 +457,22 @@ impl App {
                     let top = (span.at + held.into).min(total.saturating_sub(1));
                     let end = (top + room.max(1)).min(total);
                     *scroll = total.saturating_sub(end);
-                    // **And the state is NOT changed here, even when `scroll` lands at 0.**
-                    //
-                    // That was tempting and it is wrong: a replacement that shortens the
-                    // transcript can put a held row near the end, the arithmetic lands the
-                    // window at the bottom, and clearing the hold there would mean **the
-                    // head returned the reader to following by itself** — which is exactly
-                    // what the requirement forbids. Only an act does that: a scroll down
-                    // past the bottom ([`App::hold`]) or `esc`.
+                    // The state is not changed here, even when `scroll` lands at 0: a shorter transcript can put a
+                    // held row near the end, and clearing the hold there would return the reader to following on a
+                    // frame nobody asked for.
                 }
                 // **The row is not on the screen.** Its handling is above, before the frame
                 // borrowed the history — see `App::repair_anchor` — because saying so is a
                 // note and a note is `&mut self`.
                 None => {
-                    // **A carry in flight, and the count must not be asked.** The reader's
-                    // row is named but has no body yet, so there is nothing to place the
-                    // window on — and `scroll` was measured against the transcript this one
-                    // replaced. Every body that lands moves `total` under it, so a window
-                    // placed by that count is a reader dragged to the bottom of a
-                    // conversation they were reading the middle of: the operator, *"i was
-                    // scrolled up and it showed me thousands of lines 'below'"*. The window
-                    // holds the LINE the reader was at instead — the reader's PLACE is the
-                    // pending row, and it is not being carried by this number.
+                    // A carry in flight, and the count must not be asked: the reader's row is named but has no body
+                    // yet, and `scroll` was measured against the transcript this one replaced, so every body that
+                    // lands moves `total` under it.
                     if let Some(line) = carrying {
                         *scroll = total.saturating_sub((line + room.max(1)).min(total));
                     }
-                    // **And with no carry pending, the count is what is left.** Reaching
-                    // here means the row went away between the check above and this line,
-                    // which cannot happen: nothing between them replaces the rows. Falling
-                    // back to the count is the honest answer if it ever does.
+                    // And with no carry pending the count is what is left. Reaching here means the row went away
+                    // between the check above and this line, which cannot happen; the count is the honest fallback.
                 }
             }
         }
@@ -752,10 +512,9 @@ impl App {
             .collect();
         // **And which are a red target's warning, drawn as one line** (`red_card`).
         self.card_rows = self.card_rows_in(start, end);
-        // **And which of them are rows of a call the turn is still drawing** — the live pane's
-        // cards, keyed by the CALL and not by their text: a card's words change as the call goes
-        // from `Running` to `Finished`, and a target registered against the words would point at
-        // a row that no longer says them (`App::call_rows`).
+        // And which of them are rows of a call the turn is still drawing: the live pane's cards, keyed by the
+        // CALL and not by their text, which changes as the call goes from `Running` to `Finished`. See
+        // [`App::call_rows`].
         self.call_rows = cards
             .into_iter()
             .filter(|(line, _)| *line >= start && *line < end)
@@ -777,16 +536,9 @@ impl App {
         // its clauses are read off this frame's rows (`live_marker_rows`).
         let live = self.live_marker_rows(start, &out);
         self.marker_rows.extend(live);
-        // **The disclosure is about the HOLD, not about a number** (R36). It used to be
-        // `scroll > 0`, which ties the reader's sentence to a derived count: a hold whose
-        // anchored row happens to sit near the END of a shortened transcript has
-        // `scroll == 0`, and the reader was then left holding a viewport with nothing on
-        // screen saying so. The state is the anchor, so the sentence follows the anchor.
-        // **The turn's prompt, pinned on top while the view is held** — the operator,
-        // 2026-10-09: *"when im scrolling back i want my latest prompt (truncated to one line)
-        // to stay pinned on top, otherwise i forget wtf is going on"*. It covers the window's
-        // first row the way the banner below covers its last, and only while it has scrolled
-        // off: a prompt still on screen is not drawn twice. See [`App::pinned_prompt`].
+        // The disclosure is about the hold and not about a number: `scroll > 0` ties the sentence to a derived
+        // count, so a hold whose row sits near the end of a shortened transcript has none and the reader is left
+        // holding a viewport with nothing saying so.
         if !self.following()
             && out.len() > 2
             && let Some(pin) = self.pinned_prompt(start)
@@ -822,14 +574,9 @@ impl App {
 }
 
 impl App {
-    /// **The prompt of the turn at line `top` of the history, as one pinned row** — or `None`
-    /// when there is nothing to pin: no operator prompt at or above that line, or the prompt's
-    /// own first line is still on screen.
-    ///
-    /// The turn is found from the ROW at the top of the window (R36's span map), walking back to
-    /// the nearest row the operator wrote — so the pin is the question the visible answer is
-    /// answering, not the newest question of the session. Drawn as the operator's row is drawn
-    /// (`user_block`), with the text cut to the block's one line and the head's own `…`.
+    /// The prompt of the turn at line `top` of the history, as one pinned row, or `None` when the prompt's own
+    /// first line is still on screen. The turn is found from the row at the window's top by R36's span map,
+    /// walking back to the nearest row the person wrote.
     pub(crate) fn pinned_prompt(&self, top: usize) -> Option<String> {
         let at_top = self.spans.iter().rev().find(|sp| sp.at <= top)?;
         let (row, it, text) = (0..=at_top.row).rev().find_map(|k| {
@@ -921,11 +668,9 @@ pub(crate) fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<Str
 }
 
 impl App {
-    /// **The turn's in-flight work, read before the walk's disjoint borrow.** The
-    /// destructure below deliberately leaves `turn` out (the pane later needs it whole),
-    /// so this is the one place the walk can see it — and it must, because a call in
-    /// flight is not a row and the counts have to carry it.
-    // The walk's inputs are the frame's own, each read once before the disjoint borrow it takes.
+    /// The turn's in-flight work, read before the walk's disjoint borrow: the destructure below leaves `turn`
+    /// out, so this is the one place the walk can see it, and it must, since a call in flight is not a row and
+    /// the counts have to carry it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_history(
         &mut self,
@@ -972,27 +717,12 @@ impl App {
         } = self;
         let diff_split = *diff_split;
         let echo_open = *echo_open;
-        // **The run `ctrl-t` opens, computed once per frame** (R37 AMENDED): the same
-        // shape `newest_payload` has above, and for the same reason — the seam names the
-        // chord only on the run the chord acts on, and asking per row would be a scan of
-        // the transcript for every row drawn.
+        // The run `ctrl-t` opens, computed once per frame: the seam names the chord only on the run it acts on,
+        // and asking per row would be a scan of the transcript for every row drawn.
         let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
         loop {
-            // **A note with no seam in THIS window is stepped over, not drawn** (R19).
-            // Two ways to have none, and they are one fact:
-            //
-            // * `Placed::Before` — it happened before the conversation this head holds;
-            // * **a seam below `hist_floor`** — its row is above the window. A tail walk renders the
-            //   last N rows and skips the rest, and `hist_upto` then stands at the END of the
-            //   transcript, so every seam is *at or before* it and the walk drew the whole list at
-            //   the foot of the window. That is the operator's *"when i click on tool calls counter
-            //   ... all hidden with Ctrl-n notification are showed up again, then they hide on the
-            //   next tool call"*: the click, the queued row and the first thinking count all rebuild
-            //   the tail, and each one put every notice back.
-            //
-            // Stepped over once — `note_upto` only goes forward — and the note is still held, listed
-            // by `/notes` and counted on `/status`: retired is not deleted, and neither is *out of
-            // this window*.
+            // A note with no seam in this window is stepped over, not drawn: either it happened before the
+            // conversation this head holds, or its seam is below `hist_floor` and its row is above the window.
             while let Some((place, _)) = notes.get(*note_upto) {
                 let gone = match place {
                     Placed::Before => true,
@@ -1007,36 +737,16 @@ impl App {
                 .get(*note_upto)
                 .is_some_and(|(place, _)| matches!(place, Placed::Seam(at) if *at <= *hist_upto));
             if note_next {
-                // **A retired note contributes nothing — not its text, and not
-                // the blank line above it.** R10: the note is a disclosure, and
-                // the reader has read it. Skipping the blank as well is what
-                // makes the wall go rather than becoming a column of gaps; the
-                // note itself is still in `notes`, still counted on `/status`,
-                // and still listed by `/notes`.
-                //
-                // **Two ways to be retired, and the walk asks both** — the key set the
-                // reader pressed on, and the watermark `ctrl-n` leaves (`read_marks`, and
-                // `App::read_marks` is the argument for why one without the other is a
-                // hide). The same pair `App::is_retired` asks, as a free function because
-                // this walk holds the fields destructured and cannot call a method — and
-                // they must be the same question, or `/notes` and the screen disagree
-                // about what is hidden.
+                // A retired note contributes nothing, not its text and not the blank above it: the reading has
+                // happened, and skipping the blank is what makes the wall go rather than become a column of gaps.
                 if !crate::app::note_retired(dismissed, read_marks, &notes[*note_upto].1) {
-                    // **One row per kind, counted** — a burst of notices of the same kind that
-                    // arrived together is drawn once, at its first live member, with the count;
-                    // its other members draw nothing at all (not even the blank line above,
-                    // which is what makes a wall go rather than become a column of gaps). A
-                    // member is retired, listed and counted by its own key, so `/notes dismiss`
-                    // still acts on one notice and `ctrl-n` on the whole kind. See
-                    // `app::burst_at` for the window and `ui::panes::notes::burst_card` for the
-                    // words.
+                    // One row per kind, counted: a burst of notices of the same kind is drawn once at its first live
+                    // member, and the others draw nothing at all, not even the blank.
                     let burst = crate::app::burst_at(notes, dismissed, read_marks, *note_upto);
                     let drawn: Option<DrawnNote> = match &burst {
                         crate::app::Burst::Drawn => None,
-                        // **Every note but a pane's ending is a card's one line** (R89); a
-                        // click on it opens the text whole: where it is, kept for the click
-                        // map, with the popup's title — the card's, since the popup no longer
-                        // has the code.
+                        // Every note but a pane's ending is a card's one line, and a click opens it whole: where it
+                        // is, kept for the click map, with the card's own title.
                         crate::app::Burst::Single => {
                             let n = &notes[*note_upto].1;
                             let lines = note_lines(cfg, n);
@@ -1098,27 +808,9 @@ impl App {
                     }
                 }
                 *note_upto += 1;
-            // `hist_upto` is "every row at or below this index is accounted for".
-            // A tail walk sets it to the row count, so this does nothing until a
-            // *new* row arrives at the end — which is the whole point: the rows
-            // above the floor are deliberately not walked.
-            //
-            // **In tail mode there are no marks.** They are indexed by absolute
-            // row, the walk pushes one per row it passes, and a tail walk does not
-            // pass the rows it skipped — so `invalidate_history_from` finds none
-            // and falls back to a full rebuild. Correct, just not incremental, and
-            // it is the honest trade for not lexing a 160 MB session to draw its
-            // last 40 rows.
-            // **This turn's assistant row, announced and not yet filled, holds back every row
-            // after it.** Its text is on the screen already — it streamed into the live pane —
-            // and it moves into the transcript only when the row's BODY lands. A row announced
-            // after it (the operator's message the daemon took at the step boundary) drawn now
-            // would sit ABOVE the reply it follows, and then be pushed under it when the body
-            // landed: *"it can go above the most recent piece of reply and then get reordered to
-            // the bottom. very strange feeling"* (2026-10-08). So the walk waits here; the message
-            // keeps its `queued` echo under the live pane until then, and everything lands in
-            // order, once. Only rows of the turn in flight: a body that never comes for an old
-            // row must not freeze the transcript, and once the turn ends this does not apply.
+            // `hist_upto` is "every row at or below this index is accounted for": a tail walk sets it to the row
+            // count, so this does nothing until a new row arrives at the end, which is the point. In tail mode there
+            // are no marks, since they are indexed by absolute row and the walk never passes the skipped ones.
             } else if *hist_upto < items.len()
                 && *hist_upto >= *hist_floor
                 && items[*hist_upto].kind == "assistant"
@@ -1127,10 +819,9 @@ impl App {
             {
                 break;
             } else if *hist_upto < items.len() && *hist_upto >= *hist_floor {
-                // Where the walk stands before this row, so a later "from row
-                // k on" can come back to exactly here. Recorded for every row,
-                // including one that renders to nothing, because the mark is
-                // indexed by row and a gap would misalign every mark after it.
+                // Where the walk stands before this row, so a later "from row k on" comes back to exactly here.
+                // Recorded for every row including one that renders to nothing, since the marks are indexed by row
+                // and a gap would misalign every mark after it.
                 if hist_marks.len() == *hist_upto {
                     hist_marks.push(HistMark {
                         lines: hist_lines.len(),
@@ -1138,19 +829,9 @@ impl App {
                         class: *hist_class,
                     });
                 }
-                // An assistant row carries the arguments for the calls it
-                // proposed, and the tool-result rows that follow it want the
-                // same label. Learning them here, in transcript order, is what
-                // lets a head that attached *after* a turn still say which file
-                // was read — the proposal event is long gone and the row is the
-                // only place the arguments survive.
-                //
-                // **Replaced, not merged.** `call_0` is round-positional, so a
-                // merge is how round 4's `call_0` came to be labelled with
-                // round 1's path. An assistant row opens a new round and its
-                // calls are the only ones the rows after it can be about; one
-                // with no calls at all opens a round with no calls, and a
-                // stray result then has to say so rather than borrow.
+                // An assistant row carries the arguments for the calls it proposed, and the result rows after it
+                // want the same label. Learning them here, in transcript order, is what lets a head that attached
+                // after a turn say which file was read.
                 let mut answered: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
@@ -1166,21 +847,9 @@ impl App {
                     answered = round_results(items, *hist_upto);
                 }
                 *hist_renders += 1;
-                // **The run this row belongs to, and whether it is the one that is open**
-                // (R37 AMENDED). Three states, and only one of them is a row:
-                //
-                // * the row is inside the OPEN run — the rung is lifted for it, so it
-                //   draws itself, and the marker for that run must not also be drawn;
-                // * the row is the FIRST row of a closed run — the marker stands for the
-                //   whole run and is drawn here, at the run's first row, in both walk
-                //   directions (which is what makes the two walks agree without either
-                //   of them having to remember anything);
-                // * any other row of a closed run — nothing at all, which is R37 as
-                //   filed, and the walk treats a row that renders to nothing as no row.
-                // **The room the counts will need, reserved before the sentence wraps.**
-                // See `reserved_for_run`: without this the join depends on where the
-                // prose's last line happened to end, which is the operator's *"sometimes
-                // you do it same line - sometimes dont."*
+                // The run this row belongs to, and whether it is the open one: a row inside the open run draws
+                // itself and the run's marker must not also be drawn, while a closed run's first row draws the
+                // marker and the rows under it draw nothing.
                 let reserve = reserved_for_run(
                     items,
                     *visibility,
@@ -1205,19 +874,12 @@ impl App {
                     payload_sel.as_deref(),
                     *hist_upto,
                 );
-                // **The marker is drawn whether the run is OPEN or not** — R37 AMENDED's *"it
-                // opens"* read together with R29's rule that a disclosure carries the act that
-                // undoes it. An open run's marker is the HEADER of the rows it lifted: its
-                // clauses are the toggle that switches kind or puts it back (`App::open_marker`),
-                // and the hint bar's `esc folds the run back` is the second door. It used to be
-                // suppressed the moment the run opened, which left the state named by the hint
-                // bar alone — and a state whose marker is gone is the defect this file exists
-                // against, one key removed.
+                // The marker is drawn whether the run is open or not: an open run's marker is the header of the
+                // rows it lifted, its clauses are the toggle that puts it back, and the hint bar names the key.
                 let unseen = unseen_run_at(items, *visibility, bound_prompts, live, *hist_upto);
-                // **No blank line in front of a marker.** It continues the sentence above
-                // it rather than standing as a row of its own, so the separator's blank —
-                // which exists to say *a new kind of thing starts here* — is the opposite
-                // of what it means. See [`hidden_run_marker`].
+                // No blank line in front of a marker: it continues the sentence above it, so the separator's
+                // blank, which says *a new kind of thing starts here*, is the opposite of what it means. See
+                // [`hidden_run_marker`].
                 let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(items, start));
                 let tight = unseen.is_some() && joinable;
                 // **A row of an OPEN run draws itself under that header**, and a row the click's
@@ -1257,32 +919,27 @@ impl App {
                                 bound: bound_prompts
                                     .get(&items[*hist_upto].item_id)
                                     .map(String::as_str),
-                                // **A bound row is being drawn, so its mark is never `queued`** —
-                                // see [`echo_mark`]. This was the same `_ => QUEUED` as its sibling
-                                // walk above, and it is the one that drew the operator's own line:
-                                // *"my message | your line | and only then unqueued."*
+                                // A bound row is being drawn, so its mark is never `queued`: see [`echo_mark`]. This
+                                // was the same `_ => QUEUED` as its sibling walk, and it is the one that drew the
+                                // person's own line as still waiting.
                                 echo_mark: bound_prompts
                                     .get(&items[*hist_upto].item_id)
                                     .map(String::as_str)
                                     .map(|t| echo_mark(unconfirmed, t, true))
                                     .unwrap_or(QUEUED),
                                 echo_open,
-                                // **An open run lifts the rung for its own rows**, which is
-                                // what "it opens" means: the reader sees the very rows the
-                                // rung was hiding, with their own headlines, payloads and
-                                // diffs, rather than a second rendering of them.
+                                // An open run lifts the rung for its own rows, which is what "it opens" means: the
+                                // reader sees the rows the rung was hiding with their own headlines and diffs,
+                                // rather than a second rendering of them.
                                 vis: if open_run {
                                     Visibility::lifted()
                                 } else {
                                     *visibility
                                 },
                                 diff_split,
-                                // Rebuilt per row inside the walk, so it cannot be hoisted
-                                // out of this borrow — it reads two fields the walk is
-                                // holding. **Closed for an open run**: that run is being
-                                // read whole, and opening a payload window inside a row that
-                                // is only on screen because the run is open would be two
-                                // unfoldings of one thing.
+                                // Rebuilt per row inside the walk, so it cannot be hoisted out of this borrow: it
+                                // reads two fields the walk is holding. Closed for an open run, since that run is
+                                // being read whole.
                                 payload_view: if open_run {
                                     None
                                 } else {
@@ -1316,15 +973,9 @@ impl App {
                             MarkerFacts::of(live, newest_run),
                             live_here,
                         );
-                        // **Glued to the sentence it continues**, when there is one: the
-                        // last drawn row is [`RowClass::Speech`] — the class this file
-                        // already has for prose the reader can see — and the joined line
-                        // still fits the frame. Otherwise it stands alone, which is the
-                        // honest degradation: counts with no sentence are still the fact,
-                        // and a marker clipped to fit would lose them.
-                        // **Painted before it is measured or placed.** `visible_width`
-                        // skips escapes, so the width check below sees the counts and not
-                        // the register they are drawn in.
+                        // Glued to the sentence it continues when there is one: the last drawn row is
+                        // [`RowClass::Speech`] and the joined line still fits the frame. Otherwise it stands alone,
+                        // which is the honest degradation.
                         let painted = marker.painted(cfg);
                         let joined = if joinable && *hist_class == Some(RowClass::Speech) {
                             hist_lines
@@ -1372,17 +1023,13 @@ impl App {
                     Some(_) => (body_class, body),
                     None => (body_class, body),
                 };
-                // A row that rendered nothing gets no separator either. An
-                // assistant row whose text is `"\n\n\n"` and whose every call
-                // is drawn by its own result row is a real and common shape —
-                // it is what a tool-calling round looks like — and paying two
-                // blank lines for it puts a hole in the transcript.
+                // A row that rendered nothing gets no separator either: a tool-calling round's assistant row has
+                // no visible text and its calls are drawn by their own result rows, and paying two blanks for it
+                // puts a hole in the transcript.
                 if !rows.iter().all(|l| l.trim().is_empty()) {
-                    // Air where the KIND changes, not between every pair of
-                    // rows. Two tool cards in a row are one block and read as
-                    // one; a blank between each of them was a third of the
-                    // vertical budget spent separating things a glyph in the
-                    // first column already separates.
+                    // Air where the kind changes and not between every pair of rows: two tool cards in a row read
+                    // as one block, and a blank between them spends a third of the vertical budget separating what
+                    // a glyph already separates.
                     let pack =
                         *hist_class == Some(RowClass::Activity) && class == RowClass::Activity;
                     if !hist_lines.is_empty() && !pack && !tight {

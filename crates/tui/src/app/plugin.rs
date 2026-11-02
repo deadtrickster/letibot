@@ -1,27 +1,6 @@
-//! **Plugin panes, as this head holds them**: the document each one answered, which of its
-//! screens is on the screen, the stop under the cursor, and the three acts a key has — open a
-//! panel's view, read a stop whole, or send one of its actions back to the plugin.
-//!
-//! # Where the state lives, and why it is keyed by name
-//!
-//! A plugin pane is not a `Surface` with its own fields, because there can be any number of
-//! them: `App::plugin_panes` is a map from the pane's name (`<layer>/<hook>`, the wire's own
-//! spelling) to the view its last look answered, and `App::plugin_open` says which of them the
-//! [`Surface::PluginPane`] on the stack is showing. That is the same split `Surface::Listing`
-//! makes with `slash_out`: the surface says *where on the screen*, the data says *what*.
-//!
-//! # The keys are the host's, templated
-//!
-//! `q`, `j`, `k`, `f` and `l` mean here what they mean in every other pane, `↑↓` move the
-//! cursor through the stops, Enter reads one whole and Esc leaves what it entered. The only
-//! keys a plugin chooses are its panels' keys and its stops' action letters, both single
-//! lowercase letters, both refused by `pane::View::validate` when they collide with the host's.
-//! So a plugin cannot own a key the operator expects to leave with — which is C3's whole
-//! sentence about the keys being the host's. **`j` and `k` are reserved and unbound**: C3 puts
-//! them in the host's set so a plugin cannot take them, and this head does not give them a
-//! meaning here (the arrows are what moves), so they fall through to the composer with every
-//! other letter the pane did not claim. A reserved letter that swallowed typing would be a
-//! pane you cannot write a sentence under.
+//! Plugin panes as this head holds them: the view each answered, which screen is shown, and the
+//! stop under the cursor. A pane is not a `Surface`, because there can be any number of them; keys
+//! stay the host's, and a plugin chooses only its panels' keys and its stops' letters.
 
 use super::*;
 use crate::ui::panes::plugin as view;
@@ -29,12 +8,9 @@ use crate::ui::render::row_strings;
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::pane as pv;
 
-/// **One plugin pane's held state**: the view its last look answered, or why this head could
-/// not read it.
-///
-/// A view that does not parse is not an empty pane — an empty dashboard and a broken plugin
-/// look identical on a screen and mean opposite things, which is why the reason is kept and
-/// drawn rather than dropped.
+/// One plugin pane's held state: the view its last look answered, or why this head could not
+/// read it. The reason is kept because an empty dashboard and a broken plugin look identical
+/// on a screen and mean opposite things.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PluginState {
     pub(crate) held: Option<pv::View>,
@@ -114,14 +90,9 @@ impl App {
         view::target_of(v, self.plugin_screen, self.plugin_sel)
     }
 
-    /// **The legend's words for the row the pointer is over** — C3: *a legend documents every
-    /// label, and the same text answers on hover*.
-    ///
-    /// Read from where the pointer IS ([`App::pointer_at`]) and not from [`App::hovered`], and
-    /// that is the difference between this and every other pointer feature: `hovered` is *what a
-    /// click here would act on*, and a legend row is documentation — the pointer over it acts on
-    /// nothing, which is exactly the row a reader wants explained. The row is found in
-    /// [`App::plugin_legend_at`], the record the last frame wrote while drawing.
+    /// The legend's words for the row the pointer is over: a legend documents every label, and
+    /// the same text answers on hover. Read from `pointer_at`, not `hovered` - the pointer over
+    /// a legend row acts on nothing, which is exactly the row a reader wants explained.
     pub(crate) fn plugin_hover_legend(&self) -> Option<&str> {
         let (_, y) = self.pointer_at?;
         let key = self
@@ -152,13 +123,9 @@ impl App {
         self.plugin_stop_rows.get(at).copied().unwrap_or(0)
     }
 
-    /// **Open a plugin's pane**, by the name the daemon publishes it under — `/pane NAME`, or a
-    /// row of `/pane`'s list.
-    ///
-    /// It asks the daemon for a fresh look (`Action::PaneOpen`) as it opens, for the reason the
-    /// jobs pane asks for its table: what this head holds may be a view from an hour ago, and a
-    /// dashboard an hour old is a dashboard of another moment. The held view is drawn first, so
-    /// the pane is never blank while the answer travels.
+    /// Open a plugin's pane, by the name the daemon publishes it under - `/pane NAME`, or a row
+    /// of `/pane`'s list. It asks for a fresh look as it opens, because a held view may be an
+    /// hour old; the held view is drawn first, so the pane is never blank while that travels.
     pub(crate) fn open_plugin(&mut self, name: &str) -> Option<Action> {
         if !self.plugin_panes.contains_key(name) {
             self.say(&format!(
@@ -167,10 +134,9 @@ impl App {
             self.redraw = true;
             return None;
         }
-        // **A different pane in the same rectangle is a pane that closed.** The surface is one
-        // (`Surface::PluginPane`), so `plugin_open` is about to name another one — and the daemon
-        // holds a refresh clock per pane NAME. Without this the dashboard the operator navigated
-        // away from would keep its look running for the rest of the session.
+        // A different pane in the same rectangle is a pane that closed: the surface is one, and
+        // the daemon holds a refresh clock per pane NAME. Without this the dashboard the operator
+        // navigated away from would keep its look running for the rest of the session.
         if let Some(previous) = self.plugin_open.replace(name.to_string())
             && previous != name
         {
@@ -194,11 +160,9 @@ impl App {
         })
     }
 
-    /// **The pane leaves the surface stack**, so the daemon is told to stop refreshing it — C4's
-    /// `PaneClose`, which is the opposite of the `PaneOpen` [`App::open_plugin`] sends.
-    ///
-    /// The name has to be read BEFORE the close: `forget_surface` clears `plugin_open` with the
-    /// pane, which is what keeps a closed pane from reopening on a stale name.
+    /// The pane leaves the surface stack, so the daemon is told to stop refreshing it - the
+    /// opposite of the `PaneOpen` `open_plugin` sends. The name is read BEFORE the close, because
+    /// `forget_surface` clears `plugin_open` with the pane.
     pub(crate) fn close_plugin(&mut self) -> Option<Action> {
         // **The surface closes whatever the name says**: a pane left on the stack with no name is
         // a screen whose keys go nowhere, and the name is only needed for the frame.
@@ -207,12 +171,9 @@ impl App {
         pane.map(|pane| Action::PaneClose { pane })
     }
 
-    /// **Esc, inside a plugin pane**: leave the view, then the pane. `true` when it took the
-    /// key.
-    ///
-    /// C3's ladder and nobody else's — a detail is its own surface, so the stack's Esc has
-    /// already taken that step by the time this runs; what is left is the view a panel's key
-    /// (or `f`, or `l`) opened, and the overview under it.
+    /// Esc inside a plugin pane: leave the view, then the pane. `true` when it took the key. A
+    /// detail is its own surface, so the stack's Esc has already taken that step; what is left is
+    /// the view a panel's key (or `f`, or `l`) opened, and the overview under it.
     pub(crate) fn plugin_esc(&mut self) -> bool {
         if self.focused_surface() != Some(Surface::PluginPane) {
             return false;
@@ -227,10 +188,9 @@ impl App {
         true
     }
 
-    /// **One key of the pane's own** — a panel's key, `f`, `l`, or a letter of the selected
-    /// stop's actions. `Continue` when the letter is none of those, so it reaches the composer:
-    /// the letters are the operator's to type first, and a pane that swallowed every one would
-    /// be a pane you cannot type under (`Guard::EmptyComposer` in the binding table).
+    /// One key of the pane's own - a panel's key, `f`, `l`, or a letter of the selected stop's
+    /// actions. `Continue` when it is none of those, so the letter reaches the composer: a pane
+    /// that swallowed every one would be a pane you cannot type under.
     pub(crate) fn plugin_key(&mut self, k: &Key) -> std::ops::ControlFlow<Option<Action>> {
         use std::ops::ControlFlow;
         let Key::Char(c) = *k else {
@@ -273,10 +233,9 @@ impl App {
             return ControlFlow::Continue(());
         };
         match action.kind() {
-            // **A line to the session's model, through the composer's own path** — queued and
-            // announced exactly as a typed one is, and attributed to the operator, who is the
-            // one who pressed the key. Not a `PaneAction`: a pane does not get a second door
-            // into the model.
+            // A line to the session's model, through the composer's own path: queued and
+            // announced as a typed one is, attributed to the operator who pressed the key. Not a
+            // `PaneAction` - a pane does not get a second door into the model.
             Some(pv::ActionKind::Say(text)) => ControlFlow::Break(self.submit(text)),
             // **A call back into the plugin**, answered with a new view on the log.
             Some(pv::ActionKind::Look) => ControlFlow::Break(Some(Action::PaneAction {
@@ -289,9 +248,8 @@ impl App {
                 item,
                 action: word,
             })),
-            // **The host's own verb, on the entry this row names** — the same door an `event`
-            // word takes, because the host that performs it is the one that drew the row. A pane
-            // the daemon answers (the room's, the queue's) acts on its own state there; this head
+            // The host's own verb, on the entry this row names: the same door an `event` word
+            // takes, because the host that performs it is the one that drew the row. This head
             // has no such state to act on and no business guessing at one.
             Some(pv::ActionKind::Verb(word)) => ControlFlow::Break(Some(Action::PaneAction {
                 pane,
@@ -304,23 +262,9 @@ impl App {
         }
     }
 
-    /// **Enter: the stop under the cursor** — the act the row carries, or else the row read whole.
-    ///
-    /// # The act comes first, and that is the contract
-    ///
-    /// C3 gives a row an `enter`: *what Enter does on it, performed by the host* — `switch` to a
-    /// session, `fold` it, or call the pane again with an event. The manifest declares the verbs
-    /// (`actions = ["switch"]`) and `View::validate_for` refuses a row that reaches one nobody
-    /// declared, so by the time a view is on this screen the act is a verb the layer was allowed
-    /// to ask for. **This head did not perform it**: every Enter opened the detail, so a pane
-    /// whose rows are a list of sessions to switch to — the nick list, `plugins/builtin/irc` —
-    /// had a switch gesture that did nothing but read the row's prose.
-    ///
-    /// A row with no act is the old behaviour and still the common one: the detail, and for a
-    /// finding the numbers behind it, the fix and the way to check it. A `fold` is not performed
-    /// here because this surface has no fold state to move (the session list's own list keeps it,
-    /// and it is drawn by a different surface) — such a row falls through to its detail rather
-    /// than to a key that does nothing.
+    /// Enter: the stop under the cursor - the act the row carries, or else the row read whole.
+    /// The act comes first: `View::validate_for` has already refused a row reaching an undeclared
+    /// verb, so by here it is one the layer was allowed to ask for. No act falls to the detail.
     pub(crate) fn plugin_enter(&mut self) -> Option<Action> {
         // Nothing under the cursor — an empty list, or a view that did not parse — is a pane
         // that has nothing to open, and Enter is still the pane's.
@@ -347,13 +291,9 @@ impl App {
                     action: event,
                 })
             }
-            // **A verb the layer declared, sent to the host that drew the row.** A row carrying
-            // `{"verb":"claim","id":"i12"}` names an entry and a verb the manifest already
-            // gates (`View::validate_for`, which the daemon runs before this head sees the view),
-            // so Enter on it is a `PaneAction` — the pane's host performs it, exactly as it
-            // performs the row's letter actions. The queue's own verbs are performed by the
-            // QUEUE's surface against the snapshot this head holds (`queue_pane.rs`); they never
-            // arrive here.
+            // A verb the layer declared, sent to the host that drew the row: `validate_for` gates
+            // it before this head sees the view. The queue's own verbs are performed by the
+            // queue's surface against this head's snapshot, and never arrive here.
             Some(pv::Act::Verb { verb, id }) => {
                 let pane = self.plugin_open.clone()?;
                 Some(Action::PaneAction {
@@ -446,13 +386,9 @@ impl App {
             .collect()
     }
 
-    /// **The selected stop's own action letters**, for the bottom bar — C3: *action keys are
-    /// shown in the hint bar for the selected stop*.
-    ///
-    /// Read off the stop under the cursor ([`App::plugin_selected`]), which is the same value the
-    /// key dispatch reads, so the bar cannot offer a letter that does nothing on the row the
-    /// cursor is on. Empty when the stop has no actions — a markdown item, a finding with none —
-    /// and the bar then says the host's keys alone rather than an empty promise.
+    /// The selected stop's own action letters, for the bottom bar: read off the stop under the
+    /// cursor, the same value the key dispatch reads, so the bar cannot offer a letter that does
+    /// nothing there. Empty when the stop has none, and the bar says the host's keys alone.
     pub(crate) fn plugin_actions_hint(&self) -> Option<String> {
         let target = self.plugin_selected()?;
         let letters: Vec<String> = target
@@ -464,10 +400,8 @@ impl App {
         (!letters.is_empty()).then(|| letters.join(" · "))
     }
 
-    /// **`/pane`'s listing**: every plugin pane this session has, by title, with the spelling
-    /// that opens it. The panes list the operator picks from, on this head, is this one and the
-    /// help screen's `/pane NAME` row: the names are the daemon's and a fixed list would be a
-    /// second copy of them.
+    /// `/pane`'s listing: every plugin pane this session has, by title, with the spelling that
+    /// opens it. The names are the daemon's, so a fixed list would be a second copy of them.
     pub(crate) fn plugin_listing(&self) -> Vec<String> {
         if self.plugin_panes.is_empty() {
             return vec![
@@ -498,12 +432,9 @@ impl App {
     // D17's ladder: the operator's own door
     // ----------------------------------------------------------------------------------------
 
-    /// **`/plugin`** — every layer this session has that a person PLACED, and what D17's book says
-    /// about each: pinned (these bytes are mine) or not (adjudicated call by call).
-    ///
-    /// A built-in is not in the list. The operator's rule is *"only the builtins run freely"*, so a
-    /// row for one would be a row with no decision to make, and a list of things that need no
-    /// decision hides the ones that do.
+    /// `/plugin` - every layer this session has that a person PLACED, and whether its bytes are
+    /// pinned or adjudicated call by call. A built-in is not listed: a list of things that need
+    /// no decision hides the ones that do.
     pub(crate) fn plugin_trust_listing(&self) -> Vec<String> {
         let slot = self.plugin_host();
         let Some(host) = slot.as_ref() else {
@@ -547,13 +478,9 @@ impl App {
         out
     }
 
-    /// **`/plugin trust NAME`** — pin the bytes that are on disk now, and say which hash was
-    /// pinned. D17's fourth arm: *the operator promotes by hash*, and any later change to those
-    /// bytes un-pins the layer until it is trusted anew.
-    ///
-    /// **This is the operator's door and not a model's.** The `plugin` tool has no `trust` verb: a
-    /// layer that could pin itself would be a layer that runs freely because it said so, which is
-    /// the one thing the ladder cannot survive.
+    /// `/plugin trust NAME` - pin the bytes on disk now, and say which hash was pinned; any later
+    /// change to those bytes un-pins the layer until it is trusted anew. This is the operator's
+    /// door and not a model's: a layer that could pin itself would run freely because it said so.
     pub(crate) fn trust_plugin(&mut self, arg: &str) -> String {
         let (verb, name) = match arg.trim().split_once(char::is_whitespace) {
             Some((verb, rest)) => (verb, rest.trim()),

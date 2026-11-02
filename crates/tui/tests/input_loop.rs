@@ -1,13 +1,6 @@
-//! **The terminal's bytes, through the driver's own loop, to what they do** (R69).
-//!
-//! `app`'s unit tests hand `App::key` a `Key` they built. What sits between the operator's
-//! terminal and that call is the driver: the bytes one read consumed, rano's decoding of them,
-//! `key_of`'s reading of the decoding, and `Link::tick` handing the keys to the head — or the
-//! raw bytes to a `!term` pane — in order, then drawing, then sending what the keys asked for.
-//! The review of 2026-10-11 found no test of that seam about input at all: `driver.rs`'s four
-//! tests are about processes. These drive it with real bytes and assert on what the socket
-//! carried, because *did the key do its act* is, for the acts that leave the head, a fact
-//! about the socket.
+//! The terminal's bytes, through the driver's own loop, to what they do. `app`'s unit tests hand
+//! `App::key` a `Key` they built, so these drive the seam with real bytes and assert on what the
+//! socket carried: for the acts that leave the head, that is the fact.
 
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -154,10 +147,9 @@ fn two_chords_in_one_read_ask_for_both_and_leave_the_second_in_front() {
     );
 }
 
-/// **A click (press and release) in a read reaches the card the last frame drew, and the Enter after it in
-/// the same read answers what the click selected.** The second ctrl-c opens the quit card; a
-/// press on its second choice selects it; Enter takes it — so the STOP leaves the head, which
-/// is the socket's fact. The click is measured against the frame the tick before drew.
+/// A click (press and release) in a read reaches the card the last frame drew, and the Enter after
+/// it in the same read answers what the click selected: the STOP leaves the head, which is the
+/// socket's fact. The click is measured against the frame the tick before drew.
 #[test]
 fn a_click_report_then_enter_in_one_read_answers_the_row_clicked() {
     let path = socket_path("quit");
@@ -182,10 +174,9 @@ fn a_click_report_then_enter_in_one_read_answers_the_row_clicked() {
     );
 }
 
-/// **A `!term` pane is never handed the operator's mouse**, through the loop: while a pane is
-/// drawn, the read's raw bytes are the program's, and a wheel report and a click in them are
-/// stripped before anything is forwarded — the keys around them still go (R67 item 6, at the
-/// driver's seam rather than at `App::pane_keys`).
+/// A `!term` pane is never handed the operator's mouse, through the loop: while a pane is drawn,
+/// the read's raw bytes are the program's, and a wheel report and a click in them are stripped
+/// before anything is forwarded - the keys around them still go.
 #[test]
 fn the_pane_gets_the_keys_of_a_read_and_none_of_its_mouse_reports() {
     let path = socket_path("pane-mouse");

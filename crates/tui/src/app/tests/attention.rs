@@ -2,11 +2,9 @@
 
 use super::*;
 
-/// **A PNG a tool returned is drawn inline where the terminal can, and uploaded once** — at
-/// the size this window's width gives, and placed again at a new size when that changes.
-/// The rows are placeholders in the image's id colour — ordinary text to the width count
-/// and the diff — and the upload is the protocol's transmit plus a virtual placement of the
-/// same size the rows draw.
+/// A PNG a tool returned is drawn inline where the terminal can, uploaded once, and placed again
+/// at a new size when the width changes. The rows are placeholders in the image's id colour -
+/// ordinary text to the width count and the diff - and the upload is the same size the rows draw.
 #[test]
 fn a_png_result_is_drawn_inline_and_uploaded_once() {
     // **Small enough to be ONE chunk of the kitty transmit** (rano cuts the base64 at 4096 bytes),
@@ -88,11 +86,9 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
     assert_eq!(placeholders(&narrow), r2 as usize);
 }
 
-/// **A PNG the reply's markdown names is drawn at the reference** — the operator's own first
-/// try: a model wrote `/Users/dead/sunset.png` and said `![sunset](…)`, and the head drew
-/// the alt text; then, drawn, it sat below the reply's last paragraph rather than under the
-/// line that named it. And a row whose content arrives a frame after it was appended still
-/// gets its picture: the upload pass waits for it rather than walking past.
+/// A PNG the reply's markdown names is drawn at the reference, not below the last paragraph, and a
+/// row whose content arrives a frame after it was appended still gets its picture: the upload pass
+/// waits for it rather than walking past.
 #[test]
 fn a_png_the_reply_names_is_drawn_at_the_reference() {
     let dir = std::env::temp_dir().join(format!(
@@ -213,10 +209,9 @@ fn copy_takes_the_open_window_else_the_last_reply() {
     assert_eq!(a.take_clipboard().as_deref(), Some("line 1\nline 2\n"));
 }
 
-/// **The tab says what the session is doing, and a person who is away is told when it
-/// needs them.** Progress follows the state: busy while the turn works, waiting (the paused
-/// colour) while a card is open, idle after. A notification is an edge — the card arriving,
-/// the turn ending — and only for a window known to be unfocused.
+/// The tab says what the session is doing, and a person who is away is told when it needs them:
+/// progress follows the state (busy, waiting while a card is open, idle), and a notification is an
+/// edge - the card arriving, the turn ending - and only for a window known to be unfocused.
 #[test]
 fn progress_follows_the_turn_and_notifications_go_to_an_absent_reader() {
     use rano::term::Progress;
@@ -275,11 +270,7 @@ fn progress_follows_the_turn_and_notifications_go_to_an_absent_reader() {
 
 // ──────────────────── the resident line a question draws ────────────────────
 //
-// The operator, on a card that would not go: *"A detach clears the card … a row that is completed
-// takes its question with it"*. The question's life is the ROW's (`TodoNeed::Operator`), and the
-// head reads it from two places: the daemon's `asks` settings row — the durable half, for a head
-// that attached after the question was asked — and the board itself. The board is the truth from
-// the moment it is read; the settings row covers only the window before that.
+// A question's life is the ROW's: the `asks` row is the durable half, and the board is the truth.
 
 use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
 
@@ -335,11 +326,9 @@ fn line(a: &mut App) -> String {
     a.waiting_line(200).join("")
 }
 
-/// **A question the head has READ the board for does not outlive its row** — the defect the
-/// operator watched sit on his screen through three attempts to put it down: `detach` took the
-/// wait off the row, the board came back without it, and the line went on saying
-/// `WAITING ON YOU: 1 — "…" on \`…\`` because the only copy it had left was the `asks` settings row
-/// read at attach. A row that is completed is the same fact by another route.
+/// A question the head has READ the board for does not outlive its row: a `detach` takes the wait
+/// off the row and the board comes back without it, so a line still saying `WAITING ON YOU` can only
+/// be the `asks` settings row read at attach. A completed row is the same fact by another route.
 #[test]
 fn a_question_the_head_has_read_the_board_for_dies_with_its_row() {
     let mut a = app();
@@ -443,10 +432,9 @@ fn the_line_counts_the_questions_the_board_still_holds() {
     );
 }
 
-/// **Answering still works, and the answer still reaches the model** — the path that must not
-/// move: alt-a opens the card for the row the board names, Enter sends `AnswerTodo` for that row
-/// and question, and the line is gone in the same breath (the board's own copy is one frame
-/// behind, and `todo_answered` holds the row out until it arrives).
+/// Answering still works, and the answer still reaches the model: alt-a opens the card for the row
+/// the board names, Enter sends `AnswerTodo` for that row and question, and the line goes in the
+/// same breath - the board's own copy is a frame behind, and `todo_answered` holds the row out.
 #[test]
 fn answering_retires_the_line_and_the_answer_still_leaves() {
     use letibot_sessionlog::question::QuestionAnswer;
@@ -484,10 +472,9 @@ fn answering_retires_the_line_and_the_answer_still_leaves() {
     );
 }
 
-/// **A reattach re-reads the board, and what it draws comes from that read** — a head that was
-/// away while the question was taken back holds a board with the question on it and a settings row
-/// with the question in it; neither may survive the attach. The attach asks for the board itself
-/// (so the window in which the old copy is drawn is a round trip, not a session).
+/// A reattach re-reads the board, and what it draws comes from that read: a head that was away while
+/// the question was taken back holds both copies of it, and neither may survive the attach. The
+/// attach asks for the board itself, so the stale window is a round trip and not a session.
 #[test]
 fn a_reattach_asks_for_the_board_and_draws_nothing_the_board_no_longer_has() {
     let mut a = app();

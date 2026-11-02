@@ -23,10 +23,9 @@ pub(crate) fn push_turn_pane<'a>(
     walk_carried_live: bool,
     lifted: Option<Show>,
 ) -> Vec<(usize, String)> {
-    // **Every row of every call card this pane draws, and the call it belongs to** — the record a
-    // click is answered from (`App::call_rows`). A card is drawn here and nowhere else, so this is
-    // the one place that knows where it landed; `before` is the body line it starts on, counted
-    // off the `Seg`s already pushed, because the window is taken from their concatenation.
+    // Every row of every call card this pane draws, and the call it belongs to - the record a click
+    // is answered from (`App::call_rows`). A card is drawn here and nowhere else, so this is the one
+    // place that knows where it landed; `before` counts the `Seg`s already pushed.
     let mut cards: Vec<(usize, String)> = Vec::new();
     // **What a click on the live marker lifted** (`App::live_open`): that kind is drawn open while
     // the turn runs, whatever the rung hides.
@@ -53,42 +52,18 @@ pub(crate) fn push_turn_pane<'a>(
         ..
     } = t;
     let ind = activity_indent(cfg.width);
-    // **What the model THOUGHT is the working, not the conversation** (R37). Hidden
-    // here as it is hidden in the transcript, so the rung does not depend on whether
-    // a row has been committed yet — a reader who switched mid-turn would otherwise
-    // watch the thinking appear when it settles.
-    //
-    // **And `reasoning` here is only the part NO ROW HOLDS** (`TurnPane::reasoning`,
-    // `TurnPane::hand_over_reasoning`). A round's thinking lands as a `Reasoning` row, and from that
-    // moment the row is the copy — drawing it here as well put one thought on the screen twice
-    // whenever the fold was open, which is what the operator saw (*"when reasoning is open wiered
-    // things happen"*). The rung's answer is unchanged: what the reader sees is either the row or
-    // this block, at the same switch, and the buffer is empty rather than duplicated when the row
-    // has it.
-    // **The rung's own count of the work in flight** — R37 AMENDED, the operator's
-    // *"display looks frozen, while in fact it is just say cargo testing with yellow
-    // dot"*. Everything below this line is the working and this rung does not draw it,
-    // so without this the pane showed the narration and then nothing until a result
-    // row landed — which is a screen that says the head has stopped.
-    //
-    // Drawn where the work is: right after the prose that introduced it, which is where
-    // the counts belong and where the reader is looking.
-    // **And only when no RUN has already carried it** — see `walk_carried_live`, computed
-    // above from the same fact the fold uses, so the two cannot disagree.
-    // **The counts are drawn after the reply** — below the streaming text, further down. The
-    // operator's ruling: *all of it after the reply*; this block used to sit here, above the text
-    // the model was still writing, which is the marker *"above the current reply"*.
+    // What the model THOUGHT is the working, not the conversation: hidden here as it is hidden in
+    // the transcript, so the rung does not depend on whether a row has committed yet - and
+    // `reasoning` is only the part NO ROW HOLDS, so a landed thought is never drawn twice.
+
+    // The rung's own count of the work in flight (drawn further down, after the reply): without it
+    // the pane showed the narration and then nothing until a result row landed, which is a screen
+    // that says the head has stopped. Only when no run has already carried it.
 
     if !superseded && !reasoning.is_empty() && (!vis.hides_the_working() || show_thinking) {
-        // Narrower by the rail and by the step it is set in. Getting this
-        // wrong makes the block one row taller than the space reserved for
-        // it, which moves everything below it by a line every frame — which
-        // is one of the things being called flicker.
-        //
-        // **The header's number and this body are the same text by construction** — the count is
-        // `reasoning_display_lines(raw)` and the rows are the render of `raw`, both at the width
-        // [`reasoning_body_width`] gives. It used to be a count over the unlanded slice beside a
-        // body of the whole buffer, which is how `[3 thinking lines]` came to sit over forty rows.
+        // Narrower by the rail and by the step it is set in: getting this wrong makes the block one
+        // row taller than the space reserved for it, which moves everything below it by a line every
+        // frame. The header's number and this body are one text at [`reasoning_body_width`].
         let rcfg = reasoning_cfg(cfg);
         reasoning_cache.set_decor(reasoning_decor(cfg));
         segs.push(Seg::Owned(step_in(
@@ -117,36 +92,13 @@ pub(crate) fn push_turn_pane<'a>(
         segs.push(Seg::Owned(vec![String::new()]));
     }
     if !superseded {
-        // Only the calls the transcript has NOT taken over yet. The rest
-        // are already on the screen above as settled cards with their
-        // output under them, and drawing them here as well was the second
-        // half of the doubling: a turn eight calls deep showed eight live
-        // rows under eight settled ones, in the same order, saying less.
-        // **And a card for a call in flight is the working too.** Kept out for the
-        // same reason: this rung shows the conversation, and a spinner over a tool
-        // call is the head reporting its own machinery.
-        //
-        // **A live call has no marker, and that is the one window R37 AMENDED does
-        // not close.** A run of hidden *rows* collapses to one line; a call that has
-        // not returned is not a row yet, so while the first call of a round is still
-        // running there is nothing for a marker to count. It closes itself: the
-        // moment that call's result row lands, the run exists and the line appears
-        // above it. The rung's liveness obligation is elsewhere and unbroken — the
-        // footer says a turn is running and for how long (R13/§5.6).
+        // Only the calls the transcript has NOT taken over yet: the rest are already drawn above as
+        // settled cards, and drawing them here too showed eight live rows under eight settled ones.
+        // A call in flight is the working, and it has no marker because it is not a row yet.
         let live_calls = calls.get(*settled_calls..).unwrap_or(&[]);
-        // **Not a blanket rung question — the `edits` SWITCH is asked per call.**
-        //
-        // This read `if vis.hides_the_working() { &[] }`, which is right for the working
-        // and wrong for the one card the operator's own profile exists to keep: a call
-        // that CHANGED a file is still "live" while its body has not landed, so
-        // `read-edits` — *"all is hidden except edits"* — hid the diff it was chosen for.
-        // MEASURED while landing this: the acceptance test failed with exactly that
-        // screen, the narration and no diff.
-        //
-        // The rule is [`Visibility::keeps`]'s, one row up: an edit card is the switches',
-        // everything else is the rung's. A call whose state says it changed something and
-        // whose `edits` switch is showing is drawn whatever the rung hides; every other
-        // live call is the working and follows the ladder as before.
+        // Not a blanket rung question - the `edits` SWITCH is asked per call, because a call that
+        // changed a file is still live while its body has not landed, so a rung-only test hid the
+        // diff `read-edits` exists to keep. An edit card is the switches'; the rest is the rung's.
         let live_calls: Vec<_> = live_calls
             .iter()
             .filter(|c| match &c.state {
@@ -155,24 +107,15 @@ pub(crate) fn push_turn_pane<'a>(
             })
             .collect();
         if !live_calls.is_empty() {
-            // **Where these cards land in the body**, so each row of one can be a click target
-            // (see `App::call_rows`). The pane pushes whole `Seg`s and the window is taken off
-            // their concatenation, so the only honest line number is the one counted here — the
-            // same rule the frame's other records keep.
+            // Where these cards land in the body, so each row of one can be a click target (see
+            // `App::call_rows`). The pane pushes whole `Seg`s and the window is taken off their
+            // concatenation, so the only honest line number is the one counted here.
             let before: usize = segs.iter().map(Seg::len).sum();
             let mut owned: Vec<String> = Vec::new();
             for c in live_calls.iter().copied() {
-                // **A running call is timed against the clock that was running
-                // when it started** (R13). `now_ms` here is `t.last_ms` — the
-                // log's clock — and that number **stops** when the daemon stops
-                // saying things, which is exactly what a silent `cargo build`
-                // does: the row read `0ms` for the whole build while the spinner
-                // in the border below it turned, because the two were reading
-                // different clocks two hundred lines apart. A call whose start
-                // was recorded with this head's clock is measured against this
-                // head's clock instead; one that was not — a `--replay`, whose
-                // frames are applied before any clock is set — keeps the log's
-                // own span, which is the only honest measurement there.
+                // A running call is timed against the clock that was running when it started:
+                // `now_ms` is the log's clock and it stops when the daemon stops saying things, which
+                // a silent `cargo build` does. One clocked by this head is measured by this head.
                 let card_now = if c.started_at > 0 {
                     head_now_ms
                 } else {
@@ -191,13 +134,9 @@ pub(crate) fn push_turn_pane<'a>(
             let (stable, tail) = text_cache.split(text, cfg, cfg.budget.body_lines);
             segs.push(Seg::Borrowed(stable));
             segs.push(Seg::Borrowed(tail));
-            // The same air the reasoning block and the call cards already
-            // carry. Without it the last line of a running decode touches
-            // the top border of the composer, and the blank appears only
-            // when the turn ends and the pane stands down, so the screen
-            // grows by a line at the moment the reader finally has time to
-            // look. Padding while running is also the shape the transcript
-            // row takes over, so nothing reflows at the handoff.
+            // The same air the reasoning block and the call cards already carry. Without it the last
+            // line of a running decode touches the top border of the composer, and the blank appears
+            // only when the turn ends, so the screen grows by a line at the moment the reader looks.
             segs.push(Seg::Owned(vec![String::new()]));
         }
         // **The rung's own count of the work in flight, after the reply it follows.**
@@ -220,32 +159,18 @@ pub(crate) fn push_turn_pane<'a>(
             if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
                 eprintln!("MARKER pane draws: {painted}");
             }
-            // **Not indented, and that is the operator's own report** — *"plus current thinking
-            // lines while counting are indented by 1 or 2 cells"*. This marker and the walk's are
-            // the same kind of row and now the same row; the walk's is flush with the prose it
-            // continues (`hist_lines`), so this one is flush too. The reasoning block below is
-            // indented because it is the model's *text*, set in under its rail; a count of rows
-            // is punctuation on the sentence, not a quotation under it.
+            // Not indented, because this marker and the walk's are the same kind of row: the walk's
+            // is flush with the prose it continues, so this one is flush too. The reasoning block is
+            // indented because it is the model's text under its rail; a count of rows is punctuation.
             segs.push(Seg::Owned(vec![painted]));
-            // **And the air every other block in this pane already carries.** The reasoning
-            // block ends with a blank, and so does the streaming answer — whose comment gives
-            // the reason: *"without it the last line of a running decode touches the top
-            // border of the composer."* The counts had none, so they sat on whatever came
-            // next: the `Responding` row when no text had arrived yet, and the model's own
-            // first line when it had.
-            //
-            // The operator, twice: *"«Responding…» status line appears and [XX Thinking lines]
-            // appeared then right above «Responding» without an empty line"*, and *"this also
-            // sometimes happened when you replied while the turn goes."* One blank fixes both,
-            // and it is the same blank the walk's marker already has — inside `hist_lines`,
-            // where the frame's own `gap` separates it from what follows. The pane's marker
-            // is the same fact with no gap under it, so it brings its own.
+            // And the air every other block in this pane already carries: the reasoning block ends
+            // with a blank and so does the streaming answer. Without it the counts sat on whatever
+            // came next - the `Responding` row, or the model's first line.
             segs.push(Seg::Owned(vec![String::new()]));
         }
-        // The call the model is writing right now. The markup itself is
-        // never here: what is on the screen is that a call is being
-        // written, which is the fact the raw text was accidentally
-        // conveying and the only part of it a reader wanted.
+        // The call the model is writing right now. The markup itself is never here: what is on the
+        // screen is that a call is being written, which is the fact the raw text accidentally
+        // conveyed and the only part of it a reader wanted.
         if *writing_call {
             segs.push(Seg::Owned(step_in(
                 vec![writing_call_line(cfg, now_ms)],

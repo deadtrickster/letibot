@@ -1,4 +1,4 @@
-//! **The status lines**: `/status`'s report, and the link's and a stop's one-line state.
+//! The status lines: `/status`'s report, and the link's and a stop's one-line state.
 
 use crate::app::*;
 use crate::ui::render::{dur_human, row, row_strings};
@@ -6,22 +6,9 @@ use crate::ui::*;
 use rano::agent::status as facts;
 
 impl App {
-    /// **The line a head with no daemon draws**, above the composer and under nothing.
-    ///
-    /// A resident line rather than a note, and the distinction is the requirement: a
-    /// note is anchored to a place in the conversation and scrolls away with it, while
-    /// this is a *state* — it is true until it is not, and a head that had said it once,
-    /// at the top of the scrollback, would be saying nothing about right now. That is
-    /// the same argument the stuck line makes, one level up: this is why the turn went
-    /// quiet.
-    ///
-    /// Under [`LINK_IMPATIENT_MS`] it draws nothing here: the drop is said in the status row
-    /// ([`App::status_row`]), which never changes height.
-    ///
-    /// Past [`LINK_IMPATIENT_MS`] it stops saying `reconnecting` and starts saying how
-    /// long, how many tries, and what the operator can do — because at that point the
-    /// wait is not going to end on its own, and a person staring at a head that says
-    /// `reconnecting` has no way to tell a quarter of a second from an afternoon.
+    /// The line a head with no daemon draws, above the composer. A resident line and not a note: it
+    /// is a state, true until it is not, so it cannot scroll away with the conversation. Under
+    /// `LINK_IMPATIENT_MS` it draws nothing here; past it, how long and what the operator can do.
     pub(crate) fn link_line(&self, w: usize) -> Vec<String> {
         let Link::Reconnecting {
             since_ms, attempts, ..
@@ -30,10 +17,8 @@ impl App {
             return Vec::new();
         };
         let out = self.now_ms.saturating_sub(*since_ms);
-        // **Under the threshold the drop is a blip, and a blip is drawn in the status row**
-        // ([`App::status_row`]): the ordinary reconnect across a daemon restart is over in a
-        // second, and as lines of its own here it moved the conversation down and back up again.
-        // Past it the outage is a state, and a state gets its resident lines and the advice.
+        // Under the threshold the drop is a blip and is drawn in the status row, which never changes
+        // height: as lines of its own here it moved the conversation down and back up again.
         if self.link_blip().is_some() {
             return Vec::new();
         }
@@ -48,14 +33,9 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
-    /// **The line a read-only attach draws**, above the composer with the link line.
-    ///
-    /// A resident line for [`App::link_line`]'s reason — it is a *state*, true until the
-    /// lock is lifted or the daemon is replaced, and a note anchored at the handshake
-    /// scrolls away with the conversation. The whole informed sentence is that note's; this
-    /// line is the one a person looks at on the way to the composer, so it carries the
-    /// load-bearing clause — both versions, the direction, what still works — and **the
-    /// chord**, which is the one fact that must not be off-screen while the lock is on.
+    /// The line a read-only attach draws, above the composer. A resident line for `link_line`'s
+    /// reason, and it carries the chord as well as both versions, the direction and what still
+    /// works: that is the one fact which must not be off-screen while the lock is on.
     pub(crate) fn lock_line(&self, w: usize) -> Vec<String> {
         if !self.skew_locked() {
             return Vec::new();
@@ -71,24 +51,9 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
-    /// **The line a stood-down auto-compaction draws**, above the composer with
-    /// the link and lock lines.
-    ///
-    /// A resident line for [`App::link_line`]'s reason — it is a *state*, true
-    /// until the session is replaced or the window is raised, and the warning
-    /// that announced it scrolls away with the conversation. This is the defect
-    /// the line exists for, measured 2026-10-09 on `s-1789919514688401228`: the
-    /// no-progress guard switched that session's automatic compaction off in
-    /// memory, nothing durable held the fact, and the operator's only record of
-    /// it was one warning line that had scrolled past — while thirty provider
-    /// refusals piled up behind a session that would not tidy itself and could
-    /// not say why.
-    ///
-    /// The sentence keeps the two doors apart, because the daemon's recovery
-    /// now does: PRE-EMPTIVE tidying is off, a REFUSED turn is still compacted
-    /// under duress, and `/compact` is always by hand. A line that said only
-    /// "compaction is off" would be telling the operator less than the daemon
-    /// knows.
+    /// The line a stood-down auto-compaction draws. A resident line for `link_line`'s reason: the
+    /// warning that announced it scrolls away. It keeps the two doors apart - pre-emptive tidying is
+    /// off, a turn refused for length is still compacted, `/compact` is by hand.
     pub(crate) fn compact_off_line(&self, w: usize) -> Vec<String> {
         let Some(said) = &self.auto_compact_off else {
             return Vec::new();
@@ -102,13 +67,9 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
-    /// **The line a paused plan-check draws** (`/nag pause`), above the composer with the
-    /// link, lock and compaction lines.
-    ///
-    /// A resident line for [`App::compact_off_line`]'s reason — a STATE, true until the pause
-    /// ends — and in the warning register because the operator's ruling was *"pause and the
-    /// pause must be loud"*: a session whose board has stopped asking must never be mistaken
-    /// for one whose clock broke. It names the end, and the verb that ends it sooner.
+    /// The line a paused plan-check draws, above the composer. A resident line for
+    /// `compact_off_line`'s reason, and in the warning register because a session whose board stopped
+    /// asking must never be mistaken for one whose clock broke. It names the end.
     pub(crate) fn nag_pause_line(&self, w: usize) -> Vec<String> {
         let Some(until) = &self.nags_paused else {
             return Vec::new();
@@ -125,18 +86,9 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
-    /// **The line a board waiting on the OPERATOR draws** — *"the heads show loud notification that
-    /// im waited"*. A resident line in the warning register, above the composer with the nag and
-    /// compaction lines, for as long as any open row waits on a question: it quotes the first
-    /// question and the row, counts the rest, and names the key that opens the card (alt-a; Enter
-    /// on the row in the todo pane does the same). Drawn from the board when this head has read
-    /// it, and from the daemon's `asks` settings row until it has.
-    ///
-    /// **A question card put away with Esc is said first** (see [`App::put_question_away`]) — the
-    /// model's question, which holds a running call and lapses at its deadline, so the line
-    /// counts that down and says what the lapse costs: *"sometimes i need time to think and just
-    /// let the card stay"*, and the time to think is not unlimited. A todo row's card put away
-    /// needs no line of its own: the row is still on the board, and the line below names it.
+    /// The line a board waiting on the operator draws, for as long as any open row waits on a
+    /// question: it quotes the first, counts the rest and names the key. A question card put away with
+    /// Esc is said first, because it holds a running call that lapses at its deadline.
     pub(crate) fn waiting_line(&self, w: usize) -> Vec<String> {
         // **Folded away with alt-h** — the bottom edge counts them instead (`app/waiting.rs`).
         if self.asks_folded() {
@@ -210,11 +162,9 @@ impl App {
             );
             return row_strings(&facts::warning(&said, w), self.cfg.palette());
         }
-        // A board read and answered from here is the truth over the `asks` settings row, which
-        // was written before the answer. **And a board read is the truth over it whether or not
-        // anything was answered from here** — the settings row is one sentence from attach time
-        // that nothing refreshes, so a question the model took back (or a row that completed)
-        // would otherwise be quoted from it for ever: see [`App::asks_board`].
+        // A board read and answered from here is the truth over the `asks` settings row, which was
+        // written before the answer and which nothing refreshes: a question the model took back would
+        // otherwise be quoted from it for ever.
         let setting = if self.todo_answered.is_empty() && !self.board_read_here() {
             self.asks_setting.as_ref()
         } else {
@@ -255,14 +205,9 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
-    /// **The line a head draws while it waits for a daemon it asked to stop** (R30).
-    ///
-    /// A resident line and not a note, for `link_line`'s reason: it is a state, true until
-    /// it is not, and the operator is by definition still looking at the screen. The
-    /// requirement says *the head says what it is waiting for rather than freezing on a
-    /// dead screen*, and this is that sentence — with the elapsed time, the time left, and
-    /// what the daemon has done so far, because "waiting" and "waiting and it has answered"
-    /// are different facts and the second one means it worked.
+    /// The line a head draws while it waits for a daemon it asked to stop. A resident line for
+    /// `link_line`'s reason, and it carries the elapsed time, the time left and what the daemon has
+    /// answered so far: waiting and waiting-with-an-answer are different facts.
     pub(crate) fn stopping_line(&self, w: usize) -> Vec<String> {
         let Some(s) = self.stopping.as_ref() else {
             return Vec::new();
@@ -327,12 +272,9 @@ impl App {
                 self.unreadable
             ));
         }
-        // **R17, and the reason it is on the border and not only on `/status`.** A gap
-        // is a hole in the conversation in front of the reader: rows are missing from
-        // the middle of what they are reading, and nothing else on the screen says so.
-        // The two whose absence is *not* an alarm are deliberately absent here —
-        // `behind` is an ordinary backlog, and `orphan` is a body for a row that is
-        // already gone — and both are on `/status` where the whole set is read.
+        // A gap is a hole in the conversation in front of the reader, so it belongs on the border and
+        // not only on `/status`. `behind` and `orphan` are deliberately not here - an ordinary backlog,
+        // and a body for a row already gone - and both are on `/status`.
         if self.gaps > 0 {
             said.push_str(&format!(
                 " · gaps {} (events that never arrived; a resync was asked for)",
@@ -343,21 +285,13 @@ impl App {
         row(&facts::alarm(&said, w), self.cfg.palette())
     }
 
-    /// `/status`: this head's own instrumentation, with what each number means.
-    ///
-    /// The gloss is the part the border could never carry, and it is the reason
-    /// the counters are worth keeping at all — `scrubbed 4` is not actionable
-    /// unless you know that scrubbing is what a *late* head does to an
-    /// interactive-only frame, at which point it is the answer to "why is this
-    /// head quieter than the one next to it".
+    /// `/status`: this head's own instrumentation, with what each number means. The gloss is the part
+    /// the border could not carry and the reason the counters are worth keeping: `scrubbed 4` is not
+    /// actionable unless a reader knows what scrubbing is.
     pub(crate) fn status_lines(&self, w: usize) -> Vec<String> {
-        // **The screen says what it just did** (R51 item 17). Opening it acknowledged the alarm,
-        // and a mark that vanishes with nothing said is a mark the reader cannot tell from a bug —
-        // the numbers below are unchanged, which is precisely why the sentence is owed.
-        //
-        // Only when there was something to acknowledge, and only while it is true: on a first read
-        // of a clean head there is nothing to say, and a permanent sentence about a mark that is not
-        // there is the furniture this file keeps deleting.
+        // The screen says what it just did: opening this acknowledged the alarm, and a mark that
+        // vanishes with nothing said cannot be told from a bug. Only when there was something to
+        // acknowledge - a permanent sentence about an absent mark is the furniture this file deletes.
         let note = (self.acked != Counters::default()).then(|| {
             "the alarm is acknowledged up to the values below — the ⚠ is gone, and any \
              counter that moves again brings it back"
@@ -389,14 +323,9 @@ impl App {
                  read mark. Closing one does not stop the turn.",
             );
         }
-        // **A stood-down auto-compaction is a state, not an event** — which is
-        // why it is here beside `session` and `head` rather than counted with
-        // the diagnostics below. `/status` is the whole-set read (§13.2b), and
-        // "this session will not tidy itself at the wall, and here is the pair
-        // that decided it" is the one fact a person diagnosing a session that
-        // stopped compacting needs first. Absent means the guard has not
-        // fired — which is not drawn, because §13.2b is about fields whose
-        // absence is ambiguous and this one's is not.
+        // A stood-down auto-compaction is a state, not an event, so it sits beside `session` and
+        // `head` rather than among the diagnostics: a person diagnosing a session that stopped
+        // compacting needs this first. Absent means the guard has not fired, which is not drawn.
         if let Some(said) = &self.auto_compact_off {
             row("auto-compact", "off".into(), said);
         }
@@ -427,25 +356,18 @@ impl App {
             "Events this head chose not to show at the current filter. \
              /verbosity with nothing after it shows every profile and what each gives you.",
         );
-        // **R10: the notes this head holds, and how many the reader has retired.**
-        //
-        // Present and at zero, like every other counter here (§13.2b): "the reader
-        // has retired nothing" and "this head does not count what it retired" must
-        // not look the same, and the second is what every head did before this.
-        // It is beside `filtered` because it is the same kind of number — a fact
-        // about what was chosen NOT to be shown — and a different one from
-        // `dropped`, which is a fact about what is gone.
+        // The notes this head holds and how many the reader retired. Present and at zero, because
+        // "retired nothing" and "does not count what it retired" must not look alike. Beside
+        // `filtered` because it is the same kind of number, not a fact about what is gone.
         row(
             "notes",
             format!(
                 "{} · {} retired{}",
                 self.notes.len(),
                 self.retired_notes(),
-                // **A third number, because there is a third reason a note is not on the
-                // screen** (R19): the reader retired it, or it is from before this window
-                // and was never planted. Both are facts about what was chosen not to be
-                // shown; they are not the same choice, and the zero case says nothing
-                // rather than "0 from before this window" on every attach.
+                // A third number, because there is a third reason a note is not on the screen: the
+                // reader retired it, or it arrived with a snapshot from before this window. The zero
+                // case says nothing rather than "0 from before this window" on every attach.
                 match self.notes_before() {
                     0 => String::new(),
                     n => format!(" · {n} from before this window"),
@@ -478,18 +400,9 @@ impl App {
             "Times this head threw its state away and took a fresh snapshot, \
              because the gap since its read mark was past the daemon's bound.",
         );
-        // **R17: the three numbers that tell a lost row from a late one** (R17).
-        //
-        // They are three rows rather than one because they are three different
-        // facts about three different places, and the whole reason this defect
-        // survived a night of measurement is that they looked the same:
-        //
-        // * `gaps` — the wire lost them.
-        // * `behind` — the daemon still has them; they are in a queue, on a socket,
-        //   or in this head's channel. Not lost, just not here. A head with a
-        //   non-zero `behind` and an empty frame queue is *correct* and *not
-        //   current*, which is the state nobody could name from outside.
-        // * `orphan` — the wire delivered them and there is no row to put them on.
+        // Three rows and not one, because they are three facts about three places and a single number
+        // cannot tell them apart: `gaps` is the wire losing them, `behind` is the daemon still holding
+        // them, `orphan` is the wire delivering them with no row to put them on.
         row(
             "gaps",
             self.gaps.to_string(),
@@ -515,18 +428,9 @@ impl App {
              drawn — a snapshot replaced the rows and this one was not in it — so the \
              count is the only trace they leave.",
         );
-        // **A diagnostic that is not an event in the conversation.** `model_slow_first_byte`
-        // is the provider being slow to start answering; nothing about the turn is wrong
-        // and nothing about the conversation changed, so it is a number to look at when the
-        // triangle is up rather than a sentence between two messages — the operator's
-        // ruling, and the rule is written down in `warning::ALARM_ONLY`.
-        //
-        // **The code is in the gloss, and that is not decoration.** Moving the note off the
-        // screen took the one place the daemon's own name for this fact appeared — and the code
-        // is the word a reader greps the session log for, so the row that replaced it owes
-        // them the spelling. Every other row here is named by its code already
-        // (`unreadable`, `orphan`, `gaps`); this is the one that had to move, so this is the
-        // one that has to say where it went.
+        // A diagnostic and not an event in the conversation: nothing about the turn is wrong, so this
+        // is a number to read when the triangle is up. The daemon's code is in the gloss because
+        // leaving the note out took the only place that spelling appeared, and it is what greps work on.
         row(
             "first byte",
             self.slow_first_byte.to_string(),
@@ -537,17 +441,9 @@ impl App {
              conversation is not different because of it.",
         );
 
-        // **And the NAMES, which is the pair `orphan` was missing.**
-        //
-        // The operator, 2026-09-22, looking at `2 row(s) announced and never filled in` for a
-        // day: *"tell me if i need to restart anything"*, and *"WHICH two rows, named — an
-        // ordinal or an id, not a count, because a count is the least useful form of this
-        // fact."* `orphan` counts bodies with no row; this is the other direction — rows with
-        // no body — and it printed only a count for the same reason the line does.
-        //
-        // On `/status` rather than on the line because the line is trimmed to the frame and a
-        // name is long: 80 columns hold a count and about three ids, and this pane holds all of
-        // them, which is the form a reader can act on.
+        // The names, which is the pair `orphan` was missing: that counts bodies with no row, this
+        // counts rows with no body. Named and not counted because a count is not checkable, and on
+        // `/status` rather than the line because a name is long and the line is trimmed to the frame.
         let unfilled: Vec<&str> = {
             let mut ids: Vec<&str> = self
                 .bulk
@@ -570,11 +466,8 @@ impl App {
                 }
             ),
         );
-        // **Present and zero, like every other counter here.** §13.2b: an absent
-        // field and a zero field must not look the same. A head that has never met a
-        // frame it could not read says `0`, which is a different statement from a
-        // head that does not count them at all — and the second is what every head
-        // did before this bucket existed.
+        // Present and zero, like every other counter here: an absent field and a zero field must not
+        // look the same, and a head that does not count these at all is a different statement.
         row(
             "unreadable",
             self.unreadable.to_string(),
@@ -584,12 +477,9 @@ impl App {
              border once it has happened; nothing is acked for one, because nothing \
              was read.",
         );
-        // **The version, always present.** §13.2b in the other direction from the
-        // counters: the question "which build is on the other end of this socket" has
-        // no answer anywhere else on the screen, and its answer is the first thing to
-        // check when a head behaves strangely. `None` reads as "not told yet", which is
-        // a different statement from a version number — the same distinction the empty
-        // transcript banner draws.
+        // The version, always present: which build is on the other end of this socket is answered
+        // nowhere else on the screen and is the first thing to check when a head behaves strangely.
+        // `None` reads as not told yet, which is a different statement from a version.
         row(
             "protocol",
             match self.daemon_protocol {
@@ -615,15 +505,9 @@ impl App {
              its sends read-only until `ctrl-^` says otherwise, and a restart of the \
              daemon is the fix either way.",
         );
-        // **Which PROCESS is on the other end of this socket** (R30). The protocol row
-        // answers *which build*; this answers *which daemon*, and it is the fact the
-        // operator reached for with `ps` a day after a stop that did not happen — which is
-        // exactly how that orphan was found. `SO_PEERCRED` on this head's own connection,
-        // so it is this daemon and not a pid out of a file that may be a predecessor's.
-        //
-        // A head does not signal it. Knowing which process is at the other end and
-        // reaching around the protocol to signal it are different acts, and R30 keeps the
-        // second out while making the first available.
+        // Which PROCESS is on the other end, from `SO_PEERCRED` on this head's own connection - the
+        // fact a `ps` was reached for after a stop that did not happen. A head does not signal it:
+        // knowing which process it is and signalling it are different acts.
         row(
             "daemon",
             match self.daemon_pid {

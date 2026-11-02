@@ -1,25 +1,12 @@
-//! **`ctrl-n` then a run's expansion** — the operator, 2026-11-01: *"when i click on tool calls
-//! counter tools expand and all hidden with Ctrl-n notification are showed up again, then they hide
-//! on the next tool call. then they show. terrible"*.
-//!
-//! The expansion is `App::open_marker` → `set_lift`, and it does one thing to the transcript:
-//! `invalidate_history()`, so the whole conversation is walked again. The notes are drawn by that
-//! walk and by nothing else — there is no second cache of note rows — so the mark has to be asked
-//! at the moment the line is written, and these tests are the proof that it is: the expansion draws
-//! a notice that is NEWS and withholds one the reader has read past, in the same frame.
-//!
-//! **The second assertion is what makes the first one mean anything.** A test that only says
-//! *nothing was drawn* is passed by a walk that draws no notices at all; so each test expands a run
-//! with one notice the mark covers and one it does not, and asserts the screen holds exactly the
-//! second. Neutering `already_read`/`covered_by_mark` to `false` turns them red.
+//! `ctrl-n` then a run's expansion: expanding re-walks the whole conversation, so the read mark has
+//! to be asked where a note's line is written, as there is no second cache of note rows. Each test
+//! expands a run holding one covered notice and one it does not, and wants only the second.
 
 use super::*;
 
-/// The operator's shape: a turn one round deep with two calls running, the counter on the
-/// assistant row, and a retry ladder of notices already cleared by `ctrl-n`.
-///
-/// The ladder is what he photographs — one kind, three instants — and the third arrives AFTER the
-/// press, so it is the one line the screen owes him.
+/// The shape: a turn one round deep with two calls running, the counter on the assistant row, and
+/// a retry ladder of notices already cleared by `ctrl-n`. The ladder is one kind, three instants,
+/// and the third arrives AFTER the press, so it is the one line the screen owes the reader.
 fn a_turn_with_a_cleared_wall() -> App {
     let mut a = app();
     a.apply(hello(
@@ -133,10 +120,9 @@ fn news(a: &mut App, attempt: u64, ts: u64) {
     )));
 }
 
-/// **The wall coming back in other words** — the same incident, re-said: the same instant, a
-/// different sentence. This is the shape the mark exists for, because the key set cannot see it: a
-/// key is `code|ts|hash(detail)`, so a re-worded copy is a new key, and only the mark — *this kind
-/// is read up to here* — covers it.
+/// The wall coming back in other words: the same instant, a different sentence. A key is
+/// `code|ts|hash(detail)`, so a re-worded copy is a new key and the key set cannot see it; only
+/// the mark - this kind is read up to here - covers it.
 fn resay(a: &mut App, attempt: u64, ts: u64) {
     a.apply(ServerFrame::Event(env_at(
         0,
@@ -166,16 +152,9 @@ fn expand_the_tools(a: &mut App) {
     a.open_marker(m);
 }
 
-/// **`ctrl-n`, then the expansion, then the collapse, then the expansion again** — the retired
-/// wall is drawn in none of them, the one notice that is news is drawn in all of them, and the
-/// watermark is the same value afterwards.
-///
-/// **The wall is re-said in other words between the press and the expansion**, which is what the
-/// key set cannot cover and the mark can: three retries cleared, then the first two arrive again
-/// under a `[fallback]` wording at their own instants. A walk that read the key set alone would
-/// draw both, and the expansion is the door that makes it visible because it re-renders the whole
-/// conversation. This is the operator's *"all hidden with ctrl-n notification are showed up
-/// again"*.
+/// `ctrl-n`, then the expansion, then the collapse, then the expansion again: the retired wall is
+/// drawn in none of them and the news is drawn in all, and the watermark is unchanged. The wall is
+/// re-said in other words between the press and the expansion, which only the mark can cover.
 #[test]
 fn an_expansion_draws_no_notice_the_watermark_covers() {
     let mut a = a_turn_with_a_cleared_wall();
@@ -219,10 +198,9 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
         open.contains("model_endpoint_retry"),
         "the one notice that is news is not drawn:\n{open}"
     );
-    // **Every notice but the newest is retired, and the mark is what retires the re-said ones.**
-    // The key set cannot: `[fallback] attempt 1 of 5 …` is a different sentence and so a different
-    // key. Neutering `already_read`/`covered_by_mark` leaves this at three retired of six — the
-    // originals only — which is the wall the operator photographed.
+    // Every notice but the newest is retired, and the mark retires the re-said ones - the key set
+    // cannot, because `[fallback] attempt 1 of 5 ...` is a different sentence and so a different
+    // key. Neutering `already_read`/`covered_by_mark` leaves the wall standing.
     assert_eq!(
         a.retired_notes(),
         a.notes.len() - 1,

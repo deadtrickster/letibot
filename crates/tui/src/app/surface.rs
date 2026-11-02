@@ -1,31 +1,6 @@
-//! **The surface stack**: which screen holds the conversation's rectangle, and therefore which one
-//! the keys, the wheel and the hint bar are about (R69).
-//!
-//! # What this replaces
-//!
-//! Each pane was its own `bool` — `help`, `stats`, `picker`, `todos_pane`, `config_pane`,
-//! `queue_pane`, `standing_pane`, `subagents_pane`, `jobs_pane` — and every toggle flipped only
-//! its own. Three hand-written orders then decided what that meant: the draw order in
-//! `main_area` (todos > queue > standing > subagents > jobs), the key order in `App::key`
-//! (subagents > todos > queue > jobs > standing) and the hint bar's. They disagreed, and the
-//! review of 2026-10-11 measured what that costs: `ctrl-t` then `ctrl-g` drew the todos pane
-//! while ↑↓ and Enter went to the hidden subagents list, and **Enter switched session into a
-//! row nobody saw**. One shared `pane_scroll` made `scroll_into_view` jump the visible pane
-//! for a cursor moving in a hidden one. The operator's summary of the class: *"mouse clicks -
-//! sometimes they work, sometimes they dont, per pane key maps etc etc."*
-//!
-//! # The rule
-//!
-//! **One stack, and its top is the surface.** Opening pushes (or brings an open one to the
-//! top), Esc pops, and [`App::drawn`] is the single answer that `main_area` draws, `App::key`
-//! routes and `hint_bar` describes. A surface that is not on top is not drawn and receives
-//! nothing — its cursor and its scroll wait for it, kept per entry, so coming back to it lands
-//! where the reader left it.
-//!
-//! The overlays a pane opens over itself — a todo row read whole, a queue entry, a subagent's
-//! output, a job's output — are surfaces on the same stack with the pane as their
-//! [`Surface::parent`]: Esc goes back to the list because the list is the next entry down, not
-//! because a handler was placed above another one in a long function.
+//! The surface stack: which screen holds the conversation's rectangle, and so which one the keys,
+//! the wheel and the hint bar are about. Opening pushes or raises, Esc pops, and `App::drawn` is
+//! the one answer `main_area` draws, `App::key` routes and `hint_bar` describes.
 
 use super::*;
 
@@ -66,10 +41,9 @@ pub(crate) enum Surface {
     /// The monitors the model armed, live and ended — `/monitors`, or a click on the edge's
     /// `N monitors watching`.
     Monitors,
-    /// **A plugin's pane** — the dashboard a `pane_<name>` hook answered, open by `/pane NAME`
-    /// or by a row of `/pane`'s list. Which pane it shows is `App::plugin_open`: the surface
-    /// says where on the screen, the data says what, the split `Surface::Listing` makes with
-    /// `slash_out`.
+    /// A plugin's pane - the dashboard a `pane_<name>` hook answered, open by `/pane NAME` or by a
+    /// row of `/pane`'s list. The surface says where on the screen; which pane it shows is
+    /// `App::plugin_open`, and the data is `slash_out`.
     PluginPane,
     /// **One of that pane's stops read whole** — its Enter. An overlay like every other, so Esc
     /// gives the pane back rather than reopening a screen the reader was done with.
@@ -93,15 +67,9 @@ impl Surface {
         }
     }
 
-    /// **Does this surface take Enter even when it has nothing to do with it.**
-    ///
-    /// The operator, 2026-10-03, on a stray character and Enter in the jobs pane: *"the pane
-    /// own keyboard in a way, so enter is a pane thing."* Every surface owns Enter except the
-    /// three where a TYPED LINE is the answer — the session picker (a number, an id prefix),
-    /// the todos list (the stops' typed path) — and `submit` routes the words to them. It used
-    /// to be a hand-kept list in `App::key`, and `queue_pane` was missing from it, so Enter
-    /// with typed text SENT the prompt over an empty queue and opened an entry over a
-    /// non-empty one (R69).
+    /// Does this surface take Enter even when the Enter has nothing to do with it. Every surface
+    /// owns Enter except the two where a TYPED LINE is the answer - the session picker and the
+    /// todos list - and `submit` routes the words to those, so a stray line cannot be sent instead.
     pub(crate) fn owns_enter(self) -> bool {
         !matches!(self, Surface::Picker | Surface::Todos)
     }
@@ -129,14 +97,9 @@ impl Surface {
     ];
 }
 
-/// **What the conversation's rectangle holds this frame** — the one value `main_area` draws,
-/// `App::key` routes and the hint bar describes.
-///
-/// The three layers above the stack are not on it because they are not opened and closed the
-/// way a pane is: a `!term` pane takes the raw bytes (`Link::tick`), the diff popup is closed
-/// by its own keys, and rano has its own focus. What matters is that they are answered HERE,
-/// in the same order the frame draws them, so a pane under rano is a pane that is not drawn —
-/// and therefore one whose Enter is not swallowed after `ctrl-]` comes back to the composer.
+/// What the conversation's rectangle holds this frame - the one value `main_area` draws, `App::key`
+/// routes and the hint bar describes. The three layers above the stack are answered HERE, in the
+/// order the frame draws them, so a pane under rano is not drawn and its Enter is not swallowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Drawn {
     /// A `!term` program, drawn and holding the keyboard.
@@ -151,13 +114,9 @@ pub(crate) enum Drawn {
     Conversation,
 }
 
-/// **One entry on the stack**: the surface, and the scroll it had when something covered it.
-///
-/// The live scroll of the TOP is `App::pane_scroll`, which every pane draws through
-/// (`pane_window`) and every key moves; an entry's `scroll` is only written when it stops
-/// being the top and read back when it becomes the top again. That is what ends the shared
-/// scroll jumping the visible pane: a hidden pane's offset is in its own entry, not in the
-/// field the visible one draws from.
+/// One entry on the stack: the surface, and the scroll it had when something covered it. The live
+/// scroll of the top is `App::pane_scroll`; an entry's own is written when it stops being the top
+/// and read back when it returns, so a hidden pane's offset cannot move the visible one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Open {
     pub(crate) surface: Surface,
@@ -200,13 +159,9 @@ impl App {
         self.surfaces.iter().any(|o| o.surface == s)
     }
 
-    /// **Put `s` on top**: pushed, or brought forward when it is already open. It opens at its
-    /// head (`pane_scroll` 0), which is what every opener did by hand before; the surface it
-    /// covers keeps its own scroll in its entry.
-    ///
-    /// This is the stack's half of opening. The surface's own half — asking the daemon for its
-    /// rows, seeding a cursor — is [`App::open_surface`], which every chord, verb and click
-    /// calls; this is what it and the overlays' openers share.
+    /// Put `s` on top: pushed, or brought forward when it is already open, at its head. The surface
+    /// it covers keeps its scroll in its entry. This is the stack's half of opening; the surface's
+    /// own half - asking the daemon for rows, seeding a cursor - is [`App::open_surface`].
     pub(crate) fn push_surface(&mut self, s: Surface) {
         if let Some(top) = self.surfaces.last_mut() {
             top.scroll = self.pane_scroll;
@@ -290,10 +245,9 @@ impl App {
             // The rows and the cursor stay: a skill written since is a row at the next open,
             // and the reader lands on the one they left.
             Surface::Skills => {}
-            // **A plugin's pane closes the pane's own state with it**: which of them was open,
-            // which of its screens, and the row the detail was read from. The views themselves
-            // stay — they are the daemon's answers about the session, not about this screen —
-            // so reopening a pane draws what is already known while the new look travels.
+            // A plugin's pane closes its own state with it: which pane was open, which of its
+            // screens, and the row a detail was read from. The views stay - they are the daemon's
+            // answers about the session, not about this screen - so reopening draws what is known.
             Surface::PluginPane => {
                 self.plugin_open = None;
                 self.plugin_screen = Default::default();
@@ -305,13 +259,9 @@ impl App {
         }
     }
 
-    /// **The one door a surface is opened through** — chords, slash verbs, a click on a count
-    /// label and the Esc that climbs out of a subagent all call this, so two spellings of
-    /// "open the jobs pane" cannot come to do two different things (the drift R67 item 8 found
-    /// between `/sessions` and `ctrl-s`).
-    ///
-    /// Returns what the daemon has to be asked for the surface to have rows: the jobs table,
-    /// the todo list, the standing notes, the queue, the settings, the session list.
+    /// The one door a surface is opened through, so two spellings of "open the jobs pane" cannot
+    /// come to do two different things. Returns what the daemon has to be asked for the surface to
+    /// have rows: the jobs table, the todo list, the standing notes, the queue, the settings.
     pub(crate) fn open_surface(&mut self, s: Surface) -> Option<Action> {
         self.push_surface(s);
         match s {
@@ -378,11 +328,9 @@ impl App {
         }
     }
 
-    /// **A chord's or a verb's toggle**: the surface in front closes (and so does a pane whose own
-    /// overlay is in front — `ctrl-t` over a todo row read whole closes the pane, as it always
-    /// did); one that is open behind another, or not open at all, comes to the front. Bringing a covered pane forward rather
-    /// than closing it is the stack's answer to `ctrl-t`, `ctrl-g`, `ctrl-t`: the third press
-    /// shows the todos pane, it does not close a pane the operator cannot see.
+    /// A chord's or a verb's toggle: the surface in front closes (and so does a pane whose own
+    /// overlay is in front), while one open behind another, or not open at all, comes to the front -
+    /// so `ctrl-t`, `ctrl-g`, `ctrl-t` shows the todos pane instead of closing one nobody can see.
     pub(crate) fn toggle_surface(&mut self, s: Surface) -> Option<Action> {
         let top = self.top_surface();
         if top == Some(s) || top.and_then(Surface::parent) == Some(s) {

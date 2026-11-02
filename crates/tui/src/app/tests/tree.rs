@@ -1,16 +1,6 @@
-//! **`/sessions` is a tree**: a project's line, the sessions nobody spawned in it, their
-//! sub-sessions at any depth, and one `system` branch per project holding the harness's own agents.
-//!
-//! The operator, 2026-10-31: *"i want /sessions to show me the tree - top level nodes are projects,
-//! then next level are top-level sessions for that projects, then their subsessions for worktrees
-//! etc. gatekeepers and reviewers and all other system agents are under
-//! `<project>/<system>/<gatekeepers>`"*.
-//!
-//! What is asserted here is the head's half — [`App::session_rows`], which is the ONE enumeration
-//! the drawing, the arrows, Enter, a click and `/switch N` all read. The rule for which project a
-//! workspace belongs to is [`App::placements`]' and `project_of`'s, and the tests below pin the two
-//! shapes that make it more than a string split: a worktree is not a project, and a review clone is
-//! not one either.
+//! `/sessions` is a tree: a project's line, the sessions nobody spawned in it, their sub-sessions at
+//! any depth, and one `system` branch per project holding the harness's own agents. What is asserted
+//! is the head's half, [`App::session_rows`], the one enumeration every reader of the tree uses.
 
 use super::*;
 use letibot_sessionlog::SessionOrigin;
@@ -38,12 +28,9 @@ const LETIBOT: &str = "/home/dead/Projects/letibot/letibot";
 const RANO: &str = "/home/dead/Projects/rano/rano";
 const WORKTREE: &str = "/home/dead/Projects/letibot/worktrees/agent-read-it";
 
-/// **The daemon the tests read** — two projects, a tree in one of them, and the queue's own two
-/// rows plus a keeper.
-///
-/// The reviewer's workspace is a **review clone under `/tmp`**, which is what a host-placed review
-/// really gets (`Config::review_clones`): if a row were placed by its own workspace it would open a
-/// project called `review-m-1-1`, and the whole point of the `system` branch is that it does not.
+/// The daemon the tests read: two projects, a tree in one of them, and the queue's own two rows plus
+/// a keeper. The reviewer's workspace is a review clone under `/tmp`, what a host-placed review
+/// really gets, so a row placed by its own workspace would open a project of its own.
 fn a_daemon_with_two_projects() -> App {
     let q = queue();
     let mut reviewer = in_tree(
@@ -244,10 +231,9 @@ fn letibot_sessionlog_workspace(workspace: &str) -> String {
     crate::app::session::project_of(workspace).key
 }
 
-/// **The gatekeeper and its reviewers are under `<project>/system/…`, and nowhere else.**
-///
-/// This is the row that used to be drawn in a `review queue` fold beside the operator's
-/// conversations — the same session, in a place that said *the queue's* and not *which project's*.
+/// The gatekeeper and its reviewers are under `<project>/system/...`, and nowhere else: they are one
+/// project's agents, and a `review queue` fold beside the operator's conversations said the queue's
+/// and not which project's.
 #[test]
 fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
     let mut a = a_daemon_with_two_projects();
@@ -333,14 +319,9 @@ fn one_project_one_session_and_no_system_line() {
     assert!(!screen.contains("gatekeepers"), "{screen}");
 }
 
-/// **The keeper's mark is ONE string**, and this is the only crate that can see both halves.
-///
-/// `letibot-tools` writes the brief (`letibot_tools::notes_keeper::TITLE_PREFIX`) and
-/// `letibot-sessionlog` names the mark the tree reads
-/// (`letibot_sessionlog::NOTES_KEEPER_TITLE_PREFIX`). The constant cannot be an alias, because
-/// `tools` sits BELOW `sessionlog`; so the two spellings are held together here, in the one crate
-/// that depends on both. A brief that began differently would draw a keeper as somebody's
-/// conversation, under their project, with no `keepers` group to find it in.
+/// The keeper's mark is ONE string, and this is the only crate that sees both halves: `tools` writes
+/// the brief and sits below `sessionlog`, which names the mark the tree reads, so the two spellings
+/// are held together here. A brief that began differently would draw a keeper as a conversation.
 #[test]
 fn the_keepers_brief_and_the_trees_mark_are_one_string() {
     assert_eq!(
@@ -520,10 +501,9 @@ fn the_bar_follows_the_cursor_onto_a_nodes_line() {
     );
 }
 
-/// **A box with several projects draws every project's line, and no session under the one this head
-/// is not standing in** — the operator's *"make sessions tree collapsed by default"*, in the head's
-/// own drawing (the built-in layer's copy is
-/// `plugins/builtin/sessions`' `every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in`).
+/// A box with several projects draws every project's line, and no session under the one this head is
+/// not standing in - collapsed by default. The built-in layer's copy of the same rule is
+/// `plugins/builtin/sessions`.
 #[test]
 fn every_project_line_is_drawn_and_the_others_are_shut() {
     let mut a = a_daemon_with_two_projects();

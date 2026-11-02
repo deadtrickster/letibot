@@ -198,13 +198,9 @@ pub(crate) fn folded_waiting(line: &str) -> String {
     }
 }
 
-/// The first line of a bullet, after `  - `` ` ``. Two shapes:
-///
-/// * `LABEL` STATE after DUR, wrote N bytes: CMD — every notice before R93.C3, still in stored
-///   transcripts;
-/// * `LABEL` STATE after DUR — this session's own job since R93.C3, and `LABEL` STATE after DUR:
-///   CMD (started by `S`) for one handed up. A duration never holds `: `, so the first `: ` after
-///   the last ` after ` before it is where the command starts.
+/// The first line of a bullet, after the backtick, in either shape this tree writes: `LABEL` STATE
+/// after DUR, wrote N bytes: CMD, or `LABEL` STATE after DUR[: CMD]. A duration never holds `: `,
+/// so the first `: ` after the last ` after ` before it is where the command starts.
 fn bullet_of(bullet: &str) -> Option<EndedJob> {
     let (label, said) = bullet.split_once('`')?;
     let said = said.strip_prefix(' ')?;
@@ -308,11 +304,9 @@ pub(crate) fn notice_jobs(text: &str) -> Option<Vec<(bool, EndedJob)>> {
     (!out.is_empty()).then_some(out)
 }
 
-/// **The compact row**: two lines per ended job, every other group of the row folded the way
-/// [`folded_notice`] folds it. `None` when any group is a shape this head does not know — the
-/// row is then drawn as the fold or as it arrived, exactly as before.
-///
-/// Lines are cut to `cols` with the head's own `…`.
+/// The compact row: two lines per ended job, every other group of the row folded the way
+/// [`folded_notice`] folds it. `None` when any group is a shape this head does not know, so the row
+/// is then drawn as the fold or as it arrived. Lines are cut to `cols` with the head's own ellipsis.
 pub(crate) fn compact_notice(
     text: &str,
     subagents: &[SubagentState],

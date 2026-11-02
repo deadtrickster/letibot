@@ -21,20 +21,17 @@ impl App {
                 answer,
                 slug,
             } => {
-                // **The merge queue's reviewer is not one of this session's subagents.** The
-                // daemon starts it under this session so its approvals have a head to reach, but
-                // nobody here asked for it: it stays out of the pane and the count, and the queue
-                // pane is where its verdict shows. The operator, 2026-10-09: *"it shouldnt be
-                // visible in "normal" agents count"*.
+                // The merge queue's reviewer is not one of this session's subagents: the daemon
+                // starts it here so its approvals have a head to reach, but nobody here asked
+                // for it, so it stays out of the pane and the count.
                 if role == "gatekeeper" {
                     self.subagents.retain(|s| s.session_id != subagent_id);
                     self.redraw = true;
                     return Disposition::Filtered;
                 }
-                // **The event's own word for the instant**: it publishes `running` when the
-                // child's harness comes up and `opening` before that, so `running` is the one
-                // state it names in which a turn is generating. See
-                // [`SubagentState::generating`].
+                // The event's own word for the instant: it publishes `running` when the child's
+                // harness comes up, so `running` is the one state it names in which a turn is
+                // generating.
                 let generating = state == "running";
                 if let Some(row) = self
                     .subagents
@@ -79,35 +76,28 @@ impl App {
                 produced,
                 elapsed_ms,
             } => {
-                // **Folded, never invented.** The daemon owns the table; a
-                // settlement for a job this head has not been told about is not a
-                // row to make up, it is a row that arrives with the next
-                // `ListJobs`. Inventing one is how the pane used to show a job
-                // with no command and no idea how it got there.
+                // Folded, never invented: the daemon owns the table, so a settlement for a job
+                // this head was not told about arrives with the next `ListJobs` rather than
+                // becoming a row with no command.
                 if let Some(row) = self.jobs.iter_mut().find(|j| j.id == job) {
                     row.state = state;
                     row.running = false;
                     row.produced = produced;
                     row.elapsed_ms = elapsed_ms;
-                    // `never_ran` is deliberately **not** taken from this event: the
-                    // settlement carries no such fact, and it cannot be stale here — a
-                    // job that never ran never started, so it was never listed as a
-                    // running one, and the `never_ran` the row already holds came from
-                    // the daemon's own listing (`JobEntry`). A job that ran is never
-                    // settled as one that did not.
+                    // `never_ran` is deliberately NOT taken from this event: a settlement carries
+                    // no such fact, and a job that never ran was never listed as running, so the
+                    // row's own came from the daemon's listing.
                 }
-                // **And the count drops by one**, so the row above the composer re-asks (R51 item
-                // 5). The fold just above is the pane's copy: a job settled in a turn this head
-                // never watched has no row to fold into, which is exactly the case a count taken
-                // from the pane's rows would get wrong.
+                // And the count drops by one, so the row above the composer re-asks: a job
+                // settled in a turn this head never watched has no row to fold into, which is
+                // the case a count taken from the pane's rows would get wrong.
                 self.queued.push(Action::ListJobs);
                 self.redraw = true;
                 Disposition::Filtered
             }
-            // **A job's output, the answer to the jobs pane's Enter.** Not folded
-            // into any view: the pane that asked draws the window, and only that
-            // pane has anywhere to put it. It is ephemeral besides
-            // (`scrub::is_interactive`), so no late head replays one.
+            // A job's output, the answer to the jobs pane's Enter. Not folded into any view:
+            // only the pane that asked has anywhere to put it, and it is ephemeral, so no late
+            // head replays one.
             SessionEvent::JobOutput {
                 job,
                 from,
@@ -119,11 +109,9 @@ impl App {
                 lines,
                 next,
             } => {
-                // **The end of a job's output, for its completion notice** (`job_card`): a
-                // window that reaches the job's end — `next` is `None` and it holds bytes —
-                // is the job's tail, whoever asked for it. A window that does not (the head
-                // of a long log, or a reaped job's record, which is `0..0` of what it wrote)
-                // says nothing about the end.
+                // The end of a job's output, for its completion notice: a window that reaches
+                // the job's end (`next` is `None` and it holds bytes) is the job's tail, whoever
+                // asked; a window that does not says nothing about the end.
                 let pane_reading = self
                     .job_out
                     .as_ref()

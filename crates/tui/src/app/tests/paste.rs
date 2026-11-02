@@ -1,13 +1,6 @@
-//! **Pasting pictures and files into the composer** — `PROTOCOL_VERSION` 50.
-//!
-//! The operator: *"how i can paste an image to letibot?"*. These tests are the three doors stated
-//! as behaviour: the clipboard, a drag-and-drop paste of paths, and the chip going out with the
-//! message — plus the two refusals that keep it honest (a paste that is not files stays text, and a
-//! chip whose file is gone is not sent empty).
-//!
-//! **Nothing here reads the real clipboard.** `app()` starts on the fake
-//! (`app::attachments::default_clipboard`), and a test that wants a picture sets one with
-//! `a.set_clipboard(FakeClipboard(..))`.
+//! Pasting pictures and files into the composer: the clipboard, a drag-and-drop paste of paths, and
+//! the chip going out with the message, plus the two refusals that keep it honest. Nothing here
+//! reads the real clipboard; a test that wants a picture sets one on the fake.
 
 use super::*;
 use crate::app::attachments::{FakeClipboard, chip_text};
@@ -40,11 +33,9 @@ fn png_header_only() -> Vec<u8> {
     letibot_transcript::testing::png_header_only(640, 480)
 }
 
-/// A head with a picture on the fake clipboard AND a directory of its own to write it in.
-///
-/// **The directory is not optional.** Without it the head writes into the operator's real paste
-/// directory — `$TMPDIR/letibot-<uid>/attachments`, with `session_id: ""` making the name `-1.png`
-/// — which is exactly what happened on 2026-10-30 and what `set_attachments_dir` exists to stop.
+/// A head with a picture on the fake clipboard AND a directory of its own to write it in. The
+/// directory is not optional: without it the head writes into the operator's real paste directory,
+/// which is what `set_attachments_dir` exists to stop.
 fn a_picture_with_clipboard(tag: &str) -> App {
     let mut a = app();
     a.set_attachments_dir(dir(tag));
@@ -88,11 +79,9 @@ fn an_empty_paste_with_an_image_on_the_clipboard_makes_a_chip() {
     );
 }
 
-/// **A clipboard that hands over a PNG header is refused, not chipped.**
-///
-/// These are the incident's bytes — 33 of them, a signature and an `IHDR` — and the whole chain
-/// started with a head chipping them. A chip is a promise that the file is a picture, and this one
-/// is not; saying so here is the only place in the chain where the person can paste again.
+/// A clipboard that hands over a PNG header is refused, not chipped. A chip is a promise that the
+/// file is a picture, and these 33 bytes are not; saying so here is the only place in the chain
+/// where the person can paste again.
 #[test]
 fn ctrl_v_with_a_png_header_attaches_nothing_and_says_so() {
     let mut a = app();
@@ -116,15 +105,9 @@ fn ctrl_v_with_a_png_header_attaches_nothing_and_says_so() {
     let _ = std::fs::remove_dir_all(&where_it_would_go);
 }
 
-/// **No head a test builds can name the operator's paste directory.**
-///
-/// MEASURED 2026-10-30: a `letibot-tui` unit test pasted a fake screenshot and the head wrote it
-/// into `$TMPDIR/letibot-<uid>/attachments/-1.png` — the operator's own directory, because
-/// `App::new` starts with `session_id: ""`. `read` then called that file an image, and the session
-/// it was read in was dead for good.
-///
-/// So this is the guard the fix is held to: the directory a TEST build resolves is not the
-/// operator's, and a head that has not been given one still does not get the operator's.
+/// No head a test builds can name the operator's paste directory: `App::new` starts with
+/// `session_id: ""`, so an unnamed file lands as `-1.png` in the operator's own directory, and a
+/// session that reads it is dead for good. `set_attachments_dir` is the guard.
 #[test]
 fn a_test_build_cannot_name_the_operators_attachment_directory() {
     let operators = crate::app::panes::head_runtime_dir().join("attachments");

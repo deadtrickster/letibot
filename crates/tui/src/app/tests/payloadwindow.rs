@@ -1,16 +1,6 @@
-//! **The payload window**: a result longer than the screen, opened with `ctrl-v`, and the four
-//! ways a reader moves it — the arrows, the page keys, the wheel, and a click.
-//!
-//! The operator, on a 97-line `cat` in a 47-row terminal: *"it has 97 lines, 61 line elided and no
-//! way for me to scroll that 'viewport' like it doesn respond to the mouse"*. The elision is the
-//! budget doing its job — a large payload is capped on purpose and the count is honest — so what
-//! these tests hold is the other half: **everything the window keeps is reachable, from the keys
-//! and from the pointer, and the seam that says how much is not on the screen says it wherever the
-//! reader is.**
-//!
-//! The numbers are the report's own: 97 lines of payload, a 100×47 frame. `WINDOW_CHROME` is ten
-//! rows, so the window is 37 rows: one header, one seam and 36 lines of payload at the top —
-//! `+61 lines` under it, which is exactly what the operator read off their screen.
+//! The payload window: a result longer than the screen, opened with `ctrl-v`, and the four ways a
+//! reader moves it - arrows, page keys, wheel, click. The elision is the budget doing its job, so
+//! what these hold is that everything the window keeps is reachable, keys and pointer alike.
 
 use super::*;
 

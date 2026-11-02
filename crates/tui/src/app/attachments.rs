@@ -1,45 +1,6 @@
-//! **What the operator pastes, and what the composer makes of it** — `PROTOCOL_VERSION` 50.
-//!
-//! The operator: *"how i can paste an image to letibot?"* The composer was text and nothing
-//! else, so the only way to show a session a picture was to type its path and hope the model
-//! called `read`. Three doors now:
-//!
-//! * **ctrl-v, or the terminal's paste key, with an image on the clipboard** — the bytes are
-//!   taken from the clipboard, written under [`crate::app::panes::head_runtime_dir`], and a chip
-//!   goes into the composer: `[image 1 · png · 92 KiB]`.
-//! * **a bracketed paste whose whole text is one or more existing files** — what a terminal
-//!   sends when a file is dragged in (macOS Terminal and iTerm2 paste an absolute path, with the
-//!   spaces escaped) — becomes chips too, image or file by what the BYTES are.
-//! * **typing nothing at all** — an empty bracketed paste with an image on the clipboard is the
-//!   same act as ctrl-v, because that is what a terminal sends for a Cmd+V it has no text for.
-//!
-//! # Why the chips are TEXT and not a second list beside the editor
-//!
-//! A chip lives in the composer's own buffer, as the string the operator sees. That is the shape
-//! the paste-placeholder ledger already has (`letibot_ui::editor::Editor::pastes`), and it buys
-//! three things for free: the cursor moves through it, undo covers it, and what is SUBMITTED
-//! carries the same words the screen showed. The ledger here is only what turns a chip back into
-//! an [`Attachment`] at send time — a chip deleted from the text is an attachment that is simply
-//! not there, with no second bookkeeping to get out of step.
-//!
-//! **The message keeps its chips.** The text that reaches the model carries `[image 1 · png ·
-//! 92 KiB]` and the bytes ride beside it as a `UserPart::Image`; the transcript's user row then
-//! shows exactly what the operator put in the composer, which is the same fact drawn from the
-//! same words.
-//!
-//! # Deleting one is one press
-//!
-//! Backspace inside or at the end of a chip removes the whole chip. A chip is eleven characters
-//! of punctuation and digits; deleting it a character at a time would leave `[image 1 · png · 9`
-//! in the message — a sentence the model reads and the operator did not write — and the operator
-//! would have to count the presses to get it right.
-//!
-//! # The clipboard is behind a trait, and the tests never touch the real one
-//!
-//! A test that reads the operator's real clipboard is a test about their desktop, and it would
-//! either attach their password manager's picture to a fixture or fail on a headless box.
-//! [`Clipboard`] has one production implementor ([`SystemClipboard`]) and the tests use
-//! [`FakeClipboard`].
+//! What the operator pastes and what the composer makes of it: an image on the clipboard, a
+//! bracketed paste of existing files, and the empty bracketed paste a Cmd+V on an image sends. A
+//! chip is text in the composer's own buffer, so cursor, undo and submit carry the words shown.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -54,13 +15,9 @@ pub(crate) struct Chip {
     pub(crate) attachment: Attachment,
 }
 
-/// **What the terminal's clipboard holds**, as far as this head is concerned: an image, or
-/// nothing it can use.
-///
-/// `Err` is *the reader could not be asked* — no `osascript`/`wl-paste`/`xclip` on this box — and
-/// it is a different answer from `Ok(None)` (*the clipboard holds no picture*), because one has an
-/// install to suggest and the other does not. Collapsing them would either hide a missing tool
-/// behind silence or tell somebody to install `xclip` because their clipboard held text.
+/// What the terminal's clipboard holds as far as this head is concerned: an image, or nothing it
+/// can use. `Err` is *the reader could not be asked* - the one answer with an install to suggest -
+/// and collapsing it into `Ok(None)` would hide a missing tool behind silence.
 pub(crate) trait Clipboard {
     /// PNG bytes, when the clipboard holds a picture.
     fn image(&self) -> Result<Option<Vec<u8>>, String>;
@@ -83,14 +40,9 @@ impl Clipboard for SystemClipboard {
     }
 }
 
-/// **The clipboard a head starts with.**
-///
-/// A TEST BUILD STARTS WITH THE FAKE ONE, and that rule lives here rather than in each test's
-/// `app()`: a real clipboard read is a subprocess against the operator's desktop, so a test that
-/// reached it would either attach their picture to a fixture or answer about a box with no
-/// `osascript` — a test about their machine, not about this head.
-///
-/// A test that wants a picture sets one with [`crate::app::App::set_clipboard`].
+/// The clipboard a head starts with. A test build starts with the fake one, and the rule lives here
+/// rather than in each test's `app()`, because a real read is a subprocess against the operator's
+/// desktop: it would attach their picture to a fixture or answer about their box, not this head.
 pub(crate) fn default_clipboard() -> Box<dyn Clipboard> {
     #[cfg(test)]
     {
@@ -102,22 +54,18 @@ pub(crate) fn default_clipboard() -> Box<dyn Clipboard> {
     }
 }
 
-/// **macOS: the two types a picture is put on the clipboard as.**
-///
-/// A screenshot is `PNGf`; a copy out of Preview or Safari is `TIFF`, and a head that only asked
-/// for one of them would work on half the copies this box makes. `sips` is the converter — part of
-/// macOS, and this tree already reaches for system tools (`osascript`, `curl`) rather than
-/// linking a decoder for one case.
+/// macOS: the two types a picture is put on the clipboard as - `PNGf` from a screenshot, `TIFF` from
+/// Preview or Safari - and a head asking for one would work on half the copies this box makes.
+/// `sips` converts, because this tree reaches for system tools rather than linking a decoder.
 #[cfg(target_os = "macos")]
 #[cfg_attr(test, allow(dead_code))]
 fn macos_image() -> Result<Option<Vec<u8>>, String> {
     macos_image_in(&attachments_dir())
 }
 
-/// **The same read, with the intermediate written where the caller says** — the seam a test would
-/// need, and the reason `macos_image` has one: the two files below are named after this PROCESS, so
-/// a head a test built and a head the operator runs would write the same path in the same directory.
-/// Nothing in a test build may name that directory; see [`attachments_dir`].
+/// The same read with the intermediate written where the caller says: the two files are named after
+/// this PROCESS, so a head a test built would write the operator's own path. Nothing in a test build
+/// may name that directory; see [`attachments_dir`].
 #[cfg(target_os = "macos")]
 #[cfg_attr(test, allow(dead_code))]
 fn macos_image_in(dir: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -201,10 +149,9 @@ fn applescript_data(class: &str) -> Result<Option<Vec<u8>>, String> {
             _ => format!("the clipboard could not be read: {e}"),
         })?;
     if !out.status.success() {
-        // **A refusal is not an empty clipboard** — see [`refused`]. `missing value` with exit 0
-        // is *there is no picture*; a non-zero exit with a sentence on stderr is `osascript`
-        // saying why it could not read (a denied automation permission, a broken script), and
-        // answering `Ok(None)` to that made the two indistinguishable and said nothing at all.
+        // A refusal is not an empty clipboard: `missing value` with exit 0 means no picture, and a
+        // non-zero exit is `osascript` saying why it could not read. Answering `Ok(None)` to that
+        // made the two indistinguishable and said nothing at all.
         if let Some(Missing::Other(why)) = refused(
             &out,
             &format!("`osascript` could not read the clipboard as {class}"),
@@ -218,15 +165,9 @@ fn applescript_data(class: &str) -> Result<Option<Vec<u8>>, String> {
     )))
 }
 
-/// **A reader that ran and said why it failed** — the answer that sits between *install it*
-/// ([`Missing::Tool`]) and *there is no picture* (`Ok(None)`).
-///
-/// A non-zero exit is not an empty clipboard: `osascript` refuses outright when the automation
-/// permission has been denied (TCC), and a broken script fails the same way. Collapsing those
-/// into `Ok(None)` made *"the read was refused"* indistinguishable from *"there is no picture"*,
-/// so the head said nothing and the operator pressed the chord again. A reader that fails with
-/// an EMPTY stderr still answers `Ok(None)`: there is no sentence to put in front of anybody, and
-/// "no picture" is what they will act on.
+/// A reader that ran and said why it failed - the answer between *install it* and *there is no
+/// picture*. A non-zero exit with a sentence is not an empty clipboard, and answering `Ok(None)` to
+/// it leaves the operator pressing the chord again; an empty stderr has no sentence to show.
 #[cfg(target_os = "macos")]
 fn refused(out: &std::process::Output, what: &str) -> Option<Missing> {
     if out.status.success() {
@@ -240,11 +181,9 @@ fn refused(out: &std::process::Output, what: &str) -> Option<Missing> {
     Some(Missing::Other(format!("{what}: {said}")))
 }
 
-/// **`«data PNGf89504E47…»` as bytes**, or `None` for anything else — `missing value`, an empty
-/// clipboard, a type this build does not ask for.
-///
-/// Split out from the subprocess so the parse is testable on a box with no clipboard at all: the
-/// half that goes wrong is the hex, not the `osascript`.
+/// `«data PNGf89504E47…»` as bytes, or `None` for anything else - `missing value`, an empty
+/// clipboard, a type this build does not ask for. Split from the subprocess so the parse is
+/// testable where there is no clipboard: the half that goes wrong is the hex.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn parse_applescript_data(out: &str) -> Option<Vec<u8>> {
     let body = out.trim();
@@ -290,12 +229,9 @@ fn run(program: &str, args: &[&str]) -> Result<Option<Vec<u8>>, Missing> {
     Ok(Some(out.stdout))
 }
 
-/// **The files a paste names** — one path, several, quoted, or with their spaces escaped, which
-/// is what every terminal on this box sends when something is dragged in.
-///
-/// Answers `[]` for a paste that is not entirely made of existing files, and that is the whole of
-/// the rule: a sentence that happens to contain `README.md` stays a sentence, because a chip
-/// inserted in the middle of somebody's prose would rewrite what they wrote.
+/// The files a paste names - one path, several, quoted, or with their spaces escaped. `[]` for a
+/// paste that is not entirely existing files, which is the whole rule: a chip in the middle of
+/// somebody's prose would rewrite what they wrote.
 pub(crate) fn dropped_paths(text: &str) -> Vec<PathBuf> {
     let words = split_escaped(text);
     if words.is_empty() {
@@ -364,11 +300,8 @@ fn split_escaped(text: &str) -> Vec<String> {
     out
 }
 
-/// **One file as a chip**, or the reason it cannot be one.
-///
-/// The kind is what the BYTES are, not what the name says: a `.png` that is really a PDF is a
-/// file here and a `FileRef` in the transcript, and the two ends agreeing matters more than the
-/// name the operator saw.
+/// One file as a chip, or the reason it cannot be one. The kind is what the BYTES are, not what the
+/// name says, because the two ends agreeing matters more than the name the operator saw.
 pub(crate) fn attachment_of(path: &Path) -> Result<Attachment, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("could not be read: {e}"))?;
     if meta.is_dir() {
@@ -430,12 +363,9 @@ fn text_mime(name: &str) -> &'static str {
     }
 }
 
-/// **The chip the composer draws** — `[image 1 · png · 92 KiB]`, `[file 2 · report.csv · 12 KiB]`.
-///
-/// The number is the attachment's position in the message as it was minted. It is a LABEL and not
-/// an index: a chip deleted from the middle leaves the ones after it numbered as they were, which
-/// is the same trade the paste placeholder makes — renumbering would mean rewriting text the
-/// operator may have edited.
+/// The chip the composer draws, from the attachment alone. The number is a LABEL and not an index:
+/// a chip deleted from the middle leaves the ones after it numbered as they were, because
+/// renumbering would mean rewriting text the operator may have edited.
 pub(crate) fn chip_text(nth: usize, a: &Attachment) -> String {
     let kind = match a.kind {
         AttachmentKind::Image => "image",
@@ -465,21 +395,9 @@ pub(crate) fn size_said(bytes: u64) -> String {
     }
 }
 
-/// **Where a head keeps the pictures it was given** — one function, so a test can be given a
-/// directory of its own and no test can reach the operator's.
-///
-/// In production this is [`crate::app::panes::head_runtime_dir`] + `attachments`: whatever the
-/// person had on their clipboard, in a per-user 0700 directory, never `/tmp` at a predictable
-/// name. That is the rule the runtime directory already exists for.
-///
-/// **In a test build it is a directory of the test process's own, and that is a fix rather than a
-/// convenience.** MEASURED 2026-10-30: `App::new` starts with `session_id: ""`, so a head a test
-/// built and pasted into wrote `$TMPDIR/letibot-<uid>/attachments/-1.png` — into the operator's own
-/// paste directory. The bytes it wrote were a 33-byte PNG header, and when `read` later called that
-/// file an image the session it was read in was dead for good. So the default here is resolved
-/// once, under `$TMPDIR`, and a test that wants its own directory says so with
-/// [`crate::app::App::set_attachments_dir`]; the guard is
-/// `tests::a_test_build_cannot_name_the_operators_attachment_directory`.
+/// Where a head keeps the pictures it was given: one function, so a test can be given a directory of
+/// its own and no test can reach the operator's. Production is a per-user 0700 runtime directory and
+/// never `/tmp`; a test build resolves a directory of its own under `$TMPDIR` instead.
 pub(crate) fn attachments_dir() -> PathBuf {
     #[cfg(test)]
     {
@@ -495,14 +413,9 @@ pub(crate) fn attachments_dir() -> PathBuf {
     }
 }
 
-/// **A clipboard picture kept for the session** — the file the chip points at.
-///
-/// Under [`crate::app::panes::head_runtime_dir`] and not `/tmp`: this is whatever the person had
-/// on their clipboard, and a world-readable file at a predictable name is both a disclosure and
-/// the classic symlink target — the rule that directory already exists for.
-///
-/// The name is the session and a counter, so two pastes never collide and a chip's path says
-/// which session asked for it.
+/// A clipboard picture kept for the session - the file the chip points at. Under the runtime
+/// directory and not `/tmp`, because whatever was on somebody's clipboard at a world-readable
+/// predictable name is a disclosure and the classic symlink target. The name is session + counter.
 pub(crate) fn save_clipboard_image(
     session_id: &str,
     n: u64,
@@ -561,11 +474,9 @@ impl crate::app::App {
         self.attachments_dir = Some(dir);
     }
 
-    /// **Put one file in the composer as a chip.**
-    ///
-    /// The chip is inserted at the caret, with one space before it unless the line already ends in
-    /// whitespace — so `explain <chip>` reads as one sentence and a chip at the start of an empty
-    /// composer gets no leading space to trip over.
+    /// Put one file in the composer as a chip, at the caret, with one space before it unless the
+    /// line already ends in whitespace: so `explain <chip>` reads as one sentence and a chip in an
+    /// empty composer gets no leading space to trip over.
     pub(crate) fn chip_in(&mut self, a: Attachment) {
         let nth = self.chips.len() + 1;
         let text = chip_text(nth, &a);
@@ -583,12 +494,9 @@ impl crate::app::App {
         self.redraw = true;
     }
 
-    /// **A bracketed paste, read as what it is** — files when it names files, a picture when the
-    /// terminal sent nothing (that is what a Cmd+V on an image produces: no text at all), and
-    /// text in every other case.
-    ///
-    /// Answers whether the paste was consumed. `false` means *the editor should take it*, which is
-    /// the ordinary paste of a sentence or a stack trace.
+    /// A bracketed paste read as what it is: files when it names files, a picture when the terminal
+    /// sent no text at all (a Cmd+V on an image), and text in every other case. Answers whether the
+    /// paste was consumed - `false` means the editor should take it.
     pub(crate) fn paste_arrived(&mut self, pasted: String) -> bool {
         let files = crate::app::attachments::dropped_paths(&pasted);
         if !files.is_empty() {
@@ -612,11 +520,9 @@ impl crate::app::App {
         false
     }
 
-    /// **Take the picture on the clipboard into the composer**, if there is one.
-    ///
-    /// `true` means something happened — a chip, or a sentence saying why not. `false` is *the
-    /// clipboard holds no picture*, and it is silent: ctrl-v with text on the clipboard is the
-    /// payload window it always was, and a notice about that would be noise on every press.
+    /// Take the picture on the clipboard into the composer, if there is one. `true` means something
+    /// happened - a chip, or a sentence saying why not. `false` is silent, because ctrl-v with text
+    /// on the clipboard is the payload window it always was.
     pub(crate) fn attach_from_clipboard(&mut self) -> bool {
         let png = match self.clipboard.image() {
             Ok(Some(bytes)) => bytes,
@@ -626,11 +532,9 @@ impl crate::app::App {
                 return true;
             }
         };
-        // **What the clipboard hands over has to be a picture, not a claim of one.** MEASURED
-        // 2026-10-30: a 33-byte PNG header went into the composer as an image chip, was sent, was
-        // stored, and a provider refused every request that carried it for ever. The check is the
-        // same one `read` and the daemon make — see `letibot_transcript::media::complete_image` —
-        // so a truncated copy is refused here, at the one moment a person can paste again.
+        // What the clipboard hands over has to be a picture, not a claim of one: a header with no
+        // body was sent and stored once, and a provider then refused every request carrying it for
+        // ever. The check is the one `read` and the daemon make, at the one moment a person can re-paste.
         if !letibot_transcript::media::complete_image("image/png", &png) {
             self.say(
                 "the clipboard's picture is not a complete PNG — nothing was attached. Copy it \
@@ -669,10 +573,8 @@ impl crate::app::App {
         true
     }
 
-    /// **Backspace inside a chip takes the whole chip** — see the module's own note.
-    ///
-    /// Answers whether it did. The chip's ledger entry goes with it, and so does the attachment:
-    /// what is left in the composer is what will be sent.
+    /// Backspace inside a chip takes the whole chip. Answers whether it did: the ledger entry goes
+    /// with it, and so does the attachment, so what is left in the composer is what will be sent.
     pub(crate) fn backspace_chip(&mut self) -> bool {
         let text = self.input().to_string();
         let caret = self.editor.cursor().min(text.len());
@@ -682,8 +584,7 @@ impl crate::app::App {
             .filter_map(|c| {
                 // The occurrence the caret is at the end of, or inside of: a chip is a span and the
                 // caret is where the next character would go. The space a chip is inserted with
-                // counts as part of it, so the press right after a paste takes the chip and not
-                // just the space.
+                // counts as part of it, so the press right after a paste takes the chip, not the space.
                 text.match_indices(c.text.as_str())
                     .map(|(i, m)| {
                         let e = i + m.len();
@@ -710,13 +611,9 @@ impl crate::app::App {
         true
     }
 
-    /// **The chips this message carries**, or `None` when one of them has gone and the send must
-    /// not happen.
-    ///
-    /// A chip whose file is gone is refused with a sentence and the whole line is kept, which is
-    /// the operator's rule for every refusal here: the words are theirs, and a send that quietly
-    /// dropped the picture would be the worst of the three outcomes — the model answering about a
-    /// file it never saw while the composer looked like it had sent it.
+    /// The chips this message carries, or `None` when one of them has gone and the send must not
+    /// happen. A chip whose file is gone refuses the send and keeps the line: the words are the
+    /// operator's, and a send that dropped the picture silently would answer about a file never seen.
     pub(crate) fn chips_to_send(&mut self, text: &str) -> Option<Vec<Attachment>> {
         let mut out = Vec::new();
         for chip in &self.chips {
@@ -865,10 +762,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **The kind comes from the bytes, and then from the name** — the same order `read` keeps,
-    /// so the chip and the part the daemon builds agree. A picture named `.txt` is an image chip
-    /// (its magic number says so); a text file with a picture's extension is one too, because the
-    /// far end is the authority on what it can read and a refusal from it names the file.
+    /// The kind comes from the bytes, and then from the name - the same order `read` keeps, so the
+    /// chip and the part the daemon builds agree. The far end is the authority on what it can read.
     #[test]
     fn the_chip_is_named_for_what_the_bytes_are() {
         let d = dir("kinds");
@@ -923,14 +818,9 @@ mod tests {
         assert_eq!(parse_applescript_data("«data PNGfXYZ»"), None);
     }
 
-    /// **A refusal is not an empty clipboard** — measured 2026-10-29, from the operator's *"⌘V
-    /// does nothing"*: `osascript` exits non-zero when the automation permission is denied, and
-    /// the head answered `Ok(None)` to that, which is *there is no picture* — so the chord did
-    /// nothing and said nothing, twice in a row.
-    ///
-    /// The three answers are distinct: exit 0 is `missing value` (no picture), a failure WITH a
-    /// sentence is that sentence, and a failure with nothing on stderr is still *no picture* —
-    /// there is no sentence to put in front of anybody.
+    /// A refusal is not an empty clipboard. `osascript` exits non-zero when the automation permission
+    /// is denied, and answering `Ok(None)` to that made the chord do nothing and say nothing: exit 0
+    /// is no picture, a failure with a sentence is that sentence, and an empty stderr is no picture.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_refused_clipboard_read_says_why_and_a_silent_one_is_no_picture() {

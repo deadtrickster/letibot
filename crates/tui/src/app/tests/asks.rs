@@ -2,14 +2,9 @@
 
 use super::*;
 
-/// **A question from the run takes the screen back from the confirmation.**
-///
-/// The operator's other rule: the two questions must not be confusable, and *neither may be
-/// answerable by the other's keystroke*. They are exclusive by construction everywhere else —
-/// the confirmation is typed at the composer and the prompt card owns the composer while it
-/// is up — but a `PromptRequested` can arrive *while* the confirmation is standing, and then
-/// `y` would mean two things: this card's yes and that card's text. So the confirmation
-/// yields, with a sentence, and the program it was about is still running.
+/// A question from the run takes the screen back from the confirmation: the two questions must not
+/// be confusable, and neither may be answerable by the other's keystroke. A `PromptRequested` can
+/// arrive while the confirmation stands, so it yields with a sentence, and its program runs on.
 #[test]
 fn a_question_from_the_run_takes_the_screen_back_from_the_confirmation() {
     let mut a = app();
@@ -48,25 +43,9 @@ fn a_question_from_the_run_takes_the_screen_back_from_the_confirmation() {
     assert!(a.term.is_some(), "nothing was ended");
 }
 
-/// The sentence the model writes before its first tool call is on the screen
-/// once, before and after its row lands.
-///
-/// `TurnPane::text` accumulates every text delta of the whole turn, and prose
-/// is committed to the transcript one round at a time — so once round one's
-/// row had a body, its sentence was in history and still in the pane below the
-/// cards. Measured at 60x34 on the operator's session.
-/// **The ask is a card, and it says the thing once.**
-///
-/// The operator, having just answered one: *"the ask is ugly as hell"*. Three faults,
-/// and this pins one assertion against each: the headline said `sudo wants a password
-/// — [sudo] password for dead:` — the same fact twice, in the same weight, ending in
-/// a colon — the command sat in the body register under a `for:` that named nothing,
-/// and the hint ran past a hundred columns so `trim_to` cut it from the end, which is
-/// exactly where the countdown lives.
-/// **The daemon's key ask is the same card, worded for a key.** It arrives as a secret
-/// request with no command (`Harness::obtain_key`), so the headline says a key is needed,
-/// there is no `run:` row naming a command that does not exist, the field is masked like
-/// a password, and a refusal is noted as the operator's — not as sudo's red line.
+/// The daemon's key ask is the same card, worded for a key: it arrives as a secret request with no
+/// command, so the headline says a key is needed, no `run:` row names a command that does not
+/// exist, the field is masked, and a refusal is noted as the operator's.
 #[test]
 fn the_key_ask_is_the_secret_card_worded_for_a_key() {
     let mut a = app();
@@ -247,16 +226,9 @@ fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
     );
 }
 
-/// **A card raised WITHOUT a reading does not claim the program asked.**
-///
-/// The two cards are the two facts, and the operator's measured run is why the second one
-/// exists at all (2026-10-09, `! sudo apt install mc`: the password taken, `apt` at
-/// `Continue? [Y/n]` as root, `/proc/<pid>/fd/0` `EACCES` for the daemon). The reading-backed
-/// card's headline is *your command is asking*; a card that carried that headline on a run
-/// nobody could look at would be a guess — and a wrong one for every long quiet command that
-/// is asking nothing. So this asserts the distinction the row is judged on: the text says it
-/// could not look, and it still offers the way in, because a line sent goes into the run's
-/// input either way.
+/// A card raised WITHOUT a reading does not claim the program asked. The reading-backed card's
+/// headline is *your command is asking*, which would be a guess on a run nobody could look at, so
+/// this one says it could not look and still offers the way in: a line goes into its input anyway.
 #[test]
 fn an_unreadable_card_says_it_could_not_look_and_offers_the_way_in_anyway() {
     let mut a = app();
@@ -301,13 +273,9 @@ fn an_unreadable_card_says_it_could_not_look_and_offers_the_way_in_anyway() {
     );
 }
 
-/// **The prompt card: a command of the operator's own is asking, and the field is NOT
-/// masked.**
-///
-/// The whole of the difference from the password card, asserted rather than argued: the
-/// text is drawn as typed, the composer never holds it, Enter sends it once as an
-/// [`Action::PromptAnswer`] — and it never becomes an [`Action::Secret`], which is the
-/// head's half of *a secret cannot be routed through the prompt card*.
+/// The prompt card: a command of the operator's own is asking, and the field is NOT masked. The
+/// text is drawn as typed, the composer never holds it, and Enter sends it once as an
+/// [`Action::PromptAnswer`] - never as an [`Action::Secret`].
 #[test]
 fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() {
     let mut a = app();
@@ -411,13 +379,9 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
     assert!(!gone.contains("your command is asking"), "{gone}");
 }
 
-/// **The command ending takes the card down, and the note says which happened.**
-///
-/// The card outliving its command is the failure this pair exists to prevent: a person
-/// typing an answer into a program that has already exited. The two sentences are
-/// different because the two things are — one is *your answer went*, the other is *the
-/// command ended first* — and a head that said the same words for both would be telling
-/// somebody their answer was delivered when it was not.
+/// The command ending takes the card down, and the note says which happened. A card outliving its
+/// command would have a person typing an answer into a program that has already exited, so the two
+/// sentences differ: one is *your answer went*, the other *the command ended first*.
 #[test]
 fn a_settled_prompt_takes_the_card_down_and_says_which_way() {
     let mut a = app();
@@ -477,17 +441,9 @@ fn a_settled_prompt_takes_the_card_down_and_says_which_way() {
     );
 }
 
-/// **R13's two-clocks trap, checked in the second place it could live.**
-///
-/// leticl found this while building §1.6: its secret card subtracted a Unix
-/// deadline from a **monotonic** clock, so the number it had been drawing was
-/// in the hundreds of thousands of seconds. The question that follows is whether
-/// this head does the same, and the answer is **no** — the deadline the daemon
-/// puts on the wire is `event::now_ms()`, which is the epoch, and the clock this
-/// head is handed is the epoch too (`bin::now_ms`, `driver::now_ms`), so the
-/// subtraction is in one frame. That is a property nobody had asserted, which is
-/// exactly the kind of thing that stops being true quietly, so it gets a test
-/// rather than a sentence.
+/// R13's two-clocks trap, checked in the second place it could live: a secret card that subtracted
+/// a Unix deadline from a monotonic clock would draw hundreds of thousands of seconds. Here the
+/// wire deadline and this head's clock are both the epoch, and that is asserted, not assumed.
 #[test]
 fn the_password_cards_countdown_is_seconds_and_not_a_second_epoch() {
     let mut a = app();
@@ -503,25 +459,14 @@ fn the_password_cards_countdown_is_seconds_and_not_a_second_epoch() {
             deadline: NOW + 120_000,
         },
     )));
-    // **A wide frame on purpose.** The countdown is the last field on that line
-    // and the card trims to the width, so a narrow terminal takes the number off
-    // before the assertion can read it — which is a fact about this line worth
-    // knowing rather than a detail of the test.
-    //
-    // **And the spelling is the gate card's ladder now** (§1.6): this countdown and
-    // that one are one function, because the finding of that commit is that the
-    // instrument lived here and had never been pointed at the gate. `120s` was this
-    // card's old spelling, and `expires in 2 min` is what the shared ladder makes of
-    // it — the number is the same, and what changed is that the two cards can no
-    // longer disagree about how long there is.
+    // A wide frame on purpose: the countdown is the last field on that line and the card trims to
+    // the width, so a narrow terminal takes the number off before the assertion can read it. The
+    // spelling is the gate card's ladder, so the two cards cannot disagree about how long there is.
     let card = a.screen(200, 20).join("\n");
     assert!(card.contains("expires in 2 min"), "{card}");
-    // It counts down on the head's clock, not off the event's own timestamp —
-    // the same rule the running card above had to learn: the wire deadline is
-    // Unix millis and this head's clock is Unix millis, so the two are in one
-    // frame and the subtraction is honest. (leticl had this wrong — a Unix
-    // deadline against a monotonic counter, drawing hundreds of thousands of
-    // seconds — which is why the property is asserted rather than assumed.)
+    // It counts down on the head's clock, not off the event's own timestamp: the wire deadline and
+    // this head's clock are both Unix millis, so the two are in one frame and the subtraction is
+    // honest. A Unix deadline against a monotonic counter draws hundreds of thousands of seconds.
     a.clock(NOW + 30_000);
     let card = a.screen(200, 20).join("\n");
     assert!(card.contains("1m30s left"), "{card}");

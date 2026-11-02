@@ -2,13 +2,9 @@
 
 use super::*;
 
-/// **The card states why it is asking, in the words of whoever is stuck.**
-///
-/// `because` is the model's own line on a question — *"what you are stuck on and
-/// why the answer changes what you do"* — and this head carried it on
-/// `OpenDecision` from the day the field existed and never drew it. So the person
-/// was given a question with no answer to *why are you asking me this*, which is
-/// the only thing that decides whether the question is worth their time.
+/// The card states why it is asking, in the words of whoever is stuck: `because` is the model's own
+/// line, and a question with no answer to *why are you asking me this* leaves the person unable to
+/// decide whether it is worth their time.
 #[test]
 fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
     use letibot_sessionlog::event::OptionKind;
@@ -28,10 +24,8 @@ fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
         drawn.contains("because: the answer changes which migration I write"),
         "{drawn}"
     );
-    // Labelled with its speaker, and in the same dim register every other
-    // borrowed sentence on this card uses — the oracle's verdict included,
-    // because both are evidence rather than the question. Checked on a head
-    // that emits colour, since the layout tests deliberately do not.
+    // Labelled with its speaker, in the same dim register every other borrowed sentence on this card
+    // uses - the oracle's verdict included - because both are evidence rather than the question.
     let painted = App::new(RenderConfig {
         width: 100,
         color: true,
@@ -50,20 +44,9 @@ fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
     assert!(because_at < ladder_at, "{drawn}");
 }
 
-/// **§11.7: the card says WHY it is asking, and only where the reason is true.**
-///
-/// R18's last wording item. The headline says what the tool **declares** (`wants exec
-/// access`) and the line above it is layer A's reading of the **action** (`auto (a read
-/// inside the boundary)`), and nothing joined them — so *"the classifier decided this
-/// needed no asking"* read as being argued with by the card going up anyway. The operator,
-/// asleep at the time: an operator who cannot tell that apart from a question they should
-/// have been asked is the shape that cost three 300-second refusals in one night.
-///
-/// **Two assertions, and the second is the one that keeps the sentence honest.** An
-/// `exec`-declaring call that asks carries the clause. A `read`-declaring one **must not**:
-/// a read is asked about because of a rule, a path or a mode, so a sentence blaming its
-/// declaration would be false on the very card carrying it — which is exactly what
-/// `because: workspace: /` was, a fact named after one thing and read from another.
+/// The card says WHY it is asking, and only where the reason is true: the headline says what the
+/// tool declares and the dim line is the classifier's reading of the action, so without a clause
+/// joining them the card reads as arguing with its own greening. A `read` gets no such clause.
 #[test]
 fn the_card_says_the_declared_access_is_what_asks_and_only_when_it_is() {
     use letibot_sessionlog::event::OptionKind;
@@ -94,15 +77,9 @@ fn the_card_says_the_declared_access_is_what_asks_and_only_when_it_is() {
     assert!(!drawn.contains("the access is what asks"), "{drawn}");
 }
 
-/// **A card nobody took to an oracle says so, and a card that did does not.**
-///
-/// The two silences are different facts and they rendered identically: under
-/// `/mode supervised` the question printed above the ladder is *do you agree with
-/// the model*, and a card with no verdict on it makes *no oracle was consulted*
-/// and *the oracle was asked and said nothing* the same screen. The operator hit
-/// the live half of it — an oracle answered and its verdict was unreadable, and
-/// the card said so — while the card nobody had asked said exactly the same
-/// nothing.
+/// A card nobody took to an oracle says so, and a card that did does not: *no oracle was consulted*
+/// and *the oracle was asked and said nothing* are different facts, and rendering them identically
+/// makes the screen say the same nothing for both.
 #[test]
 fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() {
     use letibot_sessionlog::event::OptionKind;
@@ -192,26 +169,16 @@ fn an_answer_can_carry_the_operators_own_glob() {
         }
     );
 
-    // **A glob on anything but `allow_always` is refused, not dropped.**
-    // Somebody who typed `allow_once src/**` meant the rule to cover `src/**`;
-    // granting one call instead is an answer they did not give. `Unnamed` leaves
-    // the line in the composer where they can see it.
+    // A glob on anything but `allow_always` is refused, not dropped: somebody who typed
+    // `allow_once src/**` meant a rule, and granting one call is an answer they did not give.
+    // `Unnamed` leaves the line in the composer where they can see it.
     assert_eq!(match_option(&d, "allow_once src/**"), OptionChoice::Unnamed);
     assert_eq!(match_option(&d, "deny src/**"), OptionChoice::Unnamed);
 }
 
-/// **An ambiguous prefix is refused, and the candidates are named.**
-///
-/// Typing `allow` used to answer `allow_once` — silently, out of
-/// `allow_once`/`allow_session`/`allow_always`, because `.find(starts_with)` takes the
-/// first hit in list order. Which of three grants the operator gave is the whole
-/// content of the answer, and list position is not something they said. This is a
-/// gate: a grant invented by position is an answer nobody gave, and it writes an
-/// audit row naming an option the operator can see they did not type.
-///
-/// Refused means **nothing is answered** — not the typed prefix's first guess, and not
-/// the marked row either. The line stays in the composer to be finished, the card
-/// stays up, and the sentence says both ways out.
+/// An ambiguous prefix is refused, and the candidates are named: which of three grants the operator
+/// gave is the whole content of the answer, and a grant invented by list position is an answer
+/// nobody gave. Nothing is answered - not the first guess, and not the marked row either.
 #[test]
 fn an_ambiguous_option_prefix_is_refused_with_the_candidates_named() {
     use letibot_sessionlog::event::OptionKind;
@@ -286,11 +253,9 @@ fn an_ambiguous_option_prefix_is_refused_with_the_candidates_named() {
     assert!(long.contains('…'), "{long}");
 }
 
-/// **`deny_and_tell` can be told something.** Its label is *"Deny, and tell
-/// the model why"* and nothing carried the why: the head had no field, the
-/// wire had no field, and typing it was REFUSED by `match_option` — the line
-/// stayed in the composer and nothing was answered at all. The operator:
-/// *"deny and tell doesnt work - there is no input for the 'tell' part"*.
+/// `deny_and_tell` can be told something: its label promises to tell the model why, and without a
+/// field on the wire a typed sentence was REFUSED by `match_option`, so nothing was answered at
+/// all.
 #[test]
 fn deny_and_tell_carries_the_operators_words() {
     use letibot_sessionlog::event::OptionKind;
@@ -300,12 +265,9 @@ fn deny_and_tell_carries_the_operators_words() {
         OptionKind::RejectAlways,
     ]);
 
-    // Keyed on the KIND, not the id: the daemon calls this option
-    // `deny_and_tell` and this fixture calls it `deny_always`, and the rule
-    // is about the option that writes a standing refusal either way.
-    //
-    // The words ride after the id, verbatim — a sentence for a reader, so it
-    // is not lowercased the way the option id is.
+    // Keyed on the KIND, not the id: the daemon calls this option `deny_and_tell` and this fixture
+    // calls it `deny_always`, and the rule is about the option that writes a standing refusal. The
+    // words ride after the id verbatim, so they are not lowercased the way an option id is.
     assert_eq!(
         match_option(&d, "deny_always Use the scratch dir, not /tmp."),
         OptionChoice::One {
@@ -359,12 +321,9 @@ fn deny_and_tell_carries_the_operators_words() {
     );
 }
 
-/// **Why a rung is missing is ON the card, under the ladder it belongs to.**
-///
-/// The gate leaves a rung off rather than showing a button whose effect it would then
-/// decline to honour, and the operator's side of that rule is that a rung which vanishes
-/// in silence reads as *maybe I misremembered what I was offered*. MEASURED 2026-10-26:
-/// fifteen of one session's twenty-two asks had no session rung and nothing said why.
+/// Why a rung is missing is ON the card, under the ladder it belongs to: the gate leaves a rung off
+/// rather than showing a button whose effect it would decline, and a rung that vanishes in silence
+/// reads as *maybe I misremembered what I was offered*.
 #[test]
 fn the_card_draws_the_reason_a_rung_is_missing() {
     use letibot_sessionlog::event::OptionKind;
@@ -422,11 +381,9 @@ fn the_glob_hint_is_absent_when_no_rule_can_be_written() {
     );
 }
 
-/// **The command is on a line of its own, and the taxonomy is not in front of
-/// it.** The operator's report: *"no possible to see wtf was the command i
-/// supposed to approve"* — because the summary carried the target inside a
-/// sentence, layer A's reading was appended to that sentence, and a long
-/// command was then wrapped into the middle of the wall.
+/// The command is on a line of its own, and the taxonomy is not in front of it: with the target
+/// inside a sentence and the classifier's reading appended to it, a long command wrapped into the
+/// middle of a wall and the operator could not see what they were approving.
 #[test]
 fn the_command_being_approved_gets_its_own_line() {
     use letibot_sessionlog::event::OptionKind;
@@ -470,20 +427,9 @@ fn the_command_being_approved_gets_its_own_line() {
     );
 }
 
-/// **§11.7: the card says why it is asking, when the declaration is the reason.**
-///
-/// The card printed two statements that looked like a contradiction — the headline's
-/// `wants exec access` (the tool's declared access) and the dim line under it, layer
-/// A's reading of the *action* (`auto (a read inside the boundary)`) — and nothing
-/// joined them, so *"the classifier decided this needed no asking"* read as being
-/// argued with by the card going up anyway. That shape cost three 300-second
-/// refusals in one night (`head-parity` R18); the missing clause is the access.
-///
-/// **And it is absent where the access is not what asks**, which is the half that
-/// keeps it worth reading: a `read` call is asked about because of a rule, a path or
-/// a mode, so a sentence about its declaration would be false on the very card
-/// carrying it. An empty `access` is a daemon older than the field, and the head does
-/// not guess.
+/// The card says why it is asking when the declaration is the reason: the headline's `wants exec
+/// access` and the dim line's reading of the action looked like a contradiction with nothing
+/// joining them. It is absent where the access is not what asks, and an empty one is not guessed.
 #[test]
 fn the_card_says_the_declared_access_is_what_asks() {
     use letibot_sessionlog::event::OptionKind;
@@ -548,17 +494,9 @@ fn the_card_says_the_declared_access_is_what_asks() {
     );
 }
 
-/// **Five facts, five lines — leticl's measurement, as a test.**
-///
-/// leticl ran three real `decision_requested` frames through a scratch head and read the
-/// cards: **every field a head controls was identical** across *could not decide*,
-/// *unreadable* and *out of room* — `would: "ask"`, `consulted: true`, `cites: []` — and
-/// the card echoed the daemon's prose and authored nothing. `would: "ask"` is *also* what
-/// `NotAuthorised` sets, so five distinct facts reached the glass as one line.
-///
-/// The assertion is **pairwise difference**: for each of the five, the rendered line must
-/// differ from every other. A test that only checked "the field is carried" would pass
-/// against a head that ignored it, which is the half that was already broken.
+/// Five facts, five lines: three real frames rendered identically, so five distinct facts reached
+/// the glass as one line. The assertion is pairwise difference - a test that only checked the field
+/// is carried would pass against a head that ignored it.
 #[test]
 fn the_five_facts_behind_one_ask_are_five_lines_on_the_card() {
     use letibot_sessionlog::event::OptionKind;
@@ -631,14 +569,9 @@ fn a_refused_call_is_rendered_as_refused_rather_than_as_silence() {
     assert!(screen.contains("REFUSED"), "{screen}");
 }
 
-/// **A question the person answered is not a permission's verdict.**
-///
-/// The daemon's settled event for a question says `Cancelled` — `DecisionOutcome` is a
-/// permission's vocabulary and a question has no ladder to select from — so a head that
-/// read the outcome word alone would tell the person they had *cancelled* the answer
-/// they just gave, or (as rano's `Settled::Refused` would have it) that it was
-/// **REFUSED**. What the head knows and the wire does not is which kind it was, and
-/// this is that: the answer, attributed, in the faint register.
+/// A question the person answered is not a permission's verdict: the settled event says `Cancelled`
+/// because `DecisionOutcome` is a permission's vocabulary, so a head reading the word alone would
+/// tell the person they had refused the answer they just gave.
 #[test]
 fn an_answered_question_is_drawn_as_the_answer_and_not_as_a_permission_verdict() {
     use letibot_sessionlog::event::{Decider, DecisionOutcome, SessionEvent};
@@ -752,11 +685,9 @@ fn a_permission_settles_on_the_call_it_gated() {
     assert!(open.contains("no oracle was consulted"), "{open}");
 }
 
-/// **The bug this labelling was built for.** Under `/supervise` the oracle
-/// advises and the OPERATOR answers, so the decision carries two reasons: the
-/// operator's (`basis`) and the guard model's (`advice`). They were one line,
-/// rendered as `oracle: {basis}` — which printed the operator's own words
-/// under the oracle's name, a lie that reads exactly like the truth.
+/// The bug this labelling was built for: under `/supervise` the oracle advises and the OPERATOR
+/// answers, so the decision carries two reasons. Rendered as one line they printed the operator's
+/// own words under the oracle's name - a lie that reads exactly like the truth.
 #[test]
 fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
     let mut a = app();
@@ -881,10 +812,9 @@ fn an_oracle_that_cited_nothing_says_so_loudly() {
     assert!(lines.contains("could not ground this"), "{lines}");
 }
 
-/// The approval is a fact about the call, and the call outlives the live card:
-/// the moment the result row lands the transcript takes it over, and the
-/// decision has to ride the row — folded to one line, open to the brief and the
-/// reply — or it leaves the screen with the card.
+/// The approval is a fact about the call, and the call outlives the live card: once the result row
+/// lands the transcript takes it over, so the decision has to ride the row - folded to one line,
+/// open to the brief and the reply - or it leaves the screen with the card.
 #[test]
 fn a_settled_card_keeps_the_decision_that_gated_it() {
     let mut a = app();
@@ -985,11 +915,8 @@ fn a_settled_card_keeps_the_decision_that_gated_it() {
     assert!(screen.contains("no oracle was consulted"), "{screen}");
 }
 
-/// **The prompt is a control, not a spelling test.**
-///
-/// Up and Down walk the ladder and Enter takes the highlighted one — the operator
-/// never types a word they can get wrong. Reported twice as *"it wasn't a choice
-/// but something I have to type (and mistype) myself"* before it was built.
+/// The prompt is a control, not a spelling test: Up and Down walk the ladder and Enter takes the
+/// highlighted one, so the operator never types a word they can get wrong.
 #[test]
 fn a_decision_is_answered_with_the_arrows_and_enter() {
     let mut a = app();
@@ -1112,16 +1039,9 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
     );
 }
 
-/// **§1.6: the card says how long there is, and what silence will do.**
-///
-/// Both facts were already on the wire (`DecisionRequested` carries `deadline` and
-/// `on_timeout`) and neither was drawn, while this head **already drew a countdown
-/// on the secret card**. The instrument existed; nothing had pointed it at the gate,
-/// where the consequence of silence is a decision rather than a missing password.
-///
-/// Four things, and they are one requirement: the ladder on the card, the
-/// consequence clause, the expired-card sentence, and **nothing at all** when the
-/// deadline is null.
+/// The card says how long there is, and what silence will do: both facts were on the wire and
+/// neither was drawn, while this head already drew a countdown on the secret card. Four things -
+/// the ladder, the consequence clause, the expired sentence, and nothing at all with no deadline.
 #[test]
 fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
     use letibot_sessionlog::event::{OnTimeout, OptionKind};
@@ -1182,10 +1102,9 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
         "the consequence is read after the choices: {deny}"
     );
 
-    // **A card past its own deadline** — the case the operator actually hit. It says
-    // the clock ran out and the outcome is unreported, it **keeps** the consequence
-    // (that is a rule, not an observation, and with `allow` it is the one thing worth
-    // learning from an expired card), and it never counts into negative seconds.
+    // A card past its own deadline says the clock ran out and the outcome is unreported; it KEEPS
+    // the consequence, which is a rule and the one thing worth learning from an expired card, and
+    // it never counts into negative seconds.
     let expired = ladder(NOW - 14_000, NOW, OnTimeout::Allow);
     assert!(
         expired.contains("past its deadline by 14s; the daemon has not said what became of it"),
@@ -1213,13 +1132,9 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
     );
 }
 
-/// **A question's rows must not be able to answer a permission, or the reverse.**
-///
-/// `decision_rows` is the one place the two kinds' row counts are reconciled, and
-/// getting it wrong is silent: a `question` read as a `permission` shows an empty
-/// ladder (which is the defect above), and a `permission` read as a `question` would
-/// answer `option: None` with the option's label as free text — a grant nobody gave,
-/// which is worse than not answering.
+/// A question's rows must not be able to answer a permission, or the reverse. `decision_rows` is
+/// the one place the two counts are reconciled and getting it wrong is silent: an empty ladder one
+/// way, a grant nobody gave the other.
 #[test]
 fn the_row_count_is_the_kinds_own_field_in_both_directions() {
     use letibot_sessionlog::event::OptionKind;
@@ -1253,39 +1168,9 @@ fn the_row_count_is_the_kinds_own_field_in_both_directions() {
     assert!(matches!(b.key(Key::Enter), Some(Action::Answer { .. })));
 }
 
-/// **leticl's finding, checked here: does the SNAPSHOT arm draw what the live arm
-/// draws?**
-///
-/// leticl found a card arriving inside a snapshot drawing `expires in 29833973 min`
-/// — fifty-six years — because its live path converted a wire deadline into the
-/// head's own clock and its snapshot path did not. That is the shape this head has
-/// met twice already: R16's fork (the live arm marks the pending echo, the snapshot
-/// arm has to be told to) and R17's `orphan_bodies` (the live arm files a row, a
-/// snapshot replaces the table). So it is checked rather than assumed, which is what
-/// the operator asked for.
-///
-/// **This head needs no conversion**, and that is a claim with a test rather than a
-/// sentence: the wire deadline is `letibot_sessionlog::event::now_ms()` — the epoch —
-/// and this head's clock is the epoch too (`bin::now_ms`, `driver::now_ms`), so a
-/// snapshot's deadline subtracts from `now_ms` with no constant between the two. The
-/// assertion is that a card from a snapshot reads the same number a live one does, at
-/// the daemon's real 300 s budget.
-/// **The card names the files the action would write** — R35's severed wire, joined.
-///
-/// The operator: *"it cant catch those pesky python edits"*. It can — `write_targets` has
-/// resolved assigned names, modes and receiver-paths since it was written, built from their own
-/// card shape — and nothing showed them. A `bash` call running a script that rewrites a file drew
-/// a card that did not name the file.
-///
-/// Three assertions, and the second and third are the ones that keep it honest:
-///
-///   * the paths are ON the card, in the target's own register and place;
-///   * **an unresolved path is drawn differently from a resolved one** — a write whose target
-///     could not be read is the case a person most needs to see, and drawing it as a path is
-///     drawing it as something to skim past;
-///   * **an empty list draws NOTHING.** *No write the scanner could place* is not *writes
-///     nothing*, and a card claiming the second would be asserting a negative the classifier
-///     cannot support — which is R35's own subject one layer over.
+/// The card names the files the action would write, because the operator's *"it cant catch those
+/// pesky python edits"* was a wire that was severed, not a classifier that could not see them. An
+/// unresolved path is drawn differently from a resolved one, and an empty list draws nothing.
 #[test]
 fn the_card_names_the_files_the_action_would_write() {
     use letibot_sessionlog::event::{OptionKind, WriteTarget};
@@ -1450,13 +1335,9 @@ fn the_deadline_line_is_only_on_a_card_that_is_actually_open() {
     );
 }
 
-/// **A note about the decision does not outlive the decision.**
-///
-/// The gate's "asking the guard" arrives as a `ToolProgress` while the call is
-/// still `Proposed`. It used to be cleared only by `ToolFinished`, so a call
-/// that took a long time to RUN carried a sentence about a wait that had
-/// already ended. Measured 2026-09-20: a 300 s `cargo test` sat under "asking
-/// the guard" for all five minutes and was reported as an oracle hang.
+/// A note about the decision does not outlive the decision: the gate's "asking the guard" arrives
+/// while the call is `Proposed`, and cleared only by `ToolFinished` it sat under a 300 s run for
+/// all five minutes, reported as an oracle hang.
 #[test]
 fn the_guards_note_does_not_survive_the_tool_starting() {
     let mut a = app();

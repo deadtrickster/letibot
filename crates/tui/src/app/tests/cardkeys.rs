@@ -1,5 +1,5 @@
-//! **R90: keys, cards and popups agree** — each case a key sequence that used to send an answer,
-//! a `/reseat` or a quit the operator did not choose, pinned so it cannot come back.
+//! Keys, cards and popups agree: each case a key sequence that must not send an answer, a `/reseat`
+//! or a quit the operator did not choose, pinned so it cannot come back.
 
 use super::*;
 use letibot_sessionlog::question::QuestionAnswer;
@@ -274,11 +274,9 @@ fn the_quit_cards_enter_keeps_the_empty_composer_guard() {
     assert_eq!(a.input(), "wait");
 }
 
-/// **A digit on the quit card marks the row; it does not quit** (R90.6). The digit answered at
-/// once, so `2` typed as the first character of a line left the head and stopped the daemon —
-/// with every job and subagent it had running — while the bar under the card said *"1/2 or ↑↓
-/// then enter"*. One rule for every numbered card (R90.2): the digit moves the mark, and the
-/// answer is the deliberate Enter.
+/// A digit on a numbered card marks the row; the answer is the deliberate Enter. One rule for every
+/// numbered card: a digit typed as the first character of a line must not leave the head, and the bar
+/// under the card promises `1/2 or arrows then enter`.
 #[test]
 fn a_digit_on_the_quit_card_marks_the_row_and_stops_nothing() {
     let mut a = app();

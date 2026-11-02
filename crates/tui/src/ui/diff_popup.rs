@@ -1,5 +1,5 @@
-//! **The diff popup, drawn**: an edge naming the file and the change, the whole file as a diff,
-//! and an edge with the popup's own keys. See `app::diff_popup`.
+//! The diff popup, drawn: an edge naming the file and the change, the whole file as a diff, and an
+//! edge with the popup's own keys. See `app::diff_popup`.
 
 use crate::app::diff_popup::PopupBody;
 use crate::app::*;
@@ -68,10 +68,9 @@ impl App {
             p.placed = true;
         }
         p.scroll = p.scroll.min(max);
-        // **The file's path, as a link the terminal opens** (OSC 8) where it speaks it: this
-        // edge names the file the change is in, and a printed path that cannot be clicked is
-        // the operator's own report. `Style::of(Role::Strong)` is the register the path was
-        // drawn in, and the span is that same span when the terminal has no links.
+        // The file's path, as a link the terminal opens (OSC 8) where it speaks it: this edge names
+        // the file the change is in, and a printed path that cannot be clicked is the report this
+        // answers. With no links the span is the same span, in the register it was drawn in.
         let (title, keys) = match &what {
             PopupBody::Change(file) => (
                 Line::new(vec![
@@ -88,10 +87,9 @@ impl App {
                     "esc closes · ↑↓ pgup/pgdn home/end · ctrl-] edits it"
                 },
             ),
-            // **The notice names its jobs on the edge**, the way the change names its file.
-            // **A card names what it is about** — a red target's the target and the tip, in the
-            // alarm's register; a review's the branch and the verdict, in the verdict's
-            // (`line_cards`).
+            // A notice names its jobs on the edge, the way a change names its file; a card names
+            // what it is about - a red target's the target and the tip in the alarm's register, a
+            // review's the branch and the verdict in the verdict's (`line_cards`).
             PopupBody::Notice {
                 jobs, text, title, ..
             } if jobs.is_empty() => {

@@ -1,24 +1,6 @@
-//! **Each surface's keys, declared once** (R69): which keys it takes, under what guard, what each
-//! one does, and the words the hint bar and `/help` say about it — both GENERATED from here.
-//!
-//! # What this replaces
-//!
-//! Twelve `key_*` handlers, each a `match` on the key with its own guards, and three sets of
-//! words about them written by hand somewhere else: rano's pinned hint-bar sentences, this
-//! head's own half of the bar, and the help screen. They disagreed. The queue pane's `a`/`v`/`d`
-//! had no empty-composer guard where the subagents pane's `o`/`p` did, so typing "deploy" with
-//! `/queue` open sent `queue rm` and `queue approve` (R67 item 1); the help said a click on an
-//! edit row opened rano when it opens the diff popup; rano's todos sentence said *enter or tab
-//! unfolds* about a pane where Enter reads the row; and nothing at all said what the subagent
-//! output view's Enter did (R67 item 9).
-//!
-//! # The rule
-//!
-//! A [`Binding`] is `(keys, guard, act, says)`. [`App::key_surface`] finds the first binding of
-//! the focused surface that the key matches and whose guard holds, and runs its act; the bar
-//! ([`App::surface_hint`]) and the help rows ([`App::surface_help`]) are the same table read as
-//! words. **A plain letter always carries [`Guard::EmptyComposer`]** — the letters are the
-//! operator's to type first — and a test walks every table to hold that.
+//! Each surface's keys, declared once: which keys it takes, under what guard, what each does, and
+//! the words the hint bar and `/help` say - both generated from here. A plain letter always carries
+//! `Guard::EmptyComposer`, because the letters are the operator's to type first.
 
 use super::*;
 use crate::ui::panes::queue::Verb;
@@ -33,10 +15,9 @@ pub(crate) enum On {
     Enter,
     Tab,
     Char(char),
-    /// **The Delete key** — `On::Char` cannot say it, and on a list *delete this row* is what the
-    /// key means. It is also the one spelling a typed line can never be: the session picker's
-    /// typed path is a NAME, so a letter bound there eats the first letter of a filter (see
-    /// `PICKER`).
+    /// The Delete key: `On::Char` cannot say it, and on a list that is what "delete this row"
+    /// means. It is also the one spelling a typed line can never be, so it cannot eat the first
+    /// letter of the picker's typed filter the way a letter bound there would.
     Delete,
     /// **Ctrl+Z, or ⌘Z** — both decode to [`Key::Undo`]. The undo of a removal, spelled as the
     /// chord everybody's hands already know, and never as a letter for the same reason as
@@ -132,10 +113,9 @@ pub(crate) enum Act {
     Retire,
     /// The queue's `o`: go into the session of the reviewer working the row.
     Reviewer,
-    /// **A key the VIEW names** — a panel's key, `f`, `l`, or an action letter of the selected
-    /// stop. A plugin's pane's keys are its document's, so the static table can only hand the
-    /// alphabet over and let the pane decide ([`App::plugin_key`]); a letter that is none of
-    /// those falls through to the composer.
+    /// A key the VIEW names: a panel's key, `f`, `l`, or an action letter of the selected stop.
+    /// A plugin pane's keys are its document's, so the table hands the alphabet over and the pane
+    /// decides ([`App::plugin_key`]); a letter that is none of those falls through to the composer.
     PluginKey,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
@@ -159,12 +139,9 @@ pub(crate) enum Says {
     Text(&'static str),
     /// It depends on the row under the cursor; the surface says ([`App::row_says`]).
     Row,
-    /// **It depends on a SWITCH, and the two ways it stands are the two answers.** The help
-    /// writes the words for both states (the screen it is read from can be drawn at either), and
-    /// the bar asks the head which way the switch stands now and says the act that would happen —
-    /// so `d folds done` becomes `d shows done` the moment it does, and neither reading names a
-    /// key that would do nothing. *Which* switch is the binding's own `act`
-    /// ([`App::switch_says`]), so the two can never be about different settings.
+    /// It depends on a SWITCH, and the two ways it stands are the two answers: the help writes the
+    /// words for both states, and the bar asks which way it stands now and says the act that would
+    /// happen, so neither reading names a key that would do nothing.
     Switch(&'static str),
 }
 
@@ -206,18 +183,9 @@ const PICKER: &[Binding] = &[
     ),
     b(&[On::Left], Empty, Act::Collapse, Text("closes them")),
     b(&[On::Enter], Empty, Act::Open, Says::Row),
-    // **`del` takes the row off the list and `ctrl-z` puts it back** — the operator's *"add
-    // controls to remove sessions"*. Asked twice (`app::removal`): the first press says what would
-    // go and the second does it.
-    //
-    // **Not letters, and this is the one surface where that matters.** The picker's typed path is
-    // a session's NUMBER OR NAME (`typed_says`), so `x`/`u`/`f` bound here are matched under
-    // `Guard::EmptyComposer` — which is exactly the first character of a typed filter. A person
-    // typing `f` for a session called `fix the parser` got a refusal sentence and a filter missing
-    // its first letter, and `x` armed a removal of whatever the cursor happened to be on. Every
-    // other pane's letters are free only because their typed paths start with `/`; the picker's
-    // does not, so its keys are the two chords a line can never be. The forget of a session is
-    // `/forget` — typed, therefore unambiguous.
+    // `del` takes the row off the list and `ctrl-z` puts it back, asked twice: the first press
+    // says what would go, the second does it. Not letters, because the picker's typed path is a
+    // session's NUMBER OR NAME, so a bound letter would be the first character of a filter.
     b(
         &[On::Delete],
         Empty,
@@ -255,10 +223,9 @@ const TODOS: &[Binding] = &[
         Act::NagToggle,
         Text("pauses or resumes the plan-checks"),
     ),
-    // **`d` — fold the done group away** — the operator: *"we need to be able to hide done todo
-    // items"*, and then, once the done rows had a group of their own, *"done todos still not in
-    // their own group"*. A plain letter, like the pane's other two toggles (`tab`, `n`), and its
-    // words are the switch's own so the bar never offers `fold` over a group that is already shut.
+    // `d` folds the done group away, a plain letter like the pane's other two toggles (`tab`,
+    // `n`). Its words are the switch's own, so the bar never offers `fold` over a group that is
+    // already shut.
     b(
         &[On::Char('d')],
         Empty,
@@ -400,14 +367,9 @@ const JOB_OUT: &[Binding] = &[
     WHEEL,
 ];
 const LISTING: &[Binding] = &[b(UPDOWN, Always, Act::Scroll, Text("scroll")), PAGE, WHEEL];
-// **A plugin's pane** — the host's keys, and the plugin's own behind them (C3).
-//
-// The panel keys and the action letters are the VIEW's, which a static table cannot name, so
-// one last binding at the end hands every other key to [`App::plugin_key`]: it decides, from
-// the view on the screen, whether the letter opens a panel, shows the findings, shows the
-// legend, or is an action of the selected stop. `Continue` there — a letter that is none of
-// those — falls through to the composer exactly as it would with no pane open, which is what
-// the empty-composer guard is for.
+// A plugin's pane: the host's keys, and the plugin's own behind them. The panel keys and the
+// action letters are the VIEW's, which a static table cannot name, so one last binding hands
+// every other key to [`App::plugin_key`], and a letter that is none of those falls through.
 const PLUGIN: &[Binding] = &[
     LIST,
     b(
@@ -604,17 +566,9 @@ impl App {
     /// **The words for a row-dependent binding**, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
-            // **What Enter does on the session under the cursor is the ROW's own words** — a
-            // picker's footer is a function of the row the cursor is on, and this head used to
-            // spell that function a second time here, which is how the two drifted apart.
-            //
-            // **Two sources, one shape.** Whichever list is drawn — the built-in `sessions`
-            // layer's answer or the head's own tree (`app::sessions_pane`, one door) — the words
-            // are the row's own `enter` act, read by [`App::list_says`].
-            //
-            // **A row with no act drops the binding from the bar.** A key that does nothing and
-            // says nothing is a broken key; a key that does nothing and is not offered is the
-            // truth.
+            // What Enter does on the session under the cursor is the ROW's own words, read by
+            // [`App::list_says`] - a picker's footer is a function of the row, and spelling it
+            // here twice is how the two drifted. A row with no act drops the binding from the bar.
             (Surface::Picker, Act::Open) => self
                 .picker_list(self.picker_width())
                 .selected(self.picker_sel)
@@ -730,10 +684,9 @@ impl App {
         out.join(" · ")
     }
 
-    /// **What Esc does on surface `s`, as the bar says it.** A job's output or a child's read
-    /// can be opened from the todos pane's `waits on` link, and `/peek ID` opens a child's
-    /// output over whatever is drawn — no pane at all, or the jobs pane (R90.17) — so those two
-    /// name the surface actually below them instead of the fixed words.
+    /// What Esc does on surface `s`, as the bar says it. A job's output or a child's read can be
+    /// opened from the todos pane's `waits on` link, or by `/peek ID` over whatever is drawn, so
+    /// those two name the surface actually below them instead of the fixed words.
     pub(crate) fn esc_hint(&self, s: Surface) -> String {
         let below = self.surfaces.iter().rev().nth(1).map(|o| o.surface);
         match (s, below) {

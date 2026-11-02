@@ -3,10 +3,9 @@
 use super::*;
 use letibot_sessionlog::Citation;
 
-/// **The model names a range and the head shows the file's lines with the file's numbers** — the
-/// operator: *"model wants to cite me a file with line range … and it is manually extracting the
-/// code and line numbers lost"*. Before the daemon's event the fence is empty; after it, the
-/// lines are there numbered from 242, and a click on line 244 is a reference to line 244.
+/// The model names a range and the head shows the file's lines with the file's numbers: before the
+/// daemon's event the fence is empty, after it the lines are there numbered from 242, and a click
+/// on line 244 is a reference to line 244.
 #[test]
 fn a_cited_range_shows_the_files_lines_with_its_numbers_and_a_line_clicks_to_its_place() {
     let mut a = app();

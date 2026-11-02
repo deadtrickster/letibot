@@ -9,13 +9,9 @@ use letibot_sessionlog::registry::short_id;
 use letibot_sessionlog::view::Warned;
 
 impl App {
-    /// **Which process this head is attached to.** Called by the caller that opened the
-    /// socket, once per connection — including a reconnect, where the answer can be a
-    /// different process than the one before.
-    ///
-    /// **The head is the one holder of this fact.** `/status` reads it, the stop's farewell
-    /// names it, and the driver asks the head for it rather than keeping its own copy — so
-    /// there is one answer to *which process am I sending the operator to `ps` for*.
+    /// Which process this head is attached to: called by the caller that opened the socket, once per connection,
+    /// including a reconnect, where the answer can be a different process. The head is the one holder of this fact,
+    /// since `/status`, the farewell and the driver all read it from here.
     pub fn set_daemon_pid(&mut self, pid: Option<i32>) {
         self.daemon_pid = pid;
     }
@@ -25,11 +21,9 @@ impl App {
         self.daemon_pid
     }
 
-    /// **The stop this head is waiting on**, or `None`.
-    ///
-    /// `Some` from the moment the frame goes out until the head exits. Read by the
-    /// renderer for its line, by the driver for the four facts it observes, and at the
-    /// end by `main` for the farewell.
+    /// The stop this head is waiting on, or `None`: `Some` from the moment the frame goes out until the head exits.
+    /// Read by the renderer for its line, by the driver for the four facts it observes, and by `main` for the
+    /// farewell.
     pub fn stopping(&self) -> Option<&Stopping> {
         self.stopping.as_ref()
     }
@@ -82,10 +76,8 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The ordinary stop did not finish, and the head is escalating — once.** Called by
-    /// the driver when the deadline passes with the daemon's process still there. A second
-    /// call is ignored: the escalation is the one extra thing the head does, and if that
-    /// fails too the operator is told what to run.
+    /// The ordinary stop did not finish and the head is escalating, once: called when the deadline passes with the
+    /// process still there. A second call is ignored, and if the escalation fails too the person is told what to run.
     pub fn force_stop_escalated(&mut self, why: ForceWhy, now_ms: u64) {
         if let Some(s) = self.stopping.as_mut()
             && s.forced.is_none()
@@ -118,33 +110,20 @@ impl App {
         self.daemon_protocol
     }
 
-    /// **Whether a plain detach should be sent on the way out.** Not while a stop is in
-    /// flight: the daemon's own `Detach` handling would take this head off the session it
-    /// is shutting down, and the notice it publishes (`daemon_stopping`) names every head
-    /// it reached. The connection is going anyway.
+    /// Whether a plain detach should be sent on the way out: not while a stop is in flight, since the daemon's
+    /// `Detach` handling would take this head off the session it is shutting down. The connection is going anyway.
     pub fn wants_detach(&self) -> bool {
         self.stopping.is_none()
     }
 
-    /// **The farewell this head owes, after the screen is gone.** R30's third part: an
-    /// operator who chose *stop* and got a running daemon learns it here, once, on stderr,
-    /// rather than from `ps` a day later — which is exactly how this one was found.
-    ///
-    /// `None` when there is nothing to say: no stop was asked for, or the daemon's process
-    /// is gone and the question is answered. **A `Bye` is not one of those cases** — see
-    /// below. The sentences below are four because the operator's next move differs: it did
-    /// not go and a turn was running (legitimate, and it will finish); it did not go and
-    /// nothing was running or it could not even be asked (the wedge, and here is the verb);
-    /// or the daemon ended the connection itself, which is a different fact with its own
-    /// sentence in [`App::farewell`].
+    /// The farewell this head owes after the screen is gone: a person who chose *stop* and got a running daemon
+    /// learns it here, once, on stderr, rather than from `ps` a day later. `None` when there is nothing to say.
     pub fn stop_farewell(&self) -> Option<String> {
         let s = self.stopping.as_ref()?;
         let secs = s.since_ms.max(self.now_ms).saturating_sub(s.since_ms) / 1000;
-        // **A forced stop is always said**, whether or not it worked. The operator chose
-        // *stop*, and the head did something sharper than they asked for — interrupted the
-        // turns and signalled the process — so the farewell says that it did, and why, even
-        // when the daemon is gone: *"yes"* was the answer to *should the head take the force
-        // path itself, with a line saying why*.
+        // A forced stop is always said, whether or not it worked: the person chose *stop* and the head did
+        // something sharper, interrupting the turns and signalling the process, so the farewell says so and why,
+        // even when the daemon is gone.
         let forced = s.forced.as_ref().map(|f| {
             let done = match &f.outcome {
                 Some(o) if o.gone => format!("done: {}.", o.said),
@@ -156,50 +135,9 @@ impl App {
         if s.gone {
             return forced;
         }
-        // **A `Bye` is not the daemon going, on this path.** The operator was reading this
-        // pair on nearly every orderly stop, four lines apart and in this order:
-        //
-        // ```text
-        // letibot: the daemon was asked to stop and had not gone 0s later.
-        //   the request was acknowledged and did not stop; the daemon is still there (pid
-        //   2291248).
-        //   `letibot --stop --force` finishes it — …
-        // letibot: the daemon ended this head — daemon shutting down
-        // ```
-        //
-        // The second line is the daemon saying goodbye. The first said it did not go — and
-        // recommended `--force`, which *aborts in-flight turns over the protocol*, against a
-        // daemon that had just left politely. The fix for that was to treat the `Bye` as the
-        // answer — and **that over-corrected into the operator's second report**: *"it
-        // reports the server exited within a second — while `harnessd` is in fact hung and
-        // has to be killed with `--force`."*
-        //
-        // **The frame is published before the process ends, and by a thread that is not the
-        // one being waited for.** `registry.close()` runs on the connection thread the
-        // instant the `Stop` is taken; the run's own thread is inside that command and has
-        // not ended (`agent/run-off-worker`: it used to be the WORKER that was in there).
-        // Measured on a
-        // live daemon, 2026-10-06: `Bye` at 519 µs, the process still in `/proc`, and it
-        // stayed there for the rest of the run. So the `Bye` is evidence that the request
-        // was **read**, which is a real and useful fact — and it is not evidence about the
-        // process, which is the only thing the operator's question is about.
-        //
-        // **`gone` is the observation that is about the process**, and it is not overloaded
-        // to mean anything else: it is read from `waitpid` for this head's own child and
-        // from `/proc` — zombie-aware — for anybody else's. It goes on meaning exactly what
-        // its docstring says, and it is now the only thing that silences this sentence.
-        //
-        // The line below used to read `if s.gone || self.bye.is_some() { return None; }`,
-        // so the arrival of the goodbye **silenced the farewell** — the head left saying
-        // nothing, which a person reads as *it stopped*.
-        //
-        // The wait is no longer cut short (see [`App::should_quit`]), so this composes its
-        // sentence when the question is actually settled: the process is gone, or the
-        // deadline passed with it still there. A `Bye` then makes the sentence **stronger**
-        // rather than quieter — the daemon did hear the request and did begin shutting
-        // down, and its process is still in `/proc` — which is the fact a person needs in
-        // order to know that `--force` is the right next move and not a workaround for a
-        // lie.
+        // A `Bye` is not the daemon going: it is published from the connection thread the instant the stop is read,
+        // so the wait is not cut short and this sentence is composed once `gone` settles. A `Bye` makes it stronger
+        // rather than quieter, not a reason to stop waiting.
         let pid = pid_word(s.pid);
         let ask = if matches!(
             s.forced,
@@ -219,17 +157,8 @@ impl App {
             "could NOT be sent"
         };
         let because = if s.turn_busy {
-            // **And a round can be inside a command.** The daemon has one worker and a
-            // round calls its tools on that worker, so a stop that arrives mid-`! sudo apt
-            // install mc` waits for that command — whose own deadline is what ends it, and
-            // which is two minutes at the default. That is the difference between a stop
-            // that is merely slow and one that has to be forced, and the operator is the
-            // only one who can tell which they are looking at.
-            //
-            // **The TURN is not that wait any more.** The daemon interrupts the turns it
-            // holds on the way out — the same frame an Esc-Esc sends — so what a head sees
-            // here is the round a command is inside, not a generation finishing. See
-            // `Registry::close`'s `STOPPING_TURN_REASON`.
+            // And a round can be inside a command: one worker runs the round's tools, so a stop arriving mid-command
+            // waits for it, and that command's own deadline is what ends it.
             "A turn was running; the daemon interrupts it on the way out, so this is the \
              round a COMMAND is inside — and its own deadline is what ends that. This is a \
              slow stop rather than a refused one."
@@ -245,14 +174,9 @@ impl App {
         ))
     }
 
-    /// **Why the daemon ended this, for after the screen is given back.**
-    ///
-    /// `Some` only when a [`ServerFrame::Bye`] arrived — an ordinary quit has
-    /// nothing to say. The caller prints it once the terminal is restored, because
-    /// anything said into the transcript goes down with the alternate screen and
-    /// the operator is left with a head that exited for no stated reason. That is
-    /// what a protocol skew looked like on 2026-09-20: *"when i went to job with
-    /// enter in pfn project leticode just exited"*.
+    /// Why the daemon ended this, for after the screen is given back: `Some` only when a `Bye` arrived. The caller
+    /// prints it once the terminal is restored, since anything said into the transcript goes down with the
+    /// alternate screen.
     pub fn farewell(&self) -> Option<&str> {
         self.bye.as_deref()
     }
@@ -267,11 +191,8 @@ impl App {
         self.head_run_seq
     }
 
-    /// Tell the head it is about to ask the daemon, so the frames it draws in the
-    /// meantime tell the truth.
-    ///
-    /// Called once, by a head that has taken the screen and is about to attach. See
-    /// [`Self::attaching`] for what it suppresses and why.
+    /// Tell the head it is about to ask the daemon, so the frames it draws meanwhile tell the truth. Called once,
+    /// by a head that has taken the screen. See [`Self::attaching`].
     pub fn begin_attach(&mut self) {
         self.begin_attach_at(self.now_ms);
     }
@@ -283,100 +204,15 @@ impl App {
         self.attach_started_ms = now_ms;
     }
 
-    /// The head id the daemon just seated this connection with, once.
-    ///
-    /// The driver hands it to the client. It is `take`n rather than read because a
-    /// client that re-applied a stale one would ack into the session it left.
+    /// The head id the daemon just seated this connection with, once. Taken rather than read, because a client that
+    /// re-applied a stale one would ack into the session it left.
     pub fn take_seated(&mut self) -> Option<String> {
         self.seated.take()
     }
 
-    /// How this session should be named on a screen: its title, or a short id.
-    ///
-    /// **Never the full id.** `s-1788987496351498881` is twenty-one characters of
-    /// which the first thirteen are the same for every session minted on the same
-    /// afternoon — it costs a fifth of an eighty-column header to say almost nothing,
-    /// and the part that distinguishes two sessions is the part that gets cut when
-    /// the header runs out of room. The last eight characters are where they differ,
-    /// so that is what is shown.
-    ///
-    /// The full id is still reachable: it is on its own line under every named row in
-    /// the picker, and `letibot --sessions` prints it in full. A label is for
-    /// recognising a session; an id is for naming one to a command, and those are
-    /// different jobs done in different places.
-    /// **The picker's rows, as ONE enumeration — every key and the drawing read this.**
-    ///
-    /// # Why one function and not a filter at each reader
-    ///
-    /// Five things index a session list: the picker's arrows and Enter, its seeding, the row a
-    /// typed number names, and the header's position. Working out *which row is that* separately
-    /// for a nested list is the **two-enumerations defect** and this file already carries the scar:
-    /// [`App::todos_stops`], whose docstring is the operator's own two reports — *"arrows dont go
-    /// here"* and *"mouse doesnt click"* — two symptoms of one cursor whose position came from one
-    /// list and whose row came from another.
-    ///
-    /// # The shape
-    ///
-    /// **Two questions, two lists.** A head standing in a CONVERSATION draws the whole daemon,
-    /// in groups (§ below); a head standing in a subagent draws its family (the last section).
-    ///
-    /// # The whole daemon, as a tree of projects
-    ///
-    /// The operator, 2026-10-31: *"i want /sessions to show me the tree - top level nodes are
-    /// projects, then next level are top-level sessions for that projects, then their subsessions
-    /// for worktrees etc. gatekeepers and reviewers and all other system agents are under
-    /// `<project>/<system>/<gatekeepers>`"*. It replaces the five groups this list was drawn in
-    /// (`mine`, `subagents`, `review queue`, …), which answered *mine vs the harness's* by putting
-    /// the harness's work in folds that hid WHICH conversation it belonged to.
-    ///
-    /// So a row is one of four things and [`Node`] is the whole vocabulary: a **project**
-    /// ([`project_of`] — a workspace root, with any worktree mapped back to the repository that
-    /// owns it), the **`system`** branch inside one, a **group** inside that (`gatekeepers`,
-    /// `reviewers`, `keepers`), or a **session**.
-    ///
-    /// **A session hangs under the project of the ROOT of its chain.** Its own workspace can be a
-    /// review clone, a worktree or another machine, and the tree it hangs from is what says where
-    /// it belongs; only a session nobody spawned is placed by its own workspace.
-    ///
-    /// **A branch with no rows draws no line** — a project with no system agent has no `system`
-    /// node, and a fold saying `(0)` is a fold a reader learns to skip.
-    ///
-    /// # Where a system agent is decided
-    ///
-    /// By its own row first, then by its chain ([`App::system_kind`]): the review queue's session
-    /// is a **gatekeeper**; a row whose brief was cut from the review prompt, whose origin is the
-    /// queue, or whose chain reaches the queue's session is a **reviewer**; a brief cut from the
-    /// notes keeper's prompt is a **keeper**. A row with none of those marks is a session like any
-    /// other — a group named after nothing is worse than a row drawn where it looks like it
-    /// belongs.
-    ///
-    /// # What the filter this replaces was protecting against
-    ///
-    /// Not curiosity — noise. Collapsed-by-default is that concern answered instead of obeyed, and
-    /// the operator's own words are the reason the OBEDIENCE was wrong: *"yes subagents are not
-    /// even scratch session they are session, just sub sessions"*, and *"why readonly? subagent
-    /// session is more like you driving others via tmux"*. A session a head can post to, and get an
-    /// answer from, is not a row to be filtered — it is a session to be driven.
-    ///
-    /// # Inside a subagent the list is its FAMILY
-    ///
-    /// A head switched into a child used to draw the whole daemon — every conversation, and
-    /// every conversation's children — around a row that was one level down. The operator's
-    /// ask is the narrow one a tree walk implies: *"make sure sessions list (ctrl-s) is
-    /// filtered to the parent and siblings"*, so that is what this is. The parent is the top
-    /// row and its children are under it, **shown whatever the collapse state says**, because
-    /// the filter and the expansion would otherwise be the same gesture twice — a family list
-    /// whose siblings were collapsed into the parent would be a list of one row.
-    ///
-    /// The chain up to where you are is still always shown, and it is here by construction:
-    /// the child you are in *is* one of the listed siblings. `esc` (up) and a row's `enter` walk
-    /// that same edge from the outside, so ctrl-s inside a child answers *where am I* and *who is
-    /// next to me* with one list — while ctrl-s in a conversation still answers *what does this
-    /// daemon hold* under the collapse rule above. Two questions, one enumeration per question.
-    ///
-    /// **And the nodes on the way to where you are are open**, whatever the operator last said
-    /// about them: the project, its `system` branch and the group this head's session is drawn
-    /// in. A picker that hides where you are cannot answer *where am I*.
+    /// The picker's rows, as one enumeration: every key and the drawing read this, because working out which row a
+    /// cursor is on separately per reader is the two-enumerations defect. A head in a conversation draws the daemon
+    /// as a tree of projects, system agents and sessions; a head in a subagent draws its family.
     pub(crate) fn session_rows(&self) -> Vec<SessionRow> {
         // The chain from the current session up to its root, by id — so the way back to where you
         // are is always on the screen.
@@ -389,14 +225,8 @@ impl App {
             cur = p;
         }
         let mut out: Vec<SessionRow> = Vec::new();
-        // **This head is in a subagent**: the parent and its children, and nothing else. The
-        // family view stays ungrouped on purpose — it is already a list of two or three rows
-        // around the one the operator is standing in, and folds over it would be a second way to
-        // hide the answer to *where am I* (see this function's docstring).
-        //
-        // **A parent this daemon does not hold is no family at all** — the head is standing in a
-        // child whose parent is gone, and the tree it belongs to is still the answer to *where am
-        // I*. A family view with no parent in it drew nothing at all.
+        // This head is in a subagent: the parent and its children and nothing else. Ungrouped on purpose, since
+        // folds over a list of two or three rows would be a second way to hide the answer to where am I.
         if let Some(parent) = self.parent_session()
             && let Some(i) = self.index_of(&parent)
         {
@@ -519,12 +349,9 @@ impl App {
         out
     }
 
-    /// **One session's row and, when it is open, its children** — the recursive half of the tree,
-    /// shared by the project branch and the `system` groups so a row is drawn the same way in both.
-    ///
-    /// `force` is the family view's rule for its first level and nothing else, so a session row's
-    /// `open` and the rows drawn under it are one answer: a `+` over rows that are on the screen is
-    /// the one thing this list must not say.
+    /// One session's row and, when it is open, its children: the recursive half of the tree, shared
+    /// by the project branch and the `system` groups. `force` is the family view's rule for its first
+    /// level only, so a row's `open` and the rows drawn under it are one answer.
     fn push_session(
         &self,
         out: &mut Vec<SessionRow>,
@@ -534,11 +361,9 @@ impl App {
         force: bool,
         branch: Option<Branch<'_>>,
     ) {
-        // **A row the person took off the list is not drawn, and neither is anything under it** —
-        // the unit of removal is the subtree, because a child whose parent is not on a tree has no
-        // place on it. One guard here covers all three ways a session becomes a row (a project's
-        // root, a group's root, a child), which is why the filter is at this end of the walk rather
-        // than at each of them. See `app::removal`.
+        // A row the person took off the list is not drawn, and neither is anything under it: the
+        // unit of removal is the subtree, since a child whose parent is off the tree has no place on
+        // it. One guard covers all three ways a session becomes a row. See `app::removal`.
         if self.removed_chain(i) {
             return;
         }
@@ -577,12 +402,9 @@ impl App {
         })
     }
 
-    /// **The index of a session's parent, when that parent is on this list.** `None` for a session
-    /// nobody spawned and for one whose parent this daemon does not hold — the two cases in which
-    /// the row is a root of the tree it is drawn in.
-    ///
-    /// `pub(crate)` because `app::removal` walks the same edge: *is this row off the list because a
-    /// session above it is* is a question about this chain and nothing else.
+    /// The index of a session's parent, when that parent is on this list: `None` for a session
+    /// nobody spawned and for one whose parent this daemon does not hold. `pub(crate)` because
+    /// `app::removal` walks the same edge.
     pub(crate) fn parent_on_list(&self, i: usize) -> Option<usize> {
         self.sessions[i]
             .parent_session_id
@@ -594,11 +416,9 @@ impl App {
         self.sessions.iter().position(|s| s.session_id == id)
     }
 
-    /// **A path with `$HOME` written as `~`**, against THIS head's home and not the environment's.
-    ///
-    /// The shortening is a fact about the head (`App::home`), and it is one function: the session
-    /// list's rows, the plugin's feed and the status line all read it here. Two readers of the
-    /// environment is how a picture came to depend on which process drew it.
+    /// A path with `$HOME` written as `~`, against this head's home and not the environment's:
+    /// the list's rows, the plugin's feed and the status line all read it here, and two readers of
+    /// the environment is how a picture came to depend on which process drew it.
     pub(crate) fn tilde_path(&self, path: &str) -> String {
         let home = self.home.as_str();
         match path.strip_prefix(home) {
@@ -609,19 +429,12 @@ impl App {
         }
     }
 
-    /// **The session a typed number names — the n-th SESSION, not the n-th row.**
-    ///
-    /// The list's numbers are its sessions': a group's line takes none, because a number is
-    /// something a reader types to go somewhere and there is nowhere to go on a group's line.
-    /// That is rano's own rule (`agent::picker` numbers the [`SessionItem::Session`] rows and
-    /// nothing else), and it is read here so the drawn number and the typed one are one
-    /// number — the two-enumerations defect this list has paid for twice.
-    ///
-    /// `None` past the last session, and `None` for `0`: the list is numbered from 1.
+    /// The session a typed number names: the n-th session, not the n-th row. A group's line takes
+    /// no number, because a number is something a reader types to go somewhere. `None` past the
+    /// last session and for `0`, since the list is numbered from 1.
     pub(crate) fn session_at_number(&self, n: usize) -> Option<usize> {
-        // **The numbers are the DRAWN list's** — whichever of the two drew it (the plugin's, or
-        // the head's own when the layer cannot answer), because a number that means one thing on
-        // the screen and another here is the two-enumerations defect this list has paid for twice.
+        // The numbers are the drawn list's, whichever of the two drew it, because a number that
+        // means one thing on the screen and another here is the two-enumerations defect.
         self.picker_rows()
             .iter()
             .filter(|r| r.number.is_some())
@@ -629,11 +442,9 @@ impl App {
             .nth(n.checked_sub(1)?)
     }
 
-    /// **Where each session of the daemon's list is drawn** — its project, and the `system` group
-    /// it belongs in when it is one of the harness's own agents.
-    ///
-    /// A `Vec` parallel to `self.sessions` rather than a map: every reader indexes the other one
-    /// anyway, and a map keyed by id would be a second way to spell *which session is this row*.
+    /// Where each session of the daemon's list is drawn: its project, and the `system` group it
+    /// belongs in when it is one of the harness's own agents. Parallel to `self.sessions` and not a
+    /// map, because every reader indexes the other one and a map would be a second way to spell it.
     pub(crate) fn placements(&self) -> Vec<Placement> {
         let own: Vec<Project> = self
             .sessions
@@ -642,9 +453,8 @@ impl App {
             .collect();
         (0..self.sessions.len())
             .map(|i| Placement {
-                // **The ROOT of the chain decides**, because a child's workspace can be a review
-                // clone or a worktree or another machine — what says where it belongs is the tree
-                // it hangs from, and only a session nobody spawned is placed by its own path.
+                // The root of the chain decides, because a child's workspace can be a review clone
+                // or another machine: only a session nobody spawned is placed by its own path.
                 project: own[self.root_of(i)].key.clone(),
                 system: self.system_kind(i),
             })
@@ -663,12 +473,9 @@ impl App {
         at
     }
 
-    /// **Which system agent this session is, if it is one** — its own row's marks first, then the
-    /// chain's.
-    ///
-    /// Three marks, and the order is the point: the review queue's own session is a gatekeeper and
-    /// not a reviewer, and everything hanging from it — a review, a review of a review — is a
-    /// reviewer, which is the same rule `letibot_sessionlog::origin` groups the queue's work by.
+    /// Which system agent this session is, if it is one: its own row's marks first, then the
+    /// chain's. The order is the point, since the review queue's own session is a gatekeeper and
+    /// everything hanging from it is a reviewer.
     fn system_kind(&self, i: usize) -> Option<SystemKind> {
         let mut at = i;
         for _ in 0..MAX_CHAIN {
@@ -688,8 +495,8 @@ impl App {
                     SystemKind::Reviewer
                 });
             }
-            // **A brief carries no seat**, so a reviewer is known here by the brief its title was
-            // cut from — the same gap `App::fold_subagents` fills the same way.
+            // A brief carries no seat, so a reviewer is known here by the brief its title was cut
+            // from; `App::fold_subagents` fills the same gap the same way.
             if s.title
                 .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX)
             {
@@ -719,9 +526,8 @@ impl App {
                 });
             }
         }
-        // **The name, and the whole path only when two projects would read alike** — the ask, and
-        // the one case it cannot be met in: two checkouts called `letibot` are two rows a reader
-        // cannot tell apart, so both say where they are.
+        // The name, and the whole path only when two projects would read alike: two checkouts
+        // called `letibot` are two rows a reader cannot tell apart, so both say where they are.
         let names: Vec<String> = out.iter().map(|p| project_name(&p.key)).collect();
         let shared: Vec<bool> = names
             .iter()
@@ -737,12 +543,9 @@ impl App {
         out
     }
 
-    /// **The nodes on the way to where this head is standing** — the project, its `system` branch
-    /// and the group, so a list that hides where you are cannot happen.
-    ///
-    /// **`system` is on the chain only when `here` is drawn in it**: a head standing in an ordinary
-    /// conversation is not standing in the harness's branch, and opening it anyway drew a group
-    /// line per kind for a branch the person is nowhere near.
+    /// The nodes on the way to where this head is standing: the project, its `system` branch and
+    /// the group, so a list that hides where you are cannot happen. `system` is on the chain only
+    /// when this head is drawn in it, or a group line would open for a branch nobody is near.
     fn here_nodes(&self, place: &[Placement]) -> Vec<String> {
         let Some(i) = self.index_of(&self.session_id) else {
             return Vec::new();
@@ -756,8 +559,8 @@ impl App {
         out
     }
 
-    /// **Whether a node's rows are on the list** — the operator's answer when they have given one,
-    /// then the nodes on the way to where this head is standing, then the node's own default.
+    /// Whether a node's rows are on the list: the person's answer when they gave one, then the
+    /// nodes on the way to where this head is standing, then the node's own default.
     pub(crate) fn node_open(&self, node: &Node, here: &[String]) -> bool {
         let key = node.key();
         if let Some(open) = self.picker_folds.get(key) {
@@ -769,28 +572,16 @@ impl App {
         node.default_open()
     }
 
-    /// **Whether a row's children are on the list because this head is standing among them.**
-    ///
-    /// The family view ([`App::session_rows`]) shows the parent's children whatever the collapse
-    /// state says — a family whose members were folded away would be a list of one row — so the
-    /// first level of that view is open by rule rather than by the operator's `→`. One function,
-    /// read by the enumeration **and by the fold glyph the picker draws beside the row**: a `▸`
-    /// next to the rows it is hiding is the one thing this list must not say, and the glyph came
-    /// from the collapse list alone, so a family view drew `▸` over three visible rows. Same rule,
-    /// same reader, which is the `todos_stops` lesson this file already carries.
+    /// Whether a row's children are on the list because this head is standing among them. The
+    /// family view shows the parent's children whatever the collapse state says, and the fold glyph
+    /// reads the same answer: a `▸` next to rows it is hiding is the one thing this list must not say.
     pub(crate) fn family_open(&self, id: &str, depth: usize) -> bool {
         depth == 0 && self.parent_session().as_deref() == Some(id)
     }
 
-    /// A session's children, in the daemon's order, one step deeper — the recursive half of
-    /// [`App::session_rows`].
-    ///
-    /// A child is shown when its parent is expanded **or** when it is on the chain to the current
-    /// session; anything else is collapsed into its parent. `force` is [`App::family_open`]'s own
-    /// answer for the family view's first level — see `session_rows` — and it applies to **one
-    /// level only**: a sibling's own children are still folded away until that sibling is
-    /// expanded, which is what keeps the family view a family rather than the whole subtree behind
-    /// it.
+    /// A session's children, in the daemon's order, one step deeper: shown when their parent is
+    /// expanded or when one of them is on the chain to the current session. `force` applies to one
+    /// level only, which is what keeps the family view a family and not the subtree behind it.
     pub(crate) fn push_children(
         &self,
         out: &mut Vec<SessionRow>,
@@ -805,8 +596,8 @@ impl App {
             if s.parent_session_id.as_deref() != Some(parent) {
                 continue;
             }
-            // **A row belongs to exactly one branch**, so a child of another branch is not drawn
-            // under it — it is a root where it is drawn (see `session_rows`).
+            // A row belongs to exactly one branch, so a child of another branch is not drawn
+            // under it: it is a root where it is drawn.
             if branch.is_some_and(|b| !b.holds(i)) {
                 continue;
             }
@@ -817,10 +608,8 @@ impl App {
         }
     }
 
-    /// **The conversation this head's session belongs to** — itself, unless it is a sub-session.
-    ///
-    /// The header counts *conversations*, and this is the half that keeps a head driving a child
-    /// from reading `0/4`: it still says which conversation it is in.
+    /// The conversation this head's session belongs to: itself, unless it is a sub-session. The
+    /// header counts conversations, and this keeps a head driving a child from reading `0/4`.
     pub(crate) fn session_root(&self) -> String {
         let mut cur = self.session_id.as_str();
         while let Some(s) = self.sessions.iter().find(|s| s.session_id == cur)
@@ -831,21 +620,9 @@ impl App {
         cur.to_string()
     }
 
-    /// **How many rows this session's store row holds, while this head holds none of them**
-    /// — the fact [`App::restoring`] is drawn from, asked at the one moment the two sources
-    /// are both in hand (a `Hello`, whose list carries every session's `stored_items`).
-    ///
-    /// The head opened the session it asked for and was handed an empty snapshot; the same
-    /// frame said the store holds 166 rows for it. The daemon restores on its worker, behind
-    /// whatever turn it is running, so for however long that takes the two disagree and the
-    /// screen must not believe the emptier one.
-    ///
-    /// **Only while the head holds NOTHING**, and that is the rule rather than caution. A live
-    /// session in a daemon with a store has `stored_items` too, and it equals what the view
-    /// holds — but a COMPACTED session's view is trimmed to the window, so `items.len() <
-    /// stored_items` is the ordinary state of a long conversation and would have this head
-    /// claim a restore that finished an hour ago. `is_empty` is the state that has one
-    /// meaning: the head is holding no conversation at all and has been told there is one.
+    /// How many rows this session's store row holds while this head holds none of them, asked where both sources are
+    /// in hand. Only while the head holds nothing: a compacted view is trimmed to the window, so `items.len()` is
+    /// smaller than `stored_items` for any long conversation.
     pub(crate) fn rows_the_store_holds(&self) -> Option<u32> {
         if !self.items.is_empty() {
             return None;
@@ -859,9 +636,8 @@ impl App {
 
     pub(crate) fn session_label(&self, id: &str) -> String {
         let brief = self.sessions.iter().find(|s| s.session_id == id);
-        // **A subagent is named by its slug** — `fix-login`, the name its parent was handed and
-        // the one its branch carries — where its title is the first line of a brief that can run
-        // to 256 characters. A session nobody named keeps its title, or its short id.
+        // A subagent is named by its slug, the name its parent was handed; its title is the first
+        // line of a brief that can run to 256 characters.
         if let Some(b) = brief.filter(|b| !b.slug.trim().is_empty()) {
             return b.slug.clone();
         }
@@ -871,9 +647,8 @@ impl App {
             .unwrap_or_else(|| short_id(id))
     }
 
-    /// **A child as a person reads it** — `fix-login · …14688401`, or its short id — from what
-    /// this head knows of it: the subagents pane's row, then the daemon's list. See
-    /// [`crate::app::child_name`].
+    /// A child as a person reads it, from what this head knows of it: a short id, or its slug when
+    /// it has one. See [`crate::app::child_name`].
     pub(crate) fn child_label(&self, id: &str) -> String {
         let slug = self
             .subagents
@@ -891,15 +666,9 @@ impl App {
         crate::app::child_name(&slug, id)
     }
 
-    /// Ask the daemon for a session as soon as this head is attached: resume it out
-    /// of the store if it is not live, and switch to it either way.
-    ///
-    /// What `letibot --continue` and `letibot --session ID` turn into. It cannot be
-    /// an `Attach` naming the id, because the daemon refuses an attach to a session
-    /// it does not hold — correctly, since a typo must not seat you somewhere — and
-    /// "not held yet" is exactly the state a resume is for. So the head attaches to
-    /// wherever the daemon puts it and then asks, which is the same two steps the
-    /// picker takes.
+    /// Ask the daemon for a session, and switch to it once seated: what `--continue` and `--session
+    /// ID` turn into. It cannot be an `Attach` naming the id, since the daemon refuses an attach to a
+    /// session it does not hold and *not held yet* is the state a resume is for.
     pub fn request_session(&mut self, id: &str) {
         if id.is_empty() {
             return;
@@ -909,42 +678,19 @@ impl App {
         self.queued.push(Action::ResumeSession(id.to_string()));
     }
 
-    /// Make a session and go there, as soon as this head is attached.
-    ///
-    /// `letibot --new [TITLE]` against a daemon that is already running.
+    /// Make a session and go there once this head is attached: `--new [TITLE]` against a daemon
+    /// that is already running.
     pub fn request_new_session(&mut self, title: &str) {
         self.want_new_session = true;
         self.queued.push(Action::NewSession(title.to_string()));
     }
 
-    /// **A frame this head could not read: said, and counted.**
-    ///
-    /// The requirement is *survive AND count*. Dying on an unparseable frame takes the
-    /// session down and says nothing; stepping over one in silence is the same failure
-    /// more quietly, because *"this daemon is sending me something I do not
-    /// understand"* then looks exactly like quiet. So this is the one entry point the
-    /// driver has for `Inbound::Unreadable`: it says what it was, in the transcript,
-    /// and it moves a counter that `/status` carries and the border names once it has
-    /// moved.
-    ///
-    /// # What it deliberately does not do
-    ///
-    /// It does not touch `seq`, and nothing about it is acked. No frame was parsed, so
-    /// there is no seq to report — and inventing one would rewind this head's read mark
-    /// over frames it has already read, which is the one thing a mark must never do.
-    /// `Ack`'s `filtered` is "events I chose not to show" and this is not that either,
-    /// so it moves neither counter the daemon reads back.
-    ///
-    /// It is `Control` rather than `Rendered` for the same reason a `Hello` is: the
-    /// counter it moves is on a screen this head does not reach for, and the sentence
-    /// is filed as a note like every other thing that happened between rows — anchored
-    /// where it arrived, so it scrolls away like the rest of the conversation instead
-    /// of sitting above the composer for ever.
+    /// A frame this head could not read: said and counted, and not fatal. It leaves `seq` alone and acks nothing,
+    /// since no frame was parsed and inventing a seq would rewind the read mark over frames already read.
     pub fn unreadable(&mut self, u: Unreadable) -> Disposition {
         self.unreadable += 1;
-        // `ts` is 0: this happened on the socket rather than on the session's log, and
-        // the log's clock is not this. A note with no timestamp renders without one,
-        // which is the honest shape — see `clock_time`.
+        // `ts` is 0: this happened on the socket rather than on the session's log, and the log's
+        // clock is not this. A note with no timestamp renders without one.
         self.note(Note::Warned(Warned {
             code: "unreadable_frame".into(),
             detail: u.said(),
@@ -954,42 +700,24 @@ impl App {
         Disposition::Control
     }
 
-    /// **The daemon connection has gone.** Called by the driver when a write fails or
-    /// when the pump's channel closes, and by the caller when a reconnect attempt
-    /// fails.
-    ///
-    /// Idempotent, and that matters: the two ways it is noticed arrive together — the
-    /// socket EOFs and the pump dies, so the reader sees `Disconnected` while a write
-    /// in the same pass fails too — and the elapsed time is measured from the *first*
-    /// report rather than from the last, so the sentence does not keep starting over.
-    ///
-    /// A head that is going away does not reconnect, and neither does one that is
-    /// already on its way out: a `Bye` and a `/quit` both arrive mid-pass, and turning
-    /// either into a two-second retry loop is how leticl made a refusal unescapable.
+    /// The daemon connection has gone, called when a write fails, when the pump's channel closes and when a
+    /// reconnect fails. Idempotent, since both ways it is noticed arrive together, so the elapsed time is measured
+    /// from the first report. A head that is going away does not reconnect.
     pub fn link_down(&mut self, why: &str) {
         if self.quit || self.bye.is_some() {
             return;
         }
-        // **No answer is coming, so nothing is asked for.** A `SuggestShell` this head
-        // queued is dropped by the driver when the link is down ("nothing leaves a head
-        // whose link is down"), and a head that kept the ask would go on saying *asking
-        // the model* — for ever, because the id it is waiting on was never sent. Cleared
-        // here rather than in the driver's refusal arm because this is the fact: the
-        // socket the answer would arrive on is gone. The transcript's own snapshot after
-        // a reconnect clears them too, and both are the same rule.
+        // No answer is coming, so nothing is asked for: a `SuggestShell` kept here would go on
+        // saying *asking the model* for ever, waiting on an id that was never sent.
         self.clear_shell_suggestions();
-        // **A link that went down because this head asked is not news.** R30: the daemon
-        // closing our socket is the answer arriving, and drawing *"the daemon connection
-        // is down — reconnecting"* over a shutdown the operator ordered would be this
-        // head reporting its own request as a fault. Reconnecting is wrong for the same
-        // reason: the loop would open a second socket to a process that is on its way
-        // out, and `should_reconnect` would be true the whole time it waited.
+        // A link that went down because this head asked is not news: the daemon closing our socket
+        // is the answer arriving, and reconnecting would open a second socket to a process on its
+        // way out.
         if self.stopping.is_some() {
             return;
         }
-        // **And the pane goes with the connection.** See [`App::drop_pane`]: the pty is the
-        // daemon's, and a head that cannot reach it can neither feed the screen nor forward
-        // the one key that leaves.
+        // And the pane goes with the connection: the pty is the daemon's, so a head that cannot
+        // reach it can neither feed the screen nor forward the one key that leaves.
         self.drop_pane();
         if self.link.is_down() {
             // Already known: refresh the reason if this report has one and keep the
@@ -1010,39 +738,25 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Whether the caller should try to get back now**: the link is down and the
-    /// backoff has passed.
-    ///
-    /// The timing lives on the head because the head has the clock, and because a
-    /// caller that kept its own would be a second copy of a rule about how often to
-    /// retry.
+    /// Whether the caller should try to get back now: the link is down and the backoff has passed.
+    /// The timing lives on the head because the head has the clock, and a caller with its own copy
+    /// would be a second version of one rule.
     pub fn should_reconnect(&self) -> bool {
         matches!(&self.link, Link::Reconnecting { next_try_ms, .. } if self.now_ms >= *next_try_ms)
     }
 
-    /// **An attempt to get back is out.** Called by the caller the moment it has opened
-    /// a socket and sent its `ATTACH`, so the head does not try again while an answer is
-    /// in flight.
-    ///
-    /// This is not an optimisation, it is what stops the retry from eating its own
-    /// answer: an `ATTACH` goes out on a *live* socket and the `Hello` comes back a
-    /// moment later, and a loop that asked `should_reconnect` between those two would
-    /// open a second socket and — to open it — close the first, which is the one about
-    /// to be answered. Found by the end-to-end test, which deadlocked on it.
-    ///
-    /// It pushes the window out without counting an attempt: a socket that opened is not
-    /// a failure, and the `Hello` either arrives (the link goes up) or the backoff passes
-    /// and this tries again.
+    /// An attempt to get back is out: the caller has opened a socket and sent its `ATTACH`, which stops the retry
+    /// from eating its own answer, since a loop that asked between the two would close the socket about to be
+    /// answered.
     pub fn reconnect_sent(&mut self) {
         if let Link::Reconnecting { next_try_ms, .. } = &mut self.link {
             *next_try_ms = self.now_ms.saturating_add(RECONNECT_BACKOFF_MS);
         }
     }
 
-    /// An attempt to get back has failed, and this is the last thing it said. Counted,
-    /// so the sentence can say how many times the head has tried — a head that has tried
-    /// forty times and one that has tried once are in different situations, and "still
-    /// reconnecting…" says neither.
+    /// An attempt to get back has failed, and this is the last thing it said. Counted, because a
+    /// head that has tried forty times and one that has tried once are in different situations, and
+    /// *still reconnecting* says neither.
     pub fn reconnect_failed(&mut self, why: &str) {
         if let Link::Reconnecting {
             attempts,
@@ -1058,19 +772,9 @@ impl App {
         }
     }
 
-    /// **The daemon is back** — the `Hello` is what says so, because it is the frame
-    /// that seats this connection.
-    ///
-    /// Returns the sentence rather than filing it, and the caller is why: this runs
-    /// inside the `Hello` arm, and the very next thing that arm does is fold in the
-    /// snapshot — which **replaces `self.notes` wholesale**, a snapshot's warnings being
-    /// the head's whole warning history. A note filed here would be thrown away, which is
-    /// how the first version of this said nothing at all. Same shape, same reason, as
-    /// `letibot_sessionlog::protocol_skew`'s sentence in the same arm.
-    ///
-    /// The sentence carries the seq the head asked from, so "where it picks up" is a
-    /// number and not a promise. `None` when nothing was down, so the `Hello` a `Switch`
-    /// produces says nothing.
+    /// The daemon is back: the `Hello` says so, being the frame that seats the connection. It returns the sentence
+    /// rather than filing it, since the next thing the arm does is fold in the snapshot, which replaces `self.notes`
+    /// wholesale. `None` when nothing was down.
     pub(crate) fn link_up(&mut self) -> Option<String> {
         let Link::Reconnecting {
             since_ms, attempts, ..
@@ -1079,9 +783,8 @@ impl App {
             return None;
         };
         let out = self.now_ms.saturating_sub(since_ms);
-        // Only when there *were* failed attempts: the ordinary reconnect succeeds on
-        // its first try, and `(...4.4s ().)` with nothing in the brackets is a head
-        // saying a number where there is none.
+        // Only when there were failed attempts: the ordinary reconnect succeeds first try, and
+        // empty brackets are a head saying a number where there is none.
         let tries = if attempts == 0 {
             String::new()
         } else {
@@ -1102,44 +805,22 @@ impl App {
         ))
     }
 
-    /// A command the operator (or a frame) produced did not leave, because there is no
-    /// daemon to send it to. Said once per batch: the alternative is one sentence per
-    /// action, and the batch is usually one action.
+    /// A command did not leave, because there is no daemon to send it to. Said once per batch, since
+    /// the alternative is one sentence per action and the batch is usually one action.
     pub fn refused_while_detached(&mut self) {
         self.say("no daemon connection — that did not go out");
         self.redraw = true;
     }
 
-    /// Whether the link to the daemon is down. What the screen asks before it draws the
-    /// detached line, and what `submit` asks before it turns a line into a prompt.
+    /// Whether the link to the daemon is down: what the screen asks before it draws the detached
+    /// line, and what `submit` asks before it turns a line into a prompt.
     pub fn detached(&self) -> bool {
         self.link.is_down()
     }
 
-    /// **Is this head holding everything it would send — the daemon speaks an OLDER protocol
-    /// and nobody has said "attach anyway" for it?**
-    ///
-    /// The daemon (since the acceptance change) seats whatever version arrives and states its
-    /// own in the `Hello`, so *"connect, look around and make informed decision"* lands here:
-    /// the connection is up, the conversation is readable and scrollable, and the one thing the
-    /// head withholds is its own writes. **"Look around" is the default; "decide" is a key** —
-    /// [`App::attach_anyway`], the `ctrl-^` chord spelled on the resident line and in every
-    /// refusal.
-    ///
-    /// # Why OLDER is the locked direction and NEWER is not
-    ///
-    /// The asymmetry is [`letibot_sessionlog::protocol_skew`]'s, and it is the load-bearing
-    /// part: a NEWER daemon's unknown frames are a *reading* problem this head already survives
-    /// (`App::unreadable` counts them, the line is kept, nothing is lost but what the frame
-    /// said), so there is nothing to withhold. An OLDER daemon is a *writing* problem — the
-    /// first `ClientFrame` it has no arm for fails its deserialiser, and its read loop answers
-    /// with a `Bye` and closes the socket. **A head that sent as usual would be spending the
-    /// session on the first command the two do not share**, which is exactly the quiet-until-fatal
-    /// case the sentence exists for. Holding sends is what makes the attach safe by default;
-    /// the override is the person's, spelled and deliberate.
-    ///
-    /// The comparison is against [`App::daemon_seat`], not a boolean — see
-    /// [`App::skew_override_for`] for why an override belongs to the daemon it was given on.
+    /// Is this head holding everything it would send, because the daemon speaks an older protocol and nobody has said
+    /// attach anyway. Older locks and newer does not: an unknown frame from a newer daemon is a reading problem the
+    /// head survives, while an older daemon's missing arm closes the socket.
     pub(crate) fn skew_locked(&self) -> bool {
         self.daemon_protocol
             .is_some_and(|d| d < letibot_sessionlog::protocol::PROTOCOL_VERSION)
@@ -1148,29 +829,18 @@ impl App {
                 .is_some_and(|seat| self.skew_override_for != Some(seat))
     }
 
-    /// [`letibot_sessionlog::protocol_skew`]'s sentence for the daemon this head is seated
-    /// with — the informed sentence, verbatim, or `None` when the builds match. Every refusal
-    /// and the resident line draw from here so the argument cannot be said two ways.
+    /// [`letibot_sessionlog::protocol_skew`]'s sentence for the daemon this head is seated with, or
+    /// `None` when the builds match. Every refusal and the resident line draw from here, so the
+    /// argument cannot be said two ways.
     pub(crate) fn skew_sentence(&self) -> Option<String> {
         self.daemon_protocol.and_then(|d| {
             letibot_sessionlog::protocol_skew(d, letibot_sessionlog::protocol::PROTOCOL_VERSION)
         })
     }
 
-    /// **`ctrl-^` — "attach anyway, I know what this is."** The other half of the ruling: a
-    /// head that only knew how to refuse would have kept the closed door and moved it one
-    /// screen down.
-    ///
-    /// **Nothing is re-sent.** The override does not reach back for whatever was refused while
-    /// locked — a refused line was held in the composer, not queued, and re-sending a person's
-    /// words after they have moved on is an act nobody asked for. What it does send are the
-    /// reads the seating itself owes ([`App::refetch_session_facts`] and the `TermStatus` ask),
-    /// which the lock skipped on arrival: those are the head's own obligations, not the
-    /// operator's, and lifting the lock is the moment they come due.
-    ///
-    /// **Silent when nothing is locked**, by the rule a chord is only named where it acts: the
-    /// chord is spelled on the lock line and in the refusals, never in the hint bar, so a
-    /// press that finds no lock has no promise to keep.
+    /// `ctrl-^`: attach anyway. Nothing is re-sent, since a refused line was held in the composer and not queued,
+    /// and re-sending somebody's words after they moved on is an act nobody asked for. What it sends are the reads
+    /// the seating owes.
     pub(crate) fn attach_anyway(&mut self) {
         if !self.skew_locked() {
             return;
@@ -1190,13 +860,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// A command the operator (or a key, or a frame) produced did not leave, because this
-    /// head is holding its sends against an older daemon. [`App::refused_while_detached`]'s
-    /// shape, once per batch, for the same reason: one sentence, not one per action.
-    ///
-    /// The sentence is [`App::skew_sentence`]'s — the informed one — with the act and the
-    /// chord appended, because the reader here is a person who just pressed a key and needs
-    /// to know both why nothing left and what to do about it.
+    /// A command did not leave, because this head is holding its sends against an older daemon.
+    /// [`App::refused_while_detached`]'s shape, once per batch. The sentence names both why nothing
+    /// left and what to do about it, because the reader just pressed a key.
     pub(crate) fn refused_while_locked(&mut self) {
         if let Some(said) = self.skew_sentence() {
             self.say(&format!(
@@ -1207,36 +873,8 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Leave the pane without ending it** — the `ctrl-\` act. See [`TermPane`].
-    ///
-    /// The rectangle goes and the conversation comes back; **nothing is sent**, so the program
-    /// keeps running on the daemon's pty, the daemon keeps its screen, and the pane's slot stays
-    /// occupied — which is what makes a later `!term` an attach to the *same* run rather than a
-    /// new one.
-    ///
-    /// **The head keeps its own copy of the screen and keeps feeding it**, deliberately: the
-    /// `TermOutput` frames are still arriving (the pane is the session's and this head is still
-    /// attached to the session), so a program that exits while the operator is away still leaves
-    /// the row they would have seen had they been looking — with its last rows and its status.
-    /// Dropping the screen here would make a death while detached a death with nothing to show,
-    /// which is the second half of *a detach must not hide anything*.
-    ///
-    /// **The sentence names both ways on**, because a person who has just made a program
-    /// disappear needs to know it is still there and how to end it if they meant to.
-    ///
-    /// # It is NOT a notice, and that is the correction
-    ///
-    /// This said *"{line} is still running — `!term` comes back to it, `!term close` ends it"*
-    /// through [`App::say`], and it was the same fact twice: [`App::pane_behind`] draws that
-    /// sentence **persistently**, one line above the composer, for as long as it is true. Worse,
-    /// the notice is the copy that cannot be taken back — a notice lives for `NOTICE_MS` of wall
-    /// time and nothing retires it early, so the `TermEnded` a second later left a sentence on
-    /// the screen saying a program was still running, directly above the row saying it had
-    /// ended. A fact about NOW belongs in the one place that stops drawing it when it stops
-    /// being true.
-    ///
-    /// Returns whether there was a pane to leave, so a caller can say so once rather than per
-    /// report — the shape [`App::drop_pane`] uses for the same reason.
+    /// Leave the pane without ending it: the rectangle goes and the conversation comes back, and nothing is sent, so
+    /// the program keeps running on the daemon's pty and a later `!term` attaches to the same run. See [`TermPane`].
     pub fn detach(&mut self) -> bool {
         let Some(p) = self.term.as_mut() else {
             return false;
@@ -1246,33 +884,9 @@ impl App {
         true
     }
 
-    /// **`!term close` — the ending, and the head asks first.**
-    ///
-    /// # The four answers, and why the head cannot give three of them
-    ///
-    /// * **a pane of this head's own** — drawn or detached. The line the operator typed at
-    ///   `TermOpen` is in [`TermPane::line`], so the card can name what is about to end;
-    /// * **no pane here, but a live one the daemon named** — [`App::term_fact`] is
-    ///   [`PaneFact::Running`], and the card names `!term <command>`. This is the case the
-    ///   read exists for: the program's screen may be in another head entirely, and the
-    ///   operator still means it;
-    /// * **no pane at all** — a sentence, and **nothing sent**. `TermClose` is quiet about
-    ///   there being nothing to end, so a head that sent it would look like it had done
-    ///   something. The sentence names the way to start one;
-    /// * **and *not asked yet*** — [`PaneFact::Unasked`] is the state between an attach and the
-    ///   daemon's answer to the read, and **the line is held**: the read goes out, and its
-    ///   answer runs this same decision (see the `TermStatus` arm). A head that guessed *no
-    ///   pane* here would be wrong on the one case that matters — a person who attached a
-    ///   moment ago and means the program the daemon is holding.
-    ///
-    /// **Nothing here ends anything.** Every arm either raises [`App::term_ask`] or says why it
-    /// cannot; the frame leaves when the card is answered with a yes, and never before.
-    ///
-    /// **`which` is the number the operator typed** (`!term close 2`, protocol 44), and it is
-    /// checked against what the head holds and what the daemon said, never sent on trust.
-    /// Without one the pane meant is the one this head holds, or the session's only one — and
-    /// with several and no number the line is refused with their numbers, because guessing which
-    /// program to kill is the one guess this card exists to prevent.
+    /// `!term close`: the ending, and the head asks first. The four answers are a pane of this head's own, a live one
+    /// the daemon named, no pane at all, and not asked yet, which holds the line and runs this same decision when the
+    /// status arrives. Nothing here ends anything.
     pub(crate) fn begin_close(&mut self, which: Option<u32>) -> Option<Action> {
         // This head's own pane, when it is the one meant.
         if let Some(p) = &self.term
@@ -1354,24 +968,8 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Go to another session** — the one door every switch goes through, and the reason the
-    /// wait is a state rather than a gap.
-    ///
-    /// # The wait, which this used to leave blank
-    ///
-    /// A `Switch` is a round trip: the daemon answers it with a second `Hello` carrying the
-    /// whole snapshot, and until that lands the screen still holds the session being left. The
-    /// resume arm below has always drawn that wait (`fetching` + the cat) and the live-switch arm
-    /// did not — so the operator, entering a subagent: *"pressed enter on its row — main session
-    /// visible (you) and then subagent session loaded"*, and, about the whole head: *"some async
-    /// action finishes sometimes and meanwhile something else is shown"*. Both arms take the same
-    /// state now, from the same field, because a second pending flag is a second behaviour that
-    /// drifts (see [`Self::fetching`], and [`Self::switching_to`] for what is drawn from it).
-    ///
-    /// The rows do not stay where they are, and that is the half this used to leave to the reader's
-    /// imagination: a switch cannot draw the session it is going to before the daemon has sent it,
-    /// and it must not go on drawing the one being left — so the conversation draws the wait alone
-    /// (`App::switch_wait`) while the status row says `switching to …`.
+    /// Go to another session: the one door every switch goes through, and the reason the wait is a state and not a
+    /// gap. A `Switch` is a round trip, so until the second `Hello` lands the screen holds the session being left,
     pub(crate) fn switch_to(&mut self, id: String) -> Option<Action> {
         if id == self.session_id {
             self.close_surface(Surface::Picker);
@@ -1379,12 +977,9 @@ impl App {
             self.say("already here");
             return None;
         }
-        // A session that is on disk and not in this daemon has to be brought in
-        // before it can be switched to. Two frames, and the head sends the second
-        // one when the daemon answers the first — the same two steps `/new` takes,
-        // reusing `want_new_session` because "go to the session the daemon just told
-        // me about" is one behaviour and a second flag for it would be a second
-        // behaviour that drifts.
+        // A session on disk and not in this daemon has to be brought in before it can be switched to: two frames,
+        // the second sent when the daemon answers the first. `want_new_session` is reused because going to a session
+        // the daemon just named is one behaviour.
         if self.sessions.iter().any(|b| b.session_id == id && !b.live) {
             self.want_new_session = true;
             self.say(&format!(
@@ -1394,23 +989,15 @@ impl App {
             self.wait_for_session(&id);
             return Some(Action::ResumeSession(id));
         }
-        // `since_seq` is not sent: this head has no state for the session it is
-        // going to, so a snapshot is the only honest ask. Coming *back* to a
-        // session it was watching would be a resume, and this head does not keep
-        // per-session marks — it would be a cache with no invalidation rule.
+        // `since_seq` is not sent: this head has no state for the session it is going to, so a snapshot is the only
+        // honest ask, and it keeps no per-session marks, which would be a cache with no invalidation rule.
         self.wait_for_session(&id);
         Some(Action::Switch(id))
     }
 
-    /// **The wait a switch is, as one act** — both arms of [`Self::switch_to`] call this, which is
-    /// what makes *one pending state* true rather than a claim: `fetching` is the session asked
-    /// for and not yet seated in, `attaching` is *this head has been told nothing yet*, and the
-    /// `Hello` that carries the answer clears both (a `Hello` for any other session leaves them
-    /// standing, which is exactly what an overlapping pair of switches needs).
-    ///
-    /// **The pane's rows come with it, when the pane is what the operator is looking at** — see
-    /// [`Self::subagent_parent`] for the empty list this closes, and for why the composer's count
-    /// is deliberately left on the session the screen still holds.
+    /// The wait a switch is, as one act: both arms of [`Self::switch_to`] call it, which is what makes one pending
+    /// state true rather than a claim. `fetching` is the session asked for and `attaching` is *told nothing yet*, and
+    /// the `Hello` that answers clears both.
     fn wait_for_session(&mut self, id: &str) {
         self.fetching = Some(id.to_string());
         self.begin_attach();
@@ -1419,19 +1006,9 @@ impl App {
         }
     }
 
-    /// **The session whose children the subagents pane is showing** — the one this head stands in,
-    /// or, while the pane is open and a switch is in flight, the one it has asked to stand in and
-    /// has not been seated in yet.
-    ///
-    /// This is `fetching`'s second reader, and it exists because a switch is a wait. The pane is
-    /// the CURRENT session's children, so `esc` out of a subagent used to draw the child's own
-    /// (empty) list for as long as the switch took — the operator: *"esc from subagent brought me
-    /// to nowehere (iirc it was an empty subagents pane)"*. The list he came out of is the
-    /// parent's, the head knows which session it asked for, and one field is enough to draw it.
-    ///
-    /// **The pane has to be open for the target to win**, and that is not a detail: these rows are
-    /// also the composer's `N subagent running` count, which is a fact about the session on the
-    /// screen — and before the `Hello` the screen is still the session being left.
+    /// The session whose children the subagents pane shows: the one this head stands in, or while a switch is in
+    /// flight the one it asked for. Without it, `esc` out of a subagent drew the child's own empty list for as long
+    /// as the switch took.
     pub(crate) fn subagent_parent(&self) -> &str {
         match self.fetching.as_deref() {
             Some(to) if self.is_open(Surface::Subagents) => to,
@@ -1439,109 +1016,46 @@ impl App {
         }
     }
 
-    /// **Whether the conversation this head holds is one it is on its way OUT of** — the one
-    /// fact that decides what the conversation pane draws while a switch is in flight.
-    ///
-    /// [`Self::fetching`] is the session asked for, and a switch is a round trip: the daemon
-    /// answers it with a second `Hello` carrying the whole snapshot, so until that lands
-    /// `self.session_id` is still the session being left and every row in `items` is its. The
-    /// operator, on the build that already said *switching to …* in the status row: *"on this
-    /// build I \"Entered\" sub agents and still see you — main session"* — the pane was a full
-    /// screen of the conversation he had just asked to leave, with the wait squeezed under it.
-    ///
-    /// **It is not `attaching`.** A first attach is also a wait, and there the head holds no
-    /// rows at all; this is the narrower state *the rows it holds are the wrong session's*, which
-    /// is what [`crate::ui::transcript::window::body_window`] reads to draw the wait alone.
+    /// Whether the conversation this head holds is one it is on its way out of: a switch is a round trip, so until
+    /// the second `Hello` lands every row in `items` is the session being left. Not `attaching`, which is the state
+    /// where the head holds no rows at all.
     pub(crate) fn leaving(&self) -> bool {
         self.fetching
             .as_deref()
             .is_some_and(|to| to != self.session_id)
     }
 
-    /// **The session this head is on its way to, as a person reads it** — `None` when it is not
-    /// going anywhere.
-    ///
-    /// Read by the status row (`switching to …`), and the reason a switch is a state rather than
-    /// a blank screen: the conversation drawn while it happens is the session being LEFT, and
-    /// nothing in it says a move is in flight. [`Self::fetching`] is the fact; this is the
-    /// sentence, and it is deliberately the same field rather than a second one.
+    /// The session this head is on its way to, as a person reads it, or `None`. Read by the status row, and the
+    /// reason a switch is a state rather than a blank screen: the conversation drawn while it happens is the one
+    /// being left, and nothing in it says a move is in flight.
     pub(crate) fn switching_to(&self) -> Option<String> {
         let id = self.fetching.as_deref()?;
         self.leaving().then(|| self.session_label(id))
     }
 
-    /// **Everything a seated head must ASK FOR, in one place — attach, re-attach, and the
-    /// return from a switch.**
-    ///
-    /// # Why an ask at all, when the `Hello` already carries a list
-    ///
-    /// The operator's report is the whole argument: the composer's `N subagents running`
-    /// segment **disappeared and came back on its own** while a subagent ran throughout —
-    /// *"so the counter is gone"*, then, minutes later, *"yep and now it is back. wtf"*.
-    /// Nothing was restarted between the two. A drawn state that comes back by itself is a
-    /// state whose restore is **opportunistic**, and the thing that was restoring it was
-    /// some later list reply happening to arrive — the head was not asking for one.
-    ///
-    /// So every read here is a question the head puts to the daemon at the one moment it
-    /// knows it needs the answer, rather than a frame it hopes will land:
-    ///
-    /// * **`ListSessions`** — the subagent rows and the composer's count are folded from
-    ///   the daemon's own list ([`App::fold_subagents`]), and a `Hello` carries a copy of it
-    ///   cut at the instant the daemon answered. A copy is not an ask: the fold's source was
-    ///   whatever list the last frame happened to hold, and nothing re-asked. This does.
-    /// * **`ListJobs`** — the same shape, and the reason is the brief's own: *"for a job
-    ///   already running when this head attached, which no event announces."*
-    /// * **`Settings`** — the header reads the live `model` row, and the daemon never sends
-    ///   the rows unprompted. The operator, on a session answered by deepseek: *"restarted
-    ///   the letibot - still qwen"*.
-    ///
-    /// # Which three moments this is
-    ///
-    /// There is one call site, in the `Hello` arm, because the daemon answers all three with
-    /// the same frame: an **attach**, a **re-attach** (the driver's reconnect is an `ATTACH`
-    /// and the daemon answers it with a `Hello` like any other), and the **return from a
-    /// switch** — a `Switch` is answered with a second `Hello` on purpose, so that the
-    /// late-join path is the only seating path. The return from a *pane* is the same moment:
-    /// whether this session has a pane is asked on the same seating, by the same arm (see the
-    /// `TermStatus` push above, which is `Action::TermStatus`).
-    ///
-    /// **The asks are reads and they are cheap.** `ListSessions` and `ListJobs` are answered
-    /// off the registry on the connection's own thread, not through the command queue (see
-    /// the server's arms), so none of them waits behind a running turn — which is the whole
-    /// reason the daemon answers them here rather than as commands.
-    ///
-    /// **And every answer re-folds.** A re-ask whose reply is not applied is worse than no
-    /// re-ask, because it looks like one: the `Sessions` arm calls [`App::fold_subagents`]
-    /// and the `Jobs` arm replaces the table, for exactly this reason.
+    /// Everything a seated head must ask for, in one place: attach, re-attach and the return from a switch all land
+    /// in the `Hello` arm and answer with `ListSessions`, `ListJobs` and `Settings`. A `Hello` carries a copy, and a
+    /// copy is not an ask, so every answer is re-folded.
     pub(crate) fn refetch_session_facts(&mut self) {
         self.queued.push(Action::Settings);
         self.queued.push(Action::ListJobs);
         self.queued.push(Action::ListSessions);
-        // **And the board** — a session-scoped read like the three above, and the one the head
-        // draws *who waits on the operator* from ([`App::asks_board`]). Without it the read
-        // happened only when the `asks` settings row said a question waited, so a head that
-        // reattached after the question was taken back kept the copy it had and went on naming
-        // the row — nothing that arrived afterwards could correct it.
+        // And the board: the read the head draws *who waits on the person* from. Without it the read happened only
+        // when the `asks` settings row said a question waited, so a head that reattached after it was taken back kept
+        // the copy it had.
         if !self.queued.contains(&Action::ListTodos) {
             self.queued.push(Action::ListTodos);
         }
-        // **The queues, for the edge** (R92 item 5). The composer's bottom edge draws this
-        // session's repository's standing, and before this the only ask for the snapshot was
-        // OPENING THE PANE: a head that never opened `/queue` drew no standing at all — the
-        // operator's *"not all heads still show the queue"*. The answer also names this
-        // session's repository, which a switch changes.
+        // The queues, for the edge: the composer's bottom edge draws this session's repository's standing, and before
+        // this the only ask for the snapshot was opening the pane, so a head that never opened `/queue` drew none.
         if !self.queued.contains(&Action::ListMergeQueue) {
             self.queued.push(Action::ListMergeQueue);
         }
     }
 
-    /// **The session that spawned this one, or `None` when this head is not in a subagent.**
-    ///
-    /// Read off the daemon's list and **not** inferred from the id: ids are minted by the
-    /// daemon (`s-…-sub-…`) and a head that string-matched them would be inventing a fact
-    /// the registry already states — `SessionBrief::parent_session_id`, which is `Some`
-    /// exactly for a child. See [`App::fold_subagents`] for the same field used the other
-    /// way round.
+    /// The session that spawned this one, or `None` when this head is not in a subagent. Read off the daemon's list
+    /// and not inferred from the id, since a head string-matching `s-…-sub-…` would be inventing a fact the registry
+    /// already states.
     pub(crate) fn parent_session(&self) -> Option<String> {
         self.sessions
             .iter()
@@ -1550,26 +1064,8 @@ impl App {
     }
 }
 
-/// **The daemon connection, as far as this head can tell.**
-///
-/// A head's socket to its daemon goes away for ordinary reasons — the daemon is
-/// restarted, the box is shut down for a moment, a `--stop` lands — and the head's job
-/// is to keep drawing the session it already has, say that the link is down, and keep
-/// trying to get it back. It is **not** to exit: exiting takes the operator's view of a
-/// conversation that is still on disk and could still be served.
-///
-/// Two states, and the second is the whole point: `Reconnecting` is a *state the screen
-/// shows* rather than a moment between frames. It carries when the link went down, so
-/// the head can say how long it has been trying rather than "reconnecting…" for ever,
-/// and it carries the last thing known about why.
-///
-/// It is deliberately **not** the same thing as a `Bye`. A `Bye` is the daemon saying it
-/// is finished with this connection — a refusal, a version skew, a shutdown — and the
-/// head leaves with the reason on the screen. That is leticl's rule, and it was learned
-/// there the expensive way: it dropped only its `connected` flag on a `Bye` and
-/// re-attached two seconds later, for ever, so a refusal the daemon meant as the end of
-/// the conversation became a two-second loop under a head that never attached and never
-/// exited.
+/// The daemon connection, as far as this head can tell: a socket goes away for ordinary reasons, and the head's job
+/// is to keep drawing the session it has, say the link is down, and keep trying to get it back. It is not to exit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Link {
     Attached,
@@ -1642,19 +1138,13 @@ pub struct Stopping {
     pub acked: bool,
     pub closed: bool,
     pub gone: bool,
-    /// The daemon's pid, from `SO_PEERCRED` on this very connection — the process at the
-    /// other end of the socket, not a number read out of a file that may be stale. `None`
-    /// when the kernel would not say, which is a fact the farewell states rather than
+    /// The daemon's pid, from `SO_PEERCRED` on this very connection: the process at the other end of the socket and
+    /// not a number read out of a file. `None` when the kernel would not say, which the farewell states rather than
     /// fills in.
     pub pid: Option<i32>,
-    /// **Whether the model was still working when the head gave up waiting.** The daemon
-    /// interrupts the turns it holds on the way out, so this is not *a turn finishing its
-    /// round* — it is what tells *a stop that is inside a command* from *a daemon that did not
-    /// go*, and it is the head's to know because it is the head that was watching the turn.
-    ///
-    /// **`turn_busy` and not the state name**: the round a daemon finishes before it stops can be
-    /// one whose tool call is executing, and a head that asked only whether a round was generating
-    /// would call that stop *a refused one* when it was merely slow.
+    /// Whether the model was still working when the head gave up waiting: the daemon interrupts its turns on the way
+    /// out, so this is not a turn finishing its round. It is what tells a stop inside a command from a daemon that
+    /// did not go.
     pub turn_busy: bool,
     /// **The force path, when the head took it** — directly for an older daemon, or once,
     /// automatically, when the ordinary stop's deadline passed with the process still there.
@@ -1662,17 +1152,13 @@ pub struct Stopping {
     pub forced: Option<Forcing>,
 }
 
-/// **Why the head stopped the daemon the forced way.** The operator, after an exit-and-stop
-/// that did not take against an older daemon: *"yeah when i exited letidb and chose to stop
-/// daemon too - it couldnt. had to --stop --force"* — and asked whether the head should
-/// detect that and take the force path itself, with a line saying why: *"yes"*. Each variant
-/// is one of those lines.
+/// Why the head stopped the daemon the forced way: an exit-and-stop that did not take against an older daemon, and
+/// the operator's answer that the head should take the force path itself with a line saying why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForceWhy {
-    /// The daemon's `Hello` named an older protocol than this head speaks. Such a daemon may
-    /// not read this head's stop frame at all — and this head holds its writes against it
-    /// anyway (`App::skew_locked`) — so the head does not ask and wait: it goes straight to
-    /// the force path, whose interrupt frame every daemon this head can attach to reads.
+    /// The daemon's `Hello` named an older protocol than this head speaks, so such a daemon may not read the stop
+    /// frame at all: the head does not ask and wait, it goes straight to the force path, whose frame every daemon it
+    /// can attach to understands.
     OlderDaemon { daemon: u32, head: u32 },
     /// The ordinary stop was asked for and the process was still there at the deadline.
     DidNotStop { waited_ms: u64 },
@@ -1723,13 +1209,9 @@ pub struct ForceOutcome {
 pub const FORCE_TERM_GRACE_MS: u64 = 5_000;
 
 impl Stopping {
-    /// **Has the question been answered?** Either the daemon's process is gone — the
-    /// operator's choice, carried out — or the deadline has passed and the head can say
-    /// what it observed.
-    ///
-    /// **A force path in flight holds the head**, gone or not: it ends on its own
-    /// observation of the process, within its own bounds, and leaving before it answers
-    /// would drop the line saying what it did.
+    /// Has the question been answered? Either the daemon's process is gone or the deadline has passed and the head
+    /// can say what it observed. A force path in flight holds the head either way, since it ends on its own
+    /// observation of the process.
     pub fn resolved(&self, now_ms: u64) -> bool {
         match &self.forced {
             Some(f) => f.outcome.is_some(),
@@ -1765,55 +1247,22 @@ impl Stopping {
     }
 }
 
-/// **How long a head waits for a daemon it has asked to stop** — and, since the head escalates
-/// on its own, **how long an orderly stop is given before it is forced**.
-///
-/// It was five seconds, the wrapper's figure for *SIGTERM → SIGKILL* (`wait_gone` in
-/// `scripts/letibot`), and that was fine while the deadline only decided when to print a
-/// sentence. It now decides when to interrupt and signal, so it has to cover what an orderly
-/// stop legitimately does after the request is read (`harnessd`'s `cli.rs`, after the worker
-/// loop returns):
-///
-/// * the merge queue is joined, and a gate in flight is killed with its process group —
-///   *SIGTERM, five seconds, SIGKILL* — **up to 5 s**;
-/// * every subagent's VM is brought down (`firecode::down_all`);
-/// * `daemon.shutdown()` joins the accept loop and unlinks the socket;
-/// * `drain_subagents(SUBAGENT_EXIT_GRACE)` waits for the children it told to stop —
-///   **up to 5 s**;
-/// * `lifeline.stopped()` writes the stop time the next daemon measures its down time from
-///   (one store open), and the heartbeat thread dies with the process.
-///
-/// Two bounded five-second waits back to back, plus the VMs and a store write: **fifteen
-/// seconds** covers the slowest orderly stop with room, and a daemon that is still there
-/// after it is not draining — it is wedged. Forcing one sooner would SIGKILL a daemon in
-/// the middle of recording its own stop, which turns a clean restart into a crash the next
-/// daemon reports. An orderly stop with nothing to drain takes milliseconds, so this costs
-/// nothing in the ordinary case; the screen says what it is waiting for the whole time.
+/// How long a head waits for a daemon it asked to stop, and how long an orderly stop is given before it is forced.
+/// Five seconds was the wrapper's figure for SIGTERM then SIGKILL, and it was fine while the deadline only decided
+/// when to print a sentence.
 pub const STOP_DEADLINE_MS: u64 = 15_000;
 
-/// How long between attempts to get back, in milliseconds.
-///
-/// **Flat, and the same number leticl uses.** A daemon that is coming back is back in
-/// well under a second, and one that is gone costs one connect to a socket path — one
-/// syscall — every two seconds. Growing the interval would be an optimisation of
-/// nothing, and it would make the thing the operator watches move less often than the
-/// thing they are waiting for.
+/// How long between attempts to get back: flat, and the same number the other head uses. A daemon coming back is
+/// back in well under a second, and one that is gone costs one connect per interval, so growing it would optimise
+/// nothing.
 pub const RECONNECT_BACKOFF_MS: u64 = 2_000;
 
-/// When a head with no daemon stops saying `reconnecting` and starts saying how long,
-/// and what the operator can do about it.
-///
-/// Under it a drop is usually over before the sentence is read; over it the wait is not
-/// a moment, and a head that has been saying the same word at the operator for a minute
-/// has told them nothing they could not see for themselves.
+/// When a head with no daemon stops saying `reconnecting` and starts saying how long, and what the person can do.
+/// Under it a drop is usually over before the sentence is read; over it the wait is not a moment.
 pub const LINK_IMPATIENT_MS: u64 = 15_000;
 
-/// **A pid as a sentence fragment, or the honest absence** — R30's rule, in one place because
-/// two writers say it: the stop's farewell and the replaced-daemon note.
-///
-/// `None` is *the kernel would not name the peer*, which is a different statement from a pid of
-/// zero; a head that printed a number it did not have would send the operator to `ps` for a
-/// process that is not there.
+/// A pid as a sentence fragment, or the honest absence: `None` is *the kernel would not name the peer*, which is a
+/// different statement from a pid of zero, and printing a number the head does not have sends the person to `ps`.
 pub(crate) fn pid_word(pid: Option<i32>) -> String {
     match pid {
         Some(p) => format!("pid {p}"),
@@ -1821,20 +1270,9 @@ pub(crate) fn pid_word(pid: Option<i32>) -> String {
     }
 }
 
-/// **Which daemon a head is drawing the picture of** — the two facts that answer *is this the
-/// one I attached to*.
-///
-/// A pair rather than the pid alone because a pid is reused by the kernel: a daemon restarted
-/// and handed the same number is a different daemon with the same identity, and the build's
-/// protocol version is the other half of the answer — a replaced daemon is usually a rebuilt
-/// one, and a rebuild that moved the wire is the case a head most needs to be told about.
-///
-/// **What it deliberately is not: a daemon instance id.** The strongest available fact would be
-/// a boot-time stamp the daemon mints once and sends on every `Hello`, which is a protocol
-/// field and a `PROTOCOL_VERSION` bump; `SO_PEERCRED` is already on the wire (R30) and already
-/// re-read on every connection, so this is the honest reading of what the head has. The residue
-/// — a replaced daemon that happens to get the same pid and speaks the same protocol — is
-/// named here rather than papered over.
+/// Which daemon a head is drawing: a pair rather than the pid alone, because the kernel reuses pids, so a daemon
+/// restarted onto the same number is a different daemon with the same identity, and the protocol version is the
+/// other half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DaemonSeat {
     /// The process at the other end of this socket, from `SO_PEERCRED`. `None` when the kernel
@@ -1845,12 +1283,9 @@ pub(crate) struct DaemonSeat {
     pub(crate) protocol: u32,
 }
 
-/// **The branch of the tree a walk is inside** — the project, and the `system` group when the walk
-/// is under `system`. `None` is the family view, which walks one conversation's tree and nothing
-/// else.
-///
-/// One value rather than two arguments: the placements and the branch they are read against are
-/// only meaningful together, and a caller cannot pass the wrong slice for the branch it is walking.
+/// The branch of the tree a walk is inside: the project, and the `system` group when the walk is under it. `None`
+/// is the family view. One value rather than two arguments, since the placements and the branch are only meaningful
+/// together.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Branch<'a> {
     pub(crate) project: &'a str,
@@ -1885,11 +1320,8 @@ pub(crate) struct Project {
     pub(crate) name: String,
 }
 
-/// **One of the harness's own agents** — the groups under a project's `system` branch.
-///
-/// The three are the marks this tree can actually read off a session row; a row carrying none of
-/// them is drawn as the session it looks like, because a group named after nothing is worse than a
-/// row where it belongs.
+/// One of the harness's own agents: the groups under a project's `system` branch. The three are the marks this tree
+/// can read off a session row, and a row carrying none of them is drawn as the session it looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SystemKind {
     /// The review queue's own session, one per project (`s-gatekeeper-<key>`).
@@ -1978,29 +1410,16 @@ impl Node {
         }
     }
 
-    /// **How a node stands before anybody has folded it** — CLOSED, every one of the four.
-    ///
-    /// The operator, on the pane they use most: *"make sessions tree collapsed by default"*. A
-    /// project's line and its `system` branch used to be open, which on a box with a hundred
-    /// sessions drew a hundred rows and buried the one being looked for.
-    ///
-    /// **A default is not the whole rule.** A list that hides where you are standing cannot answer
-    /// *where am I*, so [`App::node_open`] opens the nodes on the chain to `here`
-    /// ([`App::here_nodes`]) and [`App::children_open`] opens the chain of parents down to the
-    /// session this head is in, whatever anybody folded. Those two are the exceptions, and they are
-    /// the reason a closed default is affordable.
+    /// How a node stands before anybody has folded it: closed, all four. A project's line and its `system` branch
+    /// used to be open, which on a box with a hundred sessions buried the one being looked for.
     pub(crate) fn default_open(&self) -> bool {
         false
     }
 }
 
-/// **One row of the session picker** — see [`App::session_rows`], which is the only thing that
-/// builds one.
-///
-/// Four facts rather than a bare `usize`, because the list is a TREE: which session it is (or
-/// which node of the tree it is), how deep it sits, and whether its own rows are under it.
-/// Deriving any of them at the drawing site instead is exactly how the drawing and the keys become
-/// two enumerations again — the defect `todos_stops` exists to record.
+/// One row of the session picker. Four facts rather than a bare `usize`, because the list is a tree: which session
+/// or node it is, how deep it sits, and whether its own rows are under it. Deriving any of them at the drawing site
+/// is the second way of answering one question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionRow {
     /// Index into `App::sessions`, or **`None` for a node's own line** — a stop with an act of its
@@ -2024,20 +1443,9 @@ pub(crate) const MAX_CHAIN: usize = 64;
 /// at the same number — one picture, two drawings.
 const MAX_INDENT: usize = 3;
 
-/// **The project a workspace belongs to** — the top level of the session list, and the one rule a
-/// worktree needs so that it is not a project of its own.
-///
-/// A session's workspace is whatever the daemon serves: a checkout, a `task_start` child's worktree
-/// beside it (`~/Projects/letibot/worktrees/agent-x`), a worktree inside it
-/// (`.claude/worktrees/agent-x`), or a repository in an org folder of several
-/// (`~/Projects/stroppy-io/worktrees/stroppy/agent-x`). All four name the same kind of thing — a
-/// repository — and `letibot_tools::builtins::task::worktree_home` is the rule that put the worktree
-/// there, read backwards here: the folder above `worktrees` is the project, and the repository
-/// inside it is the one whose name matches it.
-///
-/// **Textual on purpose.** The same rule has to run in a wasm guest that cannot read a disk (the
-/// built-in `sessions` layer draws this tree too), so it is a fact about the path and not about
-/// what is at the end of it.
+/// The project a workspace belongs to: the top level of the session list, and the one rule a worktree needs so that
+/// it is not a project of its own. A session's workspace is whatever the daemon serves, so a checkout, a child's
+/// worktree and a review clone all resolve to the repository that owns them.
 pub(crate) fn project_of(workspace: &str) -> Project {
     let path = workspace.trim_end_matches('/');
     if path.is_empty() {

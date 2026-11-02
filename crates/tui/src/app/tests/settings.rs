@@ -2,12 +2,9 @@
 
 use super::*;
 
-/// **One head's save does not discard another head's dismissals.**
-///
-/// The write half of the same repair, and the one that explains the operator seeing
-/// MORE keys in `head.toml` than his head honoured. Both heads load once and each used
-/// to write its own list back whole; `merge_retired` makes the file grow instead, so a
-/// key survives a save that never heard of it.
+/// One head's save does not discard another head's dismissals: both heads load once, and
+/// `merge_retired` makes the file grow instead of writing its own list back whole, so a key
+/// survives a save that never heard of it.
 #[test]
 fn a_save_keeps_a_key_this_head_never_loaded() {
     let dir = std::env::temp_dir().join(format!("letibot-union-{}", std::process::id()));
@@ -45,10 +42,9 @@ fn a_save_keeps_a_key_this_head_never_loaded() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `/config`: the head's rows are there at once and Enter changes one in
-/// place and writes it down; the daemon's rows arrive on `Settings`, and
-/// Enter on `mode` asks through the verb that already exists. A read-only
-/// row says why it is.
+/// `/config`: the head's rows are there at once and Enter changes one in place and writes it
+/// down; the daemon's rows arrive on `Settings`, and Enter on `mode` asks through the verb
+/// that already exists. A read-only row says why it is.
 #[test]
 fn the_config_pane_edits_head_rows_in_place_and_persists_them() {
     let dir = std::env::temp_dir().join(format!("letibot-config-pane-{}", std::process::id()));
@@ -302,15 +298,9 @@ fn a_row_number_marks_the_ask_and_the_quit_card_and_enter_answers() {
     assert!(c.quit_card, "and the card is still up");
 }
 
-/// **Every pane swallows the wheel, and the list is checked against the
-/// panes that exist** rather than against the ones somebody remembered.
-///
-/// `mode_picker` arrived after the wheel router did and was added to the Esc
-/// handler, the render dispatch and the footer — but not here, so a wheel in
-/// the mode picker scrolled the transcript underneath and closing it left the
-/// operator parked in the scrollback. That is the defect the subagent view
-/// already paid for once. A test per pane, so the next one added fails here
-/// rather than on somebody's screen.
+/// Every pane swallows the wheel, and the list is checked against the panes that exist
+/// rather than the ones somebody remembered: a pane missing from it lets a notch scroll the
+/// transcript underneath and leaves the operator parked in the scrollback.
 #[test]
 fn no_pane_lets_the_wheel_through_to_the_conversation() {
     /// One pane: the name the failure prints, and how a test opens it.
@@ -321,11 +311,9 @@ fn no_pane_lets_the_wheel_through_to_the_conversation() {
         ("mode_picker", |a| a.pick = Some(Pick::Mode)),
         ("stats", |a| a.push_surface(Surface::Stats)),
         ("todos_pane", |a| a.push_surface(Surface::Todos)),
-        // **And the row the pane's Enter opened**, which is the newest screen on top of the
-        // transcript and therefore the newest one that can forget: the page keys and the wheel are
-        // the chords' for any open pane, and they move `pane_scroll` — the field this overlay is
-        // drawn through — so a notch there moves the overlay's window and not the conversation
-        // under it (`key_todo_open` says which handler owns which key).
+        // And the row the pane's Enter opened: the newest screen on top of the transcript, so
+        // the page keys and the wheel are its chords and move `pane_scroll` - a notch here moves
+        // the overlay's window and not the conversation under it.
         ("todos_open", |a| {
             a.push_surface(Surface::Todos);
             a.todos_open = Some(TodoStop::Theirs("a row".into()));
@@ -355,11 +343,8 @@ fn no_pane_lets_the_wheel_through_to_the_conversation() {
     }
 }
 
-/// **`allow-all` costs one more keystroke, and no other point does.**
-///
-/// The operator, 2026-09-20: *"make it ask for confirmation on bare host and
-/// let it thru"*. Both halves are asserted here — that it asks, and that a
-/// `y` then sends the point with the consent the daemon reads.
+/// `allow-all` costs one more keystroke, and no other point does: it asks first, and a `y`
+/// then sends the point with the consent the daemon reads.
 #[test]
 fn allow_all_asks_before_it_is_sent_and_nothing_else_does() {
     let mut a = App::new(plain_cfg(120));
@@ -394,12 +379,9 @@ fn allow_all_asks_before_it_is_sent_and_nothing_else_does() {
     assert!(a.mode_confirm.is_none(), "the question outlived its answer");
 }
 
-/// **Enter confirms, like every other card in this head.**
-///
-/// It used to cancel, on the fail-closed argument that a mistyped answer
-/// should be a no. Right about stray keys, wrong about the one key a person
-/// presses on a confirmation — the operator read the warning, pressed it, and
-/// the session stayed at `automode-edits` with only a small notice to say so.
+/// Enter confirms, like every other card in this head: it used to cancel on the fail-closed
+/// argument that a mistyped answer should be a no, which is right about stray keys and wrong
+/// about the one key a person presses on a confirmation.
 #[test]
 fn enter_confirms_the_allow_all_card_like_every_other_card() {
     for k in [Key::Enter, Key::Char('y'), Key::Char('Y')] {
@@ -439,10 +421,9 @@ fn a_stray_key_cancels_the_allow_all_confirmation() {
     }
 }
 
-/// **The pointer answers nothing on the allow-all card** (R67 item 7). A wheel step or a click
-/// is not a keystroke aimed at the composer; it used to cancel the card, so scrolling up to
-/// reread what allow-all means said *allow-all cancelled*. The card stays up through both, and
-/// `y` still confirms after them.
+/// The pointer answers nothing on the allow-all card: a wheel step or a click is not a
+/// keystroke aimed at the composer, so neither cancels - scrolling up to reread what
+/// allow-all means once said `allow-all cancelled`. `y` still confirms after them.
 #[test]
 fn the_wheel_and_a_click_leave_the_allow_all_card_standing() {
     let mut a = App::new(plain_cfg(120));
@@ -462,13 +443,9 @@ fn the_wheel_and_a_click_leave_the_allow_all_card_standing() {
     );
 }
 
-/// **A confirmation the DAEMON raised — another head asked for `allow-all`** (B8) — is the same
-/// card, with two differences: it says who asked, and its answer names the request.
-///
-/// The bridge cannot consent for a person, so it asks; the daemon puts the card in front of the
-/// heads that may decide, and this is the one the person is looking at. The answer is
-/// `Action::ModeConsent` — a frame carrying the request's id — rather than the operator's own
-/// `Action::Mode`, because the daemon has to settle the request it raised and no other.
+/// A confirmation the DAEMON raised - another head asked for `allow-all` - is the same card,
+/// with two differences: it says who asked, and its answer is `Action::ModeConsent`, a frame
+/// carrying the request's id, because the daemon has to settle the request it raised.
 #[test]
 fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
     let mut a = App::new(plain_cfg(120));
@@ -600,21 +577,9 @@ fn without_the_keyless_row_local_is_still_ready_and_nothing_else_new_is() {
     assert!(!a.choice_ready("dense78"));
 }
 
-/// **The real wire row, for every mode the daemon names** — and the one that had no
-/// highlight at all.
-///
-/// The operator: *"permission mode menu no longer highlights the current mode when opened"*.
-/// The cause was one word: `Mode::WRITES_ALLOWED` is spelled **`writes allowed`**, with a
-/// space, and both readers of the current mode took `value.split_whitespace().next()` — so
-/// `writes` named no choice, the cursor fell back to row 0, and `← now` was drawn nowhere.
-/// Every other named mode was fine, which is why it looked like a bug about one screen
-/// rather than about one name.
-///
-/// **These are the bytes the daemon actually sends**, read off `Config::settings` on this box
-/// rather than retyped: `choices` is `Mode::NAMED`'s names verbatim, and one of them contains a
-/// space. The fixture this file used before said `writes-allowed` — a hyphen that no mode has
-/// ever had — which is exactly why the defect survived a suite that looked like it covered
-/// this.
+/// The mode picker seeds on the row the daemon actually sends: `Mode::WRITES_ALLOWED` is
+/// spelled `writes allowed`, so a reader taking `split_whitespace().next()` found no choice
+/// and fell back to row 0 - which is why the fixture uses `Mode::NAMED`'s bytes verbatim.
 #[test]
 fn every_named_mode_opens_with_its_own_row_highlighted() {
     const CHOICES: &str =
@@ -671,12 +636,9 @@ fn every_named_mode_opens_with_its_own_row_highlighted() {
     }
 }
 
-/// **A name that is a prefix of another does not seed on the shorter one** — the boundary
-/// half of [`named_choice`].
-///
-/// `automode-edits` begins with `automode`, so a bare prefix match would open the card with
-/// the cursor on `automode` — a plausible-looking wrong answer, and the reason the search is
-/// for the LONGEST name followed by a boundary rather than a `starts_with`.
+/// A name that is a prefix of another does not seed on the shorter one: `automode-edits`
+/// begins with `automode`, so a bare prefix match opens the card on a plausible-looking
+/// wrong answer - hence the LONGEST name followed by a boundary, not a `starts_with`.
 #[test]
 fn a_mode_whose_name_extends_another_does_not_seed_on_the_shorter_one() {
     let choices: Vec<String> = vec!["automode".into(), "automode-edits".into()];
@@ -1043,10 +1005,9 @@ fn a_mode_picker_without_choices_says_so() {
     assert!(a.pick == Some(Pick::Mode));
 }
 
-/// **A verb only its author knows is not offered** (R29), and `/diff` is new today: the
-/// screen a reader actually looks at has to name it, or the remedy is one they have to go
-/// looking for. The help text is one hand-kept list, so this is the check that keeps it in
-/// step with the table above.
+/// A verb only its author knows is not offered: the help text is one hand-kept list, so this
+/// is the check that keeps it in step with the table above - the screen a reader looks at has
+/// to name the remedy.
 #[test]
 fn the_help_screen_names_both_settings_and_what_a_bare_one_does() {
     let a = app();
@@ -1116,18 +1077,9 @@ fn down_keeps_the_config_cursor_in_view_and_wraps_to_the_first_row() {
     assert!(a.screen(100, 16).join("\n").contains('▸'));
 }
 
-/// **The stood-down compaction arrives on `Settings`, and only in the guard's
-/// own spelling.**
-///
-/// A head that attaches AFTER the no-progress guard fired never saw the
-/// warning — this is the durable half of the channel, read whenever settings
-/// arrive. The key is the `off —` prefix the daemon writes only for the
-/// guard's finding: a bare `off` is the operator's own `--no-auto-compact`,
-/// which is not news to them, and `on` takes the line away so a switch to a
-/// session the guard never fired on does not leave stale state above the
-/// composer. Measured on the wedge that made the line necessary
-/// (2026-10-09): the guard's fact lived in memory, a restart cleared it, and
-/// nothing anywhere said the session had stopped tidying itself.
+/// The stood-down compaction arrives on `Settings`, and only in the guard's own spelling:
+/// a head that attaches after the guard fired never saw the warning, and a bare `off` is the
+/// operator's own `--no-auto-compact`, which is not news to them.
 #[test]
 fn the_stood_down_row_sets_and_clears_the_resident_line() {
     use letibot_sessionlog::protocol::SettingRow;
@@ -1182,11 +1134,9 @@ fn the_stood_down_row_sets_and_clears_the_resident_line() {
     );
 }
 
-/// **A paused plan-check is LOUD** (`/nag pause`) — the operator's correction, *"or rather -
-/// pause and the pause must be loud"*. The `nags` settings row's `paused` spelling draws a
-/// resident line above the composer, on every frame, naming the end; the `nags_resumed` row
-/// takes it away; `on` is no line at all. Both channels, as the stood-down line has them: the
-/// row for a head that attaches later, the hub rows for one watching.
+/// A paused plan-check is LOUD: the `nags` row's `paused` spelling draws a resident line
+/// above the composer naming the end, `nags_resumed` takes it away, and `on` is no line -
+/// on both channels, the row for a later attach and the hub rows for a watcher.
 #[test]
 fn a_paused_plan_check_draws_a_resident_line_until_it_is_resumed() {
     use letibot_sessionlog::protocol::SettingRow;

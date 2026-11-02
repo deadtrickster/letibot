@@ -2,14 +2,9 @@
 
 use super::*;
 
-/// **The daemon's verbs are not this head's to enumerate** (R32), and the list it draws
-/// comes from the row.
-///
-/// The measured defect, in one assertion: `/gate`, `/flowy`, `/job`, `/login` and
-/// `/supervise` all work — they are forwarded — and none was offered, because the head
-/// completed from a table that had never heard of them. With the row they are offered;
-/// without it the head offers its own verbs and **says nothing about the rest**, which
-/// is a daemon older than this one and not a guess.
+/// The daemon's verbs are not this head's to enumerate, and the list it draws comes from the row.
+/// With the row they are offered; without one the head offers its own verbs and says nothing about
+/// the rest, which is a daemon older than this one and not a guess.
 #[test]
 fn the_daemons_verbs_come_from_its_row_and_are_not_guessed_at() {
     let mut a = app();
@@ -59,15 +54,9 @@ fn the_daemons_verbs_come_from_its_row_and_are_not_guessed_at() {
     assert_eq!(a.input(), "/gate");
 }
 
-/// **What the fold cannot account for, it does not draw.**
-///
-/// This is the half that matters more than the folding: a notice whose shape changes under
-/// this function must come back **whole** rather than lose the half the parser did not
-/// recognise. The monitor notice is the live test of it — it is the same voice, the same
-/// bullets and the same closing sentence as a job's, and it is deliberately NOT folded,
-/// because leticl does not fold it either and two heads folding different sets is the drift
-/// this file has been fixed for before. (It is still ONE line on the glass: what the fold
-/// refuses, `notice_card` draws as `monitor · w1 … · click for details` — R89.)
+/// What the fold cannot account for, it does not draw: a notice whose shape changes under this
+/// function must come back whole rather than lose the half the parser did not recognise. The
+/// monitor notice is the live test of it, and two heads folding different sets is the drift to avoid.
 #[test]
 fn the_notice_fold_refuses_anything_it_cannot_account_for() {
     let cases: &[(&str, &str)] = &[
@@ -156,14 +145,9 @@ fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
     );
 }
 
-/// **A row this session appended is not drawn as the operator's** — R42, and the
-/// operator's own question: *"why job completion events arrive as my messages?"*
-///
-/// The two rows are the same variant with the same shape and the same text length; the only
-/// difference is `speaker`, and the two renderings must differ in the three marks that make
-/// the operator's block what it is: **no `▌`**, no raised background, and the faint
-/// register. Asserted on the escape sequences for the background and the accent, because
-/// the words are identical in both cases — the defect was never the text.
+/// A row this session appended is not drawn as the operator's. The two rows are the same variant
+/// with the same text and differ only in `speaker`, so the assertion is on the escapes for the
+/// background and the accent: the words are identical in both cases and the defect was never text.
 #[test]
 fn a_session_row_is_not_drawn_as_the_operators() {
     let mut a = app();
@@ -246,21 +230,9 @@ fn a_session_row_is_not_drawn_as_the_operators() {
     );
 }
 
-/// **The jobs count is on the composer's top edge, pluralised, and absent at zero** —
-/// R51 item 5, plus the half of it this head has and the brief does not.
-///
-/// The other head put it on the status row; here the status row was just given to the turn
-/// (item 1), and this edge already carries `N subagents running`. Both are facts that stop being
-/// drawn when they stop being true, which is what earns a resident edge.
-///
-/// **The `to a file` clause is the operator's own point, and it is not in leticl's brief:** a
-/// job whose output is redirected (R41) has a window that will be empty however long it runs, so
-/// **A redirected job's row names the file, because the window cannot.**
-///
-/// The operator's question, asked while looking at the pane: *"im not sure it lets me to see
-/// that in the jobs details, when i 'enter' a job"*. A job whose output went to a file has a
-/// capture that is empty BY CONSTRUCTION, so Enter shows nothing however long it runs — and
-/// the list is therefore the only place that can say which file to read instead.
+/// The jobs count is on the composer's top edge, pluralised and absent at zero, and a redirected
+/// job's row names the file: its window is empty BY CONSTRUCTION, so Enter can show nothing however
+/// long it runs, and the list is the only place that can say which file to read instead.
 #[test]
 fn the_jobs_pane_names_the_file_a_redirected_job_writes_to() {
     let mut a = app();
@@ -368,12 +340,9 @@ fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
     );
 }
 
-/// **The count is ASKED for when the daemon's table can have changed** — R51 item 5's second
-/// half, and the half that makes the row a readout rather than a souvenir.
-///
-/// There is no `JobStarted` on the wire, so a count folded from events would be a guess. The
-/// three moments are the two that say a job started or ended, and the turn boundary, which is
-/// the only chance a job that was already running at attach ever gets.
+/// The count is ASKED for when the daemon's table can have changed. There is no `JobStarted` on the
+/// wire, so a count folded from events would be a guess: the three moments are the two that say a
+/// job started or ended, and the turn boundary, the only chance a job running at attach ever gets.
 #[test]
 fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
     let mut a = app();
@@ -458,14 +427,9 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
 
 // -- background jobs -----------------------------------------------------
 
-/// A finished `bash` call that left a job behind: the outcome names the
-/// handle, the way the runtime builds it.
-/// **A settlement for a job the daemon has not named is not a row.**
-///
-/// The head used to invent one, with an empty command and an empty `how`,
-/// which is how `(command not in this head's window)` reached the operator's
-/// screen. The table is the daemon's; an unrecognised settlement waits for
-/// the next answer rather than being guessed at.
+/// A settlement for a job the daemon has not named is not a row. The table is the daemon's, and an
+/// invented row - an empty command, an empty `how` - is how a placeholder sentence reached the
+/// operator's screen, so an unrecognised settlement waits for the next answer instead.
 #[test]
 fn a_settlement_folds_onto_a_known_job_and_never_invents_one() {
     let mut a = App::new(plain_cfg(80));
@@ -536,14 +500,9 @@ fn the_jobs_pane_joins_the_command_and_marks_a_running_job() {
     );
 }
 
-/// **The name the daemon sent survives the fold, and an unnamed row carries nothing.**
-///
-/// `JobEntry::slug` is the agent's own word for the work (`bash(slug: "release-build")`), and
-/// it arrives on the wire already flattened by the daemon — the head neither invents one nor
-/// trims one. **The pane's ROW cannot draw it yet**: the layout is rano's and its `JobRow` has
-/// no field for a name, which is written at [`crate::ui::panes::jobs`]. So this pins the half
-/// that IS this head's — the row the daemon sent is kept whole, name and all — which is what
-/// makes the drawing half one field away rather than a re-plumbing.
+/// The name the daemon sent survives the fold, and an unnamed row carries nothing. The head neither
+/// invents a `slug` nor trims one, and keeping the row whole is what leaves the drawing of it one
+/// field away rather than a re-plumbing.
 #[test]
 fn a_jobs_name_survives_the_fold_and_an_unnamed_row_carries_none() {
     let mut a = app();
@@ -569,12 +528,9 @@ fn a_jobs_name_survives_the_fold_and_an_unnamed_row_carries_none() {
     assert_eq!(a.jobs[1].command, "cargo test");
 }
 
-/// **A REDIRECTED JOB'S OUTPUT PANE NAMES THE FILE** — the operator: *"entering a job never
-/// shows me its output - whether it went to file or not"*.
-///
-/// A redirected job's window is empty BY CONSTRUCTION (R41) — the daemon gave its bytes to
-/// the file — so an empty window here must not be described as *it wrote nothing at all*
-/// about a job that wrote a build log. The sentence names the file instead.
+/// A redirected job's output pane names the file. Its window is empty BY CONSTRUCTION because the
+/// daemon gave its bytes to the file, so an empty window here must not be described as it having
+/// written nothing at all about a job that wrote a build log.
 #[test]
 fn the_job_output_pane_names_the_file_a_redirected_job_wrote_to() {
     let mut a = App::new(plain_cfg(100));
@@ -622,11 +578,8 @@ fn the_job_output_pane_names_the_file_a_redirected_job_wrote_to() {
     );
 }
 
-/// **Enter on a job row asks the daemon for its output.**
-///
-/// The operator: *"i cant enter the job to see its output"*. The binding is
-/// guarded on an empty composer — Enter with text in it is still a prompt —
-/// so both halves are pinned here.
+/// Enter on a job row asks the daemon for its output. The binding is guarded on an empty composer -
+/// Enter with text in it is still a prompt - so both halves are pinned here.
 #[test]
 fn enter_on_a_job_row_reads_its_output() {
     let mut a = App::new(plain_cfg(100));
@@ -687,25 +640,9 @@ fn enter_on_a_job_row_asks_the_daemon_for_that_jobs_output() {
     );
 }
 
-/// **§11.6 — a job that never ran is not a job that wrote nothing.**
-///
-/// The card drew `not run (could not join its scope)` as its header and then
-/// `it wrote nothing at all.` under it, which is R17 read backwards: *a row with no
-/// output must not look like a row whose output is empty*. Three states, three
-/// sentences, and the case chosen by the **daemon's** `never_ran` rather than by
-/// `lines.is_empty()` alone.
-///
-/// The words are asserted literally because the other half of this ruling is a
-/// second head — §11.6, *A rules the words; both heads render the same string* — so
-/// the literal is the whole of what the two have to agree about. The `JobState`
-/// words this head chooses against are pinned on the other side of the wire, in
-/// `letibot-tools`' own `every_state_says_whether_a_process_ever_ran`: a reword
-/// there breaks that assertion, and a reword here breaks this one.
-///
-/// A pinned list rather than a property, deliberately: a new state a head has never
-/// heard of arrives as an unfamiliar word, falls to the `wrote nothing` arm, and
-/// this list is what makes that a visible choice rather than an accident — the same
-/// reason the tools test names all five variants.
+/// A job that never ran is not a job that wrote nothing: a row with no output must not look like a
+/// row whose output is empty, so the case is chosen by the daemon's `never_ran` and not by
+/// `lines.is_empty()` alone. The sentences are asserted literally because both heads draw them.
 #[test]
 fn a_job_that_never_ran_does_not_read_as_one_that_wrote_nothing() {
     let cases: [(&str, bool, &str); 6] = [
@@ -762,10 +699,8 @@ fn a_job_that_never_ran_does_not_read_as_one_that_wrote_nothing() {
     }
 }
 
-/// **The window lands in the pane.** The `JobOutput` event the daemon publishes
-/// for a `ReadJobOutput` fills the overlay the jobs pane opened, offsets and
-/// all, and the overlay pages with → and ← without ever touching the
-/// conversation.
+/// The window lands in the pane: the `JobOutput` event for a `ReadJobOutput` fills the overlay with
+/// its offsets, and the overlay pages without ever touching the conversation.
 #[test]
 fn the_job_output_event_fills_the_overlay_and_it_pages() {
     let mut a = App::new(plain_cfg(100));
@@ -842,10 +777,9 @@ fn the_job_output_event_fills_the_overlay_and_it_pages() {
     );
 }
 
-/// **A refused read is answered in the pane, not left at `reading…`.** A job can
-/// fall out of the host's table between the listing and Enter — the daemon then
-/// answers with a `job_output_refused` warning, and the pane that asked must say
-/// so rather than wait for a window that is not coming.
+/// A refused read is answered in the pane, not left at `reading…`: a job can fall out of the host's
+/// table between the listing and Enter, and the pane that asked must say so rather than wait for a
+/// window that is not coming.
 #[test]
 fn a_refused_job_output_read_lands_in_the_pane() {
     let mut a = App::new(plain_cfg(100));
@@ -886,10 +820,9 @@ fn a_refused_job_output_read_lands_in_the_pane() {
     assert!(screen.contains("no job `j4` here"), "{screen}");
 }
 
-/// Jobs belong to the session that started them. Carried across a switch the
-/// pane drew the old session's ids and byte counts, and Enter on one of those
-/// rows now asks the NEW session for a job that was never here. The tree next
-/// door is dropped on a switch for the same reason; so is this.
+/// Jobs belong to the session that started them: carried across a switch, the pane would draw the
+/// old session's ids and Enter would ask the NEW session for a job that was never here. The tree
+/// next door is dropped on a switch for the same reason.
 #[test]
 fn switching_drops_the_old_sessions_jobs_and_coming_back_rebuilds_them() {
     let mut a = app();
@@ -925,15 +858,9 @@ fn switching_drops_the_old_sessions_jobs_and_coming_back_rebuilds_them() {
     assert!(a.jobs.is_empty(), "another session's table was folded in");
 }
 
-/// **An open window over a running job follows what it writes** — and says so in one line
-/// while it has written nothing.
-///
-/// The operator, on the `serendb` session: *"look at serendb window, try to get into a job -
-/// no output"*. `j16496` (`docker pull`) had written 1.8 KB and `j16497` (`… | tail -40`)
-/// nothing, and the pane was one read at Enter. Now the head's clock re-reads the page on
-/// screen while the job runs, the reader follows its tail, and nothing else is in flight; the
-/// window the re-read brings lands at the tail. A scrolled-up reader, a settled job and a page
-/// that is not the last are left alone.
+/// An open window over a running job follows what it writes, and says so in one line while it has
+/// written nothing. The head's clock re-reads the page on screen while the job runs and the window
+/// lands at the tail; a scrolled-up reader, a settled job and a page that is not the last are left alone.
 #[test]
 fn a_running_jobs_window_follows_its_output() {
     let window =

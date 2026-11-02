@@ -35,11 +35,9 @@ fn a_run_of(think: &str, extra: usize) -> App {
             ledger_head: String::new(),
         },
     )));
-    // **The row carries the calls as well as the prose**, which is the shape the daemon
-    // writes and the only place a row's *target* survives: `targets_before` reads the
-    // nearest assistant row's `tool_calls` arguments, so a fixture that published only
-    // proposals would leave every target empty — and this test would then be asserting
-    // that a marker with no target is a marker with the right target.
+    // The row carries the calls as well as the prose - the shape the daemon writes, and the only
+    // place a row's target survives: `targets_before` reads the nearest assistant row's
+    // `tool_calls` arguments, so proposals alone would leave every target empty.
     let calls: Vec<(&str, &str, &str)> = vec![
         ("c0", "read", "crates/tui/src/app.rs"),
         ("c1", "grep", "ctrl-t"),
@@ -198,14 +196,9 @@ fn hovering_a_part_of_the_marker_lights_it() {
     );
 }
 
-/// **No light is left on what a click opened** — the operator: *"stuck highlight still hapens on
-/// expanded reasoning and tools - when i click"*. The light is worked out from the frame that is
-/// drawn, so the rows the click put under the pointer are lit only if they are clickable
-/// themselves.
-///
-/// **And the marker is drawn again over them** — an open run's marker is its header and its
-/// clauses are the toggle (`a_second_click_on_the_same_clause_puts_it_back`), so the line under
-/// the pointer IS a button and lights. What must not light is the content it opened.
+/// No light is left on what a click opened: the light comes from the frame that is drawn, so the
+/// rows a click put under the pointer are lit only if they are clickable. The marker IS drawn again
+/// - an open run's header and its clauses are the toggle - and only the content it opened stays dark.
 #[test]
 fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
     let mut a = a_run();
@@ -235,13 +228,9 @@ fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
     );
 }
 
-/// **A run opened by a click still scrolls, both ways and to both ends** — the operator: *"when i
-/// click on thinking in the [tools, thinking lines] block, the scroll is stuck and broken"*.
-///
-/// The click opens the run by naming it in `payload_sel`, which is also what an open ctrl-v
-/// window is named by — and every scroll key asked only `payload_sel.is_some()`, so the run's
-/// wheel and page keys went to a window that is not there: down moved a page offset nobody draws
-/// (and threw the history away each notch), and the view stood still.
+/// A run opened by a click still scrolls, both ways and to both ends. The click names the run in
+/// `payload_sel`, which is also how an open ctrl-v window is named, so a scroll key asking only
+/// `payload_sel.is_some()` sent the run's wheel and page keys to a window that is not there.
 fn opened_run_scrolls(clause: &str, shown: &str) {
     let think: Vec<String> = (0..132).map(|i| format!("THINK-{i:03}")).collect();
     let mut a = a_run_of(&think.join("\n\n"), 3);
@@ -370,13 +359,9 @@ fn frame(a: &mut App) -> String {
     a.screen(100, 30).join("\n")
 }
 
-/// **A click on the thinking clause and `ctrl-r` flip one state** — the operator's *"sometimes when
-/// i click on thinking counter it gets stuck — the openness — and then all subsequent turns go with
-/// think open. ctrl-r doesnt help, esc too"*.
-///
-/// The click lifts a run (`App::lift`), `ctrl-r` moved a `Fold` — two fields, so neither key could
-/// reach the other's, and the lift had no key that closed it at all. They are one state now, asked
-/// of what is drawn (`App::thinking_open`), and every door goes through `App::set_thinking`.
+/// A click on the thinking clause and `ctrl-r` flip one state. The click lifts a run, `ctrl-r` moved
+/// a `Fold` - two fields, so neither key could reach the other's, and the lift had no key that
+/// closed it at all. They are one state now, asked of what is drawn, and every door goes through it.
 #[test]
 fn a_click_on_thinking_and_ctrl_r_are_one_verb() {
     const THOUGHT: &str = "THINK-LIVE the round's thinking, no row yet";
@@ -431,11 +416,9 @@ fn a_click_on_thinking_and_ctrl_r_are_one_verb() {
     );
 }
 
-/// **A second click on the same clause puts it back** — the operator's *"click once opens, click
-/// again closes"*, pressed with a real `Key::Click` on a **landed** run: the case in their report,
-/// and the case that needs the marker to still be drawn while the run is open (an open run's
-/// marker is its header). The old click only ever set the lift, so a second press was a third way
-/// to open it, and nothing on the frame produced the toggle's hit at all.
+/// A second click on the same clause puts it back, on a LANDED run with a real `Key::Click`: the case
+/// that needs the marker to still be drawn while the run is open, because an open run's marker is
+/// its header and therefore the toggle. A click that only sets the lift cannot put it back.
 #[test]
 fn a_second_click_on_the_same_clause_puts_it_back() {
     let mut a = a_run();
@@ -459,13 +442,9 @@ fn a_second_click_on_the_same_clause_puts_it_back() {
     assert_eq!(a.lift, None);
 }
 
-/// **The marker is drawn while the run it opened is open** — requirement 4, and the exit R29 asks
-/// a disclosure to carry.
-///
-/// Both walks used to ask `unseen_run_at` only when the run was CLOSED (`let unseen = if open_run
-/// { None } else { … }`), so the moment a click lifted a run its marker was gone: the counts line
-/// that says what is open, and the only thing on the frame that toggles it back. A state whose
-/// marker is not drawn is the defect one key removed.
+/// The marker is drawn while the run it opened is open: it is the counts line that says what is open
+/// and the only thing on the frame that toggles it back. Both walks used to ask for it only when the
+/// run was closed, so a click lifted the run and its marker vanished with it.
 #[test]
 fn an_open_runs_marker_is_drawn_over_the_rows_it_lifted() {
     let mut a = a_run();
@@ -500,12 +479,9 @@ fn an_open_runs_marker_is_drawn_over_the_rows_it_lifted() {
     );
 }
 
-/// **Esc on a ctrl-v window closes the window and nothing else** — the reviewer's secondary find.
-///
-/// The window's Esc arm used to end in `set_thinking(false)`, and at a rung that draws the thinking
-/// that goes through `set_verbosity` — so closing an unrelated window folded the reasoning AND
-/// rewrote `head.toml` for a key the reader pressed for something else. The arm's job is the panel;
-/// the fold's own Esc is the general arm (`keys/mod.rs`), which is one press further on.
+/// Esc on a ctrl-v window closes the window and nothing else: the arm once ended in
+/// `set_thinking(false)`, which at a drawing rung goes through `set_verbosity` - so closing an
+/// unrelated window folded the reasoning and rewrote `head.toml`. The fold's Esc is a later arm.
 #[test]
 fn esc_on_a_window_does_not_fold_the_thinking() {
     const THOUGHT: &str = "THINK-WINDOW a thought the reader opened";
@@ -562,14 +538,9 @@ fn esc_on_a_window_does_not_fold_the_thinking() {
     assert!(!a.thinking_open(), "the second esc did not close the fold");
 }
 
-/// **`ctrl-r` will not open a run that holds no thinking** — the reviewer's find, and the mirror of
-/// *"clicked on the tools counter — empty panel"*.
-///
-/// At a rung that hides the working, `ctrl-r` opens the newest run's thinking. `run_skips` hides
-/// every `ToolResult` row and every empty-text `Assistant` row when the kind asked for is the
-/// thinking — so lifting a CALLS-ONLY run would hide the calls it does hold and draw nothing in
-/// their place: `[3 tool calls]` vanished, the run blank. The base refused this press with a
-/// sentence; so does this, and the marker is still on the screen.
+/// `ctrl-r` will not open a run that holds no thinking: `run_skips` hides every `ToolResult` and
+/// empty-text `Assistant` row when the kind asked for is the thinking, so lifting a CALLS-ONLY run
+/// would hide the calls it holds and draw nothing in their place. The press is refused, with words.
 #[test]
 fn ctrl_r_will_not_open_a_run_that_holds_no_thinking() {
     let mut a = app();
@@ -623,14 +594,9 @@ fn ctrl_r_will_not_open_a_run_that_holds_no_thinking() {
     );
 }
 
-/// **A new round drops the pane's lift even when the boundary carries no clock** — the reviewer's
-/// minor find, and the reason the reset does not rest on `same_turn`.
-///
-/// `TurnStarted` fires once per ROUND. `same_turn` compares `began_ms`, and its `None` arm asks
-/// whether the previous pane still reads `Running` — so a wake turn (a job settling, a monitor
-/// firing: `Sessions::wake` stamps no clock) arriving over a running turn is indistinguishable
-/// from another round of it. A lift addressed at the live tail belongs to the round that is over,
-/// so it goes on every boundary whatever the clock says.
+/// A new round drops the pane's lift even when the boundary carries no clock: `same_turn`'s `None`
+/// arm asks whether the previous pane still reads `Running`, so a wake turn over a running turn is
+/// indistinguishable from another round - and a lift on the live tail is the round that is over.
 #[test]
 fn a_new_round_drops_the_panes_lift_without_a_clock() {
     const THOUGHT: &str = "THINK-WAKE the round that is over";
@@ -656,12 +622,9 @@ fn a_new_round_drops_the_panes_lift_without_a_clock() {
     assert_eq!(a.lift, None, "the pane's lift followed into the next round");
 }
 
-/// **The pane's own marker opens a PANEL, not a ctrl-v window** — `payload_sel` names both, and
+/// The pane's own marker opens a PANEL, not a ctrl-v window: `payload_sel` names both, and
 /// `run_open_at` answers *is this row of the open run*, which for the live tail's sentinel is no row
-/// at all. Answering it with the row-independent `live.work() > 0 && !live_tail_covered(..)` made
-/// every row of the transcript read as inside the open run; answering it with `false` (the right
-/// answer for a row) made `run_is_open()` false for the pane's own panel, so the bar offered
-/// `page the result` for a window nobody draws. `App::run_is_open` answers the sentinel itself.
+/// at all - so `App::run_is_open` answers the sentinel itself rather than either extreme.
 #[test]
 fn the_live_markers_panel_is_a_run_and_not_a_window() {
     const THOUGHT: &str = "THINK-PANEL the round's thinking";
@@ -693,16 +656,9 @@ fn the_live_markers_panel_is_a_run_and_not_a_window() {
     );
 }
 
-/// **A panel opened on the pane's own counter scrolls the conversation, not a phantom window** —
-/// the reviewer's blocking find, at the one address a click on the LIVE counter sets.
-///
-/// `run_open_at` answers *is this ROW of the open run*, and for the live tail's sentinel the answer
-/// is no for every row (it used to be `live.work() > 0 && !live_tail_covered(..)`, a value with no
-/// `row` in it, which made every row of the transcript read as inside the open run). So
-/// `run_is_open` answers the sentinel itself; if it did not, a click on the pane's counter left
-/// `run_is_open()` false — `Key::Up`/`Down` fell through to `page_payload`, `payload_window_open()`
-/// said yes so the page keys and the wheel paged the same window nobody draws, and the hint bar
-/// named `page the result` for it.
+/// A panel opened on the pane's own counter scrolls the conversation, not a phantom window: the
+/// click sets the live-tail sentinel, `run_open_at` answers no for every row, and without
+/// `run_is_open` answering the sentinel the page keys and the wheel would page a window nobody draws.
 #[test]
 fn a_panel_on_the_live_counter_scrolls_the_conversation() {
     let mut a = app();
@@ -856,13 +812,9 @@ fn a_click_on_another_runs_counter_does_not_leave_the_first_open() {
     assert!(now.contains(SECOND), "the second run is open:\n{now}");
 }
 
-/// **A click does not follow the operator into the next turn** — the latch, as the operator
-/// reported it: *"then all subsequent turns go with think open"*.
-///
-/// The click opens the pane's thinking; the round's rows land and the panel follows them
-/// (`carry_live_open`, which moves the ADDRESS and never the value); and a new TURN — a prompt of
-/// the operator's — starts at the default. Before this, `live_open` was re-applied at every round's
-/// end and nothing but a click could clear it, so every later turn's pane was drawn open.
+/// A click does not follow the operator into the next turn: the click opens the pane's thinking, the
+/// round's rows land and the panel follows them (`carry_live_open` moves the ADDRESS, never the
+/// value), and a new TURN starts at the default. A lift re-applied every round's end latched.
 #[test]
 fn a_click_does_not_follow_into_the_next_turn() {
     const FIRST: &str = "THINK-FIRST the turn the reader clicked";
@@ -924,12 +876,9 @@ fn a_click_does_not_follow_into_the_next_turn() {
     );
 }
 
-/// **A round boundary does not touch the thinking** — the operator's *"it is just auto opens now and
-/// then closes. then next turn and it opens and then closes"*.
-///
-/// Two rounds of one turn, no input between them: the thinking is drawn the same way in both —
-/// folded, behind the marker. The oscillation was the lift's pane half, re-applied at each round's
-/// end; the fold itself is never written by a boundary.
+/// A round boundary does not touch the thinking: two rounds of one turn, no input between them,
+/// draw it the same way in both - folded, behind the marker. The oscillation was the lift's pane
+/// half re-applied at each round's end; the fold itself is never written by a boundary.
 #[test]
 fn a_round_boundary_does_not_touch_the_thinking() {
     const ONE: &str = "THINK-ONE the first round";

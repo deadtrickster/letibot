@@ -203,15 +203,9 @@ fn repo_name(repo: &str) -> String {
         .unwrap_or_else(|| repo.to_string())
 }
 
-/// **A `target_red` warning's detail, read** — `None` for a shape this head does not know.
-///
-/// Two families, both `EMERGENCY: ` and then:
-///
-/// - the queue's own (`RepoQueue::target_went_red`): `` `main` is RED at SHA in REPO. The merge
-///   queue lands nothing … `bin/firecode test` failed:\n<output> ``;
-/// - the red tip's reviewer's (`review::open_fix_branch`): `` BY finds `main` broken at SHA:
-///   REASONS. `` and then one of three endings — a fix branch opened, a fix branch that could
-///   not be, or the project's `red_target = "raise"`.
+/// A `target_red` warning's detail, read - `None` for a shape this head does not know. Two
+/// families, both after `EMERGENCY: `: the queue's own (`main` is RED at SHA in REPO, then the
+/// failing step) and the red tip's reviewer's (BY finds `main` broken at SHA, then how it was met).
 pub(crate) fn warning_tip(detail: &str) -> Option<RedTip> {
     let rest = detail.strip_prefix("EMERGENCY: ")?;
     if let Some(r) = rest.strip_prefix('`') {

@@ -6,13 +6,9 @@ use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::notes::{self as view, Listed, NoteClass, NotesList, Settled};
 
 impl App {
-    /// The `/notes` listing: every note this head holds, in the order the
-    /// conversation has them, numbered for `/notes dismiss N`.
-    ///
-    /// **Including the ones it is not drawing** (R19). A note from before this window is a
-    /// fact this head holds and has chosen not to plant in the conversation, so the
-    /// listing is where a reader finds it — marked, for the same reason a retired one is:
-    /// two different reasons for an absence must not look like one.
+    /// The `/notes` listing: every note this head holds, in the order the conversation has them,
+    /// numbered for `/notes dismiss N` - including the ones it is not drawing, marked, because two
+    /// different reasons for an absence must not look like one.
     pub(crate) fn notes_lines(&self) -> Vec<String> {
         let list = NotesList {
             notes: self
@@ -29,14 +25,9 @@ impl App {
     }
 }
 
-/// **How many of a pane's last rows its ending carries** — the cap that replaces the fold.
-///
-/// See [`note_lines`]: a pane's ending is not folded to `rano::agent::notes::NOTE_LINES`, so it needs a bound of
-/// its own, and four is chosen the way `NOTE_LINES` was: the common case is one row (a program
-/// that dies with a sentence about why), a full-screen program leaves a whole rectangle, and a
-/// rectangle is not what a transcript row is for. What is past the cap is *not* kept anywhere —
-/// a pane's bytes are not recorded, see `harnessd`'s own TODO — so this is a disclosure
-/// decision and not a fold over a record.
+/// How many of a pane's last rows its ending carries - the cap that replaces the fold, since a
+/// pane's ending is not folded to `rano::agent::notes::NOTE_LINES`. What is past it is not kept
+/// anywhere, so this is a disclosure decision and not a fold over a record.
 pub(crate) const PANE_LAST_LINES: usize = 4;
 
 /// **A note, in rano's words.** The register a warning is drawn in is its code's class, and
@@ -59,10 +50,9 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
         Note::NotRun(w) => view::Note::NotRun {
             detail: w.detail.clone(),
         },
-        // **A question's answer, drawn in the faint register rano already has for a
-        // line that is nobody's verdict.** `view::Note::Decided` would force one of
-        // four permission words onto it; `view::Note::NotRun` is *"· {detail}"*, which
-        // is what a settled thing nobody is waiting on should look like.
+        // A question's answer, drawn in the faint register rano already has for a line that is
+        // nobody's verdict: `view::Note::Decided` would force one of four permission words onto it,
+        // while `view::Note::NotRun` is the dot and the detail a settled thing should look like.
         Note::Answered {
             summary, by, said, ..
         } => view::Note::NotRun {
@@ -124,16 +114,9 @@ pub(crate) fn class_mark(code: &str) -> (&'static str, rano::style::Role) {
     }
 }
 
-/// **A note's card**: its one line, and the text its popup shows whole — `None` for a pane's
-/// ending, which is drawn whole on purpose (see [`PANE_LAST_LINES`]) and for a settled
-/// permission, which rano draws as its outcome.
-///
-/// A hub warning a card reads is that card (`line_cards::WARNING_KINDS`): a red target's, a
-/// review's, a restart's, a stale prompt's. **Every other warning is a card too** (R89) — the
-/// operator's *"make them the usual one liners"*: `<code> · <first clause> · click for details`,
-/// the code in its register (`notice_card::warning_notice`). Before, such a note was three wrapped
-/// lines and `… +N lines · /notes` that could not be clicked, and a compaction was one line ending
-/// `· /notes` that could not be clicked either and said its code twice.
+/// A note's card: its one line, and the text its popup shows whole - `None` for a pane's ending,
+/// drawn whole on purpose, and for a settled permission, which rano draws as its outcome. Every
+/// warning is a card, so none of them is a `... +N lines` seam that cannot be clicked.
 pub(crate) fn note_card(
     n: &Note,
 ) -> Option<(crate::ui::transcript::line_cards::Card, String, u64)> {
@@ -166,12 +149,9 @@ pub(crate) fn note_card(
     }
 }
 
-/// **A note as a card's one line** — framed the way a session row's card is (`session ·`, the
-/// faint text, the clock; `blocks::session_card_block`), so one card looks the same whichever
-/// way it arrived: a `‼ main RED` from a `target_red` warning and from an `EMERGENCY —` row were
-/// two framings of one fact (R89).
-///
-/// A click opens the text whole (`App::note_cards`), and `/notes` lists it unfolded as before.
+/// A note as a card's one line, framed the way a session row's card is, so one card looks the same
+/// whichever way it arrived: the same fact from a warning and from a transcript row was two
+/// framings of it. A click opens the text whole; `/notes` lists it unfolded as before.
 pub(crate) fn card_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
     let (card, _, ts) = note_card(n)?;
     let line = card.cut(crate::ui::session_text_cols(ts, cfg));
@@ -222,18 +202,9 @@ pub(crate) fn burst_card(
     Some((card, burst_popup(&kind, members), ts))
 }
 
-/// **The popup a burst's row opens** — the rows the burst replaced, one line each, newest first.
-///
-/// **The member's line is the line the head would have drawn for it alone** — [`note_card`]'s
-/// reading, which for the queue's raises is `review · <branch> · <verdict> · <first clause>`. That
-/// is the half of the brief's *an actionable notice keeps its own identity inside the row*: a
-/// refusal or a blocked row names its branch on its own line, without reading the text under it
-/// and without expanding anything else in the burst. The whole detail follows, so nothing the
-/// daemon wrote is behind a second click.
-///
-/// Newest first, and the order is the CLOCK's rather than the list's: a snapshot's replant and a
-/// live arrival can leave `notes` out of order by a millisecond, and a list that says *newest
-/// first* while it is not is a lie about the one thing the reader is looking for.
+/// The popup a burst's row opens: the rows the burst replaced, one line each, newest first. A
+/// member's line is the line the head would have drawn for it alone, so an actionable notice keeps
+/// its own identity inside the row and its whole detail is not behind a second click.
 fn burst_popup(kind: &str, members: &[&Note]) -> String {
     use crate::ui::transcript::blocks::clock_time;
     use crate::ui::transcript::line_cards::CLICK;

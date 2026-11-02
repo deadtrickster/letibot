@@ -1,15 +1,14 @@
-//! **The jobs pane**: the background jobs this session started, and a job's output — drawn
-//! by `rano::agent::jobs` from the daemon's job table this head keeps.
+//! The jobs pane: the background jobs this session started, and a job's output - drawn by
+//! `rano::agent::jobs` from the daemon's job table this head keeps.
 
 use crate::app::*;
 use crate::ui::render::row_strings;
 use rano::agent::jobs::{JobOutput, JobRow, JobsPane};
 
 impl App {
-    /// The job-output view: one job's retained window, with its own header because
-    /// the daemon sent the **offsets** rather than a sentence. The tail shows by
-    /// default; arrows walk back toward the beginning of the loaded window; the
-    /// footer says how much further the reader can go.
+    /// The job-output view: one job's retained window, with its own header because the daemon sent
+    /// the offsets rather than a sentence. The tail shows by default and arrows walk back toward the
+    /// beginning of the loaded window, so the footer must say how much further a reader can go.
     pub(crate) fn job_out_lines(&mut self, room: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let Some(v) = self.job_out.as_mut() else {
@@ -119,13 +118,9 @@ impl App {
         }
     }
 
-    /// **The daemon's job table, as rows** — running first, then one folded `finished (N)` row.
-    ///
-    /// The operator's own ask: *"jobs panel - same as subagents - show list of running, group
-    /// finished"*. The rows come from [`App::job_stops`] — the same enumeration the arrows,
-    /// Enter and the drawn `▸` read — and each stop's line is recorded in
-    /// [`App::jobs_stop_rows`], which is what the arrows scroll to. Takes `&mut self` for that
-    /// record alone, the sibling of [`App::subagents_lines`].
+    /// The daemon's job table as rows: running first, then one folded `finished (N)` row. The rows
+    /// come from `job_stops` - the same enumeration the arrows, Enter and the drawn mark read - and
+    /// each stop's line is recorded in `jobs_stop_rows`, which is what the arrows scroll to.
     pub(crate) fn jobs_lines(&mut self, w: usize) -> Vec<String> {
         let content = self.jobs_view().content(w);
         // **The rows the stops landed on, taken as they went out** — the record the arrows

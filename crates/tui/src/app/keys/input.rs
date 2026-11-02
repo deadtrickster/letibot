@@ -1,43 +1,6 @@
-//! **What the terminal said, read as this head's [`Key`].**
-//!
-//! The bytes are rano's to read: `rano::term` decodes them into an [`Event`] that says what
-//! was *pressed* — `k` with Ctrl, Enter with Alt — and nothing about what it means. What it
-//! means is this head's, and this is the one place that decides it. Until the terminal layer
-//! moved into rano, letibot's own decoder produced [`Key`] directly (`0x0b` *was*
-//! `KillToEnd`); this map reproduces exactly what that decoder produced, so every byte sequence
-//! the operator's terminal sends still means the key it meant.
-//!
-//! # The readline keys
-//!
-//! Ctrl+A/E are Home/End, Ctrl+B/F are Left/Right, Ctrl+K/U kill to the end and the start,
-//! Ctrl+W kills a word back, Ctrl+Y yanks, Ctrl+Z and Ctrl+_ undo, Alt+Z redoes. Alt+B/F and
-//! Ctrl+Left/Right move by word, Alt+Backspace kills a word back, and Alt+Enter — or Shift+Enter
-//! under the kitty keyboard — is a newline that does not submit. Any other Alt+key is swallowed
-//! rather than typed, so Alt+j does not insert a `j`.
-//!
-//! # What maps to nothing, on purpose
-//!
-//! **Ctrl+`\` (`0x1c`)** is the pane's way out. A program inside a pane must never be given it,
-//! or it could trap it, so it is found on the raw stream (`Terminal::raw_input`, read in the
-//! head's loop) before anything is forwarded — and it is never a [`Key`]. rano decodes it as
-//! Ctrl+`\`; this map is where that is dropped. **Ctrl+`^` was one of them, and is now the
-//! read-only override against an older daemon** ([`Key::CtrlCaret`], adopted the way `]`
-//! was); Ctrl+Space remains a never-key, and a key that did nothing stays one.
-//! Ctrl+`]` was one of them too, and is now the crossing to the editor pane
-//! ([`Key::CtrlBracket`]).
-//!
-//! Every mouse report but a plain wheel step and a plain left press is dropped: selecting text
-//! stays the terminal's own Shift+drag, and a report the head does not act on must never
-//! become typed punctuation.
-//!
-//! # The ⌘ chords
-//!
-//! Under the kitty keyboard a terminal reports ⌘C as `CSI 99;9u`, and rano keeps that bit
-//! ([`Mods::SUPER`]), so a chord arrives here as a chord instead of as its plain letter: **⌘C**
-//! is silent (the terminal copies the selection, and [`Key::CtrlC`] — which an unbound super used
-//! to leave behind — would interrupt a turn), **⌘V** is the clipboard's picture door
-//! ([`Key::CtrlV`], the same one ctrl-v opens), **⌘Z** undoes and **⌘⇧Z** redoes. Any other ⌘
-//! chord is swallowed by the last character arm — never typed.
+//! What the terminal said, read as this head's [`Key`]: rano decodes the bytes into an [`Event`]
+//! that says what was pressed, and this is the one place that decides what it means. Anything the
+//! head does not act on answers `None`, so a report can never become typed punctuation.
 
 use super::Key;
 use rano::term::{Event, KeyCode, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind};
@@ -59,13 +22,9 @@ fn key(k: KeyEvent) -> Option<Key> {
     Some(match k.code {
         KeyCode::Char(c) if m.is_empty() => Key::Char(c),
         KeyCode::Char(c) if m == Mods::CTRL => return ctrl(c),
-        // **⌘ (super) is a chord, not a letter.** The terminal forwards ⌘C as `CSI 99;9u` and
-        // rano keeps the bit now, so the chord arrives as itself; before that it arrived as a
-        // plain `c` and was typed into the prompt (the operator's report, 2026-10-27).
-        //
-        // ⌘C is deliberately `None`: the TERMINAL copies the selection and this head's drag
-        // release copies it too (`App::copy_selection`), so a head that acted here would be a
-        // second copy of one fact. Silence is the whole of its job.
+        // ⌘ (super) is a chord, not a letter, and rano keeps the bit. ⌘C is deliberately `None`:
+        // the TERMINAL copies the selection and this head's drag release copies it too
+        // (`App::copy_selection`), so acting here would be a second copy of one fact.
         KeyCode::Char('c') if m == Mods::SUPER => return None,
         // ⌘V: the clipboard's picture, through the door ctrl-v already opens — the clipboard
         // first, unless a payload window is open (`App::attach_from_clipboard`).
@@ -176,11 +135,9 @@ fn mouse(m: MouseEvent) -> Option<Key> {
             x: m.x,
             y: m.y,
         }),
-        // A left-button press is a click: an open picker takes the row under the pointer as
-        // its selection, and Enter still does the switching.
-        // **A press is not yet a click**: with no motion before the release it is one, and with
-        // motion it is a selection (`app::pointer`). The release and the drag carry the button;
-        // motion with none is hover.
+        // A left press is a click: an open picker takes the row under the pointer as its selection,
+        // and Enter still switches. A press is not yet a click - with no motion before the release
+        // it is one, and with motion it is a selection (`app::pointer`).
         MouseKind::Press(MouseButton::Left) => Some(Key::Press { x: m.x, y: m.y }),
         MouseKind::Drag(MouseButton::Left) => Some(Key::Drag { x: m.x, y: m.y }),
         MouseKind::Release(_) => Some(Key::Release { x: m.x, y: m.y }),
@@ -213,10 +170,9 @@ mod tests {
         rano::term::decode::paste_open(b)
     }
 
-    /// **The numpad's Enter is Enter** — the operator, 2026-10-11: *"the numpad enter can't enter
-    /// subagent"*, *"access cards too"*. Under the kitty keyboard this head asks for, a terminal
-    /// reports the keypad by its own codes (`KP_ENTER` is `CSI 57414 u`), which decoded to nothing
-    /// until rano 0.8.3; the keypad's digits are digits too, so a card's number can be typed on it.
+    /// The numpad's Enter is Enter: under the kitty keyboard this head asks for, a terminal reports
+    /// the keypad by its own codes (`KP_ENTER` is `CSI 57414 u`). Its digits are digits too, so a
+    /// card's number can be typed on it.
     #[test]
     fn the_numpad_enter_and_digits_are_the_keys_on_them() {
         assert_eq!(decode(b"\x1b[57414u"), vec![Key::Enter]);
@@ -310,10 +266,9 @@ mod tests {
 
     #[test]
     fn an_escape_sequence_split_across_two_reads_is_one_key_not_typed_punctuation() {
-        // A lone ESC is the one deliberate exception: it is genuinely ambiguous, and it is
-        // resolved in favour of the key a person pressed on purpose, because Esc twice is the
-        // composer's interrupt and an Esc that waits for a disambiguating read is an Esc that
-        // arrives a frame late.
+        // A lone ESC is the one deliberate exception: it is genuinely ambiguous, and it resolves in
+        // favour of the key a person pressed on purpose - Esc twice is the composer's interrupt, and
+        // an Esc that waits for a disambiguating read arrives a frame late.
         assert_eq!(decode_keys(b"\x1b", false), (vec![Key::Esc], 1));
         assert_eq!(decode(b"\x1b\x1b"), vec![Key::Esc, Key::Esc]);
 
@@ -486,16 +441,9 @@ mod tests {
         );
     }
 
-    /// **`ctrl-\` decodes to nothing at all, and that is what makes it the pane's way out.**
-    ///
-    /// The pane's exit must be a key **the program never receives**, or a program can trap it.
-    /// It can never arrive at [`App::key`] as a `Key` — which is why the interception lives on
-    /// the raw stream (`Terminal::raw_input`) and not on the key path, and why the way out
-    /// cannot be something a program could also be given.
-    ///
-    /// **The letters around it are two keys**, which is the other half: the byte is *eaten*,
-    /// not turned into a `Key::Char` or an `Esc`, so a head that forwarded keys would forward
-    /// `ab` and `cd` with nothing between them and no way out at all.
+    /// `ctrl-\` decodes to nothing at all, and that is what makes it the pane's way out: the exit
+    /// must be a key the program never receives, so it is caught on the raw stream, not here. The
+    /// byte is eaten, not turned into a `Key::Char` or an `Esc`, so `ab` and `cd` stay two keys.
     #[test]
     fn the_way_out_byte_decodes_to_nothing_and_cannot_hide_in_anything() {
         assert!(decode(&[0x1c]).is_empty(), "ctrl-\\ is not a `Key`");
@@ -517,10 +465,9 @@ mod tests {
         assert!(!(0x40..=0x7e).contains(&0x1c));
     }
 
-    /// **The kitty keyboard means the keys this head already binds**, plus the two it exists
-    /// for. Every binding is reached through the legacy spelling, so Ctrl-C is still `CtrlC`
-    /// and Alt+b is still a word left; Shift+Enter is the soft newline Alt+Enter was the only
-    /// way to type; Esc is Esc.
+    /// The kitty keyboard means the keys this head already binds: every binding is reached through
+    /// the legacy spelling (Ctrl-C is still `CtrlC`, Alt+b still a word left), plus Shift+Enter as
+    /// the soft newline Alt+Enter was the only way to type.
     #[test]
     fn kitty_keys_decode_to_the_keys_this_head_already_binds() {
         let one = |b: &[u8]| {
@@ -566,27 +513,9 @@ mod tests {
         assert!(k.is_empty(), "{k:?}");
     }
 
-    /// **⌘C is a chord, and it is neither a `c` nor an interrupt** — measured 2026-10-27 from the
-    /// operator's report (*"Cmd-C with a mouse selection copies AND types a `c`"*), fixed
-    /// 2026-10-29 in rano's `fix/super-modifier`.
-    ///
-    /// **The copy works and is not this head's.** A drag's release copies the selection
-    /// (`App::copy_selection`) and Ghostty copies it too, which is why the report said *"the text
-    /// is on the clipboard"*; the damage was the character beside it.
-    ///
-    /// **Where it went wrong was one mask and one round trip in rano.** Ghostty forwards ⌘C as
-    /// `CSI 99;9u` — modifier `9` is `1 + 8`, bit 8 is super — because this head asks for the
-    /// kitty keyboard (`CSI > 1 u`). rano masked the bit off (`Mods::from_bits(b & 7)`) and then
-    /// put the character back through the LEGACY bytes it stands for, which carry alt and ctrl
-    /// only, so the sequence decoded to `c` with no modifier at all: the [`Key::Char`] a person
-    /// types by pressing the key.
-    ///
-    /// **This test used to assert that defect, on purpose**, so that the day rano was fixed the
-    /// first assertion failed loudly and named the line to invert. This is that day, and the
-    /// assertions below are the new truth: the three byte sequences decode with their super, and
-    /// [`key`] turns them into the verbs the operator reaches for. ⌘⌃C is the one that used to
-    /// hurt most — with the super gone it was a bare [`Key::CtrlC`], so the chord meant to copy
-    /// interrupted the turn.
+    /// ⌘C is a chord, and it is neither a `c` nor an interrupt: the copy is the terminal's and the
+    /// drag release's (`App::copy_selection`), so this head's job is silence. The sequences below
+    /// must decode WITH their super, or the chord types a `c` and ⌘⇧C interrupts the turn.
     #[test]
     fn a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter() {
         // The decode itself, in rano's vocabulary: the bit survives.

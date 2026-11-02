@@ -1,34 +1,12 @@
-//! **`ctrl-\` is a byte, not a signal — measured on a real terminal.**
-//!
-//! The other half of the way out, and the half no `App` test can see: whether `0x1c` is
-//! *observable* at all. `0x1c` is `QUIT` under `ISIG`, so a head whose terminal is not
-//! fully raw never receives the byte — the kernel sends `SIGQUIT` to the process group and
-//! the head dies instead of detaching from the pane. `Terminal::enter` calls `cfmakeraw` on the
-//! fd it read, which clears `ISIG` (`term.rs`), and this file is the measurement of that
-//! claim rather than a reading of it: a pty pair, a real `Terminal`, the byte written into
-//! the master the way a keyboard would send it, and the assertion that
-//! `Terminal::raw_input` has it.
-//!
-//! **It is in its own file because it takes fd 0.** `Terminal::enter` inspects stdin, so
-//! the test points fd 0 at a pty slave — and an integration test is its own process, so
-//! that redirect is contained here and cannot reach another test's stdin.
-//!
-//! # What this proves and what it does not
-//!
-//! Proved: the byte reaches the reader, and it survives `key_of`, which maps it to nothing,
-//! because the reader keeps what it *consumed* rather than what it decoded.
-//! Not proved here: that a particular terminal or multiplexer sends `0x1c` for the
-//! operator's `ctrl-\` at all — that is a fact about their keyboard, their terminal and
-//! their multiplexer, and it is the one thing a live head still has to answer.
+//! `0x1c` is `QUIT` under `ISIG`, so a head whose terminal is not fully raw never receives the
+//! byte - the kernel signals the group instead. This measures `Terminal::enter` clearing
+//! `ISIG`, in a file of its own because it takes fd 0 and so needs a process of its own.
 
 use std::io::Write;
 use std::os::fd::AsRawFd;
 
-/// **The way-out byte is delivered and observable.**
-///
-/// One pty pair, one real `Terminal`, one `0x1c`. If `enter` left `ISIG` on anywhere, the
-/// kernel would turn this into `SIGQUIT` for the process group and there would be no byte
-/// to assert on — which is exactly the failure the assertion is written to distinguish.
+/// The way-out byte is delivered and observable: had `enter` left `ISIG` on, the kernel would
+/// turn this into `SIGQUIT` for the process group and there would be no byte to assert on.
 #[test]
 fn the_way_out_byte_reaches_the_reader_and_is_not_a_key() {
     let mut master = 0i32;

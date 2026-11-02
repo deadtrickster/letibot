@@ -1,42 +1,6 @@
-//! **The daemon goes away, and the head does not.**
-//!
-//! §4.2, end to end and against a real socket: a head attaches, the socket is closed
-//! under it, and what is measured is that the head is still *running* — drawing the
-//! conversation it had, saying the link is down, holding the composer — and that when a
-//! daemon comes back it **resumes from the seq it had**, so the transcript is carried
-//! over rather than started again.
-//!
-//! The unit tests in `app.rs` own the head's half (the line, its clock, the composer
-//! refusal, and that a `Bye` is not a drop). This file owns the socket half, which is
-//! where the defect was: `client.ack(...)?` propagated out of the driver's loop and out
-//! of `main`, so there was nothing left running to assert on.
-//!
-//! # Why the daemon here is scripted on the wire and not a `ServerHandle`
-//!
-//! **A real daemon cannot produce this case in-process.** `ServerHandle::shutdown`
-//! calls `registry.close()`, the seat's pump answers `Delivery::Closed` with
-//! `ServerFrame::Bye { reason: "daemon shutting down" }` — and a `Bye` is by design
-//! *not* a drop: it is the daemon saying the conversation is over, and the head leaves
-//! with the reason on its screen. That is a different requirement with its own test
-//! (`a_bye_leaves_and_never_looks_like_a_link_to_reconnect`).
-//!
-//! What this file needs is a socket that **closes without a word**, which is what a
-//! daemon that is killed, restarted or crashed does. So the peer below speaks protocol
-//! frames directly, on two connections, and the assertion that matters is made **on the
-//! wire**: the retry's `ATTACH` carries `since_seq` = the seq the head had read, which
-//! is the requirement as a number rather than inferred from a screen.
-//!
-//! # Resumed, not restarted, and how this tells them apart
-//!
-//! The two are easy to confuse and the difference is the point. A reconnect that took a
-//! **fresh snapshot** would show a conversation that *looked* right while having thrown
-//! away everything the daemon's log no longer holds, and would rewind the head's read
-//! mark — a snapshot is a replacement.
-//!
-//! So the first connection puts a transcript row on the screen and the second
-//! connection's `Hello` carries **no snapshot** and its stream no such row, and the test
-//! asserts the row is still there afterwards. A resume keeps `items` and fills the gap;
-//! a resync replaces `items` wholesale, and that row would be gone.
+//! The daemon goes away and the head does not: it keeps drawing, says the link is down, and a
+//! daemon coming back is RESUMED from the seq the head had read. A real daemon cannot produce this
+//! in process (a `Bye` is by design not a drop), so the peer below speaks frames and closes silently.
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -86,12 +50,9 @@ fn step(link: &mut Link, a: &mut App) {
     link.tick(a, (100, 30), &[], &[], &mut sink);
 }
 
-/// One pass **plus the caller's half of the recovery**, exactly as the binary does it:
-/// ask the head whether the backoff has passed, and if it has, open the socket here.
-///
-/// Written out rather than hidden behind a helper that took a path, because the split
-/// *is* the design — the timing belongs to the head, which has the clock, and the socket
-/// belongs to this layer, which has the path.
+/// One pass plus the caller's half of the recovery, exactly as the binary does it: ask the head
+/// whether the backoff has passed, and if it has, open the socket here. The split IS the design -
+/// timing belongs to the head, which has the clock; the socket to this layer, which has the path.
 fn pump_once(link: &mut Link, a: &mut App, path: &std::path::Path) {
     step(link, a);
     if a.should_reconnect() {
@@ -173,24 +134,18 @@ fn read_attach(r: &mut FrameReader<UnixStream>) -> Attach {
     }
 }
 
-/// **A daemon, drawn on the wire**: two connections, scripted, each `ATTACH` handed back
-/// for the test to judge.
-///
-/// Connection one answers a fresh attach, puts two rows on the screen, and then **closes
-/// without a word** — the case a real `ServerHandle` cannot produce, because it says
-/// goodbye. Connection two answers the head's retry as a *resume* and stays open, so the
-/// head ends the test attached.
+/// A daemon, drawn on the wire: two connections, scripted, each `ATTACH` handed back for the test
+/// to judge. Connection one answers a fresh attach, puts two rows on the screen and then closes
+/// without a word; connection two answers the retry as a RESUME and stays open.
 fn scripted_daemon(path: PathBuf) -> std::sync::mpsc::Receiver<Attach> {
     let (tx, rx) = std::sync::mpsc::channel();
     let listener = UnixListener::bind(&path).expect("the socket binds");
     std::thread::spawn(move || {
         // ---- connection one: a fresh attach, two rows, then silence.
         let (stream, _) = listener.accept().expect("the first attach");
-        // **The reading fd is scoped, and that is the whole of "the daemon goes away".**
-        // `try_clone` is a second descriptor for one socket, so the connection is gone
-        // only when *every* one of them is closed — and a peer that holds its reading
-        // half open looks exactly like a daemon that is merely quiet. Measured: the
-        // first version of this left it alive and the head sat attached for ever.
+        // The reading fd is scoped, and that is the whole of "the daemon goes away": `try_clone` is
+        // a second descriptor for one socket, so the connection is gone only when every one of them
+        // is closed, and a peer holding its reading half open looks like a daemon merely quiet.
         let at = {
             let mut r = FrameReader::new(stream.try_clone().unwrap());
             read_attach(&mut r)
@@ -270,11 +225,9 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
         "and names its build"
     );
 
-    // What the first connection put on the screen. Both rows are here already, and the
-    // daemon is already gone — the peer closes the socket the moment it has written
-    // them, which is exactly what "the daemon vanishes" looks like and is why there is
-    // no `!a.detached()` to assert at this point: the whole design is that the head
-    // keeps this screen *afterwards*.
+    // What the first connection put on the screen. Both rows are here already and the daemon is
+    // already gone - the peer closes the socket the moment it has written them - so there is no
+    // `!a.detached()` to assert: the whole design is that the head keeps this screen afterwards.
     let before = frame(&mut a);
     assert!(before.contains("remember this row"), "{before}");
 
@@ -302,11 +255,9 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     assert!(after.contains("daemon connection is down"), "{after}");
     assert!(after.contains("reconnecting"), "{after}");
 
-    // **A line typed here does not leave — and does not look sent.** The trap is the
-    // echo: `submit` pushes it into the pending list, the conversation draws
-    // `queued · <their words>`, and there is no queue behind it anywhere, so when the
-    // daemon comes back the sentence is gone and it was on the screen as held the whole
-    // time.
+    // A line typed here does not leave - and does not look sent. The trap is the echo: `submit`
+    // pushes it into the pending list and the conversation draws it `queued`, while there is no
+    // queue behind it, so when the daemon comes back the sentence is gone.
     for c in "is anybody there?".chars() {
         a.key(Key::Char(c));
     }
@@ -370,16 +321,9 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     );
     assert_eq!(a.resyncs, 0, "no `Resync` was sent, so none may be counted");
     assert!(recovered.contains("daemon is back"), "{recovered}");
-    // **A resume fills a gap; it does not drill one.** Every row on this screen came with
-    // its body, so the head has nothing to report as announced-and-never-filled. This is
-    // the assertion that separates §4.2 from the R2 defect it can look like: the resume
-    // path replays *every* event past the read mark, so a body the daemon wrote is
-    // delivered. If a resume ever lost one, this is the string it would say.
-    // **The substring is the CURRENT wording, not the one this test was written against.**
-    // It said `announced and never filled in`, and the sentence was reworded on 2026-09-23 to
-    // name the rows and stop asserting a cause — so this assertion would have passed against
-    // ANY string, including one that said every row was missing. A test that looks for text the
-    // code no longer has is a green test about nothing.
+    // A resume fills a gap; it does not drill one: every row here came with its body, and a resume
+    // replays every event past the read mark. The substring is the CURRENT wording - a test that
+    // looks for text the code no longer has passes against any string, including a wrong one.
     assert!(
         !recovered.contains("never filled"),
         "a resume left a row with no body: {recovered}"
@@ -432,10 +376,9 @@ fn a_retry_that_cannot_connect_says_so_and_keeps_trying() {
     );
 }
 
-/// **A socket with nobody on it is not a reconnect case at all** — there is nothing on
-/// the screen to keep, so the attach fails and the caller reports it. The distinction is
-/// the requirement's own: this is about a head whose *daemon goes away*, and a head that
-/// could not attach has no session to hold.
+/// A socket with nobody on it is not a reconnect case at all - there is nothing on the screen to
+/// keep, so the attach fails and the caller reports it. The requirement is about a head whose
+/// daemon goes away; a head that could not attach has no session to hold.
 #[test]
 fn an_absent_daemon_fails_the_attach_rather_than_running_detached() {
     let path = socket_path("absent");
@@ -449,29 +392,9 @@ fn an_absent_daemon_fails_the_attach_rather_than_running_detached() {
     );
 }
 
-/// **A head that reconnects names the session it is IN, and lands there.**
-///
-/// MEASURED 2026-10-26 (S2), from the operator's report: *"I had a session running in
-/// stroppy-io with that habr article, and then I resumed another session that does the rust
-/// rewrite, and the habr head switched to the rust session wtf"*.
-///
-/// # The mechanism, which is in this file's own field
-///
-/// A head the launcher starts is handed `--resume ID` or nothing at all, and either way its
-/// first `ATTACH` carries the **empty** session id — an empty id means *whatever the daemon
-/// calls current*, and the `ResumeSession` + `Switch` that follow are what actually name a
-/// session. `Switch` also calls `Registry::set_default`, so from that moment the daemon's
-/// *current* session is the one the OTHER terminal asked for.
-///
-/// A reconnect used to send the empty id the launcher had passed, so it was answered with the
-/// new current session: the head in the habr conversation came back from a hiccup sitting in
-/// the rust rewrite, with nothing on the screen having said so — and with a read mark from one
-/// log sent against another.
-///
-/// The fix is in `Link`: it keeps the session the last `Hello` named, which is the only
-/// statement of where the head actually is, and sends that. This test drives the exact case:
-/// a real registry on a real socket, a head in one session, another head moving the daemon's
-/// default, and then a reconnect.
+/// A head that reconnects names the session it is IN, and lands there. An empty session id on
+/// `ATTACH` means whatever the daemon calls current, and `Switch` moves that default, so a
+/// reconnect must send the session the last `Hello` named - `Link` keeps it for this reason.
 #[test]
 fn a_reconnecting_head_lands_on_the_session_it_is_in_not_the_daemons_current_one() {
     const HABR: &str = "s-habr";

@@ -1,7 +1,6 @@
-//! **A todo row's `waits on …` is a link** — the operator: *"\"waits on j97\" - make j97 a link
-//! to the real job, also render job slug"*. The slug (and a child's short name) on the row and in
-//! its detail view, the click on exactly those words opening the job's output or reading the
-//! child, `w` doing the same from the keyboard, and the cases that must open nothing wrong.
+//! A todo row's `waits on …` is a link: the slug (and a child's short name) on the row and in its
+//! detail view, the click on exactly those words opening the job's output or reading the child,
+//! `w` doing the same from the keyboard, and the cases that must open nothing wrong.
 
 use super::*;
 use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoNeed, TodoStatus};
@@ -332,15 +331,9 @@ fn a_cut_row_links_only_its_visible_part() {
     assert!(a.todos_wait_links.iter().all(|l| l.todo != 0));
 }
 
-/// **A wait link on a DONE row lands on the row the words are drawn on** — the done rows are
-/// gathered under the `done (N)` line now (`board_drawn`), so a row's pane row is no longer the add
-/// control plus its place on the board. `placed_rows` is the one arithmetic for that, and this is
-/// the measurement of it: the link's row must be the row whose words hold `waits on`.
-///
-/// **A moved link would be silent** — `wait_links` checks the row it took against the words it
-/// handed rano and records nothing when they disagree, so a wrong row costs the link rather than
-/// putting it on the wrong words. That is the right failure, and it is also why this has to be
-/// asserted rather than eyeballed.
+/// A wait link on a DONE row lands on the row the words are drawn on: the done rows are gathered
+/// under the `done (N)` line, so `placed_rows` is the one arithmetic for a row's pane row. A moved
+/// link is silent by design, which is why it has to be asserted rather than eyeballed.
 #[test]
 fn a_wait_link_on_a_done_row_lands_on_the_row_it_is_drawn_on() {
     let mut a = app();

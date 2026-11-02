@@ -1,21 +1,12 @@
-//! **The tool-call counter's panel, while the calls are still running** — the operator, from a
-//! fresh session: *"model started toolcalling (yellow counter), clicked on the tools counter —
-//! empty panel, Esc brings me back"*.
-//!
-//! The counter's numbers are the LIVE pane's (`LiveWork`): a round's result rows are appended only
-//! after every call in it has run, so at the moment the marker appears the transcript holds nothing
-//! about the calls it counts. What a click on it opens has to show the calls themselves.
+//! The tool-call counter's panel while the calls are still running. A round's result rows are
+//! appended only after every call in it has run, so the counter's numbers are the live pane's
+//! (`LiveWork`) and the panel a click opens must show the calls the transcript does not hold yet.
 
 use super::*;
 
-/// **The tool-call counter's panel, mid-turn** — the operator's *"model started toolcalling (yellow
-/// counter), clicked on the tools counter — empty panel"*.
-///
-/// A round's result rows are appended only after every call in it has run, so while the calls are
-/// running the transcript holds nothing about them: the counter's numbers are the live pane's
-/// (`LiveWork`), and the panel that opens has to show the calls themselves. This is the state the
-/// bug lived in — a turn one round deep, a marker carrying two running calls, and an open run whose
-/// rows are a reasoning row the "tool calls" clause deliberately hides.
+/// A turn one round deep with a marker carrying two running calls, and an open run whose only row
+/// is the reasoning the "tool calls" clause hides: the panel must show the calls themselves here,
+/// because a round appends no result row until every call in it has run.
 fn a_turn_with_two_calls_running() -> App {
     let mut a = app();
     a.apply(hello(

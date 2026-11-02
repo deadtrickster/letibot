@@ -1,34 +1,23 @@
-//! **The pickers' state**: which picker is open, its rows and the selection, and the mode a
-//! pick asks for.
+//! The pickers' state: which picker is open, its rows and the selection, and the mode a pick asks
+//! for.
 
 use super::*;
 use letibot_plugin::pane::Act as RowAct;
 use letibot_sessionlog::registry::SessionBrief;
 
 impl App {
-    /// Answer the session picker: a row number, or enough of an id to be unique.
-    ///
-    /// An ambiguous prefix is **refused with the count**, not resolved to the first
-    /// match. Switching to the wrong session is not a keystroke you can take back —
-    /// the prompt you type next lands there.
+    /// Answer the session picker: a row number, or enough of an id to be unique. An ambiguous
+    /// prefix is refused with the count, never resolved to the first match - switching to the
+    /// wrong session is not a keystroke you can take back, since the next prompt lands there.
     pub(crate) fn pick(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.close_surface(Surface::Picker);
             self.redraw = true;
             return None;
         }
-        // **The number is the n-th SESSION** — [`App::session_at_number`], which is the same
-        // reading rano's list writes its numbers from. They are the same list only while nothing
-        // is expanded, and a number that means one thing on the screen and another in this
-        // function is the two-enumerations defect. A group's line has no number, so there is
-        // nothing here to refuse: the numbers run over the sessions alone, and a list with two
-        // group lines above three conversations numbers those conversations 1, 2, 3.
-        //
-        // The prefix search below stays over every session on purpose: a collapsed child is still
-        // reachable by name, which is what collapsing is for — **and a number past the end falls
-        // through to it**, because `3` is also a thing a title can say (`3 days of work`) and a
-        // list that refused it would be a list that stopped searching for names that look like
-        // numbers. Only when neither reading finds anything is the number answered as a number.
+        // The number is the n-th SESSION, the same reading rano's list numbers its rows from - a
+        // number that means one thing on the screen and another here is the two-enumerations
+        // defect. The prefix search stays over every session, so `3 days of work` is still found.
         let numbered = typed.parse::<usize>().ok().filter(|n| *n >= 1);
         if let Some(n) = numbered
             && let Some(i) = self.session_at_number(n)
@@ -83,20 +72,12 @@ impl App {
         }
     }
 
-    /// **A click on the session list** — the row under the pointer, and the act of the row it
-    /// landed on.
-    ///
-    /// **A group's line folds, and that is the one place in this head where a click ACTS rather
-    /// than marks.** A group has no session to mark for a later Enter, so a click that only moved
-    /// the cursor would be a click that did nothing at all — the same rule Enter follows on the
-    /// same row. A session's row keeps its two acts apart (the click marks, Enter switches),
-    /// because switching to the wrong session is not a keystroke you can take back.
+    /// A click on the session list: the row under the pointer, and the act of the row it landed
+    /// on. A group's line FOLDS, since a group has no session to mark for a later Enter - a click
+    /// that only moved the cursor would do nothing. A session's row marks; Enter switches.
     pub(crate) fn click_picker(&mut self, k: usize) {
         self.picker_sel = k;
         self.redraw = true;
-        // **A row that folds ACTS on a click**, and a session's row only marks: a group has no
-        // session to mark for a later Enter, so a click that only moved the cursor would be a
-        // click that did nothing at all — the same rule Enter follows on the same row.
         let Some(row) = self.picker_row() else {
             return;
         };
@@ -107,14 +88,9 @@ impl App {
         }
     }
 
-    /// Take a submitted line while the mode picker is up: a row number, or a
-    /// mode name — exact, or a prefix only one mode shares.
-    ///
-    /// The normalization is `Mode::parse`'s own, read-only side: case folds,
-    /// and `_` and a space fold to `-`, so `automode_edits` and `Automode
-    /// Edits` reach the mode the daemon spells `automode-edits`. An exact
-    /// match wins before prefixes are counted, so `automode` reaches
-    /// `automode` even though `automode-edits` also starts with it.
+    /// Take a submitted line while the mode picker is up: a row number, or a mode name - exact,
+    /// or a prefix only one mode shares. Normalization is `Mode::parse`'s own read-only side
+    /// (case, `_` and a space fold to `-`), and an exact match wins before prefixes are counted.
     pub(crate) fn pick_mode(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.pick = None;
@@ -159,11 +135,9 @@ impl App {
         }
     }
 
-    /// Leave the mode picker for the mode the operator chose. The mode the
-    /// session already runs under closes the list and says so, the way the
-    /// session picker answers Enter on its own row — a round trip to the
-    /// daemon to be told what the screen already showed is not worth its
-    /// flicker.
+    /// Leave the mode picker for the mode the operator chose. The mode the session already runs
+    /// under closes the list and says so, the way the session picker answers Enter on its own
+    /// row: a round trip to be told what the screen already showed is not worth its flicker.
     pub(crate) fn take_mode(&mut self, name: String) -> Option<Action> {
         self.pick = None;
         self.redraw = true;
@@ -190,46 +164,32 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// **The settings row the open card is choosing from**, or `None` for a setting this
-    /// head owns: `Verbosity` and the diff style are the head's own and have no daemon row.
-    ///
-    /// One function for the four, because the choice of row is the only thing that differs
-    /// between a daemon's setting and the head's — see [`Pick::row_key`].
+    /// The settings row the open card is choosing from, or `None` for a setting this head owns:
+    /// `Verbosity` and the diff style have no daemon row. One function for the four, because the
+    /// choice of row is the only thing that differs - see [`Pick::row_key`].
     pub(crate) fn pick_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
         let key = self.pick?.row_key()?;
         self.settings.iter().find(|r| r.key == key)
     }
 
-    /// **What the open card offers, as values with meanings** (R38).
-    ///
-    /// Two sources, and the difference is where the knowledge lives. A daemon's setting is
-    /// read from its own `SettingRow` — the head keeping its own copy of a list is the
-    /// mistake the `mode` row's comment records — and the values carry **no sentence**,
-    /// because the head does not know what `automode-edits` means and inventing a gloss would
-    /// be writing the other half's documentation. The head's own two settings carry the
-    /// sentences from [`Pick::values`].
+    /// What the open card offers, as values with meanings. A daemon's setting is read from its
+    /// own `SettingRow` and its values carry NO sentence - the head does not know what
+    /// `automode-edits` means, and a gloss would be writing the other half's documentation.
     pub(crate) fn pick_values(&self) -> Vec<(String, String)> {
         let Some(subject) = self.pick else {
             return Vec::new();
         };
-        // **The verbosity card is the PROFILE TABLE, and not a second list built beside it.**
-        //
-        // The rows used to be a hand-written const (`VERBOSITY_VALUES`) and the copy drifted the way
-        // a copy does: it was missing `read-edits` — the rung that is *conversation plus the edit
-        // cards* — so a rung `/v` cycles onto had no row on the card, and the profile the operator
-        // asked for by name did not exist as far as the card was concerned. One table, so a profile
-        // added to `Profile::ALL` appears here by construction.
+        // The verbosity card is the PROFILE TABLE, not a second list built beside it: a copy
+        // drifts, and the copy this replaced was missing a rung, so `/v` could cycle onto a
+        // profile the card had no row for. One table, so `Profile::ALL` appears by construction.
         if subject == Pick::Verbosity {
             let mut rows: Vec<(String, String)> = Profile::ALL
                 .iter()
                 .map(|p| (p.name.to_string(), p.why.to_string()))
                 .collect();
-            // **And the set in force, when no profile is it.** The rows above are the table; the set
-            // is runtime state, so a set off the ladder had no row at all — the operator, having
-            // typed one: *"it is not saved - when i do /verbosity there is no custom"*. The row is
-            // named by the set's own `custom …` string, which `as_str` writes so that it can be
-            // typed back; and since the row IS that string, it is also the row the marker lands
-            // on — `pick_current` reads the same one.
+            // And the set in force, when no profile names it: the rows above are the table and the
+            // set is runtime state, so a set off the ladder would have no row. Its name is the
+            // `custom ...` string `as_str` writes to be typed back, which is what `pick_current` marks.
             if self.visibility.profile().is_none()
                 && !rows.iter().any(|(v, _)| v == &self.visibility.as_str())
             {
@@ -261,12 +221,9 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// What the open card is already on.
-    ///
-    /// **The profile when the set is one, and the set's own `custom …` name when it is not** — and
-    /// since `pick_values` now draws a row under exactly that name, a custom set is marked on the
-    /// card like any other state rather than matching nothing. (It used to match no row at all,
-    /// which read as the card having lost the setting; see that function.)
+    /// What the open card is already on: the profile when the set is one, the set's own
+    /// `custom ...` name when it is not - the same name `pick_values` draws a row under, so a
+    /// custom set is marked like any other state instead of matching nothing.
     pub(crate) fn pick_current(&self) -> String {
         match self.pick {
             Some(Pick::Verbosity) => self.visibility.as_str(),
@@ -307,17 +264,9 @@ impl App {
                     self.say("not attached to a session yet");
                     return None;
                 }
-                // **A row this box holds no key behind ASKS rather than switching.**
-                //
-                // The operator's row: *"if i choose a model without key picker should ask for the key."*
-                // Left as it was, the switch went to the daemon and came back as its refusal
-                // (`NO KEY — /models … --key PASTE`) — the picker telling the operator to type a
-                // command it could have collected on the spot.
-                //
-                // **Only when the daemon named the keyless row** (`models.keys` present): an
-                // absent row is *no greening*, never *no keys*, and asking on its absence would
-                // block every switch behind a prompt for a key this box may well hold. `local`
-                // never asks — it needs no credential, and `choice_ready` says so.
+                // A row this box holds no key behind ASKS rather than switching - left to the daemon
+                // the switch came back as a refusal telling the operator to type a command. Only
+                // when the daemon NAMED the keyless row: absent means no greening, never no keys.
                 if self.keys_row_present() && !self.choice_ready(&name) {
                     let provider = name.split('/').next().unwrap_or(&name).trim().to_string();
                     self.say(&format!(
@@ -376,37 +325,25 @@ impl App {
         }
     }
 
-    /// The mode this session runs under, **as one of the daemon's own names** — see
-    /// [`named_choice`], which is the whole of the reading.
-    ///
-    /// It used to be `value.split_whitespace().next()`, and that is wrong for a name that
-    /// contains a space: `Mode::WRITES_ALLOWED` is spelled `writes allowed`, so the first word is
-    /// `writes`, which names no choice. Both things that read this — the picker's cursor and the
-    /// card's `← now` — then failed together, which is the operator's report exactly: *"permission
-    /// mode menu no longer highlights the current mode when opened"*.
+    /// The mode this session runs under, as one of the daemon's own names - see [`named_choice`].
+    /// It cannot be the first whitespace-separated word: `writes allowed` is one name, so that
+    /// reading names no choice, and both readers of it fail together.
     pub(crate) fn mode_current(&self) -> String {
         let Some(r) = self.mode_row() else {
             return String::new();
         };
         match named_choice(&r.value, &r.choices) {
             Some(c) => c.to_string(),
-            // **No row to mark, and the value is returned as it stands.** A current value that
-            // names none of the choices is a real state — a daemon that lists fewer modes than it
-            // accepts — and the honest render is no `← now` anywhere rather than one on the wrong
-            // row. Returning the first word here is what made that case indistinguishable from a
-            // name the head had failed to read.
+            // No row to mark, and the value is returned as it stands: a value naming none of the
+            // choices is a real state (a daemon listing fewer modes than it accepts), and the
+            // honest render is no mark anywhere rather than one on the wrong row.
             None => r.value.clone(),
         }
     }
 
-    /// **Put the open picker's cursor on the row that answers now**, and remember that nothing
-    /// has touched it yet — see [`App::pick_unseeded`].
-    ///
-    /// One function for the four cards, because they seed identically now that
-    /// [`App::pick_current`] reads a row's value through [`named_choice`]: the mode, the model,
-    /// the rung and the diff style all pick whichever of their values the current one names.
-    /// They used to seed at four call sites with two spellings of the same rule, which is the
-    /// shape this file keeps deleting.
+    /// Put the open picker's cursor on the row that answers now, and remember that nothing has
+    /// touched it yet - see [`App::pick_unseeded`]. One function for the four cards, because
+    /// `pick_current` reads a row's value through `named_choice`, so they all seed identically.
     pub(crate) fn seed_pick(&mut self) {
         let values = self.pick_values();
         let now = self.pick_current();
@@ -415,18 +352,9 @@ impl App {
     }
 }
 
-/// **Which setting a card is choosing** — R38.
-///
-/// Two of these are the daemon's (`Mode` from a `SettingRow`'s `choices`, `Model` from the
-/// catalogue); two are this head's own (`Verbosity`, the diff style). They share one card
-/// because they are one KIND of act — the reader is choosing between named values and can see
-/// all of them — and one card is what keeps them from becoming three vocabularies.
-///
-/// **`Verbosity::Terse` and its neighbours are the reason this exists.** `/verbosity` used to
-/// cycle, which requires the reader to hold four rungs in their head and to find the current
-/// one by changing it: three presses and three repaints for the value they wanted, and no
-/// screen anywhere saying what the four were. R38's rule: **a setting with more than two
-/// values is chosen from a card; only a true toggle may cycle.**
+/// Which setting a card is choosing: two are the daemon's (`Mode`, `Model`), two are this head's
+/// own. They share one card because they are one KIND of act, and because a setting with more
+/// than two values is chosen from a card - only a true toggle may cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     /// The mode this session runs under — the daemon's names.
@@ -466,22 +394,16 @@ impl Pick {
         }
     }
 
-    /// What this setting can be, with what each value MEANS.
-    ///
-    /// **Every value carries its meaning on the card and not only its name** (R38). `Terse`,
-    /// `Normal`, `Loud` and `Conversation` are not self-describing, and a reader choosing
-    /// between them is choosing between *what will be on my screen*, which the card can state
-    /// and the name cannot. The daemon's two settings have no sentences here because the head
-    /// does not know what they mean — it renders the daemon's choices verbatim and says
-    /// nothing more, which is the same rule as its hints.
+    /// What this setting can be, with what each value MEANS: `Terse`, `Normal`, `Loud` are not
+    /// self-describing, and the reader is choosing what will be on their screen. The daemon's two
+    /// have no sentences here - it renders its choices verbatim, and a gloss would be a guess.
     pub(crate) fn values(self) -> &'static [(&'static str, &'static str)] {
         match self {
             // The daemon's own names arrive at runtime; see `SettingPick::daemon_lists`.
             Pick::Mode | Pick::Model => &[],
-            // The head's own two carry their sentences from [`Pick::values`] — and the verbosity
-            // card is the PROFILE TABLE itself, built in `App::pick_values` rather than listed
-            // here. It used to be a hand-written list beside this one, and the two drifted: the
-            // copy was missing `read-edits` entirely, so a rung `/v` cycles onto had no row.
+            // The head's own two carry their sentences from [`Pick::values`]; the verbosity card is
+            // the PROFILE TABLE itself, built in `App::pick_values` rather than listed here, so a
+            // profile added to `Profile::ALL` appears there by construction.
             Pick::Verbosity => &[],
             Pick::Diff => DIFF_VALUES,
             // The workspace's own repositories, read when the card opens (`App::pick_values`).
@@ -490,13 +412,8 @@ impl Pick {
     }
 
     /// The lines under the list: what taking a row DOES, which differs per subject and is the
-    /// difference a reader is most likely to get wrong.
-    ///
-    /// **A slice and not one line**, because the model card has two facts and the file's own
-    /// rule is one fact per line: these are trimmed rather than wrapped, and measured at 110
-    /// columns a two-fact version read *"It also become…"* with its useful half never reaching
-    /// the screen. The second line is the verb for the OTHER thing, which the operator went
-    /// looking for — one verb doing both is what sent them.
+    /// difference a reader is most likely to get wrong. A slice and not one line, because the
+    /// model card has two facts and this file's rule is one fact per line, trimmed not wrapped.
     pub(crate) fn consequence(self) -> &'static [&'static str] {
         match self {
             Pick::Mode => &[
@@ -573,21 +490,9 @@ impl App {
     }
 }
 
-/// **What the diff style means** — named here so both heads spell one setting one way (R38,
-/// §11.6).
-///
-/// # The two axes, and the one that is NOT a value
-///
-/// The operator named two: *unified against side-by-side*, and *whether colour or the `+`/`-`
-/// marks carry the meaning*. **The first is the setting. The second is not a choice and this
-/// is the ruling:** the marks are drawn in BOTH layouts, always, because they are the diff's
-/// meaning and colour is reinforcement of it. A value that removed the marks would be a value
-/// that makes the diff unreadable on exactly the terminals the operator is worried about — a
-/// pipe, a `--replay`, a light theme, a reader who cannot tell red from green — and R20's own
-/// argument is that an appearance which collapses in half the terminals it is read in is not
-/// an appearance at all. So there is no `marks: off`, and no `colour` value either: colour is
-/// a property of the terminal, which the head already knows about (`RenderConfig::color`),
-/// not a preference to be stored.
+/// What the diff style means. Unified against side-by-side is the setting; colour versus the
+/// `+`/`-` marks is NOT a choice - the marks are drawn in both layouts always, because they carry
+/// the meaning and colour only reinforces it. Colour is the terminal's (`RenderConfig::color`).
 pub(crate) const DIFF_VALUES: &[(&str, &str)] = &[
     (
         "unified",

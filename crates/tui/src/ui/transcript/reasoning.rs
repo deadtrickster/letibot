@@ -1,4 +1,4 @@
-//! **The model's working-out**, dimmed and folded.
+//! The model's working-out, dimmed and folded.
 
 use crate::app::*;
 use crate::ui::render::{BlockCache, Decor, RenderConfig, visible_width};
@@ -9,53 +9,36 @@ use rano::agent::card;
 use rano::markdown::IncrementalMarkdown;
 use rano::style::Role;
 
-/// The rail every line of the model's reasoning carries.
-///
-/// Three independent signals, because each one is lost somewhere: the **word**
-/// (`Thinking…` / `Thought for 4.2s`), the **rail** (`┃`), and the **dim-italic
-/// attribute**. Colour is a no-op under a terminal-native palette; the rail is
-/// what survives a copy-paste; the attribute is what survives a `--replay` diff.
-/// Handing it to the `BlockCache` as a `Decor` rather than mapping over the lines
-/// per frame is what keeps §13.3: the rail is applied once, when the line enters
-/// the cache, not once per line per frame.
-/// The width the reasoning body wraps to, and the style it wraps inside.
-///
-/// One place, because two call sites computing it and one of them forgetting the
-/// step makes the block a row taller than the space reserved for it, which moves
-/// everything below it every frame.
+/// The width the reasoning body wraps to, and the style it wraps inside. One place, because two
+/// call sites computing it and one forgetting the step makes the block a row taller than the space
+/// reserved for it, which moves everything below it every frame.
 pub(crate) fn reasoning_cfg(cfg: &RenderConfig) -> RenderConfig {
     let mut r = cfg.inside(Role::Reasoning);
     r.width = reasoning_body_width(cfg.width);
     r
 }
 
-/// **The columns a reasoning body is actually drawn in** — the frame's width, less the step it is
-/// set in and the rail every row carries.
-///
-/// One definition, because the body's wrap ([`reasoning_cfg`]) and the number that says how much
-/// of the terminal the body costs ([`reasoning_display_lines`]) must be the same arithmetic. They
-/// were not: the count wrapped at the frame's width while the body wraps four columns narrower, so
-/// a wrapped thought read one line short of what opening it showed. The operator's own words for
-/// the number are *"how much of the terminal this is about to cost"*, and a figure not measured at
-/// the width it is drawn at is not that.
+/// The columns a reasoning body is actually drawn in - the frame's width, less the step it is set
+/// in and the rail every row carries. One definition, because the body's wrap and the count of what
+/// it costs must be the same arithmetic, or the count reads short of what opening it shows.
 pub(crate) fn reasoning_body_width(frame: usize) -> usize {
     frame
         .saturating_sub(activity_indent(frame) + card::REASONING_RAIL_WIDTH)
         .max(20)
 }
 
+/// The rail every row of the model's reasoning carries. Three signals, because each is lost
+/// somewhere: the word, the rail, and the dim-italic attribute - colour dies under a terminal's own
+/// palette, the rail survives a copy-paste, and the attribute survives a `--replay` diff.
 pub(crate) fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     let p = cfg.palette();
     // The step the whole of the model's working is set in, carried on the same
     // prefix as the rail so it is applied once per line as the line enters the
-    // cache — not once per line per frame, which is what §13.3 forbids.
+    // cache - not once per line per frame, which is what the decor exists for.
     let step = " ".repeat(activity_indent(cfg.width));
-    // The rail is painted **inside** the block too, so that the row obeys one
-    // invariant end to end: every reset in a reasoning row either ends the row or
-    // hands the reasoning style straight back. That is what the test asserts, and
-    // an invariant with an exception at column 0 is an invariant nobody can check.
-    // The cost is the block's opening sequence twice at the head of each row,
-    // which a terminal collapses to nothing.
+    // The rail is painted inside the block too, so a row obeys one invariant end to end: every reset
+    // either ends the row or hands the reasoning style straight back. An invariant with an exception
+    // at column 0 is one nobody can check; the cost is the opening sequence twice, which collapses.
     let register = rano::render::Style::of(Role::Reasoning);
     let rail = rano::render::Line {
         spans: vec![rano::render::Span::role("┃", Role::Faint)],
@@ -67,18 +50,9 @@ pub(crate) fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     }
 }
 
-/// **How many display lines a reasoning block is** — wrapped, not counted by newline.
-///
-/// One implementation with two callers, because R37's marker and the thinking row's own
-/// header must not disagree about the same block: the header says `▸ Thought · 43 lines`
-/// and the marker says `43 thinking lines`, and a reader who opens the run sees the 43.
-/// A long unwrapped line is several display lines and counts as several — the same
-/// arithmetic, and the same reason, as `visible_width(...).div_ceil(w)`.
-///
-/// **The width is the FRAME's and this takes the step and the rail off itself** — see
-/// [`reasoning_body_width`]. It used to divide by the frame's width while the body is drawn four
-/// columns narrower, which made the number one line short of the fold on any thought that wrapped:
-/// the third disagreement between a count and the text it counted, after the landed slice.
+/// How many display lines a reasoning block is - wrapped, not counted by newline. One implementation
+/// with two callers, because the row's header and the run marker must not disagree about the same
+/// block. The width is the FRAME's; the step and the rail come off inside, as the body's wrap does.
 pub(crate) fn reasoning_display_lines(text: &str, w: usize) -> usize {
     let w = reasoning_body_width(w);
     let text = without_control_lines(text);
@@ -88,19 +62,9 @@ pub(crate) fn reasoning_display_lines(text: &str, w: usize) -> usize {
         .max(1)
 }
 
-/// The fold's own header, which is also where its key is advertised.
-///
-/// `card::reasoning` supplies the word and the tense; this adds the two things
-/// only the head knows — how much of the terminal opening it would cost, and
-/// which key opens it. There is no pointer here and no selection, so the fold's
-/// own header naming its key is the whole discoverability mechanism, and it is on
-/// the screen at the moment the operator wants it.
-///
-/// The count is **screen** lines, not source lines: the model writes its
-/// working-out as a handful of very long paragraphs, so "3 lines" beside a fold
-/// that opens to half a screen is a number that answers the wrong question. What
-/// the reader wants to know is how much of the terminal this is about to cost.
-/// See [`reasoning_display_lines`], which computes it for this header and for R37's marker.
+/// The fold's own header, which is also where its key is advertised: there is no pointer here and no
+/// selection, so naming the key is the whole discoverability mechanism. The count is SCREEN lines,
+/// because the model writes a few very long paragraphs - `3 lines` beside half a screen is a lie.
 pub(crate) fn thinking_header(
     cfg: &RenderConfig,
     raw: &str,
@@ -140,12 +104,9 @@ pub(crate) fn reasoning_row_lines(
     let TranscriptItem::Reasoning { text, .. } = item else {
         unreachable!("reasoning_row_lines is handed only Reasoning rows");
     };
-    // **The model's reasoning is text this head did not author** (§3.1), and it
-    // reaches the terminal through the markdown renderer with the head's own
-    // escapes around it — so a control byte in it is a control byte on the
-    // glass. Sanitised BEFORE the lexer, so what is lexed and what is measured
-    // are the same string: the escape becomes one space, which is what keeps the
-    // column arithmetic honest (`without_control`'s whole argument).
+    // The model's reasoning is text this head did not author, and it reaches the terminal through the
+    // markdown renderer with the head's own escapes around it - so a control byte in it is a control
+    // byte on the glass. Sanitised BEFORE the lexer, so what is lexed and what is measured agree.
     let text = without_control_lines(text);
     // A `Cow`, and the borrow is what the change bought: this used to force the
     // allocation even when the sanitiser had nothing to do.

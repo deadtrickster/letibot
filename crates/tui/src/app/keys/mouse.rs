@@ -1,14 +1,13 @@
-//! **The mouse, routed by what was drawn** (R69): a click and a wheel notch go to the topmost
-//! target the last frame recorded under the pointer (`app::hits`), in that target's own rows.
+//! The mouse, routed by what was drawn: a click and a wheel notch go to the topmost target the last
+//! frame recorded under the pointer (`app::hits`), in that target's own rows.
 
 use super::*;
 use std::ops::ControlFlow;
 
 impl App {
-    /// **A card that owns every key is up** — the `allow-all` confirmation, the new-todo card,
-    /// a password, a `!term close` confirmation, a prompt, a key ask, or the diff popup. Their
-    /// handlers take the mouse as one of their keys, so the pointer's position means nothing
-    /// while one of them is in front.
+    /// A card that owns every key is up - `allow-all`, a todo draft, a password, `!term close`,
+    /// a prompt, a key ask, the diff popup. Their handlers take the mouse as one of their keys,
+    /// so the pointer means nothing while one of them is in front.
     fn modal_up(&self) -> bool {
         self.mode_confirm.is_some()
             || self.todo_draft.is_some()
@@ -61,19 +60,9 @@ impl App {
         }
     }
 
-    /// **A click, answered from the last frame alone.**
-    ///
-    /// The topmost target under the pointer; the stop drawn on that row; that surface's act.
-    /// **A click that lands on no target falls through** — it used to be taken by whichever of
-    /// the todos, queue, picker or setting-card handlers was open, hit or miss, which is why the
-    /// count labels stopped answering while one of those was up. A click on a target with no
-    /// stop on that row (a pane's title, the blank under a short list) is the target's and moves
-    /// nothing: there is nothing under it to fall through to.
-    ///
-    /// **What a click does is select**, everywhere a row is a choice — the picker's own rule,
-    /// *"select and confirm stay two acts"*: Enter still does the switching, the answering, the
-    /// opening. The exceptions are the targets that are buttons: a count label opens its pane,
-    /// an edit row opens its change, the edge's standings open the queue.
+    /// A click is answered from the last frame alone: the topmost target under the pointer, the
+    /// stop on that row, that surface's act. It selects - Enter still switches, answers, opens -
+    /// except on targets that are buttons; a click on no target is nobody's and falls through.
     pub(crate) fn key_click(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         let Key::Click { x, y } = *k else {
             return ControlFlow::Continue(());
@@ -108,10 +97,8 @@ impl App {
                 let _ = self.command("repo");
                 return ControlFlow::Break(None);
             }
-            // **The corner's repository opens the queue for it** — the operator's *"option to
-            // track the work"*: the path beside the session's name is the tree, and a click asks
-            // the merge queue pane for that tree's queues through the verb a person would type
-            // (`/queue /PATH`, `QueueScope::Path`), so the pane and the word cannot disagree
+            // The corner's repository is the tree, so a click asks the queue for THAT tree through
+            // the verb a person would type (`/queue /PATH`): the pane and the word cannot disagree
             // about what a scope is.
             (Target::HeaderRepo, _) => {
                 let repo = crate::gitfield::repo_dir(&self.wiring.workspace);
@@ -129,18 +116,13 @@ impl App {
                     CountLabel::Monitors => Surface::Monitors,
                 }));
             }
-            // **The merge queue's standings open the queue** — the operator, 2026-10-27: *"i want
-            // to click '5 in review' and be taken to the merge queue"*. It is `/queue`'s act
-            // through the verb's own door (`App::command`), which is how the git field opens the
-            // repo card, so the click keeps the rule a bare `/queue` keeps: the pane opens on
-            // THIS session's repository, not on whatever scope the last `/queue all` left behind
-            // — and a second click while the pane is up closes it, as the verb would.
+            // `/queue`'s own act through the verb's door, so a click keeps the rule a bare
+            // `/queue` keeps: the pane opens on THIS session's repository, not on whatever scope
+            // the last `/queue all` left - and a second click closes it, as the verb would.
             (Target::QueueStandings, _) => return ControlFlow::Break(self.command("queue")),
-            // **A link opens.** A `file://` link opens in the editor pane this head already opens
-            // files with, at the line it names; anything else is handed to the platform's opener
-            // (`Action::OpenUrl`), which is the only process that can open a URL from here — the
-            // head takes the mouse, so the terminal never gets the click to open itself. See
-            // [`App::open_link`] and `app::links`.
+            // A `file://` link opens in the editor pane at the line it names; anything else goes
+            // to the platform's opener, the only process that can open a URL from here - this head
+            // takes the mouse, so the terminal never gets the click to open it itself.
             (Target::Link, Some(k)) => {
                 let url = self.link_targets.get(k).cloned();
                 return ControlFlow::Break(url.and_then(|u| self.open_link(&u)));
@@ -166,29 +148,18 @@ impl App {
                 self.open_notice_popup(k);
                 return ControlFlow::Break(None);
             }
-            // **A call the turn is still drawing opens what its own row will** — the diff popup
-            // for a card carrying a change, and a sentence for one that has nothing behind it
-            // yet (`App::open_call`). The record is keyed by the call, so the click answers about
-            // the call even though the card's words changed since the frame was drawn.
+            // A call the turn is still drawing opens what its own row will - the diff popup for a
+            // card with a change behind it, a sentence for one without. The record is keyed by the
+            // CALL, so a card whose words changed since the frame still answers about the call.
             (Target::LiveCall, Some(k)) => {
                 if let Some((_, call)) = self.call_rows.get(k).cloned() {
                     self.open_call(&call);
                 }
                 return ControlFlow::Break(None);
             }
-            // **A finished child's line takes you to the child** — the operator: *"when subagent
-            // finished main session gets notification and it is clickable. but the card shown is
-            // completely useless - i want the click to bring me to the subagent session instead,
-            // so i can read its conclusions"*. The popup restated the notice the model had already
-            // been given; the child's own conversation is where its conclusions are.
-            //
-            // **The act is `ctrl-s`'s**, through the one door that switches (`App::switch_to`):
-            // so a session this daemon holds is a `Switch`, one it has finished but still knows is
-            // resumed from the store, and a child that is a subagent gets its parent back on `esc`
-            // — the same way out the session list has.
-            //
-            // A stop the frame no longer holds switches to nothing rather than to a guess; the
-            // row's id was recorded with the frame that drew it.
+            // A finished child's line goes to the child: the popup only restated the notice the
+            // model already had, and its conclusions are in its own conversation. The act is
+            // `ctrl-s`'s one switching door, so `esc` gives the parent back as the list does.
             (Target::TaskAgent, Some(k)) => {
                 let Some(session) = self.task_switches.get(k).cloned() else {
                     return ControlFlow::Break(None);
@@ -201,11 +172,9 @@ impl App {
                 self.open_card_popup(i);
                 return ControlFlow::Break(None);
             }
-            // **A todo row's `waits on j97 · pg-timing` opens the job** — the operator: *"\"waits
-            // on j97\" - make j97 a link to the real job, also render job slug"*. A button, like
-            // the notice: the click is the act, and `w` on the row is the same act.
-            // **The flash notice, cut to its line, opens whole** (R89) — and so does a progress
-            // the status row could not say all of.
+            // A todo row's `waits on j97` opens the job - a button, like the notice: the click is
+            // the act and `w` on the row is the same act. A flash notice cut to its line opens
+            // whole, and so does a progress the status row could not say all of.
             (Target::FlashNotice, _) => {
                 if let Some((title, text)) = self.status_click.clone() {
                     self.open_text_popup(text, (title, rano::style::Role::Pending));
@@ -249,11 +218,9 @@ impl App {
                     let stops = self.todos_stops();
                     self.sync_repo_from_stop(&stops);
                 }
-                // **A click on a queue row OPENS it** — Enter's own act, through the same door. A
-                // click that only moved the mark left the row's detail behind a key the person had
-                // already pressed and found inert (the operator: *"i go to /queue and cant click or
-                // enter that merge job"*), and a queue row is a thing you open, not a thing you
-                // point at.
+                // A click on a queue row OPENS it - Enter's own act through the same door: a click
+                // that only moved the mark left the detail behind a key already pressed and found
+                // inert, and a queue row is a thing you open, not a thing you point at.
                 Surface::Queue => {
                     self.queue_sel = k;
                     self.redraw = true;
@@ -285,15 +252,9 @@ impl App {
         ControlFlow::Break(None)
     }
 
-    /// **A wheel notch, sent to the surface under the pointer.**
-    ///
-    /// `Continue` hands the notch on with no position — to the cards that own every key, and
-    /// for a pointer over nothing the frame recorded (the composer, the hint bar), where the
-    /// notch does what it always did. Over a target, the notch is that target's and only its:
-    /// the pane or output under the pointer scrolls, the conversation scrolls (or the ctrl-v
-    /// window in it pages), the decision card scrolls its content while it has somewhere to go,
-    /// and a card or label with nothing to scroll takes the notch and moves nothing — a notch
-    /// over a card must not scroll the transcript behind the reader's back.
+    /// A wheel notch goes to the surface under the pointer and only to it: the pane or output
+    /// scrolls, the conversation scrolls or pages its window, a decision card scrolls its content.
+    /// `Continue` hands the notch on with no position; a card with nowhere to go moves nothing.
     pub(crate) fn wheel_at(&mut self, up: bool, x: u16, y: u16) -> ControlFlow<Option<Action>> {
         if self.modal_up() {
             return ControlFlow::Continue(());

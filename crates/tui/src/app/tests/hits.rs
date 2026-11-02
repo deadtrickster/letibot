@@ -124,10 +124,9 @@ fn a_click_on_the_decision_ladder_and_the_quit_card_selects_that_row() {
     assert_eq!(a.quit_sel, 1);
 }
 
-/// **A click on a wrapped rung's later row selects that rung.** The rows are rano's
-/// (`DecisionCard::choice_rows`); what is this head's is placing them under the card's content
-/// and the chrome above it. Long labels at a narrow width put each option's id on a row after
-/// its first, which is the row a miscounted offset would give to the wrong rung.
+/// A click on a wrapped rung's later row selects that rung. The rows are rano's; what is this
+/// head's is placing them under the card's content and the chrome above it. Long labels at a
+/// narrow width put an option's id on a later row, which a miscounted offset would misplace.
 #[test]
 fn a_click_on_a_wrapped_rung_selects_that_rung() {
     let mut a = tall_card(false);

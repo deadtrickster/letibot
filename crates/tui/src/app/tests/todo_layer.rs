@@ -1,21 +1,6 @@
-//! **`/todo` through a layer** — the `command_` seam of `docs/plugins-plan.md` §4.7, and the
-//! feeds of its Feeds section.
-//!
-//! The seam's shape, once, because every test here is one line of it: the head owns the slash line
-//! and its own five verbs, the layer owns *what a new row may look like*, and the head performs the
-//! one act it has heard of. So there are exactly four things a test can stand in:
-//!
-//! | the layer | the head |
-//! |---|---|
-//! | the built-in `todo` (`b-todo`, this binary's own module) | adds `title — body` |
-//! | a project layer with a scripted answer | performs `add_todo`, ignores every other act name |
-//! | a layer that passes (`-1`) | answers the line exactly as it did before there was a layer |
-//! | a layer that traps | says so, and the layer below answers |
-//!
-//! **Nothing is faked except the layer's ANSWER.** `RanoLoader` compiles the real module for the
-//! built-in, `letibot_builtins::install` is the same function the head calls, and the commands are
-//! driven through `App::command` — the composer's own door — so a test that passes here is a head
-//! that answers the line.
+//! `/todo` through a layer: the head owns the slash line and its five verbs, the layer owns what a
+//! new row may look like, and the head performs the one act it has heard of. Nothing is faked but
+//! the layer's answer: the real module is compiled and the commands go through `App::command`.
 
 use super::*;
 use letibot_plugins::{Capability, Loader, Module, Stack};
@@ -143,13 +128,9 @@ fn project_layer(root: &Path, seen: &Seen, answer: Option<&str>, traps: bool) ->
     stack
 }
 
-/// The same stack **without the built-in table** — the shape in which a layer that could not
-/// answer leaves the line to the HEAD rather than to `b-todo`: a binary whose built-in failed to
-/// load (`install_builtins`' sentence, or a stale table), or a project layer trapping on a line
-/// the built-in below would have passed on. It is the only shape that reaches
-/// `todo_command`'s `_ if !rest.is_empty() => add_operator_row` arm, which is the arm the
-/// reviewer's finding was about: the test that used `project_layer` was answered by `b-todo`
-/// and so measured nothing of the head's own fallback.
+/// The same stack WITHOUT the built-in table - the shape in which a layer that could not answer
+/// leaves the line to the HEAD: a binary whose built-in failed to load, or a project layer trapping
+/// on a line the built-in below would have passed on. It is the only shape reaching the fallback.
 fn project_layer_without_builtins(root: &Path, seen: &Seen) -> Stack {
     let dir = root.join(".letibot").join("plugins").join("todo");
     std::fs::create_dir_all(&dir).expect("the project's plugin dir");
@@ -193,13 +174,9 @@ fn a_head_with(stack: Stack) -> App {
     a
 }
 
-/// **The operator's own line, end to end** — `/todo title:"a" body:"b"` is one row reading
-/// `a — b`, filed as the operator's, pending, sent as `SetOperatorTodos`.
-///
-/// The layer is the one this BINARY carries: `Host::build` discovers the scopes, installs the
-/// built-in table and compiles the module, which is the whole of *"the layer is actually
-/// installed"* — the em dash in the content is the proof that the guest parsed the line, because
-/// the head's own reading of it would be the literal `title:"a" body:"b"`.
+/// The operator's own line, end to end: `/todo title:"a" body:"b"` is one row reading `a - b`,
+/// filed as the operator's, pending, sent as `SetOperatorTodos`. The layer is the one this binary
+/// carries, and the parsed content is the proof the guest read the line and the head did not.
 #[test]
 fn the_builtin_layer_answers_the_operators_title_and_body() {
     let mut a = app();
@@ -239,10 +216,9 @@ fn the_builtin_layer_answers_the_operators_title_and_body() {
     );
 }
 
-/// **`done 1` is the head's, and the layer never sees it.** Every verb in `OWN_VERBS` is driven at
-/// a recording layer, because the list of the head's verbs and the `match` that answers them are
-/// two places that have to agree — and `when` was missing from the list once, which made
-/// `/todo when 1 j7` a row called `when 1 j7`.
+/// `done 1` is the head's, and the layer never sees it. Every verb in `OWN_VERBS` is driven at a
+/// recording layer, because the list of the head's verbs and the `match` answering them are two
+/// places that have to agree - `when` was missing from one of them once.
 #[test]
 fn the_heads_own_verbs_never_reach_a_layer() {
     let seen = Seen::default();
@@ -282,12 +258,9 @@ fn the_heads_own_verbs_never_reach_a_layer() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **A layer that answers an act this head does not perform adds nothing** — and says so.
-///
-/// `plugin.toml`'s `actions` and the head's one `add_todo` arm are two ends of one sentence: the
-/// manifest is what a reviewer reads and what the gate can check, and the head is what refuses to
-/// be talked into a verb. A layer that answered `{"act":{"name":"run_shell"}}` gets a line nothing
-/// happens to, which is the whole of why `actions` is a list of words and not a code path.
+/// A layer that answers an act this head does not perform adds nothing, and says so. `plugin.toml`'s
+/// `actions` is what the gate can check; the head's one `add_todo` arm is what refuses to be talked
+/// into a verb, which is why `actions` is a list of words and not a code path.
 #[test]
 fn an_act_the_head_does_not_know_adds_nothing() {
     let seen = Seen::default();
@@ -359,14 +332,9 @@ fn a_layer_that_passes_leaves_the_line_to_the_head() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **The head hands the layer the feeds, and only what it holds** — the `feeds` object beside
-/// `line`: the whole board, the session's id and folder, and the project's `TODO.md` **only when
-/// the head has read it**.
-///
-/// The `repo_todos` half is the interesting one: the todos pane reads the file at DRAW time, so a
-/// head that never opened the pane holds no outline at all. That is an ABSENT key, not an empty
-/// list — `[]` would tell a layer the project's list is empty, and a layer deciding whether a row
-/// is already in it would believe that.
+/// The head hands the layer the feeds it holds - the whole board, the session's id and folder, and
+/// the project's `TODO.md` only when the head has read it. An unread outline is an ABSENT key, not
+/// `[]`: an empty list would tell a layer the project's list is empty and be believed.
 #[test]
 fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};

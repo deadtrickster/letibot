@@ -14,26 +14,9 @@ impl App {
                 kind,
                 ledger_head,
             } => {
-                // A tool-result row is the answer to one live card, and its facts —
-                // the duration, the edit pair, the decision — are carried across
-                // HERE, at the announcement, because this is the one moment the
-                // positional frontier is known AND the row exists to key them on.
-                // Positional, not by id: the engine invokes a round's calls in
-                // order and appends their rows in the same order, and the ids
-                // repeat every round so there is nothing to match on.
-                //
-                // **The CARD itself is not handed over here.** The row cannot draw
-                // until its body lands (`record_item`), and a row with no body
-                // renders zero rows — so a pane that dropped the card at the
-                // announcement left the call in *neither half* for the frames
-                // between the two events: the card's rows erased, the window
-                // re-derived around the hole, the settled row drawn a frame later.
-                // The operator, in a loop of noop `edit` calls: *"periodic flicker
-                // while diff card settles - even green caret appears briefly inside
-                // the diff card"* — the erase sweep is what walked the terminal's
-                // own caret through the card's rows. The handover is
-                // [`App::record_item`]'s now, on the body: one frame, the card on
-                // screen throughout.
+                // A tool result's facts - duration, edit pair, decision - ride across at the
+                // announcement, positionally (a round's rows are appended in call order and the ids
+                // repeat). The CARD waits for its body in `record_item`, or the call flickers out.
                 let mut carried: Option<u64> = None;
                 let mut carried_edit: Option<letibot_sessionlog::event::ToolEdit> = None;
                 let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
@@ -66,13 +49,9 @@ impl App {
                 if let Some(d) = carried_decision {
                     self.call_decisions.insert(item_id.clone(), d);
                 }
-                // **A user row is drawn from the moment it is announced.** The body
-                // follows on its own channel and, behind a running turn, the reply
-                // streams in the meantime — so without this the prompt is invisible
-                // while the answer to it is already on the screen, and the echo
-                // underneath goes on saying `queued` about words that have landed.
-                // See `App::bound_prompts` for why this is a guess and what keeps it
-                // honest.
+                // A user row is drawn from the moment it is announced: the body follows on its own
+                // channel and the reply streams meanwhile, so without this the prompt is invisible
+                // while its answer is on screen. `App::bound_prompts` says why the guess is safe.
                 if kind == "user" {
                     self.bind_echo(&item_id);
                 }
@@ -97,10 +76,9 @@ impl App {
                 self.restoring = self.rows_the_store_holds();
                 Disposition::Rendered
             }
-            // The body for a row already announced. Before this existed, a head
-            // that was attached when the row landed had no route to the content at
-            // all and rendered `[kind id — content not loaded]` for the rest of the
-            // session — including for the operator's own prompt.
+            // The body for a row already announced. Without this route a head attached when the row
+            // landed rendered `[kind id - content not loaded]` for the rest of the session, the
+            // operator's own prompt included.
             SessionEvent::TranscriptContent { item_id, item } => {
                 self.record_item(&item_id, *item);
                 Disposition::Rendered
@@ -114,23 +92,9 @@ impl App {
                 }
                 Disposition::Rendered
             }
-            // **The daemon has forked the transcript, so the rows this head holds are not
-            // this session's rows any more.**
-            //
-            // The rows that follow are the carried conversation under the new transcript's
-            // ids, so a head that keeps what it has folds two conversations into one list —
-            // MEASURED: 40 rows plus a 60-row carry left 100, and the reader was left looking
-            // at the whole of it twice. The clear is the whole of this head's half; the rows
-            // arrive a moment later on the same log.
-            //
-            // **This is the third door onto "the rows were replaced", and the other two are
-            // `load`.** A `resync`, a `Hello` and now a fork all replace the transcript whole,
-            // and `load` is what the first two go through because both of those carry a
-            // snapshot. A fork cannot: the rows are published as appends, and a snapshot taken
-            // at the fork would be the old transcript's rows — which is why the daemon states
-            // the replacement and the rows follow it. **And that is why the reader's place is
-            // taken below rather than in `load`**: a carry taken only there is one a live
-            // `/reseat` never takes, which is the operator's *one row off, with a sentence*.
+            // The daemon has forked the transcript, so these rows are no longer this session's and
+            // the ones that follow carry the same conversation under new ids - keeping both draws it
+            // twice. `load` cannot take this: a fork publishes appends, so its place is taken below.
             SessionEvent::TranscriptForked {
                 transcript_id,
                 parent_id,

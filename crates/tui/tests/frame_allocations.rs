@@ -1,51 +1,6 @@
-//! **How many allocations a frame costs** — measured, because the claim is worth nothing without
-//! a number.
-//!
-//! The head's loop calls `App::screen(w, h)` once per pass, tens of times a second, and then hands
-//! the frame to `Terminal::draw`, which diffs it against a memory of the glass. Every `String`
-//! built along that path exists to be compared and dropped, so this is the one place in the head
-//! where an allocation is unambiguously hot — and the place a change is easiest to make on a hunch.
-//!
-//! # How it measures
-//!
-//! A counting global allocator: one increment per `alloc`/`realloc`, **on the allocating thread's
-//! own counter**. The delta around one call on the test's thread is that call's own cost, whatever
-//! any other thread in the binary is doing. (The path measured here is single-threaded: nothing in
-//! `App::screen` or `Terminal::draw` hands work to another thread, which a thread-local count
-//! would not see.)
-//!
-//! # Why the counter is per thread
-//!
-//! It was one global `AtomicUsize`, and the region a wall-clock slice, so **a second test running
-//! concurrently in this binary landed in the same count**. It did: three tests here reported 9
-//! allocations for a frame that provably allocates none, and the frame numbers wandered by ±30
-//! between runs — cargo gives each test *file* its own process but runs the tests *within* one in
-//! parallel threads. The first fix was to keep exactly one test in the file, which held only
-//! while nobody added a second (R67 item 22). MEASURED before this change: one extra test that
-//! allocates in a loop, run beside this one, failed it 3 times in 3.
-//!
-//! The thread-local is `const`-initialised and holds a `Cell<usize>`, which has no destructor: so
-//! touching it from inside the allocator registers nothing, lazily initialises nothing and
-//! allocates nothing — the TLS-initialisation re-entrancy that made a thread-local allocator
-//! look unsafe here does not arise. `try_with` covers the one remaining case, an allocation
-//! during the thread's own teardown, by not counting it.
-//!
-//! # Why it is a test and not a benchmark
-//!
-//! A benchmark reports a time, which depends on the machine, the governor and whatever else is
-//! running. This counts allocations, which is a property of the code. The numbers are exact and a
-//! regression is a regression on any box.
-//!
-//! # The bounds, and what each one catches
-//!
-//! * **`App::screen`** must not build a second copy of the frame, and must not allocate per line
-//!   for lines that have not changed. That is what the tail of `screen` used to do —
-//!   `into_iter().map(…).collect()` built a new `Vec<String>` and dropped the old one, and the
-//!   mapping called `trim_to` (which allocates even when a line already fits) and then `format!`
-//!   to pad it.
-//! * **`Terminal`** must not re-copy the glass. `paint_full` started from `shown.to_vec()` and
-//!   returned the copy, so a `String` per screen row was allocated and freed on every frame —
-//!   including frames that changed nothing and wrote no bytes at all.
+//! How many allocations a frame costs, counted on the allocating thread's own counter: `App::screen`
+//! and `Terminal::draw` are the head's one hot path, and the delta around a call is that call's own
+//! cost whatever else in the binary is running. A count is a property of the code, a time is not.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -83,11 +38,9 @@ fn count() -> usize {
     ALLOCS.with(Cell::get)
 }
 
-/// A head showing a settled conversation, sized like a real terminal.
-///
-/// The content matters: an empty screen is not the hot case. This drives the head the way the
-/// driver does — a snapshot for `Hello`, then live frames — using the daemon's own test fixtures,
-/// so the rows are the shapes a real frame has to draw rather than a hand-made approximation.
+/// A head showing a settled conversation, sized like a real terminal: an empty screen is not the hot
+/// case. It is driven the way the driver drives it - a `Hello` snapshot, then live frames - over the
+/// daemon's own fixtures, so the rows are the shapes a real frame draws.
 fn head() -> letibot_tui::app::App {
     use letibot_sessionlog::{Hub, ServerFrame, protocol, testing};
     use letibot_tui::ui::render::RenderConfig;
@@ -177,13 +130,9 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     let mut edited = glass.clone();
     edited[7] = "row 7, and this one moved".into();
 
-    // **Warm twice, and the reason is that the buffers alternate.** `adopt_next` swaps them, so
-    // after the first frame `shown` holds the rows and `scratch` is the empty vec `shown` used to
-    // be; it is the second frame that refills `scratch`, and only from the third does the buffer
-    // being filled arrive already holding this screen's rows. Measuring after one warm-up measures
-    // the frame that legitimately allocates every row — which is how the first version of this
-    // test reported 51 allocations for a frame that changes nothing. The test was wrong, not the
-    // encoder.
+    // Warm twice, because the buffers alternate: `adopt_next` swaps them, so only from the third
+    // frame does the buffer being filled arrive holding this screen's rows. One warm-up measures the
+    // frame that legitimately allocates every row.
     let mut shown: Vec<String> = Vec::new();
     let mut scratch: Vec<String> = Vec::new();
     let s = paint_full(&shown, &glass, &mut scratch, None, None, true);
@@ -217,20 +166,9 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
         "changing one row of 40 cost {one_row} allocations — the per-row copy is back"
     );
 
-    // ---- the scroll path, which never took the diff until now -----------------------------
-    //
-    // **The half this file never covered, and the one that was flickering.** A wheel notch is a
-    // key like any other, so it went through the same loop — but the arm that handled it set
-    // `App::redraw`, the driver read that before the next frame and called `Terminal::invalidate`,
-    // and every frame after a notch was therefore a `full` one: `ESC[2J`, then all forty rows
-    // rewritten with the row diff switched off. On a touchpad that is one erase per NOTCH: the
-    // inertial scroll arrives over many reads and every read is its own tick.
-    //
-    // Two things are asserted, and they are the fix and its shape. **The flag stays clear** —
-    // that is the whole change, and the assertion that fails on the old code. **And the frame a
-    // notch produces takes the diff**: it writes exactly the rows whose text differs and no
-    // screen erase at all, which is the claim that makes dropping the flag safe rather than
-    // optimistic.
+    // ---- the scroll path, which never took the diff ---------------------------------------
+    // Two things are asserted: the redraw flag stays clear after a notch (that is the whole change),
+    // and the frame a notch produces writes exactly the rows that differ with no screen erase.
     use letibot_sessionlog::{Envelope, ServerFrame, testing};
     use letibot_tui::app::Key;
 
@@ -240,10 +178,9 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
         ts: 0,
         event,
     };
-    // **Tall enough for the window to MOVE**, or the test proves nothing: a screen whose rows do
-    // not change takes the diff path and the full path identically, both writing nothing. Forty
-    // rows of conversation against a forty-row terminal, added after the allocations above are
-    // measured so the fixture's cost is where it was.
+    // Tall enough for the window to MOVE, or the test proves nothing: a screen whose rows do not
+    // change takes the diff path and the full path identically, both writing nothing. Added after the
+    // allocations above are measured, so the fixture's cost is where it was.
     for i in 0..40u64 {
         let id = format!("q.{i}");
         app.apply(ServerFrame::Event(env(
@@ -266,11 +203,9 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
         s
     };
 
-    // **Spend the flag the arrivals set, the way the head's loop does.** `take_redraw` is read at
-    // the top of every pass and *before* the keys (`head.rs`), so the flag a key sets is spent by
-    // the frame after it — and the flag an arriving row set is spent by the frame before any key
-    // at all. Draining it here is what keeps the assertions below about the scroll rather than
-    // about the forty rows that built the fixture.
+    // Spend the flag the arrivals set, the way the head's loop does: `take_redraw` is read at the top
+    // of every pass and before the keys (`head.rs`), so draining it here keeps the assertions below
+    // about the scroll rather than about the forty rows that built the fixture.
     assert!(
         app.take_redraw(),
         "the fixture's own rows should have asked for a frame"
@@ -280,13 +215,9 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     assert!(before.len() > 20, "the scroll fixture draws no frame");
     put(&mut shown, &mut scratch, &before);
 
-    // **The state change is kept, and the walk with it**, because dropping a repaint must not drop
-    // a scroll: a notch up parks the reader on the anchor, and a notch down walks three lines back
-    // toward the tail. This fixture parks three lines up, so the walk arrives in one notch — but
-    // that is the geometry and not the rule. **One notch was the tail itself until 2026-10-06**, and
-    // that is what the operator reported as *"one simple stroke gets me to the bottom immediately —
-    // effectively like Esc"*; the walk is the reconciliation, and Esc and the parked `↓` are the
-    // keys that still mean "follow again" in one press.
+    // The state change is kept, and the walk with it, because dropping a repaint must not drop a
+    // scroll: a notch up parks the reader and a notch down walks three lines back toward the tail,
+    // so a fixture parked three lines up follows again in one notch. That is geometry, not the rule.
     assert!(app.following(), "the fixture starts on the stream");
     assert_eq!(app.key(Key::WheelUp), None);
     assert!(!app.following(), "a notch up parks the reader");
@@ -339,10 +270,9 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
         before = after;
     }
 
-    // **Ctrl-L is the other half of the same decision, and it keeps its erase.** The flag means
-    // *this head's memory of the glass is wrong*, which is what the operator is saying when they
-    // press it — the one key whose whole job is to repaint. A resize is the other case and it is
-    // in `term.rs`, because that is where the new size is known.
+    // Ctrl-L is the other half of the same decision, and it keeps its erase: the flag means this
+    // head's memory of the glass is wrong, which is what pressing it says. A resize is the other case
+    // and it lives in `term.rs`, where the new size is known.
     assert_eq!(app.key(Key::CtrlL), None);
     assert!(
         app.take_redraw(),

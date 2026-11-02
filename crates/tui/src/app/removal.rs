@@ -1,64 +1,18 @@
-//! **Taking a row off the session list** — the operator's *"add controls to remove sessions"*.
-//!
-//! # Three senses of "remove", and which one this is
-//!
-//! 1. **Hide it from this list.** The row goes, the session does not: it keeps its store rows, its
-//!    transcript and its children, and `ctrl-z` puts it back. This is the one built here, because it
-//!    is the one a person can take back.
-//! 2. **Forget it in the store** — its `session` row and its transcript. `Store::delete_empty_session`
-//!    exists and refuses a session holding transcript rows (`transcript_item` carries a `BEFORE
-//!    DELETE` trigger: an append-only log whose history can be removed is not one), and **no frame
-//!    reaches it from a head**: the only door is `letibot --delete <id>`, a one-shot on the store
-//!    file. A head cannot ask the daemon to do it, so `/forget` refuses and says so
-//!    ([`App::forget_row`]).
-//! 3. **Close it if it is live, then forget it.** `ClientFrame::CloseSession` closes *the session a
-//!    connection is attached to*, so a head can close the session it is in and no other. A list
-//!    cannot close its neighbours, which is why sense 3 has no control either.
-//!
-//! # Why a removal is asked twice
-//!
-//! It is not undoable *by the row's own key*: `del` arms, `del` again removes, and `ctrl-z` is the
-//! way back. Two presses rather than one, because this tree has already been bitten by a key that
-//! did something to a running thing on its first character (`app::keys::cards`' `digit_row` note).
-//!
-//! # Why the keys are not letters
-//!
-//! The session list is the one surface in this head whose typed line is a NAME rather than a
-//! `/verb`, so a letter bound here is matched exactly when the composer is empty — which is exactly
-//! the first character of a filter. `del` and `ctrl-z` are the two spellings a typed line can never
-//! be, and the destructive sense is `/forget`: typed, therefore unambiguous.
-//!
-//! # What a removal may not do
-//!
-//! **The session this head is standing in is refused, and so is every session above it.** The
-//! list's whole answer to *where am I* is the row, the chain above it and the open project —
-//! removing any link of that chain would take the row you are standing in off the list with it, so
-//! the refusal is the whole path and not just its end. Every refusal names the id: a key that says
-//! *no* has to say *which*.
+//! Taking a row off the session list: the row goes, the session does not. Nothing reaches the store,
+//! because no frame from a head does, so `/forget` refuses and its sentence names that door. The
+//! path down to the row the head is standing in is never removable.
 
 use super::*;
 
-/// **How long an armed removal waits for its second press.** Long enough for a person who read the
-/// sentence, short enough that a `del` aimed at something else does not remove a row minutes later
-/// — and the clock is the only guard for the keys that never reach a binding at all (a letter typed
-/// into the composer).
+/// How long an armed removal waits for its second press: long enough to read the sentence, short
+/// enough that a stray `del` is not a removal minutes later. It is also the only guard for keys
+/// that never reach a binding, such as a letter typed into the composer.
 const ARM_MS: u64 = 5_000;
 
 impl App {
-    /// **Whether session `i` is off this list** — itself, or because a session above it is: the
-    /// unit of removal is a ROW AND ITS SUBTREE, since a child whose parent is not drawn has no
-    /// place on a tree.
-    ///
-    /// One function, read by the head's own walk and by the feed the built-in layer draws from, so
-    /// the two drawings cannot come to different conclusions about what is on the list.
-    ///
-    /// **The chain down to where this head is standing is never removed, whatever the list says.**
-    /// That is the invariant `remove_row` enforces by refusing and `prune_removed` enforces by
-    /// dropping, stated here as a property of the PREDICATE instead of at each of the three places
-    /// that draw — the family view's parent row, the tree's children, and the feed. A `removed`
-    /// entry for a session above `here` is then not a row that disappears from the head's drawing
-    /// while the layer's falls out of the family view into the whole project tree: it is not a
-    /// removal at all.
+    /// Whether session `i` is off this list - itself, or through a removed session above it, since a
+    /// child whose parent is not drawn has no place on a tree. Read by the head's own walk and by the
+    /// layer's feed, so the two drawings cannot disagree; the path down to `here` is never removed.
     pub(crate) fn removed_chain(&self, i: usize) -> bool {
         if self.removed.is_empty() {
             return false;
@@ -80,13 +34,9 @@ impl App {
         false
     }
 
-    /// **`x` on the session list** — remove the row under the cursor, or arm it and say what the
-    /// second press would do.
-    ///
-    /// The refusals come first and each names the session: the one this head is standing in, and
-    /// nothing else. A live session *can* be removed — it keeps running, and the sentence says so,
-    /// because a person decluttering a list of a hundred sessions must not be told to wait for the
-    /// daemon to let go of them.
+    /// `x` on the session list: remove the row under the cursor, or arm it and say what the second
+    /// press would do. A live session can be removed and keeps running, so the sentence says so
+    /// rather than making a person wait for the daemon to let go of it.
     pub(crate) fn remove_selected(&mut self) -> Option<Action> {
         let row = self.picker_row()?;
         // A node's line is a fold, not a session: `x` on it says what the key is for rather than
@@ -103,12 +53,9 @@ impl App {
         None
     }
 
-    /// **Whether `id` is `here`, or a session above it** — the path a removal may not cut, because
-    /// the row the person is standing in is drawn *through* it.
-    ///
-    /// The same walk [`App::removed_chain`] makes, from the other end: that one asks *is a removed
-    /// session above this row*, this one asks *is this row above the session I am in*. Both are the
-    /// parent chain and nothing else, so a removal cannot make the two disagree.
+    /// Whether `id` is `here` or a session above it: the path a removal may not cut, because the row
+    /// the person stands in is drawn through it. The same walk as `removed_chain` from the other end,
+    /// so a removal cannot make the two disagree.
     fn chain_to(&self, here: &str, id: &str) -> bool {
         let mut cur = here;
         for _ in 0..MAX_CHAIN {
@@ -126,14 +73,9 @@ impl App {
         false
     }
 
-    /// **The removals that survive a seating** — a session the daemon no longer lists, and the
-    /// chain down to the session this head has just been seated in.
-    ///
-    /// **The second half is the refusal seen from the other side.** A removal may not cut the path
-    /// to where the head is standing ([`App::remove_row`]), and a head that *moves* onto a removed
-    /// row — `/switch <name>`, which searches every session the daemon holds and not just the drawn
-    /// rows — would otherwise be standing in a subtree its own list filters out. So landing there
-    /// brings the row back: the list's answer to *where am I* is not a thing a removal may keep.
+    /// The removals that survive a seating: a session the daemon no longer lists, and the chain down
+    /// to the session just seated in. Landing on a removed row - `/switch` searches sessions and not
+    /// drawn rows - brings it back, so where the head stands is never a thing a removal may hide.
     pub(crate) fn prune_removed(&mut self, here: &str) {
         let kept: Vec<String> = self
             .removed
@@ -149,10 +91,9 @@ impl App {
     /// The act itself, on a session index — the half a test can drive without a cursor.
     pub(crate) fn remove_row(&mut self, i: usize) {
         let id = self.sessions[i].session_id.clone();
-        // **The chain to where this head is standing is not removable, link by link.** The row you
-        // are in is drawn under its parent, so removing the parent takes the row with it — which is
-        // the same defect as removing the row itself, one step out. Both are refused, and each says
-        // which of the two it is.
+        // The chain to where this head is standing is not removable, link by link: the row you are in
+        // is drawn under its parent, so removing the parent takes the row with it. Both are refused,
+        // and each sentence says which of the two it is.
         if id == self.session_id {
             self.removal_armed = None;
             self.say(&format!(
@@ -202,16 +143,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// **`/forget [ID]` — forget it in the store.** Refused, always, and the sentence is the
-    /// finding: what a forget would take, and the one door that could take it.
-    ///
-    /// **A verb rather than a key**, and that is the picker's own rule: its typed line is a name, so
-    /// a letter bound there eats the first character of a filter. A line that starts with `/` is a
-    /// verb and cannot be anything else.
-    ///
-    /// **The id is resolved rather than guessed**: an id, or a prefix of one id or title — the same
-    /// reading `/switch` gives its argument, minus the switching. Nothing is forgotten either way;
-    /// what the person gets is the sentence that says why not and which door could.
+    /// `/forget [ID]`: refused, always, and the sentence is the finding - what a forget would take
+    /// and the one door that could. A verb rather than a key because the picker's typed line is a
+    /// name, and the id is resolved (an id or the unique prefix of one) rather than guessed.
     pub(crate) fn forget_named(&mut self, typed: &str) {
         let typed = typed.trim();
         let i = if typed.is_empty() {
@@ -241,10 +175,9 @@ impl App {
         self.forget_row(i);
     }
 
-    /// **Which session a typed word names** — an id, or the unique prefix of one id or title. The
-    /// refusals are `/switch`'s (`App::pick`): an ambiguous prefix is named as ambiguous and a miss
-    /// is named as a miss, because forgetting the wrong conversation is not a keystroke to take
-    /// back — and a refusal that resolved it anyway would be worse than the verb not existing.
+    /// Which session a typed word names: an id, or the unique prefix of one id or title. An ambiguous
+    /// prefix is named as ambiguous and a miss as a miss, because forgetting the wrong conversation is
+    /// not a keystroke to take back.
     fn session_named(&self, typed: &str) -> Result<usize, String> {
         let hits: Vec<usize> = self
             .sessions
@@ -370,10 +303,9 @@ impl App {
         }
     }
 
-    /// **A key that is not the removal ends its arm**, so a second `del` minutes later is a first
-    /// press again. Called from the surface dispatch — and **not every key gets there**: a letter
-    /// typed into the composer is unbound on this surface and never reaches a binding, so the arm's
-    /// own clock ([`ARM_MS`]) is what ends that case.
+    /// A key that is not the removal ends its arm, so a `del` minutes later is a first press again.
+    /// Not every key gets here - a letter typed into the composer never reaches a binding - so the
+    /// arm's own clock (`ARM_MS`) is what ends that case.
     pub(crate) fn clear_removal_arm(&mut self) {
         self.removal_armed = None;
     }

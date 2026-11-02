@@ -1,15 +1,6 @@
-//! **An override, proved end to end** — `docs/plugins-plan.md` §7 step 10's *"then overriding the
-//! list is one `sessions` layer in a project or a session, and a small one, since it can call below
-//! and edit the built-in's tree"*.
-//!
-//! The layer is `plugins/examples/sessions-override`: a real wasm module, built and committed, that
-//! asks for the layer below and rewrites two lines of what it finds. This file copies it into a
-//! project's `.letibot/plugins/sessions/`, builds the head's stack over that project, and asserts
-//! on **what is drawn** — not on the JSON: the question is whether the person looking at the list
-//! sees the project's list.
-//!
-//! Nothing is faked: `RanoLoader` compiles both modules, the built-in `sessions` layer is the one
-//! this binary carries, and the stack does the ask-below itself.
+//! An override proved end to end: `plugins/examples/sessions-override` is a real committed wasm
+//! layer that asks below and rewrites two lines, and this file installs it into a project and
+//! asserts on what is DRAWN rather than on the JSON - nothing faked, the stack does the ask.
 
 use super::*;
 use letibot_plugins::Stack;
@@ -88,20 +79,9 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
     let failed = letibot_builtins::install(&mut stack);
     assert!(failed.is_empty(), "{failed:?}");
 
-    // The project's layer is on top, the built-ins below it — and **the built-ins are in the order
-    // `crates/builtins` installed them, newest on top**, which is the stack's own rule for a scope
-    // (`docs/plugins-plan.md` §2.1) applied to a table the binary carries: the table is sorted by
-    // name and the stack reverses it, so `b-queue` stands below `b-sessions`, which stands below
-    // `b-todo` — and `b-irc` (the nick list, whose hook is `pane_nicks`) is the newest of them and
-    // stands at the bottom of the reversed table. **Nothing answers two hooks**, so nothing depends
-    // on that order — a test that pins it is how the next layer to share a hook finds out it has to
-    // think about it.
-    //
-    // **Read off the table, not written down**: a second hand-kept list drifts the moment another
-    // package adds a built-in, and REVERSED because `register_builtin_bytes` stacks the table
-    // newest-first. The head's stack installs the whole table (`letibot_builtins::install`), tools
-    // included: a pane is the head's to draw, and a tool is a row in a list the head may show, so a
-    // built-in that declares one is a layer here whether or not any session seats it.
+    // The expected order is read off the table, not written down - a hand-kept list drifts the
+    // moment another package adds a built-in - and REVERSED, because `register_builtin_bytes`
+    // stacks newest-first. Nothing answers two hooks, so nothing depends on this order.
     let mut want = vec![String::from("p1")];
     let mut built_in: Vec<String> = letibot_builtins::table()
         .iter()

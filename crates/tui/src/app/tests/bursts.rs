@@ -1,10 +1,6 @@
-//! **A wall of notices becomes a count** — one row per KIND, with the number, and the individual
-//! notices one click away.
-//!
-//! The operator, twice: *"i still get walls of notices"*. The retry row got a counter and stopped
-//! being a wall; every other kind did not. This is that rule applied to a kind rather than to one
-//! endpoint's attempts — see `app::COALESCE_MS` for the window, `app::burst_at` for which note
-//! draws, and `ui::panes::notes::burst_card` for the words.
+//! A wall of notices becomes a count: one row per KIND, with the number, and the individual
+//! notices one click away. `app::COALESCE_MS` is the window, `app::burst_at` picks which note
+//! draws, and `ui::panes::notes::burst_card` writes the words.
 
 use super::*;
 
@@ -94,11 +90,9 @@ fn five_of_a_kind_are_one_row_with_a_count() {
     assert_eq!(a.retired_notes(), 0);
 }
 
-/// **The count and the expansion agree** — `5` means five, and the popup shows five.
-///
-/// The pair is what makes the row readable, and a count that does not add up is worse than the
-/// wall it replaced. Each member is the row the head would have drawn for it alone, so the burst
-/// loses nothing: the branch is on the member's own line, and its whole text is under it.
+/// The count and the expansion agree: `5` means five, and the popup shows five. A count that does
+/// not add up is worse than the wall it replaced, so each member is the row the head would have
+/// drawn for it alone.
 #[test]
 fn the_count_and_the_expansion_agree() {
     let mut a = head();
@@ -144,11 +138,9 @@ fn the_count_and_the_expansion_agree() {
     );
 }
 
-/// **A red burst keeps the red register** — the count is not a way to make a failure quiet.
-///
-/// A burst is one KIND, and a kind's register is its code's (`sessionlog::warning::class`), so
-/// every member of a failure burst is a failure: the row carries `!`, and it is not on a timer
-/// (`FLEETING` holds only `Routine` codes, which is the guard that keeps a fault off one).
+/// A red burst keeps the red register: the count is not a way to make a failure quiet. A burst is
+/// one KIND, and a kind's register is its code's, so every member of a failure burst is a failure,
+/// and `FLEETING` holds only `Routine` codes, which keeps a fault off a timer.
 #[test]
 fn a_failure_burst_carries_the_failure_register_and_never_expires() {
     let mut a = head();
@@ -317,11 +309,9 @@ fn ctrl_n_clears_the_whole_burst() {
     assert_eq!(a.read_upto("queue_blocked"), Some(4_000));
 }
 
-/// **A retired member does not take the burst with it.**
-///
-/// `/notes dismiss N` acts on ONE notice, and its key is its own — so the row moves to the next
-/// live member and counts what is left. The alternative is a row that hides four notices because
-/// the reader retired the first one, which is the defect a burst could most easily introduce.
+/// A retired member does not take the burst with it. `/notes dismiss N` acts on ONE notice, so the
+/// row moves to the next live member and counts what is left - the alternative is a row that hides
+/// four notices because the reader retired the first.
 #[test]
 fn a_retired_member_leaves_the_others_drawn() {
     let mut a = head();
@@ -376,12 +366,9 @@ fn the_count_grows_on_the_screen_when_a_member_arrives() {
     );
 }
 
-/// **The count grows when a member of the same kind arrives with another kind in between** —
-/// the interleaved case, and the one a look-back at "the last note filed" gets wrong.
-///
-/// A `queue_blocked` and a `queue_branch_kept` alternate, which is exactly what the queue does
-/// when a host dies: both kinds raise per row. The second `queue_blocked` chains with the FIRST,
-/// not with the note beside it, so the row it changes is the first one's — two rows back.
+/// The count grows when a member of the same kind arrives with another kind in between - the case a
+/// look-back at the last note filed gets wrong. The second `queue_blocked` chains with the FIRST,
+/// not with the note beside it, so the row it changes is two rows back.
 #[test]
 fn a_member_behind_another_kind_still_grows_its_own_burst() {
     let mut a = head();
@@ -413,11 +400,9 @@ fn a_member_behind_another_kind_still_grows_its_own_burst() {
     );
 }
 
-/// **A fleeting burst goes together, and the count is honest on the way out.**
-///
-/// `merge_queued` is the one code in `FLEETING`; its members expire on their own clocks, so a
-/// burst of two loses one member first — and the row must then be the survivor's own card rather
-/// than a count of two with one of them gone.
+/// A fleeting burst goes together, and the count is honest on the way out: `merge_queued` members
+/// expire on their own clocks, so a burst of two loses one first and the row must then be the
+/// survivor's own card rather than a count of two with one gone.
 #[test]
 fn a_fleeting_burst_loses_its_members_one_clock_at_a_time() {
     let mut a = head();
@@ -456,13 +441,9 @@ fn a_fleeting_burst_loses_its_members_one_clock_at_a_time() {
     assert!(a.notes.is_empty(), "{:?}", a.notes);
 }
 
-/// **A refusal is one of a KIND, not a kind of its own** — `denied:<request id>` is one code a
-/// request, and the id is the notice's identity rather than its kind
-/// (`letibot_sessionlog::warning::family`). Without that, five refusals are five kinds and the
-/// wall of red the operator photographs is never counted.
-///
-/// Each member keeps its own id on its own line in the popup, which is the half the brief calls
-/// *an actionable notice keeps its own identity inside the row*.
+/// A refusal is one of a KIND, not a kind of its own: `denied:<request id>` is one code a request,
+/// and the id is the notice's identity rather than its kind (`warning::family`), or five refusals
+/// are five kinds and never counted - though each keeps its own id on its own line.
 #[test]
 fn refusals_are_counted_by_family_and_keep_their_own_ids() {
     use letibot_sessionlog::view::Warned;

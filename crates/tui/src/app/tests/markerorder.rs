@@ -135,10 +135,9 @@ fn the_live_counts_sit_below_the_reply_that_is_streaming() {
     assert!(marker >= reply, "the counts are below the reply:\n{text}");
 }
 
-/// **A row landing in a later round of a run re-counts the marker the run's first round drew** —
-/// the *"backfilled"* half: the marker sits on an earlier round's prose line, and a landing row
-/// rebuilt only from its own round's head, so the number stayed stale until something unrelated
-/// rebuilt the line.
+/// A row landing in a later round of a run re-counts the marker the run's first round drew: the
+/// marker sits on an earlier round's prose line, and a landing row rebuilt only from its own
+/// round's head left the number stale until something unrelated rebuilt the line.
 #[test]
 fn a_row_landing_later_in_a_run_recounts_its_marker_at_once() {
     let mut a = app();
@@ -210,11 +209,9 @@ fn a_row_landing_later_in_a_run_recounts_its_marker_at_once() {
     );
 }
 
-/// **The live marker clicks before its turn is sealed** — the operator: *"clicking on tool calls
-/// and thinking counters work only after they are sealed. Say i just sent a prompt and model
-/// thinks - clicking doesnt work. same for running toolcals"*. A click on the pane's `thinking`
-/// clause shows the thinking; on its `tool call` clause, the call in flight; the same clause
-/// again puts it back.
+/// The live marker clicks before its turn is sealed: a click on the pane's `thinking` clause shows
+/// the thinking, on its `tool call` clause the call in flight, and the same clause again puts it
+/// back.
 #[test]
 fn the_live_marker_clicks_before_the_turn_is_sealed() {
     let mut a = conversation();

@@ -1,7 +1,6 @@
-//! **A workspace of several repositories, none of them the main one** — the operator, of
-//! `~/Projects/stroppy-io`, whose session could not see `./stroppy`: *"there are many repos in
-//! that stroppy-io … without any main"*. The header's git field follows the repository the work is
-//! in, says how many there are before there is any work, and a click on it opens the repo card.
+//! A workspace of several repositories, none of them the main one: the header's git field follows
+//! the repository the work is in, says how many there are before there is any work, and a click on
+//! it opens the repo card.
 
 use super::*;
 
@@ -227,10 +226,9 @@ fn a_click_on_the_field_opens_the_card_and_a_pin_holds_against_the_work() {
     );
 }
 
-/// **A folder holding one repository and the operator's `TODO.md`** — their own layout:
-/// `~/Projects/letibot/TODO.md` beside `~/Projects/letibot/letibot` (the repository, one level
-/// down and the same name). `todo` decides whether the list sits in the folder or beside the
-/// code, which is the two halves of the split this test is about.
+/// A folder holding one repository and the operator's `TODO.md`: their own layout, the file beside
+/// the repository one level down and the same name. `todo` decides whether the list sits in the
+/// folder or beside the code, which is the split this test is about.
 fn one_repo(tag: &str, todo: Option<&str>) -> Folder {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -260,22 +258,9 @@ fn one_repo(tag: &str, todo: Option<&str>) -> Folder {
     Folder(root)
 }
 
-/// **The corner's repository survives a `TODO.md` beside it** — the operator's own layout, and
-/// the disappearance they reported on 2026-11-01: *"in the top left corner where session name and
-/// path lives. it used to be showing clickable repo and option to track the work. and it is gone
-/// since yesterday"*.
-///
-/// `~/Projects/letibot` is a folder holding the repository `letibot` and — since 2026-10-31 — the
-/// operator's `TODO.md`. A `TODO.md` used to answer *this directory is the project*, so the git
-/// field ran `git -C ~/Projects/letibot status`, git said *not a repository*, and the header drew
-/// the name and the path and nothing else. Three things are asserted here, and they are the three
-/// the operator lost: the branch is DRAWN (beside the path, in the `(…)` rano puts it in), it is a
-/// CLICK TARGET, and the click opens the repo card — whose first row is *follow the work*, the
-/// operator's *"option to track the work"*.
-///
-/// And the fourth, which is why the fix is a split rather than a deletion: the todos pane still
-/// reads the FOLDER's list. One directory answering both questions is what broke the corner, so
-/// the file and the branch are two resolutions now (`gitfield::todos_path`, `project_dir`).
+/// The corner's repository survives a `TODO.md` beside it: the branch is drawn beside the path, is
+/// a click target, and the click opens the repo card. One directory answering both questions is
+/// what broke the corner, so file and branch are two resolutions and the todos pane keeps the folder.
 #[test]
 fn the_corners_repository_survives_a_todo_md_beside_it() {
     let f = one_repo(
