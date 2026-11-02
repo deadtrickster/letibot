@@ -23,8 +23,8 @@ pub const INDEX_MAX_BYTES: usize = 4_000;
 /// beside the standing notes and not out of them: a corpus of notes must not eat the skills.
 pub const INDEX_BUDGET_TOKENS: usize = 800;
 
-/// The floor a free-text query must clear before [`SkillRegistry::ranked`] loads anything. Lower
-/// than the notes' read-hint floor, because a skill's document is its name and one line.
+/// The floor a free-text `skill find` must clear before it loads anything. Asking is a decision the
+/// model has already made, so it may be looser than the offer's own floor, which speaks unasked.
 pub const QUERY_FLOOR: f64 = 0.15;
 
 /// Where a skill was found, the fact the index shows beside every name. A label, never a
