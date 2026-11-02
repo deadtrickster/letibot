@@ -2653,10 +2653,9 @@ fn scrolled_back_the_turns_prompt_is_pinned_on_top() {
     assert_eq!(screen.matches("PROMPT-0").count(), 1, "{screen}");
 }
 
-// A carry: the rows are replaced and the place is not. A re-seat forks the transcript, so every row arrives
-// under a new id and a viewport named by an id has nothing to hold; what both sides agree on is the words.
-//
-// The rule these pin: a bare offset must never cross a transcript boundary.
+// A carry: the rows are replaced and the place is not. A re-seat forks the transcript, so every row
+// arrives under a new id and a viewport named by an id has nothing to hold; the words are what both
+// sides agree on, and a bare offset must never cross a transcript boundary.
 
 /// The conversation the fixtures scroll in: `n` rows, each saying `row {i} says a thing`.
 fn forty_rows(a: &mut App, n: u64) {
@@ -3095,11 +3094,9 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
     );
 }
 
-// A live fork: the rows are replaced under an attached head. A `/reseat` on a live session sends no
-// snapshot — the carried rows arrive as appends and the boundary is stated after them — so a carry taken
-// only in `load` is one a live fork never takes, and the ordinal fallback lands the reader one row off.
-//
-// What these pin: the row is found by its words, or the tail is where the reader goes and the sentence says so.
+// A live fork: the rows are replaced under an attached head, and a `/reseat` on a live session sends
+// no snapshot - the carried rows arrive as appends and the boundary is stated after them - so a carry
+// taken only in `load` is one a live fork never takes, and the ordinal fallback lands one row off.
 
 /// The carried rows, published the way the daemon publishes them: an announcement, and then
 /// its body, under the **new** transcript's ids.

@@ -1,14 +1,6 @@
-//! **What waits on you, folded away** — the operator, 2026-10-15: *"so that I can hide 'waits on
-//! you' todos questions - they are in yellow and very visible - very good, but sometimes i need to
-//! do additional digging and they just keep space and irritate. we need some counter in the right
-//! bottom corner near triangle - yellow and visible"*, and *"also a way for me to see all
-//! questions without answering them"*.
-//!
-//! alt-h folds the yellow `WAITING ON YOU` / `PUT AWAY` line ([`App::waiting_line`]) and the
-//! composer's bottom edge says `N waiting · alt-h` instead; alt-h again unfolds it. **A question
-//! that arrives after the fold is news**, so the line comes back by itself: the fold remembers
-//! what it hid, not that it hid. `/asks` lists every question waiting, whole, without opening any
-//! card.
+//! What waits on you, folded away: alt-h folds the yellow `WAITING ON YOU` / `PUT AWAY` line and
+//! the composer's bottom edge counts what waits instead. A question that arrives after the fold is
+//! news, so the line comes back by itself - the fold remembers what it hid, not that it hid.
 
 use super::*;
 use crate::app::todos::TODO_ASK;

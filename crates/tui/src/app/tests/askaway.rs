@@ -1,14 +1,6 @@
-//! **A question card moves on after an answer, and steps away on Esc.**
-//!
-//! The operator, 2026-10-12, with three todo rows waiting on them: they answered one and the
-//! resident line simply moved to the next question — *"i answered what was asked by the todo, and
-//! it didnt hide"*. Then: *"yes, and i want to be able to escape the selection card. sometimes i
-//! need time to think and just let the card stay"*.
-//!
-//! So: after a todo answer the card opens the next row still waiting and closes when none remain,
-//! with a line saying which; and Esc on any question card — a todo row's or the model's
-//! `ask_user_question` — puts it away with nothing sent, keeps what was typed on it, and leaves a
-//! resident line saying it waits (with the model's deadline) and that alt-a brings it back.
+//! A question card moves on after an answer, and steps away on Esc: the next waiting row opens
+//! and the card closes when none remain, while Esc puts it away with nothing sent, keeps what was
+//! typed and leaves the resident line saying alt-a brings it back.
 
 use super::*;
 use letibot_sessionlog::event::{OnTimeout, TodoBy, TodoEntry, TodoNeed, TodoStatus};
@@ -436,10 +428,9 @@ fn the_question_card_and_its_bar_name_esc_and_alt_a() {
     );
 }
 
-/// **alt-h folds the yellow line away and the box's edge counts what waits instead** — the
-/// operator: *"sometimes i need to do additional digging and they just keep space and irritate.
-/// we need some counter in the right bottom corner near triangle - yellow and visible"*. alt-h
-/// again brings the line back, and a question that arrives after the fold shows itself.
+/// alt-h folds the yellow line away and the box's edge counts what waits instead; alt-h again
+/// brings the line back, and a question that arrives after the fold shows itself, because news
+/// is what the fold cannot hide.
 #[test]
 fn alt_h_folds_the_waiting_line_into_a_count_on_the_edge_and_news_unfolds_it() {
     let mut a = App::new(plain_cfg(100));

@@ -1,28 +1,6 @@
-//! **What the last frame drew, as click targets** (R69): one record per frame, and one function
-//! that answers *what is under (x, y)*.
-//!
-//! # What this replaces
-//!
-//! Each clickable surface did its own hit-testing: the picker read `picker_hits`, the setting
-//! card `mode_hits`, the todos and queue panes combined their recorded stop rows with the LIVE
-//! `pane_scroll` and a recorded top, the count labels read `box_top_hits`, the conversation read
-//! `file_rows`. Some recomputed layout arithmetic, and the review of 2026-10-11 found three
-//! defects of that shape (the picker's two-line rows, the mode card under the link line, a click
-//! in the same read as a wheel step combining the new scroll with the old rows). And because each
-//! handler decided for itself whether a click was its own, the todos, queue, picker and setting
-//! card handlers took EVERY click, hit or miss — so the count labels stopped working while one
-//! of them was open. The subagents, jobs, standing and config panes, the decision card and the
-//! quit card had row maps and took no clicks at all.
-//!
-//! # The rule
-//!
-//! **The frame records `(Rect, Target, rows → stops)` with the scroll already applied**, and a
-//! click is answered from that record alone: the topmost rectangle under the pointer, the stop on
-//! that row, that surface. A click that lands on no rectangle falls through. Nothing here reads
-//! the live scroll, so a click in the same read as a wheel step is measured against the frame the
-//! operator actually saw — whole, never half of one frame and half of the next — and a target
-//! the keys before it took off the screen (an Esc that closed the pane) is dropped rather than
-//! answered by whatever is drawn there now.
+//! What the last frame drew, as click targets: the frame records `(Rect, Target,
+//! rows -> stops)` with the scroll already applied, and a click is answered from
+//! that record alone, so it is measured against the frame the operator saw.
 
 use super::*;
 
@@ -52,30 +30,13 @@ pub(crate) enum Target {
     /// notice's index in `items`. A click opens the notice whole, as a click on an edit row
     /// opens its change.
     Notice,
-    /// **A row of a call the turn is still drawing** — the live pane's card ([`App::call_rows`]);
-    /// its one stop is the index of that row in the record, and the call it names is carried
-    /// beside it.
-    ///
-    /// A click performs exactly what the same call's row performs once it lands
-    /// (`Target::Conversation` → `file_rows`): a card carrying a change opens its diff popup, and
-    /// one carrying none says so. It exists because the card is the working's own row and the
-    /// click map heard about nothing below the history — so the operator's *"why running tool
-    /// call rendered in yellow is no longer clickable?"* was a click that fell through the
-    /// conversation's rectangle and answered nothing.
+    /// A row of a call the turn is still drawing; a click does what the same call's row does
+    /// once it lands (`Target::Conversation` -> `file_rows`): opens the diff it carries, or says
+    /// it has none. The card is below the history, where nothing else in the record reaches.
     LiveCall,
-    /// **One line of a finished subagent's settlement** (`task_rows`); its one stop is the index
-    /// of that child in [`App::task_switches`].
-    ///
-    /// A click **goes to the child's session** — the operator: *"when subagent finished main
-    /// session gets notification and it is clickable. but the card shown is completely useless -
-    /// i want the click to bring me to the subagent session instead, so i can read its
-    /// conclusions"*. It is the same act the session list and a plugin pane's `switch` row
-    /// perform (`App::switch_to`), so `esc` comes back up to the parent exactly as it does from
-    /// `ctrl-s`.
-    ///
-    /// **It is recorded over the notice row, not instead of it.** The line is still a notice —
-    /// its text is the daemon's and `alt-n` opens it whole — and a card whose child this head can
-    /// no longer name is not in `task_rows` at all, so its click is the popup it always was.
+    /// One line of a finished subagent's settlement; a click goes to the child's session
+    /// (`App::switch_to`), so `esc` comes back up to the parent as it does from `ctrl-s`. It is
+    /// recorded over the notice row: the text stays the daemon's and `alt-n` still opens it.
     TaskAgent,
     /// **One warning drawn as a card's line** (`line_cards`); its one stop is the card's
     /// index in `note_cards`. A click opens the detail whole, in the same popup.
@@ -104,49 +65,23 @@ pub(crate) enum Target {
     /// over the block the picture was drawn in. A click opens the picture larger, in the popup the
     /// change and the notice open in.
     Picture,
-    /// **One line of the open payload window** (`App::payload_rows`) — the body of a result the
-    /// reader opened with `ctrl-v`, one rectangle a row, and its one stop is the payload line that
-    /// row drew.
-    ///
-    /// A click puts that line at the top of the window (`App::payload_click`) — the same offset the
-    /// arrows and the wheel move, so the two cannot disagree about where the reader is. The header
-    /// and the `… +N lines` seam are **not** this target: a click on them acts on nothing, because
-    /// they are not lines of the payload.
+    /// One line of the open payload window; a click puts that line at the top of the window
+    /// (`App::payload_click`), the same offset the arrows and the wheel move. The header and the
+    /// seam are not this target: they are not lines of the payload.
     PayloadLine,
     /// **The header's git field** — its `(…)` on the header row; a click opens the repo card.
     GitField,
-    /// **The corner's repository** — the workspace path the header draws beside the session's name.
-    /// A click opens the merge queue pane **scoped to that repository** (`QueueScope::Path`, the
-    /// scope `/queue /PATH` names), which is the operator's *"option to track the work"*.
-    ///
-    /// It is the path and not the git field because the two answer different questions on one row:
-    /// the field is *what the branch is doing* and opens the card that can pin another repository
-    /// (`/repo`, whose first row is *follow the work*); the path is *which tree this is* and is
-    /// where a reader who wants its queues clicks. The rectangle is the span the header drew for
-    /// it, read off the line's own spans (`App::header_row`) — never computed from the path's
-    /// length, which the fit may have shortened from its left.
+    /// The corner's repository: a click opens the merge queue pane scoped to that path
+    /// (`QueueScope::Path`). It is the path and not the git field, which opens the card that can
+    /// pin another repository; the rectangle is the span the header drew, never the path's length.
     HeaderRepo,
-    /// **The merge queue's standings on the composer's bottom edge** — `1 red · 1 unjudged · 3 in
-    /// review · 1 being merged · 1 stuck · 2 landed`, the words `Standings::words()` drew, each
-    /// only while it has a count. A click opens the queue pane.
-    ///
-    /// It is the one piece of the edge that is not about this head (see `bottom_markers`), and it
-    /// is drawn on every screen — so it is the only door to the queue that a reader finds without
-    /// knowing `/queue`. The rectangle is the span's own columns on the row the frame drew, read
-    /// off that row (`screen::drawn_span`), because the edge truncates from the right and the
-    /// standings are the last thing on it.
+    /// The merge queue's standings on the composer's bottom edge, each word only while it has a
+    /// count; a click opens the queue pane. The rectangle is read off the drawn row
+    /// (`screen::drawn_span`) because the edge truncates from the right.
     QueueStandings,
-    /// **A link the frame drew** (OSC 8) — the operator, 2026-10-30: *"why links are not clickable
-    /// and ghostty doesnt detect them either?"*. Its one stop is the index of the URL in
-    /// `App::link_targets`, and its rectangle is exactly the cells the link covers, read off the
-    /// finished row (`app::links::osc8_spans`) — so the margin beside it is not the link, and the
-    /// row under it keeps whatever target it had.
-    ///
-    /// It exists because the terminal cannot answer this one: the head takes the mouse
-    /// (`rano::term::Mouse::Any`), so Ghostty forwards the click instead of opening the link, and
-    /// the SGR protocol cannot even carry the Command key. A click here is this program opening
-    /// the URL, through the door it already has for a file and through the platform's opener for
-    /// anything else.
+    /// A link the frame drew (OSC 8), exactly the cells it covers, read off the finished row.
+    /// The terminal cannot answer this one: the head takes the mouse, so the click is forwarded
+    /// here and this program opens the URL itself.
     Link,
 }
 
@@ -188,14 +123,9 @@ impl App {
             .collect()
     }
 
-    /// **The conversation's rectangle, recorded** — called by `compose_screen` straight after
-    /// `main_area` drew it, so the stop rows, the scroll and `drawn()` are the ones this frame
-    /// used. Starts the frame's record.
-    ///
-    /// The rectangle is the whole width of the terminal, gutters included: a click in the
-    /// margin beside a row is a click on that row, as it always was. `gutter` is where the
-    /// pane's own columns start, for the targets that are narrower than a row (the queue's
-    /// strip).
+    /// The conversation's rectangle, recorded by `compose_screen` straight after `main_area`
+    /// drew it, so the stops, the scroll and `drawn()` are this frame's. The whole terminal
+    /// width, gutters included: a click in the margin beside a row is a click on that row.
     pub(crate) fn record_main_hits(
         &mut self,
         gutter: usize,
@@ -252,10 +182,9 @@ impl App {
                         }
                     }
                 }
-                // **A plugin pane's panels, over the title rows they were drawn on** — the
-                // frame's own record (`plugin_panel_rows`), scroll applied, so a click lands on
-                // the panel whose title the operator saw. A title scrolled out of the window is
-                // not a target.
+                // A plugin pane's panels, over the title rows they were drawn on, scroll applied.
+                // A title scrolled out of the window is not a target, so a click lands on the
+                // panel whose title the operator saw.
                 if s == Surface::PluginPane {
                     for (row, panel) in self.plugin_panel_rows.clone() {
                         if let Some(d) = row.checked_sub(self.pane_scroll)
@@ -273,12 +202,9 @@ impl App {
                             });
                         }
                     }
-                    // **The rows a legend documents, in the terminal's rows** — the record a
-                    // hover reads to answer *what does this label mean* (C3's *the same text
-                    // answers on hover*). Not a hit: a legend row is documentation, and a click
-                    // on it acts on nothing, so it wants no hand pointer and no target. The
-                    // translation lives here because this is the one place that knows the pane's
-                    // top and its scroll.
+                    // The rows a legend documents, in terminal rows: a hover reads this to answer
+                    // what a label means. Not a hit - a legend row is documentation and a click on
+                    // it acts on nothing. The translation lives here, with the top and the scroll.
                     self.plugin_legend_at = self
                         .plugin_legend_rows
                         .iter()
@@ -302,11 +228,9 @@ impl App {
                     target: Target::Conversation,
                     stops,
                 });
-                // **The open window's lines, over the conversation they are drawn in** — one
-                // rectangle a row, whole width, and its stop is the payload line that row drew.
-                // Recorded before the notices and cards below, so anything drawn over one of
-                // these rows keeps it: a line of the window is the conversation's own, and the
-                // topmost record wins as everywhere here.
+                // The open window's lines, over the conversation they are drawn in: one rectangle
+                // a row, whole width. Recorded before the notices and cards, so a line of the
+                // window is the conversation's own and anything drawn over it keeps it.
                 for (r, line) in self.payload_rows.clone() {
                     self.hits.push(Hit {
                         rect: Rect {
@@ -375,11 +299,9 @@ impl App {
                         stops: vec![(y, k)],
                     });
                 }
-                // **The turn's own call cards, over the rows they were drawn in** — the live
-                // pane's rows are the conversation's too, and until this record they were the one
-                // part of it no click could reach (see [`App::call_rows`]). Pushed after the
-                // conversation's own rectangle so a click on a card is the card's, and before
-                // nothing else: the pane is below the history, where no notice or picture is.
+                // The turn's own call cards, over the rows they were drawn in: the live pane is
+                // the conversation's too. Pushed after the conversation's rectangle, so a click on
+                // a card is the card's.
                 for (k, (y, _)) in self.call_rows.clone().into_iter().enumerate() {
                     self.hits.push(Hit {
                         rect: Rect {

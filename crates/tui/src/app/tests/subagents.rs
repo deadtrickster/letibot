@@ -2,14 +2,9 @@
 
 use super::*;
 
-/// **A card that is a subagent's call says so, and names the child.**
-///
-/// The operator's ruling is that a subagent's ask surfaces at the root's head — *"who
-/// asks subagents permissions? i think they should surface to the parent head all the way
-/// to the root obviously"*. R58 gives a child no head, so its card arrives on THIS
-/// session's screen, and **an unlabelled card is answered for the wrong thing**: the
-/// question and the ladder are the same either way, and this clause is the only thing
-/// that says whose call it is.
+/// A card that is a subagent's call says so and names the child: a child has no head, so its card
+/// arrives on this session's screen, and the question and the ladder are the same either way - the
+/// clause is the only thing that says whose call it is.
 #[test]
 fn the_card_says_when_the_call_is_a_subagents_and_names_it() {
     use letibot_sessionlog::event::{OptionKind, SubagentAsk};
@@ -99,23 +94,9 @@ fn ctrl_g_opens_the_subagent_tree_and_esc_closes_it() {
     assert!(!a.is_open(Surface::Subagents));
 }
 
-/// **A fresh head rebuilds the subagent pane AND the count out of the daemon's own
-/// session list — no spawn event required.**
-///
-/// The operator's measured report, in two sentences: *"i just restarted the head and the
-/// subagents list is gone"*, and (twice) *"when you started new subagents the subagents
-/// pane refreshed and qwens showed up"*. So a head that attached after the spawns drew an
-/// empty pane and no count, and the only thing that could fill it was a later spawn —
-/// `SessionEvent::Subagent` carries exactly ONE child, so it cannot re-list an earlier
-/// generation. Nothing folded the durable rows: `SessionEvent::Subagent` was folded into
-/// nothing at all by the view (`letibot_sessionlog::view`), so the snapshot did not carry
-/// them either, and the ONE push into `self.subagents` was the live event arm.
-///
-/// The durable half is `SessionBrief::parent_session_id`, which is on the wire in every
-/// `Hello` and every `Sessions` frame — the registry's own words for it: *"A head draws a
-/// subagent tree from this without reaching the store"*. This pins both halves of what the
-/// pane must be able to say after an attach: **the rows**, and **the running count**, which
-/// is the same list read through the state clause.
+/// A fresh head rebuilds the subagent pane AND the count from the daemon's own session list, with
+/// no spawn event: `SessionEvent::Subagent` carries one child, so it cannot re-list an earlier
+/// generation, and `SessionBrief::parent_session_id` is the durable half every `Hello` carries.
 #[test]
 fn a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list() {
     let mut a = app();
@@ -162,13 +143,9 @@ fn a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list()
     assert!(screen.contains("state unknown"), "{screen}");
 }
 
-/// **After a daemon restart the pane says how each child ended, from the store** — and in
-/// words, not markdown.
-///
-/// The operator's pane, 2026-10-09: 195 finished children, most of them `[?] state unknown`,
-/// every title `**bold**` with its asterisks. The `Subagent` event that said `done` lived on
-/// the parent's in-memory log and went with the daemon; the store still has each child's
-/// conversation, and its last row is the answer — or is not.
+/// After a daemon restart the pane says how each child ended, from the store, and in words rather
+/// than markdown: the `Subagent` event lived in the parent's memory and went with the daemon,
+/// while the child's stored conversation still has a last row to answer with - or not.
 #[test]
 fn a_rebuilt_child_says_how_its_stored_conversation_ended() {
     use letibot_sessionlog::StoredEnd;
@@ -234,16 +211,9 @@ fn a_rebuilt_child_says_how_its_stored_conversation_ended() {
     );
 }
 
-/// **THE ONE THAT IS RUNNING IS AT THE TOP OF THE PANE, NOT BELOW THE FOLD.**
-///
-/// The operator, 2026-10-06: *"i went to subagents panel and dont see it here"* — a subagent
-/// just started, and a long list of finished ones. **It is not a delay**, which is the
-/// question they asked next (*"after some time (which?) it appears"*): the daemon publishes the
-/// child's `opening` state at the spawn and `running` once its harness is open — 0.3s for that
-/// one, its own progress line — so the row is on the wire at once. It landed BELOW THE FOLD,
-/// because a child this head watched spawn is appended after the durable rows, and the pane had
-/// drawn nothing that would scroll it up. With the finished children folded, the running child
-/// is the first row, which is the whole point.
+/// The one that is running is at the TOP of the pane, not below the fold. It is not a delay: the
+/// daemon publishes `opening` at the spawn, so the row is on the wire at once, and it landed below
+/// the fold because a watched spawn is appended after the durable rows.
 #[test]
 fn the_running_subagent_is_drawn_above_the_folded_finished_ones() {
     let mut a = app();
@@ -290,15 +260,9 @@ fn the_running_subagent_is_drawn_above_the_folded_finished_ones() {
     assert!(!joined.contains("finished 25"), "{joined}");
 }
 
-/// **THE ACCEPTANCE TEST: Enter into a subagent, then a single Esc back up to the
-/// subagents list.**
-///
-/// The operator's own two sentences: *"when I \"Enter\" Subagent it is like completely
-/// switching session with just one piece of info - a Label that it is a subagent and Esc
-/// going up in the subagents tree"*, and *"so after o I couldnt just Esc from the subagent
-/// - had to switch back here via session"*. One keystroke down, one keystroke up, the
-///   parent's list on the screen when you land, and the label saying whose child you were in
-///   while you were there.
+/// The acceptance test: Enter into a subagent, then a single Esc back up to the subagents list -
+/// one keystroke down, one up, the parent's list on the screen when you land, and the label saying
+/// whose child you were in while you were there.
 #[test]
 fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
     let mut a = app();
@@ -317,11 +281,9 @@ fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
         a.subagents.is_empty(),
         "a subagent's own session shows its own children, not its parent's"
     );
-    // **And the COUNT is the same list**, which is the reason the clear exists at all:
-    // measured 2026-09-16, a carried row put `1 subagent running` on the composer of the
-    // very subagent being looked at. The rebuild is filtered by `parent_session_id`, so a
-    // head standing in the child draws none of the parent's running rows — and this is the
-    // half that would come back if the fold ever read the daemon's list unfiltered.
+    // And the COUNT is the same list, which is the reason the clear exists: a carried row put
+    // `1 subagent running` on the composer of the very subagent being looked at. The rebuild is
+    // filtered by `parent_session_id`, so a head standing in the child draws none of them.
     let screen = a.screen(100, 24).join("\n");
     assert!(
         !screen.contains("subagent running"),
@@ -360,12 +322,9 @@ fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
     assert!(screen.contains("1 subagent running"), "{screen}");
 }
 
-/// **Esc's other meanings, inside a subagent — and the two it gave up.**
-///
-/// The descent arm sits below every arm that already owns Esc, and this is the proof
-/// rather than the claim: a pane the operator is standing in closes, a half-typed line
-/// keeps Esc for the composer, an open decision keeps it away from the tree, and a
-/// session with no parent has nowhere to go in the first place.
+/// Esc's other meanings inside a subagent, and the two it gave up: the descent arm sits below every
+/// arm that already owns Esc, so a pane closes, a half-typed line keeps Esc for the composer, and
+/// an open decision keeps it away from the tree.
 #[test]
 fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
     // A pane on the screen owns Esc — its own footer says `esc closes`, and it wins.
@@ -427,17 +386,9 @@ fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
     assert!(a.hint_bar(120).contains("again"), "{}", a.hint_bar(120));
 }
 
-/// **THE CONFLICT, PINNED RATHER THAN TAKEN IN SILENCE: inside a subagent, one Esc goes
-/// up, and Esc-Esc no longer interrupts that child there.**
-///
-/// A single Esc that leaves the session and a first Esc that arms the interrupt frame are
-/// the same keystroke, so no rule can honour both inside a subagent — and this is the one
-/// the operator asked for (*"make sure a single Esc goes up to subagents list"*). What is
-/// left of the frame is what the arm's own comment records: the child's turn can still be
-/// interrupted from the child with `/interrupt`, and from the parent with `job_kill`,
-/// which is how this tree already documents stopping one. In a session that is NOT a
-/// subagent nothing moves at all — `esc_twice_interrupts_a_running_turn_…` above is that
-/// half, unedited.
+/// The conflict, pinned rather than taken in silence: inside a subagent one Esc goes up, so Esc-Esc
+/// no longer interrupts that child there. The child's turn is still interruptible with
+/// `/interrupt`, and from the parent with `job_kill`.
 #[test]
 fn esc_inside_a_busy_subagent_goes_up_and_the_pair_does_not_interrupt_it_there() {
     let mut a = inside_a_subagent();
@@ -458,15 +409,9 @@ fn esc_inside_a_busy_subagent_goes_up_and_the_pair_does_not_interrupt_it_there()
     );
 }
 
-/// **ctrl-s inside a subagent is its family: the parent and its siblings.**
-///
-/// The operator's ask — *"make sure sessions list (ctrl-s) is filtered to the parent and
-/// siblings. In fact it should also fix our sessions pane - it must be a tree"* — and the
-/// tree was already here (`session_rows`/`push_children`: nested, folded, with the chain
-/// to where you are always shown); what was wrong is that a head standing in a child drew
-/// every conversation in the daemon around a row one level down. The siblings are **shown
-/// whatever the collapse state says**, because a family view whose members were folded
-/// away would be a list of one row.
+/// ctrl-s inside a subagent is its family: the parent and its siblings, drawn as the tree it
+/// already is. The siblings are shown whatever the collapse state says, because a family view
+/// whose members were folded away would be a list of one row.
 #[test]
 fn ctrl_s_inside_a_subagent_lists_the_parent_and_its_siblings() {
     let mut a = inside_a_subagent();
@@ -497,20 +442,9 @@ fn ctrl_s_inside_a_subagent_lists_the_parent_and_its_siblings() {
     );
 }
 
-/// **The one word the daemon's list is authoritative for, in both directions.**
-///
-/// `state` is the only field both halves can speak to, and the list speaks to exactly one
-/// word: whether a turn is generating in that session *now*. A row this head watched keeps
-/// every richer field — the role, the model, the answer — and the word `running` comes from
-/// the list either way: a `false` retires a `running` the row is still claiming, because a
-/// finish this head was not attached for otherwise leaves the composer counting a child
-/// that is not running; and a `true` overrides a settled row, because a child that has
-/// started a second turn is generating whatever it last finished.
-///
-/// **This is the merge, and it is where the two halves meet.** `fold_subagents` runs at
-/// every `load` — the late-join and resync path, and the `Hello` a `Switch` is answered
-/// with — so the list cannot flatten a watched row and the watched row cannot outlive the
-/// list's live word.
+/// The one word the daemon's list is authoritative for, in both directions: `state`. A row this
+/// head watched keeps every richer field, but a `false` retires a `running` it still claims and a
+/// `true` overrides a settled row. `fold_subagents` runs at every `load`, so neither wins twice.
 #[test]
 fn the_session_list_owns_the_word_running_and_the_event_owns_everything_else() {
     let mut a = app();
@@ -566,11 +500,9 @@ fn the_session_list_owns_the_word_running_and_the_event_owns_everything_else() {
     assert_eq!(a.subagents[0].answer.as_deref(), Some("3529 files"));
 }
 
-/// The subagent tree is the parent's fact. Measured 2026-09-16: switching
-/// into a subagent carried "1 subagent running" onto ITS composer, and the
-/// pane there offered the row of the very session being looked at. On the way
-/// back the daemon replays the parent's retained events after `Hello`, so the
-/// tree is rebuilt from the same events that built it the first time.
+/// The subagent tree is the parent's fact: a head standing in a child draws neither the parent's
+/// running rows nor the row of the session it is looking at, and on the way back the daemon
+/// replays the parent's retained events after `Hello`, so the tree is rebuilt from the same events.
 #[test]
 fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it() {
     let mut a = app();
@@ -696,13 +628,8 @@ fn an_opening_subagent_is_listed_but_cannot_be_entered() {
     );
 }
 
-/// **Enter on a subagent row IS the switch into that subagent's session.**
-///
-/// Replaced behaviour, and the operator's own words for it: *"when I \"Enter\" Subagent
-/// it is like completely switching session with just one piece of info … Which narrows the
-/// subagent prompt - make \"o\" to \"Enter\""*. Enter used to `Peek` — a read that left the
-/// head where it was — and `o` was the key that moved. The two acts are now where the rest
-/// of this head puts them: Enter takes the row you are on.
+/// Enter on a subagent row IS the switch into that subagent's session, which is where the rest of
+/// this head puts the moving act; the read that leaves the head where it was has its own key (`p`).
 #[test]
 fn enter_on_a_subagent_row_switches_into_its_session() {
     let mut a = app();
@@ -732,12 +659,9 @@ fn enter_on_a_subagent_row_switches_into_its_session() {
     );
 }
 
-/// **The READ stays reachable, on a key that is neither Enter nor Esc — `p`.**
-///
-/// The peek is not a lesser act: it is the thing `ClientFrame::Peek` exists for (a child's
-/// output read *without* moving the head, R20), and it was the behaviour Enter had, so
-/// moving Enter must not lose it. `p` is `/peek ID`'s own key, and the ask is remembered so
-/// a rejection has something to end.
+/// The READ stays reachable, on a key that is neither Enter nor Esc - `p`. It is not a lesser act:
+/// it is what `ClientFrame::Peek` exists for, a child's output read without moving the head, and
+/// the ask is remembered so a rejection has something to end.
 #[test]
 fn p_reads_a_subagents_output_without_moving_the_head() {
     let mut a = app();
@@ -810,20 +734,17 @@ fn a_peeked_subagent_shows_its_tool_output_and_spills_the_whole_view() {
     let v = a.sub_out.as_ref().expect("the view opened");
     assert_eq!(v.session_id, "s-sub-1");
     assert_eq!(v.dropped, 3);
-    // **No snapshot, so this is the FALLBACK and it says so.** The daemon answered
-    // with its event ring because that is all it had to answer with; a reader who
-    // could not tell this from a session drawn from its rows would be reading a
-    // different thing than they think — the whole reason `degraded` exists.
+    // No snapshot, so this is the FALLBACK and it says so: the daemon answered with its event
+    // ring because that is all it had, and a reader who could not tell this from a session drawn
+    // from its rows would be reading a different thing than they think.
     assert!(v.degraded, "an event-ring answer is the fallback");
     let text = v.lines.join("\n");
     assert!(text.contains("· bash — ok"), "{text}");
     assert!(text.contains("line one"), "{text}");
     assert!(text.contains("line two"), "{text}");
     assert!(text.contains("/spill/c1"), "{text}");
-    // The whole view is on disk, at a name a re-read overwrites — under the
-    // head's own runtime dir, never a world-readable /tmp. The live write
-    // went where the head puts things; the writer itself is exercised under
-    // a directory this test owns.
+    // The whole view is on disk, at a name a re-read overwrites, under the head's own runtime dir
+    // and never a world-readable /tmp. The writer is exercised under a directory this test owns.
     let spill = v.spill.as_ref().expect("spilled");
     assert!(
         spill.ends_with("/letibot/subagent-s-sub-1.log") || spill.contains("/letibot-"),
@@ -945,14 +866,9 @@ fn a_running_subagent_row_becomes_done_rather_than_a_second_line() {
     assert!(screen.contains("Here is the summary."), "{screen}");
 }
 
-/// **The pane's row is the TASK, and the child's answer is the subtitle beside it.**
-///
-/// The defect this pins, measured on the running head: a `done` row drew **122 characters
-/// which were the child's ANSWER**, with the two-line task nowhere on the wire — because
-/// `prompt` held a title on the opening states and the answer's first line on the finish,
-/// and a field whose meaning depends on `state` cannot be read as the row. So the event
-/// carries `task` whole (and never truncated by the daemon) and `answer` as its own field,
-/// and this asserts both halves: the row is the question, the subtitle is the answer.
+/// The pane's row is the TASK and the child's answer is the subtitle beside it: `prompt` held a
+/// title on the opening states and the answer's first line on the finish, and a field whose
+/// meaning depends on `state` cannot be read as the row. So the event carries both, separate.
 #[test]
 fn a_subagent_row_shows_the_task_and_the_answer_beside_it() {
     let mut a = app();
@@ -996,11 +912,9 @@ fn a_subagent_row_shows_the_task_and_the_answer_beside_it() {
     );
 }
 
-/// **Stopping the daemon stops the work, and the card says so** — the operator's
-/// ask, 2026-10-05. A running job is an hour of `cargo test --release`; a running
-/// subagent is a session mid-task; both die with the daemon, and the stop row named
-/// only the cold prefill — the cost that reverses itself — while omitting the one
-/// that does not.
+/// Stopping the daemon stops the work, and the card says so: a running job is an hour of `cargo
+/// test`, a running subagent is a session mid-task, both die with the daemon - and the stop row
+/// named only the cold prefill, the cost that reverses itself, while omitting the one that does not.
 #[test]
 fn the_stop_row_names_the_jobs_and_subagents_that_die_with_the_daemon() {
     let mut a = app();
@@ -1111,14 +1025,9 @@ fn a_running_subagent_is_counted_on_the_top_border_and_a_done_one_is_not() {
     );
 }
 
-/// **A child with a tool call in flight is a working child, and it is counted.**
-///
-/// The operator's standard, in their own words: *"claude code for example shows subagent as
-/// alive until it finished turn with reply. not 'pausing it' on tool calls."* The daemon's
-/// session list measures an **instant** — `SessionStatus::running` is *"a turn is generating
-/// in this session at this instant"* — and a child executing a `cargo test` generates nothing
-/// while it runs. So the list says `false` about a child that is plainly at work, and reading
-/// that `false` as *finished* is what took live children out of the count.
+/// A child with a tool call in flight is a working child, and it is counted. The list's
+/// `SessionStatus::running` is an instant - a turn generating now - and a child executing a
+/// `cargo test` generates nothing, so reading that `false` as finished drops live children.
 #[test]
 fn a_child_with_a_tool_call_in_flight_is_counted() {
     let mut a = app();
@@ -1154,14 +1063,9 @@ fn a_child_with_a_tool_call_in_flight_is_counted() {
     );
 }
 
-/// **A child that stopped its turn with an interim message has not finished, and it counts.**
-///
-/// The operator's own child, verbatim: *"Waiting on `j228` (the workspace-wide test run) —
-/// I'll report as soon as it ends"*, with two commits and a running suite behind it. That line
-/// is not a completion — see [`child_event`]: `answer` rides the `done` and nothing else — so
-/// the row holds no answer and the child has not ended. **The count must not move with the
-/// list's instantaneous measurement**, however many times that measurement flaps; this is the
-/// `4, 2, 3, 1` the operator watched, over children that were alive the whole time.
+/// A child that stopped its turn with an interim message has not finished, and it counts: `answer`
+/// rides the `done` and nothing else, so a row with no answer is a child that has not ended, and
+/// the count must not flap with the list's instantaneous measurement.
 #[test]
 fn a_child_that_stopped_its_turn_with_an_interim_message_still_counts() {
     let mut a = app();
@@ -1188,14 +1092,9 @@ fn a_child_that_stopped_its_turn_with_an_interim_message_still_counts() {
     }
 }
 
-/// **The footer's number is the rows the pane draws, and not a second rule about them.**
-///
-/// The defect this pins: the footer counted `state == "running"` while the pane's active group
-/// was built from [`SubagentState::is_finished`], so a child in `opening` was drawn as a live
-/// row and left out of the number — two readings of one list, which is the two-enumerations
-/// defect [`App::subagent_stops`] exists to prevent. Both now read the one lifecycle
-/// predicate, and this asserts the agreement at three points: the pane's own enumeration, the
-/// marks it drew on the glass, and the number on the composer's edge.
+/// The footer's number is the rows the pane draws, not a second rule about them: it counted
+/// `state == "running"` while the pane's group was built from [`SubagentState::is_finished`], so a
+/// child in `opening` was drawn live and left out of the number. Both read one predicate now.
 #[test]
 fn the_footers_number_is_the_rows_the_pane_draws() {
     let mut a = app();
@@ -1254,11 +1153,9 @@ fn the_footers_number_is_the_rows_the_pane_draws() {
     );
 }
 
-/// **The merge queue's gatekeeper is not one of this session's subagents** — the operator,
-/// 2026-10-09: *"it shouldnt be visible in "normal" agents count"*. The daemon runs the reviewer
-/// as a child of this session so its approvals reach this head, but nobody here started it: a
-/// live `Subagent` event naming the `gatekeeper` seat, and a list row whose title is the review
-/// brief, both stay out of the pane and the count.
+/// The merge queue's gatekeeper is not one of this session's subagents: the daemon runs the
+/// reviewer as a child of this session so its approvals reach this head, but nobody here started
+/// it, so it stays out of the pane and the count.
 #[test]
 fn a_gatekeeper_child_is_not_counted_or_listed() {
     let mut a = app();
@@ -1314,24 +1211,9 @@ fn a_gatekeeper_child_is_not_counted_or_listed() {
     );
 }
 
-/// **The finished fold survives the round trip down into a child and back up.**
-///
-/// The operator, of this pane: *"it supposed to group finishes subagents, and it doesnt. but
-/// it was grouping before i entered one of the gatekeepers."* … *"so somehow it expands
-/// itself."* The group was folded; they went into a child; they came back; the group was open.
-///
-/// **The unfold was deliberate, and it is the defect.** `fold_subagents` opened the group so
-/// the cursor could land on the row of the child the operator had just left — and a child that
-/// ENDED while they were inside it is exactly the case that fires, because a finished row is
-/// not a stop while the group is folded. So the walk was allowed to spend the operator's fold
-/// to save itself one keystroke, and the price was the whole pane: a folded group of two
-/// hundred children coming back open, which is the wall the fold exists to prevent.
-///
-/// The cure is the one the flag already has — it lives in the head ([`App`],
-/// `subagents_finished_open`) and is handed to the pane each frame — so the walk must not
-/// write it. The cursor instead lands on the row that STANDS FOR the child while it is folded,
-/// the `finished` group, and the fold is left exactly as the operator set it. See
-/// [`App::fold_subagents`].
+/// The finished fold survives the round trip down into a child and back up: `fold_subagents` must
+/// not write `subagents_finished_open` to land its cursor, or a folded group of two hundred
+/// children comes back open. The cursor lands on the `finished` group row instead.
 #[test]
 fn the_fold_survives_going_down_into_a_child_and_back_up() {
     let mut a = app();
@@ -1379,15 +1261,9 @@ fn the_fold_survives_going_down_into_a_child_and_back_up() {
     assert!(!screen.contains("audit the store"), "{screen}");
 }
 
-/// **A child ending does not re-open the group the operator folded.**
-///
-/// The handoff note's own reading of the same report, pinned so it cannot come back: *"the
-/// fold does not survive an update of the list. Entering a child was merely how it was first
-/// noticed, and the list updates constantly while anything is finishing."* The fold is
-/// explicitly folded first — the same Enter on the group row the operator presses — and then a
-/// live child ends, which is a row landing under the group. Whether a re-open arrives with the
-/// round trip or with a later list frame, the rule is one: the fold is the operator's, and a
-/// row landing under it is not a reason to open it.
+/// A child ending does not re-open the group the operator folded: the fold is the operator's, and a
+/// row landing under it is not a reason to open it - whether the re-open would arrive with the
+/// round trip or with a later list frame.
 #[test]
 fn a_child_ending_does_not_re_open_the_fold() {
     let mut a = app();
@@ -1495,19 +1371,9 @@ fn a_two_line_entry_is_one_block_under_the_pointer_and_the_click() {
 
 // ─────────────────── the wait a switch is, and what is drawn for it ───────────────────
 
-/// **Entering a subagent is a ROUND TRIP, and the head says so while it happens.**
-///
-/// The operator, verbatim: *"entering subagent took ages - pressed enter on its row - main
-/// session visible (you) and then subagent session loaded. this is basically throughout the ui -
-/// some async action finishes sometimes and meanwhile something else is shown"*.
-///
-/// The resume arm of `App::switch_to` has always drawn that wait — `fetching` plus the cat —
-/// because restoring a session out of the store is seconds. The LIVE-switch arm had nothing: the
-/// pane closed, the session being LEFT stayed on the screen, and the only sign a move was in
-/// flight was the frame that finally arrived. Both arms are one state now (`fetching` +
-/// `attaching`), and this is the test that says so: before the `Hello`, the head is attaching,
-/// the status row names the session it is going to, and the conversation it is still drawing is
-/// not passed off as the one that was asked for.
+/// Entering a subagent is a round trip, and the head says so while it happens: both arms of
+/// `App::switch_to` share one state (`fetching` + `attaching`), so before the `Hello` the status
+/// row names where the head is going and the conversation it still draws is not passed off as that.
 #[test]
 fn entering_a_subagent_says_that_a_switch_is_in_flight() {
     let mut a = app();
@@ -1543,14 +1409,9 @@ fn entering_a_subagent_says_that_a_switch_is_in_flight() {
     );
 }
 
-/// **A `Hello` for some OTHER session does not end the wait for the one that was asked for.**
-///
-/// The resume path's rule, and the reason `fetching` is a session id rather than a flag: the head
-/// asks for a session, the daemon seats it somewhere first (a `--continue` lands on whatever the
-/// daemon has open), and that first `Hello` is not the answer. A live switch has the same shape
-/// when two of them overlap — Enter on a row while an earlier switch is still unanswered — and a
-/// pending state that cleared on the wrong `Hello` would take the sentence down while the move it
-/// describes was still in flight.
+/// A `Hello` for some OTHER session does not end the wait for the one asked for, which is why
+/// `fetching` is a session id rather than a flag: the daemon may seat the head somewhere first, and
+/// a pending state cleared on the wrong `Hello` would take the sentence down mid-move.
 #[test]
 fn a_hello_for_another_session_leaves_the_switch_pending() {
     let mut a = app();
@@ -1567,15 +1428,9 @@ fn a_hello_for_another_session_leaves_the_switch_pending() {
     assert!(screen.contains("switching to"), "{screen}");
 }
 
-/// **`esc` out of a subagent draws the list it came out of, not the child's empty one.**
-///
-/// The operator's trap, verbatim: *"then I ended up in a trap - esc from subagent brought me to
-/// nowehere (iirc it was an empty subagents pane)"*. The pane lists the CURRENT session's
-/// children, and the head is standing in the child — which has none — so for as long as the
-/// switch took the pane drew `none spawned yet. The model spawns them with the task tool.` over a
-/// parent with two of them. That sentence is a claim about the session, and the session it is
-/// about is the one being entered: the head knows which one it asked for (`fetching`), so the
-/// list, the count and the cursor are that session's from the keystroke, not from the `Hello`.
+/// `esc` out of a subagent draws the list it came out of, not the child's empty one: the pane lists
+/// the CURRENT session's children, so for as long as the switch took it drew `none spawned yet`
+/// over a parent with two of them. `fetching` names the session the list belongs to.
 #[test]
 fn esc_out_of_a_subagent_lists_the_parent_before_the_switch_lands() {
     let mut a = inside_a_subagent();
@@ -1617,15 +1472,8 @@ fn esc_out_of_a_subagent_lists_the_parent_before_the_switch_lands() {
     assert_eq!(a.subagents[a.subagents_sel].session_id, "s-sub-1");
 }
 
-/// **Entering a subagent stops drawing the conversation it is LEAVING.**
-///
-/// The operator, on the build that already had the pending state: *"on this build I \"Entered\"
-/// sub agents and still see you — main session"*. `entering_a_subagent_says_that_a_switch_is_in
-/// _flight` was green over it, and the reason it could be is the fixture: it attaches to an
-/// EMPTY snapshot, so the cat is the whole body of the conversation and the test cannot tell
-/// *the wait replaces the conversation* from *the wait is appended under it*. With a real
-/// transcript the second is what the head did — `body_window` pushed the cat after every row
-/// of the session being left, so the pane the operator was looking at was the parent's
+/// Entering a subagent stops drawing the conversation it is LEAVING: `body_window` pushed the
+/// attach cat after every row of the session being left, so the pane showed the parent's
 /// conversation with a spinner squeezed under it.
 #[test]
 fn entering_a_subagent_stops_drawing_the_conversation_it_is_leaving() {

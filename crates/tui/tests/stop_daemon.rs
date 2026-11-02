@@ -99,14 +99,9 @@ fn wait_for<T>(what: &str, mut poll: impl FnMut() -> Option<T>) -> T {
     panic!("timed out waiting for {what}");
 }
 
-/// The same, **ticking between polls** — which is what makes it a test of the driver and
-/// not of an idle `App`.
-///
-/// A frame the daemon wrote sits in the pump's channel until somebody drains it, and the
-/// only thing that drains it is [`step`]. A wait that polled the head without ticking would
-/// be asserting that a fact arrives by itself, and it would fail for a reason that has
-/// nothing to do with the requirement — measured, because that is exactly what this did
-/// first.
+/// The same, ticking between polls - which is what makes it a test of the driver and not of an
+/// idle `App`: a frame the daemon wrote sits in the pump's channel until [`step`] drains it, so a
+/// wait that polled without ticking would assert that a fact arrives by itself.
 fn wait_ticking<T>(
     link: &mut Link,
     a: &mut App,
@@ -124,10 +119,9 @@ fn wait_ticking<T>(
     panic!("timed out waiting for {what}");
 }
 
-/// **What the peer does when it is asked to stop.**
-///
-/// Three behaviours because there are three different questions to ask about a stop, and
-/// the third is the one a real daemon actually produces — see [`OnStop::AcceptedThenBye`].
+/// What the peer does when it is asked to stop: three behaviours because there are three questions
+/// to ask about a stop, and the third is the one a real daemon produces - see
+/// [`OnStop::AcceptedThenBye`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OnStop {
     /// Acknowledges, then closes the socket silently. The state machine (`acked`,
@@ -135,22 +129,9 @@ enum OnStop {
     Accepted,
     /// Says nothing at all, so the head has only a write and a deadline.
     Silent,
-    /// **Acknowledges and then says goodbye, which is what a real daemon does.**
-    ///
-    /// `ServerHandle::shutdown` closes the registry, the seat's pump answers
-    /// `Delivery::Closed` with `Bye { reason: "daemon shutting down" }`
-    /// (`crates/sessionlog/src/server.rs`), and that is the last frame an orderly stop
-    /// produces.
-    ///
-    /// **This mode is new, and its absence is why nothing caught the defect.** The peer
-    /// used to close silently with a comment asserting that the real daemon sends no
-    /// `Bye` — *"`serve_conn` returns, the writer is dropped, and the head's pump sees
-    /// EOF"* — which is exactly backwards, and `reconnect.rs`'s header says so in as many
-    /// words: *"the seat's pump answers `Delivery::Closed` with `ServerFrame::Bye { reason:
-    /// \"daemon shutting down\" }` — and a `Bye` is by design not a drop."* Two test files
-    /// disagreed about the daemon's behaviour, and the one that modelled a stop had it
-    /// wrong, so the farewell below was never once exercised against the frame it
-    /// actually gets.
+    /// Acknowledges and then says goodbye, which is what a real daemon does: `shutdown` closes the
+    /// registry, the seat's pump answers `Delivery::Closed` with `Bye { reason: "daemon shutting
+    /// down" }`, and that is the last frame an orderly stop produces. A `Bye` is not a drop.
     AcceptedThenBye,
 }
 
@@ -367,22 +348,9 @@ fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
     let _ = std::fs::remove_file(&peer.path);
 }
 
-/// **A daemon that does not go is NAMED on the way out** — R30's third part, and the one
-/// the operator asked for in the incident's own words: they found the orphan with `ps` a
-/// day later, and the whole point is that they should have read it here.
-///
-/// The real deadline is waited out rather than faked. Fifteen seconds in one test — and the
-/// force path's own bounds after it — is the price of asserting a number the operator reads
-/// instead of a number the test chose.
-///
-/// **And since the head escalates on its own, this is now the case where the escalation
-/// fails too.** The operator: *"yeah when i exited letidb and chose to stop daemon too - it
-/// couldnt. had to --stop --force"* — so a stop that does not finish is forced by the head
-/// itself (`crates/tui/tests/stop_force.rs`), and only when THAT fails is the operator sent to
-/// run the verb. A process the kernel cannot end does not exist to test with, so the head's
-/// signaller is stood in by one that records what it was asked and delivers nothing: the
-/// head asks for SIGTERM and then SIGKILL, for the pid it holds and no other, and then says
-/// it is still there.
+/// A daemon that does not go is NAMED on the way out: the operator found the orphan with `ps` a day
+/// later, and the point is they should have read it here. The real deadline is waited out rather
+/// than faked, and the head's own escalation fails too - its signaller is a stand-in, not a kill.
 #[test]
 fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
     let path = socket_path("survives");
@@ -613,10 +581,9 @@ fn the_daemons_goodbye_is_not_the_daemon_being_gone() {
          happened — the operator then had to kill `harnessd` with `--force`."
     );
 
-    // The deadline is the head's own way out, and the sentence it leaves says what it saw.
-    // **The escalation runs here too** and sends nothing: this head was never told a pid
-    // (nothing seeded `App::daemon_pid`), and the force path signals only the pid the head
-    // holds — so it interrupts, finds no pid, and the farewell keeps its verb.
+    // The deadline is the head's own way out, and the sentence it leaves says what it saw. The
+    // escalation runs here too and sends nothing: nothing seeded `App::daemon_pid`, and the force
+    // path signals only the pid the head holds.
     let deadline = Instant::now() + Duration::from_secs(60);
     while !a.should_quit() && Instant::now() < deadline {
         step(&mut link, &mut a);
@@ -642,13 +609,9 @@ fn the_daemons_goodbye_is_not_the_daemon_being_gone() {
     let _ = std::fs::remove_file(&peer.path);
 }
 
-/// **A stop whose process really went says nothing — goodbye or no goodbye.**
-///
-/// This is the half `the_daemons_goodbye_is_not_the_daemon_being_gone` used to defend, and
-/// it must not regress: the operator's complaint that started it was *two contradicting
-/// sentences on stderr four lines apart*. With the wait no longer cut short by the frame,
-/// the sentence is composed only when the question is settled — and when the process is
-/// gone, there is no sentence at all.
+/// A stop whose process really went says nothing - goodbye or no goodbye. The operator's complaint
+/// was two contradicting sentences on stderr four lines apart, so the sentence is composed only
+/// when the question is settled, and when the process is gone there is no sentence at all.
 #[test]
 fn a_stop_whose_process_really_went_says_nothing_even_with_a_goodbye() {
     let path = socket_path("goodbye-gone");
@@ -680,30 +643,9 @@ fn a_stop_whose_process_really_went_says_nothing_even_with_a_goodbye() {
     let _ = std::fs::remove_file(&peer.path);
 }
 
-/// **The scripted peer is pinned against a real daemon, so it cannot go on modelling
-/// something the daemon does not do.**
-///
-/// The peer in this file is scripted on purpose — it has to withhold an answer and hold a
-/// socket open over a process that is not there. But a scripted peer is a **claim about the
-/// daemon**, and this one's `OnStop::Accepted` mode was written from a guess: it closed
-/// silently with a comment asserting the real daemon sends no `Bye`. That is backwards, and
-/// because it was the only model of an orderly stop in this file, the farewell the head
-/// prints — *"the daemon ended this head — daemon shutting down"* — had **never once been
-/// exercised against the frame it actually gets**, which is how the operator came to read
-/// that line and *"the daemon was asked to stop and had not gone"* four lines apart on
-/// nearly every stop.
-///
-/// So this test does not argue about the peer: it stands a real `ServerHandle` up
-/// (`serve_registry`), asks it and the peer the same question over a socket, reduces each
-/// connection to the frames a stop is made of, and requires them equal — and equal to the
-/// two frames named below, so a failure says what a stop is rather than only that two things
-/// disagree.
-///
-/// **One honest difference is dropped by the reduction.** A real daemon publishes a
-/// `daemon_stopping` warning into every session before it acks, and a scripted peer has no
-/// hub to publish into. That warning is a fact about the sessions and is asserted where it
-/// belongs (`crates/sessionlog/tests/sessions.rs`); it is not what a stop *is* on the wire. A
-/// stop is the ack, and then the farewell.
+/// The scripted peer is pinned against a real daemon, so it cannot go on modelling something the
+/// daemon does not do: a scripted peer is a claim about the daemon, and the claim that a stop sends
+/// no `Bye` was backwards. Both are asked over a socket and reduced to the frames a stop is made of.
 #[test]
 fn the_peer_sends_the_frames_a_real_daemon_sends_on_a_stop() {
     // The real one, over a real socket, with a real registry behind it.
@@ -738,11 +680,9 @@ fn the_peer_sends_the_frames_a_real_daemon_sends_on_a_stop() {
     let _ = std::fs::remove_file(&peer.path);
 }
 
-/// **One stop, read off the socket, reduced to the frames a stop is made of.**
-///
-/// Attach, take the `Hello`, ask to stop, then read to the end of the connection. The read
-/// has a deadline so a daemon that answers nothing ends the read instead of the test run — the
-/// comparison above then fails with the short list, which is a better failure than a hang.
+/// One stop, read off the socket, reduced to the frames a stop is made of: attach, take the `Hello`,
+/// ask to stop, read to the end. The read has a deadline, so a daemon that answers nothing ends the
+/// read and the comparison above fails with the short list rather than the test run hanging.
 fn stop_frames(path: &std::path::Path) -> Vec<String> {
     let stream = UnixStream::connect(path).expect("connect");
     stream
@@ -813,10 +753,9 @@ fn the_daemons_pid_is_the_process_on_the_other_end_of_the_socket() {
     drop(peer);
 }
 
-/// **The head does not reconnect to a daemon it just asked to stop.** The daemon closing
-/// our socket is the answer arriving; a head that read that as a fault would open a second
-/// socket to a process on its way out and draw *"reconnecting"* over a shutdown the
-/// operator ordered.
+/// The head does not reconnect to a daemon it just asked to stop: the daemon closing our socket is
+/// the answer arriving, and a head that read that as a fault would open a second socket to a process
+/// on its way out and draw reconnecting over a shutdown the operator ordered.
 #[test]
 fn a_daemon_that_closes_after_a_stop_is_not_a_link_failure() {
     let path = socket_path("noreconnect");
