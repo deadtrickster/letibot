@@ -1,19 +1,11 @@
-//! The `condition` hook: what a monitor watches, answered by a plugin.
+//! `condition` - what a monitor watches: the plugin says what to look at, the host runs it, and
+//! the plugin is asked again with the result to say whether it fired and what to look at next.
 //!
-//! The plugin says what to look at, the host runs it, and the plugin is asked again with the result
-//! and says whether it fired and what to look at next.
+//! A `look` in an answer is a declaration, not an act: the host spawns it under the layer's
+//! declared capability, so a hook call is pure and the shadow gate's replay means something.
 //!
-//! The plugin never runs anything. `look` in an answer is a declaration, the host spawns it under
-//! the layer's declared capability, and the result comes back in the next input's `look`, so a hook
-//! call is pure and the shadow gate's replay means something.
-//!
-//! `look` is a result on the way in ([`LookResult`]) and an ask on the way out ([`LookAsk`]). Two
-//! types, because the directions mean opposite things and one struct with both fields would be a
-//! document a plugin can read backwards.
-//!
-//! `state` is opaque JSON the plugin returns and the host stores with the monitor, so a restart, a
-//! reload or a newer build of the plugin keeps the baseline a watch needs. A `null` on the first
-//! call is *nothing has been looked at yet*.
+//! The input's `look` is a result and the answer's is an ask - two types, because one struct with
+//! both fields would be a document a plugin can read backwards. `state` is the host's, so it survives.
 
 use serde_json::Value;
 
@@ -33,8 +25,8 @@ pub const EVERY_MIN_S: u64 = 5;
 /// The input's `look`: what the host saw when it ran the last one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LookResult {
-    /// The exit status, or 126 for a look the host refused to run because the layer does not hold
-    /// the capability: the same spelling a refused `read` uses, so a plugin has one thing to check.
+    /// The exit status, or 126 for a look the host refused to run (a capability it does not
+    /// hold) — the same spelling a refused `read` uses, so a plugin has one thing to check.
     pub exit: i32,
     #[serde(default)]
     pub stdout: String,
@@ -61,8 +53,9 @@ impl LookResult {
     }
 }
 
-/// The answer's `look`: what to run next, externally tagged so the key IS the kind and there is no
-/// second place to say it.
+/// The answer's `look`: what to run next. Both kinds are the host's act.
+///
+/// Externally tagged, so the key IS the kind and there is no second place to say it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LookAsk {
@@ -73,8 +66,9 @@ pub enum LookAsk {
     Read(String),
 }
 
-/// One watch of one pull request, shared with every other watch on it: the host refuses a second
-/// watch on a pull request another holds, and a condition declaring this takes part in that rule.
+/// One watch of one pull request, shared with every other watch on it.
+///
+/// The host coalesces, so a pull request watched through a plugin and through `github` is one look.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Github {
     /// `owner/repo#N`.

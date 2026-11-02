@@ -1,14 +1,11 @@
 //! Plugins: the layer stack, hot reload and the shadow gate.
 //!
-//! A plugin is a wasm module that answers text hooks. Layers stack: the topmost layer that answers
-//! wins, an answer it does not give falls through, and the bottom is the built-in defaults compiled
-//! into the daemon. There is no wasm engine here -- a module comes through [`Module`] and a compile
-//! through [`Loader`] -- so precedence, pass, mask, ask-below, a trap and a refused build are all
-//! tested with fakes.
+//! A plugin is a wasm module that answers text hooks. Layers stack - the topmost layer that answers
+//! a hook wins, what it does not mention falls through, and the bottom is the built-in defaults -
+//! so a session's model can write a small layer, load it hot, and consolidate the pile later.
 //!
-//! `pass` asks the next layer down, `mask` stops the descent with no answer, `{"below": <input>}`
-//! resolves the layer below and re-asks this one, and anything else is the answer. A layer that traps
-//! is skipped and recorded: fail down, loudly.
+//! This crate has no wasm engine on purpose: it talks to a [`Module`] and a [`Loader`], so
+//! precedence, mask, the ask-below and a trap falling down are all tested with fakes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -30,8 +27,9 @@ pub use recorder::Recorder;
 pub use stack::{BrokenPin, Candidate, DeclaredTool, Failure, Layer, Resolved, Stack};
 pub use trust::{Pin, Standing, Trust, Written};
 
-/// One plugin module, as the stack sees it. `Ok(None)` means unchanged and falls through; an `Err`
-/// is a trap or an exhausted budget, which the stack records before asking the next one down.
+/// One plugin module, as the stack sees it.
+/// The seam that keeps this crate out of the wasm business: rano's engine is one implementation, a
+/// table in a test is another. `Ok(None)` is unchanged, and an `Err` is recorded and asked below.
 pub trait Module: Send + Sync {
     /// The export names this module answers, e.g. `pane_dashboard`.
     fn hooks(&self) -> Vec<String>;
@@ -43,14 +41,15 @@ pub trait Module: Send + Sync {
     fn fuel(&self) -> u64;
 }
 
-/// How a module is compiled and admitted, so the engine is one dependency and not a design. It is
-/// handed the manifest's capabilities and nothing else, which is where the sandbox starts.
+/// How a module is compiled and admitted, so the engine is one dependency and not a design.
+/// The engine is handed the manifest's capabilities and nothing else: a plugin's imports can only
+/// reach what the file it was reviewed with declared.
 pub trait Loader: Send + Sync {
     fn load(&self, wasm: &Path, caps: &[Capability]) -> Result<Box<dyn Module>, String>;
 
-    /// Load a module the host already holds in memory, a built-in compiled into the binary: the
-    /// same engine and the same capabilities, and a shorter journey. The default refuses, because
-    /// most loaders are test fakes with no memory to read from.
+    /// Load a module the host already holds in memory: a built-in, `include_bytes!`d into the
+    /// binary. Same engine and capabilities, so it is a layer like any other once loaded; `name` is
+    /// the layer's name because memory has no path. The default refuses - most loaders are fakes.
     fn load_bytes(
         &self,
         name: &str,
@@ -64,9 +63,9 @@ pub trait Loader: Send + Sync {
         ))
     }
 
-    /// A built-in's module, shared rather than owned: compiling one costs seconds and every session
-    /// open paid it again. `Module` answers `&self`, so one compile may serve several stacks; the
-    /// default repeats it.
+    /// A built-in's module, shared rather than owned: `load_bytes` answers a `Box` and so compiles
+    /// once per stack, while a `Module` is `Send + Sync` and the stack keeps it behind an `Arc`.
+    /// The default is `load_bytes`; only an engine that can keep the compiled module overrides it.
     fn load_builtin(
         &self,
         name: &str,
@@ -82,8 +81,9 @@ pub trait Loader: Send + Sync {
 /// moved is not a field that can be guessed at (`docs/plugins-plan.md` §1, principle 6).
 pub const CONTRACT: u32 = 1;
 
-/// One hook kind whose contract has moved, and the version it moved to: a session row and a group
-/// header are both rows, so only a declared witness can tell a layer drawing the wrong one.
+/// One hook kind whose contract has moved, and the version it moved to.
+/// Listed only when the answer changed shape in a way no wire can show - a session row and a group
+/// header are both rows - so the manifest declares the version and `Manifest::admit` checks it.
 pub struct Moved {
     /// The export name, as `plugin.toml`'s `hooks` spells it.
     pub hook: &'static str,
@@ -110,8 +110,9 @@ pub fn speaks(hook: &str) -> u32 {
         .unwrap_or(CONTRACT)
 }
 
-/// The export-name prefixes the host recognises as hooks. An export outside this list is refused at
-/// the gate, so a typo is a refusal the model can read rather than a hook that never fires.
+/// The export-name prefixes the host recognises as hooks. An export outside this list is refused
+/// at the gate, so a typo in a hook name is a refusal the model can read instead of a hook that
+/// silently never fires.
 pub const HOOK_PREFIXES: &[&str] = &[
     "on_",
     "provider_",
@@ -130,8 +131,9 @@ pub const WASM: &str = "plugin.wasm";
 /// What a layer declares.
 pub const MANIFEST: &str = "plugin.toml";
 
-/// Whether this build has an engine for a module file, and the sentence when it has not: a layer
-/// whose module is other text is still on the ladder, and is refused here by name.
+/// Whether this build has an engine for a module file, and the sentence when it has not.
+/// A layer whose module is other text is still on the ladder - pinned, hashed, polled - so it is
+/// refused here by name rather than pinned on an empty hash and answering nothing.
 pub fn engine_for(module: &str) -> Result<(), String> {
     let wasm = Path::new(module)
         .extension()

@@ -20,10 +20,9 @@ pub const RUNNING: &str = "running";
 /// `<project>/.letibot/status.json`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Status {
-    /// **Required, and the one field that is.** Every other field defaults, because a project that
-    /// has not filled a section in should still draw; but a file with no date cannot be told fresh
-    /// from abandoned, and the dashboard's honesty rests on that comparison — so a status file
-    /// without `updated` is a malformed one, named as such.
+    /// Required, and the one field that is. Every other field defaults, because a project that has
+    /// not filled a section in should still draw; but a file with no date cannot be told fresh from
+    /// abandoned, so a status file without `updated` is a malformed one, named as such.
     pub updated: String,
     #[serde(default)]
     pub release: Release,

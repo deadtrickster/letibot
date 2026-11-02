@@ -1,67 +1,11 @@
-//! **The top-level session list as an IRC channel's nick list** — the thing a person glances at to
-//! see who is here and who is busy, and the thing they switch with.
+//! The top-level session list as an IRC channel's nick list: who is here, who is busy, and the
+//! thing a person switches with.
 //!
-//! # Why a column and not a screen
-//!
-//! This pane is meant for the right-hand side of a conversation, so it draws ONE NARROW COLUMN and
-//! leaves the rest of the rectangle alone. The host decides the rectangle (a plugin never paints
-//! cells, `docs/plugins-plan.md` §4.9) and today it hands a plugin pane the whole screen — so the
-//! column is a DRAWING decision this layer makes, not a placement the host offers. Everything the
-//! column needs therefore rides in its own `state`: the width (`w`/`n`), whether it is hidden
-//! (`h`) and which scope it is narrowed to (`s`). Those are the three gestures a person would
-//! expect the layout to give them, and they are the layer's because the layout is not the host's
-//! to hand out one pane at a time.
-//!
-//! # What it reads
-//!
-//! One feed, `sessions` (`plugin.toml`'s `feeds = ["sessions"]`): the daemon's session list, which
-//! the host already holds and adjudicates nothing about. `capabilities = []` — this layer runs
-//! nothing, reads no file and asks nobody.
-//!
-//! **Top-level only.** A row whose `parent` is set is a subagent: it is somebody's work, not a
-//! conversation you switch to, and a nick list that listed every subagent would bury the four
-//! channels a person is actually in.
-//!
-//! # What it answers
-//!
-//! One panel, one `tree` block: a header line (`#letibot · 4 of 31 · 2 working`), one row per
-//! session, and — when the scope hides a session that is WORKING — a divider and those rows under
-//! it. A row carries `enter: {"switch": <id>}`, which is the host's own verb, and four action
-//! letters (`w` `n` `h` `s`) that call this layer back with an `event` word.
-//!
-//! # The marks are the palette's
-//!
-//! | mark | is | role |
-//! |---|---|---|
-//! | `»` | the session you are in | `strong` |
-//! | `@` | a head is attached — you are talking to it | `success` |
-//! | `+` | a turn is running | `pending` |
-//! | `·` | on disk; the daemon is not holding it | `muted` |
-//! | ` ` | live and idle | `plain` |
-//!
-//! One column, the most significant mark, because a nick list's prefix is one character wide. A
-//! session that is both `here` and working keeps its `»` and says *working* in the fact column's
-//! role instead — the fact is `pending` while a turn runs, and `attention` when a running session
-//! has not moved for [`STALE_MS`], which is the whole question this pane answers.
-//!
-//! # The fact column, and why it is an age
-//!
-//! `12m` is when the session last moved: a row (a prompt, a call, a result) was appended then.
-//! The question a person asks of a list of agents is *is that one stuck?*, and it has no answer in
-//! a model name or a row count — a session that has been "generating" for twenty minutes with
-//! nothing appended is stuck, and one that appended a row a minute ago is not. So the age is the
-//! fact, and its ROLE carries the answer: `pending` while a turn runs, `attention` when that turn
-//! has gone quiet for ten minutes, `faint` otherwise.
-//!
-//! # The order is a roster, not a ranking
-//!
-//! A list that reorders while you look at it is worse than a list in the wrong order: the host's
-//! cursor is an INDEX into these rows, so a re-sort moves the cursor onto somebody else. The order
-//! is therefore pinned in `state` and recomputed **only when the set of drawn sessions changes**
-//! (one appears, one goes, or the scope changes) — and the rule it is computed by is: the session
-//! you are in, then the ones with a head attached, then the ones working, then the idle ones by
-//! recency, then the ones only on disk. Ties are broken by id, so the same roster always sorts the
-//! same way.
+//! It draws ONE NARROW COLUMN and leaves the rest of the rectangle alone, because it is meant for
+//! the right-hand side of a conversation - the host hands a pane the whole screen, so the column
+//! is a drawing decision this layer makes, and its width, hidden flag and scope ride in `state`.
+//! One feed, `sessions`, and no capabilities. Top-level only: a row whose `parent` is set is a
+//! subagent, and a nick list of every subagent would bury the channels a person is actually in.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Input, Role};
@@ -142,8 +86,9 @@ impl State {
         }
     }
 
-    /// The roster in the order the rows are drawn: the ids when the set has changed, and last call's
-    /// order when it has not, because a row that moves under the cursor is a row to find again.
+    /// The roster, in the order the rows are drawn: the ids of this call when the set has changed,
+    /// and last call's order when it has not. `wanted` arrives already sorted, so this is the one
+    /// place stability is decided - a row that moves under the cursor is a row to find again.
     fn roster(&mut self, wanted: Vec<String>) -> Vec<String> {
         let same =
             self.order.len() == wanted.len() && wanted.iter().all(|id| self.order.contains(id));
@@ -263,8 +208,9 @@ fn no_feed() -> Value {
     })
 }
 
-/// The hidden pane: one strip instead of nothing, since a pane that hides to zero height has to be
-/// guessed at. The strip is a stop of its own, so the key that brings the list back rests on a row.
+/// The hidden pane: one strip instead of nothing. A pane that hides itself to zero height is a
+/// pane somebody has to guess their way back into, and the strip is a STOP with an `id` of its own,
+/// so the `h` that brings the list back is still on a row the cursor can rest on.
 fn strip(feed: &Feed, st: &State, rect: usize) -> Value {
     let counts = counts(feed, st);
     let said = format!(
@@ -368,8 +314,9 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
         }
     }
     if inside.is_empty() && outside.is_empty() {
-        // A list with nothing in it is still a row, not an `empty` sentence: the sentence leaves the
-        // pane with no stop, and the keys that widen or hide the column are on a stop.
+        // A list with nothing in it is still a row, not an `empty` sentence: the sentence leaves
+        // the pane with no stop at all, and the keys that widen the column, hide it or widen the
+        // scope are on a stop. So the empty state IS the row.
         rows.push(json!({
             "id": EMPTY,
             "cells": [Cell::role(
@@ -420,6 +367,8 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
 const EMPTY: &str = "·empty";
 
 /// One session's row: a mark, a name, and one fact pinned to the column's right edge.
+/// The fact is not a `facts` cell because the host right-aligns `facts` against the RECTANGLE, so on
+/// a wide screen it would sit at column 100. It is the row's third cell and the name is padded there.
 fn session_row(s: &Session, width: usize, here: &str, now: u64, home: &str) -> Value {
     let (mark, mark_role) = mark_of(s, here);
     let (fact, fact_role) = fact_of(s, now);
@@ -444,9 +393,9 @@ fn session_row(s: &Session, width: usize, here: &str, now: u64, home: &str) -> V
     })
 }
 
-/// The four keys, on every stop. They are row actions rather than pane keys because the contract's keys
-/// are the host's: a plugin binds letters through a row's `actions`, so a letter works wherever the
-/// cursor rests.
+/// The four keys, on every stop. They are row actions rather than pane keys because the contract's
+/// keys are the host's: a plugin binds letters through a row's `actions`, so a letter works wherever
+/// the cursor rests - and these four work on every row, which makes them feel like the pane's own.
 fn actions(hidden: bool) -> Value {
     json!([
         {"key": "w", "label": "wider", "event": "wider"},
@@ -752,8 +701,9 @@ fn fit(text: &str, room: usize) -> String {
     out
 }
 
-/// How many columns a run of text takes, in cells: a wide glyph measured by `chars().count()` pushes
-/// the fact column right, which is the misalignment this layer exists not to have.
+/// How many columns a run of text takes, in the terminal's cells rather than in characters: a title
+/// in a script with wide glyphs measured by `chars().count()` pushes the fact column right per glyph
+/// - the misalignment this layer exists not to have.
 fn cells(text: &str) -> usize {
     text.chars().map(char_cells).sum()
 }

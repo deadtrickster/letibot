@@ -1,14 +1,9 @@
-//! **The queue layer's policy, tested natively** — no engine, no wasm, no store.
+//! The queue layer's policy, tested natively - no engine, no wasm, no store.
 //!
-//! Every test here is a claim the operator made about the pane it replaces:
-//!
-//! | the claim | the test |
-//! |---|---|
-//! | *live work fills the frame, the past tense does not* | `live_rows_fill_the_frame_and_history_is_one_folded_line` |
-//! | *a row says the one verb that would do something* | `a_row_says_the_verb_that_would_move_it_and_why_when_none_would` |
-//! | *the id is under the cursor and nowhere else* | `the_address_is_under_the_cursor_and_on_no_other_row` |
-//! | *a row's act names the entry it is about* | `every_live_row_names_its_own_entry` |
-//! | *the bar and the row agree about what `d` is called* | `the_verbs_are_the_daemons_words` |
+//! Every test here is a claim the operator made about the pane it replaces: live work fills the
+//! frame and the past tense does not, a row says the one verb that would do something, the id is
+//! under the cursor and nowhere else, a row's act names the entry it is about, and the bar and the
+//! row agree about what `d` is called.
 
 use super::*;
 use serde_json::json;
@@ -266,9 +261,9 @@ fn opening_the_fold_draws_the_history_and_says_how_to_close_it() {
     );
 }
 
-/// A row says the one verb that would do something, and on a row nothing would move, the verb you
-/// would reach for with the reason it would not: the pane used to print four verbs of prose and the bar
-/// the same four keys in other words.
+/// A row says the one verb that would do something - `approve · veto · rm` on a `reviewing` row,
+/// and on a row nothing would move, the verb you would reach for with the reason it would not. One
+/// phrase per row, and the legend has the meaning.
 #[test]
 fn a_row_says_the_verb_that_would_move_it_and_why_when_none_would() {
     let feed = a_queue();
@@ -609,8 +604,9 @@ fn a_target_review_says_red_target() {
     assert_eq!(cells[1], "RED TARGET main", "{cells:?}");
 }
 
-/// A `gating` row says which step its gate is on and how long it has been there. The tail itself is
-/// not in the feed, since a guest cannot read a file; the host draws it on Enter.
+/// A `gating` row says which step its gate is on, and how long it has been there. The tail itself
+/// is not in the feed: a guest cannot read a file, and a row is one line - the detail the host
+/// draws on Enter carries it.
 #[test]
 fn a_gating_row_says_which_step_its_gate_is_on() {
     let mut feed = a_queue();

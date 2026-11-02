@@ -1,86 +1,11 @@
-//! **The room's pane** — one host's agents' queues, per tag, the four keys that move them, and the
-//! key that restarts the server they live in.
+//! The room's pane: one host's agents' queues per tag, the four keys that move them, and the key
+//! that restarts the server they live in.
 //!
-//! The operator's design (`docs/room.md` § *Still owed* 1): *"the queues per tag, the tie-breaker's
-//! raw session, and the manual controls — claim on a session's behalf, release, mark abandoned, rule
-//! on a dispute"*. This layer draws the queues and the questions; the four controls are the HOST's
-//! verbs, performed by the daemon over the session's own connection to the coordinator. **Nothing
-//! here decides what a claim does** — it decides which row says which verb. The fifth key is the
-//! operator's later word — *"that panel must explicitly let me to restart the server"* — and it is a
-//! daemon lifetime rather than a room act: see § *The four keys* below and `docs/room.md` § *Slice
-//! 4*.
-//!
-//! # What it reads
-//!
-//! One feed, `room` (`plugin.toml`'s `feeds = ["room"]`): every item with its tag, its state, its
-//! claimant and the age of that claim's beat, its abandonment count; the open questions; the arbiter
-//! and who is connected; and the room's own **identity** — *the room on this socket, started T ago
-//! and holding N item(s)*, and the sentence saying it keeps no store.
-//!
-//! **That last one is not decoration.** An in-memory room holds nothing at every start, so an empty
-//! queue is the same reading for a room that has been up for an hour and one that has just
-//! restarted — unless the age is in front of the person. *"Restarted clean" and "restarted empty"
-//! must never look the same*, and only the sentence tells them apart.
-//!
-//! **And this pane is a picture, not a subscription.** The head has no room connection of its own:
-//! the daemon holds one per top-level session and the feed above is what it reads through
-//! (`docs/room.md` § *The bell, per client*). So a room event reaches a person as **the turn it
-//! started** — the notice row in the transcript — and never as a card here. A card means *a person
-//! must answer*, and a bell is addressed to a model; the `room` panel's `bell` line says so in the
-//! place a reader would otherwise wait for one.
-//!
-//! # What it draws
-//!
-//! * **`room`** (`r`) — the identity, the arbiter and whether it is up, who is connected, and the
-//!   counts. The first thing a person reads, because it says whether what follows is the truth.
-//! * **`queues`** — one tag, then its items, first come first served. A row says the item, its
-//!   state, its claimant, how long the claim has been held and how long since the holder's last
-//!   beat, and how many claimants it has lost.
-//! * **`questions`** (`a`) — every open question, with one row per decision the person can take.
-//! * **`server`** (`s`) — the restart, and the note the last one left: when, and why.
-//!
-//! # The five keys, and where each one is offered
-//!
-//! | row | Enter | `x` |
-//! |---|---|---|
-//! | an item this session holds | `release` | `abandon` |
-//! | an item anybody may claim | `claim` | — |
-//! | an item somebody else holds, or a finished one | (nothing) | — |
-//! | `q3:retry`, `q3:drop`, `q3:hand:<session>` | `rule` | — |
-//! | `restart` (the `s` panel) | `restart` | — |
-//!
-//! **The fifth is not a room verb, and that is the whole design of it.** `claim`, `release`,
-//! `abandon` and `rule` move the room's own state machine over the session's connection; `restart`
-//! is a daemon lifetime, asked of the supervisor that starts coordinators. The coordinator must not
-//! do it on itself: this pane is fed by the instance a restart would kill, so a control that killed
-//! its own feed could not say what happened, and the person would be left looking at a frozen pane
-//! with no way to tell a restart from a hang (`docs/room.md` § *Still owed* 1).
-//!
-//! **The panel says what survives.** The room keeps no store, so a restart begins with no items at
-//! all, and the row says so in as many words. What it does NOT do is guess: the `s` panel prints
-//! the note the last restart left — when, and why: a person pressed it, the daemon restarted it, or
-//! it crashed — because a room that comes back with no memory of the last minute is exactly the
-//! opaque thing the control exists to remove.
-//!
-//! **A key is only offered where it would do something.** A row held by somebody else carries no
-//! act, because `claim` would be refused `Busy` and `release` would be refused `NotHeld` — and a row
-//! that offers a key the room will refuse is a row that teaches a person not to press keys. The room
-//! still refuses when it must, and the host says so (`room_act_refused`).
-//!
-//! **`release` and `abandon` are two intentions on one room verb.** The room counts a voluntary
-//! release as an abandonment (`docs/room.md` § *A claim is a lease with a beat*), so the difference
-//! the person gets is the sentence that lands on the item's history — and that sentence is the
-//! host's to write, not this layer's.
-//!
-//! # No clock, and no folds
-//!
-//! `std::time::SystemTime::now()` is a panic on `wasm32-unknown-unknown` and a panic in a guest is a
-//! trap, so every age arrives in milliseconds against the host's clock and this module only
-//! subtracts and rounds (`.letibot/notes/the-pane-contracts-two-look-keys.md`).
-//!
-//! There are no folds: a fold is the HOST's map (`Input::folded`), the head keeps one for the panes
-//! it draws itself, and a pane the daemon answers is handed none — so a row here that offered a
-//! fold would be a glyph and a key that does nothing.
+//! This layer draws the queues and the questions; the four controls are the HOST's verbs, performed
+//! by the daemon over the session's connection, and nothing here decides what a claim does. The
+//! fifth key is a daemon lifetime rather than a room act, asked of the supervisor that starts
+//! coordinators - the pane is fed by the instance a restart would kill, so the coordinator must not
+//! do it on itself. No clock either: every age arrives against the host's.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Input, Role};
@@ -91,8 +16,9 @@ use serde_json::{Value, json};
 /// (`lease_ms`), so this is only the fallback for a feed that did not say.
 const DEFAULT_LEASE_MS: u64 = 90_000;
 
-/// The feed as this layer reads it. Every age in it is already milliseconds against the host's clock,
-/// so the `now_ms` the feed carries is not read here: a guest has no clock.
+/// The feed, as this layer reads it. Every age in it is already milliseconds against the host's
+/// clock - a guest has none - so the `now_ms` the feed also carries is not read here: this layer
+/// never needs an age it was not handed.
 #[derive(Debug, Default, Deserialize)]
 struct Feed {
     /// `Server::identity()` — the sentence a person reads before believing the queues.
@@ -306,9 +232,9 @@ fn no_feed() -> Value {
 
 /// **The whole view.**
 fn view(feed: &Feed) -> Value {
-    // A room that could not be read says so instead of drawing an empty queue: *nothing is queued* and
-    // *nobody answered* are two facts. The restart control stays, since a dead room is when a person
-    // wants it.
+    // A room that could not be read says so instead of drawing an empty queue: *nothing is queued*
+    // and *nobody answered* are two facts. And the restart stays on it - an unreadable room is the
+    // one most likely to be dead, and the panel below needs nothing from the room.
     if let Some(why) = &feed.unreadable {
         return json!({
             "title": "the room",
@@ -401,8 +327,9 @@ fn header(feed: &Feed) -> Value {
         "role": "faint",
         "tail": format!("{} session(s) connected", feed.connected.len()),
     }));
-    // The bell, and who can hear it: the head holds no room connection, so a room event arrives as the
-    // notice row of the turn the daemon ran. Said here because the absence looks like a quiet room.
+    // The bell, and who can hear it. A person who reads a queue and waits for something to happen
+    // on this screen is waiting for a turn: the head holds no room connection, so a room event
+    // arrives as the notice row of the turn the daemon ran for it. The absence looks like silence.
     lines.push(json!({
         "label": "bell",
         "value": "a room event starts a turn in the session it names",
@@ -444,10 +371,9 @@ fn header(feed: &Feed) -> Value {
     })
 }
 
-/// The server itself: the restart control, and the note the last restart left.
-///
-/// Every line below says the room keeps no store, so a restart begins with no items at all. A key is
-/// only offered where it would do something: a host with no supervisor draws the reason instead.
+/// The server itself - the restart control, and the note the last restart left. What survives is
+/// stated, not assumed: every line below says the room keeps no store, so a restart begins with no
+/// items. A host with no supervisor draws the reason instead of the key.
 fn server(feed: &Feed) -> Value {
     let mut under: Vec<String> = Vec::new();
     let mut facts: Vec<Cell> = Vec::new();
@@ -459,9 +385,9 @@ fn server(feed: &Feed) -> Value {
     }
     match &feed.restart.marker {
         Some(m) => {
-            // The note is the point of the panel: *restarted clean* and *restarted empty* are the same
-            // picture without it. The role is the cause's, a crash being a failure and a key press
-            // attention.
+            // The note is the point of the panel: *restarted clean* and *restarted empty* are the
+            // same picture without it. The role is the cause's - a room that crashed is a failure,
+            // a key that was pressed is attention.
             facts.push(Cell::role(age(m.age_ms), cause_role(&m.cause)));
             under.push(m.sentence.clone());
         }
@@ -570,9 +496,9 @@ fn queues(feed: &Feed) -> Value {
     })
 }
 
-/// Who owns a tag's queue, or that nobody does: the one fact a person needs before posting. Two
-/// sentences and never a blank, since a blank would read as *an agent, details unknown*. The re-seat
-/// count is printed only when there is one.
+/// Who owns a tag's queue, or that nobody does - the one fact a person needs before posting. Two
+/// sentences and never a blank: a blank column reads as *an agent, details unknown*, which is the
+/// one reading that is never true. The re-seat count is printed only when there is one.
 fn agent_cell(agent: Option<&Agent>) -> Cell {
     match agent {
         None => Cell::role("no agent", Role::Faint),

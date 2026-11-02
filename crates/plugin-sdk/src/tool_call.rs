@@ -1,36 +1,27 @@
-//! The `on_tool_call` hook: the call the model proposed, before the gate.
+//! `on_tool_call` - the tool call, before the gate: a layer may narrow it, rewrite it, refuse it,
+//! or answer it without letting it run at all.
 //!
-//! A layer sees the call and may narrow it, rewrite it, refuse it, or answer it without letting it
-//! run.
-//!
-//! It can never admit anything. The hook runs before the gate and the rewritten call is the call the
-//! gate then adjudicates, so a rewrite that needs permission still asks and one that reaches further
-//! meets the same rules the original would. `refuse` and `answer` run nothing, and the model reads
-//! the layer's words as the call's result.
-//!
-//! There is no field for *admitted*: the class of the call, the mode, the adjudicator, the session's
-//! boundary and the operator's own card are decided in Rust after this returns. What a layer can do
-//! is make a call smaller, which is the whole point of the hook.
-//!
-//! One hook for the kind, not per plugin. Layers stack, and the top one may ask `{"below": …}` to
-//! see what the layer beneath would have said and edit it, which is how two fixes coexist instead of
-//! the newer one silently replacing the older.
+//! The hook runs before the gate, and the rewritten call is the call the gate then adjudicates, so
+//! every route through this kind ends at the same boundary. A layer cannot answer *admitted*
+//! because there is no field for it: the class, the mode, the adjudicator and the operator's card
+//! are decided in Rust after this returns. What a layer can do is make a call smaller.
+//! Every layer exports the same name: the top answers, and it may ask the layer beneath.
 
 use serde::Deserialize;
 use serde_json::Value;
 
 /// The export name. One name for the kind: the call is the subject, and every layer sees the same
-/// subject.
+/// subject (`crate`'s header on the two spellings).
 pub const HOOK: &str = "on_tool_call";
 
-/// The session the call is being made in, so a layer can be narrower than *always*: the mode is
-/// the gate's own word for how much this session may do without asking.
+/// **The session the call is being made in**, so a layer can be narrower than *always*: the mode
+/// is the gate's own word for how much this session may do without asking.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     /// The session's id, as the store names it.
     pub session: String,
-    /// The mode in force: `read-only`, `writes-allowed`, `allow-edits`, `allow-all`, the words the
-    /// gate and the status line already use.
+    /// The mode in force — `read-only`, `writes-allowed`, `allow-edits`, `allow-all`: the words
+    /// the gate and the status line already use.
     pub mode: String,
     /// Where the session's tree is, so a layer can be about one project.
     pub workspace: String,
@@ -60,8 +51,9 @@ impl ToolCallIn {
         }
     }
 
-    /// The synthetic input `plugin test` and the shadow gate use when a session has none recorded:
-    /// a third monitor on a pull request that is already watched.
+    /// The synthetic input `plugin test` and the shadow gate use when a session has none
+    /// recorded: the plan's own example, the third monitor on a pull request that is already
+    /// watched.
     pub fn synthetic() -> ToolCallIn {
         ToolCallIn::new(
             crate::Call::new(
@@ -86,7 +78,7 @@ impl ToolCallIn {
 pub enum Verdict<'a> {
     /// Run it exactly as the model proposed.
     Pass,
-    /// Run it with these arguments instead, through the gate.
+    /// Run it with these arguments instead — **through the gate**.
     Rewrite(&'a Value),
     /// Do not run it; the model reads this sentence as the result.
     Refuse(&'a str),
@@ -95,23 +87,25 @@ pub enum Verdict<'a> {
 }
 
 /// The answer. Absent fields are absent on the wire, so *this layer said nothing* and *this layer
-/// said nothing with these fields* are one thing, and the stack's `pass` marker is another.
+/// said nothing with these fields* are one thing and the stack's `pass` marker is another.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallOut {
     /// Run it as it is. The plainest way to say *not my business*, and the same meaning as
     /// answering `None` through the ABI.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pass: bool,
-    /// The arguments to run it with instead. `null` here is a rewrite, not silence: a layer narrowing
-    /// a call to no arguments is narrowing it.
+    /// The arguments to run it with instead.
+    /// `null` here is a rewrite, not silence (see [`present`]): a layer narrowing a call to no
+    /// arguments is narrowing it, and serde's reading of `null` as absent would run the model's call.
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     pub arguments: Option<Value>,
-    /// Do not run it, and tell the model this. A layer that means this must write the sentence: `null`
-    /// is said nothing and lets the call run, and a refusal nobody can act on is not a refusal.
+    /// Do not run it, and tell the model this.
+    ///
+    /// A layer that means this must write the sentence: `null` is silence and lets the call run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refuse: Option<String>,
     /// Do not run it, and answer the model with this. As with `refuse`, `null` is silence.
@@ -123,8 +117,8 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Any JSON value, present or null, as `Some`, so `{"arguments": null}` and `{}` are two different
-/// answers. Absence is `#[serde(default)]`'s `None` and nothing else is.
+/// Any JSON value, present or null, as `Some` — so `{"arguments": null}` and `{}` are two
+/// different answers. Absence is `#[serde(default)]`'s `None` and nothing else is.
 fn present<'de, D>(d: D) -> Result<Option<Value>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -165,9 +159,9 @@ impl ToolCallOut {
         }
     }
 
-    /// What this answer means, in the restrictive order the host applies it: refuse, answer, rewire,
-    /// pass. An answer naming two is a layer saying *at least this much*, so the reader never has to
-    /// work out whether a refusal also wanted different arguments.
+    /// What this answer means, in the order the host applies it: refuse, answer, rewrite, pass.
+    /// The restrictive order is on purpose: a reader of a call that ran must never have to work
+    /// out whether the layer that refused it also wanted different arguments.
     pub fn verdict(&self) -> Verdict<'_> {
         if let Some(why) = &self.refuse {
             return Verdict::Refuse(why);

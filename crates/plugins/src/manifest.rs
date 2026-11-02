@@ -1,7 +1,4 @@
-//! `plugin.toml` — what a layer declares about itself, and what the host will not load without.
-//!
-//! The file is small on purpose (`docs/plugins-slice1.md`, C2):
-//!
+//! `plugin.toml` - what a layer declares about itself, and what the host will not load without.
 //! ```toml
 //! name = "plan-dashboard"
 //! purpose = "a project plan's tiers, stages, agents and hosts at a glance"
@@ -9,42 +6,6 @@
 //! capabilities = ["read"]
 //! contract = 1
 //! ```
-//!
-//! # Two spellings a layer may add, and both are a person writing something down
-//!
-//! `[[tools]]` declares a tool the model calls — its name, its one-line description and the JSON
-//! Schema of its arguments — and `read:<path>` names one tree outside the workspace the layer may
-//! read. The second exists because `read` alone means *the workspace*, and Claude Code's
-//! transcripts live in `~/.claude/projects`: a layer that reads them must say so in a line a
-//! reviewer can read, and `admit` is what checks the module against it. See [`ToolDecl`] and
-//! [`Capability::ReadPath`].
-//!
-//! Every field is required, and none of them is decoration:
-//!
-//! * `purpose` is the sentence an operator is asked to consent to when a **session** layer wants a
-//!   capability (`docs/plugins-plan.md` §3). A manifest with no purpose cannot be consented to, so
-//!   it is refused rather than loaded and asked about with an empty card.
-//! * `hooks` is what the review reads: a layer that exports more than it declares is a diff
-//!   nobody approved. [`Manifest::admit`] compares it with the module's exports.
-//! * `capabilities` is the whole of the sandbox: it is handed to the [`crate::Loader`], which
-//!   grants nothing beyond it. `read:<path>` is the one entry that names a tree rather than the
-//!   workspace, so a manifest can be read as *exactly what this layer may look at*.
-//! * `tools` is what the model is offered: a declared tool whose hook the module does not export
-//!   is refused by [`Manifest::admit`], because a tool in the prompt that nothing answers is the
-//!   harness telling the model about a capability it does not have.
-//! * `contract` is the version of the JSON contracts the hooks speak; a host that moved does not
-//!   guess, it refuses by name (§1, principle 6).
-//! * `[contracts]` names a version per hook kind, for the kinds whose shape has moved past
-//!   `contract` (see [`crate::MOVED`]). A layer written for the shape before a move declares
-//!   nothing here and is refused, which is the only detector a shape change can have.
-//!
-//! Unknown keys are ignored rather than refused: a newer layer may carry metadata this host has
-//! no use for, and refusing it would make every forward-compatible field a version bump.
-//!
-//! `module` is the one field that has a default: `plugin.wasm`, which is what a layer written
-//! before the field existed means. It names the file the pin, the hash, the change poll and the
-//! declaration rule are about, so a layer whose answers are not wasm (a script,
-//! `docs/plugins-plan.md` step 11) is pinned on the text it actually runs.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -101,9 +62,9 @@ impl std::fmt::Display for Scope {
 pub enum Capability {
     /// Read files under the workspace.
     Read,
-    /// Read files under one tree outside the workspace, named as it was declared. `read` means the
-    /// workspace, which is why this exists rather than a widening of it: the manifest line is the
-    /// approval, and the string stays the declared spelling so a refusal reads it back as `~/`.
+    /// Read files under ONE tree outside the workspace, named as it was declared. `read` alone is
+    /// the workspace, so this spelling exists rather than a widening of it: the manifest line is
+    /// the approval, and the string is the DECLARED spelling so `Display` prints back what was read.
     ReadPath(String),
     /// Run `<program>`, with arguments the plugin chooses, through the gate.
     Exec(String),
@@ -144,9 +105,9 @@ impl Capability {
     }
 }
 
-/// One tree, named as a person would write it: absolute or home-relative, strictly deeper than the
-/// root, and no `..` segment. A path that climbs out of the tree it names is a path whose
-/// declaration is not what it reads.
+/// One tree, named as a person would write it. The rules are the whole security story of
+/// `read:<path>`, so they live here and not in the host: absolute or home-relative (a relative
+/// path names a different tree on every machine), strictly below the root or home, and no `..`.
 fn read_path(rest: &str) -> Result<String, String> {
     let path = rest.trim();
     if path.is_empty() {
@@ -177,9 +138,9 @@ fn read_path(rest: &str) -> Result<String, String> {
     Ok(path.to_string())
 }
 
-/// A declared module is one file inside the layer's own directory, because the pin, the hash and
-/// the poll all open this path: a module naming `../elsewhere.wasm` would make a pin a statement
-/// about bytes a reviewer never sees.
+/// A declared module is one file inside the layer's own directory. The rule is here rather than at
+/// each reader because the pin, the hash and the poll all open this path: `../elsewhere.wasm` would
+/// make a pin a statement about bytes the reviewer never saw. No `..`, no root; subdirectories are fine.
 fn module_file(declared: &str) -> Result<String, String> {
     let text = declared.trim();
     if text.is_empty() {
@@ -213,13 +174,15 @@ impl std::fmt::Display for Capability {
     }
 }
 
-/// A layer's `plugin.toml`, parsed.
+/// A layer's `plugin.toml`, parsed. Every field is required except `module`, and unknown keys are
+/// ignored rather than refused: a newer layer may carry metadata this host has no use for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub name: String,
     pub purpose: String,
-    /// The file this layer's answers come from, relative to its own directory. The pin, the module
-    /// hash, the gate and the *a manifest and no module* rule all read this one field.
+    /// The file this layer's answers come from, relative to the layer's own directory, and
+    /// `plugin.wasm` when the manifest says nothing. One file and not a search: the pin, the hash,
+    /// `poll_changes` and the gate all read it, so the ladder is about the bytes that answer.
     pub module: String,
     pub hooks: Vec<String>,
     pub capabilities: Vec<Capability>,
@@ -228,19 +191,23 @@ pub struct Manifest {
     /// contract has moved ([`crate::MOVED`]). A kind that is absent is at `contract`, which is
     /// what a layer written before the move says.
     pub contracts: std::collections::BTreeMap<String, u32>,
-    /// The feeds a `pane` layer reads: data the host already has. A declaration rather than a
-    /// capability, since a feed is a read of something the host already shows.
+    /// The feeds a `pane` layer reads - data the host already has (`letibot_plugin::pane::Feed`).
+    /// A DECLARATION and not a capability: a feed is a read of something the host is already
+    /// showing, so declaring it grants it and no adjudication is skipped.
     pub feeds: Vec<letibot_plugin::pane::Feed>,
-    /// The acts a pane's rows may ask the host to perform. A row carrying an act this list does not
-    /// name is refused, so a layer cannot reach a verb nobody reviewed.
+    /// The acts a pane's rows may ask the HOST to perform (`letibot_plugin::pane::Act`). A view
+    /// whose rows carry an act this list does not name is refused, so a layer cannot reach a verb
+    /// nobody reviewed; the next verb a pane needs is one more word here.
     pub actions: Vec<String>,
-    /// The tools this layer offers the model. A declaration is prompt bytes, so it is reviewed as
-    /// prompt bytes; empty is every layer that is not a tool.
+    /// The tools this layer offers the model - `[[tools]]`, one entry per tool: its name, the one
+    /// line the prompt carries, and the JSON Schema of its arguments. A declaration IS the prompt
+    /// bytes, so it is reviewed as prompt bytes.
     pub tools: Vec<ToolDecl>,
 }
 
-/// One tool a layer declares. The hook's name is not a field: it is `tool_<name>`, the export
-/// convention every kind follows, so a declared tool cannot point at a hook another manifest named.
+/// One tool a layer declares: what the model is offered, and - through [`Manifest::admit`] - the
+/// hook that has to answer it. The hook's name is not a field: it is `tool_<name>`, the convention
+/// every kind follows, so a declared tool cannot point at somebody else's hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolDecl {
     /// What the model calls it. The export is `tool_<name>`.
@@ -274,14 +241,16 @@ fn tool_name(name: &str) -> bool {
 }
 
 impl Manifest {
-    /// The file this layer's answers come from, in its own directory: one spelling of it, because
-    /// the pin, the hash, the poll and the gate all need the same answer.
+    /// The file this layer's answers come from, in its own directory.
+    /// One spelling of it, because seven callers need the answer: the pin, the module hash,
+    /// `poll_changes`, the gate's build and load, and the *a manifest and no module* rule.
     pub fn module_path(&self, dir: &Path) -> PathBuf {
         dir.join(&self.module)
     }
 
     /// The module file a layer directory's manifest names, and `plugin.wasm` when it names none or
-    /// will not parse: a builder and a pin need it before a [`Manifest`] exists.
+    /// will not parse. A builder and a pin need the answer before a `Manifest` is available, and a
+    /// build that wrote one file while the loader read another would be a gate over nothing.
     pub fn module_name(dir: &Path) -> String {
         Manifest::read(dir)
             .map(|manifest| manifest.module)
@@ -372,9 +341,9 @@ impl Manifest {
         })
     }
 
-    /// Whether this layer may answer at all: the contract this host speaks, a hook list that is
-    /// exactly what the module exports, and a declared tool whose export exists. A tool in the prompt
-    /// that nothing answers is the harness describing a capability it has not got.
+    /// Whether this layer may answer at all: the contract, a declared hook list that is exactly
+    /// what the module exports, and - for a tool - the export its tool names. A tool in the prompt
+    /// that nothing answers tells a model about a capability it does not have, so it is refused here.
     pub fn admit(&self, exports: &[String]) -> Result<(), String> {
         // The module's own path first: a manifest whose module leaves the folder describes a
         // layer whose bytes are not the ones a person can review.
@@ -386,8 +355,8 @@ impl Manifest {
             ));
         }
         // A kind whose shape moved needs a witness: the wire cannot tell a row drawn as a group
-        // from one drawn as a branch, so a layer declaring no version for such a kind is taken to
-        // be the older shape and refused at load.
+        // from a row drawn as a branch, so a layer declaring no version for such a kind is taken to
+        // be the version before the move and refused here rather than drawn against bad data.
         for moved in crate::MOVED {
             if !self.hooks.iter().any(|h| h == moved.hook) {
                 continue;
@@ -528,8 +497,9 @@ fn strings_opt(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// `[[tools]]`, absent for a layer that declares none. The schema is JSON so it arrives at the
-/// runtime as the same document a built-in tool writes, and nothing downstream has to know which.
+/// `[[tools]]` - absent is a layer that declares none, which is every layer that is not a tool.
+/// The schema is carried as JSON rather than as TOML because `toml::Value` serialises, so it
+/// arrives at the runtime as the same document a built-in tool writes by hand.
 fn tools_opt(table: &toml::Table) -> Result<Vec<ToolDecl>, String> {
     let Some(value) = table.get("tools") else {
         return Ok(Vec::new());

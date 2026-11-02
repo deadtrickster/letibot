@@ -1,19 +1,11 @@
-//! The `on_tool_result` hook: what happens after a call.
-//!
-//! A layer sees the call and its result and may append to the result, rewrite it, and arm monitors.
-//! It is the general form of the hard-coded intercept that watched one command and said one
-//! sentence.
-//!
-//! Successful results only, and that is a decision: a failed call did nothing to react to, and its
-//! result is the failure's own words, which the model has to read exactly. So the hook runs on `Ok`
-//! and on `Backgrounded`, a job that started did happen, and never on a refusal or a failure.
-//! `outcome` says which, so a layer can read it without being given a place where its own reason
-//! could bury a real error.
+//! `on_tool_result` - what happens after a call: a layer may append to the result, rewrite it, and
+//! arm monitors. It runs on `Ok` and `Backgrounded` only: a call that failed did nothing to react
+//! to, and its result is the failure's own words, which the model has to read exactly.
 //!
 //! `arm` is not a second way to start a monitor: the host turns each entry into the same `monitor`
 //! call the model would type, so the coalescing, the already-watched refusal, the TTL caps and the
-//! name collision rules all apply unchanged. What a layer gets from it is *the harness noticed
-//! something*, never *a monitor with no rules*.
+//! name collision rules all apply. A layer gets *the harness noticed something*, not an unruled
+//! monitor.
 
 use serde_json::Value;
 
@@ -31,7 +23,7 @@ pub struct ToolResultIn {
     /// [`V`](crate::V).
     pub v: u32,
     pub call: crate::Call,
-    /// [`OK`] or [`BACKGROUNDED`], the two outcomes a hook is asked about.
+    /// [`OK`] or [`BACKGROUNDED`] — the two outcomes a hook is asked about.
     pub outcome: String,
     /// What the call produced: the text the model is about to read.
     pub payload: String,
@@ -128,8 +120,9 @@ impl ToolResultOut {
         }
     }
 
-    /// The result this answer means: a replacement, a suffix, or neither. Both may appear, since *this
-    /// is what it was* and *here is what I noticed* are different sentences; `Unchanged` names neither.
+    /// The result this answer means - a replacement, or a suffix, or neither.
+    /// Both may appear: *this is what it was* and *here is what I noticed about it* are two
+    /// sentences, and `Unchanged` is the common case, which must cost nothing.
     pub fn said(&self) -> Said<'_> {
         use std::borrow::Cow;
         match (&self.payload, &self.append) {

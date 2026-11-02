@@ -1,12 +1,11 @@
-//! The shadow gate: build, load, shadow, replay, report -- the mechanical check every change to a
-//! stack takes before it answers, run by the daemon and not by an agent.
+//! The shadow gate: build, load, shadow, replay, report - the mechanical check every change to a
+//! stack takes before it answers.
 //!
-//! Five steps in order, and the first failure stops, because a report that mixes a build error into
-//! a replay diff is read by a model that then edits the wrong thing: build the layer offline for
-//! wasm, load it and admit it, apply it to a CLONE of the stack, replay every recorded input through
-//! both stacks, and report the log, the fuel and the diff.
-//!
-//! The module the gate loaded is kept on the candidate, so what answers is what was replayed.
+//! It is the merge gate's role for layers, and like the merge gate it is run by the daemon and not
+//! by an agent: nobody who can be asked to verify their own fix is asked. The steps run in order
+//! and the first failure stops, because a report that mixes a build error into a replay diff is
+//! read by a model that then edits the wrong thing.
+//! The module the gate loaded is kept on the candidate, so what answers was replayed, not recompiled.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,8 +19,8 @@ use crate::{Candidate, Module, Recorder, Stack, sha256_file};
 /// How the gate's step 1 is performed, so tests never run cargo.
 pub trait Builder: Send + Sync {
     /// Build `dir`'s source, install the result as `<dir>/plugin.wasm`, and return the build log.
-    /// The log comes back whether the build worked or not, since *"it failed"* with no compiler
-    /// output is a report nobody can act on.
+    /// The log comes back whether the build worked or not: it is what the model fixes the source
+    /// from, and *"it failed"* with no compiler output is a report nobody can act on.
     fn build(&self, dir: &Path) -> Result<String, BuildError>;
 }
 
@@ -40,18 +39,18 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-/// The production builder: `cargo build --offline --release --target wasm32-unknown-unknown` in the
-/// layer's directory, then the crate's own `.wasm` becomes `plugin.wasm`. `--offline` is not a
-/// preference: a plugin build must not be the first thing in a session to reach the network.
+/// The production builder: `cargo build --offline --release --target wasm32-unknown-unknown` in
+/// the layer's directory, then the crate's own `.wasm` becomes `plugin.wasm`. `--offline` because
+/// a plugin build must not reach the network first; the `Loader` seam is what the tests cover.
 pub struct CargoBuilder;
 
 impl Builder for CargoBuilder {
     fn build(&self, dir: &Path) -> Result<String, BuildError> {
         let out = Command::new("cargo")
             .current_dir(dir)
-            // The plugin's build is its own crate in its own target directory: inheriting the
-            // host's `CARGO_TARGET_DIR` put the guest outside the layer, so a build that succeeded
-            // was reported as having no module, and contended for that directory's lock.
+            // The plugin's build is its own crate in its own target directory: an inherited
+            // `CARGO_TARGET_DIR` puts the guest outside the layer this function then looks in, and
+            // a guest sharing the host's directory contends for its lock with every session build.
             .env_remove("CARGO_TARGET_DIR")
             .args([
                 "build",

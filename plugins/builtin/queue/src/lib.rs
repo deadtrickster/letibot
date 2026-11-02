@@ -1,56 +1,11 @@
-//! **The queue, as a built-in plugin** - what the merge queue is DOING, then what it has finished.
+//! The queue, as a built-in plugin - what the merge queue is DOING, then what it has finished.
 //!
 //! This is the queue's one renderer: the head hosts this layer's answer and draws nothing of its
-//! own. The layer draws two things and never mixes them:
-//!
-//! * **`live`** - the rows the queue is working on now (`waiting`, `reviewing`, `blocked`, `queued`,
-//!   `gating`), one line each, with the reason it is where it is. They fill the frame.
-//! * **`finished`** - everything else, behind ONE folded line that says how many there are. It is
-//!   `act = ["fold"]` on a row the host's `folded` map keeps, so opening it costs no call and
-//!   survives the next answer. A `RED TARGET` row that was withdrawn or superseded is history and
-//!   lives in here, not in the alarm above it: the alarm is the TARGET's health, which is its own
-//!   line.
-//!
-//! # The row says one thing, and it is the verb that would DO something
-//!
-//! A row carries:
-//!
-//! * the state's mark and word, in the state's role - `[~] reviewing`;
-//! * what the row is about - the branch, or `RED TARGET main`;
-//! * how long it has been in that state;
-//! * **the one phrase a person can act on**: `approve`, or `restart (it is reviewing)` when the
-//!   verb you would reach for would do nothing. The feed carries the answer (`verbs`, with the
-//!   daemon's own reason for each that would not move the row), so this layer does not re-derive
-//!   `mergequeue::verbs`' rule - a second copy of it is a copy that drifts.
-//!
-//! The general meaning of every verb is in the legend (`l` on a plugin pane, and the hover), not
-//! repeated on every row.
-//!
-//! # The row read whole
-//!
-//! Every row carries `detail`: the whole entry as prose - every field, the gate's steps with
-//! their output, what a running gate has written and whether it has moved, and the row's moves.
-//! The host's Enter reads it (C3: `detail` is prose read whole), so the overlay belongs to this
-//! layer as much as the one-line rows do. The row whose detail is being read arrives in the feed
-//! as `open`, and is drawn even when it has left the live list, so an overlay outlives the row
-//! landing or being withdrawn under it.
-//!
-//! # The keys
-//!
-//! Every live row carries `enter: {"verb": …, "id": …}` - the act that names the entry it is
-//! about. That is what lets the person's `a`/`v`/`r`/`d` act on the row they are LOOKING at: a
-//! plugin row can draw one entry and the keys would otherwise act on whichever entry the host's
-//! own cursor happened to be over. The verb word is what `plugin.toml`'s `actions` gates, so a
-//! row asking for a verb this layer did not declare is refused by the host.
-//!
-//! # What it reads, and the one thing it cannot
-//!
-//! One feed, `queue` (`plugin.toml`'s `feeds = ["queue"]`): the snapshot the head already holds,
-//! in the daemon's own words, with every age already in milliseconds against the host's clock.
-//! **This module has no clock** - `std::time::SystemTime::now()` is a panic on
-//! `wasm32-unknown-unknown` and a panic in a guest is a trap - so the feed hands it `now_ms`
-//! and every age is a subtraction. Whether a gate's tail has MOVED is the host's to say
-//! (`still_ms`), because only a reader of two snapshots can know it.
+//! own. Two things, never mixed: the `live` rows the queue is working on now, one line each with
+//! the reason it is where it is, and `finished` behind one folded line that says how many there are.
+//! A row says one thing, and it is the verb that would DO something - the feed carries the answer,
+//! so this layer does not re-derive `mergequeue::verbs`' rule. A second copy of it drifts.
+//! One feed, `queue`, and no clock: `SystemTime::now()` is a panic on `wasm32-unknown-unknown`.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Fold, Input, Role};
@@ -113,8 +68,9 @@ struct Feed {
 struct Scope {
     #[serde(default)]
     words: String,
-    /// Whether a row has to name its repository: the host's answer to *is there more than one in scope
-    /// to tell apart?* It is a field rather than a reading of `words`, whose prose cannot say.
+    /// Whether a row has to name its repository - the host's answer to *is there more than one in
+    /// scope to tell apart?* It is a field and not a reading of `words` because the words are prose:
+    /// grepping them names the repository when it is redundant and omits it when it is the only clue.
     #[serde(default)]
     several: bool,
 }
@@ -351,9 +307,9 @@ struct Out {
     detail: String,
 }
 
-/// The phrase a person can act on: the verb that would move the row, or the one they would reach for
-/// with the reason it would not. One phrase per row is the design, since four verbs of prose per row
-/// made the pane this replaced illegible.
+/// The phrase a person can act on, from the feed's own answer - the verb that would move the row,
+/// or the one they would reach for with the reason it would not. One phrase per row is the whole
+/// design: four verbs of prose per row made the pane this replaced illegible.
 fn the_verb(verbs: &[VerbWhy]) -> Option<String> {
     let acts: Vec<&str> = verbs
         .iter()
@@ -584,8 +540,9 @@ fn role_of(state: &str) -> Role {
     }
 }
 
-/// The history, folded away behind one line. `act = ["fold"]` and the host's `folded` map are the
-/// mechanism: the fold is instant and survives the next answer.
+/// The history, folded away behind one line - the count, and whether it is open.
+/// `act = ["fold"]` and the host's `folded` map are the mechanism: the fold is instant, it survives
+/// the next answer, and a pane nobody has opened asks for nothing.
 fn history_row(feed: &Feed, folded: bool) -> Out {
     let n = feed.counts.finished;
     let shown = feed.reviews.iter().filter(|r| !r.live).count()
@@ -622,9 +579,9 @@ fn history_row(feed: &Feed, folded: bool) -> Out {
     }
 }
 
-/// The chrome above the rows: the emergencies, the targets' health, whose queues these are and who
-/// serves them. One `lines` block, so it is a few rows and never a paragraph, with every target state
-/// drawn.
+/// The chrome above the rows: the emergencies, the targets' health, whose queues these are, and who
+/// serves them. One `lines` block, so it is a few rows and never a paragraph. Every target state is
+/// drawn: red and unjudged as alarms, gating as a gate on it, green as the quiet line.
 fn chrome(feed: &Feed) -> Vec<Value> {
     let mut lines: Vec<Value> = Vec::new();
     if let Some(why) = &feed.unreadable {
@@ -978,9 +935,9 @@ fn target_gate_of<'a>(feed: &'a Feed, m: &Merge) -> Option<&'a RunningGate> {
         .and_then(|t| t.running_gate.as_ref())
 }
 
-/// A gate in flight, read whole: which step of how many, whether its output has moved and the end of
-/// what it wrote. `waiting` says the gate is the target's, and a stale snapshot is said as no answer
-/// rather than turned into a verdict.
+/// A gate in flight, read whole: which step of how many, the step itself, whether its output has
+/// moved, and the end of what it has written - the answer to *is it stuck?*. `waiting` says the
+/// gate is the TARGET's rather than the row's, so the reader knows whose step they are reading.
 fn gate_detail(g: &RunningGate, waiting: bool, feed: &Feed) -> Vec<String> {
     let head = if waiting {
         format!(

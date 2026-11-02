@@ -1,38 +1,15 @@
 //! The letibot plugin SDK: the typed contract of every hook kind, in one place.
 //!
 //! A hook is a wasm export that takes one JSON document and answers another. The shapes live here
-//! rather than in a markdown table because a renamed field then breaks a compilation rather than a
-//! sentence: the daemon builds every input from these types, parses every answer into them, and
-//! prints its worked examples by serialising them, so the document a model copies and the bytes
-//! the host accepts cannot drift apart.
+//! as types, not as a table, so a renamed field breaks a compilation and not a sentence.
 //!
-//! The crate is compiled into the daemon and into a guest plugin, so its dependencies are serde and
-//! nothing else. It does not carry rano's ABI glue: a guest's `Cargo.toml` names this crate for the
-//! types and rano's for the memory and the result block.
-//!
-//! | kind | export | runs | answers |
-//! |---|---|---|---|
-//! | [`notice`] | `notice_<the notice's kind>` | when the harness is about to tell the model something | the sentence, reworded or dropped |
-//! | [`tool_result`] | `on_tool_result` | on a successful tool result, before the model reads it | a rewritten result, a suffix, monitors to arm |
-//! | [`tool_call`] | `on_tool_call` | on a proposed call, before the gate | run it, run it with these arguments, refuse it, or answer it |
-//! | [`condition`] | `condition_<name>` | when a monitor polls | what to look at next, and whether it fired |
-//!
-//! A kind is declared here only once the host runs it, because a contract nothing calls is a
-//! document that lies.
-//!
-//! `pane_` and `condition_` are per subject: each pane is drawn, each condition is armed, and the
-//! name says which one. `notice_<kind>`, `on_tool_result` and `on_tool_call` are one hook per kind:
-//! every layer that wants to answer those exports the same name, and they resolve as a stack where
-//! the top answers and may ask the ones below with `{"below": …}`.
-//!
-//! The markers `{"pass":true}`, `{"mask":true}` and `{"below": <input>}` belong to the stack,
-//! which reads them before it hands an answer on. That is why every input type here has a `below`.
-//!
-//! Nothing here can widen a permission. `on_tool_call` runs before the gate, the rewritten call is
-//! the call the gate adjudicates, and there is no field by which a layer could say *allow*.
+//! `pane_` and `condition_` are named per subject; `notice_<kind>`, `on_tool_result` and
+//! `on_tool_call` are one hook per kind, resolved as a stack - the top answers, and the ones below
+//! answer when it asks. Nothing here can widen a permission: `on_tool_call` runs before the gate.
 
-/// The contract version every input carries. A host that changes a contract keeps answering the old
-/// version or refuses the plugin by name; an added field is not a version.
+/// The contract version every input carries, and the only one this crate describes.
+///
+/// An added field is not a version: a host keeps answering the old version or refuses by name.
 pub const V: u32 = 1;
 
 pub mod condition;
@@ -41,8 +18,9 @@ pub mod pane;
 pub mod tool_call;
 pub mod tool_result;
 
-/// One tool call, as a hook sees it. `arguments` is an object, not the model's raw text, so a layer
-/// rewrites fields rather than parsing JSON; a call whose arguments are not JSON never reaches a hook.
+/// One tool call, as a hook sees it: the name and the arguments the model proposed.
+/// `arguments` is an object because a hook rewrites fields, not text; a call whose arguments are
+/// not JSON never reaches a hook, so no layer is asked to guess.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Call {
     pub name: String,
@@ -63,8 +41,9 @@ impl Call {
 mod tests {
     use super::*;
 
-    /// Every hook kind's name is one the host's prefix list admits, duplicated here because this crate
-    /// is compiled into a guest that must not depend on the daemon.
+    /// Every hook kind's name must be one `letibot_plugins`'s `HOOK_PREFIXES` admits, or rano
+    /// never looks for it. Duplicated rather than depended on: this crate is compiled into a
+    /// guest, and a guest must not depend on the daemon.
     const PREFIXES: &[&str] = &[
         "on_",
         "provider_",
