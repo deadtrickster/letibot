@@ -119,24 +119,12 @@ convenience.
 
 ## 3. The critical path
 
-```
-[decide RenderSpan]  →  W4 GLM renderer  ─┐
-                                          ├→  W6 turn engine  →  M1 exit (C1–C10 vs harnessd)
-[vocab FFI]  →  W5 ledger + store  ───────┘        ↑
-                                          W8 TUI ──┘ (M1 needs one head)
-                                          W9 read-only tools ──┘
-```
-
-The longest chain to M1 is **W5 → W6 → integration**. W3 must be green before M1 exits but does not gate
-W4's writing, and W1/W2/W3 are not on the critical path to M1 - they are on the path to *knowing whether
-M1 worked*.
-
-The interfaces that take work off the chain, in order of what they buy: **`RenderSpan`/`ParsedSpan`/
-`ControlTokens`** (without them W4 waits on W5's FFI); **the head frame format** (makes W8 a leaf
-buildable against a recorded log); **the execution-backend interface** (tools ship host-local and firecode
-becomes a swap); **the scripted-session format** (without it W1 and W16 are one person's serial work);
-**the control-channel wire encoding**; and **`ExplainPlan` as a type** (every strand fills its own field
-instead of W14 archaeologising them at the end).
+The longest chain to M1 was **W5 → W6 → integration**, with W3 green before M1 exits but not gating W4's
+writing: W1/W2/W3 are on the path to *knowing whether M1 worked*, not to M1. The interfaces that took
+work off the chain, in order of what they bought: `RenderSpan`/`ParsedSpan`/`ControlTokens` (without them
+W4 waits on W5's FFI), the head frame format (W8 becomes a leaf), the execution-backend interface
+(firecode becomes a swap), the scripted-session format, the control-channel encoding, and `ExplainPlan`
+as a type.
 
 ## 4. Decisions
 
@@ -178,36 +166,21 @@ Where strands must meet, what must be true when they do, and what breaks if it i
 
 ## 6. Parallelism honesty
 
-Where splitting the work costs more than it buys.
+Where splitting the work costs more than it buys. **The token pipeline is one person's work end to end**,
+because the parse side of a dialect is defined by its render side (`parse ∘ render ≡ id`) and the ledger's
+correctness is a property of what the renderer emitted - two people either agree constantly or ship a
+consistent-and-wrong pipeline; only the second and third dialects are genuinely separable. **EXPLAIN
+cannot be built by an observability strand**, since only the person who built a stage knows which of its
+numbers is a proxy and which is the fact: the type and printer are a strand, the fields are a tax every
+other strand pays. **Compaction policy and the segment model are one design** (§10, §19.1, §19.2 are one
+decision seen three times). **The flowy connector is one person's work**, since the level table, the
+read-cursor rule, the `Skipped` disclosure and the broadcast clause interlock.
 
-**The token pipeline is one person's work, end to end.** Render → tokenize → ledger → submit → parse. It
-is presented as W4/W5/W6 because the interfaces are worth naming, but the parse side of a dialect is
-defined by its render side (`parse ∘ render ≡ id`) and the ledger's correctness is a property of what the
-renderer emitted, so two people either agree constantly or ship a consistent-and-wrong pipeline. The
-exception is the second and third dialects, which are genuinely separable once the trait is real and the
-diff is green.
-
-**EXPLAIN cannot be built by an observability strand.** §6.4 asks each stage for its own counters, and only
-the person who built a stage knows which of its numbers is a proxy and which is the fact. The right split
-is: the `ExplainPlan` type and its printer are a strand, and the fields are a tax every other strand pays
-as it goes.
-
-**Compaction policy and the segment model are one design** (§10's levels, §19.1's decay rates and §19.2's
-labelling are one decision seen three times). Splitting them produces a segment model that cannot express
-what compaction needs, discovered at S7.
-
-**The flowy connector is one person's work**: the per-room level table, the read-cursor rule, the `Skipped`
-disclosure and the human-broadcast clause interlock, and each is a small thing that becomes a lie beside
-the wrong neighbour.
-
-**Physical limits on this box.** With `--no-op-offload` the CPU is on the inference path, so a `-j 24`
-Rust build steals prefill and decode from production (§18.2). Two workers compiling concurrently is a
-measurable regression, not a scheduling detail: the realistic ceiling is two or three strands building at
-once, niced, in a quiet window, or in a firecode run.
-
-**And the honest framing of who the parallel workers are.** This is one operator with agents, not a team,
-which makes the contracts *more* load-bearing than they would be for humans: a human who finds
-`RenderSpan` undefined asks, and two agents invent two.
+**Physical limits on this box**: with `--no-op-offload` the CPU is on the inference path, so a `-j 24`
+build steals prefill and decode from production and the realistic ceiling is two or three strands at once,
+niced or in a firecode run. And the parallel workers here are one operator with agents, not a team, which
+makes the contracts *more* load-bearing: a human who finds `RenderSpan` undefined asks, and two agents
+invent two.
 
 ## 7. What is still underspecified
 
