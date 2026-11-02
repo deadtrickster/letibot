@@ -98,7 +98,9 @@ impl World {
         // SAFETY: this test binary runs one test, and the variables are set before the
         // daemon, any thread that reads config, or the bridge exists.
         unsafe {
+            std::env::set_var("HOME", root);
             std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+            std::env::set_var("XDG_CACHE_HOME", root.join("cache"));
             std::env::set_var("XDG_DATA_HOME", root.join("data"));
             std::env::set_var("LETIBOT_STORE", root.join("sessions.db"));
             std::env::remove_var("DEEPSEEK_API_KEY");
@@ -108,6 +110,10 @@ impl World {
         }
         let worktree = root.join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree");
+        // An empty catalogue: the models table is the host's cache unless it is a fixture, and
+        // an empty one says *nothing here is priced* on every machine.
+        std::fs::create_dir_all(root.join("cache/letibot")).expect("cache dir");
+        std::fs::write(root.join("cache/letibot/models.json"), "{}").expect("models.json");
         // An empty providers file: nothing of the operator's may decide what answers.
         std::fs::write(
             root.join("config/letibot/providers.toml"),

@@ -214,12 +214,15 @@ impl World {
         let dir = TempDir::new("transcript");
         let root = dir.path();
         // **Nothing of the operator's may reach this session**: a key in their
-        // `providers.toml` or a mode row in their store would decide what answers.
+        // `providers.toml` or a mode row in their store would decide what answers, and the
+        // models catalogue in their `~/.cache` what a turn costs.
         std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
         // SAFETY: this test binary runs one test, and the variables are set before the
         // daemon, any thread that reads config, or the bridge exists.
         unsafe {
+            std::env::set_var("HOME", root);
             std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+            std::env::set_var("XDG_CACHE_HOME", root.join("cache"));
             std::env::set_var("XDG_DATA_HOME", root.join("data"));
             std::env::set_var("LETIBOT_STORE", root.join("sessions.db"));
             std::env::remove_var("DEEPSEEK_API_KEY");
@@ -229,6 +232,9 @@ impl World {
         }
         let worktree = root.join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree");
+        // An empty catalogue: the models table is the host's cache unless it is a fixture.
+        std::fs::create_dir_all(root.join("cache/letibot")).expect("cache dir");
+        std::fs::write(root.join("cache/letibot/models.json"), "{}").expect("models.json");
 
         let fake = Fake::serve(vec![long_answer(), SECOND_ANSWER.to_string()]);
         std::fs::write(

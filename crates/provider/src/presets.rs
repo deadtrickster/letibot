@@ -277,27 +277,21 @@ mod tests {
     ///   onto the right model so nothing ever failed. Caught by the second assertion,
     ///   which applies the same rule the catalogue does for the same reason.
     ///
-    /// Skipped — loudly — where the catalogue is not readable, because the absence is
-    /// a fact about the box rather than about this constant. **What no test here can
-    /// see is the account's own model list**, which is the authority: models.dev
-    /// carried `deepseek-v4-flash` while the account did not offer it. That is what
+    /// **The fallback names are checked against the catalogue this tree ships**, not against
+    /// whichever catalogue the box running the test happens to have: `Catalogue::load` reads the
+    /// operator's files, so the same tree passed or failed by host. **What no test here can see is
+    /// the account's own model list**, which is the authority: models.dev carried
+    /// `deepseek-v4-flash` while the account did not offer it. That is what
     /// `scripts/check-provider-models.sh` is for, and it needs a key.
     ///
     /// [`Catalogue::default_model`]: crate::catalogue::Catalogue::default_model
     #[test]
     fn every_fallback_names_a_real_model_and_its_shortest_form() {
-        let cat = crate::catalogue::Catalogue::load();
-        if cat.is_empty() {
-            eprintln!(
-                "SKIPPED: no catalogue at {}, so the fallback names cannot be checked \
-                 against it — run scripts/check-provider-models.sh with a key for the \
-                 check that matters",
-                crate::catalogue::Catalogue::load()
-                    .source()
-                    .unwrap_or_else(|| "(no source at all)".into())
-            );
-            return;
-        }
+        let cat = crate::catalogue::Catalogue::snapshot();
+        assert!(
+            !cat.is_empty(),
+            "the vendored snapshot parses, or every fallback name is unchecked"
+        );
         for (preset, catalogue_id) in [
             (&DEEPSEEK, "deepseek"),
             (&GLM, "zhipuai"),

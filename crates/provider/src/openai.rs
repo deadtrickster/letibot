@@ -24,6 +24,9 @@ pub struct OpenAiProvider {
     pub thinking: bool,
     /// `temperature` and friends, passed through verbatim.
     pub sampling: Value,
+    /// The catalogue this provider looks a model up in: the box's by default, and a
+    /// caller's own when a test must not read the machine's files.
+    catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
     /// **Where a fact the operator must read is said** — the daemon's hub, one crate up.
     ///
     /// A closure rather than a hub because this crate is below `letibot-sessionlog` and
@@ -49,6 +52,7 @@ impl OpenAiProvider {
             .timeout_global(None)
             .timeout_recv_body(Some(Duration::from_secs(600)))
             .build();
+        let catalogue = crate::catalogue::Catalogue::load();
         OpenAiProvider {
             preset,
             // The catalogue's pick when the operator named no model, else this
@@ -56,14 +60,25 @@ impl OpenAiProvider {
             // route that builds a provider gets the same answer.
             model: model
                 .map(str::to_string)
-                .unwrap_or_else(|| preset.default_model(&crate::catalogue::Catalogue::load())),
+                .unwrap_or_else(|| preset.default_model(&catalogue)),
             url,
             creds,
+            catalogue,
             agent: ureq::Agent::new_with_config(config),
             thinking: false,
             sampling: json!({}),
             notes: None,
         }
+    }
+
+    /// **The catalogue this provider reads**, instead of the box's, so a test's answer is about
+    /// this code and not about which files the machine running it happens to have.
+    pub fn with_catalogue(
+        mut self,
+        catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
+    ) -> Self {
+        self.catalogue = catalogue;
+        self
     }
 
     /// **Install the way this provider tells a person something** — see [`Notes`].
@@ -85,8 +100,10 @@ impl OpenAiProvider {
         if crate::messages::known_text_only(self.preset.name, &self.model) {
             return crate::messages::Eyes::TextOnly(&self.model);
         }
-        let catalogue = crate::catalogue::Catalogue::load();
-        match catalogue.takes_images(self.preset.catalogue_id, &self.model) {
+        match self
+            .catalogue
+            .takes_images(self.preset.catalogue_id, &self.model)
+        {
             Some(true) => crate::messages::Eyes::Sees,
             Some(false) => crate::messages::Eyes::TextOnly(&self.model),
             None => crate::messages::Eyes::Unknown(&self.model),
@@ -534,7 +551,13 @@ impl OpenAiProvider {
             return Err(BackendError::Aborted);
         }
         let wall_ms = started.elapsed().as_millis() as u64;
-        Ok(acc.finish(&self.model, &self.creds, wall_ms, self.preset))
+        Ok(acc.finish(
+            &self.model,
+            &self.creds,
+            wall_ms,
+            self.preset,
+            &self.catalogue,
+        ))
     }
 }
 
@@ -658,6 +681,7 @@ impl Accumulator {
         creds: &Credentials,
         wall_ms: u64,
         preset: &'static crate::presets::Preset,
+        catalogue: &crate::catalogue::Catalogue,
     ) -> Completion {
         let u = self.usage.as_ref();
         let get = |k: &str| {
@@ -706,7 +730,7 @@ impl Accumulator {
             .get(billed)
             .copied()
             .or_else(|| {
-                crate::catalogue::Catalogue::load()
+                catalogue
                     .model(preset.catalogue_id, billed)
                     .and_then(|m| m.prices)
             })
@@ -866,7 +890,13 @@ mod tests {
                 output: 2.0,
             },
         );
-        let done = a.finish("m", &creds, 12, &crate::presets::DEEPSEEK);
+        let done = a.finish(
+            "m",
+            &creds,
+            12,
+            &crate::presets::DEEPSEEK,
+            &crate::catalogue::Catalogue::default(),
+        );
         assert_eq!(done.text, "Hello");
         assert_eq!(done.reasoning, "hm");
         assert_eq!(done.tool_calls.len(), 1);
@@ -886,7 +916,13 @@ mod tests {
         };
         assert_eq!(
             Accumulator::default()
-                .finish("m", &creds2, 0, &crate::presets::DEEPSEEK)
+                .finish(
+                    "m",
+                    &creds2,
+                    0,
+                    &crate::presets::DEEPSEEK,
+                    &crate::catalogue::Catalogue::default()
+                )
                 .cost
                 .micros_usd,
             None
@@ -968,7 +1004,13 @@ mod tests {
         a.absorb(&json!({"model": "deepseek-flash", "choices": [],
                          "usage": {"prompt_tokens": 1000, "completion_tokens": 100,
                                    "prompt_cache_hit_tokens": 600}}));
-        let done = a.finish("deepseek-chat", &creds, 12, &crate::presets::DEEPSEEK);
+        let done = a.finish(
+            "deepseek-chat",
+            &creds,
+            12,
+            &crate::presets::DEEPSEEK,
+            &crate::catalogue::Catalogue::default(),
+        );
         assert_eq!(
             done.cost.micros_usd,
             Some(660),
@@ -981,7 +1023,13 @@ mod tests {
         b.absorb(&json!({"choices": [],
                          "usage": {"prompt_tokens": 1000, "completion_tokens": 100,
                                    "prompt_cache_hit_tokens": 600}}));
-        let done = b.finish("deepseek-chat", &creds, 12, &crate::presets::DEEPSEEK);
+        let done = b.finish(
+            "deepseek-chat",
+            &creds,
+            12,
+            &crate::presets::DEEPSEEK,
+            &crate::catalogue::Catalogue::default(),
+        );
         assert_eq!(
             done.cost.micros_usd,
             Some(6600),

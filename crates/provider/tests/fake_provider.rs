@@ -80,11 +80,15 @@ fn provider(url: &str) -> OpenAiProvider {
         prices: Default::default(),
         url: Some(url.into()),
     };
+    // **A box with no catalogue.** `OpenAiProvider::new` prices a model by the catalogue it finds
+    // on the machine, so a fake whose turn is asserted to be UNPRICED only says that on a box
+    // without one.
     OpenAiProvider::new(
         &letibot_provider::presets::DEEPSEEK,
         Some("deepseek-chat"),
         creds,
     )
+    .with_catalogue(Arc::new(letibot_provider::catalogue::Catalogue::default()))
 }
 
 const SCRIPT: &str = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n\
