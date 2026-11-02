@@ -43,6 +43,14 @@ go stale.*
 
 ---
 
+## R115 - A host placement's commits do not come back, its shells outlive the stop, and its notes land on the Mac - **OPEN, filed 2026-11-02**
+
+Three placement bugs seen running packages on lubuntu1, lubuntu2 and lab2x1.
+
+1. `leticode_start` says commits come back as `remote/<host>/<short id>` when the session ends. After `leticode_stop` and `letibot --stop` no such branch appears, for letibot and rano worktrees alike. The only way back is a manual fetch with letibot's own key from `~/<root>/<wt>/<last 8 of session id>`. A peer session whose permission classifier blocks that fetch cannot collect its work at all. Fix: fetch the placement's HEAD into `remote/<host>/<short id>` on stop, and add an explicit collect verb to `letibot-mcp` for a session already stopped.
+2. `letibot --stop` ends the local daemon but not the shells it started on the host. Shells from stopped packages were still running on lab2x1 about two hours later, in placement directories that had been removed.
+3. The `notes` tool writes the Mac worktree's `.letibot/notes` even when the session's tools run on a host. Subagents of a host session then leave uncommitted notes in the operator's local tree, and their work never reaches the placement's branch. The notes tool should write where bash, read and write do.
+
 ## R114 - Embeddings as the second similarity tier, in `letibot_tools::similarity` for every caller - **BLOCKED on R113's take-up log, filed 2026-11-02, operator's ask**
 
 `crates/tools/src/similarity.rs` is lexical, and its own measurement shows where that ends: a paraphrase of the review-queue note scored 0.126, under a docker prompt's 0.133 against an unrelated note, so no floor separates them. The skill offer (R113) will meet the same gap on synonyms (presentation and beamer).
