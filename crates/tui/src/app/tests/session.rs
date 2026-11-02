@@ -282,6 +282,78 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     );
 }
 
+/// **A child is a session the head DRIVES** - under its parent on the picker's list, taken by the
+/// same pick, typed into by the same composer, and left by the same way up. Nothing on that path
+/// reads the parent edge, which is the point: the filter that hid these rows must not come back.
+#[test]
+fn a_child_is_listed_attached_to_sent_to_and_left_like_any_other_session() {
+    let mut child = brief("s-child", "the child", true);
+    child.parent_session_id = Some("s-root".into());
+    let root = brief("s-root", "root", true);
+    let mut a = app();
+    a.apply(hello(
+        "s-root",
+        vec![root.clone(), child.clone()],
+        Hub::new("s-root").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    a.set_row_fold("s-root", true);
+
+    // **Listed one level under its parent, and numbered like any other row** - the number is the
+    // drawn list's, so a child a person can see is a child a number can name.
+    let rows: Vec<(String, usize)> = a
+        .session_rows()
+        .iter()
+        .filter_map(|r| r.idx.map(|i| (a.sessions[i].session_id.clone(), r.depth)))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![("s-root".to_string(), 1), ("s-child".to_string(), 2)],
+        "the child is a row one level under the session that spawned it"
+    );
+    assert_eq!(
+        a.session_at_number(2)
+            .map(|i| a.sessions[i].session_id.clone()),
+        Some("s-child".to_string()),
+        "the second session on the list is the child"
+    );
+
+    // **And the drawing is that list** - whichever of the two drew it, the child is a row a person
+    // reads, since a row the eyes cannot find is a row the keys might as well not reach.
+    let picture = a.picker_lines(100).join("\n");
+    assert!(
+        picture.contains("the child"),
+        "the picker does not draw the child:\n{picture}"
+    );
+
+    // **The pick on it is an ordinary attach.** No refusal, no second verb.
+    assert_eq!(
+        a.pick("2"),
+        Some(Action::Switch("s-child".into())),
+        "picking a child must switch to it"
+    );
+    a.apply(hello(
+        "s-child",
+        vec![root, child],
+        Hub::new("s-child").snapshot(),
+    ));
+    assert_eq!(a.session_id, "s-child");
+
+    // **A line typed while standing in it is a prompt to the child**, and one Esc is the way back:
+    // this is the same send and the same detach every other session gets.
+    typed(&mut a, "and the sizes");
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::Prompt("and the sizes".into())),
+        "a child takes a message like any other session"
+    );
+    assert_eq!(
+        a.key(Key::Esc),
+        Some(Action::Switch("s-root".into())),
+        "leaving a child must not need a second door"
+    );
+}
+
 /// The version the daemon is told to be is checked at the handshake, and a skew is said rather than fatal: the
 /// `Hello` is the cheap moment, since nothing has been read yet and the direction is known, where the first
 /// frame that failed to parse was one frame late and phrased as a decoder's complaint.
