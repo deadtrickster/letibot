@@ -1,32 +1,6 @@
-//! `monitor` — declare, renew or retire a condition watched **across turns**.
-//!
-//! One tool and not three, and the arithmetic is the argument. §8.4's ceiling is
-//! eight and [`crate::runtime::roles::m2_runner`] was already at eight. Three
-//! monitor verbs would have cost the role three seats it does not have, so:
-//!
-//! - **declaring, renewing and retiring** are one tool taking an `action`, because
-//!   all three act on the same named handle and none of them is a different
-//!   question — *set the state of this named watch* covers the three.
-//! - **listing** is not here at all. It is in `job_list`, next to the jobs, the
-//!   scopes and the reap log, because *"what is running and what is watching"* is
-//!   one question and the place people already look is the place a watcher must be
-//!   visible. T24 requirement 2 is better served by being in the existing listing
-//!   than by a second one nobody opens.
-//!
-//! That leaves one new seat, and `m2_runner` names the trade in its own doc.
-//!
-//! # The argument this tool does not have
-//!
-//! There is no `pattern`, no `match`, no `cmdline`, no `command`, no `until`, no
-//! `host`. [`no_monitor_tool_grows_a_pattern_argument`] asserts it, the way the
-//! job tools already do for themselves.
-//!
-//! This is not tidiness. A process check self-matched its own shell **seven times
-//! in one session** on this box, and the seventh — `pkill -f
-//! 'harnessd-rice.sock'` — killed a running command mid-flight, because the
-//! string was in the shell's own command line. Prompting has failed against this
-//! eight times now. The only thing that has ever worked is that there is nowhere
-//! to type the pattern.
+//! `monitor`: declare, renew or retire a condition watched across turns.
+//! One tool with an `action` rather than three, because a role's seats are fixed; the
+//! listing lives in `job_list`. No argument is a pattern, so nothing can match its own waiter.
 
 use std::time::Duration;
 
@@ -105,11 +79,9 @@ impl Tool for Monitor {
                 },
                 "required": ["name"]
             }),
-            // It creates a resource that outlives the turn — and, with an
-            // `explicit` owner, the session. Clause 4 wants the widest thing it can
-            // do, and "leave something watching on the operator's box after this
-            // conversation" is that. It is emphatically NOT `Network`: see the
-            // module docs on why `port` has no host argument.
+            // It creates a resource that outlives the turn, and with an `explicit` owner the
+            // session: the widest thing this tool can do. Not `Network` - `port` has no host
+            // argument, so a loopback check cannot become an arbitrary reach.
             Access::Exec,
         )
     }
@@ -243,10 +215,8 @@ impl Tool for Monitor {
             };
             Watch::Scope(sid)
         } else if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-            // Resolved against the workspace root, and checked **lexically**
-            // rather than by stat: the whole point of a path monitor is a path
-            // that does not exist yet, so `stat`-based containment would refuse
-            // exactly the case it is for.
+            // Checked lexically rather than by stat: a path monitor exists for a path that
+            // does not exist yet, so stat-based containment would refuse exactly that case.
             let Some(root) = host.workspace() else {
                 return Invocation::not_run(
                     "this session's process host does not know where its workspace is",
@@ -338,20 +308,16 @@ impl Tool for Monitor {
                 Ok(w) => w,
                 Err(inv) => return *inv,
             };
-            // **One watch per pull request** — a second on one already watched is refused, and
-            // the refusal is the one call that watches all of it. Measured on stroppy: nine
-            // watches, three conditions apiece, for three pull requests — nine `gh` calls a look
-            // where three would do.
+            // One watch per pull request: a second is refused, and the refusal is the one call
+            // that watches all of it, so three conditions cost one look rather than three.
             if let Some(inv) = already_watched(monitors, &w, name, args) {
                 return inv;
             }
             w
         } else if let Some(p) = args.get("plugin").and_then(|v| v.as_str()) {
-            // **A condition a layer answers** (`docs/plugins-plan.md` §4.4). The arming call is
-            // the host's: `PluginCondition::arm` asks the hook once with no look, so a plugin that
-            // traps is a refusal here rather than a monitor that explodes on its first poll, and
-            // the watch's own cap comes from the answer. Nothing about the look, the interval or
-            // the firing is this tool's decision once the layer has spoken.
+            // A condition a layer answers. `PluginCondition::arm` asks the hook once with no
+            // look, so a plugin that traps is a refusal here rather than a monitor that
+            // explodes on its first poll; the look, interval and firing are the layer's.
             let Some(conditions) = monitors.plugin_conditions() else {
                 return Invocation::failed(
                     "this session cannot arm a plugin condition",
@@ -422,19 +388,15 @@ impl Tool for Monitor {
             },
             Some(o) => match super::jobs::resolve_scope(host, o) {
                 Some(s) => s,
-                // An owner must be a scope that ALREADY exists. A monitor that
-                // could mint its own `explicit` scope would be a watcher that
-                // outlives the session and that nothing created deliberately —
-                // the leak with an extra step, which is why `bash` refuses an
-                // unnamed explicit scope too.
+                // An owner must be a scope that already exists: one that could mint its own
+                // `explicit` scope would outlive the session with nothing having created it.
                 None => return super::jobs::unknown_scope(host, o),
             },
         };
 
-        // Clause 1 before the declaration, not after: a port that is ALREADY in the
-        // wanted state produces a monitor that fires on its first tick, and the
-        // model then reads a firing as news. The harness can see this and the model
-        // cannot, so it says so.
+        // Clause 1 before the declaration: a port already in the wanted state would fire on
+        // the first tick and the model would read that as news. The harness can see it, the
+        // model cannot.
         if let Watch::Port { port, want } = &watch {
             let now = crate::exec::host::port_is_listening(*port);
             if (now && *want == PortState::Listening) || (!now && *want == PortState::Closed) {
@@ -517,12 +479,9 @@ impl Tool for Monitor {
     }
 }
 
-/// Whether a relative path stays inside the workspace, decided lexically.
-///
-/// The same rule [`crate::runtime::GateCall::path_is_inside`] applies, and for
-/// the same reason it is lexical there: this has to be answerable about a path
-/// that does not exist, because *"tell me when this file appears"* is the most
-/// ordinary thing a path monitor is for.
+/// Whether a relative path stays inside the workspace, decided lexically like
+/// [`crate::runtime::GateCall::path_is_inside`]: it has to be answerable about a path
+/// that does not exist, which is what a path monitor is for.
 fn inside(path: &str) -> bool {
     if path.starts_with('/') {
         return false;
@@ -667,11 +626,8 @@ fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
     ))))
 }
 
-/// The TTL, bounded — and **refused rather than clamped** when it is over.
-///
-/// Clamping would leave the caller believing a number the monitor does not have,
-/// which is the silent-rewrite failure clause 1 forbids. The refusal names the
-/// cap so the retry succeeds.
+/// The TTL, bounded and refused rather than clamped when it is over: clamping would leave
+/// the caller believing a number the monitor does not have. The refusal names the cap.
 fn ttl_of(args: &Value) -> Result<Duration, Box<Invocation>> {
     ttl_within(args, DEFAULT_TTL, MAX_TTL)
 }
@@ -742,11 +698,8 @@ pub fn watchable(host: &dyn ProcessHost) -> (Vec<JobId>, Vec<ScopeId>) {
 mod tests {
     use super::*;
 
-    /// **The deliverable this module exists for.**
-    ///
-    /// If this fails, somebody has added the argument that brings the whole
-    /// failure mode back — and it comes back as `pkill -f` with a JSON wrapper,
-    /// which is how a running command got killed mid-flight on this box.
+    /// If this fails, an argument has come back that brings the whole failure mode with it:
+    /// a pattern a shell matches against output that includes the shell.
     #[test]
     fn no_monitor_tool_grows_a_pattern_argument() {
         let s = Monitor.schema();
@@ -763,15 +716,9 @@ mod tests {
             "predicate",
             "until",
             "shell",
-            // `process` is no longer banned, and the reason it was is the reason it
-            // is not: the hazard was a pattern matched by a SHELL against output
-            // that included the shell. `process` is resolved by the in-process
-            // finder (`exec::procs::find`), which removes this daemon, its
-            // ancestors and its protected pids before matching, and the monitor
-            // then holds (pid, start time) handles — the pattern is never polled.
-            // Not a pattern, but the same shape of mistake: a host argument turns
-            // a loopback check into an arbitrary network reach, and then every
-            // monitor call has to be network-gated.
+            // `process` is not banned: the in-process finder drops this daemon, its ancestors
+            // and its protected pids, and the monitor holds (pid, start time) handles, so no
+            // pattern is polled. `host` stays banned: it makes a loopback check a network reach.
             "host",
             "url",
         ] {

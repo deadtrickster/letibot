@@ -57,11 +57,8 @@ fn spec(role: &str) -> TaskSpec {
     }
 }
 
-/// **A correction reaches the runner, and a refusal is not an `Ok`.**
-///
-/// The whole value of `task_message` is that a parent cannot be told its child was
-/// corrected when it was not, so this pins both directions: what the runner is asked to
-/// say, and what the caller sees when the runner refuses.
+/// A correction reaches the runner, and a refusal is not an `Ok`: the whole value of
+/// `task_message` is that a parent cannot be told its child was corrected when it was not.
 #[test]
 fn a_message_reaches_the_runner_and_a_refusal_is_not_an_ok() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -158,18 +155,9 @@ fn a_message_reaches_the_runner_and_a_refusal_is_not_an_ok() {
     assert!(why.contains("cannot message"), "{why}");
 }
 
-/// **The call returns while the child is still working.** This is the whole
-/// point of the change: the daemon runs a round's calls in order on one
-/// thread, so a `task` that waited held every call behind it for as long as
-/// the child lived. Measured 2026-09-17 in the operator's session — a block
-/// of `todo_write`, `task` and three `web_search` calls, all unfinished for
-/// the fifteen minutes the subagent ran.
-/// **R23 for subagents: a watched child is looked at, not waited on.** The stroppy session
-/// spent 240 s in `task_result` on a child whose answer the daemon was already going to
-/// deliver as a turn — *"why it decided to wait for it explicitly if we have completion
-/// events"*. With the watch question wired, a `timeout_ms` on a child still working returns
-/// at once and says the answer is on its way; an answer already in is returned as ever; and
-/// a child nobody is watching keeps the wait it asked for.
+/// The call returns while the child is still working: a round's calls run in order on one thread,
+/// so a `task` that waited held every call behind it for as long as the child lived.
+/// A watched child is looked at, not waited on, since the daemon delivers its answer as a turn.
 #[test]
 fn a_watched_subagent_is_not_waited_on() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -276,20 +264,9 @@ fn a_watched_subagent_is_not_waited_on() {
     assert!(r.payload.contains("has not answered yet"), "{}", r.payload);
 }
 
-/// **THE THREE STATES, THROUGH THE DOOR THE PARENT HAS** — a working child, an idle one and a
-/// wedged one must be tellable apart by what `task_result` answers, and the idle one is the
-/// case this change is for.
-///
-/// The operator's measurement, in their words: three asks about one child produced the
-/// identical sentence, *"still working"* — *"which tells me it has not died and nothing at all
-/// about whether it is stuck"*. And the state that had no sentence anywhere: a child whose turn
-/// ended and which sits parked, *"between turns"*, which the parent learned only by sending a
-/// message nothing said to send.
-///
-/// **Constructed, not waited for**: the reading is a value the runner hands back
-/// ([`RunningChild`]), so the three cases are three literals and no child, no model and no
-/// clock. The one thing this cannot construct is a runner that keeps no reading — that is the
-/// last case, and it must read exactly as it did before this field existed.
+/// The three states, through the door the parent has: a working child, an idle one and a wedged
+/// one must be tellable apart by what `task_result` answers, and the idle one is the case this is
+/// for. Constructed, not waited for: the reading is a value the runner hands back, and no clock.
 #[test]
 fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -481,13 +458,9 @@ fn starting_a_subagent_does_not_wait_for_it() {
         )
     };
 
-    // The child is nowhere near done, and `task` comes back anyway —
-    // `Backgrounded`, not `Ok`: it is running and has not answered yet.
-    //
-    // "Did not wait" is asserted as a CAUSE, not a duration: `task` never asked the child
-    // anything (`collect` is the only way to wait on it, and it ran zero times). This was
-    // `elapsed() < 1s`, which a loaded box or a parallel `cargo test` can trip without the
-    // code being wrong (R67 item 19) — and which a `task` that waited 900 ms would pass.
+    // The child is nowhere near done, and `task` comes back anyway: `Backgrounded`, not `Ok`, so it
+    // is running and has not answered yet. "Did not wait" is asserted as a cause, not a duration:
+    // `collect` is the only way to wait on it and it ran zero times.
     let r = call(&mut rt, &mut sink, "task", r#"{"prompt": "a long job"}"#);
     assert_eq!(
         collects.load(Ordering::SeqCst),
@@ -542,14 +515,9 @@ fn starting_a_subagent_does_not_wait_for_it() {
     assert!(listed.payload.contains("sub-slow"), "{}", listed.payload);
 }
 
-/// **A child finishing enqueues its branch** — the seam the merge queue's enqueue hangs on,
-/// driven through the tool with a fake runner.
-///
-/// The claim is the tool's half of `task_start`'s door: when a `task_start` child is seen
-/// to finish, the tool asks its runner to enqueue the branch and reports what the runner
-/// answered. The runner's own half — the row, the store, the brief — is
-/// `harnessd::mergequeue::entry_for_finished`'s and is tested there; what this test holds is
-/// that the ask happens at all, and that a plain `task` child does not trigger it.
+/// A child finishing enqueues its branch, the seam the merge queue's enqueue hangs on, driven
+/// through the tool with a fake runner: when a `task_start` child is seen to finish, the tool asks
+/// its runner to enqueue and reports the answer. A plain `task` child must not trigger it.
 #[test]
 fn a_child_finishing_enqueues_its_branch() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -677,10 +645,9 @@ fn a_child_finishing_enqueues_its_branch() {
     assert!(r.payload.contains("could not be opened"), "{}", r.payload);
 }
 
-/// **A runner that arranges nothing answers `NoBranch`, and that is not a failure.**
-///
-/// `NoTaskRunner` is the default seat, and a `task_result` against it must not grow a line
-/// about a merge queue the session has no door to.
+/// A runner that arranges nothing answers `NoBranch`, and that is not a failure: `NoTaskRunner` is
+/// the default seat, and a `task_result` against it must not grow a line about a merge queue the
+/// session has no door to.
 #[test]
 fn a_runner_with_no_worktree_leaves_no_branch() {
     match NoTaskRunner.finished("anything").unwrap() {
@@ -740,11 +707,9 @@ fn a_downgrade_only_removes_and_the_union_keeps_every_denial() {
     assert!(Downgrade::parse("").unwrap().is_none());
 }
 
-/// **A placement round-trips through the string a recorded spec carries.**
-///
-/// `RecordedSpec` writes `placement.as_str()` and reads it back with `Placement::parse` when a
-/// child is resumed, so the two spellings are one fact: a name that changed on the way through
-/// would resume a child somewhere its record does not say.
+/// A placement round-trips through the string a recorded spec carries: `RecordedSpec` writes it and
+/// reads it back with `Placement::parse` when a child is resumed, so a name that changed on the way
+/// through would resume a child somewhere its record does not say.
 #[test]
 fn a_placement_round_trips_and_a_host_keeps_its_case() {
     for p in [
@@ -782,10 +747,9 @@ fn a_placement_round_trips_and_a_host_keeps_its_case() {
 fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
     use crate::runtime::{Registry, ToolRuntime};
     use letibot_transcript::ToolCall;
-    // A host that has firecode: the tool is told the CLI is a program that is there (the
-    // refusal for a host that has none is the end of this test). Named to the tool, not
-    // put in `$FIRECODE_BIN`: a `set_var` here was read by every other test in this binary
-    // that looked at firecode while this one ran (R67 item 17).
+    // A host that has firecode: the tool is told the CLI is a program that is there. Named to the
+    // tool, not put in `$FIRECODE_BIN`, because a variable set here is read by every other test in
+    // this binary that looks at firecode while this one runs.
     let stub = std::env::temp_dir().join(format!("letibot-firecode-stub-{}", std::process::id()));
     crate::testing::write_stub(&stub, "#!/bin/sh\n");
     let runner: Arc<dyn TaskRunner> = Arc::new(Echo::default());
@@ -884,10 +848,9 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
     assert!(!p.contains("started subagent `sub-2`"), "{p}");
 }
 
-/// **The seam line for a VM placement says where the work comes back** — FIRECODE-NOTES:
-/// *"It says … 'the work comes back as the branch, not as the directory.' There is no branch
-/// on this path — the work comes back as a sibling directory. A confidently wrong line in a
-/// tool's own output is worse than no line."*
+/// The seam line for a VM placement says where the work comes back: the work comes back as a
+/// sibling directory, not as a branch, and a confidently wrong line in a tool's own output is worse
+/// than no line.
 #[test]
 fn a_vm_placement_does_not_promise_a_branch() {
     let line = placement_seam(&Placement::Firecode);
@@ -900,12 +863,9 @@ fn a_vm_placement_does_not_promise_a_branch() {
     assert!(line.contains("directory beside"), "{line}");
 }
 
-/// **The slug is short, kebab, and deterministic in the prompt.**
-///
-/// The derivation is the default, not a lock: two different subtasks get two
-/// different slugs, and the same subtask asked twice gets the same slug — which
-/// is what makes the refusal of an existing path meaningful. Pure, so it is
-/// tested without a repo.
+/// The slug is short, kebab, and deterministic in the prompt: two subtasks get two slugs, and the
+/// same subtask asked twice gets the same one, which is what makes refusing an existing path
+/// meaningful. Pure, so it is tested without a repo.
 #[test]
 fn the_slug_is_short_kebab_and_deterministic() {
     assert_eq!(
@@ -967,13 +927,8 @@ fn the_worktree_brief_says_the_branch_is_the_deliverable() {
     assert!(b.contains("names the commit(s)"), "{b}");
 }
 
-/// **A `task_start` whose path already exists is refused by name, and nothing is
-/// spawned.**
-///
-/// The default is a fresh worktree, and a path that already exists — a directory,
-/// or a worktree a previous `task_start` made — is refused here rather than by a
-/// child that was never started. The refusal names the path and says nothing was
-/// spawned.
+/// A `task_start` whose path already exists is refused by name, and nothing is spawned: the refusal
+/// names the path and says so, rather than leaving it to a child that was never started.
 #[test]
 fn an_existing_path_is_refused_by_name_and_nothing_is_spawned() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -1254,10 +1209,9 @@ fn a_taken_derived_slug_gets_the_next_free_suffix() {
     assert_eq!(unique_slug("free", |_| false), "free");
 }
 
-/// **A runner that keeps names** — three children of this session (two of them sharing a name),
-/// one grandchild elsewhere in the tree, and a log of every handle the tools asked it about.
-/// `start` names its child the way the daemon does: the spec's slug, else the prompt's, made
-/// unique among the names it holds.
+/// A runner that keeps names: three children of this session, two of them sharing a name, one
+/// grandchild elsewhere in the tree, and a log of every handle the tools asked it about. `start`
+/// names its child the way the daemon does, unique among the names it holds.
 #[derive(Default)]
 struct Named {
     kids: std::sync::Mutex<Vec<ChildName>>,
@@ -1338,11 +1292,9 @@ impl TaskRunner for Named {
     }
 }
 
-/// **A child is named by its handle or its slug — the job rule, case by case.** The handle
-/// always wins; a name one child carries is that child; a name two of this session's children
-/// carry is refused naming both; a name a grandchild shares with a child is the child's; a name
-/// only a grandchild carries is the grandchild's; and anything else is handed on unchanged, so the
-/// runner's own refusal (or a peer session's id) reaches it as it was written.
+/// A child is named by its handle or its slug, the job rule case by case: the handle wins, a name
+/// one child carries is that child, a name two of this session's children carry is refused naming
+/// both, and anything else is handed on unchanged so the runner's own refusal reaches it.
 #[test]
 fn a_child_resolves_by_id_or_slug_and_an_ambiguous_name_is_refused() {
     let kids = Named::family().children();
@@ -1432,10 +1384,9 @@ fn a_task_childs_slug_is_given_or_derived_and_made_unique() {
     assert_eq!(child_slug(Some(" "), "Bench it", is_taken), "bench-it");
 }
 
-/// **The tools take the slug where they took the handle, and say the name back.** `task` names
-/// the child it started by its label; `task_result`, `task_message` and `task_resume` reach the
-/// runner with the HANDLE the slug stands for; a shared name reaches nothing; and `task_result`'s
-/// listing names every child by its label.
+/// The tools take the slug where they took the handle, and say the name back: `task` labels the
+/// child it started, `task_result`, `task_message` and `task_resume` reach the runner with the
+/// handle the slug stands for, and a shared name reaches nothing.
 #[test]
 fn the_task_tools_take_a_slug_and_name_the_child_by_it() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -1592,11 +1543,9 @@ fn a_worktree_goes_where_the_layout_says() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **`where: "host:NAME"` names a machine the operator declared, or it names nothing.**
-///
-/// The refusal is the interesting half: a name that is not in the file must spawn nothing
-/// and must say which names the file *does* have, because "no host `lab2`" when the file
-/// says `lab2x1` is a refusal the caller cannot act on.
+/// `where: "host:NAME"` names a machine the operator declared, or it names nothing. The refusal is
+/// the interesting half: a name that is not in the file must spawn nothing and must say which names
+/// the file does have, since a refusal the caller cannot act on is no answer.
 #[test]
 fn a_remote_placement_needs_a_host_the_operator_declared() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -1663,19 +1612,9 @@ fn a_remote_placement_needs_a_host_the_operator_declared() {
     assert!(empty.contains("needs a name"), "{empty}");
 }
 
-/// **`parent` is a HANDLE, not a name** — the reserved word a child answers its parent with.
-///
-/// Three facts, and each is a way this could be got wrong:
-///
-/// * a session that has a parent reaches it by the word, and what the runner is asked to say is
-///   addressed to the parent's ID — the model never carries a thirty-character id;
-/// * a session at the top of its tree is REFUSED by name, because there is nobody above it. The
-///   alternative — resolving `parent` to nothing and letting the refusal come from `send` — would
-///   say *"no session `parent` is live"*, which is a sentence about a session rather than about
-///   the tree;
-/// * **a child actually called `parent` does not shadow it.** The word is read before
-///   [`resolve_child`]'s handles and slugs, so a child whose slug is `parent` is not reachable by
-///   it: `parent` means the session that started this one, and nothing else.
+/// `parent` is a HANDLE, not a name: the reserved word a child answers its parent with. It resolves
+/// to the parent's id, so the model never carries a thirty-character string, and a session at the
+/// top of its tree is refused by name. A child called `parent` does not shadow it.
 #[test]
 fn parent_is_a_reserved_handle_and_a_root_is_refused_by_name() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -1791,18 +1730,9 @@ fn parent_is_a_reserved_handle_and_a_root_is_refused_by_name() {
     );
 }
 
-/// **A child with no record's row says how far it got** — the class, not one fixed sentence.
-///
-/// MEASURED 2026-11-01, from the review of the branch that made a lost child appear in the list at
-/// all: every lost child that did not end on an assistant row printed *gone with no answer —
-/// nothing is running it, and no record of it was ever written*, so a parent reading the list could
-/// not tell a child that died mid-`bash` from one that never opened a session. The single-handle
-/// door already computed the difference (`subagent_record::ended_in`) and used it there alone.
-///
-/// **And no row may name a cause the list does not know.** *Why* the row is missing is the store's
-/// own class (`no_record_cause`), and the list is handed only the fact that it is: a row that said
-/// *the store refused the write* about a child older than the store's first record would be a
-/// cause nobody measured (the defect the window closed).
+/// A child with no record's row says how far it got, the class and not one fixed sentence: a parent
+/// reading the list must be able to tell a child that died mid-`bash` from one that never opened.
+/// And no row may name a cause the list does not know: why the row is missing is the store's class.
 #[test]
 fn a_lost_childs_row_says_how_far_it_got() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -1912,14 +1842,9 @@ fn a_lost_childs_row_says_how_far_it_got() {
     assert_eq!(listed.lines().count(), 4, "{listed}");
 }
 
-/// **`task_result task=<handle>` on a child with no record does not hand its text over as an
-/// answer** — the caveat comes first, and it survives the shape a payload is cut to.
-///
-/// MEASURED 2026-11-01, from the review: `a_child_with_no_record` returns `Done { answer: text }`
-/// for any last `Assistant` row with no tool calls, and the Done arm printed that text alone.
-/// During a shutdown an interrupted turn *comes back as an ANSWER — whatever the child had written
-/// when it stopped* (`SubagentRecord::settled`'s own comment), so a parent asking by handle got a
-/// turn that stopped mid-way under the name of the child's last word.
+/// `task_result task=<handle>` on a child with no record does not hand its text over as an answer:
+/// the caveat comes first, and it survives the shape a payload is cut to. An interrupted turn comes
+/// back as an answer whatever the child had written, so a bare text would read as its last word.
 #[test]
 fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -1941,10 +1866,9 @@ fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
         fn started(&self) -> Vec<String> {
             vec!["s-1-sub-lost".into(), "s-1-sub-kept".into()]
         }
-        // **The lost child is deliberately NOT in the list** — the list is the children a record
-        // was due for, and a child from before the store recorded any is one a model may still
-        // name (517 of one session's 573 on the operator's box). Reading the class out of the list
-        // would leave exactly those children's answers bare.
+        // The lost child is deliberately NOT in the list: the list is the children a record was due
+        // for, and a child from before the store recorded any is one a model may still name, so
+        // reading the class out of the list would leave exactly those answers bare.
         fn children(&self) -> Vec<ChildName> {
             vec![ChildName {
                 handle: "s-1-sub-kept".into(),
