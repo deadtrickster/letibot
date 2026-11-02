@@ -551,10 +551,23 @@ pub(crate) fn apparatus_absent_words(step: &str, what: &str, machine: Option<&st
     )
 }
 
-/// Output that shows a kill rather than a verdict: cargo's own sentence for a child (a rustc, a
-/// test binary) that a signal ended.
+/// The signal a kill in the OUTPUT names, rather than a verdict: cargo's own sentence for a child
+/// (a rustc, a test binary) that a signal ended.
+fn shown_kill(out: &str) -> Option<i32> {
+    for (marker, sig) in [
+        ("(signal: 9, SIGKILL", libc::SIGKILL),
+        ("(signal: 15, SIGTERM", libc::SIGTERM),
+    ] {
+        if out.contains(marker) {
+            return Some(sig);
+        }
+    }
+    None
+}
+
+/// Whether the output shows a kill rather than a verdict - see [`shown_kill`].
 fn shows_a_kill(out: &str) -> bool {
-    out.contains("(signal: 9, SIGKILL") || out.contains("(signal: 15, SIGTERM")
+    shown_kill(out).is_some()
 }
 
 /// Read a red step ([`RedCause`]). Pure, so the measured case is a unit test: `exit` is how the
@@ -583,6 +596,12 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
     // the whole of the fix.
     if let Some(what) = apparatus_absent(out) {
         return RedCause::ApparatusAbsent(what);
+    }
+    // A child killed far from the cap - the box's OOM killer took a rustc - leaves cargo answering
+    // with a code of its own and the kill in its output. The step's leader is not the thing that
+    // ended without judging, so the output's signal is the answer.
+    if !code_failed && let Some(sig) = shown_kill(out) {
+        return RedCause::KilledBySignal(sig);
     }
     match exit {
         StepExit::Signal(s) if !code_failed => RedCause::KilledBySignal(s),
@@ -2214,6 +2233,48 @@ mod tests {
             red_cause(ENDED_IN_WARNINGS, StepExit::Signal(9), &uncapped),
             RedCause::KilledBySignal(9)
         );
+    }
+
+    /// A rustc the BOX's own OOM killer took is not the code's verdict: cargo answers with a code of
+    /// its own and prints the child's kill, and the cgroup's counters never see it because the kill
+    /// happened outside the gate's cap.
+    #[test]
+    fn a_child_the_box_killed_far_from_the_cap_is_unjudged_not_red() {
+        let out = "error: could not compile `letibot-tui` (lib)\n\nCaused by:\n  process didn't \
+                   exit successfully: `rustc --crate-name letibot_tui src/lib.rs` (signal: 9, \
+                   SIGKILL: kill)\n\nwarning: build failed, waiting for other jobs to finish...\n";
+        let far = StepMemory::Used(MemoryUse {
+            cap: Some(24 * GIB),
+            peak: 6 * GIB,
+            oom_kills: 0,
+        });
+        assert_eq!(
+            red_cause(out, StepExit::Code(101), &far),
+            RedCause::KilledBySignal(libc::SIGKILL),
+            "nothing was judged: the compiler was killed, not the code"
+        );
+        // And the row it writes says so, rather than *the step failed*.
+        let judged = judge(
+            "cargo test --offline --workspace",
+            StepEnd::Red(out.into(), StepExit::Code(101)),
+            far.clone(),
+            0,
+            Duration::from_secs(1800),
+        );
+        assert_eq!(judged.outcome, MergeGateOutcome::Killed);
+        let Some(GateVerdict::Infra(why)) = judged.verdict else {
+            panic!("a kill by the box must not be a verdict about the code");
+        };
+        assert!(
+            why.starts_with(GATE_KILLED)
+                && why.contains("killed by signal 9 (SIGKILL)")
+                && why.contains("UNJUDGED, not red")
+                && !why.contains("%"),
+            "{why}"
+        );
+        // A step that judged the code and then died is still the code's red.
+        let failed = "test result: FAILED. 1 passed; 1 failed\nerror: 1 target failed\n";
+        assert_eq!(red_cause(failed, StepExit::Code(101), &far), RedCause::Code);
     }
 
     /// A step that refused to skip is the MACHINE's, not the branch's - the measured case from
