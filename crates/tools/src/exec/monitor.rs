@@ -783,6 +783,79 @@ impl Monitors {
         Some(f)
     }
 
+    /// Give one of this registry's watchers to another - a session's monitor handed to its heir,
+    /// which is the half of T24 that a monitor needs as much as a job does.
+    ///
+    /// The one-waiter-per-name rule travels with it: a name the heir is already watching is
+    /// REFUSED and the monitor stays here, because two watchers under one name is the defect
+    /// requirement 4 exists to prevent, and dropping it on the floor would be worse than either -
+    /// a watcher that vanishes records nothing, which is the invisible end this package is about.
+    ///
+    /// The heir's poller is started if it had none, and a custom condition's push signal is
+    /// re-installed against the heir: a condition that rang the giver's poller would ring a
+    /// thread that has nothing left to poll, and a monitor whose wakes reach nobody is a poll.
+    pub fn hand_over(
+        self: &Arc<Self>,
+        name: &str,
+        to: &Arc<Monitors>,
+    ) -> Result<(), Box<MonitorError>> {
+        if Arc::ptr_eq(self, to) {
+            return Err(Box::new(MonitorError::NoSuchMonitor {
+                name: name.to_string(),
+                live: self.live_names(),
+            }));
+        }
+        // Two registries, two locks, taken in one fixed order - the lower address first - so
+        // two sessions handing over in opposite directions at the same instant cannot hold
+        // them in the other order. Never holding both would leave a window in which the
+        // monitor is in neither registry, which is the invisibility this refuses.
+        let self_first = (Arc::as_ptr(self) as usize) < (Arc::as_ptr(to) as usize);
+        // The whole move is one block, so both locks are released before the poller is started:
+        // `spawn_poller` takes no lock, but a thread started under one is a thread that can only
+        // fail to be able to say so.
+        let (m, start) = {
+            let (from_lock, into_lock) = if self_first {
+                (&self.inner, &to.inner)
+            } else {
+                (&to.inner, &self.inner)
+            };
+            let mut a = from_lock.lock().expect("monitors");
+            let mut b = into_lock.lock().expect("monitors");
+            let (from, into) = if self_first {
+                (&mut *a, &mut *b)
+            } else {
+                (&mut *b, &mut *a)
+            };
+            let Some(m) = from.live.get(name).cloned() else {
+                return Err(Box::new(MonitorError::NoSuchMonitor {
+                    name: name.to_string(),
+                    live: from.live.keys().cloned().collect(),
+                }));
+            };
+            if let Some(held) = into.live.get(name) {
+                return Err(Box::new(MonitorError::NameTaken {
+                    name: name.to_string(),
+                    watching: held.watch.describe(),
+                    owner: held.owner.clone(),
+                    declared_by: held.declared_by.clone(),
+                    age: held.age(),
+                }));
+            }
+            from.live.remove(name);
+            into.live.insert(name.to_string(), Arc::clone(&m));
+            let start = !into.polling;
+            into.polling = true;
+            (m, start)
+        };
+        if let Probe::Custom(c) = &m.probe {
+            c.clone().install(to.signal_fn());
+        }
+        if start {
+            to.spawn_poller();
+        }
+        Ok(())
+    }
+
     /// Retire every monitor a scope owned, because the scope ended. Called from the reaping
     /// path so the record lands when the scope goes: a monitor merely left unpolled would look
     /// exactly like one whose condition never fired.
@@ -1433,6 +1506,108 @@ mod tests {
             "a retired monitor is not still listed"
         );
         assert_eq!(ms.firings().len(), 1, "and it is still in the record");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_monitor_handed_to_an_heir_watches_there_and_leaves_the_giver() {
+        // T24's other half: a watcher a session cannot take with it is handed to the session
+        // that outlives it, and it must be WATCHING there - a monitor in a registry whose
+        // poller never started is a row nobody evaluates, which reads exactly like a
+        // condition that never happened.
+        let dir = tmp();
+        let giver = Arc::new(Monitors::new());
+        let heir = Arc::new(Monitors::new());
+        let watched = dir.join("appears");
+        giver
+            .declare(
+                "logs",
+                scope(&dir),
+                Watch::Path(watched.clone()),
+                None,
+                "turn-1",
+                DEFAULT_TTL,
+                false,
+            )
+            .expect("declared");
+
+        giver.hand_over("logs", &heir).expect("handed over");
+        assert!(
+            giver.list().is_empty(),
+            "a monitor in two registries is two owners"
+        );
+        assert_eq!(heir.live_names(), vec!["logs".to_string()]);
+
+        // And it WORKS in the heir: the path it was baselined against changes, and the heir's
+        // own pass is what finds it.
+        std::fs::write(&watched, "x").unwrap();
+        assert!(
+            heir.get("logs").is_some(),
+            "the heir holds the very monitor, not a copy"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut fired = Vec::new();
+        while Instant::now() < deadline {
+            // The RECORD, not `tick`'s return: handing over starts the heir's poller, so either
+            // that thread or this call may be the one that looks.
+            fired = heir.firings();
+            if !fired.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            fired.len(),
+            1,
+            "the heir's pass must evaluate what it was given"
+        );
+        assert!(fired[0].fired.happened(), "{:?}", fired[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hand_over_into_a_name_the_heir_already_watches_is_refused_and_nothing_moves() {
+        // Requirement 4 has to survive the move: if handing over could replace a watcher, a
+        // monitor would disappear with no record at the exact moment somebody asked for a
+        // second one under that name.
+        let dir = tmp();
+        let giver = Arc::new(Monitors::new());
+        let heir = Arc::new(Monitors::new());
+        for (ms, who) in [(&giver, "giver"), (&heir, "heir")] {
+            ms.declare(
+                "build",
+                scope(&dir),
+                Watch::Path(dir.join(who)),
+                None,
+                who,
+                DEFAULT_TTL,
+                false,
+            )
+            .expect("declared");
+        }
+        let e = giver.hand_over("build", &heir).unwrap_err();
+        assert!(e.to_string().contains("already"), "{e}");
+        assert_eq!(
+            giver.live_names(),
+            vec!["build".to_string()],
+            "a refused hand-over leaves the monitor where it was"
+        );
+        assert_eq!(
+            heir.list()[0].declared_by,
+            "heir",
+            "and the heir's own watcher is not the one that moved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_monitor_that_does_not_exist_cannot_be_handed_over() {
+        let dir = tmp();
+        let giver = Arc::new(Monitors::new());
+        let heir = Arc::new(Monitors::new());
+        let e = giver.hand_over("nothing", &heir).unwrap_err();
+        assert!(e.to_string().contains("nothing"), "{e}");
+        assert!(heir.list().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
