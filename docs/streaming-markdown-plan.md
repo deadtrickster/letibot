@@ -7,8 +7,8 @@ it registers, and the TUI's markdown is its first consumer.
 
 The short version: the engine works, but tree-sitter's incremental reuse is **not** an asymptotic
 win for markdown. A push re-lexes essentially the whole document, so a whole-document stream is
-O(N²) and the µs-per-push budget misses by ~100×. The fix is the architecture the hand-written
-lexer already had: **never give the parser the settled text**.
+O(N²) and the µs-per-push budget misses by ~100×. The fix is the architecture the lexer already
+had: **never give the parser the settled text**.
 
 ## 1. The measurement that decided the design
 

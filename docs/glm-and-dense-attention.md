@@ -47,8 +47,8 @@ fast** - memory corruption with no error, where the same flag is harmless elsewh
 - **Re-anchoring is model-dependent.** On the dense 27B an old rule is already attended, merely
   diluted, so placement helps least there and most on the two sparse models. On GLM, ask whether
   *ordering* degrades.
-- **A per-model hazard belongs in the backend's declared capabilities**, not a rule file:
-  `BackendCaps` (`crates/backend`) has no field for `--cache-reuse` yet.
+- **A per-model hazard belongs in the backend's declared capabilities**, not a rule file -
+  `BackendCaps` has no field for `--cache-reuse` yet.
 
 Not established: whether llama.cpp applies `top_k 2048` at serving time
 (`docs/model-topology.md` §7.1), and GLM's linear state size, which its header does not declare.
