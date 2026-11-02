@@ -120,6 +120,14 @@ inode read from inside), `SharedByDecision` (with the reason), or `NotEntered` -
 refuses; a property is `Held`, `Absent` (this OS cannot give it) or `Unverified` (it could have been
 measured and was not, which is reported as unknown, never as held).
 
+Two consequences of the seal. Inside a boundary **no user namespace can be created**: `unshare -U
+true` is ENOSPC, which is `SealKind::NestedNamespaces` doing its job, so no test that spawns a real
+`bwrap` (or opens a real `HostProcesses`, which wants a delegated cgroup v2) can pass from inside one.
+Those suites take their `apparatus::present` branch, which is loud and green - "the boundary tests are
+green here" therefore says nothing, and the suites must run on the merge gate. And a session's `/tmp`
+directory must be a **subdirectory** of the daemon's scratch: bound at `/tmp` itself, the scratch would
+put `job-<id>.out` inside the sandbox, where `rm -rf /tmp/*` deletes it.
+
 `Boundary::encloses` is the whole test, and it is what §6 admits inside: user, mount and pid all
 `Entered`; **both seals `Held`** rather than merely not-open - `NestedNamespaces` (a process inside
 cannot `unshare` back out) and `NoNewPrivs` (or a setuid binary reachable inside is an escalation);
