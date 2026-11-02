@@ -1,39 +1,12 @@
 //! The stack: what layers exist, which one answers a hook, and what a change to one costs.
 //!
-//! # Discovery, and why the order is what it is
+//! Four scopes in precedence -- session over project over user over built-in -- and newest on top
+//! inside each, so the stack reads as the history of the fixes made in a session. A directory with
+//! no readable manifest is a [`Failure`]; a manifest with no module is a declaration and not a
+//! failure, since that is the documented install of a built-in's tool.
 //!
-//! Four scopes, in precedence: **session over project over user over built-in** (`§2.1`). Within
-//! a scope the order is *creation order, newest on top*, so the stack reads as the history of the
-//! fixes made in a session — the last layer written is the one whose answer wins. A layer
-//! directory's mtime is its creation order here, with the name as the tie-break, because a
-//! directory has no birth time in `std` and two layers added in the same second are still
-//! ordered, just by name.
-//!
-//! Ids follow from that order and never from a file: `s1`, `s2`, `p1`, `u1`. Built-ins are named
-//! (`b-github-pr`) because they are a fixed set the host compiled in, not history.
-//!
-//! A directory with no readable `plugin.toml` is **not a layer**: it is a [`Failure`] naming the
-//! directory. A layer whose manifest parses but whose module will not load *is* a layer, listed
-//! with its module missing — the stack view shows it broken instead of showing nothing, which is
-//! the difference between "this fix is not installed" and "this fix is installed and exploding".
-//!
-//! A layer directory with a manifest and **no `plugin.wasm` at all** is neither: it is a
-//! **declaration**, and it is not a failure. That is the documented install of a built-in's tool
-//! (`docs/plugins-plan.md` §4.8) — the manifest is what the model is offered and the module that
-//! answers it is the one the binary carries, put at the bottom of the session's stack for exactly
-//! that reason — so a correct install must not look like a broken one. The layer is listed (its
-//! `sha256` is empty: there are no bytes to hash), it answers nothing, and it is silent:
-//! [`Stack::poll_changes`] has always treated the same absent file as *a build in progress* rather
-//! than as news, and a `plugin_layer` warning on every session in the project is a false alarm
-//! that teaches a person to ignore the code that means it.
-//!
-//! # Failures during a call are the call's, not the stack's
-//!
-//! [`Stack::call`] takes `&self`, because a stack is shared: the daemon keeps one behind an
-//! `Arc` and every hook call in every turn goes through it. So a failure met *during* a
-//! resolution is returned in [`Resolved::failures`], where the caller that must tell the model
-//! has it in hand, and [`Stack::failures`] is the other kind — what discovery, `apply` and
-//! `poll_changes` could not load, which is a property of the stack rather than of one call.
+//! [`Stack::call`] takes `&self` because one stack is shared, so a failure met during a resolution
+//! is returned in the call's own list, where the caller that must tell the model has it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,20 +20,12 @@ use crate::manifest::{Manifest, Scope, ToolDecl};
 use crate::trust::{Pin, Trust};
 use crate::{Loader, MANIFEST, Module, sha256_file};
 
-/// How many module calls one resolution may make.
-///
-/// An ask-below nests — a layer asks below, that layer asks below — so a stack of ten layers could
-/// in principle ask for a great many answers to settle one hook. The budget turns a pathological
-/// arrangement into a recorded failure with an answer from below, instead of a pane that takes a
-/// second to draw. Ten layers of one ask each need far fewer than this.
+/// How many module calls one resolution may make: an ask-below nests, and the budget turns a
+/// pathological arrangement into a recorded failure rather than a pane that takes a second to draw.
 const MAX_CALLS: usize = 32;
 
-/// **One tool a layer declares, with the layer it came from and what that layer may read.**
-///
-/// A [`ToolDecl`] alone is prompt bytes; a tool the host seats needs three more facts, and all
-/// three are the layer's rather than the tool's: which layer it is (for the sentence a failure
-/// carries), what it may read (a tool hook's looks are checked against the layer's capabilities),
-/// and the scope it came from (so a project layer overrides a built-in one by being higher).
+/// One tool a layer declares, with the layer it came from, what that layer may read, and its
+/// scope: a [`ToolDecl`] alone is prompt bytes, and a seated tool needs the layer's own facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredTool {
     /// The layer's directory name for a layer on disk, the built-in's name for one compiled in.
@@ -86,18 +51,9 @@ pub struct Layer {
     /// [`Layer::trusted`] is decided against beside `sha256`.
     pub manifest_sha256: String,
     pub disabled: bool,
-    /// **Whether this layer may run freely** — DECISIONS.md D17, in the operator's words on
-    /// 2026-10-31: *"Only the builtins run freely; anything I place later needs a pin."*
-    ///
-    /// `true` for a built-in (it is part of the binary the operator runs, and nobody placed it at
-    /// run time) and for a layer whose module AND manifest match a pin somebody recorded. `false`
-    /// for everything else a person or a model put on disk, whatever its scope and whoever wrote
-    /// it — where a file sits proves nothing, so the fact is the hash in [`crate::Trust`].
-    ///
-    /// An untrusted layer still answers; what changes is that **every call it makes is
-    /// adjudicated without a card** (`Gate::admit_unasked`) rather than run. Where that decision
-    /// is taken is the host's: `crates/harnessd/src/plugins/tool.rs` for a tool call and
-    /// `crates/harnessd/src/plugins/conditions.rs` for an `exec` look.
+    /// Whether this layer may run freely: `true` for a built-in, and for a layer whose module and
+    /// manifest match a pin somebody recorded. Where a file sits proves nothing, so the fact is the
+    /// hash in [`crate::Trust`]; an untrusted layer still answers, with every call adjudicated.
     pub trusted: bool,
     /// The pin nearest to this layer: the one its bytes match, or — with `trusted` false — the one
     /// they have broken. `None` for a layer nothing was ever pinned for, and for a built-in.
@@ -116,11 +72,9 @@ impl Layer {
     }
 }
 
-/// **A pin whose bytes moved** — the layer, what was pinned, and what is on disk now.
-///
-/// Drained by the host, which says it once (`plugin_untrusted`): *this layer was pinned and is not
-/// any more* is news when it happens, and the alternative — a layer that quietly stopped being
-/// yours — is the state the ladder exists to make impossible to miss.
+/// A pin whose bytes moved: the layer, what was pinned, and what is on disk now. Drained by the
+/// host, which says it once, because a layer that quietly stopped being yours is the state the
+/// ladder exists to make impossible to miss.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrokenPin {
     pub layer: String,
@@ -163,11 +117,8 @@ pub struct Resolved {
     pub failures: Vec<Failure>,
 }
 
-/// A layer's module changed on disk and is waiting for the gate.
-///
-/// The gate fills in the module it loaded, and [`Stack::apply`] swaps in **exactly that one**:
-/// applying a second compile of the same bytes would mean the module that answers is not the
-/// module that was replayed, which is the one thing the gate exists to prevent.
+/// A layer's module changed on disk and is waiting for the gate. [`Stack::apply`] swaps in exactly
+/// the module the gate loaded, so what answers is always what was replayed.
 pub struct Candidate {
     /// The id of the layer this replaces, or empty for a layer that does not exist yet.
     pub layer: String,
@@ -242,11 +193,9 @@ impl Clone for Candidate {
     }
 }
 
-/// What a layer's module looked like the last time the stack read it.
-///
-/// The SHA-256 is the truth — it is what a layer *is*, in the transcript and in the stack view.
-/// The mtime and the length are the cheap half of a poll: a file that has not moved in either
-/// cannot have different bytes, so a poll over a quiet stack stats files and hashes none of them.
+/// What a layer's module looked like the last time the stack read it. The SHA-256 is the truth;
+/// the mtime and length are the cheap half of a poll, where a file that has not moved cannot have
+/// different bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Fingerprint {
     mtime: Option<SystemTime>,
@@ -273,12 +222,9 @@ fn fingerprint(path: &Path) -> Result<Fingerprint, String> {
     })
 }
 
-/// Whether the module a layer's manifest names is on disk at all.
-///
-/// `false` for a path that is not there, and for nothing else: a module that exists and will not
-/// load is a [`Failure`], and a directory of that name is one too (`fingerprint` refuses to hash
-/// it). A dangling symlink counts as a module that is there, so the reason is recorded once instead
-/// of being taken for a layer that never meant to have one.
+/// Whether the module a layer's manifest names is on disk. `false` only for a path that is not
+/// there: one that exists and will not load is a [`Failure`], and a dangling symlink counts as a
+/// module, so the reason is recorded once.
 fn has_module(path: &Path) -> bool {
     !matches!(
         std::fs::symlink_metadata(path),
@@ -298,10 +244,8 @@ struct Wired {
     seen: Fingerprint,
 }
 
-/// The four scopes resolved into one stack.
-///
-/// Layered as the module doc says, and cloneable so the gate can fork one: the fork is the
-/// shadow of §2.4, and the live stack it was cloned from is untouched.
+/// The four scopes resolved into one stack, cloneable so the gate can fork one and leave the live
+/// stack untouched.
 #[derive(Clone)]
 pub struct Stack {
     /// Newest-first within scope, scopes in precedence order. This vector *is* the order a hook
@@ -319,19 +263,9 @@ pub struct Stack {
 }
 
 impl Stack {
-    /// Discover layers from the four scopes.
-    ///
-    /// Each argument is the *root of a scope* and may be absent, which is an empty scope and not
-    /// an error — a head with no project, a user who has installed nothing:
-    ///
-    /// | scope | where the layer directories are |
-    /// |---|---|
-    /// | session | under `session_dir` itself (the session's own plugin directory) |
-    /// | project | under `<project>/.letibot/plugins` |
-    /// | user | under `<user>/plugins`, with `<user>` the letibot config dir (`~/.config/letibot`) |
-    ///
-    /// Built-ins are added afterwards with [`Stack::register_builtin`], because they are compiled
-    /// into the host rather than found on disk.
+    /// Discover layers from the four scopes. Each argument is a scope's root and may be absent,
+    /// which is an empty scope rather than an error: session, then `<project>/.letibot/plugins`,
+    /// then the user's config dir. Built-ins are added afterwards, since they are compiled in.
     pub fn discover(
         session_dir: Option<&Path>,
         project: Option<&Path>,
@@ -358,21 +292,9 @@ impl Stack {
         stack
     }
 
-    /// **Hand this stack D17's book**, and decide every placed layer against it.
-    ///
-    /// Called by the host right after discovery (the daemon's `PluginHost` and the head's), and
-    /// again whenever the book moves on disk: a pin a person takes in the head has to be in force
-    /// in the daemon's stack at its next poll, and a layer rebuilt after its pin has to stop being
-    /// free in the same place.
-    ///
-    /// A stack nobody gives a book to has every placed layer untrusted, which is the fail-closed
-    /// direction and the reason this is a setter rather than an argument to `discover`: a caller
-    /// that forgot it would otherwise be a caller that trusted everything.
-    /// **The answer is the news, and the caller must say it.** A layer whose bytes moved while no
-    /// daemon was running is exactly the case `plugin_untrusted` exists for, and `refresh_trust`
-    /// records a pin as *said* as it answers it — so a caller that dropped this `Vec` would silence
-    /// the one warning the restart path needs. `PluginHost::with_trust` queues it for its first
-    /// tick; the head's `Host::build` puts it in the sentence a person sees.
+    /// Hand this stack D17's book and decide every placed layer against it: no book means every
+    /// placed layer is untrusted, which is why this is a setter. The answer is the news, and a
+    /// caller that dropped it would silence `plugin_untrusted`.
     pub fn set_trust(&mut self, trust: Arc<Trust>) -> Vec<BrokenPin> {
         self.trust = Some(trust);
         self.refresh_trust()
@@ -383,15 +305,9 @@ impl Stack {
         self.trust.as_ref()
     }
 
-    /// **Re-decide every placed layer's [`Layer::trusted`]** against the book, and answer the pins
-    /// whose bytes have moved since they were taken.
-    ///
-    /// Cheap enough for a two-second poll: a hash of each layer's `plugin.toml` (a couple of
-    /// hundred bytes) and the module's hash the stack already holds. A built-in is skipped — it is
-    /// free by definition and has no directory to read.
-    ///
-    /// The answer is what is NEW: a layer that was pinned and is not any more, said once. The
-    /// caller says it (`plugin_untrusted`), because a stack has nobody to talk to.
+    /// Re-decide every placed layer's trust against the book, and answer the pins whose bytes have
+    /// moved: cheap enough for a two-second poll, since the manifest and module hashes are already
+    /// held. The answer is what is new, because a stack has nobody to talk to.
     pub fn refresh_trust(&mut self) -> Vec<BrokenPin> {
         let Some(trust) = self.trust.clone() else {
             return Vec::new();
@@ -427,10 +343,8 @@ impl Stack {
         news
     }
 
-    /// **The layer a person or a tool named** — by id (`p1`), by its manifest name, by the
-    /// directory it sits in, or by that directory's own name. `None` when nothing matches, and
-    /// never a guess between two: a caller that has to choose is a caller that should have named
-    /// an id.
+    /// The layer a person or a tool named, by id, manifest name or directory. `None` when nothing
+    /// matches, and never a guess between two: a caller that has to choose should have named an id.
     pub fn layer_named(&self, what: &str) -> Option<&Layer> {
         let dir = Path::new(what);
         self.layers
@@ -461,26 +375,9 @@ impl Stack {
             .collect()
     }
 
-    /// **What the layers of these three scopes declare, without loading a single module.**
-    ///
-    /// `Stack::discover` compiles every `plugin.wasm`, which is the right price at session open
-    /// and the wrong one *before* it: a declared tool is prompt bytes, and the prompt is composed
-    /// before the daemon has a hub to build a plugin host with. So this walks the same three
-    /// directories in the same order — session, project, user; newest layer first inside each —
-    /// and reads only the `plugin.toml`s.
-    ///
-    /// **No dedupe here, on purpose**, and no built-in scope either. The order IS the precedence, so
-    /// the caller keeps the first declaration of each tool name — and the built-in table is *not*
-    /// read here: a tool is seated when a layer on disk declares it, never because the binary
-    /// carries it (`docs/plugins-plan.md` §4.8; `crates/harnessd/tests/wired.rs` pins the default
-    /// session's tool set for exactly that reason). A layer whose module does not load is still
-    /// listed: the tool is then seated and answers *the layer is not loaded*, which is a sentence a
-    /// model can act on rather than a tool that silently is not there. So is a layer with no module
-    /// at all — the documented install of a built-in's tool is its `plugin.toml` alone, and the
-    /// module that answers it is the one the host puts below.
-    ///
-    /// A `plugin.toml` that does not parse is skipped here and reported by `discover`, which is
-    /// the caller that has a `Failure` list to put it in.
+    /// What the layers of these scopes declare, without loading a module: a declared tool is
+    /// prompt bytes and the prompt is composed before a plugin host exists. The order is the
+    /// precedence, so the caller keeps the first declaration of each name.
     pub fn declared_tools(
         session_dir: Option<&Path>,
         project: Option<&Path>,
@@ -546,13 +443,8 @@ impl Stack {
         self.layers.iter().find(|l| l.id == id)
     }
 
-    /// **The fuel a layer's module burned on its last call** — the price per hook, which is what
-    /// `plugin test` and `plugin load` report and what `GateReport::fuel` is built from.
-    ///
-    /// `None` for a layer whose module never loaded, and for a built-in registered without one:
-    /// *nothing was measured* is not *it cost nothing*, and a caller that printed `0` for both
-    /// would be reporting a free hook that never ran. The number is the engine's own last call, so
-    /// it is per module and not per hook — ask it immediately after the call that interests you.
+    /// The fuel a layer's module burned on its last call, which is what `plugin test` reports.
+    /// `None` for a module that never loaded: *nothing was measured* is not *it cost nothing*.
     pub fn fuel(&self, id: &str) -> Option<u64> {
         self.wired
             .get(id)
@@ -560,25 +452,16 @@ impl Stack {
             .map(|m| m.fuel())
     }
 
-    /// Register a built-in default: a layer the host compiled in, with the module that answers
-    /// for it. The **last registered is on top** of the built-in scope, which is the same
-    /// newest-on-top rule the disk scopes follow — so register the least specific default first.
-    ///
-    /// An empty id is filled in as `b-<name>`. A layer whose manifest and exports disagree, or
-    /// whose id is already taken, is refused and recorded rather than registered: ids are how
-    /// `set_disabled`, `by` and the transcript name a layer, so two of them cannot be one.
+    /// Register a built-in default: a layer the host compiled in. The last registered is on top,
+    /// so register the least specific first. A manifest that disagrees with its exports, or a taken
+    /// id, is refused and recorded.
     pub fn register_builtin(&mut self, layer: Layer, module: Box<dyn Module>) {
         self.register_builtin_shared(layer, Arc::from(module));
     }
 
-    /// [`Stack::register_builtin`] with a module the caller already holds behind an `Arc` — the
-    /// door a built-in whose compiled module is kept for the whole process comes through
-    /// ([`Loader::load_builtin`]).
-    ///
-    /// One `Arc`, several stacks: a `Module` answers `&self`, so a session's stack, the gate's
-    /// shadow and the next session's stack may all be wired to the same compiled bytes — and
-    /// since compiling one is the expensive half of installing a built-in (1.97 s for this
-    /// binary's tool layer in a debug host, MEASURED 2026-10-28), paying it once is the point.
+    /// [`Stack::register_builtin`] with a module the caller already holds behind an `Arc`, so a
+    /// session's stack, the gate's shadow and the next session's can share one compile, which is
+    /// the expensive half of installing a built-in.
     pub fn register_builtin_shared(&mut self, mut layer: Layer, module: Arc<dyn Module>) {
         // **A built-in runs freely, by definition** — D17's first arm. It is the binary's own
         // bytes: nobody placed them at run time, so there is nothing to pin.
@@ -620,18 +503,9 @@ impl Stack {
         );
     }
 
-    /// **Register a built-in the binary carries as BYTES** — `crates/builtins`' table, read into
-    /// the bottom of the stack (`docs/plugins-plan.md` §7 step 10).
-    ///
-    /// The manifest is parsed from its `plugin.toml` text and the module comes from memory, so a
-    /// built-in goes through exactly the doors a layer on disk does: the same manifest rules, the
-    /// same export admission, the same `Loader`, the same row in the stack view. The one
-    /// difference is that the bytes never touch the filesystem, which is the whole point — a
-    /// shipped layer is not a directory that can be missing, half-installed or the wrong version.
-    ///
-    /// A failure is answered AND recorded in [`Stack::failures`]: the caller puts it in front of a
-    /// person, and the stack view shows the built-in broken rather than absent — *this is
-    /// installed and exploding* is the state that needs saying, the same rule discovery follows.
+    /// Register a built-in the binary carries as bytes: the same doors a layer on disk goes
+    /// through, and bytes that never touch the filesystem, so a shipped layer cannot be missing or
+    /// half-installed.
     pub fn register_builtin_bytes(
         &mut self,
         name: &str,
@@ -688,12 +562,9 @@ impl Stack {
         Ok(())
     }
 
-    /// Resolve one hook through the stack, from the top.
-    ///
-    /// The protocol is the crate doc's one table: pass or unchanged falls through, mask stops
-    /// everything below, `below` round trips, anything else answers. A layer that fails is
-    /// recorded and skipped, and **one failure never stops the resolution** — the layer below
-    /// still answers, which is what keeps a broken fix from taking the session down with it.
+    /// Resolve one hook through the stack, from the top: pass falls through, mask stops the
+    /// descent, `below` round trips, anything else answers. A layer that fails is recorded and
+    /// skipped, because one failure never stops the resolution.
     pub fn call(&self, hook: &str, input: &Value) -> Resolved {
         let mut walk = Walk {
             hook,
@@ -712,13 +583,8 @@ impl Stack {
         }
     }
 
-    /// Re-stat each layer's module; the ones whose bytes changed come back as candidates.
-    ///
-    /// The file it stats is the one the manifest names, so a layer answering from a script is
-    /// polled on the script. A change is pending until it is applied, so polling again reports it
-    /// again: a candidate the gate refused has not happened, and a caller that saw one and did
-    /// nothing about it gets told again. A layer with no module at all is silent: that is a build
-    /// in progress, and a failure recorded every poll would be noise, not news.
+    /// Re-stat each layer's module; the ones whose bytes changed come back as candidates. A change
+    /// stays pending until applied, and a layer with no module is silent: a build in progress.
     pub fn poll_changes(&mut self) -> Vec<Candidate> {
         let mut out = Vec::new();
         for i in 0..self.layers.len() {
@@ -797,15 +663,9 @@ impl Stack {
         ))
     }
 
-    /// Put a candidate into the stack — **only after the gate passed**; this is the door the gate
-    /// does not close for you.
-    ///
-    /// Two things are refused here that the gate cannot see: a `plugin.wasm` that is no longer
-    /// the bytes the gate replayed (a build that ran between the two), because what answers must
-    /// be what was replayed; and a manifest that no longer admits its module. Applying a
-    /// candidate that was never gated loads what is on disk, which is what a caller who is not
-    /// using the gate wants — the gate is the path §2.3 requires, not a thing this method can
-    /// check.
+    /// Put a candidate into the stack, only after the gate passed. Two things the gate cannot see
+    /// are refused here: a module whose bytes left since the replay, and a manifest that no longer
+    /// admits its module.
     pub fn apply(&mut self, c: Candidate) -> Result<(), String> {
         if c.scope == Scope::BuiltIn {
             return Err(
@@ -887,10 +747,8 @@ impl Stack {
             .position(|l| l.scope != Scope::BuiltIn && l.dir == dir)
     }
 
-    /// **D17's second arm, in one place** — what the book says about a directory's bytes.
-    ///
-    /// `(false, None)` for a stack with no book: a caller that never handed one over gets every
-    /// placed layer adjudicated, which is the direction a mistake has to fail in.
+    /// D17's second arm in one place: what the book says about a directory's bytes. No book means
+    /// every placed layer is adjudicated, which is the direction a mistake has to fail in.
     fn standing_of(&self, dir: &Path, module: &str, manifest: &str) -> (bool, Option<Pin>) {
         match self.trust.as_ref() {
             Some(trust) => {
@@ -937,11 +795,9 @@ impl Stack {
         for (n, (path, manifest)) in found.into_iter().enumerate().rev() {
             let id = format!("{}{}", scope.prefix(), n + 1);
             let wasm = manifest.module_path(&path);
-            // **A manifest and no module is a declaration, not a failure** — the module doc's
-            // third case. Recording it would publish `plugin_layer` warnings on every session in
-            // the project for a *correct* install of a built-in's tool, and there is nothing to
-            // load, so the layer is wired with no module and an empty fingerprint and
-            // `poll_changes` picks a module up if one is ever written beside the manifest.
+            // A manifest and no module is a declaration, not a failure: recording it would publish
+            // `plugin_layer` warnings for a correct install of a built-in's tool, and
+            // `poll_changes` picks a module up if one is written beside the manifest.
             let (seen, module, hooks) = if !has_module(&wasm) {
                 (Fingerprint::absent(), None, Vec::new())
             } else {
@@ -997,10 +853,8 @@ impl Stack {
                 dir: path,
                 sha256: seen.sha256.clone(),
                 manifest,
-                // **A placed layer is not the operator's because of where it sits.** D17's
-                // second arm: the hashes in the book decide, and `set_trust` (or the poll) is
-                // what fills these in — a stack nobody gave a book to leaves every layer
-                // untrusted, which is the fail-closed direction.
+                // A placed layer is not trusted because of where it sits: the hashes in the book
+                // decide, and no book leaves every layer untrusted.
                 manifest_sha256,
                 disabled: false,
                 trusted,
@@ -1017,12 +871,8 @@ impl Stack {
         }
     }
 
-    /// One placed layer's module, or the reason it has none. **The engine question comes first.**
-    ///
-    /// A manifest may name a module that is not wasm (`docs/plugins-plan.md` step 11), and this
-    /// build has one engine. Refusing here rather than inside a loader keeps every engine honest:
-    /// a `.js` layer is on the ladder (pinned, hashed, polled) and answers nothing, which is what
-    /// the operator is told before they pin it.
+    /// One placed layer's module, or the reason it has none. The engine question comes first, so a
+    /// manifest naming something that is not wasm is refused here rather than inside a loader.
     fn load_placed(&self, manifest: &Manifest, wasm: &Path) -> Result<Box<dyn Module>, String> {
         crate::engine_for(&manifest.module)?;
         self.loader.load(wasm, &manifest.capabilities)
@@ -1624,12 +1474,8 @@ mod tests {
         );
     }
 
-    /// **A built-in the binary carries as BYTES** — `crates/builtins`' table, at the bottom of the
-    /// stack (`docs/plugins-plan.md` §7 step 10).
-    ///
-    /// The layer has no directory, a manifest that had to parse, a module that had to be admitted,
-    /// and an id built from its name — and the scope above it still wins, because a built-in is a
-    /// default and not an exception.
+    /// A built-in the binary carries as bytes, at the bottom of the stack: no directory, a manifest
+    /// that had to parse and an id built from its name, while the scope above still wins.
     #[test]
     fn a_builtin_from_bytes_sits_at_the_bottom_and_obeys_the_scopes_above_it() {
         let t = TempDir::new("builtin-bytes");
@@ -1873,10 +1719,9 @@ mod tests {
         assert!(r.failures.is_empty());
     }
 
-    /// **C3's `look` is an answer, not C2's ask-below.** A pane that asks the host to read a file
-    /// answers a document with a top-level `look`; under the old protocol the stack read that as
-    /// *ask the layer below*, recorded `look without below`, and a dashboard that asked for its
-    /// file drew nothing at all. `below` is the marker now, and `look` belongs to the pane.
+    /// C3's `look` is an answer, not C2's ask-below: a pane asks the host to read a file and
+    /// answers a document with a top-level `look`. `below` is the marker now, and `look` is the
+    /// pane's.
     #[test]
     fn a_pane_answer_carrying_c3s_look_answers_without_asking_below() {
         let t = TempDir::new("pane-look");
@@ -2130,14 +1975,8 @@ mod tests {
         assert_eq!(s.call("notice_fired", &json!({})).answer, None);
     }
 
-    /// **A manifest and no module is a declaration, not a failure** — the documented install of a
-    /// built-in's tool (`docs/plugins-plan.md` §4.8): a project copies the built-in's `plugin.toml`
-    /// into its own scope and the module that answers it is the one the host puts below.
-    ///
-    /// Before this, `discover` recorded two failures for that directory (the fingerprint of a file
-    /// that is not there, and the load of it) and the daemon published them as `plugin_layer`
-    /// warnings on every session in the project — a false alarm for a correct install, on the one
-    /// code that is supposed to mean *this layer is exploding*.
+    /// A manifest and no module is a declaration, not a failure: the documented install of a
+    /// built-in's tool copies the manifest into a project scope and the module below answers it.
     #[test]
     fn a_manifest_with_no_module_is_a_declaration_and_not_a_failure() {
         let t = TempDir::new("declared-only");

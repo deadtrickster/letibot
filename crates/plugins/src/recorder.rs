@@ -1,13 +1,6 @@
 //! The recorded inputs: the last N inputs of every hook, which is what a replay can be run over.
 //!
-//! §2.4's step 4 is *"every recorded input of every hook the change touches, through the live
-//! stack and the shadow stack"* — so the shadow gate is only as good as this ring. It holds the
-//! last [`Recorder::DEFAULT`] inputs per hook, because a hook's history is not the point: what
-//! arrives is a stream, and a diff over the last handful of real inputs is what tells a
-//! refactor that changed nothing from a fix that changed something.
-//!
-//! **Inputs only, never answers.** The answer a live stack gave at the time is not what a replay
-//! compares against; both stacks are asked the same input now, side by side, so a bug that
+//! Inputs only, never answers: both stacks are asked the same input now, side by side, so a bug that
 //! changed the answer in between is not mistaken for an intended difference.
 
 use std::collections::BTreeMap;
