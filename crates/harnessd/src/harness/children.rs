@@ -2795,65 +2795,25 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         }
     }
 
-    /// **Say something to a session that is still working** — the operator's ruling, 2026-10-06:
-    /// *"in the tree all subagents must be addressable by their parents. that is how live
-    /// corrections delivered."*
+    /// Say something to a session that is still working.
     ///
-    /// **The door is a session's own hub, and it is NOT parent-shaped.** The registry is the
-    /// daemon's, keyed by session id, so `handle` may name **any live session**: a subagent this
-    /// session started, or a peer — the operator's correction to the whole framing of this
-    /// channel, verbatim: *"well gatekeeper is not a child so we are not doing up"*. A peer is a
-    /// session in its own right, one session sends another session a message, and
-    /// [`letibot_sessionlog::CommandKind::Message`] — a sender and a text, addressed at a session
-    /// — is already exactly that. So the refusal below is for a session that DOES NOT EXIST and
-    /// for nothing else; a live session that is not this session's child is delivered to, and the
-    /// `from` it carries is what lets the recipient judge provenance.
+    /// The door is a session's own hub, and it is not parent-shaped: the registry is the daemon's,
+    /// keyed by session id, so `handle` may name any live session, a child or a peer. A peer is a
+    /// session in its own right, and a command that is a sender and a text addressed at a session is
+    /// already exactly that. So the refusal below is for a session that does not exist and nothing
+    /// else, and the `from` it carries is what lets the recipient judge provenance.
     ///
-    /// The address is `DAEMON_SUBMITTER` for the same reason it is for [`Self::kill`]: the sender
-    /// is seated in another session's hub entirely. What it submits is a
-    /// [`letibot_sessionlog::CommandKind::Message`] rather than a `Prompt`, and that difference is
-    /// the feature — the recipient hears an agent's utterance at its next round boundary, recorded
-    /// as an agent's (`from`, never the daemon: `Hub::submit`'s relayed-message arm keeps the
-    /// author), instead of something the operator is supposed to have typed.
+    /// What the recipient hears depends on its state, and the two are not the same sentence. If its
+    /// turn is running it hears the message at its next round boundary and keeps working; if it is
+    /// between turns a turn is STARTED for it, and the message is what that turn is about.
     ///
-    /// **REFUSED BY NAME WHEN THE SESSION'S THREAD IS GONE, and the answer says WHICH delivery the
-    /// sender got.** What this door used to do was refuse anything that was not a running turn,
-    /// and its reason was a measurement rather than caution: a message rides the same queue as
-    /// every other command, so a submission against a child whose turn had ended answered
-    /// `Accepted` and then sat there, because *nothing drains a child's queue between turns* —
-    /// the parent would have been told it had corrected a child that never heard a word of it.
-    /// The operator met the other end of this: *"message was queued when you stopped and it didnt
-    /// restart you"*, and then ruled on it: *"fix task_message - it should enqueue"*.
-    ///
-    /// **What changed is the sentence in the middle, and it changed by being made false rather
-    /// than by being deleted.** A session's queue now HAS a between-turns reader, whichever kind
-    /// of session it is: a subagent's own thread (`serve_child`'s `ChildCommand::Hear`, which
-    /// submits through [`Harness::submit_a_parents_message`]), and — for a session the daemon
-    /// itself holds, the main session — the daemon's worker, whose `Message` arm appends the row
-    /// and starts the turn (`Sessions::dispatch`). So there are two deliveries and they are not
-    /// the same sentence:
-    ///
-    ///   * **the recipient's turn is running** — it hears the message at its next round boundary,
-    ///     as an agent's utterance, and keeps working;
-    ///   * **it is between turns** — a turn is STARTED for it, and the message is what that turn
-    ///     is about.
-    ///
-    /// **The order is the race handling: durable first, wake second.** The message is on the
-    /// queue before the wake is sent, so a wake that is missed, or a turn that ends in the window
-    /// between the state read below and the recipient's next look at its queue, still finds work
-    /// waiting — the message is never `Accepted` into a queue that nothing will look at. The
-    /// window is genuinely narrow and genuinely there (the turn can end between the read and the
-    /// drain) and it is CLOSED by the wake rather than named and left: whichever of the two states
-    /// the recipient was in, the queue entry and the wake are both delivered.
-    ///
-    /// **The two failures stay failures, by name.** A handle no session in the daemon answers to
-    /// is refused: nothing was sent, and the sentence says which of the two kinds of handle this
-    /// door takes. A child of THIS session whose own thread has ENDED is refused too, because a
-    /// thread that has ended takes no wake — [`TaskSlot::has_exited`] is the same fact `stop_all`
-    /// reads before submitting an interrupt nothing would answer — and that check happens BEFORE
-    /// the submit, so "nothing was sent" is true when it is said. The one residual window is a hub
-    /// that closes between the submit and the wake: then the message really is on a queue with no
-    /// reader, and the answer says exactly that instead of claiming a delivery.
+    /// The order is the race handling: durable first, wake second. A wake that is missed, or a turn
+    /// that ends in the window between the state read and the recipient's next look at its queue,
+    /// still finds work waiting, so the message is never accepted into a queue nothing will read.
+    /// Both failures stay failures by name: a handle no session answers to, and a child of this
+    /// session whose own thread has ended, which takes no wake. The one residual window is a hub
+    /// that closes between the submit and the wake, and the answer says exactly that instead of
+    /// claiming a delivery.
     fn send(&self, handle: &str, text: &str) -> Result<String, String> {
         // **A session that does not exist is the refusal; a peer is not.** `Registry::get`
         // answers for the whole daemon, keyed by session id, so a handle naming a live session
@@ -3236,46 +3196,23 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         out
     }
 
-    /// **The child has finished, so its branch goes to be landed** — the merge queue's enqueue,
-    /// on the runner that arranged the tree.
-    ///
-    /// The operator's ask, in their words: *"we need a gated merge to main, and worktree
-    /// cleanup"*, and *"a permanent subagent that lazily starts as soon as task_start was
-    /// finished and item put into the queue"*.
-    ///
-    /// # Why this is a runner's act and not a tool's
+    /// The child has finished, so its branch goes to be landed: the merge queue's enqueue, on the
+    /// runner that arranged the tree.
     ///
     /// The row needs the ask the child was given, the placement it worked in, and the store the
-    /// queue lives in — and the tool layer has none of the three. The runner arranged the tree,
-    /// so the runner is the one that can hand them over; see
-    /// [`letibot_tools::builtins::task::TaskRunner::finished`] for the seam itself.
+    /// queue lives in, and the tool layer has none of the three. The runner arranged the tree, so
+    /// the runner is the one that can hand them over.
     ///
-    /// # Two doors, one entry
+    /// Two callers, one act: the child's own settlement inside `run_to_completion`, which is the
+    /// true moment it finished (a host child parks and serves its own queue, so the thread ending is
+    /// not the finish), and `task_result` on a `Done`, which is the tool layer's one sight of a
+    /// finish. They write the same row under the same id, and the write is an upsert, so the second
+    /// is a no-op. One door only would be either a branch that never lands because nobody collected
+    /// the child, or a queue that depends on the model remembering to call `task_result`.
     ///
-    /// This is called from two places, and they are one act rather than two answers:
-    ///
-    ///   * **The child's own settlement**, inside `run_to_completion` — the true moment the
-    ///     child finished. A host child parks after its turn and serves its own queue until the
-    ///     daemon closes it, so *the thread ending* is not the finish; the answer being given is
-    ///     (see `AnswerOnce`).
-    ///   * **`task_result` on a `Done`** — the tool layer's one sight of a finish, and the door
-    ///     that makes this callable by a fake runner in a test.
-    ///
-    /// The two write **the same row under the same id** (the child's handle), and `put_merge_entry`
-    /// is an upsert, so the second is a no-op that reports the same entry. That is deliberate:
-    /// the alternative — one door only — is either a branch that never lands because nobody
-    /// collected the child, or a queue that depends on the model remembering to call
-    /// `task_result`.
-    ///
-    /// # What is refused, and what is not
-    ///
-    /// * **A plain `task` child** answers [`Finished::NoBranch`]: it works in the parent's own
-    ///   tree and has no branch of its own. Not an error — the ordinary case.
-    /// * **A child of the main checkout** answers the same, by name: there is no branch to land.
-    /// * **A session with no `--store`** cannot be enqueued at all, and that is a refusal rather
-    ///   than a quiet `NoBranch`: the queue lives in `sessions.db`, so a daemon without one has
-    ///   no queue, and a parent told *queued* about a branch in no queue is the lie this tree
-    ///   keeps refusing to tell.
+    /// A plain `task` child and a child of the main checkout both answer `NoBranch`, by name: there
+    /// is no branch of their own. A session with no `--store` is refused rather than quietly
+    /// answering `NoBranch`, because a parent told *queued* about a branch in no queue is a lie.
     fn finished(&self, handle: &str) -> Result<letibot_tools::builtins::task::Finished, String> {
         use letibot_tools::builtins::task::Finished;
         match self.enqueue_entry(handle)? {
@@ -3806,48 +3743,24 @@ impl HarnessTaskRunner {
         };
         let parent = self.base.session_id.clone();
 
-        // Publish the subagent's state on the **parent's** hub, so a head attached to
-        // the parent sees the spawn and finish without subscribing to the subagent's
-        // own hub. Same three states the journal records, same prompt.
+        // Publish the subagent's state on the parent's hub, so a head attached to the parent sees the
+        // spawn and the finish without subscribing to the subagent's own hub. Same three states the
+        // journal records, same prompt. `task` is the whole subtask and `prompt` keeps its old
+        // two-meaning shape, so a head older than the field sees exactly what it saw before.
+        // Every spawn goes through the model door, the absent `model:` case included. Resolving a
+        // model only when one was NAMED left a spawn without one keeping the PARENT's inherited
+        // window and ledger scale, which for a parent on a provider is the cloud model's number,
+        // while what answers the child is the daemon's own server.
         //
-        // **`task` is the whole subtask and `prompt` keeps its old two-meaning shape**
-        // (title on the opening states, the answer's first line on the finish) so a head
-        // older than the field sees exactly what it saw before. A new head reads the row
-        // from `task` and the subtitle from `answer` — see `SessionEvent::Subagent`.
-        // **THE CHILD'S OWN MODEL, when it was given one** — the operator's ask, 2026-10-05:
-        // *"I want to be able to have subagents using different models. say you deepseek
-        // should be able to run local model"*, and the other way: *"local qwen in main
-        // session should be able to run cloud glm"*. Resolved through `models_choice`, the
-        // same door `/models` uses, so a name a person can type is a name a child can run
-        // on and a key the picker finds is a key the spawn finds. A refusal is the tool's
-        // own sentence and the spawn does not happen — never a child quietly run on the
-        // parent's model while the record says otherwise.
-        // **EVERY spawn goes through the model door — the absent `model:` case included.**
+        // The order: the call's own word, then the project file's for this seat, then the parent's
+        // model. The two leticode keys are read here and nowhere else, and a child stopped for its
+        // window names the model the PROJECT chose for it.
         //
-        // This resolved a model only when one was NAMED, and a spawn without one kept
-        // `sub_cfg`'s inherited window and `ledger_scale`: the PARENT's, which for a session on
-        // a provider is the cloud model's number, while what answers the child is the daemon's
-        // own server. Three children died that way (see [`child_window_refusal`]). `local` is
-        // not a guess about the absent case — it is what `models_choice` and `/models local`
-        // already mean by it, and the child's `provider: None` below is that same door.
-        // **The call's own word for the model, then the project file's for this seat, then
-        // the parent's model.** The two leticode keys are read here and nowhere else: the
-        // call's `model:` beats `[roles.<seat>] model`, which beats the file's
-        // `subagent_model`, which beats the inheritance below. Read at the spawn rather than at daemon start because the seat is
-        // only known now — and read at all because both keys were parsed, disclosed and
-        // answered by nobody until this line, which is the defect the feature is written
-        // against. The label the refusals below name is this one, so a child stopped for its
-        // window says the model the PROJECT chose for it.
-        //
-        // **Then the PARENT's model, not `local`** — the operator, 2026-10-07, after a DeepSeek
-        // session on a Mac with no model server spawned a child with no `model:`: *"so if no
-        // local config, and no model - default to the same"*, and *"local - anyway must be
-        // configured"*. `local` as the silent default was a guess that this box serves one,
-        // and where it did not the child was refused before it opened. A parent on its own
-        // server still gives `local`, which is the same model; a parent on a provider gives
-        // that provider and model, through the same door a named one takes — so its window is
-        // the catalogue's, or the parent's own via `runs_on_the_parents_model`. `local` is now
-        // only ever a choice somebody wrote.
+        // The parent's model and not `local`, because `local` as the silent default was a guess that
+        // this box serves one, and where it did not the child was refused before it opened. A parent
+        // on its own server still gives `local`, which is the same model; a parent on a provider
+        // gives that provider and model, through the same door a named one takes. `local` is now only
+        // ever a choice somebody wrote.
         let named = spec
             .model
             .as_deref()
