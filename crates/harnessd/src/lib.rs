@@ -64,6 +64,7 @@ pub mod prompt;
 pub mod restart;
 pub mod room;
 pub mod sessions;
+pub mod skills_offer;
 pub mod slash;
 pub mod standing_notes;
 pub mod store_floor;

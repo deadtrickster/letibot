@@ -1466,6 +1466,10 @@ impl Harness {
         // offered, from the log; the offer lives in the request assembly, because a row cannot be un-said.
         let mut offers = crate::notes_offer::Offers::new();
         offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
+        // The turn's skill offers, by the same delivery and the same memory: a name in the tail, once
+        // per session, settled against the round's own `skill` loads.
+        let mut skill_offers = crate::skills_offer::Offers::new();
+        skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
 
         let backstop = round_backstop(self.cfg.max_tool_rounds);
         for round in 0..backstop {
@@ -1482,8 +1486,16 @@ impl Harness {
                     &self.prefix.system,
                     &self.session.items,
                 );
+                // A skill is scored against more than the note's subject: the person's prompt, the
+                // plan, and the model's own latest text and reasoning, since a round that has worked
+                // out what it needs is the round that needs the instructions for it.
+                skill_offers.compose(
+                    &self.skills,
+                    &crate::skills_offer::subject(&self.session.items, &self.todos.snapshot()),
+                );
             }
-            let tail = offers.tail();
+            let mut tail = offers.tail();
+            tail.extend(skill_offers.tail());
             // Take the round again when the endpoint is what failed: an inner loop, so a retry does not spend a
             // `max_tool_rounds`, since it produced nothing. And `/models` is ANSWERED here but not APPLIED, because a
             // re-issued round carries the rest of the old turn, which a thinking-mode provider refuses.
@@ -1805,6 +1817,7 @@ impl Harness {
             // The offer is settled here, where the round's calls are known, and logged whichever way it went. A round
             // that ends the turn with no calls settles with an empty list, which is an untaken offer recorded as one.
             offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
+            skill_offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             // What the agent says it is doing, recorded before its calls are adjudicated: the sentence in front of its
             // tool calls is what the guard is missing when the operator's instruction names a goal rather than a file.
             // Never an authorisation and never citable.

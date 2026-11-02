@@ -83,6 +83,12 @@ pub struct Skill {
     /// Claude Code's `allowed-tools`, when the skill declares it: names, lowercased, with any
     /// `(...)` qualifier dropped. It can only narrow a session (`tool_ceiling`).
     pub allowed_tools: Option<Vec<String>>,
+    /// The frontmatter's `when_to_use`, when the author wrote one: the sentence a reader decides by
+    /// and a ranker needs, since a `description` is often a title.
+    pub when_to_use: Option<String>,
+    /// The frontmatter's `keywords`, split on commas and spaces: the words a subject reaches a
+    /// skill's subject by when the prose around them differs.
+    pub keywords: Vec<String>,
 }
 
 impl Skill {
@@ -98,7 +104,25 @@ impl Skill {
             body: body.into(),
             source,
             allowed_tools: None,
+            when_to_use: None,
+            keywords: Vec::new(),
         }
+    }
+
+    /// What this skill is scored on: its whole frontmatter, never its body. A one-line
+    /// `description` cannot carry "beamer" to a prompt that says "latex presentation", and the
+    /// body is thousands of words that would drown the subject rather than describe it.
+    pub fn document(&self) -> String {
+        let mut out = format!("{} {}", self.name, self.description);
+        if let Some(when) = &self.when_to_use {
+            out.push(' ');
+            out.push_str(when);
+        }
+        for keyword in &self.keywords {
+            out.push(' ');
+            out.push_str(keyword);
+        }
+        out
     }
 }
 
@@ -487,18 +511,26 @@ impl SkillRegistry {
     }
 
     /// The skills most like a free-text query: the same arithmetic the notes use, over each
-    /// skill's name and its one line, because that is what a reader is shown.
+    /// skill's whole frontmatter ([`Skill::document`]) - a `description` alone is a title, and a
+    /// title cannot carry "beamer" to a query that says "latex presentation".
     pub fn ranked(&self, query: &str, most: usize) -> Vec<(String, f64)> {
-        let (rows, _) = self.index_rows();
-        let docs: Vec<(PathBuf, String)> = rows
+        let mut docs: Vec<(PathBuf, String)> = self
+            .skills
             .iter()
-            .map(|r| {
-                (
-                    PathBuf::from(&r.name),
-                    format!("{} {}", r.name, r.description),
-                )
-            })
+            .map(|s| (PathBuf::from(&s.name), s.document()))
             .collect();
+        // A shelf's skills are a title and a visibility, and nothing else is known about them
+        // until one is loaded, so that is what they are scored on.
+        if let Some(shelf) = self.shelf()
+            && let Ok(entries) = shelf.list()
+        {
+            docs.extend(entries.into_iter().map(|e| {
+                (
+                    PathBuf::from(&e.title),
+                    format!("{} {}", e.title, e.visibility),
+                )
+            }));
+        }
         crate::similarity::Corpus::of_texts(&docs)
             .ranked(query, most)
             .into_iter()
@@ -598,6 +630,8 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
     let mut name = None;
     let mut description = None;
     let mut allowed = None;
+    let mut when = None;
+    let mut keywords = Vec::new();
     for line in front.lines() {
         let line = line.trim();
         if let Some(v) = line.strip_prefix("name:") {
@@ -609,6 +643,18 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
             if !tools.is_empty() {
                 allowed = Some(tools);
             }
+        } else if let Some(v) = line.strip_prefix("when_to_use:") {
+            when = Some(v.trim().to_string()).filter(|v| !v.is_empty());
+        } else if let Some(v) = line.strip_prefix("keywords:") {
+            // The two spellings authors write: one line of words and a `[a, b]` list.
+            keywords = v
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split([',', ' '])
+                .map(|w| w.trim().trim_matches(['"', '\'']).to_string())
+                .filter(|w| !w.is_empty())
+                .collect();
         }
     }
     let name = name.filter(|n| !n.is_empty())?;
@@ -618,6 +664,8 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
         body: rest.trim_start().to_string(),
         source,
         allowed_tools: allowed,
+        when_to_use: when,
+        keywords,
     })
 }
 
@@ -882,6 +930,44 @@ mod tests {
             order.contains(&"plugin-pane"),
             "the built-ins are still here"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The frontmatter is the document a ranker reads: `when_to_use` and `keywords` reach it, the
+    /// body does not, and a skill described as beamer is reachable from a prompt saying "latex
+    /// presentation" - the pair no one-line `description` connects.
+    #[test]
+    fn the_whole_frontmatter_is_the_document_and_the_body_is_not() {
+        let root = std::env::temp_dir().join(format!("letibot-skilldoc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("slides");
+        std::fs::create_dir_all(&dir).expect("a skill dir");
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: slides\ndescription: build a deck for a talk\nwhen_to_use: the person \
+             asks for a latex presentation\nkeywords: [beamer, frames]\n---\n\nTHE BODY\n",
+        )
+        .expect("a skill");
+        let r = SkillRegistry::load_onto(
+            vec![Skill::new(
+                "commit",
+                "write a conventional commit",
+                "type(scope): summary",
+                SkillSource::Operator,
+            )],
+            std::slice::from_ref(&root),
+        );
+        let slides = r.skills.iter().find(|s| s.name == "slides").expect("slides");
+        let doc = slides.document();
+        for part in ["slides", "deck", "latex presentation", "beamer", "frames"] {
+            assert!(doc.contains(part), "`{part}` is not in the document: {doc}");
+        }
+        assert!(!doc.contains("THE BODY"), "the body is not scored: {doc}");
+        assert_eq!(slides.keywords, vec!["beamer", "frames"]);
+        // And the ranker reads it: a query about a presentation finds the deck, which its
+        // name and one line would never have reached.
+        let ranked = r.ranked("make me a latex presentation for the offsite", 3);
+        assert_eq!(ranked[0].0, "slides", "{ranked:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
