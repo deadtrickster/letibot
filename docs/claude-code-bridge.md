@@ -3,7 +3,7 @@
 A Claude Code session delegates well-scoped work to leticode to save Claude usage. As a shell
 command that was three defects of the shape: **a one-shot run dies with its turn** (a model that
 backgrounds a long test and ends its turn exits the process, so the completion never reaches it);
-**permission is all or nothing** (one-shot runs cannot ask anybody, so only allow-all works); and
+**permission is all or nothing** (only allow-all works, and it enforces nothing the brief asks); and
 **following up means restarting** (`leticode --continue` re-runs start-up and the resume, and the
 answer comes back as a 10,000-line log).
 
@@ -29,10 +29,9 @@ brief**. A package worker is not the repository's queue holder.
 
 So `daemon_args` passes **`--no-queue`** on every start: no lease claimed, no target gated, no
 branch landed, and none of the queue's model-facing notices (`queue_emergency_notices`,
-`queue_notices`, `handover_notices`) composed for that daemon's sessions. The store watcher still
-runs, so a head attached here redraws when another daemon moves a row. `ensure` also writes the
-launcher's record (`<rundir>/<key>.json`) for a daemon it started - after the socket answers, so a
-failed start leaves nothing behind and `--daemons` and `--stop N` see it.
+`queue_notices`, `handover_notices`) composed for its sessions. `ensure` also writes the launcher's
+record (`<rundir>/<key>.json`) for a daemon it started - after the socket answers, so a failed start
+leaves nothing behind and `--daemons` and `--stop N` see it.
 
 ### A package whose tools run on another machine
 
@@ -49,9 +48,8 @@ names it (`leticode_start { host: "lab2x1" }`); **it never speaks ssh**.
   `(dev, ino)`, so a record left by a daemon that is gone reads as *nothing known*; `ensure` refuses
   a mismatch naming the placement and the command that ends it. **Nothing recorded is refused in
   both directions**, because `None` is *unknown* and not *local*.
-- **Every answer says `placement`** (`leticode_start`, `leticode_status`, `leticode_list`,
-  `leticode_attach`): `host`, `host:lab2x1`, or `null` - which `leticode_start` refuses rather than
-  assuming *local*.
+- **Every answer says `placement`** - `host`, `host:lab2x1`, or `null`, which `leticode_start`
+  refuses rather than assuming *local*.
 
 ## `letibot-mcp`: an MCP server over stdio
 
@@ -63,14 +61,14 @@ one head connection per session it started or attached to, so asks reach it.
 |---|---|
 | `leticode_start` | `{worktree, brief, model, mode, host, vm}` - starts the folder's daemon if needed, opens a session, sends the brief, stays attached |
 | `leticode_attach` | `{worktree, session, watch_only}` - joins a running daemon (never starts one); `session` is an id or `gatekeeper` |
-| `leticode_send` | `{session, text}` - an operator line, queued behind a running turn as the head's own |
+| `leticode_send` | `{session, text}` - an operator line, queued behind a running turn |
 | `leticode_status` | `{session}` - `state`, `placement`, `turn`, `todos`, `last_message`, `report?`, `cost_usd`, `tokens`, `spent`, `pending_asks`, `activity`, `waiting_on`, `last_rejection` |
-| `leticode_events` | `{session, since, limit}` - the progress since the cursor: calls, jobs, failures, asks, turns, **subagents**; never banner lines |
-| `leticode_transcript` | `{session, since, limit, reasoning}` - the CONVERSATION, row by row, up to the stated `cap`, plus `next` (B8) |
+| `leticode_events` | `{session, since, limit}` - the progress since the cursor: calls, jobs, failures, asks, turns, **subagents** |
+| `leticode_transcript` | `{session, since, limit, reasoning}` - the CONVERSATION, row by row, up to the stated `cap` (B8) |
 | `leticode_mode` | `{session, mode}` - a point that needs nobody applies at once; `allow-all` with no boundary asks the operator (B8) |
 | `leticode_asks` | `{session}` - the pending asks: id, the call, the options offered |
-| `leticode_answer` | `{session, ask, option, note}` - sent as the protocol's `Answer`, so it lands in the decision corpus like the operator's own |
-| `leticode_diff` | `{session, full}` - the branch against its merge base: `git log --oneline`, `git diff --stat`, the whole diff when `full` |
+| `leticode_answer` | `{session, ask, option, note}` - sent as the protocol's `Answer`, so it lands in the decision corpus |
+| `leticode_diff` | `{session, full}` - the branch against its merge base: `git log --oneline`, `git diff --stat`, and the diff when `full` |
 | `leticode_stop` | `{session}` - interrupts a running turn and detaches; the session stays on disk |
 | `leticode_list` | - the sessions this bridge holds, with `placement`, watched or driven |
 
@@ -106,9 +104,9 @@ With the bridge attached the session no longer needs allow-all: `writes-allowed`
 once) puts the routine through and sends what the gate asks about - a push, network, a write outside
 the worktree, the always-ask list - to the attached head, which Claude reads with `leticode_asks` and
 answers with `leticode_answer`; the corpus records each answer with who gave it. The brief's closing
-report is asked for in a fixed markdown shape and parsed into fields by `leticode_status`, so the
-review starts from data. `/delegate` packages the workflow as a skill, and an `escalate` tool would
-later let a session post a design question it should not decide alone.
+report is asked for in a fixed markdown shape and parsed into fields by `leticode_status`. `/delegate`
+packages the workflow as a skill, and an `escalate` tool would later let a session post a design
+question it should not decide alone.
 
 ## The queue, from the orchestrator's side (B5)
 
@@ -117,9 +115,9 @@ later let a session post a design question it should not decide alone.
   orchestrator's box the gate the queue already owns, nor bypass its history. With B5 the bridge
   holds a head on the repository's queue and Claude does what the operator does with `/queue`,
   recorded under `bridge:<identity>`: `leticode_queue`, `leticode_submit` (`{row}`),
-  `leticode_queue_verb` (the verbs `mergequeue::verbs` already has; approve still runs the gate), and
-  `letibot-mcp wait-queue <repository> <row>` exiting on land (0), rejection or veto (10, the
-  reviewers' words), gate failure (20), or timeout (30).
+  `leticode_queue_verb` (the verbs `mergequeue::verbs` already has), and `letibot-mcp wait-queue
+  <repository> <row>` exiting on land (0), rejection or veto (10, the reviewers' words), gate
+  failure (20), or timeout (30).
 
 **Not built, and not before the queue is stable**: B5 makes the queue the landing path for every
 package, so it waits on a stability pass over the queue itself.
