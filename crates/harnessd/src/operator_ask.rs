@@ -1,4 +1,4 @@
-//! **A todo row that waits on the OPERATOR** — the daemon's half: the answer, the words the
+//! A todo row that waits on the OPERATOR - the daemon's half: the answer, the words the
 //! model is told, and the loud state the heads draw. The operator's ask, verbatim: *"a todo
 //! can be dependent on todo, and todo can be dependend on ME. if model says todo is
 //! dependent on ME the other heads of the todo DAG keep firing, model told to try to figure
@@ -11,7 +11,7 @@ use letibot_sessionlog::question::QuestionAnswer;
 use letibot_tokencore::store::{TodoItem, TodoNeed, TodoStatus, operator_asks};
 use letibot_tools::builtins::todo::{OperatorAsk, TodoBoard};
 
-/// **The reply, as a sentence** — what the row keeps and what the model is told after the
+/// The reply, as a sentence - what the row keeps and what the model is told after the
 /// question. The option is quoted by its WORDS, not its number: the model offered the options, and
 /// a number is a thing it would have to look up.
 pub fn reply_words(ask: &OperatorAsk, answer: &QuestionAnswer) -> String {
@@ -39,8 +39,8 @@ pub fn reply_words(ask: &OperatorAsk, answer: &QuestionAnswer) -> String {
     }
 }
 
-/// **The line the model is told** — `[answer] on "<row>": you asked "<question>" —
-/// <reply>.`, and what to do with an abstention, which is an answer and not permission:
+/// The line the model is told - `[answer] on "<row>": you asked "<question>" -
+/// <reply>.`, and what to do with an abstention, which is an answer and not permission
 pub fn answer_line(row: &str, question: &str, reply: &str, abstained: bool) -> String {
     let mut line = format!(
         "[answer] on \"{}\": you asked \"{}\" — {}. The row no longer waits on the operator.",
@@ -54,9 +54,9 @@ pub fn answer_line(row: &str, question: &str, reply: &str, abstained: bool) -> S
     line
 }
 
-/// **Apply the operator's answer to the board** — validated against the row's own options,
+/// Apply the operator's answer to the board - validated against the row's own options
 /// the edge replaced by the reply, and the line for the model returned. `Err` is a sentence
-/// for the operator:
+/// for the operator
 pub fn settle(
     board: &TodoBoard,
     content: &str,
@@ -77,7 +77,7 @@ pub fn settle(
     ))
 }
 
-/// **What waits on the operator now**, as `(row, question)` pairs — the reading the daemon compares
+/// What waits on the operator now, as `(row, question)` pairs - the reading the daemon compares
 /// across a flush to say when a question was asked and when it was settled.
 pub fn waiting(todos: &[TodoItem]) -> Vec<(String, String)> {
     operator_asks(todos)
@@ -86,7 +86,7 @@ pub fn waiting(todos: &[TodoItem]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// **The settings row's value** — `none`, or `2 — "which database?" on \`deploy\``. The head keys
+/// The settings row's value - `none`, or `2 - "which database?" on \`deploy\``. The head keys
 /// its resident line on anything but `none`, and draws its own words from its board when it has
 /// one; this is the sentence for a head that has not read the board yet.
 pub fn setting_value(todos: &[TodoItem]) -> String {
@@ -102,7 +102,7 @@ pub fn setting_value(todos: &[TodoItem]) -> String {
     }
 }
 
-/// **The hub row for a question just asked** — loud, because a person is being waited on.
+/// The hub row for a question just asked - loud, because a person is being waited on.
 pub fn asked_words(row: &str, question: &str) -> String {
     format!(
         "WAITING ON YOU: the model asked \"{}\" on the row `{}` — open the question card to answer \
@@ -112,9 +112,9 @@ pub fn asked_words(row: &str, question: &str) -> String {
     )
 }
 
-/// **Why a question stopped waiting**, in the sentence the settled notice carries — so a
+/// Why a question stopped waiting, in the sentence the settled notice carries - so a
 /// reader can tell an ANSWER from a TAKE-BACK. Three routes end a question and only one of
-/// them is a person's:
+/// them is a person's
 pub fn settled_words(todos: &[TodoItem], row: &str, question: &str) -> String {
     let tail = format!(
         "for \"{}\" on `{}`",
@@ -160,7 +160,7 @@ mod tests {
         }
     }
 
-    /// **A question that stopped waiting says which route took it** — the operator's ask, once
+    /// A question that stopped waiting says which route took it - the operator's ask, once
     /// more: *"when question is resolved models are being able to cancel the ask"*.
     #[test]
     fn a_question_that_stops_waiting_says_which_route_took_it() {
@@ -218,7 +218,7 @@ mod tests {
         }
     }
 
-    /// **Every shape a person can answer in is said in words** — *"that choice list with an optioin
+    /// Every shape a person can answer in is said in words - *"that choice list with an optioin
     /// to enter my freetext"*, and the card's note and abstention beside it.
     #[test]
     fn each_answer_shape_reads_as_a_sentence() {

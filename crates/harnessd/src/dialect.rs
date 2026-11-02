@@ -3,8 +3,8 @@
 //! on its own corpus and covers both Qwen targets. Selecting one is the *only* place in the
 //! daemon that knows a model exists; everything downstream sees `PromptRenderer` and
 //! `Parser`. # The seam that did not fit, and what this file does about it
-//! `letibot_tools::Registry::tools_json()` produces `serde_json::to_string(schema)`, which
-//! uses `,`/`:` with **no spaces**. Both shipped templates render tool schemas through
+//! `letibot_tools::Registry::tools_json` produces `serde_json::to_string(schema)`, which
+//! uses `,`/`:` with no spaces. Both shipped templates render tool schemas through
 //! Hugging Face's `tojson`, which is `json.dumps(separators=(", ", ": "))`.
 
 use std::sync::Arc;
@@ -19,8 +19,8 @@ use serde_json::Value;
 pub enum Dialect {
     /// `glm-5.3-flash`. Fidelity-gated at 139/139 (`tests/fidelity/run_gate.py`).
     Glm,
-    /// `qwen3.8` — Flash-Next and 27B, one byte-identical template.
-    /// Checked at 56/56 on its own corpus (`crates/dialect-qwen/fidelity.py`),
+    /// `qwen3.8` - Flash-Next and 27B, one byte-identical template.
+    /// Checked at 56/56 on its own corpus (`crates/dialect-qwen/fidelity.py`)
     /// with one declared divergence.
     Qwen,
 }
@@ -41,9 +41,9 @@ impl Dialect {
         }
     }
 
-    /// **The family name a `[model.<family>]` block is written under**, which is the short one:
+    /// The family name a `[model.<family>]` block is written under, which is the short one
     /// `providers.toml` documents `[model.qwen]` and `[model.glm]`, and [`Dialect::name`]
-    /// answers `qwen3.8` — the served name, not the section name.
+    /// answers `qwen3.8` - the served name, not the section name.
     pub fn family(self) -> &'static str {
         match self {
             Dialect::Glm => "glm",
@@ -106,7 +106,7 @@ impl Wiring {
 
     /// `StablePrefix::tools_json`, from the registry's OpenAI-shaped schemas.
     ///
-    /// See the module header for why this is not `registry.tools_json()`.
+    /// See the module header for why this is not `registry.tools_json`.
     pub fn tools_json(&self, schemas: &[letibot_tools::ToolSchema]) -> Vec<String> {
         schemas
             .iter()
@@ -122,7 +122,7 @@ impl Wiring {
     }
 
     /// §5.3's system update, in the form this dialect can actually render. GLM takes a real
-    /// `System { origin: Update }` item; Qwen's template **raises** on a mid-history system
+    /// `System { origin: Update }` item; Qwen's template raises on a mid-history system
     /// message, so it takes a user turn with a fixed envelope.
     pub fn system_update(&self, seq: u64, text: &str) -> TranscriptItem {
         match self.dialect {
@@ -218,8 +218,8 @@ mod tests {
 
     #[test]
     fn the_registry_bytes_are_not_the_prompt_bytes() {
-        // The seam this module exists to close. If this ever starts passing as equality,
-        // `Registry::tools_json()` became prompt-ready and this indirection can go — but until
+        // The seam this module exists to close. If this ever starts passing as equality
+        // `Registry::tools_json` became prompt-ready and this indirection can go - but until
         // then, using it directly is a cold prefill on every turn.
         let reg = letibot_tools::read_only_tools(std::sync::Arc::new(
             letibot_tools::builtins::retrieval::Unavailable,

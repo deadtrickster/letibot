@@ -1,8 +1,8 @@
 //! `letibot-askpass` - what `sudo` runs, inside a letibot session, when it wants a
 //! password. The session's shell has `SUDO_ASKPASS` pointing here and a `sudo` shim that
-//! adds `-A`, so a `sudo apt install x` the gate admitted never reaches for a terminal:
+//! adds `-A`, so a `sudo apt install x` the gate admitted never reaches for a terminal
 //! sudo runs this with its prompt as the one argument and reads the password from stdout.
-//! What this does with it:
+//! What this does with it
 
 use std::io::Write;
 

@@ -1,5 +1,5 @@
 //! The store behind the `transcript` and `digest` tools. `letibot-tools` cannot name
-//! `letibot-tokencore` — it is the lower crate — so the tools declare a
+//! `letibot-tokencore` - it is the lower crate - so the tools declare a
 //! [`TranscriptSource`] trait and this is the daemon's implementation of it, the same seam
 //! `harness` uses for `DaemonFacts`. # The fork chain is the whole job A session does not
 //! have *a* transcript. It has a chain of them, one per compaction: each fork writes a new
@@ -36,13 +36,13 @@ impl StoreTranscripts {
     }
 
     /// A poisoned lock is a reader that panicked mid-query, which leaves the
-    /// SQLite connection fine — the panic was ours, not the file's.
+    /// SQLite connection fine - the panic was ours, not the file's.
     fn store(&self) -> std::sync::MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Which session this query is about. A named one is matched by exact id first, then by a
-    /// case-insensitive substring of the id or the title — the operator's own way of naming one
+    /// case-insensitive substring of the id or the title - the operator's own way of naming one
     /// is *"check letibot letibot session"*, which is a title fragment and not an id.
     fn resolve(&self, want: Option<&str>) -> Result<(String, String), String> {
         let sessions = self
@@ -94,8 +94,8 @@ impl StoreTranscripts {
     }
 
     /// The session's transcripts, newest first, each with its generation. Newest is `created_at
-    /// DESC, rowid DESC` — the same tie-break `Store::list_sessions` uses and for the same
-    /// reason:
+    /// DESC, rowid DESC` - the same tie-break `Store::list_sessions` uses and for the same
+    /// reason
     fn chain(&self, session_id: &str) -> Result<Vec<ChainLink>, String> {
         let store = self.store();
         let conn = store.connection();
@@ -186,7 +186,7 @@ impl TranscriptSource for StoreTranscripts {
                 scanned += 1;
                 let seq = seq as u32;
                 // The seq predicates address the CURRENT transcript's numbering, so they are only applied
-                // there — a `from`/`to` range meant for generation 0 would select arbitrary rows in
+                // there - a `from`/`to` range meant for generation 0 would select arbitrary rows in
                 // generation 3, whose seq numbers mean something else entirely.
                 if link.generation == 0 {
                     if q.from_seq.is_some_and(|f| seq < f) {
@@ -232,9 +232,9 @@ impl TranscriptSource for StoreTranscripts {
             }
         }
 
-        // `last` is the newest N of what matched — applied after the predicates, so `last=20` with
+        // `last` is the newest N of what matched - applied after the predicates, so `last=20` with
         // a `match` means the twenty newest matching rows and not "whichever of the twenty newest
-        // rows happened to match". Newest is generation ascending and seq descending:
+        // rows happened to match". Newest is generation ascending and seq descending
         matched.sort_by_key(|r| (r.generation, std::cmp::Reverse(r.seq)));
         if let Some(n) = q.last {
             matched.truncate(n as usize);
@@ -280,8 +280,8 @@ fn tool_name(item: &TranscriptItem) -> String {
     }
 }
 
-/// **A row as a person would see it**, which is what a text predicate must match against.
-/// The alternative — matching `item_json` — matches serde tags and field names, so
+/// A row as a person would see it, which is what a text predicate must match against.
+/// The alternative - matching `item_json` - matches serde tags and field names, so
 /// `match=kind` hits every row in the store.
 fn visible_text(item: &TranscriptItem) -> String {
     match item {

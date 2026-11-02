@@ -236,7 +236,7 @@ fn a_monitor_firing_is_recorded_as_immediate() {
 
 /// The turn-end heading says what is true, and the rules are told apart in the record. A
 /// result held through a turn is delivered the moment that turn ends and the heading says
-/// the model was working;
+/// the model was working
 #[test]
 fn the_turn_end_heading_and_the_rule_words() {
     // One heading whatever the rule and the count: no holding policy, no cap, no

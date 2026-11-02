@@ -79,8 +79,10 @@ const NEXT: &str = "now carry on";
 /// history. Its contents do not matter; that the round EXISTS is the point.
 const TOOL_FILE: &str = "notes.txt";
 
-/// How long the old model holds a request before answering `429`. **This is the operator's
-/// window**, made reachable:
+/// How long the old model holds a request before answering `429`.
+///
+/// This is the operator's window, made reachable: the driver waits on the stub's own request
+/// count, but without the wait a round in flight would close before a line could be queued.
 const REFUSAL_HOLD_MS: u64 = 900;
 
 /// The provider's own words, as they arrived. The retry policy reads this: a 429 whose body names
@@ -92,9 +94,10 @@ const REFUSAL_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhau
 // The two stubs
 // ---------------------------------------------------------------------------
 
-/// One loopback model, plus every request body it was sent. The bodies are the evidence:
-/// `model` says which model the harness believed it was talking to, and `messages` says
-/// what the model was asked to continue — which is the whole of what deepseek refused.
+/// One loopback model, plus every request body it was sent.
+///
+/// The bodies are the evidence: `model` says which model the harness believed it was talking to,
+/// and `messages` says what it was asked to continue. `Clone` shares the recorder.
 #[derive(Clone)]
 struct Model {
     port: u16,
@@ -556,9 +559,10 @@ fn config(
     cfg
 }
 
-/// **One session, one daemon, one head** — the arrangement `run_off_worker.rs` uses, with
-/// the driver on a thread of its own and the worker loop on this one. `body` runs on the
-/// driver thread with the head, the pump and the hub.
+/// One session, one daemon, one head, with the driver on a thread of its own.
+///
+/// When `body` returns this asks the session `/models`, which is the turn's own end, and only
+/// then closes the registry, which is what ends `daemon.run`.
 fn drive<F>(parts: &Parts, cfg: Config, body: F) -> (Rec, Arc<Hub>, Config)
 where
     F: FnOnce(&mut HeadClient, &Receiver<Inbound>, &Arc<Hub>, &mut Rec) + Send + 'static,
@@ -680,8 +684,9 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
     // The operator's per-project mode is not this test's business (`wired.rs`'s rule).
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
-    // ── A. The switch waits for the turn, and the next turn is the first request on the new
-    // model The old model runs one round with a tool call and then refuses;
+    // A. The switch waits for the turn, and the next turn is the first request on the new model.
+    // `/models` goes in while the old model's second round is in flight, which is the operator's
+    // own window.
     old.forget();
     new.forget();
     let cfg = config(&scratch, &gguf, "window", "deepseek", "deepseek-chat");
@@ -760,8 +765,8 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "the retry loop announced a model change: {:?}",
         rec.retries
     );
-    // **And the new model's first request is the next turn's, not the rest of this one.** This
-    // is the assertion the whole change exists for:
+    // And the new model's first request is the next turn's, not the rest of this one: the history
+    // it inherits ends at a user message, with the old turn's tool-call rounds before it.
     let new_sent: Vec<Sent> = new.sent().iter().map(|b| sent(b)).collect();
     assert_eq!(
         new_sent.len(),
@@ -802,9 +807,9 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.listing
     );
 
-    // ── B. A switch during a failing round's RETRIES changes nothing about the retries
-    // `http_retries = 1`: the ladder takes the round again once. Every attempt is still sent
-    // to the old model, and the new one is sent nothing until the next prompt.
+    // B. A switch during a failing round's RETRIES changes nothing about the retries:
+    // `http_retries = 1` takes the round again once, still on the old model, and the new one is
+    // sent nothing until the next prompt.
     old.forget();
     new.forget();
     let mut cfg = config(&scratch, &gguf, "ladder", "deepseek", "deepseek-chat");
@@ -857,8 +862,9 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.slashes
     );
 
-    // ── C. `[fallback]` — the switch takes at the turn's end, and the WORK GOES ON No
-    // `/models` at all and no second prompt either:
+    // C. `[fallback]`: the switch takes at the turn's end and the work goes on. Nobody types
+    // anything: the model is out, the list names where the session goes, and the daemon opens the
+    // next turn itself on the new model, with the notice as its user item.
     old.forget();
     new.forget();
     let mut cfg = config(&scratch, &gguf, "fallback", "deepseek", "deepseek-chat");
@@ -941,7 +947,8 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.listing
     );
 
-    // ── D.
+    // D. An interrupted turn applies the pending switch: the interrupt is heard at a round that is
+    // generating, the switch is recorded after the first refusal, and the turn ends the other way.
     old.forget();
     new.forget();
     slow.forget();

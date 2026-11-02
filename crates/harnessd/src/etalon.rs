@@ -1,9 +1,9 @@
-//! **The etalon, read against layer A as it is today.** Plan: `docs/guard-corpus-plan.md`
-//! §2 and §7. The etalon is every tool call this operator sat through — Claude Code,
-//! opencode and letibot, on every box that offered its transcripts — with the operator's
+//! The etalon, read against layer A as it is today. Plan: `docs/guard-corpus-plan.md`
+//! §2 and §7. The etalon is every tool call this operator sat through - Claude Code
+//! opencode and letibot, on every box that offered its transcripts - with the operator's
 //! words beside it and what became of it: it ran, it errored, or it was refused. Extracted
 //! by `scripts/etalon-extract.py` into JSONL; commands and utterances only, never tool
-//! output. This module answers one question about a layer-A change before it lands:
+//! output. This module answers one question about a layer-A change before it lands
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -17,8 +17,8 @@ pub struct Row {
     pub source: String,
     #[serde(default)]
     pub session: String,
-    /// Where the call ran. The scope half of layer A — inside or outside the project — is
-    /// judged against THIS, not against the daemon's own workspace:
+    /// Where the call ran. The scope half of layer A - inside or outside the project - is
+    /// judged against THIS, not against the daemon's own workspace
     #[serde(default)]
     pub cwd: String,
     pub tool: String,
@@ -67,27 +67,27 @@ pub struct Report {
     pub commands: usize,
     /// (source, outcome, read) → count.
     pub cells: BTreeMap<(String, String, Read), usize>,
-    /// Which `always_ask` rule fired on a row that RAN, and how often — the
+    /// Which `always_ask` rule fired on a row that RAN, and how often - the
     /// false-prompt table, by rule.
     pub prompts_by_rule: BTreeMap<&'static str, usize>,
-    /// Which rule fired on a row that was REFUSED — the catches, by rule.
+    /// Which rule fired on a row that was REFUSED - the catches, by rule.
     pub catches_by_rule: BTreeMap<&'static str, usize>,
     /// A few examples per rule of a ran-row it would prompt on, so a reader can
     /// see the command and not only the count.
     pub prompt_examples: BTreeMap<&'static str, Vec<String>>,
     /// Why layer A could not read a command, by first sentence, with counts.
     pub not_run_why: BTreeMap<String, usize>,
-    /// The constructs that made a command unreadable, by how many commands each appears in —
+    /// The constructs that made a command unreadable, by how many commands each appears in -
     /// and, separately, how many commands each construct is the ONLY reason for. The second
-    /// number is what resolving that one construct would recover;
+    /// number is what resolving that one construct would recover
     pub not_run_constructs: BTreeMap<String, (usize, usize)>,
     /// Where here-document bodies go, by count of commands: the program that reads the body on
     /// stdin, or the file it is redirected into (by its extension or directory class). Plan
-    /// §4b:
+    /// §4b
     pub heredoc_sinks: BTreeMap<String, usize>,
     /// Program heads layer A does not know (`Intent::Unknown`), by count of
     /// commands they appear in. The list the next tranche of heads is chosen
-    /// from — by what this operator actually runs, not by a paper's table.
+    /// from - by what this operator actually runs, not by a paper's table.
     pub unknown_heads: BTreeMap<String, usize>,
 }
 
@@ -95,8 +95,8 @@ pub struct Report {
 pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut r = Report::default();
-    // `LETIBOT_ETALON_DUMP=path` writes one line per command — its row number,
-    // read and rule — so two builds can be diffed row by row, which the summary
+    // `LETIBOT_ETALON_DUMP=path` writes one line per command - its row number
+    // read and rule - so two builds can be diffed row by row, which the summary
     // cannot do: a rule that gains 500 and loses 500 shows as unchanged.
     let mut dump = std::env::var_os("LETIBOT_ETALON_DUMP")
         .map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("dump path")));

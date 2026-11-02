@@ -116,7 +116,7 @@ impl Gauges {
 }
 
 /// The whole footprint: the restated numbers plus the trail, which is read live. The trail
-/// is not in the gauges because it does not need to be:
+/// is not in the gauges because it does not need to be
 pub fn of(gauges: &Gauges, trail: &TrailMirror) -> Footprint {
     let (trail_bytes, trail_utterances) = trail.held();
     Footprint {

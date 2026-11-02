@@ -1,4 +1,4 @@
-//! **The etalon on a map: every command's tree, clustered.** Plan:
+//! The etalon on a map: every command's tree, clustered. Plan
 //! `docs/guard-corpus-plan.md` §7. The operator: *"treesitter as normalization for each
 //! command and clustering over trees, something like SOM or vectors to see the clusters.
 //! draw me them even."* The normalisation is [`letibot_code::shell::shape`]: the

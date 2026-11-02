@@ -1,4 +1,4 @@
-//! The subagent (task) journal: live state of every subagent this daemon has spawned,
+//! The subagent (task) journal: live state of every subagent this daemon has spawned
 //! written to a JSON file that `leticode-dash` reads. It is a file, not a socket. The
 //! daemon rewrites it on every subagent spawn and finish, so a head polling it reads the
 //! record without owning a socket or speaking the session protocol; a query over the socket

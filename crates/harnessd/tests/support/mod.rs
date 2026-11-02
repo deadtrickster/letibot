@@ -6,7 +6,7 @@
 //! a harness opens with. A helper whose copy differs on purpose stays in its own file, where the
 //! difference can be read beside the assertion that depends on it.
 
-// A fixture, not a library: each binary includes this file and uses the part its subject needs,
+// A fixture, not a library: each binary includes this file and uses the part its subject needs
 // so the rest is dead in that compilation and alive in another.
 #![allow(dead_code)]
 

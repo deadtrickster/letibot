@@ -1,11 +1,11 @@
-//! **Where the gate's decisions go so they outlive the daemon.** > *"we should assemble my
+//! Where the gate's decisions go so they outlive the daemon. > *"we should assemble my
 //! decisions and model decisions into corpus across our > letibot/leticode runs. and if
 //! gatekeeper is unsure it should say so and i still > asked - goes to corpus too."*
-//! `AdjudicatedGate::log` is a `Vec` in one process. It was always the right shape — the
-//! model's verdict and the operator's answer in separate fields, `shown` kept verbatim —
+//! `AdjudicatedGate::log` is a `Vec` in one process. It was always the right shape - the
+//! model's verdict and the operator's answer in separate fields, `shown` kept verbatim -
 //! and it was always discarded. Everything this harness ever decided died with the daemon
 //! that decided it. This is the write-through. One row per decision at the moment it is
-//! made;
+//! made
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +19,7 @@ pub struct StoreCorpus {
     /// is quietly dropping rows must not read as a corpus that is being kept.
     lost: AtomicU64,
     /// Rulings that found no row. Counted separately because it means something
-    /// different — the decision was never written, or it belongs to a store this
+    /// different - the decision was never written, or it belongs to a store this
     /// daemon is not the one holding.
     orphan_rulings: AtomicU64,
 }
@@ -54,7 +54,7 @@ impl StoreCorpus {
 
 impl CorpusSink for StoreCorpus {
     /// From the table, so a resumed session's gate carries on numbering where the last daemon
-    /// stopped. Unreadable store, or a session with no rows yet, is `0` — the same answer a
+    /// stopped. Unreadable store, or a session with no rows yet, is `0` - the same answer a
     /// fresh session gives, and the honest one when nothing can be read.
     fn decisions_recorded(&self, session_id: &str) -> u64 {
         self.store
@@ -106,11 +106,11 @@ impl CorpusSink for StoreCorpus {
             shape: row.shape.clone(),
             shape_class: row.shape_class.clone(),
             brief_sha: Some(row.brief_format.to_string()),
-            // **The flag the counts read** (R11). `Row::consulted` is
+            // The flag the counts read. `Row::consulted` is
             // `ModelAdvice::consulted`, so this column is the fact rather than a regex
-            // over prose — and `CorpusCounts::measured` counts it.
+            // over prose - and `CorpusCounts::measured` counts it.
             consulted: Some(row.consulted),
-            // **R12's label, beside the flag**: which of the four `Unsure`s the answer was,
+            // 's label, beside the flag: which of the four `Unsure`s the answer was
             // so *how often does the guard run out of room* is a `GROUP BY` and not a regex
             // over `model_verdict`.
             oracle_reading: row.oracle_reading.map(str::to_string),
@@ -119,8 +119,8 @@ impl CorpusSink for StoreCorpus {
             asked: row.asked,
         };
 
-        // **Written, not merely attempted.** `record_adjudication` is `INSERT OR IGNORE`, so a key
-        // that is already there answers `Ok(0)`; reading only `is_ok()` counted that as kept and
+        // Written, not merely attempted. `record_adjudication` is `INSERT OR IGNORE`, so a key
+        // that is already there answers `Ok(0)`; reading only `is_ok` counted that as kept and
         // is how a whole session's corpus went missing without `lost` ever moving.
         let ok = self
             .store
@@ -132,9 +132,9 @@ impl CorpusSink for StoreCorpus {
             self.lost.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        // **At `supervised` the ruling arrives WITH the decision**, because the person answered
+        // At `supervised` the ruling arrives WITH the decision, because the person answered
         // this call with the model's verdict in front of them. Two statements rather than an
-        // eleven-argument insert with two more optional columns:
+        // eleven-argument insert with two more optional columns
         if let Some(what) = &row.operator {
             self.ruled(&row.request_id, what);
         }
@@ -175,9 +175,9 @@ mod shape_cache_tests {
     use letibot_tools::runtime::{Gate, GateCall, GateDecision};
     use letibot_tools::schema::Access;
 
-    /// **The whole loop, end to end: approve once, restart, do not be asked again.** Every
+    /// The whole loop, end to end: approve once, restart, do not be asked again. Every
     /// piece of this was unit-tested separately and the operator still had a session that asked
-    /// them about the same `grep` after a restart — because the pieces were never joined up.
+    /// them about the same `grep` after a restart - because the pieces were never joined up.
     #[test]
     fn a_shape_approved_before_a_restart_survives_it() {
         let dir = std::env::temp_dir().join(format!("letibot-shape-{}", std::process::id()));
@@ -225,7 +225,7 @@ mod shape_cache_tests {
             .with_surroundings(surroundings(workspace))
             .with_corpus_sink(std::sync::Arc::clone(&sink) as std::sync::Arc<dyn CorpusSink>);
 
-            // **Exec, so that asking is what this measures** (R21): a `grep` over the
+            // Exec, so that asking is what this measures : a `grep` over the
             // workspace is a read, clause 4 settles it with nobody asked, and a run
             // through this test would then be green about a prompt that never happened.
             let args = serde_json::json!({"command": "sed -n 1p /w/a.rs"});
@@ -248,7 +248,7 @@ mod shape_cache_tests {
             "the approval did not reach the store: {warm:?}"
         );
 
-        // Session two: a different pattern, count and file — one shape.
+        // Session two: a different pattern, count and file - one shape.
         let asked_second = {
             let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let a = asked.clone();

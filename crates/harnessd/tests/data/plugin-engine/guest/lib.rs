@@ -1,8 +1,8 @@
-//! **The four hook kinds and nothing else** — the guest behind `../plugin.wasm`.
+//! The four hook kinds and nothing else - the guest behind `../plugin.wasm`.
 //!
 //! Every hook this host runs is a `(ptr, len) -> i32` call through rano's ABI v1: the input is
-//! (ptr, len) in this module's memory, and the answer is the offset of an 8-byte result block —
-//! `out_ptr` and `out_len` as little-endian `u32`s — or `-1` for *unchanged*. A hook that answers a
+//! (ptr, len) in this module's memory, and the answer is the offset of an 8-byte result block -
+//! `out_ptr` and `out_len` as little-endian `u32`s - or `-1` for *unchanged*. A hook that answers a
 //! constant needs no allocator, no copy and no import, so this is the whole of it: four exports
 //! over four static sentences.
 //!
@@ -20,7 +20,7 @@
 //!
 //! It is committed rather than built by the test for the reason `plugins/examples/plan-dashboard`'s
 //! module is: a test that shells out to a compiler is a test that fails on a box without a wasm
-//! target, and a module this small never changes. It has **no imports at all**, which is what rano's
+//! target, and a module this small never changes. It has no imports at all, which is what rano's
 //! linker grants by default (a plugin's capabilities are letibot's looks, enforced in Rust, not
 //! rano capabilities).
 
@@ -38,16 +38,16 @@ const ARENA: i32 = 4096;
 /// The result block a hook returns: `out_ptr`, `out_len`.
 static mut BLOCK: [u32; 2] = [0, 0];
 
-/// The answer to `notice_job` — a reworded sentence, in this layer's own words.
+/// The answer to `notice_job` - a reworded sentence, in this layer's own words.
 static NOTICE: &[u8] = br#"{"text":"the engine reworded this notice"}"#;
 
-/// The answer to `on_tool_result` — a suffix, the shape `pr_watch`'s sentence has.
+/// The answer to `on_tool_result` - a suffix, the shape `pr_watch`'s sentence has.
 static RESULT: &[u8] = br#"{"append":" (the engine read this result)"}"#;
 
-/// The answer to `on_tool_call` — an answer, so the tool does not run.
+/// The answer to `on_tool_call` - an answer, so the tool does not run.
 static CALL: &[u8] = br#"{"answer":"the engine answered this call"}"#;
 
-/// The answer to `condition_engine` — armed, watching a file, once a minute.
+/// The answer to `condition_engine` - armed, watching a file, once a minute.
 static CONDITION: &[u8] = br#"{"look":{"read":"status.json"},"every_s":60,"state":{"armed":true}}"#;
 
 #[no_mangle]

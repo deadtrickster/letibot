@@ -1,11 +1,9 @@
-//! **The daemon's half of a session's leases** (RH9) — where a block of a shared host's
-//! ports is taken, and the two moments it goes back. `crates/tools/src/lease.rs` is the
-//! engine and the seam; this is the implementation of that seam over a real store, in the
-//! same shape `supervise::StoreBook` gives the process book: a path, a session, one
-//! lazily-opened connection. # The two moments a lease goes back * **A session closes**
-//! ([`release_session`], called by `Sessions::close` and `close_backends`). That is an act,
-//! and it is the ordinary one. * **The owner is found GONE** ([`reap`], called by the
-//! supervisor's tick).
+//! The daemon's half of a session's leases: where a block of a shared host's ports is taken, and
+//! the two moments it goes back.
+//!
+//! `crates/tools/src/lease.rs` is the engine and the seam; this implements it over a real store in
+//! the shape `supervise::StoreBook` gives the process book. A block goes back when the session
+//! closes, which is an act, and when the supervisor's tick finds the owner gone.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,13 +12,13 @@ use std::sync::Mutex;
 use letibot_tokencore::store::{Ask, Lease, Store};
 use letibot_tools::lease::{Blocks, Leases};
 
-/// **How long the owner must be gone before its blocks go back.** Sixty seconds: long enough for a
-/// daemon that has just started to reopen the sessions it is going to reopen (each open is a store
-/// read and an eager first session at boot), short enough that a block left by a hard-killed daemon
-/// is available to the next session within one turn.
+/// How long the owner must be gone before its blocks go back: sixty seconds.
+///
+/// Long enough for a daemon that has just started to reopen its sessions, short enough that a
+/// block left by a hard-killed daemon is available to the next session within a turn.
 pub const GRACE_MS: i64 = 60_000;
 
-/// **A session's leases, over the store** — the implementation of
+/// A session's leases, over the store - the implementation of
 /// [`letibot_tools::lease::Leases`] the daemon registers.
 pub struct StoreLeases {
     path: PathBuf,
@@ -81,15 +79,15 @@ impl std::fmt::Debug for StoreLeases {
     }
 }
 
-/// **The engine a session's tools and a close both use**: the operator's hosts, this box's
+/// The engine a session's tools and a close both use: the operator's hosts, this box's
 /// ssh material, and a [`StoreLeases`] behind it.
 pub fn blocks(path: &Path, session: &str) -> Blocks {
     Blocks::new(session).with_leases(std::sync::Arc::new(StoreLeases::new(path, session)))
 }
 
-/// **Give back every block a session still holds, and remove exactly what it created** — a
+/// Give back every block a session still holds, and remove exactly what it created - a
 /// session's close, the daemon's stop, and the reaper's act, in one place. Returns one line
-/// per lease, so the caller can log what happened:
+/// per lease, so the caller can log what happened
 pub fn release_session(path: &Path, session: &str, by: &str) -> Vec<String> {
     let store = match Store::open(path) {
         Ok(s) => s,
@@ -119,8 +117,8 @@ pub fn release_session(path: &Path, session: &str, by: &str) -> Vec<String> {
     said
 }
 
-/// **Every block whose owner is gone goes back.** `alive` is the daemon's own answer — the
-/// registry's — `seen` is the reaper's memory of *how long* each session has been gone, and
+/// Every block whose owner is gone goes back. `alive` is the daemon's own answer - the
+/// registry's - `seen` is the reaper's memory of *how long* each session has been gone, and
 /// `release` is the act that does it.
 pub fn reap(
     store: &Store,
@@ -146,9 +144,9 @@ pub fn reap(
     said
 }
 
-/// **Which sessions' leases are due to go back** — the grace, and nothing else. A session
+/// Which sessions' leases are due to go back - the grace, and nothing else. A session
 /// seen alive is stamped with `at` and kept. A session not seen for [`GRACE_MS`] is due.
-/// **A session nobody has seen yet is not a session known to be gone**:
+/// A session nobody has seen yet is not a session known to be gone
 pub fn due(
     held: &[Lease],
     alive: &dyn Fn(&str) -> bool,
@@ -198,7 +196,7 @@ mod tests {
             .expect("a block")
     }
 
-    /// **A restart is not an owner being gone.** The first tick stamps the session; the release
+    /// A restart is not an owner being gone. The first tick stamps the session; the release
     /// happens only after the grace, and a session that comes back inside it keeps its block.
     #[test]
     fn a_lease_survives_the_grace_a_restart_needs() {
@@ -210,14 +208,14 @@ mod tests {
         assert!(due(&held, &|_| false, &mut seen, 1_000).is_empty());
         // Half the grace later, still nothing.
         assert!(due(&held, &|_| false, &mut seen, 1_000 + GRACE_MS / 2).is_empty());
-        // And the session is reopened before the grace is out — its block stays, for ever.
+        // And the session is reopened before the grace is out - its block stays, for ever.
         assert!(due(&held, &|s| s == "s-a", &mut seen, 1_000 + GRACE_MS - 1).is_empty());
         // Even after the grace, a session that came back is not due.
         assert!(due(&held, &|s| s == "s-a", &mut seen, 1_000 + GRACE_MS * 3).is_empty());
         assert_eq!(store.held_leases().expect("held").len(), 1);
     }
 
-    /// Past the grace, an owner nobody serves is gone and its block goes back — once, and the
+    /// Past the grace, an owner nobody serves is gone and its block goes back - once, and the
     /// release hears its own name.
     #[test]
     fn a_lease_whose_owner_is_gone_is_released() {
@@ -255,7 +253,7 @@ mod tests {
         assert_eq!(after.released_by.as_deref(), Some("its owner was gone"));
     }
 
-    /// **A session closing releases its own blocks and nobody else's** — the difference between a
+    /// A session closing releases its own blocks and nobody else's - the difference between a
     /// teardown and a sweep.
     #[test]
     fn a_close_releases_one_sessions_blocks() {

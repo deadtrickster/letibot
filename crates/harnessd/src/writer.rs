@@ -53,7 +53,7 @@ impl Drop for Claim {
 
 /// This daemon's identity for one claim: host and pid from the lease identity, and a
 /// nanosecond suffix so two claims in one process are two claims. The suffix is
-/// load-bearing:
+/// load-bearing
 fn me() -> (String, String, u32) {
     let lease = crate::mergequeue::lease::this_daemon();
     let owner = format!("{}/{}/{}", lease.host, lease.pid, crate::config::now_ns());
@@ -67,7 +67,7 @@ fn alive(pid: u32) -> bool {
 }
 
 /// Claim this session's transcript for the harness about to open it, or refuse naming who
-/// has it. The refusal carries the four facts a person needs: which session, which process,
+/// has it. The refusal carries the four facts a person needs: which session, which process
 /// what two writers do to the store, and what to do about it.
 pub fn claim(store: &Store, session_id: &str) -> Result<Claim, String> {
     let (owner, host, pid) = me();

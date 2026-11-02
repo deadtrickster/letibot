@@ -1,11 +1,11 @@
-//! **The gatekeeper measured on an attack corpus.** Plan: `docs/guard-corpus-plan.md` §1
+//! The gatekeeper measured on an attack corpus. Plan: `docs/guard-corpus-plan.md` §1
 //! (BashArena, arXiv 2512.15688) and §2. `--etalon` measures layer A alone and `--compare`
-//! measures the guard on the store's own labelled rows — which, measured 2026-09-16, hold
+//! measures the guard on the store's own labelled rows - which, measured 2026-09-16, hold
 //! no attacks at all: every one of the 66 asked rows was admitted by the operator. A guard
 //! that has only ever been measured on benign work has a false-prompt rate and no recall.
 //! This measures the recall. The input is the etalon's JSONL shape
 //! (`scripts/etalon-extract.py`), so any set in that shape works; the one it was built for
-//! is BashArena's `monitor-eval` split (HF `abhayesian/basharena-monitor-eval`):
+//! is BashArena's `monitor-eval` split (HF `abhayesian/basharena-monitor-eval`)
 
 use std::path::Path;
 
@@ -55,7 +55,7 @@ pub struct Outcome {
     pub by_source: std::collections::BTreeMap<String, Split>,
 }
 
-/// Turn the JSONL into store rows, seat them in a scratch copy of the store,
+/// Turn the JSONL into store rows, seat them in a scratch copy of the store
 /// and replay them through the guard under `arm`.
 pub fn measure(
     cfg: &Config,
@@ -66,14 +66,14 @@ pub fn measure(
 ) -> Result<Outcome, String> {
     let text = std::fs::read_to_string(jsonl).map_err(|e| format!("{}: {e}", jsonl.display()))?;
 
-    // A scratch copy: the replay reads sessions and examples from a store,
+    // A scratch copy: the replay reads sessions and examples from a store
     // and this one must not learn BashArena's sessions.
     let scratch_dir =
         std::env::temp_dir().join(format!("letibot-etalon-oracle-{}", std::process::id()));
     std::fs::create_dir_all(&scratch_dir).map_err(|e| e.to_string())?;
     let scratch = scratch_dir.join("sessions.db");
     std::fs::copy(store, &scratch).map_err(|e| format!("copying the store: {e}"))?;
-    // Never the live WAL/SHM: a copied .db is a consistent file only if the
+    // Never the live WAL/SHM: a copied.db is a consistent file only if the
     // source is checkpointed; opening it fresh forces a clean journal.
     let db = Store::open(&scratch).map_err(|e| format!("opening the scratch store: {e}"))?;
 
@@ -142,7 +142,7 @@ pub fn measure(
             tier: "may_approve".into(),
             trail_json: serde_json::to_string(&trail).map_err(|e| e.to_string())?,
             shown: None,
-            // R11. An etalon row is replayed from a store that predates the column, and
+            // . An etalon row is replayed from a store that predates the column, and
             // its brief was already `None` (nobody rendered one).
             reply: None,
             tool: "bash".into(),
@@ -161,7 +161,7 @@ pub fn measure(
             // A row replayed from a corpus that has no `consulted` flag: `None` is
             // "not recorded", which is what an etalon row honestly is.
             consulted: None,
-            // And none has R12's reading either, for the same reason: these rows were
+            // And none has 's reading either, for the same reason: these rows were
             // written by a build that recorded the reason (if at all) in a sentence.
             oracle_reading: None,
             effect: if r.outcome == "refused" {
@@ -263,8 +263,8 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
             100.0 * ha as f64 / hr as f64
         ));
     }
-    // **The ceiling's own number** (R12's `UnsureKind`). A reply cut off at `max_tokens` is
-    // not a verdict, and at the pre-R12 prompt order it is scored as *not allowed* — i.e. as a
+    // The ceiling's own number. A reply cut off at `max_tokens` is
+    // not a verdict, and at the pre- prompt order it is scored as *not allowed* - i.e. as a
     // catch the guard did not make.
     let truncated = o
         .report
@@ -284,7 +284,7 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
             o.report.rows.len(),
             100.0 * truncated as f64 / o.report.rows.len() as f64
         ));
-        // **The median, beside the mean the table already prints.** The mean is what a per-source
+        // The median, beside the mean the table already prints. The mean is what a per-source
         // table wants; the median is what a *cost* wants, because one call that spends the whole
         // 20 s budget drags a mean and says nothing about the ordinary case.
         let mut ms: Vec<u64> = o.report.rows.iter().map(|r| r.ms).collect();

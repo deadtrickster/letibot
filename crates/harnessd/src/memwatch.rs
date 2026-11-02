@@ -1,10 +1,10 @@
-//! **The daemon watching its own memory** — `TODO.md` R66. A harnessd serving
+//! The daemon watching its own memory - `TODO.md`. A harnessd serving
 //! qwen-3.8-flash-next reached 108 GB resident over 47 hours and was killed by the kernel
 //! at 2026-10-11 00:47, and its log had not one line about memory in it: nothing said it
 //! was growing, what was growing, or when it started. The operator: *"can we have more logs
 //! and more instrumentation? maybe some asserts? can rust runtime do asserts or log large
-//! memory allocations?"* Three answers, one module: 1. **[`Counting`], the global
-//! allocator** (installed in `bin/harnessd.rs`).
+//! memory allocations?"* Three answers, one module: 1. [`Counting`], the global
+//! allocator (installed in `bin/harnessd.rs`).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -32,7 +32,7 @@ thread_local! {
     static LOGGING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// **The system allocator, counted.** See the module docs. One `fetch_add` and one `fetch_max`
+/// The system allocator, counted. See the module docs. One `fetch_add` and one `fetch_max`
 /// per allocation; the large-allocation path is taken only above the threshold.
 pub struct Counting;
 
@@ -115,7 +115,7 @@ unsafe impl GlobalAlloc for Counting {
             if new >= old {
                 grew(new - old);
                 // A `Vec` doubling past the threshold is exactly what this is for, and each
-                // doubling above it is its own line — rare by construction.
+                // doubling above it is its own line - rare by construction.
                 large(new, "realloc");
             } else {
                 LIVE.fetch_sub(old - new, Ordering::Relaxed);
@@ -162,7 +162,7 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
             "memwatch: {}",
             summary(rss, live, peak, large_n, threads.values().sum(), &census)
         );
-        // R66's number over time (TODO R81): every fifth line — five minutes at the default —
+        // 's number over time : every fifth line - five minutes at the default -
         // and at every census step below.
         if tick % 5 == 1 || rss >= next_step {
             crate::instruments::mem_sample(rss, live, peak, threads.values().sum(), &census);
@@ -244,8 +244,8 @@ fn throttle_events(leaf: &std::path::Path) -> Option<u64> {
         .and_then(|n| n.trim().parse().ok())
 }
 
-/// Every thread, grouped by its name with the per-instance part taken off —
-/// `letibot-job-j12` and `letibot-job-j13` are one row — because a leak of threads is a
+/// Every thread, grouped by its name with the per-instance part taken off -
+/// `letibot-job-j12` and `letibot-job-j13` are one row - because a leak of threads is a
 /// count that climbs under one name, and a list of 300 names hides it.
 pub fn thread_names() -> BTreeMap<String, usize> {
     let mut out = BTreeMap::new();
@@ -302,7 +302,7 @@ pub fn summary(
     )
 }
 
-/// **The bounds a hub claims, checked.** Each entry is `(which bound, the sentence)`. The slack
+/// The bounds a hub claims, checked. Each entry is `(which bound, the sentence)`. The slack
 /// is the one event a log may hold over its bound between the push and the eviction, and a
 /// head's queue may sit at its gap bound until the demotion that clears it.
 pub fn broken_bounds(c: &HubCensus) -> Vec<(&'static str, String)> {
@@ -327,8 +327,8 @@ pub fn broken_bounds(c: &HubCensus) -> Vec<(&'static str, String)> {
             ),
         ));
     }
-    // **What the session's HARNESS holds** (R66) — the one term a growing daemon could not
-    // name before this:
+    // What the session's HARNESS holds - the one term a growing daemon could not
+    // name before this
     if c.footprint.over_ceiling() {
         let f = &c.footprint;
         out.push((
@@ -348,7 +348,7 @@ pub fn broken_bounds(c: &HubCensus) -> Vec<(&'static str, String)> {
         ));
     }
     // The view's lists with no bound of their own: a count this large is a list that only
-    // grows. Not a bound the code claims — a tripwire for one it should.
+    // grows. Not a bound the code claims - a tripwire for one it should.
     const UNBOUNDED_TRIP: usize = 10_000;
     for (kind, n) in [
         ("view_settled", c.view.settled),
@@ -408,7 +408,7 @@ fn full_census(
             human_bytes(f.ceiling_bytes as u64),
         ));
     }
-    // **And the same list by what the HARNESS holds**, because the two orders are different
+    // And the same list by what the HARNESS holds, because the two orders are different
     // questions: a hub with the longest log is not the session that grew.
     let mut by_footprint: Vec<&(HubCensus, usize)> = census.iter().collect();
     by_footprint.sort_by_key(|(c, _)| std::cmp::Reverse(c.footprint.total()));
@@ -491,8 +491,8 @@ mod tests {
         LIVE.fetch_sub(1000, Ordering::Relaxed);
     }
 
-    /// **The census a person reads names the session AND the part that grew** — R66's whole
-    /// ask. A total is not actionable;
+    /// The census a person reads names the session AND the part that grew - 's whole
+    /// ask. A total is not actionable
     #[test]
     fn the_census_names_the_session_and_the_part_that_grew() {
         let c = HubCensus {
@@ -539,9 +539,9 @@ mod tests {
         );
     }
 
-    /// **The term R66 could not name** — a session's harness past the ceiling it states for
+    /// The term could not name - a session's harness past the ceiling it states for
     /// itself is reported, and the sentence says which part grew. Three shapes, because the
-    /// three have to be told apart:
+    /// three have to be told apart
     #[test]
     fn a_harness_past_its_ceiling_is_named_and_one_inside_it_is_not() {
         let ceiling = 4 << 20;

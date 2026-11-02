@@ -1,11 +1,11 @@
-//! **A head that speaks HTTP**, so a model behind harnessd can be used the way a bare
+//! A head that speaks HTTP, so a model behind harnessd can be used the way a bare
 //! llama-server is. # Why this exists The gatekeeper on this box is a llama-server: the
-//! oracle posts a brief to `/v1/chat/completions` and reads one verdict back. That works,
-//! and it means the guard has **no base prompt of its own** — every call has to carry
-//! everything it needs, because nothing else is holding any context for it. The operator,
+//! oracle posts a brief to `/v1/chat/completions` and reads one verdict back. That works
+//! and it means the guard has no base prompt of its own - every call has to carry
+//! everything it needs, because nothing else is holding any context for it. The operator
 //! 2026-09-20: *"I want to be able to start harnessd against a model with my custom base
 //! prompt. Think of our oracle qwen. right now it is a bare llama endpoint. I want it to be
-//! a harnessd and another simple http head."* So:
+//! a harnessd and another simple http head."* So
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -28,7 +28,7 @@ const MAX_BODY: usize = 1 << 20;
 const DEFAULT_PERMITS: usize = 4;
 
 /// A counting semaphore. `std` has none, and a channel of permits would make a
-/// dropped handler leak one — a guard that returns its permit on the way out,
+/// dropped handler leak one - a guard that returns its permit on the way out
 /// panic included, cannot.
 struct Permits {
     free: std::sync::Mutex<usize>,
@@ -73,8 +73,8 @@ struct Msg {
 pub fn serve(listener: TcpListener, parts: Parts, cfg: Config) {
     let prefix = StablePrefix {
         system: cfg.system.clone(),
-        // **No tools.** This head cannot call any, so announcing them would be a
-        // prompt that lies about what the model can do — and tool schemas are
+        // No tools. This head cannot call any, so announcing them would be a
+        // prompt that lies about what the model can do - and tool schemas are
         // the bulk of a prefix, which is what this exists to keep small and warm.
         tools_json: Vec::new(),
     };
@@ -109,7 +109,7 @@ pub fn serve(listener: TcpListener, parts: Parts, cfg: Config) {
             .name("http-turn".into())
             .spawn(move || {
                 // One engine per request. It borrows the vocabulary out of this
-                // thread's own `Parts` clone — an `Arc` bump, not a second load —
+                // thread's own `Parts` clone - an `Arc` bump, not a second load -
                 // which is what lets the turns actually run side by side.
                 let mut engine = match engine_for(&parts, &cfg) {
                     Ok(e) => e,
@@ -156,7 +156,7 @@ fn handle(
 
     match run_once(engine, prefix, &msgs) {
         Ok(text) => respond(stream, 200, &completion_json(&text)),
-        // The turn's own words. A guard that gets `{"error": ...}` back reads it as an unparseable
+        // The turn's own words. A guard that gets `{"error":...}` back reads it as an unparseable
         // verdict and answers `Unsure`, which is the honest outcome of "the model did not answer"
         // and is what `Oracle::ask` already does with a body it cannot read.
         Err(e) => respond(stream, 502, &err_json(&e)),
@@ -172,7 +172,7 @@ fn run_once(
     let items: Vec<TranscriptItem> = msgs
         .iter()
         .map(|m| match m.role.as_str() {
-            // A `system` message from the CLIENT is not this head's base prompt — that is `--system`
+            // A `system` message from the CLIENT is not this head's base prompt - that is `--system`
             // and it is already in the prefix. It lands as an update inside the conversation, which is
             // what it is: something the caller said, after the daemon's own instructions.
             "system" => TranscriptItem::System {
@@ -316,7 +316,7 @@ fn respond(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<(
 mod tests {
     use super::*;
 
-    /// **The bound is a bound, and a permit comes back however the handler ends.**
+    /// The bound is a bound, and a permit comes back however the handler ends.
     ///
     /// A channel of permits leaks one when a handler panics; a guard cannot.
     #[test]

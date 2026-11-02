@@ -55,7 +55,8 @@
 //! 1. `the_password_ask_is_served_while_the_operators_run_is_blocked` — the ask is answered
 //!    while the run waits, and the run's *own* wait raises no card it did not earn. `sudo -A`'s
 //!    process shape (`pw=$(helper)`: a pipe on the child's stdout, blocked reading it, fd 0
-//!    left alone) must not read as a question. 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` — the
+//!    left alone) must not read as a question.
+//! 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` — the
 //!    operator's case, end to end, without a real `sudo`: a run whose process makes itself as
 //!    unreadable as a root `apt` is, waiting on the terminal the daemon holds. The daemon says so, names
 //!    the way in, and **`!send` reaches it** — which is the whole of what a person was owed.
@@ -113,8 +114,9 @@ fn config(session: &str, socket: &Path) -> Config {
     // needs no oracle — the point here is the exec path, not the mode.
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on the byte
-    // vocabulary needs none), so a harness built here is handed one:
+    // `Config::for_this_box` carries no vocabulary default, so a harness built here is handed
+    // one: the operator's `LETIBOT_VOCAB_GGUF` if set, else the box's own GGUF, the same path
+    // this file's `vocab_gguf` gate consults.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
@@ -139,8 +141,9 @@ fn socket_path(tag: &str) -> PathBuf {
     ))
 }
 
-/// **The shape of `sudo -A`**, as a script: the helper is a child whose stdout is a pipe
-/// and this process blocks reading it, with fd 0 inherited from the run.
+/// The shape of `sudo -A`, as a script: the helper's stdout is a pipe this process blocks
+/// reading, with fd 0 inherited from the run. `pw=$(helper)` is that shape, and it raised a card
+/// for a question nobody asked before `ask`'s descriptor check existed.
 fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
     let path = dir.join("sudodouble");
     letibot_tools::testing::write_stub(
@@ -161,9 +164,10 @@ fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
     path
 }
 
-/// **The run's own process, when this test binary is re-executed as it.** The `!` line in
-/// the second test is `LETIBOT_SUDO_ASK_CHILD=1 <this binary> --exact
-/// the_run_this_daemon_may_not_read --nocapture`, so what the exec host spawns is this
+/// The run's own process, when this test binary is re-executed as it.
+///
+/// It sets `PR_SET_DUMPABLE 0`, the flag a setuid exec sets, which makes `/proc/<pid>/fd/0`
+/// unreadable without `CAP_SYS_PTRACE`; then it asks a question and blocks on the terminal.
 #[test]
 fn the_run_this_daemon_may_not_read() {
     if std::env::var("LETIBOT_SUDO_ASK_CHILD").as_deref() != Ok("1") {
@@ -223,7 +227,9 @@ fn payloads(hub: &Hub) -> String {
         .join("\n")
 }
 
-/// **Mechanism 1, refuted:
+/// Mechanism 1, refuted: the ask is served while the operator's run is blocked inside the
+/// command, and the run's own askpass wait raises no card it did not earn. The run is on this
+/// thread's own runner, as the daemon's single worker is, so a shared queue could never deliver.
 #[test]
 fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -341,8 +347,9 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The operator's own case, end to end, without a real `sudo`**: a run the daemon may not
-/// look at, waiting on the terminal the daemon holds — said out loud, and answerable.
+/// The operator's own case, end to end, without a real `sudo`: a run the daemon may not look at,
+/// waiting on the terminal it holds, said out loud and answerable. The run is this binary
+/// re-executed, unreadable as a root `apt`; no card is raised, because a card is a reading.
 #[test]
 fn a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -392,9 +399,8 @@ fn a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered() {
         }
     });
 
-    // ---- 1 and 2. The sentence, and what it names. **The run is deliberately NOT waited for
-    // here**: it cannot end until somebody answers it, which is the whole point of the case,
-    // so this loop ends at the sentence rather than at the run.
+    // The run is deliberately NOT waited for: it cannot end until somebody answers it, so this
+    // loop ends at the sentence.
     let deadline = Instant::now() + PATIENCE;
     let mut seen: Vec<SessionEvent> = Vec::new();
     let mut the_sentence: Option<String> = None;

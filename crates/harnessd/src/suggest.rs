@@ -1,11 +1,9 @@
-//! The daemon's model call for the smart `!`: the local endpoint, bounded. The prompt and
-//! the defensive parse live in `letibot_sessionlog::suggest`, where they are testable
-//! without standing up inference. This is the half that talks to a model, and it is the
-//! daemon's because the daemon is the one with an endpoint and an HTTP client. The
-//! operator's ask, in their words: *"i want smart ! when a model suggest completions."* #
-//! Local only, and bounded The endpoint is the one the daemon already resolved into
-//! `cfg.oracle` — the `[gatekeeper]` endpoint in the operator's providers.toml, which on
-//! this box is the LOCAL model.
+//! The daemon's model call for the smart `!`: the local endpoint, bounded.
+//!
+//! The prompt and the defensive parse live in `letibot_sessionlog::suggest`, where they are
+//! testable without standing up inference; this half talks to a model and is the daemon's because
+//! the daemon has an endpoint and an HTTP client. The endpoint is the one already resolved into
+//! `cfg.oracle`, which on this box is the LOCAL model.
 
 use std::time::Duration;
 
@@ -15,17 +13,13 @@ use letibot_sessionlog::suggest::{self, RECENT_ROWS};
 use letibot_transcript::TranscriptItem;
 use letibot_turn::http::{self, Endpoint};
 
-/// **How long a suggestion may take the local model.**
+/// How long a suggestion may take the local model: three seconds.
 ///
-/// The gatekeeper's own budget is for a verdict that fails closed on a timeout, and it
-/// is tight (400 ms by default) because it is on the tool path. A suggestion is off the
-/// tool path — it fills a composer, it runs nothing — so it may take a little longer,
-/// but it is still a completion and not a turn: three seconds is the patience of a
-/// person waiting for a word to appear, and past it the answer is *nothing* rather than
-/// a stall.
+/// The gatekeeper's budget is tight because a verdict is on the tool path; a suggestion fills a
+/// composer and runs nothing, and past this the answer a waiting person wants is nothing.
 pub const SUGGEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// **How many output tokens a suggestion may spend.** Five shell lines, one per line, is a
+/// How many output tokens a suggestion may spend. Five shell lines, one per line, is a
 /// handful of tokens.
 pub const SUGGEST_MAX_TOKENS: usize = 128;
 
@@ -90,7 +84,7 @@ impl ShellSuggester for LocalSuggester {
         let commands = suggest::commands_run(&items);
         let prompt = suggest::suggestion_prompt(&recent, &commands, workspace, prefix);
         // The model's half, and the defensive parse of whatever it said. A model that
-        // did not answer, or answered with prose, is an empty list — the head reads
+        // did not answer, or answered with prose, is an empty list - the head reads
         // that as *no suggestion* and the operator's Tab does what it did before.
         match self.ask(&prompt) {
             Some(reply) => suggest::parse_suggestions(&reply),
@@ -142,7 +136,7 @@ mod tests {
         (Endpoint::new("127.0.0.1", addr.port()), rx)
     }
 
-    /// A local model that accepts the connection and then says nothing at all — the
+    /// A local model that accepts the connection and then says nothing at all - the
     /// one shape that tests the deadline, because there is no byte for a read to
     /// return and no close for it to notice.
     fn silent_model() -> Endpoint {
@@ -153,7 +147,7 @@ mod tests {
                 return;
             };
             // Held open, unread and unanswered, for longer than the suggester's own
-            // deadline — the thread is detached and the test is done with it by then.
+            // deadline - the thread is detached and the test is done with it by then.
             std::thread::sleep(Duration::from_secs(30));
             drop(conn);
         });
@@ -215,8 +209,8 @@ mod tests {
         hub
     }
 
-    /// **The prompt that goes on the wire is the conversation, and the answer is the parsed
-    /// reply.** This is the seam nothing else covers:
+    /// The prompt that goes on the wire is the conversation, and the answer is the parsed
+    /// reply. This is the seam nothing else covers
     #[test]
     fn the_local_model_is_asked_about_this_session_and_its_reply_is_parsed() {
         let (endpoint, asked) = canned_model(
@@ -260,9 +254,9 @@ mod tests {
         );
     }
 
-    /// **A model that never answers is nothing, and it is nothing in three seconds.** The
+    /// A model that never answers is nothing, and it is nothing in three seconds. The
     /// endpoint's own default read timeout is 180 s, which is right for a turn and absurd for a
-    /// completion:
+    /// completion
     #[test]
     fn a_model_that_never_answers_is_nothing_within_the_deadline() {
         let s = LocalSuggester::new(silent_model(), "local".into());
@@ -279,7 +273,7 @@ mod tests {
         );
     }
 
-    /// **No endpoint at all is nothing**, which is what a daemon with no local model
+    /// No endpoint at all is nothing, which is what a daemon with no local model
     /// answers: the head reads it as *no suggestion* and the operator's Tab does what
     /// it did before the feature.
     #[test]

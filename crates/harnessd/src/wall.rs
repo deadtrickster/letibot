@@ -1,25 +1,25 @@
-//! **The wall controller** — one state for what a session does at its context wall,
-//! changed in one place, and only by a count somebody MEASURED.
+//! The wall controller - one state for what a session does at its context wall
+//! changed in one place, and only by a count somebody
 //!
 //! # The case it answers
 //!
-//! MEASURED 2026-10-11 on pg-noop, session `s-1789919514688401228` (deepseek-flash,
+//! MEASURED 2026-10-11 on pg-noop, session `s-1789919514688401228` (deepseek-flash
 //! window 1,000,000): `compacting: 941101 of 1000000 deepseek tokens resident (936387 at
-//! the last round + 4714 appended since)`, then on the head *"⚠ auto-compaction is off:
+//! the last round + 4714 appended since)`, then on the head *"⚠ auto-compaction is off
 //! compacted from 941101 to 1039055 tokens and that is STILL within 62500 of the 1000000
 //! window … and a refusal will not force another"*. The first round on the new
-//! transcript (`#t18`) stored `context_tokens = 507355` — deepseek's own count; the head
+//! transcript (`#t18`) stored `context_tokens = 507355` - deepseek's own count; the head
 //! showed 504k. The fold had HALVED the session. The no-progress guard judged it on an
 //! estimate of a base the provider had not seen yet (in the wrong unit besides) and
 //! latched two switches for the daemon's life: `auto_compact = false` (the pre-emptive
-//! door) and `forced_gave_up` (the refused door — the overrun protection itself). The
+//! door) and `forced_gave_up` (the refused door - the overrun protection itself). The
 //! operator: *"wtf is this"*, *"window shows 504k tokens"*, and *"why it didnt believe
 //! what api told it"*.
 //!
 //! And the fold that did not help enough had nowhere to go. `plan_overrun` picks the
 //! sliced fold by SIZE only (`resident + MIN_SUMMARY_ROOM > window`); at 941k of 1M the
-//! history fit one summary call, so the ordinary fold ran — a summary of the first half
-//! and the second half verbatim — and that verbatim half is the ~500k that remained.
+//! history fit one summary call, so the ordinary fold ran - a summary of the first half
+//! and the second half verbatim - and that verbatim half is the ~500k that remained.
 //! Nothing escalated from "the ordinary fold did not make enough room" to a smaller
 //! verbatim part or to the sliced fold, though the guard's own comment said the sliced
 //! fold *"may still cure exactly the case the ordinary one failed on"*. It latched.
@@ -38,33 +38,33 @@
 //! ```
 //!
 //! The ladder is [`Fold::Ordinary`] → [`Fold::SmallerTail`] → [`Fold::Sliced`]. A local
-//! session has no verbatim part to shrink (its compaction carries none — R27) and goes
+//! session has no verbatim part to shrink and goes
 //! straight from the ordinary fold to the sliced one; its base is measured the moment it
 //! exists, because a local prompt IS the ledger.
 //!
-//! **What no state does: refuse a refused request.** A turn the provider refused for
-//! length is folded from every state — the fold its size calls for when the controller
+//! What no state does: refuse a refused request. A turn the provider refused for
+//! length is folded from every state - the fold its size calls for when the controller
 //! is `Armed`, the sliced fold from anywhere else, `Stuck` included. 2026-10-09 was this
 //! session wedged for thirty refusals by a switch that stood the refused door down with
 //! the pre-emptive one; `forced_gave_up` rebuilt that switch one door along, and this
 //! module is what replaced both.
 //!
 //! `Stuck` stands down only the PRE-EMPTIVE door (and the round loop's wall stop with
-//! it, the trade `auto_compact = false` always made), and it is loud — the settings row
-//! the head draws its resident line from — and reversible, by a measured count or by
+//! it, the trade `auto_compact = false` always made), and it is loud - the settings row
+//! the head draws its resident line from - and reversible, by a measured count or by
 //! the operator.
 
-/// **How hard a fold presses**, in the order the controller tries them.
+/// How hard a fold presses, in the order the controller tries them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fold {
     /// What a compaction always was: the fold the size calls for (`plan_overrun`), with
-    /// its verbatim part — the second half of a `plan_fold`, or a budgeted tail.
+    /// its verbatim part - the second half of a `plan_fold`, or a budgeted tail.
     Ordinary,
     /// The same fold with half the verbatim part: a fold that summarises up to the last
     /// quarter of the history by tokens instead of the last half, or a tail of half the
     /// budget.
     SmallerTail,
-    /// Both halves summarised, nothing verbatim — `plan_cut`, asked for by name rather
+    /// Both halves summarised, nothing verbatim - `plan_cut`, asked for by name rather
     /// than reached by size.
     Sliced,
 }
@@ -90,12 +90,12 @@ impl Fold {
     }
 }
 
-/// **The release margin, in headrooms.** A stuck session is re-armed when a measured count
-/// is under `window − RELEASE_HEADROOMS × headroom` — at 1,000,000 with the sixteenth
+/// The release margin, in headrooms. A stuck session is re-armed when a measured count
+/// is under `window − RELEASE_HEADROOMS × headroom` - at 1,000,000 with the sixteenth
 /// reserve, under 875,000.
 pub const RELEASE_HEADROOMS: u64 = 2;
 
-/// **The wall, in the units a measurement is in** — the window as configured and its
+/// The wall, in the units a measurement is in - the window as configured and its
 /// reserve (`Config::shown_wall`): the provider's tokens on a metered session, the
 /// server's on a local one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,7 @@ pub struct Wall {
 }
 
 impl Wall {
-    /// Within a headroom of the window — the question every compaction door asks.
+    /// Within a headroom of the window - the question every compaction door asks.
     pub fn at(&self, count: u64) -> bool {
         count + self.headroom >= self.window
     }
@@ -164,7 +164,7 @@ pub enum Change {
     Released { measured: u64 },
 }
 
-/// **The controller**: the state and the last count a provider (or, locally, the prompt
+/// The controller: the state and the last count a provider (or, locally, the prompt
 /// itself) measured. Carried on `Config`, the per-session object the settings rows are
 /// built from, so the state a head draws and the state a door reads are one value.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -174,7 +174,7 @@ pub struct WallControl {
 }
 
 impl WallControl {
-    /// **Which fold a door runs, or `None` for a door that stands down.** The threshold
+    /// Which fold a door runs, or `None` for a door that stands down. The threshold
     /// is the caller's (`Config::should_compact` for the pre-emptive door; a refusal is
     /// its own threshold). `transcript` is the one the session is on now.
     pub fn fold_for(&self, refused: bool, transcript: &str) -> Option<Fold> {
@@ -199,8 +199,8 @@ impl WallControl {
         }
     }
 
-    /// **A fold landed on `transcript`.** Returns whether the session was `Stuck`
-    /// before it — a fold the operator asked for (`/compact`) restarts the ladder, and
+    /// A fold landed on `transcript`. Returns whether the session was `Stuck`
+    /// before it - a fold the operator asked for (`/compact`) restarts the ladder, and
     /// the stuck pair on the store row has to go with it.
     pub fn folded(&mut self, fold: Fold, transcript: &str, before: u64, estimate: u64) -> bool {
         let was_stuck = self.is_stuck();
@@ -213,7 +213,7 @@ impl WallControl {
         was_stuck
     }
 
-    /// **A count was measured on `transcript`** — the only input that moves the
+    /// A count was measured on `transcript` - the only input that moves the
     /// controller past a fold. `metered` picks the ladder ([`Fold::next`]).
     pub fn measured(
         &mut self,
@@ -274,7 +274,7 @@ impl WallControl {
         }
     }
 
-    /// **The operator's re-arm** (`/auto-compact on`). Returns whether anything was
+    /// The operator's re-arm (`/auto-compact on`). Returns whether anything was
     /// stood down.
     pub fn rearm(&mut self) -> bool {
         let was = !matches!(self.state, WallState::Armed);
@@ -286,7 +286,7 @@ impl WallControl {
         matches!(self.state, WallState::Stuck { .. })
     }
 
-    /// Whether the count on `transcript` is an unmeasured estimate of a fold's base —
+    /// Whether the count on `transcript` is an unmeasured estimate of a fold's base -
     /// the one count no judgement may be made on.
     pub fn awaiting_on(&self, transcript: &str) -> bool {
         matches!(&self.state, WallState::Awaiting { transcript: t, .. } if t == transcript)
@@ -307,7 +307,7 @@ impl WallControl {
         self.last_measured = Some(measured);
     }
 
-    /// **The settings row's value** — the state and the last measured count, in `unit`.
+    /// The settings row's value - the state and the last measured count, in `unit`.
     pub fn row(&self, unit: &str) -> String {
         let last = match self.last_measured {
             Some(n) => format!("; last measured {n} {unit}"),
@@ -349,8 +349,8 @@ mod tests {
         }
     }
 
-    /// **The live case, replayed on the controller.** `s-1789919514688401228`: the fold of
-    /// 941,101 was ESTIMATED at 1,039,055 — past the window — and the first round on `#t18`
+    /// The live case, replayed on the controller. `s-1789919514688401228`: the fold of
+    /// 941,101 was ESTIMATED at 1,039,055 - past the window - and the first round on `#t18`
     /// measured 507,355.
     #[test]
     fn an_estimate_over_the_wall_whose_first_round_measures_well_under_it_stands_nothing_down() {
@@ -378,8 +378,8 @@ mod tests {
         assert!(!c.is_stuck());
     }
 
-    /// **The ladder steps in order, and only on measured counts.** Ordinary, then the
-    /// smaller tail, then the sliced fold, then `Stuck` — each step taken by a round that
+    /// The ladder steps in order, and only on measured counts. Ordinary, then the
+    /// smaller tail, then the sliced fold, then `Stuck` - each step taken by a round that
     /// measured the base still within a headroom of the window.
     #[test]
     fn the_ladder_steps_in_order_on_measured_counts() {
@@ -389,7 +389,7 @@ mod tests {
         while let Some(fold) = c.fold_for(false, &format!("s#t{}", t - 1)) {
             seen.push(fold);
             c.folded(fold, &format!("s#t{t}"), 960_000, 400_000);
-            // The estimate said room; the provider says otherwise — and it is the
+            // The estimate said room; the provider says otherwise - and it is the
             // provider's count that moves the state.
             c.measured(&format!("s#t{t}"), 950_000, WALL, true);
             t += 1;
@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(Fold::Ordinary.next(false), Some(Fold::Sliced));
     }
 
-    /// **A refusal after `Stuck` still folds**, with the hardest press, and so does
+    /// A refusal after `Stuck` still folds, with the hardest press, and so does
     /// one in every other state: the 2026-10-09 wedge was a stood-down switch that
     /// the refused door also read.
     #[test]
@@ -425,7 +425,7 @@ mod tests {
         );
     }
 
-    /// **A stuck session re-arms on a measured drop** — under the release margin, not
+    /// A stuck session re-arms on a measured drop - under the release margin, not
     /// merely under the wall, so a count hovering at the wall does not flip it.
     #[test]
     fn a_stuck_session_re_arms_when_a_measured_count_drops_comfortably_below() {
@@ -442,7 +442,7 @@ mod tests {
         assert_eq!(c.fold_for(false, "t"), Some(Fold::Ordinary));
     }
 
-    /// **A wait a later fork replaced is dropped**, rather than standing the
+    /// A wait a later fork replaced is dropped, rather than standing the
     /// pre-emptive door down for a transcript nothing will ever measure.
     #[test]
     fn a_wait_on_a_replaced_transcript_does_not_hold_the_door() {

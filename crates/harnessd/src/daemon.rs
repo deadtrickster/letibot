@@ -53,7 +53,7 @@ extern "C" fn on_signal(sig: libc::c_int) {
 }
 
 /// How long a one-shot may take to come back from its interrupted turn before it goes
-/// anyway. Long enough for the killed command's result and the turn's rows to be written,
+/// anyway. Long enough for the killed command's result and the turn's rows to be written
 /// short enough that a person who pressed Ctrl-C is not left wondering.
 pub const ONE_SHOT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -78,8 +78,8 @@ fn bring_guests_down() {
 }
 
 /// What one signal does and what a second one does, on its own thread because `Hub::close`
-/// takes a mutex and a handler may not. The first names itself and closes the registry,
-/// which interrupts the turn before it kills the runs holding it;
+/// takes a mutex and a handler may not. The first names itself and closes the registry
+/// which interrupts the turn before it kills the runs holding it
 fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: bool) {
     let mut buf = [0u8; 1];
     // Blocks. No timer, no poll: the byte arrives or it does not.
@@ -208,7 +208,7 @@ impl Daemon {
     }
 
     /// Run the daemon's own loop until the registry closes. Arming the session threads is the
-    /// first thing it does;
+    /// first thing it does
     pub fn run(
         &self,
         sessions: &mut Sessions<'_>,
@@ -218,7 +218,7 @@ impl Daemon {
         sessions.serve_each_on_its_own_thread(sink.clone());
         // The worker's wait, with the clock as an input: `next_work_until` gives up at a deadline
         // and says so, which is what lets this loop act on a PAUSE and not only on an event. Three
-        // clocks feed it and one never stands down:
+        // clocks feed it and one never stands down
         loop {
             let deadline = sessions.next_idle_at();
             match self.registry().next_work_until(deadline) {
@@ -226,7 +226,7 @@ impl Daemon {
                 // this while there is work, and a session with no check armed and no review clock
                 // passes `None`, so this arm is reachable only when a clock is actually due.
                 WorkOrIdle::Idle => {
-                    // The per-session clocks belong to the sessions' own threads: each keeps its plan check,
+                    // The per-session clocks belong to the sessions' own threads: each keeps its plan check
                     // its abandoned-call sweep and its child park THERE, on the one thread that may drive its
                     // harness.
                     if !sessions.each_on_its_own_thread() {
@@ -239,7 +239,7 @@ impl Daemon {
                         if swept > 0 {
                             eprintln!("  swept {swept} abandoned tool call(s)");
                         }
-                        // And the room's reminders, onto the boards this daemon holds: before the plan check,
+                        // And the room's reminders, onto the boards this daemon holds: before the plan check
                         // because that check reads the board and a row for an item this session has just released
                         // would otherwise be asked about for a whole window.
                         let pass = std::time::Instant::now();
@@ -253,7 +253,7 @@ impl Daemon {
                         }
                         // And the queue's stuck-row census, on the same idle arm and as a TURN one model call per
                         // interval per project while a row is stuck, because a notice reaches nobody. The clock is
-                        // the plan check's, the daemon's clock being the only clock;
+                        // the plan check's, the daemon's clock being the only clock
                         let pass = std::time::Instant::now();
                         let rang = sessions.deliver_due_censuses();
                         crate::instruments::worker_pass("queue-census", pass, rang);
@@ -270,15 +270,15 @@ impl Daemon {
                             eprintln!("  parked {parked} idle subagent(s) in the store");
                         }
                         // And the plugin tick: the hot-reload poll every two seconds, the panes whose `every_s`
-                        // has come round, and the notices a layer owes its session's model. Never inside a turn,
-                        // so `plugin_tick` starts the gate (which runs `cargo`) on a thread and returns:
+                        // has come round, and the notices a layer owes its session's model. Never inside a turn
+                        // so `plugin_tick` starts the gate (which runs `cargo`) on a thread and returns
                         sessions.plugin_tick();
                     }
                     // And the reviews this daemon's sessions host, read from the store: the
                     // durable half of the queue's ring, due on its own clock rather than on this
                     // pass's, because this arm is also entered for a nag or a sweep.
                     if sessions.reviews_due() {
-                        // The review queue's own SESSION, started once and then nagged like any other:
+                        // The review queue's own SESSION, started once and then nagged like any other
                         match sessions.ensure_gatekeeper() {
                             Ok(true) => eprintln!(
                                 "  the review queue is session {} — attach to it and its board is the \
@@ -313,7 +313,7 @@ impl Daemon {
                 WorkOrIdle::Closed => break,
                 WorkOrIdle::Work(work) => match work {
                     // A session was created, by a head's `/new` or by a `--continue` asking for one out of the
-                    // store. Opened HERE, on the worker, rather than on the connection thread that asked:
+                    // store. Opened HERE, on the worker, rather than on the connection thread that asked
                     Work::Open(session_id) => {
                         match sessions.open(&session_id) {
                             Err(e) => eprintln!("  {session_id} · not opened: {e}"),
@@ -340,7 +340,7 @@ impl Daemon {
                     }
                     Work::Command(session_id, cmd) => {
                         // The sweep is armed BEFORE the turn runs: a turn can end with a tool call nothing
-                        // answered, and only an idle pass closes such a call out. `turn_tail::run_turn` arms it,
+                        // answered, and only an idle pass closes such a call out. `turn_tail::run_turn` arms it
                         // which every door's turn goes through, so a door reached some other way cannot forget it.
                         let at = crate::instruments::Clock::now();
                         let outcome = sessions.dispatch(&session_id, &cmd);
@@ -360,7 +360,7 @@ impl Daemon {
                     Work::Woken(session_id) => {
                         // A monitor fired while nothing was running, served on the worker like everything else and
                         // AFTER every queued command: a head that pressed enter is waiting, and a monitor is not.
-                        // `Ignored` is a real and common outcome:
+                        // `Ignored` is a real and common outcome
                         match sessions.wake(&session_id) {
                             outcome @ Outcome::Replied(_) => {
                                 sink(&session_id, OutcomeSaid::Wake(&outcome))
@@ -392,8 +392,8 @@ fn to_owned(fd: libc::c_int) -> std::os::fd::OwnedFd {
 }
 
 impl HarnessError {
-    /// Whether the daemon should keep serving after this. A failed turn is not a failed daemon:
-    /// a failed turn is a recorded outcome. Only a setup or store failure ends the process,
+    /// Whether the daemon should keep serving after this. A failed turn is not a failed daemon
+    /// a failed turn is a recorded outcome. Only a setup or store failure ends the process
     /// because the next turn would fail the same way and the rows would stop being written.
     pub fn is_fatal(&self) -> bool {
         matches!(self, HarnessError::Setup(_) | HarnessError::Store(_))
