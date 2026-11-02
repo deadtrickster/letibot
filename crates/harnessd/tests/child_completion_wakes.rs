@@ -40,6 +40,13 @@ const CHILD_MARKER: &str = "marker: this child is the one";
 /// so the notice's `first_line` rule is exercised rather than assumed.
 const CHILD_SAYS: &str = "the count is forty-two.\nthe rest is in task_result";
 
+/// What the child says when its parent asks it something AFTER its task - a second answer, so
+/// a notice carrying this line can only have come from the later turn.
+const CHILD_AGAIN: &str = "second time round: the total is forty-four";
+
+/// What a parent tells a child that has already answered, to make it turn again.
+const MORE: &str = "one more thing before you go";
+
 /// How long the driver waits for something a correct build produces in milliseconds -
 /// generous on purpose, because the assertion is what happened, not how fast.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -214,6 +221,19 @@ impl Parent {
         })
     }
 
+    /// Tell the child something, through the tool a parent actually uses: the message is a
+    /// command on the child's own hub, so this is the production door and not a second prompt.
+    fn message(&self, handle: &str, text: &str) -> String {
+        let rt = self.harness().runtime_handle();
+        let call = letibot_transcript::ToolCall {
+            id: "call_task_message".into(),
+            name: "task_message".into(),
+            arguments: serde_json::json!({"task": handle, "text": text}).to_string(),
+        };
+        let mut sink = letibot_tools::NullToolSink;
+        rt.invoke("t1", &call, &mut sink).payload
+    }
+
     /// Wait for the daemon's own wake queue to name `who` - `Work::Woken` is the ring, and a
     /// ring is the only thing that makes `Harness::wake` run at all. Everything else the queue
     /// holds is dropped on the way past: the assertion is *this session was woken*.
@@ -289,7 +309,11 @@ impl Stub {
         let addr = listener.local_addr().unwrap();
         let call = Arc::new(a_task_call_turn(vocab, SUBTASK, 30));
         let answer = Arc::new(a_plain_answer_turn(vocab, "thinking", CHILD_SAYS, 30));
+        let again = Arc::new(a_plain_answer_turn(vocab, "thinking", CHILD_AGAIN, 30));
         let requests = Arc::new(AtomicUsize::new(0));
+        // How many of this endpoint's requests were the CHILD's, so a second child turn gets
+        // words of its own without the parent's turns moving the count.
+        let child_turns = Arc::new(AtomicUsize::new(0));
         let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(open), Condvar::new()));
         let held = Arc::new(AtomicUsize::new(0));
         let vocab = Arc::clone(vocab);
@@ -306,8 +330,10 @@ impl Stub {
                 // the socket the parent's next round needs.
                 let call = Arc::clone(&call);
                 let answer = Arc::clone(&answer);
+                let again = Arc::clone(&again);
                 let vocab = Arc::clone(&vocab);
                 let seen = Arc::clone(&mine);
+                let child_seen = Arc::clone(&child_turns);
                 let gate = Arc::clone(&theirs);
                 let held = Arc::clone(&parked);
                 std::thread::spawn(move || {
@@ -323,7 +349,8 @@ impl Stub {
                     // The child's request, told from the parent's by whose words it holds. The marker alone is
                     // not enough
                     let asked = prompt_of(&vocab, &body);
-                    if asked.contains(CHILD_MARKER) && !asked.contains(PROMPT) {
+                    let is_child = asked.contains(CHILD_MARKER) && !asked.contains(PROMPT);
+                    if is_child {
                         let (lock, cv) = &*gate;
                         let mut open = lock.lock().expect("the stub's gate");
                         while !*open {
@@ -331,7 +358,18 @@ impl Stub {
                             open = cv.wait(open).expect("the stub's gate");
                         }
                     }
-                    let frames: &[Frame] = if n == 0 { &call } else { &answer };
+                    let child_n = if is_child {
+                        child_seen.fetch_add(1, Ordering::SeqCst)
+                    } else {
+                        0
+                    };
+                    let frames: &[Frame] = if n == 0 {
+                        &call
+                    } else if child_n >= 1 {
+                        &again
+                    } else {
+                        &answer
+                    };
                     let _ = write_frames(stream, frames);
                 });
             }
@@ -548,6 +586,81 @@ fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
         stub.turns() >= 2,
         "the endpoint answered {} turn(s): the child never ran",
         stub.turns()
+    );
+}
+
+/// **A child's LATER turn reaches its parent**: the slot settled once, so a second answer produced no
+/// settlement, no ring and no notice - the parent heard the child once and never again, however often
+/// it asked it something.
+#[test]
+fn a_childs_second_answer_reaches_its_parent() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("child-again");
+    let store = dir.path().join("sessions.db");
+    let parent_id = "s-parent-again";
+    seed_session(&store, parent_id, dir.path());
+    let mut cfg = config(parent_id, Endpoint::new("127.0.0.1", 1), &store, dir.path());
+    let parts = parts_for(&cfg);
+    let stub = Stub::new(&parts.vocab);
+    cfg.endpoint = stub.endpoint.clone();
+    let registry = Registry::new();
+    let mut parent = Parent::open(&parts, &cfg, registry).owning();
+    parent
+        .harness_mut()
+        .submit(PROMPT)
+        .expect("the turn that starts the child");
+    let child = parent
+        .spawned()
+        .expect("the `task` call's result row names the child it started");
+
+    // The child's task answer, taken as any parent takes it: the ring, then the wake that
+    // puts the notice in the conversation.
+    assert!(
+        parent.wait_for_a_ring(parent_id),
+        "the child's first answer never rang its parent"
+    );
+    parent
+        .harness_mut()
+        .wake()
+        .expect("the first settlement's turn")
+        .expect("the first settlement is a turn");
+
+    // And now the parent asks it something else, which is a turn of its own.
+    let said = parent.message(&child, MORE);
+    assert!(
+        said.contains(&child),
+        "`task_message` did not reach the child ({said})"
+    );
+    assert!(
+        parent.wait_for_a_ring(parent_id),
+        "the child's later turn ended and its parent was never woken: nothing tells a parent \
+         about a child's second answer ({child})"
+    );
+    let woke = parent
+        .harness_mut()
+        .wake()
+        .expect("the second settlement's turn")
+        .expect("a second settlement is a turn too");
+    assert!(!woke.text.is_empty(), "the wake carries its notice");
+
+    let notices: Vec<String> = user_rows(parent.harness().items())
+        .into_iter()
+        .filter(|(speaker, text)| {
+            *speaker == Speaker::Agent && text.contains("a subagent you started has finished")
+        })
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(
+        notices.len(),
+        2,
+        "a parent hears once per answer, so there are two notices: {notices:#?}"
+    );
+    assert!(
+        notices[1].contains(CHILD_AGAIN),
+        "the second notice carries the second answer's first line: {:#?}",
+        notices[1]
     );
 }
 

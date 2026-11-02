@@ -475,6 +475,19 @@ impl JobWatchers {
         self.completions.push(c);
     }
 
+    /// **A settlement found by the session that knows and not by a watcher**: a subagent's later
+    /// turn ends and nothing is blocked on its slot, so it goes to the level ABOVE - the parent
+    /// that started the child - queued and rung the way a stopped session's queue hands up.
+    pub fn settle_up(&self, c: JobCompletion) {
+        let Some((above, who)) = &self.parent else {
+            return;
+        };
+        above.push(c);
+        if let Some(bell) = &self.bell {
+            bell.ring_wake(who);
+        }
+    }
+
     /// Queue a settlement as a watcher would, without the ring - for a test of the delivery
     /// rules, which needs a completion in the queue without a process ending. Nothing in
     /// the daemon calls it: a settlement is queued by its watcher thread.

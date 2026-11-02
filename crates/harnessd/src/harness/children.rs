@@ -651,6 +651,10 @@ pub struct ChildTurns {
     /// length, so a restart in the middle of a parent's message turn resumes the child instead of reading
     /// its first answer as its state. `None` for a child with no record.
     record: Option<crate::subagent_record::SubagentRecord>,
+    /// **The parent's slot for THIS child.** A later turn settles it again and hands the settlement
+    /// up, because the slot was the whole of what a parent was told: it settled once, at the task
+    /// answer, and every turn after it ended in silence.
+    slot: Option<Arc<TaskSlot>>,
 }
 
 impl ChildTurns {
@@ -666,7 +670,14 @@ impl ChildTurns {
             sweep_at: None,
             wake_armed: false,
             record: None,
+            slot: None,
         }
+    }
+
+    /// The slot the parent's runner holds for this child - see the field.
+    fn with_slot(mut self, slot: &Arc<TaskSlot>) -> Self {
+        self.slot = Some(slot.clone());
+        self
     }
 
     /// The child's record, for its later turns to move - see the field.
@@ -1003,9 +1014,61 @@ fn later_turn(
 ) -> Option<Result<Reply, HarnessError>> {
     let record = turns.record.clone();
     let prior = record.as_ref().and_then(|r| r.later_turn_began());
+    // **And the parent hears it**: its slot for this child settled at the task answer and nothing
+    // moved it again, so a second answer was invisible. Only the doors that are somebody's word:
+    // the plan-check and the census are the harness's own business, not the parent's.
+    let somebody_spoke = matches!(
+        door,
+        crate::turn_tail::Door::Prompt
+            | crate::turn_tail::Door::Message
+            | crate::turn_tail::Door::Wake
+    );
     let out = crate::turn_tail::run_turn(sub, turns, door, turn);
     if let (Some(r), Some(prior)) = (&record, &prior) {
         r.later_turn_ended(prior);
+    }
+    if let Some(slot) = &turns.slot
+        && somebody_spoke
+        && let Some(ended) = &out
+    {
+        let status = match ended {
+            Ok(reply) => letibot_tools::builtins::task::TaskStatus::Done {
+                answer: reply.text.clone(),
+                child: None,
+            },
+            Err(e) => letibot_tools::builtins::task::TaskStatus::Failed {
+                why: e.to_string(),
+            },
+        };
+        let (state, detail) = match &status {
+            letibot_tools::builtins::task::TaskStatus::Failed { why } => {
+                ("failed", crate::jobwatch::first_line(why))
+            }
+            other => (
+                "done",
+                crate::jobwatch::first_line(match other {
+                    letibot_tools::builtins::task::TaskStatus::Done { answer, .. } => answer,
+                    _ => "",
+                }),
+            ),
+        };
+        slot.settle(status);
+        if let (Some(watch), Some(owner)) = (sub.job_watchers(), sub.config().parent_session_id.clone())
+        {
+            watch.settle_up(crate::jobwatch::JobCompletion {
+                memory: None,
+                kind: crate::jobwatch::BackgroundKind::Subagent,
+                owner,
+                job: turns.id.clone(),
+                command: String::new(),
+                slug: slot.slug.clone(),
+                state: state.to_string(),
+                produced: 0,
+                elapsed_ms: 0,
+                detail,
+                arrived: std::time::SystemTime::now(),
+            });
+        }
     }
     out
 }
@@ -2819,7 +2882,7 @@ impl HarnessTaskRunner {
         sub_id: &str,
         prompt: &str,
         spec: &letibot_tools::builtins::task::TaskSpec,
-        slot: &TaskSlot,
+        slot: &Arc<TaskSlot>,
         progress: &mut dyn FnMut(&str),
         restart: Option<&str>,
     ) -> Result<String, String> {
@@ -3279,7 +3342,8 @@ impl HarnessTaskRunner {
         // `ContextWall` and nothing reacted, so the task failed with a notice promising a compaction nothing
         // attempted. The task is the child's first turn through the shared tail, with the owner later turns use.
         let mut turns = ChildTurns::new(&sub, &sub_id, crate::sessions::TodoNagClock::new())
-            .with_record(slot.record.clone());
+            .with_record(slot.record.clone())
+            .with_slot(slot);
         // The branch is the deliverable, said in the brief and checked as each turn ends: one nudge if the tree
         // is dirty. Set for a RESUMED child too, since its placement comes back with it and an interrupted child
         // is the likeliest of all to hold uncommitted work.
