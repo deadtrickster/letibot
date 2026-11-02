@@ -69,9 +69,14 @@ pub fn one_shot_steps_done() {
 }
 
 /// The last thing done before a forced exit: every guest this daemon booted comes down, and
-/// each line says where its copy-out landed. A forced exit ends the process without closing a
-/// backend, so a VM on another machine would run on with nothing left to mention it again.
+/// everything a placed session started on a host is ended - each line says where a guest's
+/// copy-out landed or how many processes went. A forced exit ends the process without closing a
+/// backend, so a VM would run on with nothing left to mention it again, and a shell would outlive
+/// the daemon that started it in a placement directory somebody then removes.
 fn bring_guests_down() {
+    for said in letibot_tools::remote::placements_down() {
+        eprintln!("harnessd: {said}");
+    }
     for said in letibot_tools::remote::guests_down() {
         eprintln!("harnessd: {said}");
     }

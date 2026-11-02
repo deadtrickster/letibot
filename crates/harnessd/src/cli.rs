@@ -512,6 +512,12 @@ impl Drop for GuestsDown {
         for said in letibot_tools::remote::guests_down() {
             eprintln!("  {said}");
         }
+        // And what a placed session STARTED there. A host has no cgroup to empty, so this is the
+        // same guard for the same reason: `--stop` closes no backend, and a session on its own
+        // thread holds its backend where `close_backends` cannot reach it.
+        for said in letibot_tools::remote::placements_down() {
+            eprintln!("  {said}");
+        }
     }
 }
 
@@ -1918,6 +1924,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // act, one machine over, and the line says where each copy-out landed.
     eprintln!("  stopping: bringing every remote session's VM down");
     for said in letibot_tools::remote::guests_down() {
+        eprintln!("  {said}");
+    }
+    // And what every placed session started on its host, which no cgroup here can end: said as its
+    // own step, before the session teardown, because it can take a host's four seconds of TERM-and-
+    // wait and the stop's own clock should show it.
+    eprintln!("  stopping: ending what every placed session started on its host");
+    for said in letibot_tools::remote::placements_down() {
         eprintln!("  {said}");
     }
     // The queues are told to stop.

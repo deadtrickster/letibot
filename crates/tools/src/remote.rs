@@ -1017,6 +1017,72 @@ fn grouped(script: &str, file: &str) -> String {
 /// bound is not made to spend a second one twice.
 const CANCEL_BOUND: Duration = Duration::from_secs(10);
 
+/// The variable every command a placed session runs carries, whose value names the placement.
+/// `LETIBOT_SESSION` is the whole of what a host with no cgroup can be asked later: *which of these
+/// processes did this session start*. Nothing else tells a build of this session's apart from the
+/// operator's own build on the same machine, so a sweep that did not read it would either kill their
+/// work or leave this session's running to the end of the box.
+pub const SESSION_MARK: &str = "LETIBOT_SESSION";
+
+/// How long the sweep gets: its own TERM-and-wait is four seconds at the longest, and a host that has
+/// stopped answering must not hold the daemon's exit open past a fresh master's timeout.
+const END_SESSION_BOUND: Duration = Duration::from_secs(25);
+
+/// The sweep [`Ssh::end_session_processes`] runs on the far side. One script and not a `pkill`: the
+/// pids it finds are TERMed, waited for and then KILLed, so the answer is *what is left* rather than
+/// *what was signalled*. The id arrives as `$1` because a mark spelled inside this text would appear
+/// in the sweep's own command line, where it would find and kill itself.
+///
+/// Two readers, because the exact one is Linux's: `/proc/<pid>/environ` holds each process's
+/// environment as it was at exec, whole and in NUL-separated fields, so ONE `grep -l` answers for the
+/// whole machine; `ps eww` prints it as text after the command, which is all a Mac has. The two run in
+/// SEQUENCE, so the `grep` whose own argv holds the mark has exited before `ps` looks for it.
+const SESSION_SWEEP: &str = r#"
+mark="LETIBOT_SESSION=$1"
+self=" "
+p=$$
+while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
+  self="$self$p "
+  p=$(ps -p "$p" -o ppid= 2>/dev/null | tr -d ' ')
+done
+proc_pids() {
+  grep -lF -- "$mark" /proc/[0-9]*/environ 2>/dev/null | sed 's|^/proc/||; s|/environ$||'
+}
+ps_pids() {
+  ps eww -A -o pid=,command= 2>/dev/null | while read -r pid rest; do
+    case "$rest" in *"$mark"*) echo "$pid" ;; esac
+  done
+}
+mine() {
+  { proc_pids; ps_pids; } | sort -un | while read -r pid; do
+    case "$self" in *" $pid "*) continue ;; esac
+    case "$(ps -p "$pid" -o stat= 2>/dev/null)" in Z*|"") continue ;; esac
+    echo "$pid"
+  done
+}
+pids=$(mine)
+told=$(echo "$pids" | wc -w | tr -d ' ')
+if [ "$told" = "0" ]; then
+  echo "TOLD 0"
+  exit 0
+fi
+kill -TERM $pids 2>/dev/null
+i=0
+while [ $i -lt 40 ]; do
+  left=""
+  for p in $pids; do
+    kill -0 "$p" 2>/dev/null && left="$left $p"
+  done
+  [ -z "$left" ] && break
+  sleep 0.1
+  i=$((i+1))
+done
+[ -n "$left" ] && kill -KILL $left 2>/dev/null
+sleep 0.1
+echo "TOLD $told"
+echo "LEFT $(mine)"
+"#;
+
 /// Which `mise` a host turned out to have, per process, `None` meaning *asked, and it has none*. A
 /// cache because the answer costs a round trip and does not change under a running daemon; a negative
 /// entry because a host without mise must pay for that fact once.
@@ -1118,6 +1184,10 @@ pub struct Ssh {
     /// The guest this session's commands run in, once one is booted. `None` on any host placement, which
     /// is what makes the rest of this file's behaviour unchanged there.
     vm: Option<RemoteVm>,
+    /// `LETIBOT_SESSION=<the placement>`, in the environment of every command once the session is
+    /// placed. A host has no cgroup per session, so this mark is the only handle on the tree the
+    /// session forked; [`Ssh::end_session_processes`] is its one reader.
+    mark: Option<String>,
 }
 
 impl Ssh {
@@ -1149,6 +1219,7 @@ impl Ssh {
             bound: STEP_BOUND,
             dir: None,
             vm: None,
+            mark: None,
         })
     }
 
@@ -1157,6 +1228,14 @@ impl Ssh {
     /// toolchain is read from.
     pub fn with_dir(mut self, dir: impl Into<String>) -> Ssh {
         self.dir = Some(dir.into());
+        self
+    }
+
+    /// Mark every command this connection runs, so the processes it starts on that machine can be
+    /// found again and ended when the session stops - the one thing a host with no cgroup cannot
+    /// answer any other way.
+    pub fn with_mark(mut self, id: &str) -> Ssh {
+        self.mark = Some(format!("{SESSION_MARK}={id}"));
         self
     }
 
@@ -1270,9 +1349,17 @@ impl Ssh {
                 quote(&self.host.with_path(&vm.guest_command(script)))
             );
         }
+        // The session's mark goes on the OUTERMOST command, never inside the script: an exported
+        // variable set by the script is not in the shell's own `environ`, and this one has to be -
+        // it is what `end_session_processes` reads to find the tree this command forked. Outside the
+        // wrapper, so a `mise exec -C <dir> --` line keeps the shape it always had.
         let body = format!("bash -lc {}", quote(&self.host.with_path(script)));
-        match self.mise_program() {
+        let body = match self.mise_program() {
             Some(program) => format!("{program} exec -C {} -- {body}", self.dir_arg()),
+            None => body,
+        };
+        match &self.mark {
+            Some(mark) => format!("env {} {body}", quote(mark)),
             None => body,
         }
     }
@@ -1523,6 +1610,91 @@ impl Ssh {
             None => format!("bash -lc {}", quote(&self.host.with_path(&script))),
         };
         let _ = self.raw("ending the remote process group", &command, CANCEL_BOUND);
+    }
+
+    /// End every process this session started on that machine, and say what that was.
+    ///
+    /// A host has no cgroup to empty, so the mark ([`SESSION_MARK`]) is the only handle on the tree
+    /// the session forked - a stopped package used to leave its shells running for hours in a
+    /// placement directory that had already been removed. A process that cleared its own environment
+    /// is out of reach, so the answer says what is LEFT rather than claiming a clean machine.
+    pub fn end_session_processes(&self) -> Option<String> {
+        // A guest's processes end with the guest, and that is `down`: nothing of the session's runs
+        // in the host's own process table, so there is nothing here to sweep for.
+        if self.vm.is_some() {
+            return None;
+        }
+        let id = self.mark.as_ref()?.split_once('=').map(|(_, id)| id)?;
+        // `bash -lc <script> name <arg>`: the id is an ARGUMENT, never part of this command's text,
+        // because a sweep whose own argv carried the mark would find itself.
+        let command = format!(
+            "bash -lc {} letibot-end {}",
+            quote(&self.host.with_path(SESSION_SWEEP)),
+            quote(id)
+        );
+        let step = "ending the processes this session started";
+        // Never longer than a step of this connection's own work: a host that has stopped answering
+        // must cost the close what every other step costs it, and not a bound of its own choosing.
+        let within = self.bound.min(END_SESSION_BOUND);
+        let out = match self.raw(step, &command, within) {
+            Some(Ok(Call::Answered(out, _, 0))) => out,
+            Some(Ok(other)) => {
+                return Some(format!(
+                    "the processes this session started on {} could NOT be shown to have ended: {}",
+                    self.host.name,
+                    self.no_answer(step, &other, within)
+                ));
+            }
+            Some(Err(e)) => {
+                return Some(format!(
+                    "the processes this session started on {} could NOT be ended: {e} - anything \
+                     the session left running is still running",
+                    self.host.name
+                ));
+            }
+            None => {
+                return Some(format!(
+                    "the processes this session started on {} could NOT be ended: no slot in the \
+                     connection queue within {} s, so the sweep never ran and anything the session \
+                     left there is still running",
+                    self.host.name,
+                    within.as_secs()
+                ));
+            }
+        };
+        let said = |tag: &str| {
+            out.lines()
+                .find_map(|l| l.strip_prefix(tag))
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let told = said("TOLD ");
+        if told.is_empty() || told == "0" {
+            return None;
+        }
+        let left: Vec<&str> = out
+            .lines()
+            .find_map(|l| l.strip_prefix("LEFT "))
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        Some(if left.is_empty() {
+            format!(
+                "{told} process(es) this session started on {} were ended, so that machine is not \
+                 still running the work of a package that is over",
+                self.host.name
+            )
+        } else {
+            format!(
+                "{told} process(es) this session started on {} were ended and {} survived even \
+                 SIGKILL ({}): they are still running there. Look for them by their own command \
+                 line, `ps -A -o pid=,command=`",
+                self.host.name,
+                left.len(),
+                left.join(" ")
+            )
+        })
     }
 
     /// One step of this backend's own work, bounded by [`Ssh::bound`] and asked again once when the
@@ -2617,6 +2789,10 @@ pub struct SshBackend {
     vm: Option<RemoteVm>,
     /// What [`ExecBackend::close`] found when it brought the branch back, said once.
     brought_back: Mutex<Option<String>>,
+    /// What the sweep ended on the host, said once: `None` before it has run, `Some("")` when it
+    /// found nothing. A second close reports what the first found rather than a machine it has
+    /// already emptied.
+    swept: Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for SshBackend {
@@ -2647,6 +2823,17 @@ impl SshBackend {
         if let Some(within) = spec.bound {
             ssh = ssh.with_bound(within);
         }
+        // From here on, every command this session runs on that machine carries a mark - including
+        // the arranging steps below, which fork `git` there like anything else. It names the PLACEMENT
+        // and not only the session: two daemons can place the same session id on one host, and a sweep
+        // must end only what it started.
+        static MARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        ssh = ssh.with_mark(&format!(
+            "{}-{}-{}",
+            spec.name,
+            std::process::id(),
+            MARKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let place =
             |e: BackendError| BackendError::Io(format!("placing this session on {host}: {e}"));
 
@@ -3006,7 +3193,7 @@ impl SshBackend {
             None
         };
 
-        Ok(SshBackend {
+        let backend = SshBackend {
             ssh,
             host,
             root,
@@ -3028,7 +3215,12 @@ impl SshBackend {
             unconfined,
             vm,
             brought_back: Mutex::new(None),
-        })
+            swept: Mutex::new(None),
+        };
+        // What is running here is a session's work until somebody ends it, and the daemon's exit
+        // closes no backend: the last act sweeps this list for exactly that reason.
+        remember_placement(&backend.ssh);
+        Ok(backend)
     }
 
     /// The host's name, for a card, a progress line or a test.
@@ -3046,6 +3238,23 @@ impl SshBackend {
     /// second call reports what the first found.
     fn settle(&self) -> String {
         let mut said: Vec<String> = Vec::new();
+        // First, before anything is fetched home: what the session STARTED on that machine goes with
+        // it. A host has no cgroup, so this is the mark sweep and not a scope - and it runs before the
+        // branch comes back, because a process still writing in the checkout when the fetch reads it
+        // is the one state nobody can describe. Said once, so a second close reports the first's
+        // finding rather than an empty machine it has already emptied.
+        let swept = {
+            let already = self.swept.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            match already {
+                Some(had) => had,
+                None => {
+                    let had = self.ssh.end_session_processes().unwrap_or_default();
+                    *self.swept.lock().unwrap_or_else(|e| e.into_inner()) = Some(had.clone());
+                    had
+                }
+            }
+        };
+        said.extend(Some(swept).filter(|s| !s.is_empty()));
         if let Some(vm) = &self.vm {
             let plain = self.ssh.without_vm();
             // The session's own close is the authoritative act, so the last act has nothing left
@@ -3065,6 +3274,9 @@ impl SshBackend {
             said.push(self.collect_from_guest(&plain, vm));
         }
         said.push(self.bring_back());
+        // The sweep has run and the branch is home: nothing of this session is left to find. A second
+        // close of the same session (two doors, one `settle`) reports what the first did.
+        forget_placement(&self.ssh);
         said.retain(|s| !s.is_empty());
         said.join("; ")
     }
@@ -3503,6 +3715,51 @@ fn write_into_guest(
 /// `in`.
 static GUESTS: std::sync::LazyLock<Mutex<Vec<(Ssh, RemoteVm)>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Every placement this process made and no session has closed yet. The last act's list, for the
+/// reason [`guests_down`] is one: a forced exit closes no backend at all, and a session served on its
+/// own thread holds its backend on that thread, where `Sessions::close_backends` cannot reach it.
+static PLACEMENTS: std::sync::LazyLock<Mutex<Vec<Ssh>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// `(host, mark)` is what makes two placements different: one host can hold two sessions at once, and
+/// a sweep keyed on the host alone would end the other one's work.
+fn placement_key(ssh: &Ssh) -> (&str, Option<&str>) {
+    (&ssh.host.name, ssh.mark.as_deref())
+}
+
+/// Take a placement onto the list the last act reads.
+fn remember_placement(ssh: &Ssh) {
+    let key = placement_key(ssh);
+    let mut all = PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner());
+    if !all.iter().any(|s| placement_key(s) == key) {
+        all.push(ssh.clone());
+    }
+}
+
+/// A closed session's placement is not the last act's to sweep again - and its sweep already ran.
+fn forget_placement(ssh: &Ssh) {
+    let key = placement_key(ssh);
+    PLACEMENTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|s| placement_key(s) != key);
+}
+
+/// End what every placement this process made and no session closed left running on its host, and say
+/// what each sweep found. All at once and bounded by [`END_SESSION_BOUND`]: the daemon is on its way
+/// out, and a host that has stopped answering must not be able to hold the exit open.
+pub fn placements_down() -> Vec<String> {
+    let all: Vec<Ssh> = std::mem::take(&mut *PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner()));
+    let running: Vec<_> = all
+        .into_iter()
+        .map(|ssh| std::thread::spawn(move || ssh.end_session_processes()))
+        .collect();
+    running
+        .into_iter()
+        .filter_map(|t| t.join().ok().flatten())
+        .collect()
+}
 
 /// How long one guest's `down` gets when the daemon is on its way out: twice what a manual one
 /// costs, and not a budget.

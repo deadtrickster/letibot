@@ -148,6 +148,19 @@ the one cost of this shape.
 session is refused too - it makes worktrees with the local `git` against a local path; the way to a remote
 child is `task`. A command's stderr arrives merged into its stdout, because ssh carries one channel.
 
+**A host has no cgroup, so a session's processes are found by a mark.** Every command carries
+`LETIBOT_SESSION=<the session's id>` in its environment (`Ssh::with_mark`), which means everything the
+command forked carries it too, at any depth - the one thing that distinguishes this session's build from
+the operator's own on the same machine. When the session ends, `Ssh::end_session_processes` reads that mark
+in one bounded call: `/proc/<pid>/environ` where the host has one, `ps eww` where it does not (a Mac), TERM,
+wait, then KILL - and answers with what is LEFT rather than with what it signalled. Two doors reach it,
+because a stop reaches neither the other: the session's own close (`SshBackend::settle`, which also brings
+the branch back), and the daemon's last act (`remote::placements_down`, from `Sessions`' guard and the
+forced exit), since `--stop` closes no backend at all. Without the second door a stopped package's shells
+kept running for hours on lab2x1, in a placement directory that had already been removed. A process that
+clears its own environment is out of reach and the sentence says so; a guest's processes are the guest's
+and end with `firecode down`.
+
 A **`fanout` branch is a job of another host's table**, so it cannot be waited on from here: `jobwatch`'s
 watcher thread blocks in `ProcessHost::wait_job` on this session's host, which answers `NeverStarted` for a
 handle that lives in `RemoteProcesses` on that machine. The seam that settles it is `exec::host::Aggregate`
