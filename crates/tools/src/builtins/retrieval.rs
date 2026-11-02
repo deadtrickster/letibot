@@ -1,37 +1,19 @@
-//! `ask_code` and `ask_corpus` — retrieval as **callable tools**, and the place
-//! §8.2's measured failure actually happened.
+//! `ask_code` and `ask_corpus`: retrieval as callable tools.
 //!
-//! > The measured failure: retrieval said "The corpus doesn't cover this"; the
-//! > model invented a search term, found an adjacent passage, relabelled it,
-//! > dropped two items and attached a citation. *"A hallucination wearing a
-//! > footnote is more dangerous than a naked one."*
+//! The harness does no retrieval of its own; it calls these as tools and takes their
+//! abstention as a verdict. Two rules the seam exists to enforce:
 //!
-//! §9.4 is emphatic that **the harness does no retrieval**: it calls these as
-//! tools and treats their abstention per §8.2. So this module is a seam plus the
-//! outcome discipline, and contains no embedder, no reranker and no corpus.
+//! 1. A backend that does not cover the question abstains. `covered: false`, an empty
+//!    answer or an answer with no citations becomes [`ToolOutcome::Abstained`] and then
+//!    the `NO_RESULT` envelope, never an `Ok` with a hedged sentence in it: a
+//!    hallucination wearing a footnote is more dangerous than a naked one.
+//! 2. A rewritten query is visible. If a backend searched for something other than what
+//!    was asked, [`RetrievalAnswer::rewritten_query`] carries it and the tool prints it.
+//!    The harness itself rewrites nothing.
 //!
-//! Two rules the seam exists to enforce:
-//!
-//! 1. **A backend that does not cover the question abstains.** `covered: false`,
-//!    or an empty answer, or an answer with no citations, becomes
-//!    [`ToolOutcome::Abstained`] and therefore the `NO_RESULT` envelope. It never
-//!    becomes an `Ok` with a hedged sentence in it.
-//! 2. **A rewritten query is visible.** §9.4's one carry-across: *"the harness must
-//!    not silently 'improve' a tool's query … If the harness ever adds query
-//!    rewriting for a retrieval tool, the rewrite must be visible in the tool
-//!    result."* If a backend rewrites, [`RetrievalAnswer::rewritten_query`] carries
-//!    it and the tool prints it. The harness itself rewrites nothing.
-//!
-//! # What is not built here, and why
-//!
-//! There is **no MCP client**. The oracle server is an SSE MCP endpoint on the
-//! operator's workstation and it is not reachable from this box (a connect to it
-//! fails outright), so a client written here could not be tested against the thing
-//! it exists to talk to, and an untested transport is the kind of component that
-//! reports success while delivering nothing — which is precisely what §8.2 is
-//! about. [`Unavailable`] is therefore what M1 ships when nothing is attached, and
-//! it returns `NotRun`: *nothing ran*, which is a different fact from *the corpus
-//! does not cover it*, and both are different from an answer.
+//! There is no MCP client here: an untested transport reports success while delivering
+//! nothing. [`Unavailable`] is what answers when nothing is attached, and it returns
+//! `NotRun`, which is a different fact from *the corpus does not cover it*.
 
 use serde_json::Value;
 
@@ -60,7 +42,7 @@ impl RetrievalKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetrievalQuery {
     pub question: String,
-    /// A path, a repository, a collection — whatever the backend scopes by. Passed
+    /// A path, a repository, a collection: whatever the backend scopes by. Passed
     /// through untouched.
     pub scope: Option<String>,
 }
@@ -72,8 +54,8 @@ pub struct RetrievalAnswer {
     /// Where the answer came from. An answer with no citations is not grounded,
     /// and this tool will not report it as though it were.
     pub citations: Vec<String>,
-    /// **The backend's own honesty bit.** `false` means the index does not cover
-    /// the question; it is not a confidence score and it is not negotiable here.
+    /// The backend's own honesty bit: `false` means the index does not cover the
+    /// question. It is not a confidence score and it is not negotiable here.
     pub covered: bool,
     /// Set when the backend searched for something other than what was asked.
     pub rewritten_query: Option<String>,
@@ -81,11 +63,9 @@ pub struct RetrievalAnswer {
 
 #[derive(Debug)]
 pub enum RetrievalError {
-    /// Nothing is attached. Distinguished from "no coverage" on purpose, and
-    /// carried in [`NotAttached`] rather than as a sentence: this tool was the
-    /// first thing in the tree with nothing behind it and it wrote its own
-    /// wording, which is how the second one would have got a different wording.
-    /// See [`crate::attach`].
+    /// Nothing is attached. Distinguished from "no coverage" on purpose, and carried
+    /// in [`NotAttached`] rather than as a sentence of its own, so every tool with
+    /// absent infrastructure says the same thing. See [`crate::attach`].
     NotAttached(NotAttached),
     Transport(String),
 }
@@ -163,9 +143,8 @@ impl Ask {
 
 impl Tool for Ask {
     fn schema(&self) -> ToolSchema {
-        // Clause 6: how to use it, and what comes back. Nothing about what is
-        // indexed — that is exactly the sentence that goes stale, and this
-        // description is linted at registration.
+        // How to use it, and what comes back. Nothing about what is indexed: that
+        // sentence goes stale, and this description is linted at registration.
         let description = match self.kind {
             RetrievalKind::Code => {
                 "Ask a natural-language question about a code base and get an answer with \
@@ -238,7 +217,8 @@ impl Tool for Ask {
 fn answer(kind: RetrievalKind, query: &RetrievalQuery, a: RetrievalAnswer) -> Invocation {
     let mut notes = Vec::new();
     if let Some(rewritten) = &a.rewritten_query {
-        // Visible, always. This is the mechanism §9.4 asks for by name.
+        // A rewrite must be visible, or the answer is judged against a question
+        // nobody asked.
         notes.push(format!(
             "the backend searched for `{rewritten}` rather than `{}`; judge the answer \
              against what you asked, not against what it searched",

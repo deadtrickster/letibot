@@ -1,14 +1,8 @@
-//! `glob` — file names, and clause 1's second acceptance case:
+//! `glob`: list the file paths a pattern matches.
 //!
-//! > a `find`/`glob` that misses **returns the surrounding listing** and what
-//! > would have matched.
-//!
-//! Both halves are here and they are different things. *What would have matched*
-//! is the relaxation ladder — the same idea as `grep`'s, over path syntax instead
-//! of pattern syntax. *The surrounding listing* is the directory the pattern's
-//! literal prefix points at, printed even when every rung failed, because a model
-//! that guessed `src/parser/**/*.rs` needs to see that `src` holds `parse/` and
-//! not `parser/`, and no relaxation of the pattern will tell it that.
+//! A miss answers two ways, because neither alone corrects the guess: the relaxation
+//! ladder says what a looser pattern would have matched, and the listing around the
+//! literal prefix says what the directory really holds.
 
 use serde_json::Value;
 
@@ -89,7 +83,7 @@ impl Tool for Glob {
             }
             let mut inv = Invocation::ok(body);
             if let Some(r) = relaxation {
-                // The rewrite is visible, always. §9.4.
+                // A relaxed match must say so, or it reads as an exact one.
                 inv = inv.with_note(format!(
                     "`{source}` matched nothing as written. {r}, and that is what the \
                      paths above matched."
@@ -105,8 +99,8 @@ impl Tool for Glob {
             return inv;
         }
 
-        // Nothing matched under any relaxation. The listing still goes back — that
-        // is the half of clause 1 a relaxation ladder cannot supply.
+        // Nothing matched at any rung, so the surrounding listing is the only
+        // answer that can still correct the pattern.
         let mut body = surroundings(ctx, source);
         body.push_str(&format!(
             "\n{} file(s) were walked under `{scope}`. Relaxations tried: {}.\n",
@@ -171,7 +165,7 @@ fn ladder(source: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
-/// The listing around the pattern's literal prefix — the part before the first
+/// The listing around the pattern's literal prefix: the part before the first
 /// wildcard, cut back to a directory.
 fn surroundings(ctx: &mut InvokeCtx<'_>, pattern: &str) -> String {
     let literal: String = pattern
@@ -182,9 +176,8 @@ fn surroundings(ctx: &mut InvokeCtx<'_>, pattern: &str) -> String {
         Some(i) => literal[..i].to_string(),
         None => ".".to_string(),
     };
-    // `nearest_listing` walks up to the deepest ancestor that exists, and its
-    // first return value is the directory it actually found — which is the point:
-    // the model guessed `src/parser/` and what it needs to see is what `src` holds.
+    // `nearest_listing` walks up to the deepest ancestor that exists, which is the
+    // point: the model guessed `src/parser/` and needs to see what `src` holds.
     let (found, entries) = nearest_listing(ctx.backend, &format!("{dir}/x"));
     let mut out = render_listing(&found, &entries, 60);
     if found != dir && !dir.is_empty() && dir != "." {
@@ -207,8 +200,7 @@ mod tests {
 
     #[test]
     fn a_miss_returns_the_surrounding_listing_and_what_would_have_matched() {
-        // The plan's second acceptance test for clause 1. `src/parser/` does not
-        // exist; `src/util/` does.
+        // `src/parser/` does not exist; `src/util/` does.
         let mut h = harness();
         let r = h.call("glob", r#"{"pattern":"src/parser/**/*.rs"}"#);
         assert!(

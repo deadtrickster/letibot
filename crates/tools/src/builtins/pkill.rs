@@ -1,31 +1,17 @@
-//! `pkill` — find processes by a pattern, and kill them by pid. Never by the
-//! pattern.
+//! `pkill`: find processes by a pattern, and kill them by pid, never by the pattern.
 //!
-//! What it replaces: `pkill -f 'harnessd-rice.sock'` killed a running command
-//! mid-flight; `pkill -9 -f 'flowy inbox --as NAME'` killed the shell running
-//! it, twice in one night (exit 144), four times across three seats; and on
-//! 2026-09-14 the author of this file did it again with `pkill -f "fake.py
-//! 18811"` inside a command whose own line launched `fake.py 18811`. Every one
-//! of those was a shell matching a pattern against `ps` output that included
-//! the shell. `TODO.md` T21 and `exec/monitor.rs` record the count as eight.
+//! A pattern matched against `ps` output also matches the shell that ran the command,
+//! so listing and killing are two steps. `action: list` (the default) runs
+//! [`crate::exec::procs::find`], which drops this process, its ancestors and the
+//! process host's protected pids before the pattern is applied.
 //!
-//! # Two steps, and the second takes a handle
+//! `action: kill` takes `pids` from that listing: each must still match the pattern
+//! now (a reused pid is refused, not killed), must not be protected, and is signalled
+//! by (pid, start time). After `term` the tool waits two seconds and reports what is
+//! gone, so a `kill` is a decision made on a reading rather than a reflex.
 //!
-//! `action: list` (the default) runs [`crate::exec::procs::find`] — this
-//! process, its ancestors and the process host's protected pids are removed
-//! before the pattern is applied — and prints pid, age and command line, with
-//! `PROTECTED` or `job <id>` beside what cannot or should not be killed here.
-//!
-//! `action: kill` takes `pids`: numbers that were in that listing. Each must
-//! still match the pattern now (a pid that was reused since is refused, not
-//! killed), must not be protected, and is signalled by (pid, start time).
-//! `signal` is `term` (the default), `int`, `hup` or `kill`; after `term` the
-//! tool waits two seconds and says which are gone and which are not, so a
-//! `kill` is a decision made on a reading rather than a reflex.
-//!
-//! A job started by this session is named as such and refused: `job_kill`
-//! reaps it with its cgroup, and killing its pid from here would leave the
-//! job's record saying "running".
+//! A job of this session is refused: `job_kill` reaps it with its cgroup, and killing
+//! its pid here would leave the job's record saying "running".
 
 use std::time::Duration;
 
