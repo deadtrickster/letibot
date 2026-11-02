@@ -1,17 +1,9 @@
-//! The tools whose infrastructure this box does not run, and the seam each one
-//! attaches through.
+//! The tools whose infrastructure this box does not run, and the seam each one attaches
+//! through.
 //!
-//! **The seam is what is under test here**, not the stub. A stub that refuses is
-//! easy to write and easy to write wrongly, and the way it goes wrong is that
-//! nothing ever attaches to it — so every case below is run twice: once with
-//! nothing behind the tool, and once with a scripted backend behind it. If the
-//! second half of a pair stops compiling, the trait has grown a shape no real
-//! implementation could satisfy, which is the failure this file exists to catch
-//! before somebody has a provider in their hand.
-//!
-//! The other thing asserted throughout: a refusal is `NotRun`, never `Abstained`.
-//! An abstention is a claim about the world — *"it is not out there"* — and nothing
-//! here looked.
+//! The seam is what is under test, not the stub: every case runs twice, once with nothing
+//! behind the tool and once with a scripted backend, because a stub nothing ever attaches to is
+//! the way this goes wrong. A refusal is `NotRun`, never `Abstained`: nothing here looked.
 
 use letibot_tools::adjudicate::{AdjudicatedGate, EffectScope, Reversibility};
 use letibot_tools::builtins::external::scripted;
@@ -31,9 +23,7 @@ const NETWORK_TOOLS: &[&str] = &["web_search", "web_fetch", "github"];
 
 #[test]
 fn every_network_tool_declares_network_access_and_a_description_that_will_not_go_stale() {
-    // Clause 4 and clause 6, on the three tools that were added without anything
-    // behind them. Under-declaring is a hole in §11.3's policy input, and a
-    // description is prompt that nobody audits.
+    // Under-declaring is a hole in the policy input, and a description is prompt nobody audits.
     let h = external_harness(ExternalBackends::unattached());
     for name in NETWORK_TOOLS {
         let s =
@@ -60,8 +50,8 @@ fn every_network_tool_declares_network_access_and_a_description_that_will_not_go
 
 #[test]
 fn the_researcher_role_seats_under_the_ceiling() {
-    // §8.4 is a hard stop. A role naming a tool this build lacks fails loudly, so
-    // this also checks the names in the table against the names in the registry.
+    // A role naming a tool this build lacks fails loudly, so this checks the table against the
+    // registry.
     let h = external_harness(ExternalBackends::unattached());
     let seated =
         h.rt.registry
@@ -77,10 +67,9 @@ fn the_researcher_role_seats_under_the_ceiling() {
 
 #[test]
 fn registering_these_does_not_move_an_existing_sessions_prompt() {
-    // The stable prefix is a cache key. A session seating the M1 orchestrator must
-    // render byte-identically whether or not the network tools exist in the build,
-    // or shipping this re-prefills every conversation that is already warm — which
-    // is the cost §5.2 keeps naming.
+    // The stable prefix is a cache key: a session seating the orchestrator must render
+    // byte-identically whether or not the network tools exist, or every warm conversation is
+    // re-prefilled.
     let plain = letibot_tools::with_session_tools(
         letibot_tools::read_only_tools(std::sync::Arc::new(
             letibot_tools::builtins::retrieval::Unavailable,
@@ -126,9 +115,8 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
 
 #[test]
 fn with_no_adjudicator_a_network_call_never_reaches_the_tool() {
-    // The configuration a daemon actually starts in. The refusal is the gate's,
-    // it is NotRun and not Denied — nobody decided — and the tool never ran, which
-    // the event stream has to agree with.
+    // The configuration a daemon actually starts in: the refusal is the gate's, it is `NotRun`
+    // rather than `Denied` because nobody decided, and the event stream agrees nothing started.
     let mut h = external_harness_with_gate(scripted::attached(), Some(Box::new(NoBoundary)));
     let r = h.call("web_search", r#"{"query":"anything"}"#);
     match &r.outcome {
@@ -178,8 +166,7 @@ fn with_an_adjudicator_and_nothing_attached_the_tool_names_what_is_missing() {
 
 #[test]
 fn a_turn_of_nothing_but_refusals_cannot_be_reported_as_ok() {
-    // §8.2's second mechanism, over the outcome these tools produce. A subagent
-    // whose whole turn was refusals must not come back with an answer.
+    // A subagent whose whole turn was refusals must not come back with an answer.
     let mut h = external_harness(ExternalBackends::unattached());
     let a = h.call("web_search", r#"{"query":"x"}"#).outcome;
     let b = h.call("github", r#"{"op":"list_prs"}"#).outcome;
@@ -210,8 +197,7 @@ fn the_same_call_works_the_moment_a_backend_is_attached() {
 
 #[test]
 fn a_search_reports_how_many_it_is_not_showing() {
-    // §8.1 clause 2: a count does not travel without its denominator. `2` and
-    // `2 of 7` are different facts.
+    // A count does not travel without its denominator: `2` and `2 of 7` are different facts.
     let mut h = external_harness(scripted::attached());
     let r = h.call("web_search", r#"{"query":"ledgers","max_results":2}"#);
     assert!(r.payload.contains("showing 2 of 7"), "{}", r.payload);
@@ -220,8 +206,8 @@ fn a_search_reports_how_many_it_is_not_showing() {
 
 #[test]
 fn a_search_that_matched_nothing_abstains_rather_than_returning_an_empty_list() {
-    // It ran and looked, so this is a claim about the world and gets the
-    // NO_RESULT envelope — the opposite of the not-attached case above.
+    // It ran and looked, so this is a claim about the world and gets the `NO_RESULT` envelope,
+    // the opposite of the not-attached case.
     let mut h = external_harness(ExternalBackends {
         search: scripted::Search::empty(),
         ..scripted::attached()
@@ -239,9 +225,8 @@ fn a_search_that_matched_nothing_abstains_rather_than_returning_an_empty_list() 
 
 #[test]
 fn a_provider_that_searched_for_something_else_says_so() {
-    // §9.4, the rule `retrieval` already keeps: the harness must not silently
-    // improve a query, and a provider that folds a narrowing into the text is
-    // doing exactly that on the far side.
+    // The harness must not silently improve a query, and a provider that folds a narrowing into
+    // the text is doing exactly that on the far side.
     let mut h = external_harness(ExternalBackends {
         search: scripted::Search::rewriting(),
         ..scripted::attached()
@@ -257,8 +242,8 @@ fn a_provider_that_searched_for_something_else_says_so() {
 
 #[test]
 fn asking_for_more_results_than_the_cap_is_relaxed_visibly() {
-    // Clause 1's other half: the relaxation happens *and* is reported, so the
-    // model is not reasoning about an answer to a question it did not ask.
+    // The relaxation happens and is reported, so the model is not reasoning about an answer to
+    // a question it did not ask.
     let mut h = external_harness(scripted::attached());
     let r = h.call("web_search", r#"{"query":"ledgers","max_results":500}"#);
     let notes = r.notes.join(" ");
@@ -305,8 +290,8 @@ fn a_fetched_page_arrives_inside_an_untrusted_envelope() {
 
 #[test]
 fn a_page_cannot_close_the_envelope_it_is_quarantined_in() {
-    // The call id is `call_0` and the mark is a hash of it, so the page can
-    // compute the closing line. What it cannot do is emit the characters.
+    // The call id is `call_0` and the mark is a hash of it, so the page can compute the closing
+    // line. What it cannot do is emit the characters.
     let mut h = external_harness(ExternalBackends {
         fetch: scripted::Fetch::hostile(),
         ..scripted::attached()
@@ -321,8 +306,8 @@ fn a_page_cannot_close_the_envelope_it_is_quarantined_in() {
     );
     // And the alteration is reported rather than done quietly.
     assert!(r.notes.join(" ").contains("spaced out"), "{:?}", r.notes);
-    // The injected sentence is still there, verbatim apart from the markers: the
-    // model has to be able to see what it was sent.
+    // The injected sentence is still there, verbatim apart from the markers: the model has to be
+    // able to see what it was sent.
     assert!(body.contains("ignore your instructions"), "{body}");
 }
 
@@ -354,8 +339,8 @@ fn a_page_with_no_text_abstains_rather_than_returning_an_empty_ok() {
 
 #[test]
 fn a_local_path_handed_to_web_fetch_comes_back_with_the_tool_that_would_have_worked() {
-    // Clause 1 on a guard. The common case is a wrong tool, not an attack, and the
-    // refusal hands over the call that would have succeeded.
+    // The common case is a wrong tool, not an attack, so the refusal hands over the call that
+    // would have succeeded.
     let mut h = external_harness(scripted::attached());
     let r = h.call("web_fetch", r#"{"url":"file:///etc/hostname"}"#);
     assert!(matches!(r.outcome, ToolOutcome::Failed { .. }));
@@ -379,11 +364,9 @@ fn an_address_carrying_credentials_is_refused_before_anything_is_sent() {
 // ---------------------------------------------------------------------------
 // web_fetch, and the scratchpad
 //
-// A page is too big to live in the transcript, so the tool writes it to the
-// session scratchpad and hands over the path; the model reads it back with
-// `read`, two hundred lines at a time. What is under test here is the hand-off:
-// the file is where the result says it is, it holds the whole quarantined page,
-// and the inline half is bounded rather than the page itself.
+// A page is too big for the transcript, so the tool writes it to the session scratchpad and
+// hands over the path. What is under test is the hand-off: the file is where the result says,
+// it holds the whole quarantined page, and the inline half is bounded rather than the page.
 // ---------------------------------------------------------------------------
 
 /// A page long enough that one `read`'s worth is a proper subset of it.
@@ -404,8 +387,7 @@ fn a_fetched_page_is_written_to_the_scratchpad_and_the_result_hands_over_its_pat
     let r = h.call("web_fetch", r#"{"url":"https://example.invalid/x"}"#);
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
 
-    // The inline half is bounded: the first line of the page is there, the last
-    // is not. The page itself is 300 lines; one read's worth is fewer than that.
+    // The inline half is bounded: the first line is there and the last is not, out of 300.
     assert!(r.payload.contains("line 0 of the page"), "{}", r.payload);
     assert!(
         !r.payload.contains("line 299 of the page"),
@@ -428,9 +410,8 @@ fn a_fetched_page_is_written_to_the_scratchpad_and_the_result_hands_over_its_pat
 
 #[test]
 fn the_scratchpad_file_holds_the_quarantined_page_not_the_raw_body() {
-    // The envelope travels with the content: a page read back with `read` in a
-    // later turn is still marked as not the operator's, because the marking is in
-    // the file rather than only in the result that named it.
+    // The envelope travels with the content: a page read back in a later turn is still marked,
+    // because the marking is in the file and not only in the result that named it.
     let body = "A page about ledgers.\n\nThey are append-only.";
     let mut h = writable_external_harness(ExternalBackends {
         fetch: scripted::Fetch::page(body),
@@ -449,10 +430,8 @@ fn the_scratchpad_file_holds_the_quarantined_page_not_the_raw_body() {
 
 #[test]
 fn a_read_only_session_gets_the_page_inline_and_writes_no_file() {
-    // A backend that was opened read-only has no scratchpad to write to, so the
-    // page comes back whole and inline, as it did before the scratchpad existed.
-    // The refusal to write is not reported as a failure: the call is Ok and the
-    // body is there, and the result does not name a file it did not write.
+    // A backend opened read-only has no scratchpad, so the page comes back whole and inline. The
+    // refusal to write is not a failure: the call is `Ok`, and no file it did not write is named.
     let body = a_long_page();
     let mut h = external_harness(ExternalBackends {
         fetch: scripted::Fetch::page(&body),
@@ -467,9 +446,8 @@ fn a_read_only_session_gets_the_page_inline_and_writes_no_file() {
 
 #[test]
 fn a_hostile_page_in_the_scratchpad_stays_quarantined() {
-    // The page can compute the closing marker and write it, but it cannot emit
-    // the characters: every `<<<` is spaced out, in the file as well as inline,
-    // and the count comes back as a note.
+    // The page can compute the closing marker and write it, but not emit the characters: every
+    // `<<<` is spaced out in the file as well as inline, and the count comes back as a note.
     let mut h = writable_external_harness(ExternalBackends {
         fetch: scripted::Fetch::hostile(),
         ..scripted::attached()
@@ -495,8 +473,8 @@ fn a_hostile_page_in_the_scratchpad_stays_quarantined() {
 
 #[test]
 fn the_scratchpad_name_is_the_content_hash_and_the_extension_is_the_format() {
-    // Two fetches of the same page land on the same file; a different format is a
-    // different file, because the extension is the render format.
+    // Two fetches of the same page land on the same file; a different format is a different
+    // file, because the extension is the render format.
     let body = "the same page, twice";
     let mut h = writable_external_harness(ExternalBackends {
         fetch: scripted::Fetch::page(body),
@@ -530,9 +508,8 @@ fn the_scratchpad_name_is_the_content_hash_and_the_extension_is_the_format() {
 
 #[test]
 fn a_page_that_fits_in_the_preview_still_gets_its_file() {
-    // Uniformity over cleverness: a small page is not inlined and skipped, it is
-    // written and named, so the model learns that a page is a thing it can `read`
-    // rather than a blob that happened to fit.
+    // Uniformity over cleverness: a small page is written and named too, so the model learns a
+    // page is a thing it can `read` rather than a blob that happened to fit.
     let body = "A short page.\nTwo lines, no more.";
     let mut h = writable_external_harness(ExternalBackends {
         fetch: scripted::Fetch::page(body),
@@ -573,8 +550,8 @@ fn an_op_that_is_not_one_comes_back_with_the_list_and_the_nearest() {
 
 #[test]
 fn every_missing_argument_is_named_at_once() {
-    // One round trip per missing argument is the cost of reporting them one at a
-    // time, and nothing was sent, so there is no reason to.
+    // Reporting them one at a time costs a round trip each, and nothing was sent, so there is no
+    // reason to.
     let mut h = external_harness(scripted::attached());
     let r = h.call("github", r#"{"op":"create_pr","title":"x"}"#);
     assert!(matches!(r.outcome, ToolOutcome::Failed { .. }));
@@ -613,8 +590,8 @@ fn a_listing_that_matched_nothing_abstains_with_the_repository_it_looked_in() {
 
 #[test]
 fn a_thing_the_forge_says_is_absent_abstains_rather_than_not_running() {
-    // The forge answered. That is a claim about the world and it is allowed to
-    // make one; the tool that never ran is not.
+    // The forge answered, which is a claim about the world and one it may make; a tool that
+    // never ran may not.
     let mut h = external_harness(ExternalBackends {
         github: scripted::Repo::absent(),
         ..scripted::attached()
@@ -661,8 +638,8 @@ fn a_connected_server_mounts_under_its_own_name_and_calls_through() {
 
 #[test]
 fn a_mounted_tool_that_reports_an_error_does_not_come_back_as_success() {
-    // F5: never let a component's "I did not do this" be reported upward as
-    // success. The transport succeeded, which is what makes this easy to miss.
+    // Never let a component's "I did not do this" be reported upward as success. The transport
+    // succeeded, which is what makes this easy to miss.
     let mut h = external_harness(ExternalBackends {
         mcp: scripted::Servers::erroring(),
         ..scripted::attached()
@@ -696,10 +673,9 @@ fn a_mounted_tool_declares_network_and_keeps_the_servers_own_schema() {
 
 #[test]
 fn a_network_call_is_classed_external_and_irreversible() {
-    // The class had no user before these tools, and the only constructor asked
-    // whether a `path` argument was inside the workspace — which, for a call with
-    // no path, answered "inside". A `web_fetch` would have been logged as landing
-    // in the operator's project directory.
+    // The only constructor asked whether a `path` argument was inside the workspace, which for a
+    // call with no path answered "inside": a `web_fetch` would be logged as landing in the
+    // project.
     let mut gate = AdjudicatedGate::closed();
     let args = serde_json::json!({"url": "https://example.invalid/x"});
     let req = gate.request_for(&GateCall {
@@ -727,8 +703,8 @@ fn a_network_call_is_classed_external_and_irreversible() {
 
 #[test]
 fn a_dispatching_tool_puts_its_op_in_front_of_whoever_decides() {
-    // `github` is one tool to the gate and ten actions to a human. The routing key
-    // has no op field, so the op goes in the facts.
+    // `github` is one tool to the gate and ten actions to a human. The routing key has no op
+    // field, so the op goes in the facts.
     let mut gate = AdjudicatedGate::closed();
     let args = serde_json::json!({"op": "merge_pr", "number": 3});
     let req = gate.request_for(&GateCall {
@@ -765,8 +741,8 @@ fn the_startup_rows_are_read_off_the_session_and_not_asserted() {
             .unwrap_or_else(|| panic!("{subject} is not disclosed"));
         assert!(!row.active, "{subject} claims to be on: {row:?}");
     }
-    // Every row that is off says how to stop being off. A banner that only names
-    // the hole sends the reader looking for the door.
+    // Every row that is off says how to stop being off: a banner that only names the hole sends
+    // the reader looking for the door.
     assert!(
         rows.iter()
             .all(|r| r.detail.to_lowercase().contains("attach") || r.detail.contains("Pass")),

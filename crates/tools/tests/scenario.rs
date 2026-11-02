@@ -1,10 +1,8 @@
-//! **`scenario` against a fake ssh** — a service that comes up, a client that uses its port, and a
+//! `scenario` against a fake ssh: a service that comes up, a client that uses its port, and a
 //! teardown that always happens.
 //!
-//! Every service here is a real process (`python3 -m http.server`), on a real port of this box,
-//! started through the fake ssh's job directory — so the readiness check, the substitution of
-//! `${server.port}` into the client, and the group kill at the end are all the production ones.
-//! Nothing here contacts another machine.
+//! Every service is a real process on a real port, started through the fake ssh's job directory,
+//! so readiness, `${server.port}` substitution and the group kill are the production ones.
 
 #[path = "support/fake_remote.rs"]
 mod fake_remote;
@@ -29,10 +27,9 @@ fn tool(rig: &Rig) -> Scenario {
         .with_bound(Duration::from_secs(5))
 }
 
-/// **This box as the session's own backend** — a `local` leg's process host, and the one a `run`
-/// with no `host` uses. The processes are the fake's (their commands run on this box through the
-/// fake ssh), so what this exercises is exactly the part that differs: `local`'s readiness check
-/// asks *this* box's kernel instead of a host's.
+/// This box as the session's own backend, which a `run` with no `host` uses: the processes are
+/// the fake's, so what this exercises is the part that differs, namely that `local`'s readiness
+/// check asks this box's kernel instead of a host's.
 fn here(rig: &Rig) -> Option<Arc<dyn ProcessHost>> {
     let hosts = Hosts::load_from(rig.hosts_file());
     let host = hosts.get("fake1")?.clone();
@@ -52,9 +49,8 @@ fn rows(payload: &str) -> Vec<&str> {
         .collect()
 }
 
-/// **A server role becomes ready by port, the client uses `${server.port}`, and everything is torn
-/// down afterwards.** The whole fixture, in one test, because each of the three is worthless
-/// without the other two.
+/// A server role becomes ready by port, the client uses `${server.port}`, and everything is torn
+/// down afterwards. One test, because each of the three is worthless without the other two.
 #[test]
 fn a_server_is_ready_by_port_and_the_client_uses_it_and_is_torn_down() {
     let rig = Rig::new("by-port", &["fake1"]);
@@ -101,14 +97,14 @@ fn a_server_is_ready_by_port_and_the_client_uses_it_and_is_torn_down() {
         text.contains("status=200"),
         "the client really reached the server:\n{text}"
     );
-    // **The teardown is a fact about the machine**, not about the row: the port is free again.
+    // The teardown is a fact about the machine, not about the row: the port is free again.
     assert!(
         until(Duration::from_secs(10), || !listening(port)),
         "the server is still listening on {port} after the scenario ended"
     );
 }
 
-/// **A role that never becomes ready fails the scenario and tears down the ones that did start.**
+/// A role that never becomes ready fails the scenario and tears down the ones that did start.
 #[test]
 fn a_role_that_never_answers_ready_fails_and_the_started_ones_are_ended() {
     let rig = Rig::new("never-ready", &["fake1"]);
@@ -159,8 +155,8 @@ fn a_role_that_never_answers_ready_fails_and_the_started_ones_are_ended() {
     );
 }
 
-/// **A cycle in `after` is refused before a single process exists** — the refusal a scenario that
-/// would hang has to give, and the ssh log is the evidence that nothing was started.
+/// A cycle in `after` is refused before a single process exists, and the ssh log is the evidence
+/// that nothing was started.
 #[test]
 fn a_cycle_is_refused_before_anything_starts() {
     let rig = Rig::new("cycle", &["fake1"]);
@@ -187,9 +183,8 @@ fn a_cycle_is_refused_before_anything_starts() {
     );
 }
 
-/// **`after` starts a role only once the one it names is READY**, and `${role.host}` and
-/// `${role.port}` both resolve in a later role's command — the two things the dependency edge is
-/// for.
+/// `after` starts a role only once the one it names is READY, and `${role.host}` and
+/// `${role.port}` both resolve in a later role's command, which is what the edge is for.
 #[test]
 fn after_orders_the_starts_and_a_roles_facts_resolve() {
     let rig = Rig::new("after", &["fake1"]);
@@ -229,8 +224,8 @@ fn after_orders_the_starts_and_a_roles_facts_resolve() {
         lines[1].starts_with("client on fake1"),
         "and `client` second:\n{text}"
     );
-    // **Both facts resolved**: the client's own line shows the peer's name, and it reached the
-    // server. A `${…}` left unsubstituted is a bash `bad substitution` and an `exited 1` row.
+    // Both facts resolved: the client's own line shows the peer's name, and it reached the
+    // server. A `${...}` left unsubstituted is a bash `bad substitution` and an `exited 1` row.
     assert!(
         lines[1].contains("peer=fake1")
             && lines[1].contains("ok=True")
@@ -240,7 +235,7 @@ fn after_orders_the_starts_and_a_roles_facts_resolve() {
     assert!(!listening(port), "the service was torn down");
 }
 
-/// **Every role and the run are supervised records** — a `process` row with its host, so a session
+/// Every role and the run are supervised records, a `process` row with its host, so a session
 /// close or a daemon restart has the same list. Measured here because it is the contract between
 /// the tool and the daemon's supervisor.
 #[test]
@@ -309,9 +304,9 @@ fn every_role_is_written_down_before_it_is_ready() {
     assert_eq!(*book.ended.lock().expect("book"), 2);
 }
 
-/// **The other two readiness checks** — a line in the role's own output, and a command that exits 0
-/// — because the port is only one of the three spellings a fixture has, and the other two read
-/// different things: the job's output file, and a probe job of its own.
+/// The other two readiness checks, a line in the role's own output and a command that exits 0:
+/// the port is only one of the three spellings, and the other two read the job's output file and
+/// a probe job of its own.
 #[test]
 fn a_log_line_and_a_checking_command_both_answer_as_readiness() {
     let rig = Rig::new("checks", &["fake1"]);
@@ -349,8 +344,8 @@ fn a_log_line_and_a_checking_command_both_answer_as_readiness() {
     assert!(text.contains("run (local) · exited 0"), "{text}");
 }
 
-/// **The tool is one gated call whose arguments name every host and every command** — the card's
-/// whole content, asserted on the schema because that is what the gate is handed.
+/// The tool is one gated call whose arguments name every host and every command, asserted on the
+/// schema because that is what the gate is handed.
 #[test]
 fn the_tool_is_one_gated_call_that_names_its_hosts() {
     let schema = letibot_tools::runtime::Tool::schema(&Scenario::new());

@@ -1,33 +1,14 @@
-//! **A command that exits 125 is not a command that never ran.**
+//! A command that exits 125 is not a command that never ran.
 //!
-//! R19's sibling, found by the other head on 2026-09-22 and handed over because only the
-//! daemon holds the evidence. `JobState::NotScoped` was derived **from the exit code
-//! alone** —
+//! 125 is a legitimate exit code, so a state derived from the exit code alone reported a
+//! command that chose 125 as a launcher failure, and the model read that word as fact:
 //!
 //! ```text
 //! Some(EXIT_NOT_SCOPED) => JobState::NotScoped,     // host.rs
 //! ```
 //!
-//! — and `EXIT_NOT_SCOPED` is **125**, which is a legitimate exit code. So
-//! `bash -c "exit 125"` in the background was listed as
-//! `not run (could not join its scope)`; its `produced` was `0`, where a genuine launcher
-//! failure writes 63 bytes of marker to stderr; and the model then read the state word and
-//! concluded *"the 125 exit code was never produced"*. **The word taught the model
-//! something false about the world**, which is worse than teaching the operator something
-//! false: the operator can disbelieve a card.
-//!
-//! It is one integer carrying two meanings, which is R18's shape one layer down — that was
-//! one accessor answering a different question, this is one exit code standing for both
-//! *"the wrapper could not join the cgroup"* and *"the command exited"*.
-//!
-//! # What this file asserts, and both directions
-//!
-//! A fix for this that is not falsified is a guess, so the two cases are asserted together:
-//! a command that exits 125 **ran** (and its output is its own), and a wrapper that cannot
-//! join its cgroup **did not**, and still says so. A one-directional test would pass on a
-//! head that simply stopped classifying launcher failures at all, which would be a worse
-//! defect than the one being fixed — `NotScoped` exists because the F5 rule is *never let a
-//! component's "I did not do this" be reported upward as success*.
+//! Both directions are asserted, because a one-directional test would pass on a head that
+//! stopped classifying launcher failures at all.
 
 use letibot_tools::exec::{
     Cgroup2, ExecError, HostProcesses, JobId, JobState, ProcessHost, Reaping, ScopeId, ScopeKind,
@@ -36,8 +17,8 @@ use letibot_tools::exec::{
 use letibot_tools::testing::runner_harness;
 use letibot_transcript::ToolOutcome;
 
-/// The branch taken on a box with no delegated cgroup v2, asserted rather than skipped —
-/// the rule `exec.rs` and `background.rs` both state.
+/// The branch taken on a box with no delegated cgroup v2, asserted rather than skipped: the
+/// refusal must name what was missing.
 macro_rules! runner {
     ($name:literal) => {
         match runner_harness() {
@@ -52,8 +33,8 @@ macro_rules! runner {
                     msg.contains("nothing would reap it") || msg.contains("cgroup"),
                     "a refusal must name what was missing: {msg}"
                 );
-                // Announced through `apparatus` so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the
-                // skip; an `eprintln!` and a `return` it could not see (R67 item 18).
+                // Announced through `apparatus`, so `LETIBOT_REQUIRE_APPARATUS=1` can refuse
+                // the skip that an `eprintln!` and a `return` would hide.
                 return letibot_tokencore::apparatus::absent(
                     "a cgroup v2 subtree this user may write",
                 );
@@ -70,18 +51,14 @@ fn job_id_anywhere(text: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-/// **The defect, reproduced the way the other head reproduced it.**
-///
-/// A background `bash -c "exit 125"` is a job that ran and chose 125 as its answer, and it
-/// must be readable as exactly that: the state word, the `never_ran` fact the two heads
-/// draw their sentence from, and the command's own output.
+/// A background `bash -c "exit 125"` is a job that ran and chose 125 as its answer, and must be
+/// readable as exactly that: the state word, `never_ran`, and the command's own output.
 #[test]
 fn a_command_that_exits_125_ran_and_did_not_fail_to_join_its_scope() {
     let mut h = runner!("exit_125");
     let host = h.processes.clone().unwrap();
 
-    // The same shape as leticl's scratch daemon: stderr proves the command ran, and 125 is
-    // its own answer.
+    // stderr proves the command ran, and 125 is its own answer.
     let r = h.call(
         "bash",
         &serde_json::json!({
@@ -110,22 +87,21 @@ fn a_command_that_exits_125_ran_and_did_not_fail_to_join_its_scope() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
 
-    // 1. **The state word.** `exited 125`, not `not run (could not join its scope)`.
+    // The state word: `exited 125`, not `not run (could not join its scope)`.
     assert_eq!(
         view.state,
         JobState::Exited { code: 125 },
         "a command's own exit code was read as a launcher failure: {}",
         view.state.word()
     );
-    // 2. **The fact the two heads draw their sentence from** (§11.6): nothing here is a job
-    //    that never ran, so the sentence must not be the never-ran one.
+    // The fact the heads draw their sentence from: nothing here is a job that never ran, so
+    // the sentence must not be the never-ran one.
     assert!(
         !view.state.never_ran(),
         "`never_ran` is true for a command that ran and exited 125"
     );
-    // 3. **And it wrote something**, which is the third reading of leticl's report: the
-    //    genuine launcher failure produces `0` because the command never ran, and the
-    //    interesting half of the bug was that `0` looked like an answer.
+    // And it wrote something: a genuine launcher failure produces `0` because the command
+    // never ran, and `0` looks like an answer.
     let out = host
         .output(&JobId(id), 0, 4096)
         .expect("the finished job's output");
@@ -136,16 +112,11 @@ fn a_command_that_exits_125_ran_and_did_not_fail_to_join_its_scope() {
     );
 }
 
-/// **The other direction, and without it a fix could pass by classifying nothing at all.**
+/// The other direction, without which a fix could pass by classifying nothing at all.
 ///
 /// The wrapper writes its own pid into the scope's `cgroup.procs` and `exec`s only if that
-/// worked, so a scope whose `cgroup.procs` cannot be written is a launcher failure: the
-/// command is **not run**, and the state says so.
-///
-/// The tree is a stub rather than a broken cgroup mount on purpose: a real cgroup cannot be
-/// asked to fail on purpose, and a test that could only be run by breaking the box would be
-/// a test nobody runs. `with_tree` is the seam the substrate already has for exactly this
-/// (`NoScopes` and `NoConfinement` are the other two users).
+/// worked, so a scope whose `cgroup.procs` cannot be written is a launcher failure and the
+/// command is not run. The tree is a stub because a real cgroup cannot be asked to fail.
 #[test]
 fn a_scope_that_cannot_be_joined_still_says_the_command_never_ran() {
     let dir = std::env::temp_dir().join(format!("letibot-notscoped-{}", std::process::id()));
@@ -195,8 +166,7 @@ fn a_scope_that_cannot_be_joined_still_says_the_command_never_ran() {
         "not run (could not join its scope)",
         "§11.6 pins this literal on both heads"
     );
-    // The evidence, and the number leticl measured: a genuine launcher failure writes the
-    // marker, and the command's own line is absent.
+    // A genuine launcher failure writes the marker, and the command's own line is absent.
     let out = host.output(&id, 0, 4096).expect("the job's output");
     assert!(
         out.text().contains("could not join the scope cgroup"),
@@ -210,9 +180,9 @@ fn a_scope_that_cannot_be_joined_still_says_the_command_never_ran() {
     );
 }
 
-/// **A tree whose scopes cannot be joined.** `open` hands back a directory that
-/// `cgroup.procs` cannot be written in (there is no such file), which is precisely one
-/// half of what T24's substrate is protecting against and is unreachable on a healthy box.
+/// A tree whose scopes cannot be joined: `open` hands back a directory with no `cgroup.procs`,
+/// which is the launcher-failure half of what the substrate protects against and is
+/// unreachable on a healthy box.
 struct Unjoinable;
 
 impl ScopeTree for Unjoinable {
@@ -260,9 +230,8 @@ impl ScopeTree for Unjoinable {
     }
 }
 
-/// The real tree, kept honest: the property these tests depend on is that a cgroup's
-/// `cgroup.procs` is where the wrapper writes, so the marker path and the real path are
-/// built the same way.
+/// The real tree, kept honest: these tests depend on a cgroup's `cgroup.procs` being where the
+/// wrapper writes, so the marker path and the real path are built the same way.
 #[test]
 fn the_procs_path_this_test_relies_on_is_the_real_one() {
     let scope = ScopeId {
@@ -276,26 +245,17 @@ fn the_procs_path_this_test_relies_on_is_the_real_one() {
     );
 }
 
-/// **A command that PRINTS the marker is not a command that never ran.**
+/// A command that PRINTS the marker is not a command that never ran.
 ///
-/// The fix above replaced *the exit code alone* with *the marker in the output*, and that is
-/// still not the evidence the question needs: the marker is a string a command can print.
-/// The daemon holds a stronger fact than either — **whether a process was ever in the
-/// cgroup** — and this test is what says the difference is real.
-///
-/// leticl's framing, kept because it is the precise one: *only the daemon holds the evidence
-/// of whether a process was spawned. An exit code is the process's own answer and cannot be
-/// the evidence that there was no process* — and neither can a sentence the process wrote.
-///
-/// The command below does everything a launcher failure does except fail: it writes the
-/// marker to stderr, and exits 125. It **ran**, and its own answer is 125.
+/// Replacing the exit code with the marker is still not the evidence the question needs: the
+/// marker is a string a command can print. Only the daemon holds whether a process was ever in
+/// the cgroup, and the command below does everything a launcher failure does except fail.
 #[test]
 fn a_command_that_prints_the_marker_ran_and_did_not_fail_to_join_its_scope() {
     let mut h = runner!("marker_echo");
     let host = h.processes.clone().unwrap();
 
-    // The marker, verbatim, from the same const the wrapper uses — so this test cannot drift
-    // from the string it is about.
+    // The marker verbatim, as the wrapper writes it: this test is about that exact string.
     let marker = "letibot: could not join the scope cgroup; the command was NOT run";
     let r = h.call(
         "bash",

@@ -1,36 +1,22 @@
-//! **A one-shot run refuses `background: true`, and says what to do instead.**
+//! A one-shot run refuses `background: true` and says what to do instead.
 //!
-//! `letibot "a question"` starts a daemon of its own on `oneshot-<pid>.sock`, runs the prompt,
-//! prints the answer and exits — and the daemon exits with it. The operator, 2026-10-26: several
-//! of those daemons were still up after their one-shot run had ended, "some holding background
-//! jobs the model had started, and nothing will ever read those jobs' results".
-//!
-//! # The two answers, and which one this is
-//!
-//! A one-shot could WAIT: keep the daemon up while a job runs, deliver its completion as another
-//! turn, bounded, then exit. That is a second lifetime rule for the one mode that has none, and
-//! the bound would be a number nobody can justify — the job a one-shot starts is exactly the long
-//! one nobody wants to sit in front of. So it REFUSES, by name, and tells the model the thing
-//! that does work here: the foreground with a bigger `timeout_ms`.
-//!
-//! A refusal has to be reachable on every box to be worth having, so the rule is decided from
-//! the REQUEST — before the backend, the scope and the predicate — which is why this test can
-//! run the tools over a backend that starts no processes at all (`text_only_runner_harness`) and
-//! still reach it. The control case proves the rule did not fire: the same call in the same
-//! one-shot runtime, without `background`, gets as far as the backend's own refusal.
+//! The daemon a one-shot starts exits with the run, so a job it left behind would never have
+//! its result read; waiting for one instead would be a second lifetime rule for the one mode
+//! that has none. The rule is decided from the REQUEST, before the backend, so a fixture that
+//! starts no processes can still reach it.
 
 use letibot_tools::testing::{Harness, text_only_runner_harness};
 use letibot_transcript::ToolOutcome;
 
-/// The fixture with the one-shot fact set, the way `harnessd` sets it: on the RUNTIME, from the
-/// run's own config (`Config::one_shot`, wired in `Harness::open_with_registry`).
+/// The fixture with the one-shot fact set the way `harnessd` sets it: on the runtime, from the
+/// run's own config.
 fn one_shot_harness() -> Harness {
     let mut h = text_only_runner_harness();
     h.rt.one_shot = true;
     h
 }
 
-/// **The refusal, in the model's words, with nothing started.**
+/// The refusal, in the model's words, with nothing started.
 #[test]
 fn a_one_shot_run_refuses_a_background_job_by_name() {
     let mut h = one_shot_harness();
@@ -61,11 +47,8 @@ fn a_one_shot_run_refuses_a_background_job_by_name() {
     );
 }
 
-/// **And the rule is about the background, not about running commands.**
-///
-/// A foreground call is not refused for being one-shot: it reaches the backend, which cannot
-/// start processes in this fixture and says so. A test that only asserted the refusal would pass
-/// just as well if `bash` refused everything in a one-shot.
+/// And the rule is about the background, not about running commands: a test that only asserted
+/// the refusal would pass just as well if `bash` refused everything in a one-shot.
 #[test]
 fn a_foreground_command_in_a_one_shot_is_not_refused_for_being_one() {
     let mut h = one_shot_harness();
@@ -81,8 +64,7 @@ fn a_foreground_command_in_a_one_shot_is_not_refused_for_being_one() {
     );
 }
 
-/// The default is the other way round: a runtime nobody armed treats `background: true` as it
-/// always did. A rule that is always on is not a rule about one-shots.
+/// The default is the other way round: a rule that is always on is not a rule about one-shots.
 #[test]
 fn an_ordinary_runtimes_background_call_does_not_meet_the_one_shot_rule() {
     let mut h = text_only_runner_harness();

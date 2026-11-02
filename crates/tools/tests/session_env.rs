@@ -1,10 +1,7 @@
-//! **D14/R95 end to end: a real shell says what it holds, and the next command is read
-//! against it.**
+//! A real shell says what it holds, and the next command is read against it.
 //!
-//! `crates/tools/src/exec/shell.rs`'s own tests cover the trailer and the filter; the
-//! resolver's cover the order and the card. What neither can cover is the join — that the
-//! bytes a *real* shell reports after one line are the values a command adjudicated after it
-//! resolves through. That is what this file is, and it is deliberately the whole chain:
+//! The shell's own tests cover the trailer and the filter, the resolver's cover the order and
+//! the card; only this file covers the join, which is the chain below.
 //!
 //! ```text
 //!   ShellSession::run("export LT_DIR=…")   →   the trailer's NAME=value pairs
@@ -12,10 +9,9 @@
 //!        →  Baseline::of_command("cat $LT_DIR/file")
 //! ```
 //!
-//! **No cgroup and no boundary**, which is why it runs in a confined session's boundary:
-//! `ShellConfig::scope` is `None`, so no `cgroup.procs` is written and nothing nests
-//! `bwrap`. What it does need is a pty and a shell that has `compgen -e` — bash — and on a
-//! box where neither is there the test says so rather than pretending to pass.
+//! No cgroup and no boundary: `ShellConfig::scope` is `None`, so nothing writes `cgroup.procs`
+//! and nothing nests `bwrap`, which is what lets this run inside a confined session's own
+//! boundary. It needs a pty and a bash with `compgen -e`, and says so where either is absent.
 
 use std::time::Duration;
 
@@ -24,7 +20,7 @@ use letibot_tools::intent::env::SessionEnv;
 use letibot_tools::intent::{Baseline, Region, ShellTrust, Surroundings};
 
 /// The shell the tests drive: bash with no rc, so an assertion is about this chain and not
-/// about whatever the operator's `.bashrc` exports.
+/// about whatever a `.bashrc` exports.
 fn shell() -> Option<Vec<String>> {
     let bash = std::path::Path::new("/bin/bash");
     bash.exists().then(|| {
@@ -44,9 +40,7 @@ fn tmp(name: &str) -> std::path::PathBuf {
     d.canonicalize().expect("a canonical directory")
 }
 
-/// **`export X=…` in one line, and `cat $X/file` adjudicated after it.**
-///
-/// The claim the operator's decision makes, in one test: the value does not have to be
+/// `export X=...` in one line, and `cat $X/file` adjudicated after it: the value need not be
 /// written into the command, because the session's shell holds it and said so.
 #[test]
 fn an_export_in_one_line_resolves_a_command_adjudicated_after_it() {
@@ -70,7 +64,7 @@ fn an_export_in_one_line_resolves_a_command_adjudicated_after_it() {
         Duration::from_secs(30),
     )
     .expect("a turn");
-    // **The shell's own answer**, not a value this test remembered.
+    // The shell's own answer, not a value this test remembered.
     let report = s.env().expect("every trailer carries the environment");
     let mut env = SessionEnv::seeded([(
         "PATH".to_string(),
@@ -87,8 +81,8 @@ fn an_export_in_one_line_resolves_a_command_adjudicated_after_it() {
         "the value the shell reported did not resolve: {:?}",
         b.findings
     );
-    // The path was placed where the shell said it was — the point of reading the shell's
-    // answer rather than an assumption about where a session writes.
+    // The path is placed where the shell said it was: that is the point of reading the answer
+    // rather than assuming where a session writes.
     let source = b
         .command
         .as_ref()
@@ -111,11 +105,9 @@ fn an_export_in_one_line_resolves_a_command_adjudicated_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A value the shell stops holding stops resolving** — the other half of *observed*.
-///
-/// `unset` on one line is a fact the next trailer reports by omission, and a resolver that
-/// remembered the first report would go on placing a directory that is no longer in the
-/// environment.
+/// A value the shell stops holding stops resolving: `unset` is a fact the next trailer reports
+/// by omission, and a resolver that remembered the first report would place a directory that is
+/// no longer in the environment.
 #[test]
 fn an_unset_on_a_later_line_stops_resolving() {
     let Some(shell) = shell() else {
@@ -160,8 +152,8 @@ fn an_unset_on_a_later_line_stops_resolving() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A credential the shell holds reaches the card masked and never the reading.** The same
-/// chain as above, with the one value that must not be written down.
+/// A credential the shell holds reaches the card masked and never the reading: the same chain,
+/// with the one value that must not be written down.
 #[test]
 fn a_credential_the_shell_reports_is_masked_and_not_spliced() {
     let Some(shell) = shell() else {
@@ -206,8 +198,8 @@ fn a_credential_the_shell_reports_is_masked_and_not_spliced() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A `ShellTrust` that is not `Pinned` is a different axis; this only keeps the import list
-/// honest when the fixtures above change.
+/// The fixtures pin the shell, which means something only if `Pinned` is a different value from
+/// the default.
 #[test]
 fn the_fixture_declares_a_pinned_shell() {
     assert_ne!(

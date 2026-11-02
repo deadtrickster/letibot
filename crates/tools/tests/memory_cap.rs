@@ -1,19 +1,9 @@
-//! **A job that outgrows its memory cap dies alone, and says so** — `TODO.md` R64/R65,
-//! measured in a real delegated scope rather than asserted about one.
+//! A job that outgrows its memory cap dies alone, and says so, measured in a real delegated
+//! scope rather than asserted about one.
 //!
-//! The cap exists only when the process that owns the tree was started in a systemd scope of
-//! its own with `Delegate=yes` and has stepped into a leaf (`delegate_memory`). A test binary
-//! is not started that way, so this test RE-RUNS ITSELF inside one: the outer half asks
-//! `systemd-run --user --scope -p Delegate=yes` for the scope and runs this same test in it,
-//! and the inner half — the one that sees `LETIBOT_MEMCAP_INNER` — does the measuring.
-//!
-//! A box with no user systemd skips, and says so; with `LETIBOT_REQUIRE_APPARATUS=1` (the
-//! merge gate's setting) a skip is a failure, because a skipped test is a passed one as far
-//! as a step's status is concerned.
-//!
-//! **A platform with no systemd is not that box.** macOS has no `systemd-run` and no cgroups,
-//! so a cap in a delegated scope is a thing it can never have; the same absence there is
-//! announced through `apparatus::applies` and is not a failure a provisioning could clear.
+//! The cap needs a systemd scope started with `Delegate=yes`, which a test binary is not, so
+//! the test re-runs itself inside one and the inner half measures. A Linux box with no user
+//! manager fails under `LETIBOT_REQUIRE_APPARATUS=1`; macOS can never have one at all.
 
 use std::process::Command;
 use std::time::Duration;
@@ -44,11 +34,8 @@ fn a_job_that_outgrows_its_cap_dies_alone_and_one_under_its_cap_reports_its_peak
         .status()
         .is_ok_and(|s| s.success());
     if !scope_ok {
-        // **Two absences, and only one of them is this box's.** `systemd-run --user` and the
-        // delegated scope it asks for are Linux's: a Linux box with no user manager is one
-        // that has not been set up, and `LETIBOT_REQUIRE_APPARATUS=1` refuses that skip on
-        // purpose. macOS can never have either — the absence there is the platform's, so it
-        // is announced through `applies` and is not refusable.
+        // Two absences, and only one is refusable: a Linux box with no user manager fails
+        // under `LETIBOT_REQUIRE_APPARATUS=1`, while macOS can never have one.
         let Some(_) = letibot_tokencore::apparatus::applies(
             "a delegated systemd scope to cap a job in",
             cfg!(target_os = "linux"),
@@ -145,7 +132,7 @@ fn inner() {
         "the peak must show the 200 MB it built: {used:?}"
     );
 
-    // And the test process — the daemon's stand-in — is still here to say so.
+    // And the test process, the daemon's stand-in, is still here to say so.
     println!(
         "INNER MEASURED: killed at 64 MiB; under 512 MiB: {}",
         used.clause()

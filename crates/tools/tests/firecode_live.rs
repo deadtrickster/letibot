@@ -134,9 +134,8 @@ fn a_vm_backend_reads_writes_lists_runs_and_lands_its_work() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
-/// **The acceptance check is run by firecode, and its verdict is the answer's.** A placed child's
-/// "done" used to be its word; the check is the harness's, run in the VM after the child, and
-/// what `close` says is what firecode recorded. Failed first (the file is not there), then passed.
+/// The acceptance check is run by firecode, and its verdict is the answer's: what `close` says
+/// is what firecode recorded, not the child's word. Failed first, then passed.
 #[test]
 fn a_vm_backends_acceptance_check_decides_what_close_says() {
     if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
@@ -177,9 +176,8 @@ fn a_vm_backends_acceptance_check_decides_what_close_says() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
-/// **A worktree is mounted, not copied** (a Mac): the backend boots on the worktree itself, a write
-/// lands in it while the VM runs, nothing is copied under the cache, and after `close` the worktree
-/// is intact and the answer says the work is there.
+/// A worktree is mounted, not copied: the backend boots on the worktree itself, a write lands in
+/// it while the VM runs, and after `close` the worktree is intact.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_vm_backend_on_a_worktree_works_in_it_directly() {
@@ -233,10 +231,8 @@ fn a_vm_backend_on_a_worktree_works_in_it_directly() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// **`--vm`'s folder, mounted and shared** (a Mac): a session's VM boots on the folder itself,
-/// read-write; a second session joins that VM instead of booting another; a write through either
-/// lands in the folder on the host as it is made; the joiner's end leaves the VM up, and the
-/// starter's end brings it down with the folder intact.
+/// A folder VM is mounted and shared: a session's VM boots on the folder read-write, a second
+/// session joins that VM rather than booting another, and the joiner's end leaves it up.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_folder_vm_is_mounted_shared_and_joined() {
