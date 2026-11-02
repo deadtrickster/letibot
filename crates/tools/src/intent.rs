@@ -1,9 +1,7 @@
 //! Layer A: what a shell command is and what it intends, decided with no model.
 //!
-//! It emits a [`ScopedIntent`] list (a verb plus its target), never a verdict or a
-//! score: danger is the mismatch between an action and what was authorised, not a
-//! property of the string. The one refusal is secret bytes crossing the boundary
-//! irreversibly, and [`crate::authorise`] may only widen what is adjudicable.
+//! It emits a [`ScopedIntent`] list, never a verdict or a score: danger is the mismatch
+//! between an action and what was authorised, not a property of the string.
 
 use std::collections::BTreeSet;
 
@@ -17,9 +15,9 @@ use crate::runtime::{ScriptBody, ScriptSource};
 
 /// What a command intends, from a fixed vocabulary.
 ///
-/// A vocabulary rather than a score: an authorisation can be checked against an
-/// intent and cannot be checked against a number. [`Intent::Unknown`] is a member on
-/// purpose - a program this table has never heard of is not thereby harmless.
+/// An authorisation can be checked against an intent and not against a number, and
+/// [`Intent::Unknown`] is a member on purpose: a program this table never heard of is not
+/// thereby harmless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Intent {
     /// Reads metadata, not contents: `ls`, `stat`, `git status`.
@@ -118,10 +116,8 @@ impl Intent {
 
 // Execution vehicles
 
-/// Where an [`ExecutionVehicle`] entry came from.
-///
-/// The table is a cache, not a constant: a derived answer must sit next to a
-/// hand-written one without a schema change, and a disclosure must say which it is.
+/// Where an [`ExecutionVehicle`] entry came from: the table is a cache, so a derived answer must
+/// sit beside a hand-written one and a disclosure must say which it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
     /// Written by hand, with a reason somebody can argue with.
@@ -141,22 +137,17 @@ impl Provenance {
     }
 }
 
-/// How a trigger recognises itself in an argument list.
-///
-/// One shape per thing an entry has to express; a shape nothing uses is a shape
-/// nobody has checked.
+/// How a trigger recognises itself in an argument list. One shape per thing an entry has to
+/// express; a shape nothing uses is a shape nobody has checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerMatch {
     /// The flag is the vehicle whatever its value: `-exec`, `--to-command`, `git -c`.
     /// Matches the bare flag, its glued form, and - for a two-character short flag
     /// only - a bundle containing it, because `rsync -ave ssh` is `-a -v -e`.
     Flag(&'static str),
-    /// The flag is ordinary and only some of its values are vehicles: `ssh -o
-    /// ProxyCommand=...` runs a program, `ssh -o ConnectTimeout=5` does not, and
-    /// calling both code execution would make the finding worth nothing.
-    ///
-    /// Matches the separated form (`-o` then the value) and the glued forms
-    /// (`-oProxyCommand=...`, `--rsh=ssh`).
+    /// Only some values of an ordinary flag are vehicles: `ssh -o ProxyCommand=...` runs a
+    /// program and `ssh -o ConnectTimeout=5` does not, and calling both code execution would make
+    /// the finding worth nothing. Matches the separated and the glued forms.
     FlagValuePrefix {
         flag: &'static str,
         value_prefix: &'static str,
@@ -175,10 +166,8 @@ pub enum TriggerMatch {
 }
 
 impl TriggerMatch {
-    /// The argument that fired this trigger, if one did.
-    ///
-    /// [`execution_vehicle`] returns first when a word is unresolved, so the same
-    /// fact is not re-decided here for every trigger.
+    /// The argument that fired this trigger, if one did. [`execution_vehicle`] returns first when
+    /// a word is unresolved, so that fact is not re-decided per trigger.
     fn fires(&self, words: &[&str]) -> Option<String> {
         match self {
             TriggerMatch::Flag(flag) => words
@@ -255,11 +244,9 @@ fn flag_word_is(word: &str, flag: &str) -> bool {
     false
 }
 
-/// One way a program's own arguments turn it into a way to run arbitrary code.
-///
-/// `name` is short enough to sit inside the disclosure sentence; `why` names the
-/// mechanism, because a list without reasons gets emptied - a person narrowing the
-/// table can only weigh a trade whose object is written next to the entry.
+/// One way a program's own arguments turn it into a way to run arbitrary code. `why` names the
+/// mechanism because a list without reasons gets emptied: a person narrowing the table can only
+/// weigh a trade whose object is written next to the entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VehicleTrigger {
     /// What to call it in a sentence: `-c core.pager`, `--upload-pack`, `ext::`.
@@ -269,11 +256,9 @@ pub struct VehicleTrigger {
     pub how: TriggerMatch,
 }
 
-/// A program whose flags turn it into a way to run arbitrary code.
-///
-/// Not a block list and not a claim that the program is dangerous: it says this
-/// program's argument list contains a route to a child process, so a grant over the
-/// program name alone grants that route too.
+/// A program whose flags turn it into a way to run arbitrary code. Not a block list: it says this
+/// argument list contains a route to a child process, so a grant over the name alone grants that
+/// route too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionVehicle {
     /// The program's basename, as [`shell::Stage::program_name`] reports it.
@@ -301,10 +286,9 @@ impl ExecutionVehicle {
     }
 }
 
-/// The `-o` options that make an OpenSSH client run a program on this machine.
-///
-/// Shared by `ssh`, `scp` and `sftp` because they share the option parser: three
-/// copies of one list is three chances for two of them to drift.
+/// The `-o` options that make an OpenSSH client run a program here. Shared by `ssh`, `scp` and
+/// `sftp` because they share the option parser, and three copies of one list is three chances to
+/// drift.
 const SSH_OPTION_TRIGGERS: &[VehicleTrigger] = &[
     VehicleTrigger {
         name: "-o ProxyCommand",
@@ -586,20 +570,15 @@ pub const EXECUTION_VEHICLES: &[ExecutionVehicle] = &[
     },
 ];
 
-/// The entry for a program, with no argv in hand.
-///
-/// This is what a grant disclosure calls: a person writing `allow git *` is told what
-/// the glob covers before any particular command exists, so the answer comes from the
-/// table rather than from a sample of commands.
+/// The entry for a program, with no argv in hand: what a grant disclosure calls, so the answer
+/// comes from the table rather than from a sample of commands.
 pub fn vehicle_for(program: &str) -> Option<&'static ExecutionVehicle> {
     EXECUTION_VEHICLES.iter().find(|v| v.program == program)
 }
 
-/// The script file an interpreter was handed, if it was handed one.
-///
-/// `python3 script.py` runs code the gate never opens, while `-c`, `-m` and a bare
-/// interpreter name name no file at all. Only the first non-flag positional is taken:
-/// a wrong guess would hand the adjudicator an unrelated file and call it the program.
+/// The script file an interpreter was handed, if it was handed one. `python3 script.py` runs code
+/// the gate never opens, while `-c`, `-m` and a bare name name no file; only the first non-flag
+/// positional is taken, because a wrong guess hands the adjudicator an unrelated file.
 pub fn script_argument(program: &str, argv: &[String]) -> Option<String> {
     // The interpreters whose first positional is a path to run. `bash`/`sh` take
     // one too; `env` and the other wrappers are unwrapped before this is reached.
@@ -684,11 +663,8 @@ fn written_by_an_earlier_stage(n: &Normalised, path: &str) -> Option<String> {
     None
 }
 
-/// A stable digest of the bytes a classification read.
-///
-/// FNV-1a in the same `fnv1a:<hex>` shape the transcript's event digests use, so a
-/// reader comparing two of these compares one kind of thing. Not a security hash:
-/// what it answers is "are these still the bytes layer A judged".
+/// A digest of the bytes a classification read: FNV-1a in the `fnv1a:<hex>` shape the transcript's
+/// event digests use, so it answers "are these still the bytes layer A judged".
 fn digest(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
@@ -724,12 +700,9 @@ impl VehicleFinding {
     }
 }
 
-/// Did this call turn a program into a way to run arbitrary code?
-///
-/// An unresolved argument fires the vehicle with no trigger named, because an
-/// unresolved word is not an absent flag: a per-flag test answers no, which reads as
-/// safe. Otherwise the first matching trigger fires. `None` means nothing was found,
-/// never that nothing is there.
+/// Did this call turn a program into a way to run arbitrary code? An unresolved argument fires
+/// with no trigger named, because a per-flag test would answer no and read as safe. `None` means
+/// nothing was found, never that nothing is there.
 pub fn execution_vehicle(program: &str, argv: &[Word]) -> Option<VehicleFinding> {
     let vehicle = vehicle_for(program)?;
 
@@ -764,10 +737,8 @@ pub fn execution_vehicle(program: &str, argv: &[Word]) -> Option<VehicleFinding>
     None
 }
 
-/// How much of the table anybody checked, with denominators.
-///
-/// A disclosure saying "3 can execute arbitrary code" without saying where those three
-/// came from is a number that hides its own confidence.
+/// How much of the table anybody checked, with denominators: a count that hides its own
+/// confidence is worse than none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VehicleCounts {
     /// Programs in the table.
@@ -796,11 +767,9 @@ pub fn vehicle_counts() -> VehicleCounts {
     }
 }
 
-/// The program table, plus whatever [`EXECUTION_VEHICLES`] adds.
-///
-/// One-directional on purpose: the vehicle table may append [`Intent::ExecuteCode`] and
-/// nothing else - it cannot drop an intent [`program_intents`] derived, and it cannot
-/// turn [`Intent::Unknown`] into something known.
+/// The program table plus whatever [`EXECUTION_VEHICLES`] adds. One-directional on purpose: the
+/// vehicle table may append [`Intent::ExecuteCode`] and cannot drop an intent or make an unknown
+/// program known.
 fn intents_of(program: &str, argv: &[Word]) -> Vec<Intent> {
     let mut v = program_intents(program, argv);
     if execution_vehicle(program, argv).is_some() && !v.contains(&Intent::ExecuteCode) {
@@ -809,22 +778,16 @@ fn intents_of(program: &str, argv: &[Word]) -> Vec<Intent> {
     v
 }
 
-/// One row of the destructive-flag table: data, not control flow, so a flag that
-/// changes what a program does is a thing that can be listed, counted and tested.
-///
-/// A program with no row is not thereby allowed: the table only ever adds an intent,
-/// so no row can make an action look safer than its program name already did.
+/// One row of the destructive-flag table: data, not control flow, so a flag that changes what a
+/// program does can be listed, counted and tested. A program with no row is not thereby allowed.
 #[derive(Debug, Clone, Copy)]
 struct FlagRule {
     program: &'static str,
     /// The subcommand this applies to, for programs that have them. `None` means any:
     /// `rsync` has no subcommands, `git clean` is only `clean`.
     subcommand: Option<&'static str>,
-    /// Flags that make it SAFE, and so stop the rule firing.
-    ///
-    /// `gzip big.log` replaces the original and `gzip -k` keeps it, so destruction can
-    /// be the default and a flag can switch it off - a shape a table of destructive
-    /// flags alone cannot express. Empty for most rows.
+    /// Flags that make it safe and stop the rule firing: `gzip big.log` replaces the original and
+    /// `gzip -k` keeps it, which a table of destructive flags alone cannot express.
     unless: &'static [&'static str],
     /// Any one of these present fires the rule. Prefixes end in `-` and match by
     /// prefix, which is how the whole `--delete-*` family travels as one row.
@@ -900,10 +863,8 @@ impl FlagRule {
 
 include!("documented_flags.rs");
 
-/// The rows. Ordered by program so a reader can find one.
-///
-/// Each row exists because the program name alone read as harmless while a flag, or
-/// the subcommand itself, destroyed something.
+/// The rows, ordered by program for a reader. Each exists because the program name alone read as
+/// harmless while a flag, or the subcommand, destroyed something.
 const FLAG_RULES: &[FlagRule] = &[
     FlagRule {
         program: "dd",
@@ -1069,10 +1030,8 @@ const FLAG_RULES: &[FlagRule] = &[
     },
 ];
 
-/// Intents a flag adds that the program's name did not imply.
-///
-/// Only ever additive - see [`FlagRule`]. Hand-written rows come first because
-/// `flag_reasons` renders them in arrival order.
+/// Intents a flag adds that the program's name did not imply. Only ever additive, and hand-written
+/// rows come first because `flag_reasons` renders them in arrival order.
 fn all_flag_rules() -> impl Iterator<Item = &'static FlagRule> {
     FLAG_RULES.iter().chain(DOCUMENTED_FLAG_RULES.iter())
 }
@@ -1131,11 +1090,9 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         // `print | "cmd"`, and the program text arrives as the first POSITIONAL as
         // readily as via `-f`, so no flag test could catch it.
         "awk" | "gawk" | "mawk" | "nawk" => vec![ReadFile, ExecuteCode],
-        // `sed -i` edits in place; without it, it reads. Either way it executes: the
-        // `e` command and the `s///e` flag run a shell command, and `w`/`W` write a
-        // file the argument list never names. The script arrives as the first
-        // positional as readily as via `-e`, so a flag table cannot see it, and
-        // reading it here would be a second parser for a second language.
+        // `sed -i` edits in place and either way executes: the `e` command and the `s///e` flag
+        // run a shell command, and the script arrives as the first positional as readily as via
+        // `-e`, so reading it here would be a second parser for a second language.
         "sed" => {
             let mut v = vec![ReadFile, ExecuteCode];
             if argv.iter().any(|w| {
@@ -1154,10 +1111,8 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
             if argv.iter().any(|w| looks_remote(w.text().unwrap_or(""))) {
                 v.push(Network);
             }
-            // `--delete` removes files at the DESTINATION, which the reading has to
-            // say because nothing else in it implies destruction. It belongs here and
-            // not in the prompt: no model should re-derive a flag table per call, and
-            // training data reads `rsync --delete` as ordinary sync idiom.
+            // `--delete` removes files at the DESTINATION, which nothing else in the reading
+            // implies, and no model should re-derive a flag table per call.
             if program == "rsync"
                 && argv.iter().filter_map(|w| w.text()).any(|t| {
                     t == "--del"
@@ -1254,10 +1209,8 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         // Checksums and text filters: each reads its input and prints, so `ReadFile`.
         "sha512sum" | "cksum" | "b2sum" | "paste" | "xmllint" | "tr" | "fold" | "expand"
         | "unexpand" | "fmt" | "iconv" => vec![ReadFile],
-        // Control-flow and variable builtins with no effect of their own, which
-        // appear as stages inside loops and `case` arms. The ones that change the
-        // environment (`export`, `unset`, `set`, `declare`, `umask`) have their own
-        // arm below.
+        // Control-flow and variable builtins with no effect of their own, which appear as stages
+        // inside loops and `case` arms; the ones that change the environment have their own arm.
         "break" | "continue" | "return" | "shift" | "read" | "exit" | "let" | "getopts"
         | "hash" | "times" | "builtin" | "enable" | "shopt" => vec![Inspect],
         // Formatters and linters read their input; `-w`/`--fix` write it in place, so
@@ -1338,19 +1291,16 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
                 | "version" | "help" | "check-ignore" | "ls-remote" | "fsck" => vec![Inspect],
                 // A new repository, on the operator's disk: a write, not a mystery.
                 "init" => vec![WriteFile],
-                // The write half of the plumbing: `update-ref -d` deletes a ref and the
-                // rest overwrite what it pointed at, so `FLAG_RULES` adds `Destroy` for
-                // the spellings that delete. `symbolic-ref` MOVES HEAD, so it belongs
-                // here: read as `inspect` it makes `reads_only` true, which is admitted
-                // at every point, and a suppressed prompt leaves no mark on any screen.
+                // The write half of the plumbing: `update-ref -d` deletes a ref, the rest overwrite,
+                // and `symbolic-ref` MOVES HEAD. Read as `inspect` it would make `reads_only` true
+                // and leave a suppressed prompt with no mark on any screen.
                 "update-ref" | "update-index" | "symbolic-ref" | "write-tree"
                 | "commit-tree" | "hash-object" | "mktree" | "mktag" | "replace"
                 | "prune" | "prune-packed" | "gc" | "repack" | "pack-refs"
                 | "reflog-expire" | "fast-import" => vec![ReadFile, WriteFile],
-                // Subcommands that both read and write, by their own verb: `worktree
-                // add` creates a directory and a branch, and `stash` with no verb
-                // PUSHES. Listing the read verbs and defaulting to write is the
-                // fail-closed direction.
+                // Subcommands that both read and write, by their own verb: `worktree add` creates a
+                // directory and a branch, and `stash` with no verb PUSHES. Listing the read verbs
+                // and defaulting to write is the fail-closed direction.
                 "worktree" | "stash" | "config" | "branch" | "notes" | "bisect" => {
                     if matches!(subarg(0), "list" | "get" | "get-all" | "show" | "log" | "view")
                         || (sub == "branch" && rest.is_empty())
@@ -1378,10 +1328,8 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         "docker" | "podman" | "kubectl" | "helm" | "flowy" | "docker-compose" => {
             vec![Network, ExecuteCode]
         }
-        // `ar`'s first operand is the verb, a bare letter rather than a flag, so
-        // nothing that reads flags can classify it. Ordered least to most
-        // consequential: a letter this build has not heard of is not a letter that
-        // reads.
+        // `ar`'s first operand is the verb, a bare letter no flag reader can see. Ordered least to
+        // most consequential: a letter this build has not heard of is not a letter that reads.
         "ar" | "gar" => {
             let op = arg(0).trim_start_matches('-');
             match op.chars().next() {
@@ -1406,10 +1354,8 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
     }
 }
 
-/// git's subcommand, past its global options, and whatever follows it.
-///
-/// An unrecognised leading `-` is skipped as a flag rather than taken for the verb: an
-/// option this build has not heard of is still not a verb.
+/// git's subcommand, past its global options, and whatever follows it. An unrecognised leading
+/// `-` is skipped as a flag rather than taken for the verb.
 fn git_subcommand(argv: &[Word]) -> (&str, Vec<&str>) {
     const TAKES_VALUE: &[&str] = &[
         "-C",
@@ -1441,10 +1387,9 @@ fn git_subcommand(argv: &[Word]) -> (&str, Vec<&str>) {
     (sub, rest)
 }
 
-/// Programs that take a command as text, and where in argv that text is. A resolved
-/// literal there is re-normalised so the nested command is really seen rather than
-/// treated as an opaque string: the grammar hands `trap 'rm -rf /' EXIT` over as a
-/// `raw_string`, correctly, and only a table knows its first operand is shell text.
+/// Programs that take a command as text, and where in argv that text is. A resolved literal there
+/// is re-normalised so the nested command is seen rather than treated as opaque: `trap 'rm -rf /'
+/// EXIT` arrives as a `raw_string`, correctly, and only a table knows it is shell text.
 fn deferred_command_arg(program: &str, argv: &[Word]) -> Option<usize> {
     let pos = |flag: &str| {
         argv.iter()
@@ -1486,11 +1431,8 @@ fn inline_script_arg(program: &str, argv: &[Word]) -> Option<usize> {
         .map(|i| i + 1)
 }
 
-/// Wrappers whose real program is a later argument.
-///
-/// `sudo -n systemctl restart X` is a `systemctl` call: read as `sudo` it would be
-/// privilege escalation and nothing else. Public so the reader that names an
-/// interpreter's script file and the classifier share one table.
+/// Wrappers whose real program is a later argument: `sudo -n systemctl restart X` is a
+/// `systemctl` call, and read as `sudo` it would be privilege escalation and nothing else.
 pub fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
     let takes_value: &[&str] = match program {
         "sudo" | "doas" => &["-u", "-g", "-U", "-p", "-C", "-h", "-r", "-t"],
@@ -1534,10 +1476,8 @@ pub fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
 
 // Regions and secrets
 
-/// The directories whose bytes are secret.
-///
-/// Not the decider - the flow rule is - but it has to know what a secret is. A
-/// superset of [`crate::adjudicate::NEVER_WRITE`], which is about writes, not bytes.
+/// The directories whose bytes are secret. Not the decider (the flow rule is), but it has to know
+/// what a secret is; a superset of [`crate::adjudicate::NEVER_WRITE`], which is about writes.
 pub const SECRET_DIRS: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -1572,10 +1512,8 @@ pub const SECRET_DIRS: &[&str] = &[
     ".config/Bitwarden",
 ];
 
-/// Files that are secret wherever they sit, matched on the final path segment.
-///
-/// Exact names and extensions only: a substring test would put every path with the
-/// word "key" in it into the secret store.
+/// Files that are secret wherever they sit, matched on the final path segment. Exact names and
+/// extensions only, because a substring test puts every path with "key" in it in the store.
 const SECRET_FILE_NAMES: &[&str] = &[
     "id_rsa",
     "id_dsa",
@@ -1622,13 +1560,10 @@ pub enum Region {
     Remote(String),
     /// No path to place.
     None,
-    /// A path that could be anything: the widening an unresolvable construct gets
-    /// instead of a refusal. `rm -rf $X` may name the workspace or `/`, so the reading
-    /// is unbounded rather than unreadable, and a narrow mode refuses it while
-    /// `allow-all` admits it with no mode special-cased.
-    ///
-    /// Not [`Region::HostOther`], which is unplaceable and deliberately not outside: a
-    /// construct nobody can read is a different fact from a path nobody can place.
+    /// A path that could be anything: the widening an unresolvable construct gets instead of a
+    /// refusal. `rm -rf $X` may name the workspace or `/`, so the reading is unbounded rather than
+    /// unreadable, and a narrow mode refuses it. Not [`Region::HostOther`], which is a construct
+    /// nobody can read rather than a path nobody can place.
     Unbounded,
 }
 
@@ -1655,14 +1590,9 @@ impl Region {
         matches!(self, Region::Secret(_))
     }
 
-    /// Is this a place the boundary can name as outside?
-    ///
-    /// The read-only rule voids on any region this table can point at and call outside.
-    /// `HostOther` is not outside: it is where a relative path lands, and reading an
-    /// unplaceable path as an outside one is a defect this tree has already paid for.
-    ///
-    /// No `_` arm, so a new [`Region`] is a compile error here rather than a region
-    /// silently classified as innocent.
+    /// Is this a place the boundary can name as outside? `HostOther` is not: it is where a relative
+    /// path lands, and reading an unplaceable path as outside is a defect this tree has paid for.
+    /// No `_` arm, so a new [`Region`] is a compile error rather than silently innocent.
     pub fn is_outside(&self) -> bool {
         match self {
             // A boundary that exists to keep the session's own work in.
@@ -1680,28 +1610,22 @@ impl Region {
             | Region::Device
             | Region::Temp
             | Region::Root
-            // A value nobody can read could be anywhere, including outside. The opposite
-            // reading - that an unknown is innocent until placed - is the one direction of
-            // error this table exists to avoid: `cat $FILE` must not read as a read of
-            // something inside the project.
+            // A value nobody can read could be anywhere, including outside. The opposite reading
+            // - an unknown is innocent until placed - is the direction of error this table exists
+            // to avoid: `cat $FILE` must not read as a read inside the project.
             | Region::Unbounded => true,
         }
     }
 }
 
-/// Whether the shell that will run the command can make a name mean something other
-/// than itself.
-///
-/// A resolved parse is not a resolved meaning: a shell resolves a bare name through
-/// aliases, functions and `PATH`, none of which are in the text, so `alias ls='rm
-/// -rf ~'` turns an always-safe name into an `rm`. Unknown is the default for that
-/// reason.
+/// Whether the shell that will run the command can make a name mean something other than itself.
+/// A resolved parse is not a resolved meaning: aliases, functions and `PATH` are not in the text,
+/// so `alias ls='rm -rf ~'` turns an always-safe name into an `rm`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ShellTrust {
     /// The caller guarantees the execution environment: no login shell, no rc files,
-    /// `expand_aliases` off, no inherited functions, `PATH` pinned. `how` names the
-    /// mechanism and goes into the audit row, because a guarantee nobody wrote down is
-    /// an assumption. A requirement on the exec side, not something this module checks.
+    /// `expand_aliases` off, no inherited functions, `PATH` pinned. `how` names the mechanism and
+    /// goes into the audit row, because a guarantee nobody wrote down is an assumption.
     Pinned { how: String },
     /// Nobody has said. Every bare command name is therefore unresolved - it may be an
     /// alias or a shell function - and the command is `NotRun`. The fix is to give the
@@ -1719,13 +1643,9 @@ impl ShellTrust {
     }
 }
 
-/// What this gate can honestly see of the filesystem a command will run in.
-///
-/// Resolving `$PATH` only helps if the file can be named: a stage whose program is the
-/// bare name `cargo` runs whatever the current `PATH` finds, so a grant named `cargo`
-/// is a claim about a file nobody named. Where the file cannot be established,
-/// [`ProgramLookup::None`] leaves the `PATH` unresolved and the command as unread as
-/// it was - a guess would be worse than the problem.
+/// What this gate can honestly see of the filesystem a command will run in. Where a bare name's
+/// file cannot be established, [`ProgramLookup::None`] leaves the `PATH` unresolved and the command
+/// as unread as it was, because a guess is worse than the problem.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ProgramLookup {
     /// Nothing here can answer.
@@ -1737,11 +1657,9 @@ pub enum ProgramLookup {
 }
 
 impl ProgramLookup {
-    /// The file a bare name would run along `path`, or `None`.
-    ///
-    /// The shell's rule only: an empty element of `PATH` (the current directory) is not
-    /// resolved, because which directory that is belongs to the command. A name with a
-    /// `/` is a path, not a name.
+    /// The file a bare name would run along `path`, or `None`. The shell's rule only: an empty
+    /// `PATH` element is not resolved, because which directory that is belongs to the command, and
+    /// a name with a `/` is a path.
     pub fn path_file(self, name: &str, path: &str) -> Option<String> {
         if self == ProgramLookup::None || name.is_empty() || name.contains('/') {
             return None;
@@ -1770,12 +1688,9 @@ impl ProgramLookup {
     }
 }
 
-/// Programs the shell answers itself, so `PATH` never names them.
-///
-/// A resolved `PATH` is followed only for names a shell would look up: asking the disk
-/// about `export` must not be the reason a `PATH` is judged unknowable, which would
-/// switch the feature off for every `export PATH=...` command. Includes the builtins
-/// that also exist as binaries, because bash uses the builtin either way.
+/// Programs the shell answers itself, so `PATH` never names them. Includes the builtins that also
+/// exist as binaries, because bash uses the builtin either way; without this every
+/// `export PATH=...` command would make a `PATH` look unknowable.
 const SHELL_ANSWERS: &[&str] = &[
     ".",
     ":",
@@ -1843,11 +1758,8 @@ const SHELL_ANSWERS: &[&str] = &[
 enum Programs {
     /// Nothing to report: no stage after the `PATH` runs a name a shell would look up.
     Unchanged,
-    /// The stages that now name a file, and the note each one puts on the card.
-    ///
-    /// The positions are what `Baseline::absorb_stage` needs: the approval key is built
-    /// from the program's name, so a stage the `PATH` rule moved has to be named by its
-    /// file or an existing grant would settle it.
+    /// The stages that now name a file, and the note each puts on the card. The positions are what
+    /// `Baseline::absorb_stage` needs, since the approval key is built from the program's name.
     Renamed {
         notes: Vec<String>,
         renamed: Vec<usize>,
@@ -1857,15 +1769,9 @@ enum Programs {
     Unknowable(String),
 }
 
-/// Follow the `PATH` in force, renaming every file it moves.
-///
-/// Two sources can be known: a literal assignment in this command, and the session's own
-/// `PATH` when it differs from the pinned one. A stage whose `PATH` is the pinned one is
-/// not touched, because a grant for `cargo` is a grant about the `cargo` the box runs.
-///
-/// `spliced` decides what happens when a file cannot be established: when the command's
-/// own text fixed its `PATH`, refusing would make a working command unread, so the stage
-/// keeps its bare name.
+/// Follow the `PATH` in force, renaming every file it moves. A literal assignment in this command
+/// and the session's own `PATH` are the two sources; a stage on the pinned `PATH` is untouched,
+/// because a grant for `cargo` is a grant about the `cargo` the box runs.
 fn apply_path(
     n: &mut Normalised,
     env: &Surroundings,
