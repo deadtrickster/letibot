@@ -1,16 +1,15 @@
-//! Fixtures that are real images, because a fixture that only looked like one hid a bug that cost
-//! a session: a 33-byte PNG header was stored as an image and a provider refused the whole request
-//! on every turn, for ever.
+//! Fixtures that are real images - because a fixture that only looked like one hid a bug that
+//! cost a session: a PNG signature, an `IHDR` and nothing else was called an image, stored as
+//! one, and sent to a provider that refused the whole request on every turn, for ever.
 //!
-//! So [`png`] is a picture a decoder can read and [`png_header_only`] is the incident's bytes, kept
-//! so a test can assert they are refused. Public for the reason the session log's fixtures are: the
-//! crates that need a picture in a fixture are not this one.
+//! So [`png`] is a real RGBA picture and [`png_header_only`] is those 33 bytes kept on
+//! purpose, so a test can assert that they are refused.
 //!
-//! [`jpeg`], [`gif`] and [`webp`] are structurally complete and their pixels are stubs, said here
-//! rather than implied.
+//! Public rather than `#[cfg(test)]` because the crates that need a picture are not this one.
 
-/// A real PNG, `w`x`h`, opaque black RGBA. Built rather than embedded so a caller asks for the
-/// dimensions it needs; the `IDAT` is one zlib stream of stored blocks, so the bytes are visible.
+/// A real PNG, `w`x`h`, opaque black RGBA. Built rather than embedded so a caller can ask for
+/// the dimensions it needs; the `IDAT` is stored (uncompressed) deflate blocks, so the bytes
+/// are visible rather than compressed.
 pub fn png(w: u32, h: u32) -> Vec<u8> {
     // One row of opaque black, built once: filter type 0 (none), then the pixels.
     let mut row = Vec::with_capacity(1 + 4 * w as usize);
@@ -34,8 +33,9 @@ pub fn png(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-/// The bytes that wedged a session: a PNG signature and an `IHDR`, a zeroed CRC, and no picture.
-/// Kept because the refusal it produces is the behaviour under test.
+/// The bytes that wedged a session - a PNG signature and an `IHDR`, a zeroed CRC, and no
+/// picture at all. Kept because the refusal it produces is the behaviour under test: a file
+/// that announces itself as a PNG and holds no image is not an image.
 pub fn png_header_only(w: u32, h: u32) -> Vec<u8> {
     let mut p = b"\x89PNG\r\n\x1a\n".to_vec();
     p.extend_from_slice(&13u32.to_be_bytes());
@@ -48,9 +48,9 @@ pub fn png_header_only(w: u32, h: u32) -> Vec<u8> {
     p
 }
 
-/// A structurally complete JPEG: `SOI`, a JFIF `APP0`, a `SOF0` carrying the size, a `DQT`, an `SOS`
-/// header, a few bytes of entropy-coded data and `EOI`. The pixels are a stub, since only the header
-/// walk reads them.
+/// A structurally complete JPEG - `SOI`, a JFIF `APP0`, a `SOF0` carrying `w`x`h`, a `DQT`, an
+/// `SOS` header, a few bytes of entropy-coded data and `EOI`. The entropy data is a stub:
+/// nothing here decodes a JPEG, and the header walk is what this fixture exercises.
 pub fn jpeg(w: u16, h: u16) -> Vec<u8> {
     let mut out = b"\xff\xd8".to_vec();
     let app0 = b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00";

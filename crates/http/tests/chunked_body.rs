@@ -1,23 +1,18 @@
 //! The chunked-transfer framing, against a server that actually chunks.
 //!
-//! The provider suite's fake server answers with `Content-Length`, so without this the chunked
-//! path - the one a real llama.cpp endpoint uses, and the one that carries the SSE frames a turn
-//! is made of - is never executed by the suite at all.
-//!
-//! Three things about a chunked SSE body are easy to get wrong, and each has a case here: a frame
-//! split across two chunks (a long tool-call argument does not respect a TCP segment), two frames
-//! inside one chunk, and a frame boundary landing exactly on a chunk boundary.
-//!
-//! Plus the chunk-size line's extensions (`1a;ext=1`), which the parser splits off, and a body in
-//! many small chunks so the reader's chunk buffer is reused rather than reallocated.
+//! The provider suite's fake server answers with `Content-Length`, so every green test
+//! in this workspace went through `Framing::Length` and the chunked path - the one a
+//! real llama.cpp endpoint uses, and the one that carries the SSE frames a turn is
+//! made of - was never executed at all.
+//! Three things are easy to get wrong: a frame split across two chunks, two frames in
+//! one chunk, and a frame boundary landing on a chunk boundary.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
-/// A one-shot HTTP server that answers with the given chunked body, in the given chunks.
-///
-/// The endpoint comes back as an `Endpoint`, not a URL: `Endpoint::parse` takes `HOST:PORT`, and
-/// a `http://…` string is a hostname it would try to resolve.
+/// A one-shot HTTP server that answers with the given chunked body, in the given
+/// chunks. The endpoint comes back as `Endpoint`, not a URL, because `Endpoint::parse`
+/// takes `HOST:PORT` and an `http://` string is a hostname it will try to resolve.
 fn chunked_server(chunks: Vec<Vec<u8>>) -> (letibot_http::Endpoint, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -46,8 +41,8 @@ fn serve(mut conn: TcpStream, chunks: Vec<Vec<u8>>) {
     let _ = conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
                               Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
     for (i, c) in chunks.iter().enumerate() {
-        // Every other chunk carries an extension after the size, as a real server may: `;`
-        // parameters are legal and the parser must ignore them rather than fail the parse.
+        // Every other chunk carries an extension after the size, because a real server sends them
+        // (`;` parameters are legal and the parser must ignore them rather than fail the parse).
         let head = if i % 2 == 0 {
             format!("{:x}\r\n", c.len())
         } else {
@@ -101,9 +96,9 @@ fn two_frames_inside_one_chunk_are_two_frames() {
 
 #[test]
 fn a_frame_boundary_exactly_on_a_chunk_boundary_is_two_frames() {
-    // The `\n\n` is the last thing in the first chunk: a reader that looked for the boundary only
-    // within the newest chunk would find nothing here, then find it a chunk later having already
-    // consumed the delimiter.
+    // The `\n\n` is the last thing in the first chunk, which is the off-by-two case: a reader
+    // that looked for the boundary only within the newest chunk would find nothing here and then
+    // find it again one chunk later, having already consumed the delimiter.
     let (endpoint, server) = chunked_server(vec![ONE.as_bytes().to_vec(), TWO.as_bytes().to_vec()]);
     assert_eq!(payloads(&endpoint), vec!["{\"n\":1}", "{\"n\":2}"]);
     server.join().unwrap();
@@ -122,7 +117,7 @@ fn many_small_chunks_reassemble_into_the_same_frames() {
 
 #[test]
 fn a_chunk_size_line_carrying_an_extension_still_names_the_size() {
-    // `1a;ext=1`: the semicolon and what follows are not part of the hex.
+    // `1a;ext=1` — the semicolon and what follows are not part of the hex.
     let (endpoint, server) = chunked_server(vec![ONE.as_bytes().to_vec()]);
     assert_eq!(payloads(&endpoint), vec!["{\"n\":1}"]);
     server.join().unwrap();

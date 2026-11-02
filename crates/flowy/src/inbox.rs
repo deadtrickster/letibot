@@ -1,19 +1,11 @@
-//! The [`Condition`] a session's `flowy` monitor watches.
+//! The [`Condition`] a session's `flowy` monitor watches. One per attached
+//! session: each runs a delivery through its own attention table and subscription
+//! set, keeps what passed, counts what did not, and pings the monitor poller.
 //!
-//! One per attached session. The seat hands every delivery to every attached
-//! condition; each one runs it through **its own** attention table and
-//! subscription set, keeps what passed, counts what did not, and pings the
-//! monitor poller. `met` drains everything pending into **one** firing — a
-//! burst of five messages is one wake, not five — and the firing carries the
-//! counts of what went past, so a session can tell a busy room it asked to be
-//! spared from a silent one.
-//!
-//! # Why the condition is where the table lives
-//!
-//! The table is the session's, not the seat's. Two sessions on one seat can want
-//! different things — one working `#build` at `all`, another only its mentions —
-//! and the seat polls at the loosest of them. Keeping the table here rather
-//! than on the seat is what makes that a table rather than a flag.
+//! `met` drains everything pending into one firing - a burst of five messages is
+//! one wake - and carries the counts of what went past, so a session can tell a
+//! busy room it asked to be spared from a silent one. The table is the session's,
+//! not the seat's: the seat polls at the loosest of the sessions on it.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};

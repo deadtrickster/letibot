@@ -1,8 +1,11 @@
-//! `flowy`: the one tool the model drives the connector with.
+//! `flowy` - the one tool the model drives the connector with.
 //!
-//! One tool taking an `action`, for the reason `monitor` is one tool: the tool ceiling is real and none
-//! of these is a different question. Declaring, renewing or retiring the listener is not here, because
-//! the model reads messages and does not arm a bell.
+//! One tool taking an `action`, for the reason `monitor` is one: the tool ceiling
+//! is real and none of these is a different question.
+//!
+//! Declaring, renewing and retiring the listener belong to the daemon, because the
+//! model reads messages rather than arming a bell. Polling is absent because a
+//! message arrives as a firing and a blocking tool would hold the turn hostage.
 
 use std::sync::Arc;
 
@@ -16,9 +19,9 @@ use crate::render;
 use crate::seat::Seat;
 use crate::subs::Subscription;
 
-/// A session's attachment to a seat: the seat, and this session's condition on it. Behind a slot, so a
-/// session opened before a seat existed gets one when a login attaches it: whether the door is open is
-/// state.
+/// A session's attachment to a seat: the seat, and this session's condition on
+/// it. Behind a slot, so a session opened before a seat existed gets one when
+/// `/flowy login` attaches it: the tool is always a door, whether it is open is state.
 pub struct Attachment {
     pub seat: Seat,
     pub cond: Arc<InboxCondition>,

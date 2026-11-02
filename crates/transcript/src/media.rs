@@ -1,22 +1,17 @@
-//! Bytes a tool read that are not text, kept as bytes: the second structured channel on an
-//! invocation, beside `FileEdit`.
+//! Bytes a tool read that are not text, kept as bytes - the second structured channel on
+//! `letibot_tools::runtime::Invocation`, beside `letibot_tools::edit::FileEdit`. Unlike
+//! `FileEdit`, which is display-only, this one exists to be SENT.
 //!
-//! The row is the durable artifact, which is why the bytes live here rather than in an event: a head
-//! that attaches after a restart is handed rows, and a prompt rebuilt on the next round renders the
-//! transcript again -- so an image held only in an event would reach the model once and then be gone.
-//!
-//! Unlike `FileEdit`, which is display-only, this exists to be SENT, so the reference is spelled the
-//! way a renderer needs it and the mime is sniffed from the bytes. A `data:` URI is the only form a
-//! server accepts; a bare path is refused with `Failed to load image or audio file`.
-//!
-//! There is no size cap: the local server resizes above 4096 vision tokens and never refuses for
-//! pixels, so a cap here would discard what the far end would have taken.
+//! `read` gains no verb, no gate question and no permission: it is asked for a path, and
+//! only what comes back differs. The bytes live on the ROW, not in an event, because the row
+//! is the durable artifact a prompt is rebuilt from: an image that reached the model once
+//! and not on the next round would look like a model that forgot.
 
 use serde::{Deserialize, Serialize};
 
-/// The size a `data:` reference states, read out of its header only, so a head can cut a picture's
-/// box without decoding the pixels: a bounded prefix and the same [`dimensions`] walk [`Media::of`]
-/// uses. The mime comes from the reference's own prefix, since there is no file name here.
+/// The size a `data:` reference states, read out of the header only, so a head can cut a
+/// picture's cell box without decoding the pixels. The mime comes from the reference's own
+/// prefix rather than a name, because a name is the weaker claim anyway.
 pub fn size_of_data_ref(data_ref: &str) -> (Option<u32>, Option<u32>) {
     let Some((head, _)) = data_ref.split_once(";base64,") else {
         return (None, None);
@@ -29,9 +24,9 @@ pub fn size_of_data_ref(data_ref: &str) -> (Option<u32>, Option<u32>) {
     dimensions(mime, &bytes)
 }
 
-/// Standard base64, decoded: tolerant of padding, a stray character or a payload cut mid-quantum,
-/// because it reads bytes a head did not build and refusing would turn an image of an unknown shape
-/// into no image at all. A character outside the alphabet ends the decode rather than guessing.
+/// Standard base64, decoded - [`encode_base64`] backwards. Tolerant on purpose: a payload
+/// cut mid-quantum, or written by another version, must not turn an image into no image at
+/// all. It does not guess - a character outside the alphabet ends the decode.
 pub fn decode_base64(text: &str) -> Vec<u8> {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
@@ -58,8 +53,9 @@ pub fn decode_base64(text: &str) -> Vec<u8> {
     out
 }
 
-/// The base64 alphabet, spelled once for the whole tree: a `data:` URI here and a file fetched over
-/// the wire in `letibot_tools`, and an alphabet spelled twice is spelled subtly wrong once.
+/// The base64 alphabet, spelled once for the whole tree: `media` encodes a `data:` URI and
+/// the tool layer's `firecode` backend encodes a file to fetch it, and a second copy is
+/// exactly the fact that gets spelled subtly wrong in one of the two places.
 pub fn encode_base64(bytes: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -86,12 +82,14 @@ pub fn encode_base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The image types this tree will hand a model, matching the server's own set. A type outside it
-/// is not refused as a security matter: it is simply not an image, and `read` shows it as bytes.
+/// The image types this tree will hand a model. Not a policy list: it is what the model
+/// server's chat template can read. A type outside it is not refused, it is simply not an
+/// image, and `read` shows it the way it shows any other bytes.
 pub const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// Bytes a call produced that are not text, with the metadata a row needs to describe them.
-/// `bytes` is the size of the file rather than of the base64, a number a person can compare.
+/// `media_type` alone answers the wrong question - a reader wants to know how big and what
+/// shape - and `bytes` is the file's size, a number a person can compare with `ls`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Media {
     /// `image/png`. Sniffed from the bytes; see [`sniff_mime`].
@@ -106,18 +104,17 @@ pub struct Media {
     pub height: Option<u32>,
     /// `data:image/png;base64,…` — the form the model server takes, verbatim.
     pub data_ref: String,
-    /// Whether a model was actually given these bytes.
-    ///
-    /// A dropped attachment and an ignored one look identical on a transcript that does not say
-    /// which. `false` is a fact for older rows: no row before the field can carry a `Media`.
+    /// Whether a model was actually given these bytes. A dropped attachment and an ignored
+    /// one look identical on a transcript that does not say which, and only one of them is
+    /// the operator's to correct. Set by the engine, which builds the request.
     #[serde(default)]
     pub delivered: bool,
 }
 
 impl Media {
-    /// A picture this call read, or `None` when the bytes are not one of the supported images. The
-    /// mime comes from the bytes first, because a name is a claim. A signature is not a picture:
-    /// the bytes must be a COMPLETE image or a provider refuses every request from then on.
+    /// A picture this call read, or `None` when the bytes are not one of the supported
+    /// images. The mime comes from the bytes first and the path only as a fallback, because a
+    /// file's name is a claim and its magic number is not. See [`complete_image`].
     pub fn of(path: &str, bytes: &[u8]) -> Option<Media> {
         let mime = sniff_mime(path, bytes)?;
         if !complete_image(mime, bytes) {
@@ -135,22 +132,24 @@ impl Media {
         })
     }
 
-    /// The base64 a multimodal request carries: the payload without the `data:` prefix, because
-    /// llama.cpp decodes each element itself and would decode the prefix as image bytes.
+    /// The base64 a multimodal request carries - the payload WITHOUT the `data:` prefix,
+    /// because llama.cpp decodes each element of `multimodal_data` whole and the prefix would
+    /// be decoded as image bytes. A reference that is already bare is carried through.
     pub fn wire_base64(&self) -> &str {
         wire_payload(&self.data_ref)
     }
 
-    /// What this image costs the prompt, in vision tokens, or `None` when the header gave no size:
-    /// one token per 1024 pixels, capped at 4096. `None` rather than a guess, since a zero would
-    /// count a picture as free.
+    /// What this image costs the prompt, in vision tokens, or `None` when the header gave no
+    /// size: one token per 1024 pixels, capped at 4096. It lives on the type because the
+    /// accounting for a row that carries media is the one caller and it needs the number.
     pub fn vision_tokens(&self) -> Option<u64> {
         let (w, h) = (self.width?, self.height?);
         Some((u64::from(w) * u64::from(h) / 1024).min(4096))
     }
 
-    /// The one line a head draws in place of the bytes. Text and no data: a payload that inlined
-    /// the base64 would put a megabyte of it through every renderer and every `grep` over the log.
+    /// The one line a head draws in place of the bytes. Text, carrying no data at all: a
+    /// payload that inlined the base64 would put a megabyte of it through every renderer,
+    /// every `grep` over the log, and every scrollback.
     pub fn summary(&self) -> String {
         match (self.width, self.height) {
             (Some(w), Some(h)) => {
@@ -161,8 +160,9 @@ impl Media {
     }
 }
 
-/// The image type of these bytes, by magic number, with the path as a fallback. `None` means not an
-/// image this tree will hand a model, which includes a PDF: there is no PDF path to honour it.
+/// The image type of these bytes, by magic number, with the path as a fallback - a name is
+/// a claim and a magic number is not. `None` means not an image this tree will hand a model,
+/// which includes a PDF: there is no PDF path to put one on.
 pub fn sniff_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
     // **Magic first.** Every one of these is a fixed prefix, and none is ambiguous with another.
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -191,9 +191,9 @@ pub fn sniff_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Is this a COMPLETE image of the type it claims? -- judged structurally, per format, without
-/// decoding a pixel. A magic number says what a file is trying to be; this says whether there is a
-/// picture in it. Nothing here decodes, so it cannot judge the pixels.
+/// Is this a COMPLETE image of the type it claims? - judged structurally, per format,
+/// without decoding a pixel. A magic number says what a file is trying to be; this says
+/// whether there is a picture in it, which is the one thing a structural check can refuse.
 pub fn complete_image(mime: &str, bytes: &[u8]) -> bool {
     match mime {
         "image/png" => png_complete(bytes),
@@ -209,9 +209,9 @@ pub fn complete_image(mime: &str, bytes: &[u8]) -> bool {
     }
 }
 
-/// The same predicate for a picture a row already carries: a `data:` reference, decoded just far
-/// enough to ask [`complete_image`]. The whole payload is decoded, because two of the four formats
-/// state their completeness at the end.
+/// The same predicate for a picture a row already carries - a `data:` reference, decoded
+/// just far enough to ask [`complete_image`]. This is the half that lets a fixed binary
+/// reopen a session a broken one wedged, because the bad picture is still in the history.
 pub fn data_ref_is_image(data_ref: &str) -> bool {
     let Some((head, payload)) = data_ref.split_once(";base64,") else {
         return false;
@@ -282,8 +282,9 @@ fn webp_complete(bytes: &[u8]) -> bool {
     false
 }
 
-/// Width and height from the header, for the formats that carry them in a fixed place. `None` for
-/// one this does not parse rather than a zero: absent is not 0x0.
+/// Width and height from the header, for the two formats that carry them in a fixed place.
+/// `None` for a format this does not parse, which is honest rather than a zero: absent is
+/// not 0x0, and GIF and WebP are omitted rather than guessed.
 fn dimensions(mime: &str, bytes: &[u8]) -> (Option<u32>, Option<u32>) {
     match mime {
         // IHDR is the first chunk: 8 bytes of signature, 4 of length, 4 of type, then w and h.
@@ -331,8 +332,9 @@ fn jpeg_size(bytes: &[u8]) -> (Option<u32>, Option<u32>) {
     (None, None)
 }
 
-/// The `data:` prefix off a reference, or the reference unchanged when it has none. One rule, two
-/// carriers, because a second spelling of it is a second chance at the one failure with no symptom.
+/// The `data:` prefix off a reference, or the reference unchanged when it has none. One rule
+/// for two carriers, because a second spelling of "strip the prefix" is a second chance to
+/// fail with nothing but `Failed to load image or audio file` to show for it.
 pub fn wire_payload(data_ref: &str) -> &str {
     data_ref
         .split_once(";base64,")
@@ -340,8 +342,9 @@ pub fn wire_payload(data_ref: &str) -> &str {
         .unwrap_or(data_ref)
 }
 
-/// Every image in a transcript, in the order a prompt places them, ready for the wire: without the
-/// `data:` prefix, because a server substitutes pictures at the markers in that same order.
+/// Every image in a transcript, in the order a prompt places them, ready for the wire. A
+/// server substitutes `multimodal_data` at the markers in order, so this list and the
+/// renderer's markers have to be one sequence; base64 with no prefix, as the wire wants it.
 pub fn media_in_order(items: &[crate::TranscriptItem]) -> Vec<String> {
     let mut out = Vec::new();
     for item in items {
@@ -362,9 +365,9 @@ pub fn media_in_order(items: &[crate::TranscriptItem]) -> Vec<String> {
     out
 }
 
-/// Mark every picture in these rows as having reached a model, which only the engine can say
-/// because it builds the request. A tool result's media is marked; a user row's image part has no
-/// `Media` and so has no report today.
+/// Mark every picture in these rows as having reached a model. Called by the engine and
+/// nothing else, because it builds the request and so is the only thing that knows. A tool
+/// result's media is marked; a user row's image part has no `Media` to mark yet.
 pub fn mark_delivered(items: &mut [crate::TranscriptItem]) {
     for item in items {
         if let crate::TranscriptItem::ToolResult { media, .. } = item
@@ -472,14 +475,16 @@ mod tests {
         );
         assert!(m.summary().contains("320×200"), "{}", m.summary());
 
-        // A JPEG: SOI, an APP0 segment walked over, then SOF0 with the size. The segment lengths
-        // are the point -- a fixed offset would read the comment's bytes as dimensions.
+        // A JPEG: SOI, an APP0 segment to walk over, then SOF0 with the size. The segment
+        // lengths are the point - a fixed offset would read the comment's bytes as
+        // dimensions - and the fixture ends with EOI, because a JPEG without one is not a picture.
         let m = Media::of("a.jpg", &crate::testing::jpeg(800, 600)).expect("a jpeg");
         assert_eq!((m.width, m.height), (Some(800), Some(600)));
     }
 
-    /// The vision cost is the measured one, at the sizes the server was asked: one token per 1024
-    /// pixels, capped at 4096.
+    /// The vision cost is the measured one, at the sizes the server was actually asked: one
+    /// token per 1024 pixels, capped at 4096. Pinned here because the accounting defect needs
+    /// a number to be fixed with, not a paragraph.
     #[test]
     fn the_vision_cost_is_one_token_per_kilopixel_capped_at_4096() {
         let at = |w, h| {
@@ -513,8 +518,8 @@ mod tests {
         assert_eq!(no_size.vision_tokens(), None);
     }
 
-    /// `delivered` starts false and one call flips it. False is a fact and not a guess for a row
-    /// that predates the field, since no such row can carry a `Media` at all.
+    /// `delivered` starts false and one call flips it. False is a fact rather than a guess for
+    /// every row that predates the field, because no such row can carry a `Media` at all.
     #[test]
     fn an_image_is_not_delivered_until_something_sends_it() {
         let m = Media::of("a.png", &png(2, 2)).expect("a png");
@@ -565,8 +570,9 @@ mod tests {
         assert!(!m.summary().contains("0×0"), "{}", m.summary());
     }
 
-    /// A PNG with no `IDAT` is not an image, whatever its header says: these are the 33 bytes a
-    /// test wrote, that `read` called an image, and that a provider then refused on every turn.
+    /// A PNG with no `IDAT` is not an image, whatever its header says: these are the bytes
+    /// that a provider refused on every turn for ever, in a session no restart could revive,
+    /// because the row is history.
     #[test]
     fn a_png_with_no_idat_is_not_an_image() {
         let header = crate::testing::png_header_only(640, 480);

@@ -1,36 +1,34 @@
-//! Text a head did not author, made safe for a terminal.
+//! Text a head did not author, made safe for a terminal. A head writes content verbatim, so
+//! any control byte in it is an instruction to the operator's terminal: an OSC title renames
+//! their window, a CSI mode string turns the mouse wheel off for the session.
 //!
-//! Any control byte in content the head did not write is an instruction to the operator's terminal:
-//! an OSC renames their window, `ESC [ 2 J` clears it, a mode string turns the mouse wheel off. It
-//! lives here because both `letibot-sessionlog` and `letibot-ui` need it and neither can see the
-//! other.
-//!
-//! Call it where foreign text enters -- a payload, a model's prose, a tool's reason -- never on a
-//! string that may already carry the head's own escapes, or the head's own colour is stripped.
-//!
-//! [`without_control`] removes `\n` too, since it is a control character, and collapses a document
-//! onto one line; [`without_control_lines`] is the one that means lines. [`pieces`] is the one walk
-//! under both, reporting an SGR sequence rather than swallowing it.
+//! It lives here because both sides of a boundary need it and cannot see across themselves -
+//! `letibot-sessionlog` composes a display target, `letibot-ui` composes rows - and a second
+//! copy of a sequence parser is a duplicate that drifts. Call it where FOREIGN text enters,
+//! never on a string that may hold the head's own painted escapes.
 
 use std::borrow::Cow;
 use std::iter::Peekable;
 use std::str::Chars;
 
-/// One piece of a line, as a terminal would read it: the text it shows, or the SGR it obeys. The
-/// walk reports SGR rather than leaving it as garbage, and one parser serves both readers.
+/// One piece of a line, as a terminal would read it. The walk reports SGR rather than
+/// swallowing it, so a caller that wants colour interprets it and a caller that wants text
+/// takes the `Text` pieces; one parser, two readers, because the skipping rules are subtle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
     /// Text a reader sees. A control byte that was **not** part of a sequence has
     /// already become a space here, by [`without_control`]'s own rule and for its reason:
     /// dropping it would silently reflow the line.
     Text(String),
-    /// An SGR sequence's parameters, in order. A bare `ESC[m` and an empty parameter inside a
-    /// longer sequence are the `0` ECMA-48 says they are.
+    /// An SGR sequence's parameters, in order. A bare `ESC[m`, and an empty parameter inside
+    /// a longer sequence, are the `0` that ECMA-48 says they are, so a reader that understands
+    /// `0` needs no special case.
     Sgr(Vec<u16>),
 }
 
-/// The line split into the two things a terminal does with it: text it shows and SGR it obeys.
-/// Everything else is removed, and a sequence this cannot read as SGR is not reported as one.
+/// The line, split into the two things a terminal does with it: text it shows and SGR it
+/// obeys. A sequence this cannot read as SGR is not reported as one, but a well-formed
+/// sequence still goes as one thing and nothing of its body is left on the line as text.
 pub fn pieces(line: &str) -> Vec<Piece> {
     let mut out: Vec<Piece> = Vec::new();
     let mut text = String::new();
@@ -87,17 +85,16 @@ fn flush(out: &mut Vec<Piece>, text: &mut String) {
     }
 }
 
-/// Is there anything in here for the sanitiser to do? Exact rather than conservative: the slow path
-/// only changes a string when it meets a control character, so a string with none comes out
-/// identical and asking first risks nothing.
+/// Is there anything in here for the sanitiser to do? Exact rather than conservative: the
+/// slow path only ever changes a string when it meets a control character, so asking first
+/// is free of any risk of skipping work that was needed.
 fn clean(s: &str) -> bool {
     !s.chars().any(char::is_control)
 }
 
-/// One line, with any escape sequence wholly removed and any other control byte replaced by a
-/// space. Removal is the honest arithmetic: a well-formed sequence occupies no columns, so removing
-/// it leaves the count where a terminal measured it, while a space would add one and corrupt the
-/// wrap.
+/// One line, with any escape sequence wholly removed and any other control byte replaced by
+/// a space. Removal is the honest arithmetic: a well-formed sequence occupies no columns, so
+/// removing it keeps the wrap intact where a space would add one.
 pub fn without_control(line: &str) -> String {
     if clean(line) {
         return line.to_string();
@@ -111,8 +108,9 @@ pub fn without_control(line: &str) -> String {
     out
 }
 
-/// A document: the same, line by line, so its newlines survive. It borrows when it can, and it
-/// usually can, because this runs once per model delta and prose has no control character in it.
+/// A document: the same, line by line, so its newlines survive. It borrows when it can,
+/// because it is called once per model delta and a token of ordinary prose has no control
+/// character in it, so the common case must not allocate.
 pub fn without_control_lines(s: &str) -> Cow<'_, str> {
     if clean(s) {
         return Cow::Borrowed(s);
@@ -125,9 +123,9 @@ pub fn without_control_lines(s: &str) -> Cow<'_, str> {
     )
 }
 
-/// The parameters of a `CSI` sequence, with the introducer consumed, and only when it is an SGR:
-/// final byte `m`, every parameter a decimal number. `None` is not a failure -- a mode string is not
-/// a colour and is removed.
+/// The parameters of a `CSI` sequence, with the introducer already consumed. Returns them
+/// only when the sequence is an SGR - final byte `m`, every parameter a decimal number -
+/// and `None` otherwise, having consumed exactly the bytes a skip would have.
 fn csi(it: &mut Peekable<Chars<'_>>) -> Option<Vec<u16>> {
     let mut body = String::new();
     while it.peek().is_some_and(|c| ('\u{20}'..='\u{3f}').contains(c)) {
@@ -201,8 +199,9 @@ mod tests {
         }
     }
 
-    /// Removing a sequence must not change what a wrapper counts, which is why it is a removal and
-    /// not a space: a well-formed sequence measures no columns.
+    /// Removing a sequence must not change what a wrapper counts, which is why this is a
+    /// removal rather than a space: a well-formed sequence measures no columns, so a space
+    /// where the terminal measured none would corrupt the wrap.
     #[test]
     fn removing_a_sequence_leaves_the_bytes_and_the_text_behind_it() {
         let hostile = "a\u{1b}[31mred\u{1b}[0m \u{1b}[8mdim \u{1b}[2Jclear";
@@ -228,9 +227,9 @@ mod tests {
         assert_eq!(without_control("a\u{9b}31mb"), "ab");
     }
 
-    /// `pieces` reports a colour and still removes everything else. A sequence goes as one thing: an
-    /// SGR comes back as its parameters, a mode string or an OSC is removed, and a parameter that is
-    /// not a decimal number makes the whole sequence a non-SGR.
+    /// `pieces` reports a colour and still removes everything else. The rule that has to
+    /// survive is the old one restated for a reader that keeps something: a sequence goes as
+    /// one thing, and a parameter that is not a decimal number makes the whole of it a non-SGR.
     #[test]
     fn pieces_reports_a_colour_and_still_removes_everything_else() {
         let line = "a\u{1b}[01;34msrc\u{1b}[0m \u{1b}[2J\u{1b}[?1002h \u{1b}]0;t\u{7} \u{1b}[?25m \u{9b}31m\u{9c} \u{7f}b";

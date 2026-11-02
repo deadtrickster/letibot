@@ -1,32 +1,11 @@
-//! Onboarding: whose token this is, and where it came from.
+//! Onboarding: whose token this is, and where it came from. A seat's credential
+//! comes from `--flowy-token-file`, `$FLOWY_TOKEN`, or the files `flowy mint`
+//! and the seat brief leave under `~/.config/flowy/`.
 //!
-//! Two flows, and the second is the one that runs on a machine that has been
-//! seated already:
-//!
-//! 1. **Manual.** Every field given: `--flowy-addr`, `--flowy AGENT`,
-//!    `--flowy-token-file` (or `$FLOWY_TOKEN`). Nothing is looked up.
-//! 2. **The usual path.** `flowy mint` leaves a seat's token at
-//!    `~/.config/flowy/agents/<name>` and the seat brief leaves
-//!    `~/.config/flowy/env-<name>` holding `FLOWY_ADDR`, `FLOWY_AGENT` and
-//!    `FLOWY_TOKEN`. Given a name — or, when exactly one seat is on the machine,
-//!    given nothing — both are read.
-//!
-//! # What this refuses, and why it is the interesting part
-//!
-//! **`~/.config/flowy/token` is never read.** That file is the OPERATOR'S own
-//! credential; flowy's own CLI falls through to it with a warning, and the seat
-//! brief says in bold that everything a seat sends goes out under the seat's
-//! name. A harness that could speak as the operator by omission would be the
-//! failure the brief calls a lie the whole fleet acts on. So there is no
-//! fallback: no seat, no flowy.
-//!
-//! **Two seats and no name is a refusal, not a guess.** A seat is an identity.
-//! Picking one because it sorted first would attach the wrong reader to the
-//! wrong mind, and every message to the other name would go quietly unheard —
-//! the roster showing a seat attached while nobody is behind it.
-//!
-//! Every resolved value carries its [`Source`], so the daemon's disclosure is a
-//! reading of where the credential came from rather than a claim that it exists.
+//! `~/.config/flowy/token` is never read: that is the OPERATOR'S own credential,
+//! and everything a seat sends goes out under the seat's name. Two seats and no
+//! name is a refusal rather than a guess - picking one because it sorted first
+//! attaches the wrong reader to the wrong mind.
 
 use std::path::{Path, PathBuf};
 

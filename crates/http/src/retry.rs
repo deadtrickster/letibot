@@ -1,40 +1,22 @@
-//! What a failed provider call is worth: the tree's one answer to what is retryable, and for how
-//! long.
+//! What a failed provider call is worth: the tree's one answer to what is retryable,
+//! and for how long. The rule was spread over four private functions in the daemon,
+//! each answering a slightly different question about the same failure, and the
+//! questions drifted - so it lives here, in the leaf crate that owns [`HttpError`].
 //!
-//! The rule lives in this leaf crate because every caller reaches it without a cycle: the turn
-//! engine already turns its backend's failures into [`HttpError`], and the daemon already matches
-//! on it. A rule spread over several private predicates drifts, and the answers it gives about one
-//! failure stop agreeing.
-//!
-//! [`Class::Transport`] means no answer was ever reached - DNS, a refused or reset connection, a
-//! timeout, an answer that stopped half way - so the same bytes may be sent again.
-//! [`Class::TryAgain`] means the provider answered *not now*, and [`TRY_AGAIN`] is the whole list.
-//! [`Class::Refused`] means it answered *no*: the retry's premise is that it sends exactly the
-//! bytes this one did, which is what makes it safe and equally what makes it pointless here.
-//!
-//! A status outside [`TRY_AGAIN`] is deliberately `Refused`, including the 5xx the list leaves
-//! out. Widening it to `code >= 500` spends the operator's attention on a permanent answer, and a
-//! code nobody has argued is transient does not get to. Adding one is a line in that table.
-//!
-//! [`Policy::standard`] retries five times, doubling from a second: six calls and 31 seconds of
-//! waiting in the worst case. 31 because a llama.cpp cold reload is the longest legitimate
-//! silence the ladder exists for, and it announces itself as a `503`: a shorter ladder would fail
-//! the case it was written for. A caller that knows the endpoint is not there sets zero retries
-//! and is told at once.
-//!
-//! Every ending says what was tried, how many times and for how long ([`Ladder::ending`]), because
-//! "nothing was recorded" does not say whether the daemon tried once or six times.
+//! Three classes: `Transport` (no answer reached, so the same bytes may be sent
+//! again), `TryAgain` (the provider saying not now, which the ladder exists for) and
+//! `Refused` (the provider saying no, and a retry would be refused identically).
 
 use std::time::Duration;
 
 use crate::HttpError;
 
-/// The statuses a provider uses to say *not now*, and the whole of the list. `408` is here with the
-/// 5xx and the `429` because the server is saying the request did not get through this time; a `429`
-/// whose body names money is [`Policy::states_a_refusal`]'s exception.
+/// The statuses a provider uses to say not now, and the whole of the list. `408` is
+/// here with the 5xx and the `429` because the server is saying the request did not
+/// get through this time; a `429` naming money is [`Policy::states_a_refusal`]'s.
 pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504];
 
-/// The default number of retries: calls after the first. See [`Policy::standard`].
+/// **The default number of retries** — calls after the first. See [`Policy::standard`].
 pub const STANDARD_RETRIES: u32 = 5;
 
 /// What one failure is, in the only terms a retry can use.
@@ -54,7 +36,7 @@ impl Class {
         !matches!(self, Class::Refused)
     }
 
-    /// The class in the words a sentence reads with: `transport`, `try again`, `refused`.
+    /// The class in the words a sentence reads with — `transport`, `try again`, `refused`.
     pub fn name(self) -> &'static str {
         match self {
             Class::Transport => "transport",
@@ -64,8 +46,9 @@ impl Class {
     }
 }
 
-/// The rule: how many times, how far apart, and which failures. Cheap to copy, since the daemon
-/// builds one per turn and a test builds [`Policy::none`].
+/// The rule: how many times, how far apart, and which failures. Cheap to copy - the
+/// daemon builds one per turn from `Config::http_retries`, and a test builds
+/// [`Policy::none`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
     retries: u32,
@@ -78,13 +61,13 @@ impl Policy {
         Policy { retries }
     }
 
-    /// No retry at all, for a caller that already knows the endpoint is not there.
+    /// **No retry at all** — a caller that already knows the endpoint is not there.
     pub const fn none() -> Self {
         Policy::new(0)
     }
 
-    /// The daemon's default: [`STANDARD_RETRIES`] calls after the first, doubling from a second.
-    /// See the module docs for why 31 seconds.
+    /// **The daemon's default**: [`STANDARD_RETRIES`], doubling from a second. See the module
+    /// docs for why 31 seconds and why half of what it was.
     pub const fn standard() -> Self {
         Policy::new(STANDARD_RETRIES)
     }
@@ -93,14 +76,14 @@ impl Policy {
         self.retries
     }
 
-    /// Which of the three classes this failure is in.
+    /// **Which of the three classes this failure is in.**
     pub fn class(&self, e: &HttpError) -> Class {
         match e {
             HttpError::Io(_) | HttpError::Malformed(_) => Class::Transport,
             HttpError::Status { code, body } => {
                 if Self::states_a_refusal(body) {
-                    // A 429 or a 400 whose body says the account cannot pay. The status is not
-                    // the instrument: the same 429 means both *not yet* and *not ever until
+                    // A 429 (or a 400) whose body says the account cannot pay. The status is not
+                    // the instrument here: the same 429 means both *not yet* and *not ever until
                     // somebody tops up*, and only the body knows which.
                     Class::Refused
                 } else if TRY_AGAIN.contains(code) {
@@ -112,8 +95,9 @@ impl Policy {
         }
     }
 
-    /// Is this worth taking the call again, and how long to wait first? `failed` is how many calls
-    /// have already failed, and `None` means no: the class refused it or the ladder is spent.
+    /// Is this worth taking the call again, and how long to wait first? `failed` is
+    /// how many calls have already failed - `0` on the first. `None` means no: the
+    /// class refused it, or the ladder is spent.
     pub fn after(&self, e: &HttpError, failed: u32) -> Option<Duration> {
         if failed >= self.retries || !self.class(e).retryable() {
             return None;
@@ -121,16 +105,16 @@ impl Policy {
         Some(Duration::from_secs(1u64 << failed.min(31)))
     }
 
-    /// Did the MODEL refuse, rather than the wire failing? Not the same question as *is this worth
-    /// waiting for*: a refused connection may mean the endpoint is restarting, while the model is only
-    /// out on a `429` or a 5xx.
+    /// Did the MODEL refuse, rather than the wire failing? A connection refused or a
+    /// half answer is not one, because the endpoint may be restarting and the model
+    /// behind it may be well. Read by the daemon's `[fallback]`, which MOVES a session.
     pub fn the_model_refused(e: &HttpError) -> bool {
         matches!(e, HttpError::Status { code, .. } if *code == 429 || *code >= 500)
     }
 
-    /// The status, when the provider refused what was SENT: `4xx` except the two about timing. A
-    /// `400`/`401`/`403`/`404` is a request a model read and said no to, so it is the one class a
-    /// switch-back notice may cite.
+    /// The status, when the provider refused what was SENT - `4xx` except the two
+    /// about timing. A `400`/`401`/`403`/`404` is a request a model read and said no
+    /// to, so it is the one class a `switch_back_notice` may cite.
     pub fn refusal_of_what_was_sent(e: &HttpError) -> Option<u16> {
         match e {
             HttpError::Status { code, .. }
@@ -142,9 +126,9 @@ impl Policy {
         }
     }
 
-    /// A refusal no retry can lift: the account behind the key cannot pay for the call. Narrow on
-    /// purpose, to phrases that name money, since a bare `quota` is the transient thing the ladder
-    /// exists for.
+    /// A refusal no retry can lift: the account behind the key cannot pay. Only
+    /// phrases naming MONEY, because a bare `quota` is the transient thing the ladder
+    /// exists for, and swallowing it would stop retrying the case it was written around.
     pub fn states_a_refusal(body: &str) -> bool {
         const FILLED: &[&str] = &[
             "insufficient balance",
@@ -166,8 +150,9 @@ impl Policy {
         FILLED.iter().any(|p| b.contains(p))
     }
 
-    /// What failed, in the few words the ending sentence needs. `name resolution failed` is the one
-    /// that pays for this: the io error behind it is a sentence about lookups.
+    /// What failed, in the few words the ending sentence needs. `name resolution
+    /// failed` is the one that pays for it: the operator's report was a full `io:`
+    /// chain whose first four words were the whole story.
     pub fn what(e: &HttpError) -> &'static str {
         match e {
             HttpError::Io(err) => {
@@ -191,7 +176,7 @@ impl Policy {
                     }
                 }
             }
-            // A 2xx whose body did not arrive whole: the likeliest cause is a server going down
+            // A 2xx whose body did not arrive whole — the likeliest cause is a server going down
             // mid-answer, which is the same story as a reset.
             HttpError::Malformed(_) => "the answer did not arrive whole",
             HttpError::Status { code, body } => {
@@ -207,8 +192,9 @@ impl Policy {
     }
 }
 
-/// One run of the ladder, and the sentence it ends with. The count and the waiting are recorded here
-/// rather than at the failure site because nothing else keeps them.
+/// One run of the ladder, and the sentence it ends with. The count and the waiting
+/// are what [`Ladder::ending`] says when the turn finally ends, and nothing else
+/// records them, so a head cannot otherwise say whether the daemon tried once or six.
 #[derive(Debug, Clone)]
 pub struct Ladder {
     policy: Policy,
@@ -229,8 +215,9 @@ impl Ladder {
         self.policy
     }
 
-    /// One call failed: the wait before the next one, or `None` when the ladder has nothing left.
-    /// The wait is added to what this ladder reports as having waited, since the caller sleeps it.
+    /// One call failed. Returns the wait before the next one, or `None` when the
+    /// ladder has nothing left - the answer for a refusal on the very first call. The
+    /// wait is added to what this ladder reports, because the caller sleeps it next.
     pub fn failed(&mut self, e: &HttpError) -> Option<Duration> {
         let wait = self.policy.after(e, self.failed);
         self.failed += 1;
@@ -250,8 +237,9 @@ impl Ladder {
         self.waited
     }
 
-    /// What was tried and how many times: a refusal with its single call, a ladder switched off saying
-    /// so, or one that ran out with the count, the wait and the provider's own words.
+    /// What was tried and how many times - the sentence the ending carries. It says
+    /// the one thing the failure alone cannot: whether the provider refused at once,
+    /// the ladder was switched off, or it ran out after so many tries and so long.
     pub fn ending(&self, e: &HttpError) -> String {
         let what = Policy::what(e);
         if !self.policy.class(e).retryable() {
@@ -279,7 +267,7 @@ fn plural(n: u32) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// `0s`, `31s`, `2m 03s` - the same words the daemon's outage row uses, for the same reason.
+/// `0s`, `31s`, `2m 03s` — the same words `harnessd`'s outage row uses, for the same reason.
 fn span(d: Duration) -> String {
     let secs = d.as_secs();
     match secs {
@@ -321,7 +309,7 @@ mod tests {
         ))
     }
 
-    /// The three classes, over the statuses the policy names.
+    /// **The three classes, over the statuses the brief names.**
     #[test]
     fn the_classes_are_the_statuses_the_policy_states() {
         let p = Policy::standard();
@@ -343,7 +331,7 @@ mod tests {
         assert_eq!(p.class(&status(501)), Class::Refused);
     }
 
-    /// `408` waits and does not move a session: the one that looks like a 5xx and is not.
+    /// **`408` waits and does not move a session** — the one that looks like a 5xx and is not.
     #[test]
     fn a_server_that_waited_too_long_for_us_is_waited_for() {
         let p = Policy::standard();
@@ -355,7 +343,7 @@ mod tests {
         );
     }
 
-    /// The six-times 429: a refusal that names money is one call, and a rate limit is not.
+    /// **The six-times 429**: a refusal that names money is one call, and a rate limit is not.
     #[test]
     fn a_429_that_names_money_is_refused_and_a_rate_limit_is_not() {
         let p = Policy::standard();
@@ -390,7 +378,7 @@ mod tests {
         assert!(p.after(&limit, 0).is_some());
     }
 
-    /// The ladder's numbers, and the cap is a cap.
+    /// **The ladder's numbers**, and the cap is a cap.
     #[test]
     fn the_ladder_doubles_from_a_second_and_runs_out() {
         let p = Policy::standard();
@@ -404,16 +392,16 @@ mod tests {
             "the cap is a cap: {} calls and no more",
             p.retries() + 1
         );
-        // `0` is none, and `1` is one: the field is named for RETRIES, and the arithmetic has
+        // `0` is none, and `1` is one — the field is named for RETRIES, and the arithmetic has
         // to agree with the name.
         assert!(Policy::none().after(&status(503), 0).is_none());
         assert!(Policy::new(1).after(&status(503), 0).is_some());
         assert!(Policy::new(1).after(&status(503), 1).is_none());
     }
 
-    /// The budget is the caller's: the ladder is right for a server that might be reloading and wrong
-    /// for one that is not there, and only the caller knows which. The premise is asserted first, or
-    /// this passes on a build that stopped retrying.
+    /// The budget is the caller's, and `0` means the first failure is the answer: the
+    /// ladder is right for a server that might be reloading and wrong for one that is
+    /// not there. The premise is asserted first so a build that stopped retrying fails.
     #[test]
     fn one_attempt_means_no_retry_and_the_default_still_retries() {
         let e = refused();
@@ -429,15 +417,16 @@ mod tests {
         assert!(ladder.failed(&e).is_none());
         assert_eq!(ladder.attempts(), 1, "one call, and no waiting after it");
         assert_eq!(ladder.waited(), Duration::ZERO);
-        // A budget in between is honoured as itself, so this is a number and not a boolean
-        // wearing one: the field is named for RETRIES, so `1` is one call after the first.
+        // **A budget in between is honoured as itself**, so this is a number and not a boolean
+        // wearing one: the field is named for RETRIES, and `1` is one call after the first.
         assert!(Policy::new(1).after(&e, 0).is_some(), "one retry is one");
         assert!(Policy::new(1).after(&e, 1).is_none(), "and only one");
         assert!(Policy::new(3).after(&e, 2).is_some());
         assert!(Policy::new(3).after(&e, 3).is_none());
     }
 
-    /// A turn that never reached the network is tried before it is called a failure.
+    /// **A turn that never reached the network is tried before it is called a failure** — the
+    /// report this module opens with.
     #[test]
     fn a_name_that_did_not_resolve_is_tried_again() {
         let p = Policy::standard();
@@ -451,7 +440,7 @@ mod tests {
         );
     }
 
-    /// The ending sentence, in the two shapes the operator reads.
+    /// **The ending sentence, in the two shapes the operator reads.**
     #[test]
     fn the_ending_names_the_attempts_or_says_there_were_none() {
         // A ladder that ran out.

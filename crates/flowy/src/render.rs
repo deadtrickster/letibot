@@ -1,8 +1,11 @@
-//! A delivery as the sentence the model is given.
+//! A delivery as the sentence the model is given. The firing's `why` is what
+//! reaches the transcript, and it is where "monitors and timers which pollute the
+//! context" is paid or not: one message costs its own words plus one header line,
+//! and nothing the node already said is repeated.
 //!
-//! One message costs its own words plus one header line, which carries the room and project (two rooms
-//! share a name), who and whether a person, the addressee by name, the message id and thread, the
-//! node's clock beside the message's, and the quote when there is one.
+//! Each header field is there because a reply goes wrong without it: two rooms
+//! share a name, the sender's kind decides whether this needs answering, the id is
+//! what a citation names, and the node's clock is the one time that can be checked.
 
 use crate::attention::Identity;
 use crate::client::Event;
@@ -98,9 +101,9 @@ pub fn message(e: &Event, me: &Identity) -> String {
     s
 }
 
-/// A batch: every message, then the count of what went past, then the node's clock. What the attention
-/// table filtered here and what the node filtered are both said, because "busy and none of it was for
-/// me" is not "silent".
+/// A batch: every message, then the count of what went past, then the node's
+/// clock. `local_skipped` is what the attention table filtered here,
+/// `server_skipped` what the node filtered: "busy and none for me" is not "silent".
 pub fn batch(
     seat: &str,
     rendered: &[String],

@@ -1,30 +1,32 @@
 //! The conversation record: what the harness stores, and what a dialect renders.
 //!
-//! Deliberately tiny, and with no dependency on a vocab, a model, an FFI or a running server: the
-//! dialect crate which renders and the token core which tokenizes and persists both depend on it,
-//! and they must be buildable independently of each other.
+//! This crate is deliberately tiny and has no dependency on a vocab, a model, an FFI
+//! or a running server. Both the dialect crate (which renders) and the token core
+//! (which tokenizes and persists) depend on it, and they must be buildable
+//! independently of each other.
 
 use serde::{Deserialize, Serialize};
 
-/// Text a head did not author, made safe for a terminal. Here because both sides of the log and
-/// wire boundary need it and neither can see the other.
+/// **Text a head did not author, made safe for a terminal** (§3.1) — here because both
+/// sides of the log/wire boundary need it and neither can see the other.
 pub mod media;
 pub mod sanitize;
-/// Fixtures that are real images. Public for the reason `letibot_sessionlog::testing` is: the
-/// crates that need a picture in a test are not this one.
+/// **Fixtures that are real images** — public for the reason `letibot_sessionlog::testing` is: the
+/// crates that need a picture in a test are not this one. See the module for what it replaced.
 pub mod testing;
 
-/// What a fence that cites code looks like. The daemon reads the lines and the head fills the
-/// fence, so the two spellings of that fence and the rule for a block that is never closed live
-/// here, once.
+/// **What a fence that cites code looks like** — the daemon reads the lines and the head fills
+/// the fence, so the two spellings of that fence (an empty block, and the one-liner) and the
+/// rule for a block that is never closed live here, once. Same reason as `media` above.
 pub mod citation;
 
-/// Cutting text to a bound, once: a payload, a queue row, a card and a status line all cut, and a
-/// second copy of the arithmetic is a second place a character can be split.
+/// **Cutting text to a bound**, once: a payload, a queue row, a card and a status line all cut,
+/// and a second copy of the arithmetic is a second place a character can be split.
 pub mod text;
 
-/// Who asked for a tool call. An enum rather than an `Option<String>` because this tree reaches
-/// for an enum on a fact that can grow: a second origin is a variant, not a second field.
+/// Who asked for a tool call. An enum rather than a `bool` because a second origin (a
+/// peer agent, a seat, a scheduled job) is a variant rather than another field on a
+/// struct that already has one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallOrigin {
@@ -34,11 +36,9 @@ pub enum CallOrigin {
     Operator { who: String },
 }
 
-/// One entry in the conversation, in the order the model produced or consumed it.
-///
-/// Reasoning is a sibling of `Assistant` rather than a field on it, because the interleaving is
-/// what stays byte-stable across turns and a field would force last-write-wins. `User`'s
-/// `speaker` says whether the operator typed the words or the session appended them.
+/// Who a `User` row's words came from: the operator typed it, or this session appended
+/// it. The vocabulary is `letibot_tools::authorise::Speaker`'s, repeated rather than
+/// imported because `letibot-tools` depends on this crate and not the reverse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Speaker {
@@ -63,9 +63,12 @@ impl Speaker {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-// **A box would change the wire type's shape for every matcher in the tree**, so it is the
-// operator's decision rather than a tidy-up smuggled into a red gate.
+/// One entry in the conversation, in the order the model produced or consumed it.
+/// Reasoning is a SIBLING of `Assistant`, not a field on it: a field forces
+/// last-write-wins across several blocks and loses the interleaving a prefix cache needs.
 #[allow(clippy::large_enum_variant)]
+// The box would change the wire type's shape for every matcher in the tree, and that is
+// the operator's decision rather than a tidy-up smuggled into a red gate.
 pub enum TranscriptItem {
     System {
         text: String,
@@ -73,18 +76,18 @@ pub enum TranscriptItem {
     },
     User {
         parts: Vec<UserPart>,
-        /// Who these words came from. Everything a session appends is a `User` item, so without
-        /// this a head drew a job's completion exactly as it drew the person typing. Absent reads
-        /// as `Operator`, which is what was drawn for it anyway, so no version bumps.
+        /// Who these words came from. Everything this session appends is a `User` item -
+        /// steering, a salvage notice, a job settlement - so without this a head draws a
+        /// job's completion exactly as it draws the person typing.
         #[serde(default)]
         speaker: Speaker,
     },
     Reasoning {
         text: String,
         field: ReasoningField,
-        /// The operator stopped this thought, or it ran out of room: a DRAFT abandoned, not an
-        /// answer cut. A draft is the one thing downstream depends on nothing, so it is the one
-        /// thing a renderer may decline to replay. Absent on the wire means `false`.
+        /// The operator stopped this thought, or it ran out of room. Not the same claim as
+        /// `Assistant::truncated`, which marks an answer that was cut: a draft is the one
+        /// thing a renderer may decline to replay, and replaying a loop teaches the model it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
     },
@@ -103,24 +106,25 @@ pub enum TranscriptItem {
         name: String,
         outcome: ToolOutcome,
         payload: String,
-        /// Both sides of the file a call changed, bounded to what differs: the raw material of a
-        /// diff. It lives on the row because the row is the durable artifact, and it is
-        /// display-only, so the tokens a row renders to do not move.
+        /// Both sides of the file an edit changed, bounded to what differs: the raw material
+        /// of the two-panel diff, on the row because a head attaching after a restart is
+        /// handed rows rather than events. Display-only - the prompt builders read `payload`.
         #[serde(default)]
         edit: Option<ToolEditExcerpt>,
-        /// Who asked for this call: a head labels a card from the nearest preceding assistant row,
-        /// which cannot see a call nobody proposed, so an operator's own `web_fetch` would be drawn
-        /// as the model's. `None` is a call the model proposed, which is every row before the field.
+        /// Who asked for this call. A head labels a tool card from the nearest preceding
+        /// assistant call, which cannot see a call nobody proposed, so an operator-run call
+        /// would be drawn as the model's. `None` is a call the model proposed.
         #[serde(default)]
         origin: Option<CallOrigin>,
-        /// Bytes this call read that are not text, an image today: on the row because a prompt is
-        /// rebuilt from rows, and an image that reached the model once would be a picture it saw and
-        /// then forgot. The data URI is stored inline, which is a real cost and opencode's too.
+        /// Bytes this call read that are not text, stored inline so a prompt rebuilt from the
+        /// row still carries the picture: one that reached the model once and not the next
+        /// round would be a picture the model saw and then forgot.
         #[serde(default)]
         media: Option<media::Media>,
     },
-    /// A zero-width delimiter: it renders to nothing. It exists only so per-segment decay and
-    /// compaction have something to address later.
+    /// A zero-width delimiter that renders to nothing, kept so per-segment decay and
+    /// user-assisted compaction have something to address later. If those never arrive it
+    /// has cost one row and zero rendered bytes.
     SegmentMark {
         segment_id: String,
         label: String,
@@ -130,9 +134,9 @@ pub enum TranscriptItem {
 }
 
 impl TranscriptItem {
-    /// Roughly how many bytes of text this row carries, which is what a size bound needs: the
-    /// strings a reader would see and no structure. One definition, because the daemon bounds its
-    /// view by it and the head decides by it whether a transcript is too big to walk.
+    /// Roughly how many bytes of text this row carries: a size bound's input, not a
+    /// serialisation, so it counts the strings a reader would see and ignores structure.
+    /// One definition, because two copies of "what counts as size" would drift.
     pub fn bytes(&self) -> usize {
         let parts = |parts: &[UserPart]| -> usize {
             parts
@@ -165,9 +169,9 @@ impl TranscriptItem {
     }
 }
 
-/// The before and after of a file-editing call, bounded to what differs: the raw material of a
-/// diff. One definition, because the tool crate and the session log cannot name each other and two
-/// copies of a nine-field struct is how copies drift.
+/// The before/after of a file-editing call, bounded to what differs. One definition, here,
+/// because `letibot-tools` builds it and `letibot-sessionlog` carries it and neither can
+/// name the other, so two copies of a nine-field struct is how copies drift.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolEditExcerpt {
     /// Relative to the session root, as the head should label it.
@@ -210,9 +214,9 @@ pub enum SegmentEdge {
     Close,
 }
 
-/// Which wire field the model expects its prior reasoning replayed into. Getting this wrong does
-/// not error: every prompt then diverges from its own cache entry at the first assistant turn, so
-/// the prefix cache never hits and the entry count grows without bound.
+/// Which wire field the model expects its own prior reasoning replayed into. Getting this
+/// wrong does not error: every prompt diverges from its cache entry at the first assistant
+/// turn, so the prefix cache never hits and the entry count grows without bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningField {
@@ -231,8 +235,9 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// How a command came to be running in the background rather than inline: the model asked, the
-/// runtime decided, or a person decided. The first two differ in whether the model already knows.
+/// How a command came to be running in the background rather than inline. Three ways in and
+/// no fourth, because the distinction decides whether the model already knows and whether
+/// there is somebody to attribute it to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "how", rename_all = "snake_case")]
 pub enum Backgrounding {
@@ -261,12 +266,9 @@ impl Backgrounding {
     }
 }
 
-/// A closed vocabulary: adding a variant is a deliberate act.
-///
-/// `Abstained` is not a flavour of `Ok`, because collapsing "no answer" into "success with an empty
-/// payload" makes a model's confident answer over an empty retrieval invisible. `Backgrounded` is
-/// its own variant for the same reason: every other outcome says something false about a command
-/// that is still running and still recoverable.
+/// A closed vocabulary: adding a variant is a deliberate act. `Abstained` is not a flavour of
+/// `Ok`, and `Backgrounded` is not `Ok` with an empty payload either - each names a state the
+/// model would otherwise conclude something false about.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ToolOutcome {
@@ -355,8 +357,8 @@ mod tests {
 
     #[test]
     fn truncated_survives_a_round_trip() {
-        // The transcript's own record that the kept text did not finish naturally. Dropped on the
-        // way out, the row would read back as a completed turn.
+        // The transcript's own record that kept text or a kept partial did not finish
+        // naturally. Dropped on the way out, the row would read back as a completed turn.
         let item = TranscriptItem::Assistant {
             text: "the part that made it out".into(),
             tool_calls: vec![],
@@ -413,8 +415,8 @@ mod tests {
 
     #[test]
     fn a_row_written_before_the_edit_existed_reads_as_none() {
-        // Rows the store already holds predate the field, and `#[serde(default)]` is what lets them
-        // still load: a resumed daemon must not refuse a session it served yesterday.
+        // Rows the store already holds predate the field, and `#[serde(default)]` is what lets
+        // them still load - so a resumed daemon does not refuse a session it served yesterday.
         let item = TranscriptItem::ToolResult {
             call_id: "c1".into(),
             name: "edit".into(),
@@ -431,9 +433,9 @@ mod tests {
         assert_eq!(back, item);
     }
 
-    /// An operator-run call round-trips with the identity, so the row and the adjudication name the
-    /// actor the same way; a row written before the field reads as `None`, which is *the model
-    /// proposed it* and not *nobody did*.
+    /// Who asked for the call, and that an old row says `None`. An operator-run call
+    /// round-trips with the identity so the row and its adjudication name the actor the same
+    /// way; a row written before the field reads as "the model proposed it", not "nobody did".
     #[test]
     fn an_operator_run_call_carries_its_identity_and_an_old_row_reads_as_the_models() {
         let mine = TranscriptItem::ToolResult {
@@ -516,8 +518,9 @@ mod tests {
         assert!(operator.contains("deadtrickster"), "{operator}");
     }
 
-    /// A `User` row with no `speaker` reads as the operator and an `agent` row does not. The absent
-    /// case says nothing about who spoke, so the honest reading is the one a head already drew.
+    /// A `User` row with no `speaker` reads as the operator, and an `agent` row does not. The
+    /// absent case is the honest reading, and a third unknown value would put a new word on
+    /// every old row for no gain.
     #[test]
     fn a_user_row_says_who_spoke_and_an_old_row_reads_as_the_operator() {
         let wire = r#"{"type":"user","parts":[{"kind":"text","text":"hi"}]}"#;
