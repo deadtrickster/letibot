@@ -23,10 +23,10 @@ Every failure measured has a name in data systems:
 | three misdiagnoses in one session | no EXPLAIN, no per-stage metrics |
 
 Two are more than analogy. **Multi-head compaction with different decay rates is leveled
-compaction** - recent data fine-grained in small levels, older merged into coarser ones in the
-background - which does not make the stall faster, it removes the category, at the usual price of
-fidelity lost to re-summarisation. **Per-stage observability is EXPLAIN**: "why did this prefill
-144,436 tokens with zero cache hits?" is a query-plan question.
+compaction**: fine-grained recent levels, older ones merged into coarser ones in the background,
+which removes the stall rather than shortening it, at the price of fidelity lost to re-summarisation.
+**Per-stage observability is EXPLAIN**: "why did this prefill 144,436 tokens with zero cache hits?"
+is a query-plan question.
 
 Where the analogy stops: attention is position-dependent through RoPE, so KV "pages" are not freely
 relocatable the way database pages are.
@@ -35,10 +35,10 @@ relocatable the way database pages are.
 
 From a harness built on OpenAI-shaped requests against GLM-5.3-Flash on llama.cpp: **reasoning was
 not replayed**, so every turn diverged from its own cache entry and entries grew without bound -
-replaying it moved `f_keep` p10 from **0.000 to 0.999**, all of the gain in the tail; **compaction
-cold-prefilled by construction** at 144,436 tokens, cache hit 0, about 13 minutes to the first
-summary token; **the output cap was silent**, so a subagent that spent its budget thinking returned an
-empty result recorded as success; and **the renderer was quadratic**, re-parsing markdown per delta.
+replaying it moved `f_keep` p10 from **0.000 to 0.999**; **compaction cold-prefilled by
+construction**, at 144,436 tokens and cache hit 0, about 13 minutes to the first summary token; **the
+output cap was silent**, so a subagent that spent its budget thinking returned an empty result
+recorded as success; and **the renderer was quadratic**, re-parsing markdown per delta.
 
 Nobody surveyed has warm compaction on the default path; only one enforces prefix stability with a
 test.
@@ -77,8 +77,8 @@ to isolate the agent and spare me hitting enter."*
 
 A **run** is one microVM and everything created for it; lifetime is a cgroup subtree, not a process
 tree, "because a process tree cannot express what a run owns" - `cgroup.kill` ends it and every VM
-started on its behalf. Root is overlayfs layers, so nothing is copied per run; the guest is untrusted
-by construction, with paths from host config, parentage from the connection, and no host-side seed
+started on its behalf. Root is overlayfs layers, so nothing is copied per run, and the guest is
+untrusted by construction: paths from host config, parentage from the connection, no host-side seed
 script.
 
 **The harness must not reinvent any of this**, and it must say how it composes: session to run?
@@ -99,11 +99,12 @@ Three adjudicators behind **one interface**:
    than only allow/deny, what happens when it is unavailable, and how its decisions are reviewed. A
    drifting auto-adjudicator is the "did less than it claimed and said nothing" failure.
 
-Routing is **configuration, not code**; escalation is first-class both ways; everything is auditable.
-Keep `--ask`'s semantics, because asks should be uncommon: post and wait; if nobody answers, say so
-and tell the agent to decide and record what it chose; acknowledge before acting, since silence is
-indistinguishable from absence. A blocking call cannot be a permanent listener - it freezes the turn
-- so the listener exits per message. Asks-per-hour is an **observable, not a budget**.
+Routing is **configuration, not code**, escalation is first-class both ways, and everything is
+auditable. Keep `--ask`'s semantics, because asks should be uncommon: post and wait; if nobody
+answers, say so and tell the agent to decide and record what it chose; acknowledge before acting,
+since silence is indistinguishable from absence. A blocking call cannot be a permanent listener - it
+freezes the turn - so the listener exits per message. Asks-per-hour is an **observable, not a
+budget**.
 
 ## 7. flowy - chat and permissions
 
@@ -125,12 +126,10 @@ and is re-armed, so every arrival costs a tool call plus a result plus the re-ar
 ### What flowy must provide
 
 - **Three wake levels, not four**: all / addressed / mentions-only, two orthogonal scopes and a
-  per-room mute. A human's *unaddressed* broadcast wakes an addressed reader; mentions-only turns
-  that off; author kind is stamped at write time.
-- **Per-room policy does not exist, and cannot**: the level is sent per poll and stored nowhere, and
-  one waiter per name is enforced. The harness should provide it - the level on a per-room
-  subscription row (off / mentions / addressed / all), flowy's *definitions* kept, its one-flag shape
-  dropped.
+  per-room mute. A human's *unaddressed* broadcast wakes an addressed reader, and mentions-only turns
+  that off. **Per-room policy does not exist and cannot** - the level is sent per poll and stored
+  nowhere - so the harness should provide it: the level on a per-room subscription row (off /
+  mentions / addressed / all), flowy's *definitions* kept and its one-flag shape dropped.
 - **Chat is not on a pushed transport** - SSE covers todos and queues only - so pushed chat needs a
   flowy change. File it verbatim:
 
@@ -156,16 +155,15 @@ detaching mid-turn - the agent must keep working.
 
 Adopt from flowy rather than invent: a cursor per named reader acked **after** the write, so a crash
 costs a duplicate and never a silence; **the mark advances over everything read, not everything
-delivered**; report what was filtered out; one waiter per name, shared by all heads; idle means
-quiet, not unwatched; bounded scrollback that discloses the drop; snapshot and register under one
-lock; non-blocking fan-out that drops and tells the slow head; strip anything interactive from the
-stored copy, and **discard a queued reply rather than hold it** - *"a reply to a question asked ten
-minutes ago is not an answer, it is input arriving from nowhere."*
+delivered**; report what was filtered out; one waiter per name, shared by all heads; bounded
+scrollback that discloses the drop; non-blocking fan-out that drops and tells the slow head; and
+**discard a queued reply rather than hold it** - *"a reply to a question asked ten minutes ago is not
+an answer, it is input arriving from nowhere."*
 
 ## 9. The tool contract
 
 **[operator]** *"The harness must close the loop; never paper over it with prompt."* A `find` tool
-must return what is actually needed, so the model needs no workarounds. Malformed calls are salvaged
+must return what is actually needed, so the model needs no workarounds; malformed calls are salvaged
 rather than dropped; a miss returns the surrounding context and what *would* have worked instead of
 dead-ending on "not found".
 
@@ -188,9 +186,9 @@ with a test.
 measure, not a speed one."*
 
 §4 pushes the other way: reasoning was **51.7%** of one measured conversation's content, so replaying
-it roughly doubles occupancy. Both are load-bearing, so keep the **shape** append-only and byte-stable
-and make the **content** dense - return what is needed, spill rather than truncate, no restated
-framing, and reclaim occupancy at compaction rather than by reshaping history mid-flight.
+it roughly doubles occupancy. Keep the **shape** append-only and byte-stable and make the **content**
+dense - return what is needed, spill rather than truncate, no restated framing, and reclaim occupancy
+at compaction rather than by reshaping history mid-flight.
 
 If occupation is a quality measure, **compaction is the primary quality lever**, not cost control -
 which raises its priority, and it is the one thing nobody surveyed does warm.
@@ -213,7 +211,7 @@ library, or the server growing the harness's session model - and argue it.
 
 ### 11.2 Delete the provider-abstraction category
 
-No pluggable provider layer, no compat matrix, no per-provider branches. Three models, one server, one
+No pluggable provider layer, no compat matrix, no per-provider branches: three models, one server, one
 stack, and no generalisation for a hypothetical future provider. A cloud fallback later then means
 rewriting the edge; record the cost and do not hedge against it.
 
@@ -266,17 +264,16 @@ everything after it whatever the indexing looks like.
 **Finer-grained cross-session sharing is real and available** - block-hash addressing or a radix tree
 lets branches share rather than only extend, which matters because N subagents behind one system
 prompt currently pay for that prefix N times as separate resident sequences. The honest limit: **the
-436.7 MiB recurrent state is not token-proportional and no block scheme can share it.** A ladder over
-entries and one over shared blocks are different policies - blocks need refcounting - so say which
-the plan builds.
+436.7 MiB recurrent state is not token-proportional and no block scheme can share it**, and a ladder
+over entries differs from one over shared blocks, which need refcounting.
 
 **Composing arbitrary blocks out of order is blocked by physics.** A block's KV depends on its own
 tokens, every preceding token and its absolute position, which is why a block hash **chains the
-parent**: a block is reusable only at the same position behind the same prefix. **"Send blocks A, F, Q
-plus new text" cannot work as stated.** What a handle protocol *would* buy, so nobody over-invests:
-not prefill compute (the cache hit saves that either way), not bandwidth, but **an explicit,
-verifiable cache hit instead of a discovered one** - the EXPLAIN idea moved into the wire format, and
-that is the argument for building it.
+parent**: a block is reusable only at the same position behind the same prefix, and "send blocks A,
+F, Q plus new text" cannot work as stated. What a handle protocol *would* buy, so nobody
+over-invests: not prefill compute (the cache hit saves that either way), not bandwidth, but **an
+explicit, verifiable cache hit instead of a discovered one** - the EXPLAIN idea moved into the wire
+format, which is the argument for building it.
 
 **Routes past the position problem, to measure and not assume.** *Position shifting*: llama.cpp has
 the primitive, and the hazard is measured and model-specific - it corrupted recurrent state on GLM,
@@ -312,13 +309,12 @@ tells us a milestone actually beat the current setup rather than feeling like it
 | flowy | operator's own | the delivery tests - they encode paid-for bugs |
 | **oh-my-openagent** | **Sustainable Use** | **excluded - do not copy anything, tests included** |
 
-flowy's delivery tests are the ones worth having: a `--to-me` waiter must still hear a person's
-unaddressed message; a pasted address wakes nobody; a person naming *another* agent must not wake
-you; a note reaches the row's assignee and nobody else, and on an unowned row wakes its raiser - with
-the guard that **two empty strings must not compare equal** or the fallback becomes a broadcast. Also
-port the *inversion*: assert the wire format carries everything the persisted model carries minus a
-**named** exclusion list computed by reflecting the type - the antidote to the enumerating-renderer
-bug class.
+flowy's delivery tests are the ones worth having - a `--to-me` waiter still hears a person's
+unaddressed message, a pasted address wakes nobody, `--mentions` beats `--to-me`, and a note reaches
+its assignee and nobody else, with the guard that **two empty strings must not compare equal** or the
+fallback becomes a broadcast. Also port the *inversion*: assert the wire format carries everything
+the persisted model carries minus a **named** exclusion list computed by reflecting the type - the
+antidote to the enumerating-renderer bug class.
 
 Identify which tests run **without** our harness, as black-box conformance against a real llama.cpp
 plus any client: those measure today's setup, tomorrow's harness and any third-party candidate on one
@@ -339,8 +335,8 @@ byte equality. What no existing suite covers, so we write it: warm-prefix compac
    adjudication, and that segments carry human-legible labels assigned at creation.
 3. **Agentic memory** - **[operator]** *"infinite memory via explicit search and attention segments
    that are swappable."* Implies context is a set of addressable, independently serialisable segments
-   that can be searched, evicted and swapped back in. **[operator]** It is acceptable that this fights
-   append-only prompts - see §11.
+   that can be searched, evicted and swapped back in, which is acceptable even though it fights
+   append-only prompts (§11).
 
 All three want the same thing: **context as addressable segments, not a flat message list.** One
 decision unlocks all three; getting it wrong forecloses all three. The operator's existing `oracle`
