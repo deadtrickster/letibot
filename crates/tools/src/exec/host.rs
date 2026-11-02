@@ -2753,4 +2753,95 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         );
         std::fs::remove_dir_all(&root).ok();
     }
+
+    /// A tree that opens a scope as a plain directory and kills nothing: the by-id map is what
+    /// this test is about, and a real cgroup is apparatus it does not need.
+    struct DirScopes(std::path::PathBuf);
+
+    impl super::super::scope::ScopeTree for DirScopes {
+        fn describe(&self) -> String {
+            "a directory per scope".into()
+        }
+        fn open(
+            &self,
+            kind: ScopeKind,
+            name: &str,
+            _parent: Option<&ScopeId>,
+        ) -> Result<ScopeId, ExecError> {
+            let path = self.0.join(format!("{}.{}", kind.as_str(), name));
+            std::fs::create_dir_all(&path)
+                .map_err(|e| ExecError::Spawn(format!("{}: {e}", path.display())))?;
+            Ok(ScopeId {
+                kind,
+                name: name.to_string(),
+                path,
+            })
+        }
+        fn members(&self, _scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
+            Ok(Vec::new())
+        }
+        fn end(&self, scope: &ScopeId) -> Reaping {
+            Reaping {
+                scope: scope.clone(),
+                at: SystemTime::now(),
+                mechanism: "nothing (a directory per scope)",
+                observed: Vec::new(),
+                survivors: Vec::new(),
+                waited: Duration::ZERO,
+                removed: false,
+                note: None,
+            }
+        }
+        fn migrate(&self, from: &ScopeId, _to: &ScopeId) -> Result<Migration, ExecError> {
+            Err(ExecError::Spawn(format!(
+                "a directory per scope cannot migrate out of {from}"
+            )))
+        }
+        fn list(&self) -> Vec<ScopeId> {
+            Vec::new()
+        }
+    }
+
+    /// **A job is found by its id, at every door it comes in by.** The host adopted a record
+    /// another daemon left, and its row has to be where a read looks: a handle the table does not
+    /// hold is one every wait and kill fails to find.
+    #[test]
+    fn an_adopted_job_is_found_by_its_id() {
+        let dir = std::env::temp_dir().join(format!("letibot-by-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scope root");
+        let h = HostProcesses::with_tree("/tmp", Box::new(DirScopes(dir.clone())));
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a child to adopt");
+        let pid = child.id();
+        let start = super::super::procs::read(pid)
+            .expect("the child is in /proc")
+            .start;
+        let adopted = h
+            .adopt(&Adopted {
+                handle: "h-adopted".into(),
+                command: "sleep 30".into(),
+                slug: Some("adopted".into()),
+                cwd: "/tmp".into(),
+                pid,
+                identity: format!("start:{start}"),
+                scope: "session.test".into(),
+            })
+            .expect("a recorded job is adopted");
+        let row = h
+            .job(&adopted)
+            .expect("the job this host adopted is found by its id");
+        assert_eq!(row.command, "sleep 30");
+        assert_eq!(row.pid, pid);
+        assert!(
+            h.job_handle(&adopted).is_some(),
+            "and the job itself, not only a row built from it"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
