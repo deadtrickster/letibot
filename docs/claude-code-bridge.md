@@ -160,20 +160,16 @@ there is the STORE's shape. So the tool asks the daemon what a head would be han
 opened and no second reader exists**; a session this bridge only WATCHES answers the same read.
 
 One word per item kind - `user`, `assistant`, `tool_result`, `system`, `reasoning`, `segment_mark` -
-plus three facts a reader cannot derive:
-
-- **`i`, the row's position in the SESSION**, and `next`, the cursor, counted against the snapshot's
-  `items_dropped` - a snapshot is the TAIL of a conversation, so a cursor of window positions would
-  silently re-read or skip whenever the window moved.
-- **`cap`, stated in every answer**, and `cut` on any string cut at it: 8 000 CHARACTERS, not bytes.
-- **`content: null` for a row the daemon announced and has not reconciled** - *there is a row here
-  and this build cannot show you what is in it*, which is not an empty message.
-
-A tool result carries its `outcome` (`ok`, `failed`, `denied`, `not_run`, `backgrounded` …) and the
-reason for `failed`/`not_run`; a user row carries `speaker` (`operator`/`agent`) and names its
-`attachments` by type, never their bytes. A read for a session the daemon does not hold is answered
-`Rejected`, keyed `peek:<session>` because a `peek` is the one frame whose answer carries no client
-id.
+plus three facts a reader cannot derive: **`i`**, the row's position in the SESSION, with `next` as
+the cursor, counted against the snapshot's `items_dropped` (a snapshot is the TAIL of a
+conversation, so a cursor of window positions would re-read or skip when the window moved);
+**`cap`**, stated in every answer with `cut` on any string cut at it, 8 000 CHARACTERS and not
+bytes; and **`content: null`** for a row the daemon announced and has not reconciled, which is not
+the same statement as an empty message. A tool result carries its `outcome` (`ok`, `failed`,
+`denied`, `not_run`, `backgrounded` …) and the reason for `failed`/`not_run`; a user row carries
+`speaker` (`operator`/`agent`) and names its `attachments` by type, never their bytes. A read for a
+session the daemon does not hold is answered `Rejected`, keyed `peek:<session>` because a `peek` is
+the one frame whose answer carries no client id.
 
 ## `leticode_mode`: the bridge asks, a person answers
 
