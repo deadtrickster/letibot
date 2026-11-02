@@ -4358,23 +4358,33 @@ impl Harness {
                 // no process host — a VM placement, a read-only seat — registers nothing,
                 // and `Registry::close` then finds no ender for this session, which is the
                 // honest answer for a session that cannot be running a command at all.
-                let host = Arc::clone(h);
                 let id = cfg.session_id.clone();
+                // **What this session can SAY is running, without ending it.** The sentence a stop
+                // owes its heads is *what it ended*, and the ender can only answer after a kill
+                // that takes seconds (`Cgroup2::end` waits for the tree to leave its cgroup) — by
+                // which time the head has been told `Bye`. This reads the same table and kills
+                // nothing, so the announcement comes first. See `Registry::announce_runs_ending`.
+                {
+                    let host = Arc::clone(h);
+                    session_registry.name_runs(
+                        &id,
+                        Arc::new(move || {
+                            host.jobs()
+                                .into_iter()
+                                .filter(|v| v.state.is_running())
+                                .map(|v| format!("`{}` (`{}`)", v.command, v.id))
+                                .collect()
+                        }),
+                    );
+                }
+                let running = Arc::clone(h);
                 session_registry.watch_runs(
                     &id,
                     Arc::new(move || {
                         // The reason travels into the run's own state and out onto the row a
-                        // head would have drawn: `killed by the daemon stopping`.
-                        host.end_running("the daemon stopping")
-                            .into_iter()
-                            .map(|r| {
-                                format!(
-                                    "the daemon was asked to stop while a command of this \
-                                     session was running, so it was ended: {}",
-                                    r.summary()
-                                )
-                            })
-                            .collect()
+                        // head would have drawn: `killed by the daemon stopping`. What the stop
+                        // says out loud was named before this ran — see `name_runs` above.
+                        let _ = running.end_running("the daemon stopping");
                     }),
                 );
                 // **The boundary this session's `!term` pane runs inside** (R60 item 3) —

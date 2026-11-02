@@ -268,6 +268,11 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     let mut sentence: Option<String> = None;
     let mut said_at: Option<Duration> = None;
     let mut bye_at: Option<Duration> = None;
+    // **Every frame between the stop and the `Bye`, by name.** A red here is about ORDER, and the
+    // order is only answerable from what actually arrived: the earlier report of this failure said
+    // "the sentence after None" and could not say whether `daemon_stopping` or the `Accepted` came
+    // at all, which is the difference between a sentence lost and a stop that never ran.
+    let mut frames: Vec<String> = Vec::new();
     let read_until = started + STOP_BUDGET;
     while Instant::now() < read_until && sentence.is_none() && bye_at.is_none() {
         let Ok(inbound) = rx.recv_timeout(Duration::from_millis(250)) else {
@@ -275,15 +280,28 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
         };
         match inbound.frame() {
             ServerFrame::Event(env) => {
-                if let SessionEvent::Warning { code, detail, .. } = &env.event
-                    && code == "daemon_stopping_runs"
-                    && sentence.is_none()
-                {
-                    sentence = Some(detail.clone());
-                    said_at = Some(started.elapsed());
+                if let SessionEvent::Warning { code, detail, .. } = &env.event {
+                    frames.push(format!(
+                        "{}ms warning {code}",
+                        started.elapsed().as_millis()
+                    ));
+                    if code == "daemon_stopping_runs" && sentence.is_none() {
+                        sentence = Some(detail.clone());
+                        said_at = Some(started.elapsed());
+                    }
                 }
             }
-            ServerFrame::Bye { .. } if bye_at.is_none() => {
+            ServerFrame::Accepted { note, .. } => {
+                frames.push(format!(
+                    "{}ms accepted ({note})",
+                    started.elapsed().as_millis()
+                ));
+            }
+            ServerFrame::Bye { reason } if bye_at.is_none() => {
+                frames.push(format!(
+                    "{}ms bye ({reason})",
+                    started.elapsed().as_millis()
+                ));
                 bye_at = Some(started.elapsed());
             }
             _ => {}
@@ -310,6 +328,7 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
 
     eprintln!("---- the stop took {took:?} (the run's own deadline is 120 s) ----");
     eprintln!("---- the Bye arrived after {bye_at:?}, the sentence after {said_at:?} ----");
+    eprintln!("---- what arrived between the stop and the Bye: {frames:?} ----");
     if let Some(s) = &sentence {
         eprintln!("---- what the daemon said it ended ----\n  {s}");
     }
@@ -321,7 +340,8 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
         sentence.is_some(),
         "the daemon ended a run on the way out and said nothing about it before it closed the \
          hubs (Bye after {bye_at:?}). *It killed the run* and *it killed the run and told you* \
-         are different facts, and the second is the one that makes a stop auditable"
+         are different facts, and the second is the one that makes a stop auditable. What \
+         arrived between the stop and the Bye: {frames:?}"
     );
     let said = sentence.unwrap();
     assert!(

@@ -1761,6 +1761,13 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         });
                     }
                 }
+                // **What this stop is about to end is SAID FIRST, before the ack.** The sentence
+                // a head needs is *what the daemon killed*, and the only way it can be overtaken
+                // is to be produced after the kills: MEASURED on a 24-core host, `Bye` 11.7 ms
+                // after the stop while the run was still being killed at 313, and no sentence
+                // ever arrived. So the runs are named here, from the tables that know them
+                // without ending them, and `Registry::close` does not say it again.
+                registry.announce_runs_ending();
                 // Acked before the close, because after it there is no socket to
                 // ack on and a head waiting for one would wait forever.
                 let f = crate::protocol::ServerFrame::Accepted {

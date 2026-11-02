@@ -1044,9 +1044,19 @@ pub trait PromptDriver: Send + Sync {
 /// is where it is said: it settles as `Killed` carrying the reason, and the tool renders
 /// that on the row the session keeps.
 ///
-/// Returns one sentence per run it ended, for the announcement, so *it ended nothing* and
-/// *it ended nothing because nothing was running* are different answers.
-pub type RunEnder = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+/// **It kills and says nothing**: what a stop is about to end is named *before* the kill by
+/// [`RunNames`], because a kill can take seconds and the head has to be told first.
+pub type RunEnder = Arc<dyn Fn() + Send + Sync>;
+
+/// **The runs a session has in flight, NAMED AND NOT ENDED** — the pure half of [`RunEnder`],
+/// for the announcement a stop makes *before* it ends anything.
+///
+/// The two are separate because a stop must say what it is about to do before it does it: the
+/// ender kills as it reports, so a sentence built from its answer can only be published after a
+/// kill that takes seconds (a cgroup emptying), and by then the head has been told `Bye`. This
+/// answers from the same table without touching it.
+///
+pub type RunNames = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
 /// **The boundary a session's `!term` pane runs inside** — given the pane's working directory
 /// and environment, the argv that goes in front of its shell, or the sentence saying why the
@@ -1143,6 +1153,13 @@ pub struct Registry {
     /// See [`RunEnder`] for why a stop has to reach the runs and why the daemon is the half
     /// that owns them.
     runs: Mutex<std::collections::HashMap<String, RunEnder>>,
+    /// **One per session that has a process host**, installed beside [`Registry::runs`]: the
+    /// same runs, named and not ended, for the announcement a stop makes before it ends them.
+    /// See [`RunNames`].
+    run_names: Mutex<std::collections::HashMap<String, RunNames>>,
+    /// Whether this stop has already said what it is about to end — see
+    /// [`Registry::announce_runs_ending`]. One sentence per stop, whichever thread says it.
+    announced: std::sync::atomic::AtomicBool,
     /// **One per session that has a process host**, installed by its harness at open beside
     /// [`Registry::runs`]. See [`PaneBoundary`].
     panes: Mutex<std::collections::HashMap<String, PaneBoundary>>,
@@ -1335,6 +1352,8 @@ impl Registry {
             }),
             bell: Bell::new(),
             runs: Mutex::new(std::collections::HashMap::new()),
+            run_names: Mutex::new(std::collections::HashMap::new()),
+            announced: std::sync::atomic::AtomicBool::new(false),
             panes: Mutex::new(std::collections::HashMap::new()),
             notes: Mutex::new(std::collections::HashMap::new()),
             skills: Mutex::new(std::collections::HashMap::new()),
@@ -1946,6 +1965,11 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let names = self
+            .run_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         let prompt = self
             .prompts
             .lock()
@@ -1981,6 +2005,7 @@ impl Registry {
         // mutex another thread is waiting on.
         drop((
             ender,
+            names,
             prompt,
             notes,
             skills,
@@ -2600,6 +2625,82 @@ impl Registry {
             .insert(session.to_string(), ender);
     }
 
+    /// **Install what this session can NAME as in flight**, beside its ender and for the
+    /// announcement. See [`RunNames`]: the same table read without a kill, so a stop can say what
+    /// it is about to end before it ends it.
+    pub fn name_runs(&self, session: &str, names: RunNames) {
+        self.run_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_string(), names);
+    }
+
+    /// **Every run this daemon is about to end, in sentences** — the pure read behind the
+    /// announcement, from the two tables that know one: the process host's (what a `bash` call
+    /// started, the model's or the operator's) and `PromptDriver`'s (the run the `!send` door
+    /// holds). Neither is a superset of the other, which is why both are asked.
+    pub fn runs_ending(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let reporters: Vec<RunNames> = self
+            .run_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for names in &reporters {
+            out.extend(names());
+        }
+        let drivers: Vec<Arc<dyn PromptDriver>> = self
+            .prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for driver in &drivers {
+            if let Some((job, command)) = driver.in_flight() {
+                out.push(format!("`{command}` (`{job}`)"));
+            }
+        }
+        out
+    }
+
+    /// **Say what this stop is about to end — before it ends it, and once.** `false` when the
+    /// sentence has already gone out (the `Stop` frame's thread says it, and then `close` does not
+    /// say it again) or when nothing is running, which is a stop with nothing to report.
+    pub fn announce_runs_ending(&self) -> bool {
+        if self
+            .announced
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
+        let named = self.runs_ending();
+        if named.is_empty() {
+            return false;
+        }
+        let hubs: Vec<Arc<Hub>> = self
+            .lock()
+            .entries
+            .iter()
+            .map(|(_, e)| e.hub.clone())
+            .collect();
+        for hub in &hubs {
+            for name in &named {
+                hub.publish(crate::event::SessionEvent::Warning {
+                    code: "daemon_stopping_runs".into(),
+                    detail: format!(
+                        "the daemon was asked to stop while {name} was running, so it is being \
+                         ended with it"
+                    ),
+                    compaction: None,
+                });
+            }
+        }
+        true
+    }
+
     /// **Install the boundary this session's `!term` panes run inside.** See [`PaneBoundary`].
     /// A second install replaces the first, as [`Registry::watch_runs`] does: one process host,
     /// one boundary.
@@ -2713,40 +2814,18 @@ impl Registry {
                     );
                 }
             }
+            // **Every run this stop is about to end is NAMED FIRST, before a single kill.** The
+            // enders answer only once they have killed, and a kill is seconds on a box where a
+            // cgroup has to empty: a sentence built from their answer can only be published after
+            // that, which is how a head came to be told `Bye` 11.7 ms into a stop that was still
+            // killing at 313. The announcement reads the same two tables without touching them.
+            self.announce_runs_ending();
             let enders: Vec<(String, RunEnder)> =
                 self.runs.lock().expect("run enders").drain().collect();
-            let mut said: Vec<String> = Vec::new();
-            for (session, ender) in &enders {
-                let named: Vec<String> = ender();
-                if !named.is_empty() {
-                    said.extend(named);
-                    continue;
-                }
-                // **The ender is the HOST's table, and the operator's own run is a second one.**
-                // A `!` command is a job of the process host too, so the ender usually names it —
-                // and when it does not, asking this driver is the difference between a stop that
-                // says what it ended and one that says nothing while a run is in flight.
-                let driver = self.prompts.lock().expect("prompts").get(session).cloned();
-                if let Some((job, command)) = driver.and_then(|d| d.in_flight()) {
-                    said.push(format!(
-                        "`{command}` (`{job}`) was still running when the daemon was asked to \
-                         stop, so it is being ended with it"
-                    ));
-                }
-            }
-            // To every hub this registry holds — the ones collected above, not `list()`, which
-            // read every stored session from the source to find the live ones (R68.8). Still
-            // before the hubs close, so each sentence reaches the heads that are watching.
-            if !said.is_empty() {
-                for hub in &hubs {
-                    for sentence in &said {
-                        hub.publish(crate::event::SessionEvent::Warning {
-                            code: "daemon_stopping_runs".into(),
-                            detail: sentence.clone(),
-                            compaction: None,
-                        });
-                    }
-                }
+            for (_session, ender) in &enders {
+                // The return value is the runs it ended, which the announcement above has
+                // already named: one row per run, before the row could not be sent.
+                ender();
             }
         }
         for h in hubs {
@@ -2818,7 +2897,7 @@ mod tests {
         let head = hub.attach("tui", "dead", Caps::default(), 0);
         r.set_prompt("s-1", Arc::new(ARun("j1".into(), "/bin/cat".into())));
         // The ender says nothing at all: the run is not in the table the host knows.
-        r.watch_runs("s-1", Arc::new(|| Vec::<String>::new()));
+        r.watch_runs("s-1", Arc::new(|| {}));
 
         r.close();
 
@@ -2855,35 +2934,26 @@ mod tests {
         );
     }
 
-    /// **A stop that still has a run to end says so before any hub closes**, even when a second
-    /// caller asks for the stop while the first is still ending that run.
+    /// **A stop names the run it is about to end, before the kill and before any hub closes** —
+    /// even when a second caller asks for the stop while the first is still killing.
     ///
-    /// `close` is called from three places on the way out (the `Stop` frame, a signal, the
-    /// `ServerHandle`), and the guard used to cover only the MESSAGE: a caller that lost the race
-    /// skipped the guarded block and went straight on to `h.close()`, so the sentence about the
-    /// run the winner was still ending was published into a hub whose writer had already said
-    /// `Bye`. MEASURED on a box with cgroups: `Bye` 11.7 ms after the stop, the operator's run
-    /// ended at 300, and the sentence never reached the head.
-    ///
-    /// The ender here takes a beat on purpose: it stands in for `HostProcesses::end_running`
-    /// waiting for a killed tree to leave its cgroup, and it is what gives the loser time to close
-    /// the hub under the winner.
+    /// Two things are load-bearing and both were measured failing. The sentence is built from the
+    /// **pure** table ([`RunNames`]) because an ender can only answer after a kill that takes
+    /// seconds (`Cgroup2::end` waits for a tree to leave its cgroup), and a head told `Bye` at
+    /// 11.7 ms never hears a sentence finished at 300. And the whole close is one caller's: a
+    /// caller that lost the race used to go straight on to `h.close()` and take the hub away from
+    /// under the winner.
     #[test]
     fn a_run_the_stop_ends_is_named_before_the_hubs_close() {
         let r = reg();
         r.create("s-1", "", SessionWiring::default()).unwrap();
         let hub = r.get("s-1").expect("the session is held");
         let head = hub.attach("tui", "dead", Caps::default(), 0);
+        // The pure half says what is running; the ender takes a beat over it and says nothing.
+        r.name_runs("s-1", Arc::new(|| vec!["`/bin/cat` (`j1`)".to_string()]));
         r.watch_runs(
             "s-1",
-            Arc::new(|| {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                vec![
-                    "a command of this session was running, so it was ended: `j1` killed \
-                      by the daemon stopping"
-                        .to_string(),
-                ]
-            }),
+            Arc::new(|| std::thread::sleep(std::time::Duration::from_millis(200))),
         );
 
         // **A head's writer thread, from the schema's own side**: a loop that stops at the first
@@ -3127,7 +3197,6 @@ mod tests {
             "s-b",
             Arc::new(move || {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                Vec::new()
             }),
         );
         r.set_notes_source("s-b", Arc::new(Vec::new));
