@@ -1,8 +1,6 @@
-//! `decisions` — what the gate decided, and what the oracle said about it.
-//!
-//! The third tool in the same family as `transcript` and `digest`, and it exists
-//! for the same reason. The operator, 2026-09-19, watching a session try to work
-//! out why an oracle's reply never reached a tool card:
+//! `decisions`: what the gate decided, and what the oracle said about it. The third tool of the
+//! `transcript`/`digest` family: a model asks by the names a person would use, and never has to
+//! derive the storage, its format, or the path it sits at.
 //!
 //! ```text
 //! bash {"command": "cd letibot; sqlite3 -line
@@ -11,48 +9,23 @@
 //!   WHERE request_id='adj-s-1789639478142928813-0225';\" …"}
 //! ```
 //!
-//! Their rule, stated plainly: *"the model shouldn't derive the storage, its
-//! format, or what path it"* is at. That call derives all three — a hardcoded
-//! `~/.local/share` path, a table name, and eight column names written from
-//! memory against a schema with thirty of them. Get one wrong and sqlite answers
-//! `no such column`, which reads to a model as *the fact is not recorded*.
+//! The model should not derive the storage, its format, or the path it sits at: a hardcoded
+//! `~/.local/share` path, a table name and column names written from memory get one wrong and
+//! sqlite answers `no such column`, which reads to a model as the fact not being recorded.
 //!
-//! So every argument here is a **name a person would use**, and none of them is a
-//! column:
+//! So every argument is a name a person would use, and none of them is a column:
 //!
-//! | argument | the question it answers |
-//! |---|---|
-//! | `request` | what happened to this one decision, in full |
-//! | `tool` | every decision about `bash`, or `write` |
-//! | `verdict` | `allow`, `deny`, `ask`, `unavailable` |
-//! | `by` | who decided: `operator`, `oracle`, `boundary`, `gate` |
-//! | `asked` | was a person actually put in front of it |
-//! | `last` | the newest N, which is the window the warm start reads |
-//! | `session` | another session, by id or part of its title |
+//! `request` is one decision in full, `tool` every decision about `bash` or `write`, `verdict`
+//! one of `allow`/`deny`/`ask`/`unavailable`, `by` who decided, `asked` whether a person was put
+//! in front of it, `last` the newest N (the window the warm start reads), `session` by id or title.
 //!
-//! # Why `verdict_basis` is the field this was built for
+//! `verdict_basis` is the oracle's own sentence, the reasoning it gave for admitting or refusing,
+//! and the one thing that exists nowhere else once the decision settles: `SettledDecision` carries
+//! the DECIDER's basis, so a head drawing an `oracle:` line from it draws the operator's words.
 //!
-//! The corpus keeps layer B in parts: `verdict`, `verdict_by`, `verdict_basis`
-//! and `oracle_ms` are separate columns precisely so that nobody has to re-parse
-//! prose to recover them. `verdict_basis` is **the oracle's own sentence** — the
-//! reasoning it gave for admitting or refusing — and it is the one thing that
-//! exists nowhere else once the decision has settled: `SettledDecision` on the
-//! wire carries the DECIDER's basis, not the advisor's, so a head that draws an
-//! `oracle:` line from it is drawing the operator's own words under the oracle's
-//! name.
-//!
-//! That is a real bug being chased in another session as this lands. This tool
-//! does not fix it. It makes the difference between the two bases legible, which
-//! is the step that was costing a `sqlite3` call.
-//!
-//! # Read-only, and a miss is a report
-//!
-//! Nothing here rules on anything: labelling a decision is the operator's, through
-//! `/gate ok|grant|revoke`. A search that matches nothing comes back with the
-//! counts and the values that ARE present in each field it filtered on — because
-//! the common miss is a verdict word spelled the way the enum spells it rather
-//! than the way the corpus stores it, and a bare "no rows" sends a model back to
-//! sqlite.
+//! Nothing here rules on anything: labelling a decision is the operator's, through `/gate
+//! ok|grant|revoke`. A miss answers with the counts and the values that ARE present in each field
+//! it filtered on, because a bare "no rows" sends a model back to sqlite.
 
 use std::sync::Arc;
 

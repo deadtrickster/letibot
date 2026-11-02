@@ -2,20 +2,9 @@
 
 use super::*;
 
-/// **REPLACING THE HALF WIPES STATE THE OTHER AUTHOR SET ON IT — the hazard the file-migration
-/// design has to answer before anything else.**
-///
-/// The proposed shape is *"you literally migrate the whole todo, starting from the top level"*:
-/// `TODO.md` becomes the operator's half, re-read when a watcher notices the file change, and
-/// sent as `SetOperatorTodos`. That frame calls `set_operator`, which **replaces** the half.
-///
-/// But the model's only way to dispose of the operator's rows is `set_operator_states`, which
-/// moves STATE and deliberately cannot change membership. So the two writes disagree about what
-/// the half IS: the model changes one row's status, and the next whole-file migration sends the
-/// FILE's statuses and takes that mark away.
-///
-/// MEASURED here rather than argued. The order is the one a session would actually see:
-/// migrate, work, mark done, file touched, migrate again.
+/// `SetOperatorTodos` replaces the operator's half, while the model's only way to dispose of those
+/// rows moves state in place: a whole-file migration re-sends the file's statuses and takes the
+/// model's mark away.
 #[test]
 fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
     let b = TodoBoard::new(Vec::new());
@@ -52,10 +41,8 @@ fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
         "the premise: the model's mark is on the board"
     );
 
-    // 3. **The operator touches a line** — any line, even T2's, even a comment — and the watcher
-    //    re-migrates the whole file, because a whole-file migration is what removes the
-    //    line-level problem. The file still says `[ ]` for T1, because the model's work was
-    //    never written back to it.
+    // The operator touches any line and the watcher re-migrates the whole file, which still says
+    // `[ ]` for T1 because the model's work was never written back to it.
     b.set_operator(from_file());
 
     // **The assertion is that the wipe HAPPENED** — this test holds the hazard still while the
@@ -69,12 +56,8 @@ fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
     );
 }
 
-/// And the tag question, measured: **a tag in the tail survives both paths to the model**, so
-/// `TodoEntry` needs nothing for it — provided the model is told the whole tree.
-///
-/// `content` is printed VERBATIM by `render` (that is what makes the words quotable back, which
-/// `set_operator_states` depends on), and the nag's only edit is `trim`, which removes
-/// whitespace and not a trailing word. So a line's tail rides the wire as part of the row.
+/// A tag in a line's tail needs no field of its own: `render` prints `content` verbatim, which is
+/// what makes the words quotable back, and the nag only trims whitespace off them.
 #[test]
 fn a_tag_in_the_lines_tail_reaches_the_model_with_no_field_for_it() {
     let b = TodoBoard::new(vec![TodoItem {
@@ -99,19 +82,9 @@ fn a_tag_in_the_lines_tail_reaches_the_model_with_no_field_for_it() {
     );
 }
 
-/// **A POSTPONED row is still the model's to SEE, and the reply says what the mark means.**
-///
-/// The operator's ask has two halves and this is the second one: the row *"persists"* — so it
-/// is in the list the model is handed, with its own words and its author, which is what keeps
-/// `todo_write`'s `operator` field able to aim at it — and it is *"without nag"*, which from the
-/// model's side means it can stop proposing the row **without being told twice**. That is what
-/// the legend below the list is for: `[p]` with no explanation is a mark the next turn reads as
-/// *mine to pick up*, and the model proposing it is the nagging arriving through its own good
-/// manners instead of through the clock.
-///
-/// And the state is not one the model may set: `todo_write` still takes three words, so a model
-/// cannot silence the check that exists to stop it abandoning a plan. Asserted on the refusal
-/// itself, because that is where a fourth word would arrive.
+/// A postponed row keeps its place in what the model is shown, and the reply spells out the mark:
+/// a model that reads `[p]` as "mine to pick up" does the nagging itself. The word is the
+/// operator's, so `todo_write` refuses it.
 #[test]
 fn a_postponed_row_is_marked_in_what_the_model_is_shown() {
     let set_aside = TodoItem {
@@ -158,17 +131,9 @@ fn a_postponed_row_is_marked_in_what_the_model_is_shown() {
     );
 }
 
-/// **A CANCELLED ROW IS MARKED IN WHAT THE MODEL IS SHOWN — AND THE WORD IS NOT THE MODEL'S.**
-///
-/// The operator's two rulings are what the mark is for: *"only i should be able to delete todo
-/// items. as a rule everything that ever created stays in history"* and *"so done items or
-/// canceled items should be kept"*. So a cancelled row keeps its place in the list the model is
-/// shown, marked, with the mark's meaning in the legend — a model that read `[c]` as *still mine
-/// to pick up* would propose work the operator has already decided against, which is the nagging
-/// the board exists to stop, arriving through the model's own good manners.
-///
-/// And the state is not one the model may set: `todo_write` still takes three words, asserted on
-/// the refusal itself, because that is where a fifth word would arrive.
+/// A cancelled row keeps its place in what the model is shown, marked and explained: reading `[c]`
+/// as "mine to pick up" would propose work the operator has decided against. The word is theirs,
+/// so `todo_write` refuses it.
 #[test]
 fn a_cancelled_row_is_marked_and_the_word_is_not_the_models() {
     let struck_off = TodoItem {
@@ -213,19 +178,9 @@ fn a_cancelled_row_is_marked_and_the_word_is_not_the_models() {
     );
 }
 
-/// **THE SET-ASIDE SURVIVES THE MODEL'S NEXT WRITE, AND AN ANSWER DOES NOT.**
-///
-/// This is the half that makes the operator's reach over a MODEL's row real rather than a
-/// gesture. The model's half is replaced wholesale on every `todo_write`, and the row comes back
-/// with one of the three words it can spell — `pending`, because the work is not done — so
-/// without this rule the operator's silence would die on the model's very next revision of the
-/// plan. **A status the model cannot spell is not the model's to clear.**
-///
-/// And a row the model ANSWERS is answered: `completed` is not a way of clearing the operator's
-/// word, it is the work being done, and there is nothing left to be silent about.
-///
-/// The refusals are asserted too, because they are the other half of content-keying: a name
-/// that matches nothing, or two rows at once, is refused rather than guessed at.
+/// The model's half is replaced wholesale on every write and the row comes back `pending`, so a
+/// status the model cannot spell is not its to clear; `completed` is the work done, not a cleared
+/// word. A name that fits nothing or two rows is refused rather than guessed at.
 #[test]
 fn a_set_aside_on_a_model_row_survives_the_models_rewrite() {
     let b = TodoBoard::new(vec![item("operator: paste the token", TodoStatus::Pending)]);
@@ -274,11 +229,8 @@ fn a_set_aside_on_a_model_row_survives_the_models_rewrite() {
     );
 }
 
-/// **A cancelled row is not in the queue of open work.** The queue is what the check asks about
-/// and what `(N more open)` counts, so a struck-off row must not be in it — the operator has
-/// decided against the work, and a plan that still served it would be nagging about something
-/// nobody owes. `Postponed` is deliberately NOT excluded there (it is work still owed, and the
-/// daemon's own predicate is what keeps it out of the check).
+/// A cancelled row is not open work, so it is not in the queue the check asks about. `Postponed` is
+/// deliberately kept: it is work still owed, and another predicate keeps it out of the check.
 #[test]
 fn a_cancelled_row_is_not_in_the_queue_of_open_work() {
     let plan = vec![
@@ -297,13 +249,8 @@ fn a_cancelled_row_is_not_in_the_queue_of_open_work() {
     );
 }
 
-/// **THE OPERATOR'S ROWS ARE ON THE SAME BOARD, so the nag and the pane see them.** The
-/// operator's ruling: *"the existing getter should return mine and yours, and the rest is also
-/// the same. the only difference is who created and that is it."*
-///
-/// Two claims, and the second is why the halves are separate: the union is what `snapshot`
-/// answers — which is what `unfinished_plan`, and therefore the idle nag, reads — and the `todo`
-/// tool's own write, scoped to the model's rows, does not take the operator's rows with it.
+/// The operator's rows are on the same board, so the nag and the pane see them: `snapshot` answers
+/// the union, while the model's write stays scoped to its own half.
 #[test]
 fn the_board_returns_the_operators_rows_alongside_the_models() {
     let b = TodoBoard::new(vec![TodoItem {
@@ -358,35 +305,9 @@ fn the_board_returns_the_operators_rows_alongside_the_models() {
     assert!(after.iter().any(|t| t.content == "the model's"));
 }
 
-/// **The union is TWO BLOCKS, not an interleaving** — and with hierarchy coming, that is the
-/// fact the whole shape turns on.
-///
-/// `snapshot` is a clone-then-`extend`: every model row precedes every operator row, always,
-/// because nothing merges the two vectors. So the halves cannot interleave by depth, which means
-/// **"my own write" stays a well-defined edit**: the model's write cannot move, delete or
-/// re-parent a row of the operator's, and the operator's half is a suffix of the union rather
-/// than a scatter through it.
-///
-/// # And the hazard that comes with it, which is why this is asserted and not assumed
-///
-/// Depth is POSITIONAL — that is what makes it markdown's model and rano's, and it is the right
-/// choice. But positional depth over a concatenation means a row's apparent parent is *the row
-/// before it in the union*, and at the seam that row belongs to somebody else. An operator row at
-/// depth 1 sitting after a model row at depth 0 renders as a child of it, and **the model's next
-/// write can change that parent without touching a single operator row**: a write that re-words
-/// or adds a row changes the last model row, and the operator's subtree is silently re-hung
-/// under whatever took its place. That is the same failure as a flattened subtree — data that reads as a statement
-/// nobody made — one level up, and it is silent.
-///
-/// **The rule that removes it is one line and it is asserted here**: each half is its own tree,
-/// so the first row of each BLOCK is depth 0. The seam is a boundary, not a parent. When depth
-/// lands, a writer that indents the first row of a half must be refused where the board is built
-/// rather than coped with where it is drawn — see the operator's own instruction on the shape:
-/// *"the depth invariant enforced where the board is built, not where it is drawn. A renderer
-/// that copes with a gap hides a writer that made one."*
-///
-/// Today there is no depth, so the assertion is the shape it will have to satisfy: the blocks are
-/// contiguous and their order is fixed.
+/// `snapshot` clones the model's rows and extends with the operator's, so the union is two
+/// contiguous blocks and a half is a suffix: that is what keeps the model's write a well-defined
+/// edit. Positional depth would make the seam a parent, so each block's first row must be depth 0.
 #[test]
 fn the_union_is_two_contiguous_blocks_so_a_half_is_a_suffix_not_a_scatter() {
     let b = TodoBoard::new(vec![
@@ -435,10 +356,8 @@ fn the_union_is_two_contiguous_blocks_so_a_half_is_a_suffix_not_a_scatter() {
         "the union interleaved the halves, so the model's write is no longer a half-edit: {all:?}"
     );
 
-    // **And the model's own write cannot reorder what it does not own.** It restates one of its
-    // rows and adds another; the operator's block is still the tail, in the same order, with the
-    // same contents — and the row it did not mention is still there, because a row left out is
-    // not a row removed.
+    // The model's own write cannot reorder what it does not own, and a row left out of it is not a
+    // row removed.
     b.upsert_model(&[
         ("m1".into(), TodoStatus::InProgress, Vec::new()),
         ("m3".into(), TodoStatus::Pending, Vec::new()),
@@ -456,25 +375,9 @@ fn the_union_is_two_contiguous_blocks_so_a_half_is_a_suffix_not_a_scatter() {
     );
 }
 
-/// **THE MODEL CAN DISPOSE OF THE OPERATOR'S ROW, which is what `TodoBy::Operator`'s doc
-/// claimed and the code did not do.** *"the model can mark the operator's item done, and the
-/// nag in `harness.rs` picks it up like any other"* — and it could not: `todo_write` was scoped
-/// to the model's half, `set_operator` is the head's frame, so a row the operator wrote was
-/// nagged about every idle turn and could never be answered. R48's wedge, from the other side.
-///
-/// The words are the name — there is no id on the wire, and the operator ruled out a bump — so
-/// this also pins what happens when the name does not fit: **refused, with the candidates
-/// named**, and NOTHING written.
-/// **THE CALL THAT MADE A DUPLICATE ROW IN THE OPERATOR'S PANE, byte for byte from the
-/// transcript of a real session.**
-///
-/// The model put `operator` one level too deep — inside a `todos` entry instead of beside it.
-/// Every field this function read was valid, so the call SUCCEEDED: the entry landed in the
-/// model's own half and the operator's row was never touched. The model then spent two more calls
-/// and a paragraph of its reply on why the row would not close — *"the mark didn't take, and I
-/// can't make it"* — while the operator watched a second row appear where they expected their own
-/// to change. **Ignoring a field is what made a wrong write silent**, which is the defect this
-/// refuses.
+/// The call that made a duplicate row in the operator's pane: `operator` one level too deep, where
+/// every field the tool read was valid. Ignoring a field is what makes a wrong write silent, so the
+/// call is refused by name and nothing moves.
 #[test]
 fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
     let (rt, board) = runtime();
@@ -768,13 +671,9 @@ fn the_nag_says_whose_row_it_is_and_how_to_dispose_of_it() {
     assert!(theirs.contains("(quote it exactly)"), "{theirs}");
 }
 
-/// **THE FIRING IS RECORDED ON THE ROW, not in a daemon's memory.** The operator's own choice:
-/// the board is the record, so a fired row does not fire again, and a daemon that comes back
-/// re-reads it as having no condition rather than as one that is due.
-///
-/// What moves is the condition and nothing else — which is what makes a fired row ordinary open
-/// work rather than a closed one, and what keeps the intent on the screen after the job it was
-/// waiting for is gone.
+/// The firing is recorded on the row, so it cannot fire twice and a daemon that comes back re-reads
+/// the row as having no condition. Only the condition moves, which leaves the intent standing as
+/// ordinary open work.
 #[test]
 fn a_fired_condition_is_cleared_from_the_row_and_nothing_else_moves() {
     let b = TodoBoard::new(vec![]);
@@ -826,10 +725,8 @@ fn a_fired_condition_is_cleared_from_the_row_and_nothing_else_moves() {
     assert_eq!(b.operator_snapshot().len(), 2, "and no row was dropped");
 }
 
-/// **A RESUMED BOARD COMES BACK SPLIT, and it is the store's own list that has to be.** The
-/// persisted list is the UNION, so a `new` that put all of it in the model's half gave a resumed
-/// session the operator's rows as its own: the model's write would have taken them for its own,
-/// and once the head re-pushed its own half on hello the union held each of them twice.
+/// The persisted list is the union, so a board built with all of it in the model's half hands the
+/// operator's rows to the model, and the union holds each of them twice once a head re-pushes.
 #[test]
 fn the_stores_union_is_split_back_into_its_two_halves() {
     let stored = vec![
@@ -889,15 +786,9 @@ fn the_stores_union_is_split_back_into_its_two_halves() {
     );
 }
 
-/// **THE WHOLE LIST IS AN UPSERT, and a row left out of it STAYS on the board.**
-///
-/// The operator's rule, verbatim: *"regarding todo - only i should be able to delete todo items.
-/// as a rule everything that ever created stays in history"* and *"so done items or canceled
-/// items should be kept."* So the second write below — ONE entry, where the first wrote three —
-/// leaves all three on the board: the named row moves, the two it did not name are exactly where
-/// they were, and the reply SAYS so. That sentence is for the model whose frozen prefix still
-/// carries the old contract (*"omitting an entry removes it"*), and it is printed at the one call
-/// that would have meant a removal.
+/// The whole list is an upsert: a row left out stays, because only the operator deletes and nothing
+/// ever created leaves history. The reply says so at the one call that would have meant a removal,
+/// for a model whose frozen prefix still carries the old contract.
 #[test]
 fn the_whole_list_upserts_and_a_row_left_out_stays_on_the_board() {
     let (rt, board) = runtime();

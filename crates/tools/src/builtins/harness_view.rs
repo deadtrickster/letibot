@@ -1,37 +1,6 @@
-//! `harness` — what the session can see about the harness it is running inside.
-//!
-//! **Read-only, and the first tool whose subject is letibot itself.**
-//!
-//! The operator's ask, 2026-09-15: *"we need to give models ability to peek into
-//! letibot itself, readonly for now, very tyresome to describe what i see and
-//! where on the terminal."* Until now a model working in a letibot session could
-//! read the whole filesystem and not one fact about its own session — so every
-//! banner line, every `!` warning and every "which mode am I in" had to be typed
-//! out by hand by the person watching the terminal.
-//!
-//! What it answers, and each is a fact the daemon already holds:
-//!
-//! | `what` | from |
-//! |---|---|
-//! | `status` | the disclosures — mode, role, seated tools, backend, adjudicator |
-//! | `warnings` | the `!` lines on this session's log, newest last |
-//! | `turn` | whether a turn is running, its rounds, the model |
-//! | `heads` | who is attached right now |
-//!
-//! # Why read-only is not a placeholder
-//!
-//! A tool that could CHANGE the harness from inside a turn would let a model
-//! widen its own gate — the thing every layer below this refuses. The mode, the
-//! permission list and the adjudicator are the operator's, and a session
-//! reporting them is a different act from a session setting them. If a write
-//! surface is ever wanted it belongs behind the adjudicator like any other, and
-//! not in this file.
-//!
-//! # What it deliberately does not carry
-//!
-//! The transcript. A model asking to re-read its own conversation would be
-//! spending context to recover context it already has, and the rows it cannot
-//! see are the ones compaction deliberately replaced.
+//! `harness`: what the session can see about the harness it runs inside.
+//! Read-only, and not as a placeholder: a tool that could change the harness from inside a turn
+//! would let a model widen its own gate. It does not carry the transcript the model already has.
 
 use std::sync::Arc;
 
@@ -52,14 +21,9 @@ pub trait HarnessFacts: Send + Sync {
     fn turn(&self) -> Option<(bool, usize, String)>;
     /// `(kind, identity)` per attached head.
     fn heads(&self) -> Vec<(String, String)>;
-    /// **What a head has on screen right now**, as `(cols, rows, lines)`, escape
-    /// codes included — or `None` when no head answered in time.
-    ///
-    /// Asked of the heads rather than rendered here, because only the process
-    /// that drew the bytes knows the width, the scroll position, the theme and
-    /// which folds are open. A daemon-side re-render would be a reconstruction,
-    /// and the operator's whole point was that a reconstruction is not what he is
-    /// looking at.
+    /// What a head has on screen right now, as `(cols, rows, lines)`, or `None` when no head
+    /// answered in time. Asked of the heads because only the process that drew the bytes knows the
+    /// width, the scroll position and which folds are open.
     fn screen(&self) -> Option<(usize, usize, Vec<String>)>;
 }
 
@@ -292,10 +256,8 @@ mod tests {
         )
     }
 
-    /// The five views, and the distinction that matters in each: a warning's AGE
-    /// rather than a timestamp (a session's clock is hours stale by the time it
-    /// reads this), an empty log reported as empty rather than as "fine", and a
-    /// screen handed back as BYTES rather than as a description of itself.
+    /// The five views: a warning's age rather than a timestamp, an empty log reported as empty
+    /// rather than as fine, and a screen handed back as bytes rather than a description of itself.
     #[test]
     fn the_five_views_report_what_the_operator_sees() {
         let f: Arc<dyn HarnessFacts> = Arc::new(Fake);
@@ -312,7 +274,7 @@ mod tests {
             status.payload
         );
 
-        // Newest last, and aged — the `!` lines as the terminal shows them.
+        // Newest last, and aged: the `!` lines as the terminal shows them.
         let w = ask(f.clone(), r#"{"what":"warnings"}"#);
         assert!(
             w.payload.contains("! auto_compact (4s ago)"),
@@ -347,22 +309,18 @@ mod tests {
         );
         assert!(s.payload.contains("plain"), "{}", s.payload);
 
-        // `Access::Read`, so it never reaches the gate (clause 4): asking what you
-        // are running inside must not need permission, and a session with no
-        // adjudicator must still be able to discover that it has none.
+        // `Access::Read`, so it never reaches the gate: asking what you are running
+        // inside must not need permission, and a session with no adjudicator must still
+        // be able to discover that it has none.
         assert_eq!(
             HarnessView::new(Arc::new(Fake)).schema().access,
             crate::schema::Access::Read
         );
     }
 
-    /// **Empty is reported as empty, never as fine.** A model told "no warnings"
-    /// must not read it as "nothing is wrong" — the same rule `grep` follows when
-    /// it has opened zero files.
-    /// **No head is not an empty screen.** The two look identical from the
-    /// daemon — zero rows either way — and only one of them means the operator is
-    /// staring at a blank terminal. A model told "the screen is empty" would go
-    /// on to explain a blank screen that nobody has.
+    /// Empty is reported as empty, never as fine. And no head is not an empty screen: the two look
+    /// identical from the daemon, so a model told the screen is empty would explain a blank screen
+    /// nobody has.
     #[test]
     fn no_head_is_never_reported_as_a_blank_screen() {
         let s = ask(Arc::new(Empty), r#"{"what":"screen"}"#);
@@ -378,8 +336,8 @@ mod tests {
             "the absence was dressed up as a screen: {}",
             s.payload
         );
-        // And it says how to tell the two apart rather than leaving the model to
-        // guess which one it hit.
+        // And it says how to tell the two apart rather than leaving the model to guess
+        // which one it hit.
         assert!(said.contains("heads"), "{}", s.payload);
     }
 

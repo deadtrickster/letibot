@@ -1,121 +1,13 @@
-//! `ask_user_question` — the one tool whose result is a claim about what a
-//! **person** said.
-//!
-//! Every other tool in this crate reports something a machine can be re-asked. If
-//! `grep` is wrong you run it again. If this tool is wrong, the transcript now
-//! contains a sentence attributed to the operator that the operator never said,
-//! and every later turn reasons from it. So the bar is higher here than anywhere
-//! else in the tool set, and it is a single rule:
-//!
-//! > **If nobody answered, nobody answered.** Not a default, not a best guess, not
-//! > "continue using your judgement". [`ToolOutcome::NotRun`] — *nothing was
-//! > decided* — with a sentence saying who was not reached.
-//!
-//! # The prior art this is a rejection of
-//!
-//! `docs/tool-survey.md` §3.6 records grok-build's version, which is the most
-//! developed of the five and gets exactly this wrong:
-//!
-//! > a 30-minute timeout becomes a *successful* result reading *"User declined to
-//! > answer the questions. Continue with the task using your best judgment"*
-//! > (`grok_build/ask_user_question/format.rs:21`)
-//!
-//! Nobody declined. Nobody was there. That result is `Ok`, so it propagates as
-//! grounding ([`crate::result::propagate`]), and a subagent whose only call was
-//! this one may report success. opencode's is the same failure in fewer words:
-//! an unanswered question becomes `"q" = "Unanswered"` inside a successful result
-//! (`question.ts:31`).
-//!
-//! **This is operator-backed policy, not a preference.** D10: *"we need user
-//! questions claude code style - model provided options with user notes and then
-//! opencode style free user reply input, not claude code 'chat later'"*, with the
-//! unanswered case staying `not_run` and never becoming a default.
-//!
-//! # The one default there is: the model's own, named and logged
-//!
-//! The operator, 2026-10-12: *"for select tool allow model to give default and timeout so if im
-//! away it can proceed"* and *"such default proceeds must be logged"*. A question may carry a
-//! `default` (one of its options) and a `timeout_s`. When the deadline passes
-//! ([`AskError::Expired`], not an interrupt) or nobody is attached, the default is taken — as
-//! the MODEL's choice, said to be one and attributed to nobody — and only once the questioner
-//! has written it down ([`Questioner::defaulted`]: `AUTO-DECISIONS.md` in the repository, and a
-//! note on the session). With nowhere to write it, it is not taken and the rule above holds.
-//!
-//! # Eight ways this refuses, and all eight are `not_run`
-//!
-//! | | what happened | why not something else |
-//! |---|---|---|
-//! | [`AskError::NoHead`] | nothing is attached that could be asked | not `Abstained`: an abstention is a claim about the world, and nobody looked at the world |
-//! | [`AskError::Unanswered`] | the question reached a head and nobody answered before the deadline | a deadline is not a decision, and *"chat later"* is not an answer |
-//! | [`AskError::Nonconforming`] | an answer chose an option that was never offered | the same rule [`crate::adjudicate::AskAdjudicator`] applies: a non-conforming answerer never opens the gate |
-//! | [`AskError::Empty`] | an answer arrived with no option, no note and no free text | there is nothing in it to attribute to anybody |
-//! | [`AskError::NoteQualifiesNothing`] | a note arrived with no option chosen | reading it as free text would be the harness reinterpreting what a person said, which is the one thing this module must never do |
-//! | [`AskError::AbstainedAndAnswered`] | an abstention arrived carrying a choice, a note or words | two claims in one frame, and picking which one a person meant is the same defect |
-//! | [`AskError::Anonymous`] | an answer came back with nobody attached to it | an attribution to nobody is the failure this whole module exists to prevent |
-//! | [`AskError::NotAnAnswer`] | the other vocabulary's reply arrived for this request | the hub refuses it at the door; this is the belt to that pair of braces, and it is not an answer |
-//!
-//! # The answer vocabulary (D10)
-//!
-//! Four things, and the fields are separate because folding them loses information:
-//!
+//! `ask_user_question` - the one tool whose result is a claim about what a person said.
+//! If nobody answered, nobody answered: [`ToolOutcome::NotRun`], never a default and never
+//! a best guess. The only default is the model's own, and only once it has been written down.
 //! ```text
 //!   QuestionAnswer { option: Option<usize>, note: Option<String>, free: Option<String>,
 //!                    abstain: bool }
 //! ```
-//!
-//! * `option` — a model-provided choice, so the common case is one keystroke.
-//! * `note` — a qualification **on that choice**. Folding it into free text loses
-//!   *which option* it qualifies, which is usually the load-bearing half of
-//!   *"option B, but only for the CUDA box"*.
-//! * `free` — a first-class answer on its own. A person who wants to type a
-//!   sentence has answered the question; they have not deferred it.
-//! * `abstain` — **a deliberate no-answer**, which is an answer. It stands alone.
-//!
-//! At least one of `option`, `free` or `abstain` must be present, and `note` needs
-//! an `option` to qualify. [`QuestionAnswer::validate`] is where those hold, and it
-//! is the only door into an `Ok`.
-//!
-//! # An abstention is not silence and not an empty answer
-//!
-//! Three things that look alike, told apart by **what arrived and what this tool
-//! reports**, which is the whole of the distinction:
-//!
-//! | | what arrived | outcome | what the model is told |
-//! |---|---|---|---|
-//! | **silence** | nothing; the deadline passed | `not_run` | nobody answered, the question is still open |
-//! | **an empty answer** | a frame with no option, no note, no words, no abstention | `not_run` | there is nothing in it; an empty answer is not a shrug |
-//! | **an abstention** | a frame that says so | **`Abstained`** | *this person will not decide* — an answer: proceed and state the assumption (R93.B11, the rule `todo_write`'s operator wait states too) |
-//!
-//! So the abstention is the only one of the three with its own outcome class. The
-//! model reads the class first (a `NO_RESULT` envelope rather than a `TOOL_ERROR`),
-//! and the sentence names who abstained and what they did not do. A model that
-//! cannot tell an abstention from silence will ask again into the same silence; one
-//! that cannot tell it from an empty answer will think it misheard; and one that
-//! reads either as assent does the thing the person declined to authorise.
-//!
-//! # This vocabulary is deliberately NOT `OptionKind`
-//!
-//! `crates/sessionlog`'s `OptionKind` is `AllowOnce | AllowAlways | RejectOnce |
-//! RejectAlways` and [`crate::adjudicate::OptionKind`] is its five-way cousin. Both
-//! are **adjudication** vocabularies: they answer *may this run*. A question answers
-//! *which way should I go*, and the consequences differ — an adjudication that goes
-//! wrong runs something, an answer that goes wrong is attributed to a person.
-//! Overloading one into the other would put a free-form sentence where a policy
-//! engine reads a grant, so they stay two types.
-//!
-//! # What the wire has, and what poses the question
-//!
-//! `ClientFrame::AnswerQuestion` carries [`QuestionAnswer`] head → daemon, and
-//! `SessionEvent::DecisionRequested` carries the question the other way — its
-//! `kind` field is `"question"` (§11.6 — *"a permission and a question are one
-//! mechanism, differing in `kind`"*) and its `choices` are the model's plain-text
-//! options, which is the field `PROTOCOL_VERSION` 7 added so that a question could
-//! be posed *with* its choices rather than *"only by discarding the choices"*.
-//!
-//! The daemon's end of that is `letibot-harnessd`'s `HeadQuestioner`, which is what
-//! [`Wiring::questioner`](crate::builtins::intent::Wiring) is given for a session
-//! whose adjudicator is the head. [`Headless`] remains what a session with no head
-//! gets, and it refuses by name.
+//! Four separate fields, because folding one into another loses which option a note
+//! qualifies; [`QuestionAnswer::validate`] is the only door into an `Ok`, and an
+//! abstention is the one answer with its own outcome class: `Abstained`, not `not_run`.
 
 use letibot_transcript::ToolOutcome;
 use serde_json::Value;
@@ -132,25 +24,17 @@ pub struct Question {
     /// Why the model is stuck, in one line. Shown to the person; never used to
     /// derive an answer.
     pub because: String,
-    /// **The option the MODEL would take if nobody answers in time** — an index
-    /// into `options`. The operator's own ask: *"for select tool allow model to give
-    /// default and timeout so if im away it can proceed"*. It is the model's choice
-    /// and never the person's: a default taken is said to be one, and logged
-    /// ([`Questioner::defaulted`]) — with nowhere to log it, it is not taken.
+    /// The option the model would take if nobody answers in time, as an index into
+    /// `options`: the model's choice and never the person's, said to be one and logged
+    /// ([`Questioner::defaulted`]) - with nowhere to log it, it is not taken.
     pub default: Option<usize>,
     /// How long to wait before the default is taken. Only with a `default`.
     pub timeout: Option<std::time::Duration>,
 }
 
-/// **What a person said** — D10's shape, and the type that goes on the wire.
-///
-/// Four independent fields, because the four things they carry are independent: a
-/// choice, a qualification *on that choice*, a sentence typed instead of choosing,
-/// and a deliberate no-answer. See the module docs for why none of them collapses
-/// into another.
-///
-/// `Serialize`/`Deserialize` because `letibot_sessionlog`'s
-/// `ClientFrame::AnswerQuestion` carries exactly this, head → daemon.
+/// What a person said, and the type that goes on the wire: four independent fields - a
+/// choice, a qualification on that choice, a sentence typed instead of choosing, and a
+/// deliberate no-answer - none of which folds into another.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QuestionAnswer {
     /// Index into the question's `options`. One keystroke, which is the point of
@@ -167,19 +51,9 @@ pub struct QuestionAnswer {
     /// than an answered one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free: Option<String>,
-    /// **A deliberate no-answer**, which is an answer. The operator: *"i can
-    /// abstain or type my answer"*.
-    ///
-    /// It is the fourth field rather than an empty `free` because the three things
-    /// it must be told apart from are three different facts: silence (no frame),
-    /// an empty answer (a frame with nothing in it, refused as
-    /// [`AskError::Empty`]), and this. It stands alone — see
-    /// [`Self::validate`] — and a model that receives it must state the assumption
-    /// it would otherwise make and stop, or ask something the person can answer.
-    ///
-    /// Elided when `false`, like the three fields above: an absent `abstain` and a
-    /// `false` one are the same claim, so nothing is lost and every frame that
-    /// existed before this field did is byte-identical.
+    /// A deliberate no-answer, which is an answer: it stands alone ([`Self::validate`]),
+    /// and a model that receives it must state the assumption it would otherwise make.
+    /// Not an empty `free`, because silence, an empty answer and this are three facts.
     #[serde(default, skip_serializing_if = "is_false")]
     pub abstain: bool,
 }
@@ -298,20 +172,15 @@ pub enum AskError {
     Anonymous,
     /// The head was there and the ask itself broke.
     Transport(String),
-    /// The other vocabulary's reply arrived for this question.
-    ///
-    /// `Hub::submit` refuses a permission's answer for a question at the door, so
-    /// this is the belt to that pair of braces and is not reachable through the
-    /// daemon. It exists because the arm has to say *something*, and "a permission's
-    /// answer arrived" is not [`Self::Transport`] — nothing failed to be delivered.
+    /// The other vocabulary's reply arrived for this question: not [`Self::Transport`],
+    /// because nothing failed to be delivered. `Hub::submit` refuses it at the door, so
+    /// this is the belt to that pair of braces and the arm has to say something.
     NotAnAnswer(String),
 }
 
 impl AskError {
-    /// **All of them are `NotRun`.** There is no branch of this function that
-    /// produces `Ok`, `Abstained` or `Denied`, and that is the property the module
-    /// exists for: a failed ask never becomes an answer, and it never becomes a
-    /// claim about the world either.
+    /// All of them are `NotRun`: no branch here produces `Ok`, `Abstained` or `Denied`, so
+    /// a failed ask never becomes an answer and never becomes a claim about the world.
     pub fn outcome(&self) -> ToolOutcome {
         ToolOutcome::NotRun {
             why: self.to_string(),
@@ -372,27 +241,17 @@ impl std::fmt::Display for AskError {
 /// The seam to whatever can reach a person: a TUI, the flowy connector, an ACP
 /// client.
 pub trait Questioner: Send + Sync {
-    /// Post the question and wait for an answer, or say why there is none.
-    ///
-    /// Blocking is the implementation's business, and so is its deadline: this
-    /// crate has no async runtime and a deadline that expired is
-    /// [`AskError::Unanswered`], which is the same fact one layer in.
-    ///
-    /// The `String` is **who answered**, read from the head that answered and never
-    /// from the answer itself. A tuple rather than a field on
-    /// [`QuestionAnswer`] on purpose: `QuestionAnswer` is what a *person types* and
-    /// goes on the wire from their head; the identity is what the *daemon knows*
-    /// about the connection it arrived on. An answer that could name its own
-    /// answerer is an answer that could name somebody else.
+    /// Post the question and wait for an answer, or say why there is none. The `String`
+    /// is who answered, read from the head and never from the answer itself: an answer
+    /// that could name its own answerer could name somebody else.
     fn ask(&self, q: &Question) -> Result<(QuestionAnswer, String), AskError>;
 
     /// For `EXPLAIN`: who could actually be asked in this session.
     fn describe(&self) -> String;
 
-    /// **The model's default was taken** because nobody answered `q` in time: write it
-    /// down where the operator will find it, and say where. `None` — the default for a
-    /// questioner that has nowhere to write — and the default is NOT taken: an
-    /// unlogged auto-decision is a decision nobody can review.
+    /// The model's default was taken because nobody answered `q` in time: write it down
+    /// where the operator will find it. `None` is a questioner with nowhere to write, and
+    /// then the default is not taken - an unlogged auto-decision cannot be reviewed.
     fn defaulted(&self, _q: &Question, _waited: std::time::Duration) -> Option<String> {
         None
     }
@@ -404,10 +263,8 @@ pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const MIN_TIMEOUT_S: u64 = 30;
 const MAX_TIMEOUT_S: u64 = 3600;
 
-/// **The default, and it refuses.**
-///
-/// The name is the fact: there is no head. Every call is `NotRun` and the sentence
-/// says who was not reached, so a model that gets this back knows it is stuck
+/// The default, and it refuses: there is no head, so every call is `NotRun` and the
+/// sentence says who was not reached - a model that gets this back knows it is stuck
 /// rather than believing it was told to proceed.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Headless;
@@ -471,10 +328,9 @@ impl Tool for AskUserQuestion {
                 },
                 "required": ["question"]
             }),
-            // Session: it changes nothing the operator owns and reads nothing off
-            // disk; it interrupts a person. Declaring `Read` — which is what a
-            // tool set that had no word for this would do — would be the
-            // under-declaration `docs/tool-survey.md` §1.4 names in grok-build.
+            // Session: it changes nothing the operator owns and reads nothing off disk; it
+            // interrupts a person. Declaring `Read` would be the under-declaration a tool set
+            // with no word for this makes.
             Access::Session,
         )
     }
@@ -578,13 +434,9 @@ impl Tool for AskUserQuestion {
     }
 }
 
-/// **The way out of a question nobody answered in time** — the operator: *"after some time we can
-/// offer model to switch it to a todo that depends on me, so it can unblock itself. for example if
-/// it does something and thinks there is a refactor opportunity. it asks if it should proceed and
-/// gets blocked."* The question goes on the board as a row waiting on the operator, the same words
-/// and options, written out as the exact call; the rest of the plan keeps going, and the answer
-/// reaches the model when it is given. `todos` adds a row and removes none, so the call is safe to
-/// make as it stands.
+/// The way out of a question nobody answered in time: the question goes on the board as
+/// a row waiting on the operator, the same words and options, as the exact call, and the
+/// rest of the plan keeps going. `todos` adds a row and removes none, so it is safe.
 pub(crate) fn todo_offer(q: &Question) -> String {
     let json = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
     let title: String = q.text.chars().take(135).collect();
@@ -627,15 +479,9 @@ fn defaulted(q: &Question, d: usize, why: &AskError, logged: &str) -> Invocation
     )
 }
 
-/// Turn an answer into a result, refusing every shape that would attribute
-/// something to nobody or reinterpret what a person said.
-///
-/// **An abstention is the one answer that is not `Ok`.** It is a real answer —
-/// somebody was reached and said *not this one* — so it is not `not_run`, which is
-/// what both silence and a malformed answer get. It is `Abstained`: no result, and
-/// no permission either. The three are told apart by the outcome class *and* the
-/// sentence, which is the property `an_abstention_is_told_apart_from_silence_and_
-/// from_an_empty_answer` holds.
+/// Turn an answer into a result, refusing every shape that would attribute something to
+/// nobody or reinterpret what a person said. An abstention is the one answer that is not
+/// `Ok`: it is `Abstained`, not `not_run`, which is what silence and a malformed answer get.
 fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
     let refuse = |e: AskError| Invocation {
         outcome: e.outcome(),
@@ -869,10 +715,9 @@ mod tests {
         );
     }
 
-    /// **A question nobody answered offers the way out** — the operator: *"after some time we can
-    /// offer model to switch it to a todo that depends on me, so it can unblock itself"*. The
-    /// expired question comes back with the `todo_write` call that puts it on the board as a
-    /// row waiting on the operator, the same question and options, so the model can go on.
+    /// A question nobody answered offers the way out: it comes back with the `todo_write`
+    /// call that puts it on the board as a row waiting on the operator, the same question
+    /// and options, so the model can go on.
     #[test]
     fn an_expired_question_offers_to_become_a_row_waiting_on_the_operator() {
         let r = ask(Arc::new(ScriptedQuestioner::silent()), Q);
@@ -1000,10 +845,9 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("qualifies the option it came with"), "{out}");
-        // **Both halves, and the person's name on the whole of it.** The operator's
-        // requirement is that each choice can carry their note; what reaches the
-        // model has to say which choice, what the note was, and whose it is — a
-        // note that arrived unattributed reads as the harness's own reasoning.
+        // Both halves, and the person's name on the whole of it: what reaches the model says
+        // which choice, what the note was, and whose it is - a note that arrived unattributed
+        // reads as the harness's own reasoning.
         assert!(
             out.contains("deadtrickster chose option 1: b"),
             "the choice is not attributed to the person beside the note: {out}"

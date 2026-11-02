@@ -2,12 +2,8 @@
 
 use super::*;
 
-/// **A parent's write UPSERTS and never replaces — the child's rows, the operator's rows and
-/// the version's economy all survive it.**
-///
-/// This is the hazard the whole feature turns on, measured rather than argued: under the old
-/// whole-list-replace contract a parent that wrote a child's board would have deleted the
-/// child's plan with its own three rows. Every arm below is one thing that must not move.
+/// A parent's write UPSERTS, never replaces: a whole-list replace here would delete the child's own
+/// plan with the parent's rows, so each arm below is one thing that must not move.
 #[test]
 fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
     let b = TodoBoard::new(vec![
@@ -140,14 +136,8 @@ fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
     );
 }
 
-/// **A parent's row is NAG-WORTHY BY CONSTRUCTION** — and that is the whole of “the child
-/// learns via usual todo nags”.
-///
-/// The selection rules are read here, not assumed: `unfinished_plan` filters by STATUS
-/// (completed is out, postponed is out) and by nothing else — there is no `by` anywhere in
-/// `open_priority` — so a pending parent row is asked about exactly like the child's own.
-/// The child's own row is completed here so the parent's is the one named, which pins both
-/// the row and the author string the nag shows.
+/// A parent's row is nag-worthy by construction: the selection filters by status and never by
+/// author, so a pending parent row is asked about exactly like the child's own.
 #[test]
 fn a_parent_row_is_nag_worthy_by_construction() {
     let author = TodoBy::parent_of("s-1789462738453908838");
@@ -229,10 +219,8 @@ fn the_reply_names_all_three_authors() {
     assert!(shown.contains("— the operator's"), "{shown}");
 }
 
-/// **A `target` write reaches the child and ONLY the child.** The tool's own board is the
-/// thing that must not move: the target path returns before any of the own-board code runs,
-/// and the reply is the CHILD's board — the parent's confirmation that its rows landed
-/// beside the child's own.
+/// A `target` write returns before the own-board path runs, so this board cannot move and the reply
+/// is the CHILD's board.
 #[test]
 fn a_target_write_reaches_the_child_and_not_this_board() {
     let child = Arc::new(TodoBoard::new(vec![item(

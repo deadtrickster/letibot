@@ -1,34 +1,6 @@
-//! `job_list`, `job_output`, `job_wait`, `job_kill` — background job control, and
-//! the four things that make it different from the three harnesses that ship one.
-//!
-//! # 1. Every predicate is a handle
-//!
-//! `job_kill` takes a job id or a scope. `job_wait` takes a job id or a scope.
-//! Neither takes a pattern, and that is not an omission — it is the mechanism.
-//! `TODO.md` T24: *"`pkill -f X` becomes 'kill this cgroup' — no pattern, so
-//! nothing to self-match; `until pgrep -f X` becomes 'is this cgroup non-empty' —
-//! no predicate that can match its own waiter."* T21.1 and T21.2 are not guarded
-//! here, they are **blocked** here.
-//!
-//! # 2. There is a wait verb at all
-//!
-//! Because otherwise the model writes the loop. The fleet counted a hand-written
-//! polling loop in **seventy-six spellings** before `wait` became one verb, and
-//! every one of those spellings is a chance to write the self-matching one. A
-//! capability the model asks for cannot be composed wrong.
-//!
-//! # 3. Three exit conditions, never collapsed
-//!
-//! It happened / the deadline passed quietly and it is still running / it was
-//! never there. F5 forbids the second being reported as the first, and the seat
-//! brief's *only count absence after presence* is what makes the third necessary:
-//! an empty scope at t=0 is a boot window, not a finish.
-//!
-//! # 4. The reap log is a tool result
-//!
-//! `job_list` shows what every ended scope killed. A reaper whose zero is
-//! unfalsifiable is the empty-haystack bug one layer up, and the only cure for it
-//! is that the record is somewhere somebody reads.
+//! `job_list`, `job_output`, `job_wait`, `job_kill`: background job control where every
+//! predicate is a handle, so no wait or kill can match its own waiter, and where three
+//! outcomes stay distinct - it happened, the deadline passed, it was never there.
 
 use std::time::Duration;
 
@@ -60,15 +32,8 @@ fn no_process_host(ctx: &InvokeCtx<'_>) -> Invocation {
     )
 }
 
-/// Clause 1 for a job id that is not there: the list, and the nearest.
-///
-/// **The table is passed in rather than asked for again**, and that is a fact about the
-/// answer rather than tidiness: this is the listing the caller is told to look in, so it has
-/// to be the table the name was matched against. A second `host.jobs()` is a second table,
-/// and a job that spawned between the two would appear in the refusal as one the caller
-/// could have meant — or worse, vanish from a list that was just used to say it was not
-/// there. It also makes the wording assertable without a cgroup tree, which is why
-/// [`ambiguous_job`] takes the same shape.
+/// Clause 1 for a job id that is not there: the list, and the nearest name in it.
+/// The table is the one the name was matched against, so the answer cannot drift from it.
 pub(crate) fn unknown_job(jobs: &[JobView], asked: &str) -> Invocation {
     let mut body = if jobs.is_empty() {
         // A denominator of zero. `no such job` over an empty table and `no such
@@ -102,10 +67,8 @@ pub(crate) fn unknown_job(jobs: &[JobView], asked: &str) -> Invocation {
     Invocation::failed(format!("no job called `{asked}`"), body)
 }
 
-/// **Which job the caller meant**, over the daemon's table rather than over the host.
-///
-/// Pure, so the two rules that matter are assertable without a cgroup tree and a spawned
-/// job: **the id wins**, and **a name that fits more than one job is not a name**.
+/// Which job the caller meant, over the daemon's table rather than over the host.
+/// The id wins, and a name that fits more than one job is not a name.
 enum Picked {
     /// Exactly one job, by its index in the table: the id the caller wrote, or the one job
     /// carrying that name.
@@ -142,14 +105,8 @@ fn pick_job(jobs: &[JobView], asked: &str) -> Picked {
     }
 }
 
-/// **A job, from what the caller wrote: the id the daemon mints, or the name the agent
-/// stated when it backgrounded the work.**
-///
-/// `job_output`, `job_kill` and `job_wait` take either. A person reads `release-build` off a
-/// row, a model reads it out of the `bash` result it was just handed, and neither should have
-/// to go and find the id: the name is the agent's own word for what it was doing, and it is on
-/// the row beside the id precisely so that it can be used. The match is exact and never fuzzy —
-/// a near miss is guessed at only in the refusal, where guessing costs nothing.
+/// A job, from what the caller wrote: the id the daemon mints, or the name the agent
+/// stated when it backgrounded it. Exact, never fuzzy; a near miss is only named in the refusal.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn resolve_job(host: &dyn ProcessHost, asked: &str) -> Result<JobView, Invocation> {
     resolve_job_in(&host.jobs(), asked)
@@ -167,20 +124,8 @@ pub(crate) fn resolve_job_in(jobs: &[JobView], asked: &str) -> Result<JobView, I
     }
 }
 
-/// The refusal for a name that fits more than one job.
-///
-/// **The daemon makes a name unique within the session, so this is the belt to that brace** —
-/// and it stays because a host that is not this daemon (a guest, a test double, a future one)
-/// can still hand out two. Guessing which was meant would act on a job the caller did not
-/// name, which is the one thing a handle exists to prevent; the ids are listed so the next
-/// call can say which.
-///
-/// **It names the job the way it was ASKED FOR**, and that is the rule for every refusal here
-/// rather than a wording choice: the caller wrote `tests`, so `tests` is what the answer is
-/// about — `release-build · j65` is a *result's* way of naming a job, and a refusal that
-/// answered with a label would be telling the caller about a string it never used. The rows
-/// beneath it are drawn by [`JobView::label`], because there the question is which job is
-/// which.
+/// The refusal for a name that fits more than one job: guessing would act on a job the
+/// caller did not name, so both ids are listed and the name is kept as it was asked for.
 fn ambiguous_job(jobs: &[JobView], asked: &str, ids: &[JobId]) -> Invocation {
     let lines: String = ids
         .iter()
@@ -232,14 +177,8 @@ fn secs(d: Duration) -> String {
 
 // -------------------------------------------------------------- job_list
 
-/// **The two lines a `job_list` opens with**, given what was asked for and what there is:
-/// the denominator (§2.2 — a count does not travel without the size it was drawn from) and, when
-/// the answer is *nothing is running*, where the rest went.
-///
-/// Pure, and that is not tidiness: the default's whole promise is that the listing is the ACTIVE
-/// jobs with the hidden count stated, and asserting that through `invoke` would need a process
-/// host, a cgroup tree and a spawned job. The tree's own rule — *"a decision exercisable only by
-/// standing up a whole session is a decision nothing asserts"* — is why the wording lives here.
+/// The two lines a `job_list` opens with: the denominator, and where the rest went when
+/// nothing is running. Pure so the wording is assertable without a host or a cgroup tree.
 fn job_list_summary(
     want: Option<&str>,
     everything: bool,
@@ -248,12 +187,8 @@ fn job_list_summary(
     running: usize,
 ) -> String {
     let settled = in_scope - running;
-    // **Nothing running is the ANSWER, and it goes first.** MEASURED against a live daemon
-    // (12:04, the first run of this default): the accounting line already said *"0 of 1 job(s) …
-    // are still running; 1 have settled and are not listed"* and the clause below then said
-    // *"Nothing is running; 1 job(s) have settled"* — one fact twice, one line apart. The reader
-    // asked what is active, so the sentence that answers goes first, and the settled count inside
-    // it is the note about where the rest went.
+    // Nothing running is the answer, so it goes first; the settled count inside it says
+    // where the rest went, rather than being said again on the line below.
     if running == 0 && settled > 0 {
         return match want {
             Some(w) => format!(
@@ -317,12 +252,8 @@ impl Tool for JobList {
             return no_process_host(ctx);
         };
         let want = args.get("scope").and_then(|v| v.as_str());
-        // **ACTIVE BY DEFAULT** (2026-10-05). The operator, looking at a `job_list` of 44 jobs
-        // with exactly one running: *"let job_list show only active jobs by default with a note
-        // how to get finished jobs"*. The default was the whole session's history, which is how
-        // the one job anybody acts on gets buried under forty finished `grep`s — and the count of
-        // what is hidden is printed rather than the filter being silent, which is the same rule
-        // the scope filter already follows.
+        // Active by default: the one job anybody acts on must not be buried under the
+        // session's history, and the count of what was hidden is printed, not silent.
         let everything = args.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
         let all = host.jobs();
         let in_scope: Vec<_> = all
@@ -341,11 +272,8 @@ impl Tool for JobList {
         };
 
         let mut body = String::new();
-        // The denominator, first and always. §2.2: a count does not travel without
-        // the size of what it was drawn from, and "0 jobs" under a filter is not
-        // the same fact as "0 jobs". The choice of words is a pure function so that the
-        // default's promise — *the active ones, and how many were left out* — is asserted
-        // without a process host; see [`job_list_summary`].
+        // The denominator, first and always: "0 jobs" under a filter is not the same fact
+        // as "0 jobs", so the wording is a pure function and `job_list_summary` is asserted.
         body.push_str(&job_list_summary(
             want,
             everything,
@@ -358,10 +286,8 @@ impl Tool for JobList {
             body.push_str(&format!(
                 "\n{}  [{}]\n  command: {}\n  scope:   {} — {}\n  pid:     {}\n  \
                  elapsed: {}\n  output:  {} bytes{}\n{}{}",
-                // **The name beside the id**, the same rule `/job` and the pane's entry
-                // follow ([`JobView::label`]): the listing is where a model goes to find
-                // the handle it will pass to `job_output`, and the name it stated is a
-                // handle now.
+                // The name beside the id, as everywhere ([`JobView::label`]): the listing is
+                // where a model finds the handle, and the name it stated is a handle now.
                 j.label(),
                 j.state.word(),
                 clip(&j.command, 160),
@@ -375,11 +301,8 @@ impl Tool for JobList {
                     Some(d) => format!(", last wrote {} ago", secs(d)),
                     None => ", nothing written yet".to_string(),
                 },
-                // **Where the whole of it is**, on every row that has somewhere: a run with
-                // no deadline (`bash { background: true }`, the operator's own `!` line) has
-                // had its file since the spawn, so a listing that showed only the window's
-                // byte count would be the one place in the tree that did not name it. Read
-                // off the same record `job_output` and the `bash` result read.
+                // Where the whole of it is, on every row that has somewhere: the window's
+                // byte count alone would be the one place that did not name the file.
                 j.output_file
                     .as_ref()
                     .map(|f| format!("  file:    {} (from byte {})\n", f.path, f.from))
@@ -399,12 +322,8 @@ impl Tool for JobList {
             }
         }
 
-        // THE MONITORS. T24 requirement 2: *"the head can show what is watching
-        // and for whom … an invisible watcher is an unreapable one."* They are
-        // here rather than behind a `monitor_list` of their own because "what is
-        // running and what is watching" is one question, and a second listing
-        // nobody opens is how a watcher becomes invisible without anybody hiding
-        // it.
+        // The monitors, beside the jobs: "what is running and what is watching" is one
+        // question, and a watcher nobody lists is a watcher nobody can reap.
         if let Some(monitors) = host.monitors() {
             let live = monitors.list();
             let done = monitors.firings();
@@ -446,10 +365,8 @@ impl Tool for JobList {
             }
         }
 
-        // THE PROMOTIONS. A lifetime that changed under the model is a fact
-        // somebody has to be able to read back: a job whose owner is now the
-        // session, when the model started it in the turn, is a different thing
-        // from one that started there.
+        // The promotions: a job whose lifetime changed under the model is a fact somebody
+        // has to be able to read back.
         let promotions = host.promotions();
         if !promotions.is_empty() {
             body.push_str(&format!(
@@ -546,10 +463,8 @@ impl Tool for JobOutput {
             Err(inv) => return inv,
         };
         let jid = view.id.clone();
-        // **The name every sentence about this job uses**, once, so the branches below cannot
-        // drift: `release-build · j65` when the agent named it, the bare id when nobody did
-        // ([`JobView::label`]). The sentences that tell the caller which ARGUMENT to pass keep
-        // the bare id — a label is what a reader sees, and only half of it resolves.
+        // The name every sentence about this job uses, once, so no branch can drift. The
+        // sentences naming an ARGUMENT keep the bare id: only half of a label resolves.
         let label = view.label();
         let from = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
         let limit = args
@@ -564,24 +479,11 @@ impl Tool for JobOutput {
         };
         let denominator = slice.denominator(&jid, &label);
 
-        // A job that has written nothing is not an empty answer about its output —
-        // it is a job that has written nothing, and whether it is still running
-        // decides what that means. §2.2's zero-denominator rule, in its exec form.
-        //
-        // **Three cases, not two** (§11.6). `NotScoped` wrote nothing because nothing
-        // ran — the wrapper could not join its cgroup — and *"`j9` not run (could not
-        // join its scope) and wrote nothing at all"* is the same contradiction the job
-        // pane drew: a command described as having written nothing when there was never
-        // a command. The state says which case it is and this is the subject line's own
-        // half of that ruling.
+        // A job that has written nothing is not an empty answer about its output: whether
+        // it is still running decides what that means. Three cases, not two.
         if slice.produced == 0 {
-            // **A job whose output was redirected has nothing captured, and that is a
-            // different answer from having written nothing** — R41, and it is the answer the
-            // operator's own build needed. `cargo build --release … > /tmp/log 2>&1` writes
-            // plenty and none of it here, so *"wrote nothing at all"* would be false and
-            // *"nothing yet"* would send the model back to poll.
-            //
-            // The daemon knows the command, so this needs nothing new on any wire.
+            // A redirected job captured nothing, which is not the same answer as writing
+            // nothing: its output went to a file, so sending the model to poll would be wrong.
             if let Some(path) = crate::builtins::output_redirect_path(&view.command) {
                 return Invocation::abstained(
                     format!("`{label}`'s output goes to `{path}`, not to its window"),
@@ -634,15 +536,9 @@ impl Tool for JobOutput {
             } else {
                 String::new()
             },
-            // **The window is bounded and the file is not**, so the reader is told where the
-            // rest of it is at the one moment they are looking at a window whose edges matter.
-            // This is the operator's report one layer down: a promoted run whose only copy was
-            // 8 MiB of memory was a run whose output *"goes to /dev/null"*.
-            //
-            // Named as a place the bytes ARE, not as a tool to call: a session inside a
-            // boundary can open the window through this tool and cannot `read` a path outside
-            // its view, so promising `read` here would be a refusal the reader would have to
-            // discover.
+            // The window is bounded and the file is not, so the reader is told where the rest
+            // is. Named as a place the bytes are, not as a tool: a confined session cannot
+            // read outside its view.
             match &view.output_file {
                 Some(f) => format!(
                     "[every byte of it is also in `{}`, from byte {} of this job's output — the \
@@ -767,10 +663,8 @@ fn wait_on_job(
         Err(inv) => return inv,
     };
     let jid = before.id.clone();
-    // **The name every sentence about this job uses**, once, so no branch below can drift:
-    // `release-build · j65` when the agent named it, the bare id when nobody did
-    // ([`JobView::label`]). The lines that tell the caller which ARGUMENT to pass keep the
-    // bare id — a label is what a reader sees, and only half of it resolves.
+    // The name every sentence about this job uses, once, so no branch can drift. The lines
+    // naming an ARGUMENT keep the bare id: only half of a label resolves.
     let label = before.label();
     // Presence, before absence. A job that already finished is not a wait that
     // succeeded; it is a wait there was nothing to do, and saying so keeps the two
@@ -786,33 +680,9 @@ fn wait_on_job(
         ));
     }
 
-    // **R23: the harness has already promised to tell you, so there is nothing to
-    // wait for.**
-    //
-    // The daemon watches every background job and submits its settlement to the
-    // model as a turn of its own, unprompted (R7). That promise is kept by the
-    // daemon, not by this tool, so before R23 it was a promise the *model* could
-    // decline: `job_wait` on a job the harness was already watching blocked the
-    // floor for its whole deadline, and the answer it was waiting for was in
-    // flight the entire time. Measured three times since the 2026-09-22 daemon
-    // start, most recently 23 seconds after a call was backgrounded and before
-    // the job had ended, so before any completion could exist.
-    //
-    // The fix is the same one R7 used on the notice: put the promise in the
-    // mechanism rather than in the wording. Four rewrites of the backgrounded
-    // result telling the model *"do not wait for it"* did not stop this; a
-    // `job_wait` that cannot block on a watched job does.
-    //
-    // **What this deliberately does not touch.** The verb stays for every job the
-    // harness is NOT already delivering: a scope, a job from another session, a
-    // deliberate block before a dependent step. Those still block for exactly as
-    // long as they were asked to, and `with_completion_delivered` unwired — a
-    // harness with no watcher, a backend that cannot start processes — leaves
-    // every wait behaving exactly as it did before this existed.
-    // **R23 is keyed on the ID, so the name has to be resolved before it is asked.** The
-    // daemon watches jobs by the handle it minted; a caller that wrote the agent's name would
-    // otherwise be told *nobody is watching this* and block for the whole deadline on a job
-    // whose answer was already in flight — the exact defect the paragraph below describes.
+    // The harness already promises to tell the model when a watched job settles, so waiting
+    // on one blocks the floor for an answer already in flight; the verb stays for jobs
+    // nothing delivers. The watch is keyed by id, so a name resolves before it is asked.
     if ctx.completion_delivered(&jid.0) {
         // **And asking is wanting** (R79): a result nothing in the plan waits on is held for the
         // next break, and a wait is the model saying this one is not that. So the daemon is told
@@ -835,20 +705,9 @@ fn wait_on_job(
         before.produced,
         secs(timeout)
     ));
-    // **The operator can cut a wait short, and this is the wait they most want to
-    // cut.**
-    //
-    // Ctrl-B reaches `bash` through the backend's promote channel, so a long
-    // command can be pushed to the background and the floor handed back. It did
-    // not reach here — and here is where the floor was actually being held. The
-    // measured sequence: a `bash` promoted to `j14`, the model's next move
-    // `job_wait j14 180000`, and three minutes in which the operator's Ctrl-B did
-    // nothing at all and their typed line sat queued. What they saw once the turn
-    // finally ended was `promote_idle — a background request arrived between
-    // turns; nothing was running to move`, twice.
-    //
-    // The job is already in the background; the WAIT is the thing to abandon. So
-    // the deadline is spent in slices and the channel is read between them.
+    // The operator can cut a wait short, and this is the wait they most want to cut: Ctrl-B
+    // reaches `bash` and not a `job_wait` holding the floor. The job is already background,
+    // so the deadline is spent in slices and the promote channel is read between them.
     let waited = match wait_greedily(ctx, host, &jid, timeout) {
         Ok(Some(w)) => w,
         // The operator asked for the floor. Not a failure and not a timeout: the
@@ -913,10 +772,7 @@ fn wait_on_job(
 }
 
 /// Spend `timeout` on `jid` in slices, watching the promote channel between them.
-///
-/// `Ok(None)` means the operator asked for the floor before the job settled. The
-/// slice is short enough that a Ctrl-B feels immediate and long enough that the
-/// loop costs nothing next to a job measured in minutes.
+/// `Ok(None)` means the operator asked for the floor before the job settled.
 fn wait_greedily(
     ctx: &mut InvokeCtx<'_>,
     host: &dyn ProcessHost,
@@ -926,10 +782,8 @@ fn wait_greedily(
     const SLICE: Duration = Duration::from_millis(250);
     let started = std::time::Instant::now();
     loop {
-        // Before the first slice as well as between them: a request that arrived
-        // while the model was still choosing this tool is not stale, it is early.
-        // Ctrl-B, and the quieter version of the same thing: a line typed while
-        // this wait holds the floor. Either is the operator asking for it back.
+        // Checked before the first slice as well as between them: a request that arrived
+        // while the model was choosing this tool is early, not stale.
         if ctx.backend.promote_requested().is_some() || ctx.operator_waiting() {
             return Ok(None);
         }
@@ -1010,13 +864,9 @@ fn wait_on_scope(
 
 // ---------------------------------------------------------------- job_kill
 
-/// **`job_kill` stops a job or a subagent, and the two are stopped differently.**
-///
-/// The operator's ruling, having found that this reached only the host's process table:
-/// *"expand"* — and the shape of the expansion is the ruling's own: *"in a way agent is
-/// a background job."* A job is reaped: a cgroup, a pid, descendants. A subagent is
-/// **interrupted**: it owns no process, and the turn it is running is the only thing there
-/// is to stop. So the runner makes the second kind possible and this routes to it.
+/// `job_kill` stops a job or a subagent, and the two are stopped differently: a job is
+/// reaped (a cgroup, a pid, descendants), a subagent is interrupted, since it owns no
+/// process and the turn it runs is the only thing there is to stop.
 pub struct JobKill {
     /// `None` when nothing here can start a subagent, which is the honest configuration
     /// for a harness driven without a session registry.
@@ -1038,11 +888,8 @@ impl JobKill {
     }
 
     /// Stop a subagent, or say why not.
-    ///
-    /// **The process host is not consulted and must not be.** `task` is `Access::Session`
-    /// and needs no host, so gating this on one would leave a session that hands work to a
-    /// child with no way to stop it — the same hole the watcher set had, and the same
-    /// reason this is `Option` rather than a precondition.
+    /// The process host is not consulted and must not be: `task` needs no host, so gating
+    /// this on one would leave a session unable to stop its own child.
     fn kill_subagent(&self, handle: &str) -> Result<String, String> {
         match &self.tasks {
             Some(r) => r.kill(handle),
@@ -1053,14 +900,9 @@ impl JobKill {
         }
     }
 
-    /// **The subagent half of `job_kill`**, over the session's job table in hand: `Some` when the
-    /// call was a child's (stopped, or refused by name), `None` to go on to the host's jobs.
-    ///
-    /// A child's handle is a child's. A child's SLUG is the child's only when no job of this
-    /// session answers to it as well — a name a child and a job share names two things, and that
-    /// is refused naming both rather than guessed, the rule a name two jobs share already follows;
-    /// a name two children share is refused the same way. Anything else is offered to the runner
-    /// as written (it may know a handle no list here shows) and then to the host.
+    /// The subagent half of `job_kill`: `Some` when the call was a child's, `None` to go on
+    /// to the host's jobs. A name a child and a job share is refused naming both rather than
+    /// guessed, the rule a name two jobs share already follows.
     fn route_subagent(&self, id: &str, jobs: &[JobView]) -> Option<Invocation> {
         use crate::builtins::task::{PickedChild, ambiguous_child, pick_child};
         let children = self
@@ -1090,11 +932,8 @@ impl JobKill {
                     .ok()
                     .map(|said| Invocation::ok(format!("{said}\n")))
             }
-            // **An exact child's handle: the runner's answer IS the answer, refusal included.**
-            // A refused `kill` used to be dropped here and the call went on to the host's job
-            // table, so stopping a child that was already gone answered *"this session has
-            // started 0 jobs"* — a sentence about a table the caller never asked about, and one
-            // that contradicts `task_result`'s own list of that child.
+            // An exact child's handle: the runner's answer is the answer, refusal included.
+            // Falling through to the host would answer about a table nobody asked about.
             PickedChild::One(handle) => Some(match self.kill_subagent(&handle) {
                 Ok(said) => Invocation::ok(format!("{said}\n")),
                 Err(why) => {
@@ -1143,16 +982,9 @@ impl Tool for JobKill {
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
         let job = args.get("job").and_then(|v| v.as_str());
         let scope = args.get("scope").and_then(|v| v.as_str());
-        // **A subagent first, and before the host is asked for.** The two handle namespaces
-        // do not overlap — a job id comes from the process host and a subagent handle from
-        // the runner — but the *order* is load-bearing for a different reason: a session
-        // with no process host must still be able to stop its own child, so this cannot sit
-        // behind `processes()`.
-        //
-        // **A child may be named by its slug, as a job may.** A name is the child's only when no
-        // job of this session answers to it as well: a slug a child and a job share names two
-        // things, and that is refused naming both rather than guessed — the rule a name two jobs
-        // share already follows.
+        // A subagent first, and before the host is asked for: a session with no process host
+        // must still be able to stop its own child, so this cannot sit behind `processes()`.
+        // A child may be named by its slug, refused when a job answers to that name too.
         if let Some(id) = job {
             let jobs = ctx
                 .backend
@@ -1164,22 +996,15 @@ impl Tool for JobKill {
             }
         }
         let Some(host) = ctx.backend.processes() else {
-            // A host that cannot start processes has no jobs. What it may still have is a
-            // subagent, and the runner was asked about that above and refused by name (or
-            // there is no runner) — so the sentence names the missing host alone, which is
-            // the true half of a case with nothing left in it.
+            // A host that cannot start processes has no jobs; the runner was asked above, so
+            // the sentence names the missing host alone.
             return no_process_host(ctx);
         };
-        // What the harness knows and `/proc` may not be able to say at the instant
-        // of the kill: the command the model actually asked for. A record whose
-        // only identification is a `/proc` read is a record that reads `[sh] (no
-        // command line)` for a process caught between fork and exec.
+        // What the harness knows and `/proc` may not at the instant of the kill: a process
+        // caught between fork and exec reads `[sh] (no command line)`.
         let mut asked_for: Option<String> = None;
-        // **And WHICH JOB this was, in the same spelling every other sentence uses** —
-        // `release-build · j65`, or the bare id when nobody named it ([`JobView::label`]).
-        // The reaping record below names the *cgroup* (`session.job-j57`), which is the thing
-        // that was killed and the right thing for a scope kill; this is the answer to the
-        // question a person actually has, which is *which of these forty jobs was that*.
+        // Which job this was, in the spelling every other sentence uses ([`JobView::label`]);
+        // the reaping record below names the cgroup, which answers a different question.
         let mut killed: Option<String> = None;
         let reaping = match (job, scope) {
             (Some(id), _) => {
@@ -1401,15 +1226,8 @@ mod tests {
         }
     }
 
-    /// **A job is addressable by its id or by the name the agent stated, and the id wins.**
-    ///
-    /// `job_output`, `job_kill` and `job_wait` all resolve through [`pick_job`], which is pure
-    /// for exactly this reason: the rule is about the table and nothing else, so it is
-    /// assertable without a cgroup tree, a host and a spawned job.
-    ///
-    /// **And nothing is a prefix or a guess.** The match is on the whole string: `release` is
-    /// not a way to say `release-build`, because a fuzzy match on a handle is the defect
-    /// [`unknown_job`] confines to a refusal, where being wrong costs nothing.
+    /// A job is addressable by its id or by the name the agent stated, and the id wins.
+    /// Nothing is a prefix or a guess: `release` is not a way to say `release-build`.
     #[test]
     fn a_job_resolves_by_its_id_or_by_the_name_the_agent_stated() {
         let table = vec![
@@ -1450,12 +1268,8 @@ mod tests {
         ));
     }
 
-    /// **A name that fits two jobs is refused, not guessed at.**
-    ///
-    /// The daemon makes a name unique within the session ([`crate::exec::HostProcesses`]), so
-    /// this cannot happen through it — and the rule stays, because a host that is not this
-    /// daemon (a guest, a test double, a future one) can hand out two, and acting on whichever
-    /// sorted first would be acting on a job the caller did not name.
+    /// A name that fits two jobs is refused, not guessed at: acting on whichever sorted
+    /// first would act on a job the caller did not name.
     #[test]
     fn a_name_that_fits_two_jobs_is_refused_rather_than_guessed() {
         let table = vec![view("j1", Some("tests")), view("j2", Some("tests"))];
@@ -1472,14 +1286,9 @@ mod tests {
         assert!(matches!(pick_job(&table, "j2"), Picked::One(1)));
     }
 
-    /// **A refusal names the job the way it was ASKED FOR, and this is the test for it.**
-    ///
-    /// A name that fits two jobs is refused rather than guessed at, and the refusal has to say
-    /// WHICH name it refused: a caller that wrote `tests` and is answered with `release-build ·
-    /// j1` has been told about a string it never wrote. So the refusal keeps the asked spelling
-    /// — [`ambiguous_job`]'s own rule — while the rows beneath it, which answer *which job is
-    /// which*, are drawn by [`JobView::label`]. The two halves are asserted together because
-    /// the point is the difference between them.
+    /// A refusal names the job the way it was ASKED FOR, while the rows beneath it, which
+    /// answer which job is which, are drawn by [`JobView::label`]. Asserted together
+    /// because the point is the difference between them.
     #[test]
     fn a_refusal_names_the_name_it_refused_and_the_rows_beneath_it_are_labelled() {
         let table = vec![
@@ -1520,13 +1329,8 @@ mod tests {
         );
     }
 
-    /// **The default is the ACTIVE jobs, and the count of what it hid is stated** — the operator's
-    /// ask, 2026-10-05: *"let job_list show only active jobs by default with a note how to get
-    /// finished jobs"*.
-    ///
-    /// The whole point is the *note*. A filter that silently drops forty settled jobs is the same
-    /// defect as a listing that buries them, so the denominator and the way back are asserted with
-    /// it — and the operator's own shape is the fixture: 44 jobs, one of them running.
+    /// The default is the active jobs, and the count of what it hid is stated: a filter
+    /// that silently drops forty settled jobs is the same defect as burying them.
     #[test]
     fn the_default_listing_is_the_active_jobs_and_says_what_it_hid() {
         let head = job_list_summary(None, false, 44, 44, 1);
@@ -1593,14 +1397,9 @@ mod tests {
         assert!(!scoped_all.contains("not listed"), "{scoped_all}");
     }
 
-    /// **`job_kill` reaches a subagent, and a session that cannot start one says so.**
-    ///
-    /// The operator's ruling: *"expand"*. A subagent owns no process, so this cannot be
-    /// the host's kill — it is the runner's, and the runner is what makes the handle
-    /// meaningful. Asserted at `kill_subagent` rather than through `invoke` because what
-    /// is being pinned is the *routing*: which of the two kinds a handle goes to, and that
-    /// a session with no runner refuses by name instead of silently trying the host and
-    /// reporting an unknown job.
+    /// `job_kill` reaches a subagent through the runner, which is what makes its handle
+    /// meaningful, and a session with no runner refuses by name instead of silently
+    /// trying the host.
     #[test]
     fn job_kill_stops_a_subagent_through_its_runner() {
         use crate::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
@@ -1644,13 +1443,8 @@ mod tests {
             "the handle the model gave is the handle the runner was asked about"
         );
 
-        // **AND A REFUSED STOP IS A REFUSAL, NOT A SENTENCE.** The harness's runner used to
-        // answer `Ok("interrupted the turn …")` over a daemon that had refused with
-        // `not attached`, so `job_kill` reported a state change that never happened and a
-        // subagent went on running and writing rows (MEASURED 2026-10-05: 102 to 108 while the
-        // kill was in flight). The routing above is only half of what this tool owes a caller;
-        // the other half is that whatever the runner says comes back unchanged — including its
-        // refusals — so this pins the pass-through with a runner that refuses by name.
+        // A refused stop is a refusal, not a sentence: whatever the runner says comes back
+        // unchanged, so a daemon that refused cannot be reported as a state change.
         struct Refuser;
 
         impl TaskRunner for Refuser {

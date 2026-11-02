@@ -1,11 +1,6 @@
-//! `read` — the text of a file, and three misses that answer themselves.
-//!
-//! The oracle case this is modelled on is the offset one, and it is worth naming
-//! because it is the closest analogue of the measured example: the model guessed a
-//! line range, the range is not there, and the tool **hands back the file anyway**
-//! with a line saying the guess was wrong and what the real extent is. A bare
-//! "offset out of range" costs a whole extra call to learn a number the tool
-//! already had.
+//! `read`: the text of a file, and three misses that answer themselves.
+//! A guessed line range that is not there hands back the file anyway, with a line saying what the
+//! real extent is: "offset out of range" costs a call to learn a number the tool already had.
 
 use letibot_transcript::text::chars_head;
 use serde_json::Value;
@@ -67,9 +62,9 @@ impl Tool for Read {
             );
         };
 
-        // The whole file is read before a window of it is shown, so a file that is
-        // not text — a model shard, a database — would be read whole first. Sized
-        // before it is opened; the ceiling is far above any source file.
+        // The whole file is read before a window of it is shown, so a model shard or a
+        // database would be read whole first. Sized before it is opened; the ceiling is far
+        // above any source file.
         if let Some(e) = ctx.backend.stat(path)
             && !e.is_dir
             && e.bytes > super::grep::FILE_CEILING * 16
@@ -109,19 +104,13 @@ impl Tool for Read {
             ctx.progress(format!("{path}: {} bytes", bytes.len()));
         }
 
-        // **A picture is read as a picture** — the operator's ruling: *"read is read there is nothing
-        // to settle"*, *"reading an image is no different to reading a rust file."* So this is not a
-        // branch in the permission model, the gate, or the verb: one path arrives here and the only
-        // thing that differs is what comes back.
-        //
-        // It has to be HERE, above the decode, because everything below is lossy text: without this
-        // an image came back as a wall of U+FFFD with a note saying the file was not valid UTF-8,
-        // which is true and useless — the model reads a picture of a screenshot as noise and
-        // concludes it has no vision. That is the report this whole change answers.
+        // A picture is read as a picture, not as lossy text. It has to be here, above the
+        // decode: below, an image comes back as a wall of U+FFFD, and a model reading a
+        // screenshot as noise concludes it has no vision.
         if let Some(m) = crate::media::Media::of(path, &bytes) {
-            // The far end is the authority on what it can read, and the sentence below is what it
-            // gets: a description, and the fact that the bytes are attached. `summary` is the same
-            // string a head draws, so the row and the model are told the same thing.
+            // The far end is the authority on what it can read, and this is the sentence it
+            // gets. `summary` is the same string a head draws, so the row and the model are
+            // told the same thing.
             return Invocation {
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: format!(
@@ -159,8 +148,8 @@ impl Tool for Read {
             ));
         }
 
-        // The clause 1 case: the guessed offset is past the end. Hand back the file
-        // from the top **anyway**, and say what the real extent is.
+        // The guessed offset is past the end: hand back the file from the top anyway, and say
+        // what the real extent is.
         let offset = if want_offset > total && total > 0 {
             notes.push(format!(
                 "offset {want_offset} is past the end of {path}, which has {total} line(s); \
@@ -171,32 +160,17 @@ impl Tool for Read {
             want_offset
         };
 
-        // How far this call would reach if bytes were free. An explicit `limit`
-        // is the model's own ask and is taken as given; the absence of one is
-        // where the default cap applies — a full thousand-line file in one call
-        // is the shape that eats a session's context.
+        // How far this call would reach if bytes were free. An explicit `limit` is the model's
+        // own ask and is taken as given; the absence of one is where the default cap applies,
+        // and a full thousand-line file in one call is the shape that eats a session's context.
         let want_end = match limit {
             Some(l) => (offset - 1 + l).min(total),
             None => (offset - 1 + ctx.limits.max_read_lines).min(total),
         };
 
-        // Rendered with two more bounds than the line count. A line longer than
-        // the clip is shown clipped and counted — minified javascript is one
-        // line — and the byte budget stops the call even under the line cap,
-        // because two hundred lines of two hundred characters is already the
-        // budget. At least one line always renders: a cap that returns nothing
-        // answers no question.
-        // **Several windows of one file, in one call.** `read` took one span, so
-        // three lookups were three round trips — and at `automode` a round trip is
-        // also a gate decision. That is the cost a model is avoiding when it
-        // reaches for `grep -n` piped into `sed -n 'A,Bp'` instead: the shell does
-        // the batch in one call. `ranges` is that batch, and it keeps what `sed`
-        // throws away — line numbers, the file's real bounds, and a refusal that
-        // says what is there instead of printing nothing.
-        //
-        // The budget is shared across the windows, not per window: the cap exists
-        // to bound one REPLY, and a per-window cap would make three ranges cost
-        // three times the ceiling.
+        // Two bounds beyond the line count: a line longer than the clip is shown clipped and
+        // counted, and the byte budget stops the call under the line cap. `ranges` is the batch,
+        // because three lookups would be three round trips and a round trip is a gate decision.
         let windows: Vec<(usize, usize)> = match args.get("ranges").and_then(|v| v.as_array()) {
             Some(rs) if !rs.is_empty() => rs
                 .iter()
@@ -255,11 +229,9 @@ impl Tool for Read {
             }
         }
 
-        // The shown-lines ledger, recorded at the moment of the display. A read
-        // that showed every line in full marks the whole file; a capped or
-        // clipped one marks only the lines the model actually saw. The whole-file
-        // digest is recorded either way — the bytes were read, which is `write`'s
-        // fact. See `crate::files`.
+        // The shown-lines ledger, recorded at the moment of the display: a read that showed every
+        // line marks the whole file, a capped one marks only the lines the model saw, and the
+        // whole-file digest is recorded either way because the bytes were read.
         let whole_file =
             end == total && !byte_capped && truncated == 0 && (total == 0 || end >= offset);
         if whole_file {
@@ -285,16 +257,9 @@ impl Tool for Read {
                 end + 1
             ));
         } else if end < total && limit.is_none() {
-            // **Only when the cap bound the output.** A caller that passed
-            // `limit` chose this window and knows where it ends; telling it "there
-            // is more of the file" is news about something it decided. The note
-            // exists for the other case — no limit, and the 200-line cap stopped
-            // short of the end — where the boundary is OURS and silence would
+            // Only when the cap bound the output: a caller that passed `limit` chose this window
+            // and knows where it ends, while the 200-line cap's boundary is OURS and silence would
             // read as "that was the whole file".
-            //
-            // The operator's example, 2026-09-15: `read 30 25 app.rs` returned 31
-            // lines and was told "showing lines 25–54 of 7861; call read again
-            // with offset=55 for the rest". It asked for thirty. It got thirty.
             if limit.is_some() {
                 notes.push(format!(
                     "showing lines {offset}–{end} of {total}; call read again with \
@@ -302,13 +267,9 @@ impl Tool for Read {
                     end + 1
                 ));
             } else {
-                // The SAME sentence as the limit branch above. The cap is already
-                // stated once in this tool's schema, which is in the stable prefix
-                // of every turn; repeating "read returns at most 200 lines per
-                // call" on each capped read spends context restating something the
-                // model was told at the top, and the numbers in this line already
-                // imply it. Context is the scarce resource for attention as well
-                // as for memory — the operator's point, 2026-09-15.
+                // The same sentence as the limit branch above, and no restating of the cap:
+                // that is in this tool's schema, which sits in the stable prefix of every turn,
+                // and the numbers in this line already imply it.
                 notes.push(format!(
                     "showing lines {offset}–{end} of {total}; call read again with \
                      offset={} for the rest",
@@ -349,16 +310,15 @@ fn missing(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
     if !near.is_empty() {
         body.push_str(&format!("\nclosest names here: {}\n", near.join(", ")));
     }
-    // Failed, not Abstained: the tool was asked for a specific file and there is
-    // no file. What makes it clause 1 is the body, not the class.
+    // Failed, not Abstained: the tool was asked for a specific file and there is no
+    // file. The body is what makes the miss answer itself, not the class.
     Invocation::failed(format!("no file at `{path}`"), body).with_note(format!(
         "`{path}` does not exist; the listing of `{dir}` is below. Call read again \
          with one of these paths — do not guess a second one."
     ))
 }
 
-/// A directory: hand back the listing rather than an error. This is the "and
-/// handed back the whole page anyway" move, one tool over.
+/// A directory: hand back its listing rather than an error, which is the same move as a miss.
 fn directory(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
     let entries = ctx.backend.list(path).unwrap_or_default();
     let body = render_listing(path, &entries, 200);
@@ -371,15 +331,9 @@ fn directory(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
 #[cfg(test)]
 mod tests {
 
-    /// **Does `read` hand the model the file's bytes, spaces and all?**
-    ///
-    /// Asked because a fleet seat reported that the same model edits files fine
-    /// in opencode and keeps failing here on missing spaces — `if self.x!= y`
-    /// where the file has `if self.x != y`. If the model is copying back what it
-    /// was shown, the loss is on the way OUT, and this is the cheapest place to
-    /// find out.
-    /// What a model that asked for 50 lines actually gets told. The operator's
-    /// question, 2026-09-15: is the 200-line cap still being recited at it?
+    /// Does `read` hand the model the file's bytes, spaces and all?
+    /// Asked because a model that keeps failing on missing spaces is either shown a lossy file or
+    /// losing them on the way in, and this is the cheapest place to find out.
     #[test]
     fn a_read_with_a_limit_is_never_told_about_the_cap_it_did_not_hit() {
         let mut h = crate::testing::harness();
@@ -402,8 +356,8 @@ mod tests {
             "a caller that chose its own window needs no note: {notes:?}"
         );
 
-        // And with no limit, where the cap DID bind, it still says where to
-        // continue — without restating the number, which is in the schema.
+        // And with no limit, where the cap DID bind, it still says where to continue,
+        // without restating the number, which is in the schema.
         let unasked = h.call("read", r#"{"path":"big.txt"}"#);
         let n2 = unasked.notes.join(" ");
         eprintln!("no-limit note: {n2}");
@@ -413,10 +367,9 @@ mod tests {
 
     #[test]
     fn the_description_says_an_image_comes_back_as_an_image() {
-        // **Advertised, or it is never asked for** — the operator: *"looks like our read tooling
-        // doesnt advertise vision"*. The tool attached an image for any path that was one, and its
-        // description said only *"Return the text of a file"*, so a model with a screenshot to read
-        // had no reason to think `read` could show it one.
+        // Advertised, or it is never asked for: a tool that attaches an image for any image
+        // path but describes itself as "return the text of a file" gives a model with a
+        // screenshot no reason to try it.
         let d = crate::runtime::Tool::schema(&super::Read).description;
         for needle in ["image", "PNG", "JPEG", "attached"] {
             assert!(d.contains(needle), "{needle:?} missing from: {d}");
@@ -424,21 +377,14 @@ mod tests {
         assert_eq!(crate::schema::lint_description(&d), vec![]);
     }
 
-    /// **A picture comes back as a picture** — the operator's ruling, as a measurement.
-    ///
-    /// *"read is read there is nothing to settle"*, *"reading an image is no different to reading a
-    /// rust file"*. So this is the same `read`, the same verb, the same permission — and what
-    /// differs is only what comes back: a media channel carrying the bytes, and a payload that says
-    /// what was read instead of a wall of U+FFFD.
-    ///
-    /// **What failed before this.** The decode below turned the file into lossy text and said
-    /// *"not valid UTF-8; undecodable bytes are shown as U+FFFD"* — true, and the reason a model on
-    /// this stack concluded it had no vision and said so out loud.
+    /// A picture comes back as a picture: the same `read`, the same verb, the same permission,
+    /// and only what comes back differs - a media channel carrying the bytes, and a payload that
+    /// says what was read instead of a wall of U+FFFD.
     #[test]
     fn an_image_read_returns_the_bytes_and_a_sentence_rather_than_lossy_text() {
         let mut h = crate::testing::harness();
-        // **A real PNG**, from the shared fixture: `Media::of` now refuses a file that is a header
-        // and no picture, which is what this used to be — and what a provider then refused.
+        // A real PNG from the shared fixture: `Media::of` refuses a file that is a header and
+        // no picture, and a provider then refuses that too.
         let png = letibot_transcript::testing::png(640, 480);
         std::fs::write(h.root().join("shot.png"), &png).expect("fixture write");
 
@@ -454,8 +400,8 @@ mod tests {
             "the model server takes a data: URI and refuses a bare path: {}",
             &media.data_ref[..40.min(media.data_ref.len())]
         );
-        // **The payload is the sentence, not the bytes** — opencode's second channel. A payload
-        // that inlined the base64 would put a megabyte through every renderer and every scrollback.
+        // The payload is the sentence, not the bytes: a payload that inlined the base64 would
+        // put a megabyte through every renderer and every scrollback.
         assert!(got.payload.contains("shot.png"), "{}", got.payload);
         assert!(got.payload.contains("640×480"), "{}", got.payload);
         assert!(
@@ -468,7 +414,7 @@ mod tests {
             "the payload is carrying the bytes: {} chars",
             got.payload.len()
         );
-        // And the sentence the model needs to be able to say it did not arrive (R54 §7).
+        // And the sentence the model needs so it can say the picture did not arrive.
         assert!(
             got.payload.contains("attached"),
             "the payload does not tell the model the image is attached: {}",
@@ -476,8 +422,8 @@ mod tests {
         );
     }
 
-    /// **A text file is untouched by any of that** — the control for the test above, and the
-    /// operator's own rule read the other way: the same call, and only the image differs.
+    /// A text file is untouched by any of that: the control for the test above, and the same
+    /// call with only the image differing.
     #[test]
     fn a_text_file_still_comes_back_as_its_own_lines_with_no_media() {
         let mut h = crate::testing::harness();
@@ -485,9 +431,9 @@ mod tests {
         let got = h.call("read", r#"{"path":"notes.txt"}"#);
         assert!(got.media.is_none(), "a text file claimed a media channel");
         assert!(got.payload.contains("first line"), "{}", got.payload);
-        // And a binary file that is NOT an image keeps the behaviour it had: lossy text with a
-        // note. Refusing it wholesale is opencode's rule and a separate ruling; this records which
-        // one is in force so the difference is a decision rather than a drift.
+        // A binary file that is not an image keeps lossy text with a note. Refusing it
+        // wholesale is a separate ruling; this records which rule is in force, so the
+        // difference is a decision rather than a drift.
         let mut junk = vec![0u8, 159, 146, 150];
         junk.extend_from_slice(&[0xff; 64]);
         std::fs::write(h.root().join("blob.bin"), &junk).expect("fixture write");
@@ -524,8 +470,8 @@ mod tests {
 
     #[test]
     fn an_offset_past_the_end_returns_the_file_anyway_and_says_so() {
-        // The measured shape: the guess is refused *and* the content is handed
-        // back, so the model corrects itself inside the same call.
+        // The guess is refused and the content is handed back, so the model corrects itself
+        // inside the same call.
         let mut h = harness();
         let r = h.call("read", r#"{"path":"src/lib.rs","offset":9000}"#);
         assert!(r.is_grounded(), "the call must still succeed");
@@ -553,9 +499,8 @@ mod tests {
 
     #[test]
     fn a_file_past_the_line_cap_is_capped_and_the_note_names_the_offset() {
-        // The shape the operator measured: a thousand-line file read whole is
-        // twenty thousand tokens of one call. The cap is the default, and the
-        // note is the continuation.
+        // A thousand-line file read whole is twenty thousand tokens of one call. The cap is the
+        // default, and the note is the continuation.
         let mut h = harness();
         let body: String = (1..=300)
             .map(|i| format!("line {i}\n"))
@@ -566,10 +511,9 @@ mod tests {
         assert!(r.is_grounded());
         assert_eq!(r.payload.lines().count(), 200, "{}", r.payload);
         let notes = r.notes.join(" ");
-        // The note says WHERE to continue and how much there is. It does not
-        // restate the cap: that is in this tool's schema, which is in the stable
-        // prefix of every turn, and repeating it per call is context spent saying
-        // something the model was already told.
+        // The note says where to continue and how much there is, and does not restate the cap:
+        // that is in this tool's schema, in the stable prefix of every turn, and repeating it per
+        // call spends context on something already said.
         assert!(notes.contains("of 300"), "{notes}");
         assert!(notes.contains("offset=201"), "{notes}");
         assert!(
@@ -600,10 +544,9 @@ mod tests {
 
     #[test]
     fn a_minified_file_has_its_line_clipped_and_is_told_to_grep() {
-        // Minified javascript is one line of megabytes; the line cap cannot see
-        // it. The clip keeps the head of the line, and the note says what does
-        // work, because paging by line on this file is a loop: offset 2 is past
-        // the end, and the fallback would show the same clipped line again.
+        // Minified javascript is one line of megabytes, and the line cap cannot see it. The
+        // clip keeps the head of the line and the note says what does work, because paging by
+        // line on this file is a loop: offset 2 is past the end.
         let mut h = harness();
         let line = "x".repeat(10_000);
         h.write_file("min.js", &line);
@@ -645,13 +588,8 @@ mod tests {
         );
     }
 
-    /// A file past `FILE_CEILING * 16` is refused by its size, before it is opened.
-    ///
-    /// The defect this guards is the one the ceiling was added for: the whole file
-    /// is read before a window of it is shown, so a model shard or a database would
-    /// be read whole first. The file is created SPARSE — `set_len` gives it the size
-    /// without the bytes — so the test costs a metadata call rather than 256 MiB of
-    /// writes, and the refusal has to name the size and point at `bash`.
+    /// A file past `FILE_CEILING * 16` is refused by its size, before it is opened, and the
+    /// refusal names the size and points at `bash`.
     #[test]
     fn a_file_over_the_ceiling_is_refused_by_size_before_it_is_opened() {
         let mut h = harness();
@@ -676,9 +614,8 @@ mod tests {
 mod ranges_tests {
     use crate::testing::writable_harness;
 
-    /// **Several windows, one call.** Three lookups were three round trips, and
-    /// at `automode` a round trip is also a gate decision — which is the cost a
-    /// model avoids by batching into one `bash`.
+    /// Several windows, one call: three lookups would be three round trips, and at `automode` a
+    /// round trip is also a gate decision.
     #[test]
     fn ranges_returns_every_window_in_one_call_with_a_gap_marked() {
         let mut h = writable_harness();
@@ -699,8 +636,8 @@ mod ranges_tests {
         );
     }
 
-    /// One range behaves exactly as `offset`/`limit` always did — the batch is
-    /// an addition, not a change to what a plain read means.
+    /// One range behaves exactly as `offset`/`limit` did: the batch is an addition, not a
+    /// change to what a plain read means.
     #[test]
     fn a_single_range_reads_like_offset_and_limit() {
         let mut h = writable_harness();

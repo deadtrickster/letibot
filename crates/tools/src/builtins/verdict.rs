@@ -1,54 +1,6 @@
-//! `review_verdict` — **the door a reviewer hands its verdict in through, and the desk behind
-//! it.**
-//!
-//! # The seam this is
-//!
-//! The review queue's states do not move into the model, and this is the shape that keeps them
-//! out. A gatekeeper child does not own a state: it *reports* one, through a tool it holds
-//! ([`ReviewVerdictTool`]), and the daemon writes what it reported onto the entry's review row
-//! through the same function it always used (`Harness::write_outcome`, reached by
-//! `Harness::serve_reviews`). The queue's states, their storage and the per-workspace split stay
-//! exactly where they were — the child has no store handle, no entry, and no way to name a SHA
-//! ([`crate::gatekeeper::Submission`] has no field for a branch or a base).
-//!
-//! **What the parent used to do instead**: read the child's answer, parse a closing block out of
-//! it, and write the label it found. That is prose being re-parsed for a label, and the label
-//! here decides whether a branch lands. So the answer is now the child's own call, and a reply
-//! in prose is not a verdict — see `Harness::review_outcome`, which counts such an attempt
-//! rather than inventing one.
-//!
-//! # The two halves, and why the desk is shared rather than per-session
-//!
-//! * **[`ReviewDesk`]** — who is reviewing what, and what they have handed in. The review
-//!   queue's session OPENS a review on it when it starts a gatekeeper child
-//!   (`Harness::serve_reviews`), and the same desk is what the child's tool submits to. It is one
-//!   `Arc` for the daemon (it rides `Parts`, like the todo boards do), because the child is a
-//!   session of its own with a harness of its own: a per-harness desk would be a different desk
-//!   on each side of the one act this file exists for.
-//! * **[`ReviewVerdictTool`]** — the tool itself, seated in the `gatekeeper` role and registered
-//!   for every session so that seat resolves anywhere. **The caller's own session id is bound at
-//!   open and never read from the call**, so a model cannot hand a verdict in under another
-//!   session's name — the same rule `todo_write`'s `target` follows, one door over.
-//!
-//! # Who may submit, and what happens to everyone else
-//!
-//! [`ReviewDesk::submit`] answers one question: **is this session a reviewer of an entry this
-//! daemon is waiting for a verdict on?** It is open only to a child whose review the queue's
-//! session opened, so:
-//!
-//! * **A child of some OTHER session cannot submit for this queue.** It is not in the desk, the
-//!   call is refused by name, and nothing is recorded — a verdict that reached a queue from a
-//!   session the queue never asked is a judgement nobody commissioned.
-//! * **A session that is not reviewing anything** — the daemon's own session, an operator's
-//!   session seated `gatekeeper` by hand, a reviewer whose verdict is already in and whose review
-//!   is therefore closed — is refused by the same door, with the same sentence.
-//!
-//! # What the daemon does with what it was handed
-//!
-//! Nothing here writes a row. The desk holds the submission until the pass that owns the write
-//! takes it ([`ReviewDesk::take_verdict`]), and the child keeps working in the meantime: the
-//! verdict is written when the pass next looks, which the child's own settlement triggers (a
-//! child's end wakes its parent) and the daemon's own clock covers otherwise.
+//! `review_verdict`: the door a reviewer hands its verdict in through. A gatekeeper child owns
+//! no queue state: it reports one, and the daemon writes it onto the entry's row. The desk
+//! ([`ReviewDesk`]) is one `Arc` for the daemon, so the child and the queue hold the same one.
 
 use std::sync::{Arc, Mutex};
 
@@ -62,18 +14,11 @@ use crate::schema::{Access, ToolSchema};
 /// tests spell it. A tool whose name is written twice is a tool one of the two can rename.
 pub const TOOL: &str = "review_verdict";
 
-/// **One review in flight**: the child that is making it, the entry it is about, and the request
-/// it was asked with.
-///
-/// `req` is kept because it is what a `Verdict` is joined to — the branch and the base a person
-/// reads on the row, and the sentence a refusal names the branch in. The child never sees it
-/// again: what it hands in has no branch in it at all.
+/// One review in flight: the child making it, the entry it is about, and the request it was asked
+/// with. `req` is kept because that is what a `Verdict` is joined to; the child never sees it.
 struct Open {
-    /// **The session that OPENED this review** — the one that started the child, and the only one
-    /// that may close it. The desk is one `Arc` for the whole daemon, so without this a pass on
-    /// ANY session would prune reviews it never opened: measured, the daemon's own session's pass
-    /// ended with `keep(&[])` and took the review queue's review with it, so the next pass started
-    /// a second reviewer for one entry.
+    /// The session that OPENED this review, and the only one that may close it: the desk is one
+    /// `Arc` for the daemon, so an unscoped pass would prune a review it never opened.
     host: String,
     /// The reviewer's session id — the handle the queue's session started it under.
     child: String,
@@ -84,12 +29,9 @@ struct Open {
     handed: Option<Submission>,
 }
 
-/// **The desk: who is reviewing what, and what they have handed in.**
-///
-/// One per daemon, held by the harness and shared with every session's tool (see the module
-/// doc). Every method is a short critical section over one `Mutex`, because the two sides run on
-/// two threads: the review queue's session opens reviews and takes verdicts on its own thread,
-/// and each reviewer submits from its own.
+/// The desk: who is reviewing what, and what they have handed in. One per daemon, shared with
+/// every session's tool; each method is a short critical section over one `Mutex`, because the
+/// queue's session and each reviewer run on their own threads.
 #[derive(Default)]
 pub struct ReviewDesk {
     inner: Mutex<Vec<Open>>,
@@ -114,12 +56,9 @@ impl ReviewDesk {
         });
     }
 
-    /// **The reviewer's act: here is my verdict.** The one door a reviewer holds, and the whole
-    /// of what this file exists for.
-    ///
-    /// `Ok` is the verdict rendered back, so the child can see what it just handed in — the same
-    /// rendering a person reads, from [`Verdict::render`]. `Err` is a refusal written for a
-    /// model, and **nothing is recorded** on any of its arms.
+    /// The reviewer's act: here is my verdict. `Ok` is the verdict rendered back, so the child sees
+    /// what it handed in; `Err` is a refusal written for a model, and nothing is recorded on any of
+    /// its arms.
     pub fn submit(&self, from: &str, said: Submission) -> Result<Verdict, String> {
         let mut open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let Some(row) = open.iter_mut().find(|o| o.child == from) else {
@@ -149,12 +88,9 @@ impl ReviewDesk {
         Ok(verdict)
     }
 
-    /// **What the daemon writes next, taken so it is written exactly once.** `None` for a review
-    /// nobody has judged yet, and for one whose verdict a previous pass already took.
-    ///
-    /// The submission stays *taken* rather than being removed with the review: the review is
-    /// closed by the pass that wrote the row, and until then a second call is refused with *you
-    /// have already handed a verdict in* rather than with *you are not reviewing anything*.
+    /// What the daemon writes next, taken so it is written exactly once: `None` for a review nobody
+    /// has judged yet, or whose verdict a pass already took. The submission stays taken until the
+    /// pass that wrote the row closes the review, so a second call is refused as already handed in.
     pub fn take_verdict(&self, child: &str) -> Option<Submission> {
         let mut open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         open.iter_mut()
@@ -162,36 +98,17 @@ impl ReviewDesk {
             .and_then(|o| o.handed.take())
     }
 
-    /// **Whether this child has handed a verdict in that no pass has taken yet** — a PEEK, and
-    /// deliberately not a take.
-    ///
-    /// It exists for the queue's OTHER loop. Two threads judge a reviewer's fate: the queue's own
-    /// worker, which re-seats a row whose reviewer is not alive in this daemon any more
-    /// (`RepoQueue::review_upkeep`), and the reviewers' host, which writes the verdict a child
-    /// handed in (`review::serve`). A reviewer's last act is handing the verdict in and its turn
-    /// ending — and a session whose turn has ended is not live — so *"not alive"* and *"has
-    /// judged"* are the same two seconds, and the worker read the first without knowing the
-    /// second: MEASURED 2026-10-29, the verdict at 17:54:14, the row re-seated at 17:54:22 as
-    /// *"the reviewer … is not alive in this daemon any more (it finished without handing a
-    /// verdict in)"*, and the verdict discarded by the pass that then found the row was no longer
-    /// its reviewer's. Nine reviewers and eighteen `reviewing` transitions on one branch, and not
-    /// one `approved`.
-    ///
-    /// So the worker asks this before it calls a finished reviewer gone. **Taking belongs to the
-    /// pass that can apply it** ([`ReviewDesk::take_verdict`], in `review::serve`): a peek here
-    /// leaves the submission exactly where it was, for that pass to write.
+    /// Whether this child has handed in a verdict no pass has taken yet: a PEEK, not a take
+    /// ([`ReviewDesk::take_verdict`] is the take). A reviewer's last act is the verdict, then its
+    /// turn ending, so "not alive" and "has judged" are the same two seconds.
     pub fn verdict_waiting(&self, child: &str) -> bool {
         let open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         open.iter().any(|o| o.child == child && o.handed.is_some())
     }
 
-    /// **Every review still in flight that THIS session opened**, oldest first — a snapshot, for
-    /// the pass that walks them.
-    ///
-    /// Scoped to the host for the reason [`Open::host`] exists: the desk is the daemon's, and a
-    /// session that hosts nothing must not walk (or close) another session's reviews. It is the
-    /// same scope the session's own in-memory list had before the desk was one `Arc` for the
-    /// daemon, one level down.
+    /// Every review still in flight that THIS session opened, oldest first: a snapshot for the
+    /// pass that walks them. Scoped to the host because the desk is the daemon's, and a session
+    /// that hosts nothing must not walk or close another session's reviews.
     pub fn open(&self, host: &str) -> Vec<Review> {
         let open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         open.iter()
@@ -204,25 +121,17 @@ impl ReviewDesk {
             .collect()
     }
 
-    /// **Whether a child of ANY session is already on this entry** — the guard that makes *one
-    /// review per entry* true, which the store cannot say (a request row and an attempt in flight
-    /// are the same row).
-    ///
-    /// Deliberately NOT scoped to a host: the queue writes one request row per entry, so one
-    /// entry has at most one review, whichever session is hosting it.
+    /// Whether a child of ANY session is already on this entry: the guard that makes one review per
+    /// entry true, which the store cannot say (a request row and an attempt in flight are the same
+    /// row). Deliberately not scoped to a host: one entry has at most one review, whoever hosts it.
     pub fn is_open_for(&self, entry_id: &str) -> bool {
         let open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         open.iter().any(|o| o.entry_id == entry_id)
     }
 
-    /// **Keep exactly these reviews and close the rest — but only THIS session's.** The pass's own
-    /// end, spelled the way `Harness::serve_reviews` leaves its list: what it walked and did not
-    /// finish stays, and a review whose child is gone, whose entry left the queue, or whose verdict
-    /// was written is over.
-    ///
-    /// `host` is the session that is closing, and a review another session opened is left exactly
-    /// as it is — the daemon runs this pass for EVERY session it holds, so an unscoped close would
-    /// let the first pass of the daemon's own session end the review queue's review.
+    /// Keep exactly these reviews and close the rest, but only THIS session's: a review another
+    /// session opened is left as it is. The daemon runs this pass for every session it holds, so an
+    /// unscoped close would let the first pass end the review queue's review.
     pub fn keep(&self, host: &str, children: &[String]) {
         let mut open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         open.retain(|o| o.host != host || children.iter().any(|c| c == &o.child));
@@ -250,13 +159,9 @@ pub struct Review {
     pub req: ReviewRequest,
 }
 
-/// **The reviewer's own tool: hand your verdict in.**
-///
-/// Seated in the `gatekeeper` role and registered for every session (so that seat resolves in a
-/// daemon that is not running the review queue, and so a session seated `gatekeeper` by hand gets
-/// the honest refusal rather than an absent tool). What makes it usable is not the seat: it is
-/// whether the session is a reviewer of an entry this daemon is waiting on, and that is
-/// [`ReviewDesk::submit`]'s question and nobody else's.
+/// The reviewer's own tool: hand your verdict in. Registered for every session so the `gatekeeper`
+/// seat resolves anywhere; what makes it usable is not the seat but [`ReviewDesk::submit`]'s
+/// question, whether this session is a reviewer of an entry this daemon is waiting on.
 pub struct ReviewVerdictTool {
     desk: Arc<ReviewDesk>,
     /// **This session's own id, bound at open.** The author of a submission is a fact about the
@@ -357,20 +262,15 @@ impl Tool for ReviewVerdictTool {
                 },
                 "required": ["verdict"]
             }),
-            // **Session state, and not a write.** It changes the review queue's own row and
-            // nothing the operator owns: no file, no process, no network. `Access::Session` is
-            // the class for exactly this, and it is the reason a reviewer's own verdict does not
-            // raise a permission card at the head of the tree it runs in — a verdict nobody can
-            // answer unattended is a review that can never finish.
+            // Session state, and not a write: the review queue's own row, and nothing the operator
+            // owns. A verdict nobody can answer unattended is a review that can never finish.
             Access::Session,
         )
     }
 
     fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        // **An unknown top-level field is refused by name.** The same rule `todo_write` keeps,
-        // for the same reason: a field that is silently ignored is how a wrong call becomes a
-        // quiet one — here, a verdict that records no evidence because the model spelled the
-        // field `reason` or `file`.
+        // An unknown top-level field is refused by name, as `todo_write` does: a field silently
+        // ignored is how a wrong call becomes a quiet one, here a verdict with no evidence.
         if let Some(obj) = args.as_object() {
             for key in obj.keys() {
                 if !matches!(key.as_str(), "verdict" | "reasons" | "files" | "commands") {
@@ -403,10 +303,8 @@ impl Tool for ReviewVerdictTool {
                 ),
             );
         };
-        // **The closed set, checked here and refused by name.** `Decision::parse` is the queue's
-        // own reader of the word, so the door and the row cannot disagree about what `accept`
-        // means; a word outside the set is never defaulted, because guessing `accept` lands a
-        // branch nobody accepted and guessing `reject` parks work nobody rejected.
+        // The closed set, checked here and refused by name, so the door and the row cannot disagree
+        // about `accept`. Never defaulted: guessing a word lands or parks work nobody decided.
         let Some(decision) = Decision::parse(word.trim()) else {
             return Invocation::failed(
                 format!("`{word}` is not a verdict"),
@@ -591,11 +489,9 @@ mod tests {
         );
     }
 
-    /// **A child of some OTHER session cannot submit for this queue.** The desk has one review
-    /// open, for `sub-1`; a session that was never asked — a child of another tree, a session
-    /// seated `gatekeeper` by hand, the daemon's own session — is refused by name, and nothing is
-    /// recorded. This is the whole of the parentage rule, and it is the desk's because the desk
-    /// is the only thing that knows which children the queue asked.
+    /// A child of some OTHER session cannot submit for this queue: the desk is the only thing that
+    /// knows which children the queue asked, so an unasked session is refused by name and nothing
+    /// is recorded.
     #[test]
     fn a_session_that_was_never_asked_cannot_submit() {
         for who in ["s-other-child", "s-host", "sub-2"] {
@@ -625,10 +521,8 @@ mod tests {
         }
     }
 
-    /// **A review is judged once.** A second call from the same reviewer is refused by name —
-    /// with the branch and the entry it is about — and the first verdict is what the daemon
-    /// takes. A model that calls twice (a retry, a change of mind) must not be able to hand the
-    /// queue a second judgement for one entry.
+    /// A review is judged once. A second call from the same reviewer is refused, naming the branch
+    /// and the entry, so a retry or a change of mind cannot hand the queue a second judgement.
     #[test]
     fn a_second_verdict_from_one_reviewer_is_refused() {
         let (desk, rt) = desk_with_a_review("sub-1");
@@ -661,11 +555,8 @@ mod tests {
         );
     }
 
-    /// **A word outside the closed set is refused, and never defaulted.** Guessing `accept` would
-    /// land a branch nobody accepted; guessing `reject` would park work nobody rejected. The
-    /// refusal names every word there is, and an unknown field — the way a model writes `reason`
-    /// or `file` — is refused too, because a field silently ignored is a verdict that records no
-    /// evidence.
+    /// A word outside the closed set is refused and never defaulted, and so is an unknown field:
+    /// guessing `accept` lands a branch nobody accepted, and an ignored field records no evidence.
     #[test]
     fn a_verdict_outside_the_closed_set_or_with_a_stray_field_is_refused() {
         let (desk, rt) = desk_with_a_review("sub-1");
@@ -737,14 +628,9 @@ mod tests {
         assert!(access.is_unattended(), "nobody is asked about a verdict");
     }
 
-    /// **The desk is the one thing both sides hold**, so the daemon's half is measured on the
-    /// same object the child's half writes to: open a review, hand one in, take it — and a
-    /// review closed by the pass is closed for the reviewer too.
-    ///
-    /// **And a pass closes only its OWN reviews**, which is the half that had to be measured to
-    /// be believed: the daemon runs the pass for every session it holds, so a close that was not
-    /// scoped to the opener would let the daemon's own session end the review queue's review —
-    /// and the next pass would start a second reviewer for one entry.
+    /// The desk is the one thing both sides hold, so the daemon's half is measured on the object
+    /// the child's half writes to: open a review, hand one in, take it. And a pass closes only its
+    /// own reviews, since the daemon runs that pass for every session it holds.
     #[test]
     fn the_desk_is_what_both_halves_share_and_only_the_opener_closes() {
         let desk = ReviewDesk::new();

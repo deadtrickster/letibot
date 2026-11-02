@@ -1,19 +1,6 @@
-//! `ps` — one question over process state, answered without a pipeline.
-//!
-//! What it replaces, measured (`PS_USE.md`, 294 calls in 22 days on this box):
-//! `ps -eo … | grep X | grep -v grep` (112), the same through `awk` (104),
-//! "how old is pid N and what is its command line" (24), `grep -q` for one bit
-//! (18), `grep -c` for a count (12), `--sort=-pcpu | head` (8), `--ppid` (1).
-//! Eighty percent of them were one question — *is my server running, since
-//! when, with what arguments* — and every one was a ritual reproduced from
-//! training data, bracket trick included, that a shell then matched against
-//! itself. Fifteen fed a kill loop; those are `pkill`'s.
-//!
-//! Four shapes, one tool: `pattern` (a substring of the command line, never
-//! matching this process), `pid` (one process by number), `children_of` (a
-//! pid's direct children), `top` (`cpu` or `mem`, the busiest first). Each row
-//! is pid, ppid, age, state, CPU%, RSS and the command line, with `PROTECTED`
-//! or `job <id>` where `pkill` would say so. Read-only; it never signals.
+//! `ps`: one question over process state, answered without a pipeline.
+//! Four shapes, one tool: `pattern` (never matching this process), `pid`, `children_of`, `top`.
+//! Read-only; it never signals.
 
 use serde_json::Value;
 

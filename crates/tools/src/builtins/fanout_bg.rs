@@ -1,41 +1,6 @@
-//! **`fanout {background: true}`** — the branches start, and ONE handle stands in for them (FB).
-//!
-//! `docs/remote-hosts.md` § *As built (FB)* is the contract, and this file is the half of it that
-//! `docs/remote-hosts.md` § RH8 said could not be done without a composite process host. It can,
-//! and this is the smallest honest shape: **one handle in THIS session's job table whose
-//! `wait_job` waits on N branches**, each on its own machine through that machine's own process
-//! group.
-//!
-//! # Why not a composite `ProcessHost`
-//!
-//! A branch is a job of the *host's* table (`RemoteProcesses`), so `jobwatch` — whose whole job is
-//! `wait_job` on this session's host — could never settle it. Teaching the seam what a host is
-//! (`SpawnRequest.host`, `JobView.host`, a merged `jobs()`, a recorder per host) would fix that and
-//! change every caller of it. A [`Aggregate`] is one table beside the jobs instead, and then
-//! `jobs`, `job_output`, `job_kill`, `job_wait`, the activity's `waiting on: job …` and the
-//! settlement that wakes the model are all the code that was already there.
-//!
-//! # The three answers this file has to get right
-//!
-//! * **The settlement is a wake, not a report.** `jobwatch` waits on the handle and hands the model
-//!   the state, the numbers and — through [`ProcessHost::settlement_note`] — the table. A fanout's
-//!   answer IS its table, so that is the one note a settlement carries, cut to
-//!   [`REPORT_LINES`] lines because a wake is read in the middle of a turn.
-//! * **`job_output` reads a journal, not a table.** A table is re-rendered as branches settle, so
-//!   an offset into it would mean something different a second later; the journal is append-only
-//!   (`<host> · started`, then `<host> · exited 0 · 1.2s`), which is what makes paging an honest
-//!   operation while the thing runs.
-//! * **`job_kill` kills every branch on every host**, through each branch's own process group
-//!   (RH1), and each branch's `process` record ends `stopped`. There is no cgroup of ours holding
-//!   them and a signal from here would reach nothing.
-//!
-//! # What this does not survive, said here rather than discovered
-//!
-//! The table is in memory. A daemon that restarts loses the handle: its watcher was a thread of
-//! the old process, so **nothing wakes the model with the table** — `job_output` on the old handle
-//! answers *no job called that*, which is a refusal and not a hang, and it claims nothing about
-//! work still in flight. The **branches** do survive, because each is a `process` record the
-//! supervisor adopts (RH7): they are still killed at their deadline or by a session's close.
+//! `fanout {background: true}`: the branches start, and one handle stands in for them.
+//! The handle is an [`Aggregate`] beside the job table rather than a composite `ProcessHost`, so
+//! the existing job verbs work; it reads an append-only journal, and a restart loses the handle.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -129,17 +94,9 @@ pub(super) fn start(
     )
 }
 
-/// **One backgrounded fanout, as the session's job table holds it** — the [`Aggregate`] behind the
-/// handle `fanout {background: true}` answers with.
-///
-/// # Why the thread lives here
-///
-/// Somebody has to watch N branches on N machines, and nothing else can: this session's process
-/// host knows no `RemoteProcesses`, so its `wait_job` cannot block on a branch. So a thread of the
-/// fanout's own polls them the way the blocking loop does — one pass over the branches, a breath
-/// between passes — and the handle is what makes that thread's ending visible to everything above:
-/// `state`, `output`, `wait` and `kill` are the four questions `jobwatch`, `job_output`, `job_wait`
-/// and `job_kill` already ask of a job.
+/// One backgrounded fanout, as the session's job table holds it.
+/// A thread of the fanout's own polls the branches, since this session's process host cannot
+/// block on a branch; `state`, `output`, `wait` and `kill` make its ending visible above.
 pub struct FanoutJob {
     handle: JobId,
     /// The name it answers to — `fanout`, `fanout-2`, … claimed out of the host's own record.
@@ -185,11 +142,9 @@ impl FanoutJob {
             .push(format!("{line}\n").as_bytes());
     }
 
-    /// **Start every branch**, journal the ones that started and the rows of the ones that did not.
-    /// A leg that never ran is a row immediately — the blocking form's rule, one call earlier.
-    ///
-    /// On the caller's thread and not the tracker's, so the call that asked for the background
-    /// fanout is the one that knows which branches exist when it answers.
+    /// Start every branch, journal the ones that started and the rows of the ones that did not.
+    /// A leg that never ran is a row immediately.
+    /// On the caller's thread, so the call that asked for it knows which branches exist.
     fn start_branches(&self) {
         self.journal(&format!(
             "fanout · {} planned on {} · work dir `{}` on each host",

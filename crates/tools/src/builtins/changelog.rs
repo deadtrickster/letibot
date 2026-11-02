@@ -1,53 +1,6 @@
-//! `host_changelog` — what a host's setting was, what it is now, why, and on whose words.
-//!
-//! The operator, on a box whose governor had been `performance` for a month:
-//!
-//! > *"a month later nobody remembers why the governor is `performance`, and 'the agent changed
-//! > it' is not an answer a person can act on"*
-//!
-//! So a change to a host's configuration leaves a **record** — five facts and a number: `what`
-//! (the setting), `before`, `after`, `why`, and `words` (whose words it rests on, quoted).
-//! `why` and `words` are **required**, and a record missing either is refused by name, because a
-//! record of *what* with no reason is exactly the thing being complained about, written down.
-//!
-//! # The doing stays where it was
-//!
-//! This tool changes nothing. A governor is set by a `bash` call, with `sudo` where there is a
-//! tty, and that is where it stays — the changelog's job is to make the change answerable later,
-//! not to perform it. `revert` is the same rule one step further: it hands back the recorded
-//! `before` and marks the change undone, and the seat that made the change is what puts the value
-//! back.
-//!
-//! # The file, and why it is a file
-//!
-//! `<config dir>/host-changelog.jsonl`, beside `providers.toml` — **one JSON object per line,
-//! append-only**. Three reasons, and they are the feature's:
-//!
-//! * a host's configuration outlives every daemon, every session and every store row, and the
-//!   config dir is the one place on the box that is already the operator's and already survives a
-//!   store being rebuilt;
-//! * **two writers cannot lose each other's line.** An append is one write on a descriptor opened
-//!   `O_APPEND` ([`append`]), so the second session to record a change adds a line rather than
-//!   rewriting a file the first one is also rewriting;
-//! * a record is evidence, and evidence is not edited. A revert does not rewrite the change it
-//!   undoes — it appends a line saying so, and [`read`] folds the two.
-//!
-//! # The number is the position, and it is derived
-//!
-//! A change's number is its ordinal among the file's **change** lines — 1-based, oldest first —
-//! computed on every read rather than stored. No counter is shared and no lock is taken, so two
-//! concurrent records cannot be handed one number; and the order a reader sees is the order the
-//! bytes are in, which is the only order an append-only file has.
-//!
-//! A revert line names both the number and the `what` it undoes, so a file somebody truncated by
-//! hand cannot make a revert silently apply to a different setting: [`read`] reports the mismatch
-//! instead of applying it.
-//!
-//! # A line the file cannot read is reported, not skipped in silence
-//!
-//! [`Log::unreadable`] carries every line this build could not parse, with its number, and `list`
-//! prints them. A record is evidence: a reader has to be told that a line is there and was not
-//! understood, rather than shown a tidy list that is quietly missing one.
+//! `host_changelog` records what a host setting was, what it is now, why, and on whose words.
+//! `why` and `words` are required, and the record is an append-only file in the config dir, so two
+//! writers cannot lose each other's line and a revert appends rather than edits.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -71,9 +24,7 @@ pub const DEFAULT_LIMIT: usize = 20;
 
 /// Where the changelog is and who is writing, as the daemon that owns the config dir sees it.
 ///
-/// Supplied by the daemon, which owns the config dir and the session — this crate holds only the
-/// trait, the same seam [`crate::builtins::notes::NotesScope`] is, so that `letibot-tools` keeps
-/// depending on nothing above it and a test can point the tool at a temp directory.
+/// Supplied by the daemon so `letibot-tools` keeps depending on nothing above it.
 pub trait ChangelogScope: Send + Sync {
     /// The file: `<config dir>/host-changelog.jsonl`.
     fn path(&self) -> PathBuf;
@@ -209,12 +160,9 @@ pub fn read(path: &Path) -> Log {
     log
 }
 
-/// **Add one line to the file** — the only write in this module.
-///
-/// `O_APPEND` (what `append(true)` asks for) makes the kernel choose the offset at the moment of
-/// the write, so two processes appending at once cannot overwrite each other's bytes and the file
-/// never grows a gap. The whole line is one `write_all` on that descriptor, so a reader never sees
-/// half a record.
+/// Add one line to the file, the only write in this module.
+/// `O_APPEND` has the kernel choose the offset at write time, so concurrent appenders cannot
+/// overwrite each other's bytes, and one `write_all` keeps a reader from seeing half a record.
 pub fn append(path: &Path, line: &Line) -> std::io::Result<()> {
     let mut bytes = serde_json::to_vec(line).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
@@ -231,12 +179,9 @@ pub fn append(path: &Path, line: &Line) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// **Can a line be appended here?** Asked *before* a change is applied, by the tools that make
-/// one (`host_config`), because a change that lands with no line in the file is the state this
-/// whole module exists to end.
-///
-/// It creates the directory and the file if they are not there — an empty changelog reads as
-/// *no change recorded*, which is the same answer as no file — and touches nothing else.
+/// Can a line be appended here? Asked before a change is applied, since a change that lands with
+/// no line in the file is the state this module exists to end.
+/// It creates the directory and file if absent; an empty changelog reads as no change recorded.
 pub fn writable(path: &Path) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -346,9 +291,8 @@ impl Tool for HostChangelogTool {
             return nowhere();
         };
         // The second, independent gate: the adjudicator may have admitted this call, and a
-        // backend opened read-only is what refuses. Writing around it would be a tool with its
-        // own boundary policy. Only the two writing verbs are asked, so a read-only seat can
-        // still read the record — which is the point of `list` narrowing to `Read`.
+        // backend opened read-only is what refuses. Only the writing verbs are asked, so a
+        // read-only seat can still read the record.
         if matches!(verb_of(args).as_str(), "record" | "revert") && !ctx.backend.is_writable() {
             return Invocation::failed(
                 "this session's backend was opened read-only",
@@ -367,11 +311,9 @@ impl Tool for HostChangelogTool {
     }
 }
 
-/// **The tool's whole decision, with no context** — what the tests drive.
-///
-/// Split out of [`Tool::invoke`] for the same reason `room`'s is: the checks this tool has (*a
-/// record without `why` never reaches the file*, *a second revert is refused*) are its contract,
-/// and a clock a test can choose is what makes an age assertable.
+/// The tool's whole decision, with no context, which is what the tests drive.
+/// Split out of [`Tool::invoke`] so the checks this tool has are its contract and a clock a test
+/// can choose is what makes an age assertable.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub fn dispatch(
     scope: &dyn ChangelogScope,

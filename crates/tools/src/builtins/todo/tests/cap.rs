@@ -2,12 +2,8 @@
 
 use super::*;
 
-/// **The description names the cap the code enforces.**
-///
-/// The number in the model-facing prose is a literal — a `format!` over the whole description
-/// would mean escaping every `{"kind": …}` example in it — so this is the test that catches the
-/// one drift a reader cannot see: a constant moved and the sentence left behind, which would
-/// teach the model a cap the tool refuses at a different length.
+/// The cap in the model-facing description is a literal, because a `format!` would mean escaping
+/// every `{"kind": …}` example in it; this is what catches the constant and the sentence drifting.
 #[test]
 fn the_tools_description_names_the_cap_it_enforces() {
     let board = Arc::new(TodoBoard::new(Vec::new()));
@@ -39,13 +35,8 @@ fn the_tools_description_names_the_cap_it_enforces() {
 
 // -- the title cap -------------------------------------------------------
 
-/// **A title over the cap is refused BY NAME, and nothing is written** — the refusal names the
-/// row's own words, the number it measured and the cap, and the sentence says where the rest of
-/// the row goes.
-///
-/// The cap itself is `TODO_TITLE_MAX`'s and its reason is written there: the operator's 160-cell
-/// terminal, the pane's 156-column row, and the 21 columns of furniture a row spends before its
-/// own words.
+/// The refusal names the row's words, the length it measured, the cap and where the rest of the row
+/// goes; nothing is written. The cap's own reason lives at `TODO_TITLE_MAX`.
 #[test]
 fn a_title_over_the_cap_is_refused_by_name_and_nothing_is_written() {
     let (rt, board) = runtime();
@@ -119,10 +110,8 @@ fn a_long_detail_after_the_separator_is_not_the_title() {
     );
 }
 
-/// **A row written BEFORE the cap is not made immortal by it.** The cap binds the words a call
-/// WRITES, so an old long row can still be restated by the whole-list form and still be moved by
-/// quoting it in `update` — which is what keeps a board that predates the cap disposable rather
-/// than stuck with a row nobody can close.
+/// The cap binds the words a call WRITES, not the rows already on the board: an old long row can
+/// still be restated and moved, so a board that predates the cap is not wedged shut.
 #[test]
 fn a_row_written_before_the_cap_can_still_be_restated_and_moved() {
     let legacy = "L".repeat(TODO_TITLE_MAX * 2);

@@ -1,42 +1,6 @@
-//! `todo` — one set of verbs over a mount point.
-//!
-//! The model has **one** todo list. What backs it is a property of the session:
-//! with a board mounted a row is filed on the fabric and every seat in the project
-//! can see it; with none mounted the same verb records the same intent in this
-//! session's own ledger, which needs no node, no token and no network. See
-//! [`super::queue`] for the mount argument in full.
-//!
-//! # This is not a note the model writes to itself
-//!
-//! Four of the five surveyed harnesses ship a todo tool and all four treat it the
-//! same way — the model writes a list, the list is re-emitted, and nothing ever
-//! reads it back against what ran. opencode's `todowrite` literally returns *"the
-//! list re-emitted as JSON"* (`todo.ts:38`).
-//!
-//! Ours is the **error signal** of `docs/closed-loop.md` §2, and the whole reason
-//! the group is worth building. T21.3:
-//!
-//! > when model says ill start that and by end of the turn forgets and does not
-//! > start anything
-//!
-//! So there are two rules here that none of the five have:
-//!
-//! 1. **A completion is checked, not accepted.** [`super::ledger::IntentLedger::complete`]
-//!    asks the effect log whether any tool call succeeded while the item was in
-//!    progress. If none did, the item is recorded as *claimed*, it is **not**
-//!    counted as complete, and the same call says so. F5: a component's "I did not
-//!    do this" is never reported upward as success — and an announced item is not a
-//!    done one.
-//! 2. **A count never travels without its denominator.** Every result ends with
-//!    `3 of 7 complete — 2 in progress, 1 pending, 1 blocked`, including the
-//!    zeroes.
-//!
-//! # Ownership is a query
-//!
-//! `claim` takes an id and nothing else. There is deliberately no `expect`
-//! argument: `flowy todo claim --expect WHO` is a compare-and-swap, and the model
-//! forming an opinion about who holds a row is the bug (`docs/closed-loop.md` §7).
-//! The seam reads the holder and swaps against what it read.
+//! `todo` - one set of verbs over a mount point: a mounted board files the row on the
+//! fabric, and with none the same verb records the intent in this session's ledger.
+//! A completion is checked against the effect log, and a count never travels alone.
 
 use serde_json::Value;
 
@@ -64,15 +28,9 @@ impl Todo {
         }
     }
 
-    /// A session with the shared board mounted.
-    ///
-    /// This changes the tool's declared access from [`Access::Session`] to
-    /// [`Access::Network`], because with a board mounted the widest thing `todo`
-    /// can do is write to state other seats act on — and clause 4 says a tool
-    /// declares the widest thing it can do. The consequence is deliberate and
-    /// worth saying out loud: **a mounted `todo` is a gated tool**, so a session
-    /// that mounts a board and attaches no adjudicator will find `todo` refusing
-    /// with `not_run`, exactly as `write` does.
+    /// A session with the shared board mounted: the tool's access widens to
+    /// [`Access::Network`], because the widest thing it can do is write state other seats
+    /// act on, so a mounted `todo` is gated and refuses `not_run` with no adjudicator.
     pub fn mounted(ledger: std::sync::Arc<IntentLedger>, queue: std::sync::Arc<dyn Queue>) -> Self {
         Todo {
             ledger,
@@ -230,9 +188,7 @@ impl Tool for Todo {
         let id_arg = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
         // Every op but `add` and `list` names an item, and resolving it is the same
-        // question every time.
-        // Boxed because `Invocation` is a large error variant and this closure is
-        // called on every op that names an item.
+        // question every time. Boxed because `Invocation` is a large error variant.
         let resolved = |s: &Self| -> Result<u32, Box<Invocation>> {
             if id_arg.is_empty() {
                 return Err(Box::new(Invocation::failed(
@@ -302,10 +258,8 @@ impl Tool for Todo {
                     Err(inv) => return *inv,
                 };
                 match self.ledger.start(&turn, id) {
-                    // R93.F58: it used to add *"If this turn ends with no successful tool call,
-                    // the intent check will say so"* — 163× on `todo`, a threat about the prose
-                    // check that is off by default (`--intent-prose`), and not what the
-                    // deterministic check does (it speaks a turn later, and only of a stall).
+                    // No promise of the intent check here: the deterministic one speaks a turn later
+                    // and only of a stall, and the prose one is off by default.
                     Ok(i) => Invocation::ok(format!(
                         "{}{}{}",
                         self.render(&i),
@@ -751,10 +705,9 @@ mod tests {
 
     #[test]
     fn the_local_path_needs_no_flowy_environment() {
-        // The whole local path, with FLOWY_ADDR / FLOWY_TOKEN / FLOWY_AGENT
-        // removed from the process. Nothing here reads the environment and
-        // nothing here opens a socket — this crate has no HTTP client at all —
-        // but the property is worth a test rather than an assertion in a comment.
+        // The whole local path, with FLOWY_ADDR / FLOWY_TOKEN / FLOWY_AGENT removed from
+        // the process: nothing here reads the environment or opens a socket, and the
+        // property is worth a test rather than an assertion in a comment.
         let _guard = env_lock();
         let saved: Vec<(String, Option<String>)> = ["FLOWY_ADDR", "FLOWY_TOKEN", "FLOWY_AGENT"]
             .iter()

@@ -1,70 +1,31 @@
-//! The two pattern languages the search tools use, and the relaxation clause 1
-//! demands.
-//!
-//! # Why this stopped being hand-written
-//!
-//! It used to be, and the argument for that was written down here: what is needed
-//! is a matcher over single lines with a **known, statable** subset, because
-//! clause 1's third acceptance case — *a too-strict anchor is auto-relaxed to the
-//! bare identifier and the relaxation is reported* — is a property of the
-//! pattern's syntax tree, not of matching. A full engine would give more syntax
-//! and no more of the thing that matters.
-//!
-//! **The reasoning was right and the conclusion was wrong, and a measurement is
-//! what separated them.** Searching `crates/` (137 files, 1.9 MB, 48,667 lines)
-//! with `cargo run --release -p letibot-tools --example greptime`:
-//!
+//! The two pattern languages the search tools use, and the relaxation a miss needs.
+//! A too-strict anchor relaxes to the bare identifier, a property of the pattern's syntax tree
+//! rather than of matching, so the engine is `regex-syntax`.
 //! ```text
 //! walk     0.4 ms
 //! read     0.9 ms
 //! match   23.7 ms   <- 95% of the total
 //! ```
-//!
-//! ripgrep answers the same question in 9-10 ms. So the hand-rolled matcher was
-//! not paying for the syntax tree it gave us — `regex_syntax` gives the *same*
-//! syntax tree, and a better one, as a by-product of parsing. What the hand-rolled
-//! engine was actually costing was a backtracking `Vec<char>` scan per line, which
-//! is where 95% of a search went.
-//!
-//! The part of the old argument that survives is the part that mattered: **a
-//! construct this engine cannot compile is REPORTED, never silently
-//! approximated.** What changed is the remedy. The old engine treated an
-//! unsupported construct as a literal and put a note beside the result — which is
-//! still a search for something other than what was asked, merely an annotated
-//! one. [`Pattern::compile`] now returns the engine's own error, with the position
-//! in the pattern, and `grep` hands that to the model instead of a result.
-//!
-//! Two limits are deliberate and stated rather than left at the crate's defaults:
-//! [`SIZE_LIMIT`] and [`DFA_SIZE_LIMIT`]. A pattern arrives from a model, and a
-//! model can write `(a|b|c|…){20}` without meaning to; the refusal is reported the
-//! same way a syntax error is.
+//! A construct the engine cannot compile is REPORTED, never silently approximated: an approximation
+//! with a note beside it is still a search for something else. [`Pattern::compile`] returns the
+//! engine's error with its position, and [`SIZE_LIMIT`]/[`DFA_SIZE_LIMIT`] are stated on purpose.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use regex::{Regex, RegexBuilder};
 
-/// The compiled program's ceiling, in bytes.
-///
-/// The crate's default is 10 MiB. A model writing a search does not need a program
-/// that large, and the tool runtime is answering a turn a human is waiting on, so
-/// the trade is the other way round from a general-purpose library's.
+/// The compiled program's ceiling, in bytes. The crate's default is 10 MiB, which is more than a
+/// model writing a search needs while a person waits on the turn.
 pub const SIZE_LIMIT: usize = 1 << 20;
 
-/// The lazy-DFA cache ceiling. Exceeding it is not an error at compile time — the
-/// engine falls back to a slower strategy — so this bounds memory, not syntax.
+/// The lazy-DFA cache ceiling. Exceeding it is not a compile error, only a fall back to a
+/// slower strategy, so this bounds memory rather than syntax.
 pub const DFA_SIZE_LIMIT: usize = 1 << 21;
 
 /// A compiled search pattern.
-///
-/// Matching is **per line**, which is what `grep` reports, and the two entry
-/// points differ only in how much text they are handed at once:
-///
-/// - [`Pattern::is_match`] takes one line.
-/// - [`Pattern::line_hits`] takes a whole file and returns the 1-based numbers of
-///   the lines that match. It exists because scanning a buffer once lets the
-///   engine's literal prefilters skip most of it, and calling `is_match` 48,667
-///   times does not.
+/// Matching is per line, which is what `grep` reports: [`Pattern::is_match`] takes one line and
+/// [`Pattern::line_hits`] a whole file, so the engine's literal prefilters can skip most of it.
 #[derive(Debug, Clone)]
 pub struct Pattern {
     re: Arc<Regex>,
@@ -74,10 +35,8 @@ pub struct Pattern {
     pub case_insensitive: bool,
 }
 
-/// Why a pattern could not be compiled, in the engine's own words.
-///
-/// Kept as a struct rather than collapsed to a `String` so the caller can tell a
-/// refusal (too big) from a malformed pattern without matching on prose.
+/// Why a pattern could not be compiled, in the engine's own words. A struct rather than a `String`
+/// so the caller can tell a refusal (too big) from a malformed pattern without matching on prose.
 #[derive(Debug, Clone)]
 pub struct PatternError {
     /// The pattern as written.
@@ -123,29 +82,9 @@ impl PatternError {
     }
 }
 
-/// Compiled patterns, keyed by what was asked for.
-///
-/// The ladder in `grep` compiles the same source two to four times per call (bare
-/// identifier, case-insensitive retry, widened scope), and a turn typically greps
-/// for the same thing more than once. Compilation is the expensive half of a
-/// search over a small tree, so it is worth not repeating; the cache is process-
-/// wide because a `Pattern` is immutable and `Regex` is `Send + Sync`.
-///
-/// Bounded, and bounded by clearing rather than by an LRU: the entries are small,
-/// the working set of a turn is a handful, and a wrong eviction costs a
-/// recompile, not a wrong answer.
-/// The key is everything that changes the compiled program: the source and the
-/// case flag. Nothing else does — `multi_line` is set the same way for every
-/// entry, and the two limits are constants.
-///
-/// **Shared by every test in the binary, and safe for it** (R67 item 23 asked). An entry is
-/// a pure function of its key, so a test that hits an entry another test compiled gets the
-/// program it would have compiled itself: no test can observe another's entries through what
-/// a `Pattern` matches. The one observable is identity — `Arc::ptr_eq`, which only
-/// `compiling_the_same_pattern_twice_reuses_the_program` reads — and the one thing that can
-/// break it is a [`CACHE_CAP`] clear landing between that test's two compiles, which needs
-/// 256 distinct keys in one process. MEASURED 2026-10-11: the whole `letibot-tools` lib test
-/// binary (937 tests) peaks at 44; integration test files are processes of their own.
+/// Compiled patterns, keyed by the source and the case flag: everything that changes the program.
+/// The ladder in `grep` compiles one source several times per call, so the cache is process-wide;
+/// it is cleared whole rather than evicted by an LRU, since a wrong eviction costs a recompile.
 type CacheKey = (String, bool);
 
 static CACHE: LazyLock<Mutex<HashMap<CacheKey, Arc<CompiledPair>>>> =
@@ -160,12 +99,9 @@ struct CompiledPair {
 }
 
 impl Pattern {
-    /// Compile `source`, or say why it could not be.
-    ///
-    /// A pattern that does not compile is an **error the model is shown**, not a
-    /// pattern quietly replaced by a literal one. Searching for something other
-    /// than what was asked is the class of bug this crate exists to remove, and an
-    /// approximation with a note attached is still that bug with a note attached.
+    /// Compile `source`, or say why it could not be. A pattern that does not compile is an error the
+    /// model is shown, not a pattern quietly replaced by a literal one: an approximation with a note
+    /// attached is the bug this crate exists to remove, with a note attached.
     pub fn compile(source: &str, case_insensitive: bool) -> Result<Pattern, PatternError> {
         let key: CacheKey = (source.to_string(), case_insensitive);
         if let Some(hit) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
@@ -183,10 +119,9 @@ impl Pattern {
             .dfa_size_limit(DFA_SIZE_LIMIT)
             .build()
             .map_err(|e| classify(source, &e.to_string()))?;
-        // The same pattern with `^` and `$` bound to line boundaries.
-        // `line_hits` uses it to find candidate lines in one pass; `line` above is
-        // what decides whether a candidate really matches, so the two never
-        // disagree about the answer, only about how fast it is reached.
+        // The same pattern with `^` and `$` bound to line boundaries. `line_hits` uses it to find
+        // candidates in one pass, and `line` decides whether a candidate really matches, so the two
+        // never disagree about the answer, only about how fast it is reached.
         let multi = RegexBuilder::new(source)
             .case_insensitive(case_insensitive)
             .multi_line(true)
@@ -224,35 +159,20 @@ impl Pattern {
     }
 
     /// The 1-based numbers of the lines of `text` that match, in order.
-    ///
-    /// # Why this is not `text.lines().filter(is_match)`
-    ///
-    /// Because that pays the engine's per-call setup 48,667 times over a 1.9 MB
-    /// tree and never lets a literal prefilter skip a kilobyte at a time. This
-    /// runs the multi-line form over the whole buffer, which memchr-skips to
-    /// candidates, and confirms each candidate line with the single-line form.
-    ///
-    /// The confirmation is not belt-and-braces, it is the correctness of the
-    /// thing. In multi-line mode `\s`, `.` under `(?s)` and negated classes can
-    /// match a `\n` and so match ACROSS two lines — which per-line `grep`
-    /// semantics never do. A candidate is therefore only ever a candidate, and
-    /// the line-scoped regex is what decides. One hit per line, at most,
-    /// matching what `grep` prints.
+    /// One pass over the whole buffer in multi-line form lets memchr skip to candidates; each is
+    /// then confirmed by the line-scoped form, because `\s` and `(?s).` can match across a newline.
     pub fn line_hits(&self, text: &str, cap: usize, mut on_hit: impl FnMut(usize, &str)) -> bool {
         let bytes = text.as_bytes();
-        // `line_start` is a byte offset that is always the first byte of a line,
-        // which is what makes searching `&text[line_start..]` legitimate: `^` and
-        // `\b` then see exactly the context they would have seen in the whole
-        // buffer. Resuming mid-line would quietly change both.
+        // `line_start` is always the first byte of a line, which is what makes searching
+        // `&text[line_start..]` legitimate: `^` and `\b` see the context they would have seen in the
+        // whole buffer, where resuming mid-line would quietly change both.
         let mut line_start = 0usize;
         let mut line_no = 0usize;
         let mut found = 0usize;
         loop {
-            // `line_start == len` means the buffer ended with a newline, and
-            // `str::lines` yields no final empty line for that; `line_start >
-            // len` means the last line had no newline and has been consumed.
-            // Either way there is nothing left, and a zero-width pattern would
-            // otherwise invent one more line here.
+            // `line_start == len` means the buffer ended with a newline, and `str::lines` yields no
+            // final empty line for that; `line_start > len` means the last line had no newline.
+            // Either way there is nothing left, and a zero-width pattern would invent one more line.
             if line_start >= bytes.len() {
                 break;
             }
@@ -315,34 +235,9 @@ fn classify(source: &str, message: &str) -> PatternError {
     }
 }
 
-/// Clause 1's third case: **the bare identifier inside a too-strict pattern.**
-///
-/// `^\s*fn parse_args\(` relaxes to `parse_args`; `\bTokenLedger\b` to
-/// `TokenLedger`. The rule is the longest run of identifier characters, because
-/// that is what the model was actually looking for and everything else it wrote
-/// was a guess about the surrounding syntax — which is precisely the guess that
-/// produced the empty result.
-///
-/// # Why this reads the AST and not the characters
-///
-/// It used to scan the source string, and that made it a second, worse parser:
-/// `\bfoo` had to be special-cased so it did not yield `bfoo`, `\d` looked like
-/// the identifier `d`, and `a{2,3}` yielded `a23`. Every one of those is a
-/// question about the pattern's SYNTAX TREE being answered by looking at its
-/// bytes. `regex_syntax::ast` already has the tree, so the rule can be stated
-/// once and correctly: the longest run of adjacent literal identifier characters
-/// in a concatenation, over the whole tree.
-///
-/// Two things are deliberately not descended into:
-///
-/// - **Alternations.** A literal inside one branch is one possibility out of
-///   several; promoting it to "what the model was looking for" would search for a
-///   term the model never committed to.
-/// - **Character classes.** `[abc]` is three alternatives spelled compactly, for
-///   the same reason.
-///
-/// `None` when the pattern is already bare, or does not parse, so the caller
-/// cannot report a relaxation that did not happen.
+/// The bare identifier inside a too-strict pattern: `^\s*fn parse_args\(` relaxes to `parse_args`.
+/// It reads the AST rather than the characters, because `\bfoo` would yield `bfoo` and `a{2,3}`
+/// would yield `a23`. An alternation's branches and a character class are not descended into.
 pub fn bare_identifier(source: &str) -> Option<String> {
     let ast = regex_syntax::ast::parse::Parser::new().parse(source).ok()?;
     let mut best = String::new();
@@ -395,14 +290,8 @@ fn is_word(c: char) -> bool {
 }
 
 /// Path globbing: `*`, `?`, `**`, `[...]`, and `{a,b}` alternation.
-///
-/// `*` does not cross a `/`; `**` does. Separate from [`Pattern`] because a glob
-/// is matched against a whole path and a regex against one line, and conflating
-/// them is how `*` quietly becomes `.*`. Still hand-written, and for the reason
-/// the regex matcher no longer is: a glob is matched once per PATH, not once per
-/// line, so it has never appeared in a measurement, and translating globs to
-/// regexes is a well-known source of quiet semantic drift at exactly the `/`
-/// boundary this cares about.
+/// `*` does not cross a `/`; `**` does. Separate from [`Pattern`] because a glob is matched against a
+/// whole path, and translating globs to regexes drifts at exactly the `/` boundary this cares about.
 pub fn glob_match(pattern: &str, path: &str) -> bool {
     for p in expand_braces(pattern) {
         if glob_one(

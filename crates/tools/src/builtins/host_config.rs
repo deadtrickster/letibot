@@ -1,59 +1,6 @@
-//! `host_config` — **this box's own settings, in the platform's own vocabulary.**
-//!
-//! The operator's ask, from the room's design: *keyboard and input*, and *perf policy*, named
-//! the way the platform names them, with the privilege stated and **every change written into
-//! the host changelog**.
-//!
-//! # The vocabulary is per platform, and a setting this platform has not got is refused by name
-//!
-//! *"Perf policy"* on a Mac and on a Linux box are not the same knob. macOS has `pmset -a
-//! lowpowermode` (`0` or `1`); Linux has a cpufreq governor (`powersave`, `performance`,
-//! `schedutil`, …) written with `cpupower frequency-set -g`. So they are **two settings with two
-//! names** — `perf-policy` on macOS, `cpu-governor` on Linux — and asking a Mac for
-//! `cpu-governor` is refused with a sentence that says what macOS has instead. Mapping one onto
-//! the other silently is the thing this refusal exists to prevent: a `set` that "worked" by
-//! changing a different knob is worse than a refusal.
-//!
-//! # A read comes first, and the `before` is not optional
-//!
-//! A changelog line whose `before` is missing cannot be reverted, so `set` **reads the current
-//! value before it changes anything** and hands that to the record. A read that fails is a
-//! refusal, not an empty `before`: a governor that could not be read is not a governor that was
-//! not set.
-//!
-//! # Privilege is stated, never assumed
-//!
-//! Each setting says whether it needs root. When it does, the tool needs a way to *ask*, and the
-//! box's answer is `letibot-askpass`: `sudo -A` with `SUDO_ASKPASS` naming the helper, and the
-//! password travelling head → daemon → the helper's stdout → sudo, and nowhere else.
-//!
-//! **A helper on `PATH` is not a channel.** The helper attaches to the daemon that owns the
-//! session, on `LETIBOT_SOCKET` and `LETIBOT_SESSION`; with neither in its environment it prints
-//! *not inside a letibot session* and exits 1, and `sudo` reports that no password was given. A
-//! daemon does not export those in its own process — the launcher passes `--socket` as an argv —
-//! so the harness hands this tool the session's [`Channel`] when it builds the registry and the
-//! tool puts both pairs in the command's environment itself. Every other case is a refusal by
-//! name, said before anything runs: no helper, a helper with no session to ask on, a socket that
-//! is not there. A daemon has no tty, so a bare `sudo` is not a prompt — it is a hang.
-//!
-//! # Every change goes into the record
-//!
-//! The apply is the middle of three acts: **read**, apply, **record**. The record's door is
-//! proved open *before* the apply ([`changelog::writable`]) — a change that lands with no line
-//! in the file is exactly the state the changelog exists to end — and the line is written the
-//! moment the apply returns. The door comes **after** the `before` read, because that read is the
-//! cheaper refusal and proving the door first would leave an empty changelog file behind for a
-//! change that never happened. `why` and `words` are required and are checked **before anything
-//! runs**: a `set` with no reason is refused while the box is still untouched, which is the only
-//! moment at which refusing costs nothing.
-//!
-//! The `after` is a read too. When the box does not answer that read the record says [`UNREAD`]
-//! rather than the value that was asked for — see [`UNREAD`] for why that distinction is the
-//! point of the field.
-//!
-//! Undoing a change is the changelog's own verb: `host_changelog revert N` hands back the
-//! recorded `before`, and putting the value back is a `set` — a new change, recorded, which is
-//! what the changelog's own doc says a second move is.
+//! `host_config`: this box's own settings, in the platform's own vocabulary.
+//! Read, apply, record: a change is refused before anything runs unless it names a reason and the
+//! changelog is writable, and a setting this platform has not got is refused by name, not mapped.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,21 +15,17 @@ use crate::schema::{Access, ToolSchema};
 /// The tool's name.
 pub const TOOL: &str = "host_config";
 
-/// **What the record's `after` says when the box did not answer a read-back.** The value that was
-/// *asked for* is not a measurement: writing it into the field whose whole purpose is "what the
-/// machine says now" would be the one claim this record exists to keep honest, made falsely. No
-/// setting here can hold this word — the keyboard ones are integers, `pmset` takes `0`/`1` and a
-/// governor is a word the kernel lists — so it cannot be mistaken for a value.
+/// What the record's `after` says when the box did not answer a read-back.
+/// The value that was asked for is not a measurement, and no setting here can hold this word, so
+/// it cannot be mistaken for a value.
 pub const UNREAD: &str = "unread";
 
 // ---------------------------------------------------------------------------
 // What a platform hands back
 // ---------------------------------------------------------------------------
 
-/// **A platform's refusal, in two sentences**: what it is about, and what a person can do next.
-///
-/// The same shape [`Invocation::failed`] takes, kept as its own type so a platform can answer
-/// one without knowing what a tool invocation is.
+/// A platform's refusal: what it is about, and what a person can do next.
+/// Its own type so a platform can answer one without knowing what a tool invocation is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub what: String,
@@ -195,11 +138,8 @@ impl Ran {
     }
 }
 
-/// **Where a platform's commands run.** One argv in, one answer out.
-///
-/// A trait for the reason the changelog's scope is one: a test must be able to drive the whole
-/// tool without changing this box's keyboard repeat or its governor. The production runner is
-/// [`System`]; a test's is a recording fake.
+/// Where a platform's commands run: one argv in, one answer out.
+/// A trait so a test can drive the whole tool without changing this box's settings.
 pub trait Runner: Send + Sync {
     /// Run one argv with these environment additions. `Err` is a spawn that never happened —
     /// a program this box has not got — and is a different fact from a non-zero exit.
@@ -232,20 +172,13 @@ impl Runner for System {
 // Privilege
 // ---------------------------------------------------------------------------
 
-/// **A command as root runs it**: the argv to exec, and the environment that carries the helper.
-///
-/// A pair rather than a struct because both halves go to [`Runner::run`] and nothing else reads
-/// them — the helper's path never leaves this tuple, which is what keeps a password channel out
-/// of the model's reach.
+/// A command as root runs it: the argv to exec, and the environment that carries the helper.
+/// A pair, so the helper's path never leaves this tuple and a password channel stays out of the
+/// model's reach.
 pub type Elevated = (Vec<String>, Vec<(String, String)>);
 
-/// **The way back to the daemon that can ask a person**: the socket it listens on, and the
-/// session this call belongs to.
-///
-/// Both are what `letibot-askpass` attaches with, and neither is in the daemon's own environment —
-/// the launcher passes the socket as an argv and the session id is the daemon's own field. So the
-/// harness hands them over when it builds the registry, and they travel into the helper's
-/// environment from [`Privilege::as_root`].
+/// The way back to the daemon that can ask a person: its socket, and the session this call is in.
+/// Neither is in the daemon's own environment, so the harness hands them over at registry build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel {
     /// The daemon's socket — what the helper connects to.
@@ -281,11 +214,8 @@ pub enum Privilege {
 
 impl Privilege {
     /// What this session has: the helper this box installed, and the session it would ask on.
-    ///
-    /// The helper is looked for in three places, in this order: `$SUDO_ASKPASS` when it names a
-    /// file (the daemon's shim points it at the helper), `letibot-askpass` **beside this binary**
-    /// (where `harnessd`'s own `sudo::install` writes it, and what a daemon has even though it
-    /// exports nothing), and `PATH`.
+    /// The helper is looked for as `$SUDO_ASKPASS` (when it names a file), then `letibot-askpass`
+    /// beside this binary, then `PATH`.
     pub fn detect(channel: Option<&Channel>) -> Privilege {
         // SAFETY: `geteuid` has no preconditions and touches no memory.
         if unsafe { libc::geteuid() } == 0 {
@@ -344,11 +274,9 @@ impl Privilege {
         ))
     }
 
-    /// The argv to run `argv` as root, and the environment that carries the helper **and the
-    /// session it asks on**.
-    ///
-    /// Public because a [`Platform`] is what builds a command and this is where the *how* lives:
-    /// a platform that re-implemented it would be a second answer to *can this session ask?*.
+    /// The argv to run `argv` as root, and the environment that carries the helper and the session
+    /// it asks on.
+    /// Public because a platform builds the command, and a second copy would be a second answer.
     pub fn as_root(&self, argv: &[String]) -> Result<Elevated, Refusal> {
         match self {
             Privilege::Root => Ok((argv.to_vec(), Vec::new())),
@@ -403,12 +331,9 @@ fn which(name: &str) -> Option<PathBuf> {
 // The platforms
 // ---------------------------------------------------------------------------
 
-/// **One platform's settings, and the commands that read and write them.**
-///
-/// A trait rather than `cfg!` arms inside the tool, because a Mac's `defaults` and a Linux box's
-/// `xset` are *data* — argv and parsers — and data can be driven on either box. A test on Linux
-/// can therefore test the macOS arm, which is the only way a refusal for a setting this platform
-/// has not got is ever measured from both sides.
+/// One platform's settings, and the commands that read and write them.
+/// A trait rather than `cfg!` arms, so the commands are data and a test on one box can drive the
+/// other box's arm.
 pub trait Platform: Send + Sync {
     /// The platform's name, as `std::env::consts::OS` spells it.
     fn name(&self) -> &'static str;
@@ -419,22 +344,18 @@ pub trait Platform: Send + Sync {
     /// What the setting is now.
     fn read(&self, setting: &str) -> Result<Reading, Refusal>;
 
-    /// **Whether this setting would take this value** — asked by [`set`] *before* it reads the
-    /// current value, so a value the platform would never accept costs no command at all.
-    ///
-    /// [`Platform::apply`] asks it again: two doors to one decision, and neither may skip it,
-    /// because `apply` is public and a caller that came around `set` is still a caller.
+    /// Whether this setting would take this value, asked before the current value is read, so a
+    /// value the platform would never accept costs no command at all.
+    /// [`Platform::apply`] asks it again, because `apply` is public and a caller is still a caller.
     fn check(&self, setting: &str, value: &str) -> Result<(), Refusal>;
 
     /// **Set it.** Refuses a value [`Platform::check`] would, and runs nothing before it has.
     fn apply(&self, setting: &str, value: &str, privilege: &Privilege) -> Result<Applied, Refusal>;
 }
 
-/// The setting this platform has not got — refused by name, with what it has instead.
-///
-/// `other` is the *concept's* name on the platform that does have it, when one does: the point is
-/// that a person who asked in macOS's words is told Linux's, and the other way round. That is a
-/// refusal that teaches, not a mapping.
+/// The setting this platform has not got, refused by name, with what it has instead.
+/// `other` is the concept's name on the platform that does have it, so a refusal teaches instead
+/// of mapping.
 fn no_such_setting(
     platform: &str,
     asked: &str,
@@ -1014,10 +935,9 @@ impl Platform for Other {
     }
 }
 
-/// **The name a caller may have used from the other platform**, when this one has the same idea
-/// under its own word. It goes into a refusal, never into a translation: the two knobs have
-/// different units and different values, so naming the neighbour is a lesson and mapping it would
-/// be a lie.
+/// The name a caller may have used from the other platform, when this one has the same idea under
+/// its own word.
+/// It goes into a refusal, never into a translation: the units differ, so a mapping would be a lie.
 fn elsewhere(asked: &str) -> Option<&'static str> {
     match asked {
         "perf-policy" => Some("cpu-governor"),
@@ -1194,12 +1114,9 @@ impl Tool for HostConfigTool {
     }
 }
 
-/// **The tool's whole decision, with no context** — what the tests drive.
-///
-/// Split out of [`Tool::invoke`] for the reason `host_changelog`'s is: what this tool guarantees
-/// (a change with no `why` never runs, a record whose `before` is a read, a setting this platform
-/// has not got refused by name) is its contract, and a clock a test can choose is what makes the
-/// record's age assertable.
+/// The tool's whole decision, with no context, which is what the tests drive.
+/// Split out of [`Tool::invoke`] so what this tool guarantees is its contract and a clock a test
+/// can choose is what makes the record's age assertable.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub fn dispatch(
     scope: Option<&dyn ChangelogScope>,
@@ -1342,11 +1259,9 @@ fn set(
         ));
     };
 
-    // 4. **The `before` is a read.** A setting that cannot be read now cannot be reverted later,
-    //    and an empty `before` would claim there was no such setting. The read comes **before the
-    //    record's door** because it is the cheapest act that can refuse: `writable` creates the
-    //    file, and a change refused at the read would otherwise leave an empty `host-changelog.jsonl`
-    //    behind, which reads as a changelog somebody emptied.
+    // 4. The `before` is a read: a setting that cannot be read now cannot be reverted later, and an
+    //    empty `before` would claim there was no such setting. It comes before the record's door,
+    //    which creates the file, so a refusal here leaves no empty changelog behind.
     let before = platform.read(s.name).map_err(|r| {
         Invocation::failed(
             format!("`{}` could not be read, so nothing was changed", s.name),
@@ -1373,10 +1288,8 @@ fn set(
         .apply(s.name, &value, privilege)
         .map_err(Invocation::from)?;
 
-    // 7. **What the box says now**, not what was asked for: the record's `after` has to be the
-    //    truth, or a month later the file argues with the machine. A read-back that fails is
-    //    recorded as [`UNREAD`] — the value that was ASKED for is not a measurement, and writing
-    //    it down as one is the exact claim this field exists to keep honest.
+    // 7. The record's `after` is what the box says now, not what was asked for, or the file argues
+    //    with the machine later. A failed read-back is recorded as [`UNREAD`].
     let read_back = platform.read(s.name);
     let after = match &read_back {
         Ok(r) => r.value.clone(),

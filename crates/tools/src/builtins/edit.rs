@@ -1,9 +1,6 @@
-//! `edit` — replace exact text in a file, and answer a miss with what is
-//! actually there.
-//!
-//! The first tool in this harness that can change the operator's tree, so the
-//! order of its checks is the design and is worth reading as one:
-//!
+//! `edit`: replace exact text in a file, and answer a miss with what is actually there.
+//! The first tool in this harness that can change the operator's tree, so the order of its checks
+//! is the design:
 //! ```text
 //!   arguments (clause 2, in the runtime)
 //!     → the GATE (clause 4, in the runtime) — refuses with no adjudicator
@@ -14,28 +11,11 @@
 //!               → apply, atomically
 //! ```
 //!
-//! Every `no` on that ladder produces **more** output than the `yes` does, and
-//! every one of those extra bytes is something the model can act on without
-//! another call. That is the module-level rule the read-only built-ins already
-//! keep; it costs more here, because the alternative to a good miss report is a
-//! model guessing at a file it is about to write to.
-//!
-//! # The two rungs that went in 2026-09-17, and the one that came back
-//!
-//! Read-before-write and the staleness refusal were removed together, and both
-//! removals were right about the shape they removed: the read rung asked for
-//! evidence the match had just produced ("if before region matches what is in
-//! file it just looks dumb"), and over the paste ceiling it showed an excerpt,
-//! marked the file seen and let the retry through, so it cleared its own flag
-//! exactly where being wrong was likeliest. The staleness rung digested the
-//! whole file, so a formatter touching line 900 refused an edit at line 12.
-//!
-//! What is back is neither of those: [`crate::files`] keeps one fingerprint per
-//! line the model was shown, and the gate asks it about the lines the match
-//! located. A region no tool displayed is refused with the range to read; a
-//! region whose bytes moved since they were shown is refused the same way; a
-//! change elsewhere in the file refuses nothing, because those lines' own
-//! fingerprints still match.
+//! Every `no` on that ladder produces more output than the `yes` does, because the
+//! alternative to a good miss report is a model guessing at a file it is about to write to.
+//! What guards a write is [`crate::files`]: one fingerprint per line the model was shown, and the
+//! gate asks it about the lines the match located. An unseen region, or one whose bytes moved, is
+//! refused with the range to read; a change elsewhere in the file refuses nothing.
 
 use serde_json::Value;
 
@@ -49,15 +29,8 @@ use super::{near_names, nearest_listing, notes, render_listing};
 /// How many lines of the file are shown either side of a reported region.
 const CONTEXT: usize = 3;
 
-/// How many occurrences an ambiguity report lists before it says how many more.
-///
-/// grok-build's message on the same case is *"The string to replace was found
-/// multiple times in the file. Use replace_all to replace all occurrences, or
-/// include more context to only edit one occurrence."* and opencode's is *"Found
-/// multiple matches for oldString. Provide more surrounding context to make the
-/// match unique."* Neither says **where**, so the model's only move is to guess a
-/// longer string. Clause 1 says the answer is the line numbers, so this is how
-/// many of them fit before the report stops being readable.
+/// How many occurrences an ambiguity report lists before it says how many more. Neither the model's
+/// own guess nor a longer string is an answer, so the report lists the line numbers.
 const MAX_OCCURRENCES_SHOWN: usize = 10;
 
 pub struct Edit;
@@ -66,13 +39,8 @@ impl Tool for Edit {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "edit",
-            // Clause 6, and one rule grok-build keeps that is worth copying: it
-            // strips a sentence from the served description when the behaviour it
-            // describes is switched off, *"so the model is never told a rule that
-            // isn't running"*. opencode's `edit.txt` is the counter-example — it
-            // promises a read-before-write error and two error strings, none of
-            // which exist in its code. Every sentence here is a behaviour in this
-            // file.
+            // Every sentence here is a behaviour in this file, and one that is switched off is
+            // not served: a model told a rule that is not running learns the wrong shape.
             "Replace exact text in a file. Give `path`, `old_string` (the text to \
              replace, copied exactly — whitespace, indentation and all) and \
              `new_string`. `old_string` must occur exactly once unless `replace_all` is true; if it \
@@ -116,11 +84,9 @@ impl Tool for Edit {
                 },
                 "required": ["path"]
             }),
-            // Clause 4: declared, once, in the schema. `Access::Write` is what
-            // §11.3's policy keys on and it does not depend on the arguments — an
-            // `edit` whose `new_string` happens to equal `old_string` is still a
-            // write tool, because the class must be knowable before the arguments
-            // are.
+            // Declared once, in the schema: `Access::Write` is what the policy keys on and it
+            // does not depend on the arguments. An `edit` whose `new_string` equals `old_string`
+            // is still a write tool, because the class must be knowable before the arguments are.
             Access::Write,
         )
     }
@@ -132,21 +98,15 @@ impl Tool for Edit {
                 "call `edit` again with `path`, `old_string` and `new_string`.",
             );
         };
-        // **The one directory this door must not open.** `.letibot/notes/` is the
-        // `notes` tool's, and a note put there by a path goes around the similarity
-        // gate that is the whole reason the tool exists — see
-        // `notes::refuse_a_path_into_the_notes_dir`, which also says why the rule is
-        // here rather than on §11.4's never-write list. Before the `edits` dispatch,
-        // so a batch cannot slip past it either.
+        // The one directory this door must not open: `.letibot/notes/` is the `notes` tool's,
+        // and a note put there by a path goes around the similarity gate that is the whole
+        // reason the tool exists. Before the `edits` dispatch, so a batch cannot slip past it.
         if let Some(refusal) = notes::refuse_a_path_into_the_notes_dir(ctx.backend, path) {
             return refusal;
         }
-        // **Several changes to one file, in one call.** The reason this exists is
-        // measured rather than assumed: a model that wants four non-adjacent
-        // changes to one file has, until now, had to make four calls — four round
-        // trips and four gate decisions — or reach for a shell heredoc, which is
-        // what both this session's model and the operator's own agent kept doing.
-        // A tool that cannot say what somebody means is a tool they route around.
+        // Several changes to one file, in one call: without this, four non-adjacent changes are
+        // four round trips and four gate decisions, so a shell heredoc is the cheaper way to say
+        // it. A tool that cannot say what somebody means is a tool they route around.
         if args.get("edits").is_some() {
             return batch(ctx, path, args);
         }
@@ -197,10 +157,8 @@ impl Tool for Edit {
 
         let file = FileText::of(&bytes);
         if file.lossy {
-            // Writing back a lossily-decoded file replaces its undecodable bytes
-            // with U+FFFD **permanently**, which is a change nobody asked for
-            // hiding inside a change somebody did. grok-build does exactly this
-            // and does not mention it.
+            // Writing back a lossily-decoded file replaces its undecodable bytes with U+FFFD
+            // permanently, which is a change nobody asked for hiding inside one somebody did.
             return Invocation::failed(
                 format!("`{path}` is not valid UTF-8"),
                 "editing it as text would replace its undecodable bytes with U+FFFD \
@@ -251,15 +209,9 @@ enum Step {
     },
 }
 
-/// **Several edits to one file, applied in order, all or nothing.**
-///
-/// Each step is resolved against the text as the steps before it left it —
-/// which is what makes a sequence expressible at all, and is why the failure
-/// message names the step's index rather than a line number in the original.
-///
-/// Nothing is written until every step has resolved. A batch that fails leaves
-/// the file exactly as it was, because the alternative — half a change, on disk,
-/// reported as an error — is the state no caller can recover from.
+/// Several edits to one file, applied in order, all or nothing.
+/// Each step resolves against the text as the steps before it left it, so a failure names the step's
+/// index, and nothing is written until every step has resolved.
 fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
     let Some(list) = args.get("edits").and_then(|v| v.as_array()) else {
         return Invocation::failed(
@@ -334,10 +286,9 @@ fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
     let mut text = file.lf.clone();
     let mut replacements = 0usize;
     let mut first_at: Option<usize> = None;
-    // The shown-lines gate over a batch's steps: each step is checked against
-    // the text as the steps before it left it, on a checkout of the ledger that
-    // is thrown away unless the whole batch writes. The ledger itself is updated
-    // once, in write_out, over the batch's outer change.
+    // The shown-lines gate over a batch's steps: each step is checked against the text as the steps
+    // before it left it, on a checkout of the ledger that is thrown away unless the whole batch
+    // writes, and the ledger is updated once in write_out.
     let mut shown = ctx.files.checkout(path);
     for (i, step) in steps.iter().enumerate() {
         let n = i + 1;
@@ -465,19 +416,9 @@ fn excerpt(needle: &str) -> String {
     }
 }
 
-/// The shown-lines gate (R111): an edit may only replace lines a tool displayed
-/// to this session, and only while those lines are still what was displayed.
-/// Runs after the match, which is the check that locates the target; a miss or
-/// an ambiguity never reaches it. Every occurrence is checked, so a
-/// `replace_all` cannot touch an unseen region through a seen one.
-///
-/// A refusal does NOT mark what it refused over: the old rung pasted the file
-/// and recorded it as read in the same breath, which was the bookkeeping that
-/// cleared its own flag. The range to read is named instead, and the read is a
-/// real read.
-///
-/// The refusal both doors share: the range to read, what has been shown, and
-/// not one byte of the refused region (see the gate's note above).
+/// The shown-lines gate: an edit may only replace lines a tool displayed to this session, and only
+/// while those lines are still what was displayed. Every occurrence is checked, so a `replace_all`
+/// cannot touch an unseen region through a seen one, and a refusal does not mark what it refused.
 fn unshown_refusal(
     files: &crate::files::FileLedger,
     path: &str,
@@ -551,10 +492,9 @@ fn apply(
     new: &str,
     hits: &[usize],
 ) -> Invocation {
-    // Built whole, in memory, before anything is opened. A tool that wrote as it
-    // matched would have a failure mode — a match that throws halfway — that no
-    // atomic backend could rescue, because the damage would already be in the
-    // bytes handed to it.
+    // Built whole, in memory, before anything is opened: a tool that wrote as it matched would
+    // have a failure mode no atomic backend could rescue, because the damage would already be in
+    // the bytes handed to it.
     let mut after = String::with_capacity(file.lf.len() + new.len());
     let mut from = 0usize;
     for &at in hits {
@@ -579,11 +519,9 @@ fn apply(
     write_out(ctx, path, file, after, hits.len(), hits[0], extra)
 }
 
-/// **The write, the record and the edit card** — the one place any of the three
-/// happen, so a second caller cannot drift from the first.
-///
-/// `first_at` is a byte offset into the file AS IT WAS, used only to decide
-/// which lines to show; `replacements` is how many places the caller changed.
+/// The write, the record and the edit card: one place, so a second caller cannot drift from the
+/// first. `first_at` is a byte offset into the file as it was, used only to decide which lines to
+/// show; `replacements` is how many places the caller changed.
 fn write_out(
     ctx: &mut InvokeCtx<'_>,
     path: &str,
@@ -608,7 +546,7 @@ fn write_out(
     ctx.files
         .mark_edit(path, &file.lf, &after, out.as_bytes(), mark_from, mark_to);
     // And who wrote it: an `edit` into a layer directory is a model's write of that layer's
-    // bytes, which is D17's third arm.
+    // bytes, which is what the daemon's provenance sink records.
     ctx.wrote(path, out.as_bytes());
 
     let shown_from = file.line_of(first_at).saturating_sub(CONTEXT).max(1);
@@ -651,10 +589,9 @@ fn no_match(file: &FileText, path: &str, old: &str) -> Invocation {
     let mut body = String::new();
 
     if candidates.is_empty() {
-        // Nothing even nearly matched. The next most useful fact is where the
-        // first line of the search *does* occur, which is grok-build's
-        // `build_nearest_match_hint` — its longest whitespace-delimited token
-        // against every line of the file.
+        // Nothing even nearly matched. The next most useful fact is where the first line
+        // of the search does occur: its longest whitespace-delimited token, against every
+        // line of the file.
         let first = old.split('\n').next().unwrap_or(old);
         match anchor_lines(file, first) {
             hits if !hits.is_empty() => {
@@ -809,8 +746,8 @@ fn missing_file(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
     ))
 }
 
-/// A write the backend refused. Says **which** gate stopped it, because a
-/// refusal that does not is the refusal that costs an hour.
+/// A write the backend refused. Says which gate stopped it, because a refusal that does not is
+/// the refusal that costs an hour.
 fn write_failed(ctx: &mut InvokeCtx<'_>, path: &str, e: BackendError) -> Invocation {
     let extra = if !ctx.backend.is_writable() {
         format!(
@@ -853,19 +790,9 @@ fn missing_strings(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocat
     )
 }
 
-/// Lines containing the most distinctive token of `first`.
-///
-/// grok-build's `build_nearest_match_hint` takes *"the longest
-/// whitespace-delimited token of `old_string`'s first line"* and reports the
-/// first line containing it. Same idea, and every line rather than the first,
-/// because "it occurs eleven times" is itself the answer sometimes.
-///
-/// With one refinement this model needs (R8): a missing space fuses two tokens
-/// into one that occurs nowhere — `if!text.is_empty()` — and no other whole
-/// token may remain to fall back on. So whole tokens are tried longest-first,
-/// and only if none occurs anywhere is each split on non-alphanumeric
-/// boundaries and the pieces tried the same way: `text` and `is_empty` land
-/// on the line the model meant.
+/// Lines containing the most distinctive token of `first`: the nearest-match hint. Whole tokens of
+/// `old_string`'s first line, longest first, because "it occurs eleven times" is itself the answer
+/// sometimes; if no whole token occurs, each is split on non-alphanumeric boundaries and retried.
 fn anchor_lines(file: &FileText, first: &str) -> Vec<(usize, String)> {
     let mut tokens: Vec<&str> = first.split_whitespace().filter(|t| t.len() >= 3).collect();
     tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
@@ -908,16 +835,9 @@ fn lines_containing(file: &FileText, token: &str) -> Vec<(usize, String)> {
 #[cfg(test)]
 mod tests {
 
-    /// A refusal must not cost a context window. Measured 2026-09-15: a stale
-    /// `edit` on a 345 KB file pasted it back in full — 123,648 tokens in one
-    /// tool result, to say "the file moved, try again".
-    ///
-    /// Both halves matter. The refusal still has to be ACTIONABLE (the retry must
-    /// work, so the current digest is recorded), and it has to be BOUNDED (an
-    /// excerpt, not the file). A fix that only did the second would trade a huge
-    /// refusal for an infinite loop of small ones.
-    /// The fast path is untouched: an ordinary file still comes back whole, which
-    /// is what makes the common retry one call instead of two.
+    /// A refusal must not cost a context window: a stale edit on a large file must not paste it back
+    /// to say the file moved. The digest is still recorded, so the retry works, and the excerpt is
+    /// bounded, since a fix that only did the second would trade a huge refusal for an endless loop.
     use crate::testing::{deny_all, writable_harness, writable_harness_with_gate};
 
     #[test]
@@ -939,9 +859,8 @@ mod tests {
 
     #[test]
     fn an_edit_to_a_region_never_shown_is_refused_with_the_range_to_read() {
-        // R111's first sentence. The old rung pasted the file and recorded it as
-        // read in the same breath, so its refusal cleared its own flag; this one
-        // names the range and expects a real read.
+        // A region has to be shown to be editable, and the refusal must not be its own read:
+        // pasting the file back would clear the flag exactly where being wrong is likeliest.
         let mut h = writable_harness();
         let r = h.call(
             "edit",
@@ -973,7 +892,7 @@ mod tests {
 
     #[test]
     fn an_edit_to_lines_that_changed_since_they_were_shown_is_refused_until_re_read() {
-        // R111's second sentence: saw the region, but before it changed.
+        // Seen the region, but before it changed.
         let mut h = writable_harness();
         h.call("read", r#"{"path":"README.md"}"#);
         h.write_file("README.md", "somebody else was here\n");
@@ -999,9 +918,9 @@ mod tests {
         assert_eq!(h.read_file("README.md"), "nobody else was here\n");
     }
 
-    /// An unread file whose target is NOT unambiguous is refused by the match,
-    /// which is the check that was always doing the work — and it says more than
-    /// the read rule did: near misses, anchor lines, line numbers.
+    /// An unread file whose target is not unambiguous is refused by the match, which is the
+    /// check that was always doing the work, and it says more: near misses, anchor lines, line
+    /// numbers.
     #[test]
     fn an_unread_file_with_a_bad_target_is_refused_by_the_match() {
         let mut h = writable_harness();
@@ -1018,10 +937,9 @@ mod tests {
         );
     }
 
-    /// R111's third sentence, and the case that killed the whole-file digest: a
-    /// formatter touching line 900 must not refuse an edit at line 12. A partial
-    /// read is the honest fixture, because it leaves lines the session has no
-    /// claim on at all.
+    /// The case that rules out a whole-file digest: a formatter touching line 900 must not refuse
+    /// an edit at line 12. A partial read is the honest fixture, because it leaves lines the
+    /// session has no claim on at all.
     #[test]
     fn a_change_elsewhere_in_the_file_refuses_nothing_but_its_own_lines() {
         let mut h = writable_harness();
@@ -1103,7 +1021,7 @@ mod tests {
         assert!(out.contains("offset=20 and limit=1"), "{out}");
     }
 
-    /// R111: a file the session created itself counts as seen, in full.
+    /// A file the session created itself counts as seen, in full.
     #[test]
     fn a_file_the_session_created_itself_counts_as_seen() {
         let mut h = writable_harness();
@@ -1119,9 +1037,8 @@ mod tests {
         assert_eq!(h.read_file("made.rs"), "one\ndeux\nthree\n");
     }
 
-    /// R111: a read over the ceiling marks only the lines actually displayed.
-    /// The byte cap is the ceiling that bites here: lines past it were never on
-    /// the screen, and an edit there is refused exactly as an unread edit is.
+    /// A read over the ceiling marks only the lines actually displayed: lines past the byte cap
+    /// were never on the screen, and an edit there is refused exactly as an unread edit is.
     #[test]
     fn a_read_past_the_byte_cap_marks_only_the_lines_it_displayed() {
         let mut h = writable_harness();
@@ -1160,10 +1077,9 @@ mod tests {
         );
     }
 
-    /// R111: the session's own earlier edits count. The region a landed edit's
-    /// result displayed is licensed for a follow-up, without a re-read; and a
-    /// change that shifts line numbers keeps what was shown below it standing at
-    /// the new numbers.
+    /// The session's own earlier edits count: the region a landed edit's result displayed is
+    /// licensed for a follow-up without a re-read, and a change that shifts line numbers keeps
+    /// what was shown below it standing at the new numbers.
     #[test]
     fn the_sessions_own_edit_licenses_its_region_and_shifts_what_is_below_it() {
         let mut h = writable_harness();
@@ -1278,10 +1194,9 @@ mod tests {
 
     #[test]
     fn an_indentation_miss_reports_the_exact_text_and_writes_nothing() {
-        // A tab against spaces, because that is the case exact matching genuinely
-        // cannot see through. Four spaces against eight *does* match — the
-        // eight-space line contains the four-space string — and that is not a
-        // fuzzy match, it is a substring, which is what `edit` was asked for.
+        // A tab against spaces, because that is the case exact matching cannot see through.
+        // Four spaces against eight does match, and that is not a fuzzy match but a substring,
+        // which is what `edit` was asked for.
         let mut h = writable_harness();
         h.write_file("a.py", "def f():\n\treturn 1\n");
         h.call("read", r#"{"path":"a.py"}"#);
@@ -1297,9 +1212,8 @@ mod tests {
 
     #[test]
     fn an_exact_substring_of_a_line_is_a_match_and_not_a_relaxation() {
-        // Stated as a test because it is the property that made the case above
-        // need a tab: `edit` replaces a *string*, not a line, and a model that
-        // sent a differently-indented line has still sent something that occurs.
+        // Stated as a test because it is the property that made the case above need a tab:
+        // `edit` replaces a string, not a line, and a differently-indented line still occurs.
         let mut h = writable_harness();
         h.write_file("a.py", "def f():\n        return 1\n");
         h.call("read", r#"{"path":"a.py"}"#);
@@ -1326,10 +1240,9 @@ mod tests {
 
     #[test]
     fn a_missing_space_merges_two_tokens_and_a_shorter_anchor_still_lands() {
-        // R8, verbatim from the live session: the model sent `if!text.is_empty() {`
-        // where the file holds `if !text.is_empty() {`. probe() cannot re-insert
-        // the missing character and the merged token occurs nowhere, so the only
-        // way back to the right line is a shorter anchor carved out of that token.
+        // The model sent `if!text.is_empty() {` where the file holds `if !text.is_empty() {`.
+        // probe() cannot re-insert the missing character and the merged token occurs nowhere, so
+        // the way back to the right line is a shorter anchor carved out of that token.
         let mut h = writable_harness();
         h.write_file(
             "src/gate.rs",
@@ -1349,10 +1262,9 @@ mod tests {
 
     #[test]
     fn a_gated_edit_inside_the_workspace_never_says_host_other() {
-        // R9's done-when, on the rendered payload rather than the class: a refusal
-        // must not repeat a region the deciding classifier never used. Seen live as
-        // "reading: ask — intents [write_file] over [host_other]" for a path the
-        // same gate had just classed as inside the project.
+        // On the rendered payload rather than the class: a refusal must not repeat a region the
+        // deciding classifier never used, saying [host_other] about a path the same gate had
+        // just classed as inside the project.
         let mut h = writable_harness_with_gate(Some(deny_all()));
         h.call("read", r#"{"path":"src/lib.rs"}"#);
         let r = h.call(
@@ -1425,11 +1337,8 @@ mod tests {
 mod batch_tests {
     use crate::testing::writable_harness;
 
-    /// **Four changes to one file, in one call.** This is the capability whose
-    /// absence sent models to shell heredocs: four non-adjacent edits were four
-    /// round trips and four gate decisions, so `python3 - <<'PY'` was simply the
-    /// cheaper way to say it. Measured across this session, in both the
-    /// operator's agent and the one writing this.
+    /// Four changes to one file, in one call: without it, four non-adjacent edits are four round
+    /// trips and four gate decisions, so a shell heredoc is the cheaper way to say it.
     #[test]
     fn a_batch_applies_every_step_in_order_and_reports_one_edit() {
         let mut h = writable_harness();
@@ -1458,9 +1367,8 @@ mod batch_tests {
         assert!(e.after.contains("/// doc line"));
     }
 
-    /// **All or nothing.** A batch whose third step does not resolve must leave
-    /// the file exactly as it was: half a change on disk, reported as an error,
-    /// is the state no caller can recover from.
+    /// All or nothing: a batch whose third step does not resolve must leave the file exactly as
+    /// it was, because half a change on disk reported as an error is unrecoverable.
     #[test]
     fn a_batch_that_fails_partway_writes_nothing() {
         let mut h = writable_harness();
@@ -1485,8 +1393,8 @@ mod batch_tests {
         );
     }
 
-    /// A step that names neither a replacement nor an insertion — or both — is
-    /// ambiguous, and an ambiguous edit is refused rather than guessed at.
+    /// A step that names neither a replacement nor an insertion, or both, is ambiguous, and an
+    /// ambiguous edit is refused rather than guessed at.
     #[test]
     fn a_step_must_say_exactly_what_it_changes() {
         let mut h = writable_harness();

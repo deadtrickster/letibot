@@ -1,22 +1,10 @@
-//! `digest` — send a large finding to a subagent and get back the answer.
+//! `digest`: send a large finding to a subagent and get back the answer. The second half of
+//! `transcript`, and the reason `transcript` can afford to search everything: what comes back
+//! here is the answer, and the answer is the size of an answer.
 //!
-//! **The second half of `transcript`, and the reason `transcript` can afford to
-//! search everything.** The operator, 2026-09-19: *"even more — we can do a
-//! summarization of all findings by streaming them to a subagent… as a second
-//! tool… and offer it for big matches"*.
-//!
-//! # The cost this exists to refuse
-//!
-//! A transcript sweep routinely matches more than the window it is being read
-//! into. The ordinary answer — return a page, offer `offset`, let the caller page
-//! — is the wrong one here, because paging a conversation into a context to find
-//! one fact about it spends the whole conversation to learn one sentence. It is
-//! the cost `transcript` was built to avoid, arrived at one page at a time.
-//!
-//! So the bytes never cross this context. `digest` re-runs the search itself,
-//! chunks what it finds, and folds the chunks through a subagent — each chunk
-//! going from the tool straight into a child's prompt. What comes back here is
-//! the answer, and the answer is the size of an answer.
+//! A sweep routinely matches more than the window it is read into, and paging a conversation into
+//! a context to find one fact spends the whole conversation on one sentence. So `digest` re-runs
+//! the search and folds its chunks through a subagent, and the bytes never cross this context:
 //!
 //! ```text
 //!   transcript(match: "compaction")  ->  412 matched, 12 shown, and an offer
@@ -24,24 +12,13 @@
 //!                                    ->  one paragraph, 412 rows read by someone else
 //! ```
 //!
-//! # Folding, not map-reduce
+//! Folding, not map-reduce: each chunk is answered with what the previous chunks concluded already
+//! in hand, so a fact from chunk 1 is available when chunk 7 contradicts it. Oldest-first for the
+//! same reason: a conversation read backwards reports conclusions before their causes.
 //!
-//! Each chunk is answered **with what the previous chunks concluded already in
-//! hand**, so a fact established in chunk 1 is available when chunk 7 contradicts
-//! it. A fan-out that summarised each chunk independently and concatenated the
-//! results would produce seven partial answers and no reconciliation, which for a
-//! conversation — where the interesting thing is almost always that something
-//! CHANGED — is the one shape that cannot find what is being asked for.
-//!
-//! The order is oldest-first for the same reason: a conversation read backwards
-//! reports its conclusions before the things that caused them.
-//!
-//! # What it will not do
-//!
-//! It does not answer from its own knowledge. A subagent that read the rows and
-//! found nothing says so, and this tool passes that through rather than
-//! smoothing it into a plausible summary — a digest that invents continuity is
-//! worse than no digest, because it reads exactly like one that found it.
+//! It does not answer from its own knowledge: a subagent that read the rows and found nothing says
+//! so, and this tool passes that through rather than smoothing it into a summary. A digest that
+//! invents continuity is worse than no digest, because it reads exactly like one that found it.
 
 use std::sync::Arc;
 
@@ -53,12 +30,9 @@ use crate::schema::{Access, ToolSchema};
 use super::task::{TaskRunner, TaskSpec, TaskStatus};
 use super::transcript::{TranscriptQuery, TranscriptSource};
 
-/// One fold step: a subagent reads `chunk` and updates `so_far`.
-///
-/// A trait rather than a direct `TaskRunner` call so the daemon can run the fold
-/// however it likes — a nested turn, a cheaper model, a pool — without this file
-/// knowing. [`SubagentDigest`] is the one that ships, over the `task` seam that
-/// already exists.
+/// One fold step: a subagent reads `chunk` and updates `so_far`. A trait rather than a
+/// `TaskRunner` call so the daemon can run the fold however it likes without this file knowing;
+/// [`SubagentDigest`] is the one that ships, over the `task` seam.
 pub trait DigestRunner: Send + Sync {
     /// `so_far` is empty on the first chunk. Returns what is now known.
     fn fold(
@@ -92,13 +66,9 @@ pub fn is_part_reader_brief(prompt: &str) -> bool {
     n.parse::<usize>().is_ok() && of.parse::<usize>().is_ok() && rest.starts_with(PART_READER_SAYS)
 }
 
-/// The shipping fold: one subagent per chunk, over [`TaskRunner`].
-///
-/// A subagent per chunk rather than one long-lived child, because `TaskRunner`'s
-/// contract is start-then-collect and a child cannot be handed a second prompt.
-/// Each one is seated `read-only` — it is being asked to read text that is
-/// already in its prompt, and a digest that could write is a summariser that can
-/// edit the thing it is summarising.
+/// The shipping fold: one subagent per chunk, over [`TaskRunner`]. A child per chunk because
+/// `TaskRunner` is start-then-collect and cannot hand a child a second prompt, each seated
+/// `read-only`: a digest that could write is a summariser that can edit what it summarises.
 pub struct SubagentDigest {
     runner: Arc<dyn TaskRunner>,
     /// How long one chunk may take before the fold gives up and reports what it
@@ -185,10 +155,8 @@ pub struct NoDigest;
 
 impl DigestRunner for NoDigest {
     fn fold(&self, _: &str, _: &str, _: &str, _: usize, _: usize) -> Result<String, String> {
-        // **No price on the read** (R93.A7): it said *"it costs this context the rows"*, which
-        // asks the model to weigh a call against its own context — the arithmetic the base
-        // prompt forbids (*"Do not size, split or stop work by how much context you think is
-        // left"*) and the `[context check]` slaps. What the door does is the sentence.
+        // No price on the read: asking a model to weigh a call against its own context is the
+        // arithmetic the base prompt forbids. What the door does is the sentence.
         Err(
             "no subagent runner is installed in this session, so there is nobody to \
              read the findings. `transcript` with a `limit` still works: it returns the \
@@ -213,10 +181,8 @@ impl DigestTool {
 /// the running answer sits well inside a small model's window — the child doing
 /// the reading is not necessarily the model doing the asking.
 const CHUNK: usize = 24_000;
-/// The most chunks one call will fold. A sweep bigger than this is reported with
-/// what it covered, not silently half-read: the failure mode of an unbounded fold
-/// is an answer about the first third of a conversation presented as an answer
-/// about the conversation.
+/// The most chunks one call will fold. A bigger sweep is reported with what it covered, not
+/// silently half-read: an answer about the first third of a conversation reads as the whole.
 const MAX_CHUNKS: usize = 24;
 /// Rows the search may pull. High — the point is to read everything — but finite,
 /// so a `match`-less call on a huge session is bounded rather than unbounded.
@@ -335,19 +301,9 @@ impl Tool for DigestTool {
         let mut cut_short_at = None;
         for (i, c) in chunks.iter().take(total).enumerate() {
             let n = i + 1;
-            // **The operator outranks the rest of the fold.**
-            //
-            // Twenty-four parts is minutes, and for all of them this call is the
-            // only thing the session is doing — nothing polls the head, so a line
-            // typed here sits queued until the whole read finishes. Measured on the
-            // operator's own session, 2026-09-20: this tool was on part 15 of 24
-            // when *"we did it with another agent"* had been waiting underneath it
-            // for over a minute, and the remaining nine parts were about to answer
-            // a question that sentence had already settled.
-            //
-            // So: stop, and say where it stopped. What the earlier parts
-            // established is real and is reported; the rest was work nobody had
-            // asked for any more.
+            // The operator outranks the rest of the fold: a full fold is minutes and this call
+            // is the only thing the session is doing, so a line typed now sits queued until it
+            // ends. Stop, say where, and keep what the earlier parts established.
             if n > 1 && ctx.operator_waiting() {
                 cut_short_at = Some(n - 1);
                 break;
@@ -435,14 +391,9 @@ struct Chunk {
     rows: usize,
 }
 
-/// Pack rows into chunks at a byte budget, never splitting a row across two —
-/// a row cut in half is read by the child as two rows, and a tool result whose
-/// first half says `ok` and second half says `failed` is exactly the row that
-/// gets cut.
-///
-/// A single row larger than the budget gets a chunk of its own rather than being
-/// dropped: it is over budget either way, and the child can at least be told what
-/// it is looking at.
+/// Pack rows into chunks at a byte budget, never splitting a row across two: a row cut in half
+/// is read as two rows, and a tool result whose first half says `ok` and second says `failed` is
+/// exactly the row that gets cut. A row over the budget gets a chunk of its own, not dropped.
 fn chunk_rows(rows: &[super::transcript::TranscriptRow], cap: usize) -> Vec<Chunk> {
     let mut out: Vec<Chunk> = Vec::new();
     let mut cur = String::new();
@@ -595,18 +546,9 @@ mod tests {
         )
     }
 
-    /// **A fold stops when the operator speaks, and says where it stopped.**
-    ///
-    /// Measured on the operator's own session, 2026-09-20: `digest` was on part 15
-    /// of 24, over a minute in, with *"we did it with another agent"* queued
-    /// underneath it — a sentence that made the remaining nine parts pointless. A
-    /// tool that holds the floor for minutes has to be able to hear that.
-    ///
-    /// The fixture answers "yes" from the second part on, never the first: a cut
-    /// at part zero would return nothing and would be indistinguishable from a
-    /// digest that failed. The assertions are that it DID fold more than once, that
-    /// it did NOT fold all of them, and that the payload says so — a test that only
-    /// checked the wording would pass on a tool that quietly read everything.
+    /// A fold stops when the operator speaks, and says where it stopped. The fixture answers "yes"
+    /// from the second part on (a cut at part zero returns nothing and looks like a failure), and
+    /// asserts the fold ran more than once, did not run them all, and says so.
     #[test]
     fn a_fold_stops_when_the_operator_is_waiting() {
         let rows: Vec<TranscriptRow> = (0..40)
@@ -802,10 +744,9 @@ mod tests {
         );
     }
 
-    /// **A part reader is the tool's helper, named for its part, and its answer is marked read
-    /// where the tool reads it** — 2026-10-14, pg-noop: twelve readers started without either
-    /// were brought back by a daemon restart eighteen hours later and announced to the model as
-    /// twelve subagents it had started, all called `you-are-reading-part`.
+    /// A part reader is the tool's helper, named for its part, and its answer is marked read where
+    /// the tool reads it: readers without either were announced to the model as subagents it had
+    /// started, all called `you-are-reading-part`.
     #[test]
     fn a_part_reader_is_a_named_helper_whose_answer_is_marked_read() {
         #[derive(Default)]

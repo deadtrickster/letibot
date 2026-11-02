@@ -55,11 +55,8 @@ fn ok(inv: &Invocation) -> bool {
     inv.outcome == ToolOutcome::Ok
 }
 
-/// **The model's own row, attached to a running job: quiet while it runs, named again after.**
-///
-/// The live case: an `in_progress` row the check names every window, answered every window with
-/// *"the job is running, waiting"*. Attached, the row waits on the job the way a `needs` entry
-/// does, so the reading that keeps the check silent is the one it already has.
+/// A wait puts the row on the job the way a `needs` entry does, so the reading that keeps the check
+/// silent is one the row already has: quiet while the job runs, askable again once it ends.
 #[test]
 fn a_wait_on_the_models_own_row_quiets_it_while_the_job_runs_and_not_after() {
     let board = Arc::new(TodoBoard::new(vec![item(
@@ -116,11 +113,8 @@ fn a_wait_on_the_models_own_row_quiets_it_while_the_job_runs_and_not_after() {
     assert_eq!(board.version(), v, "a wait already there is not a move");
 }
 
-/// **The OPERATOR's row takes a wait too, and its words and status do not move.**
-///
-/// The row R77 names first is the operator's, and it was the one no door reached: `needs` was only
-/// writable on a row the model restated. A wait says *not now* — never *not this* — so it is the
-/// one thing about their row the model may set.
+/// A wait says "not now", never "not this", so it is the one thing the model may set on the
+/// operator's row: their words and status stay put.
 #[test]
 fn a_wait_on_the_operators_row_leaves_their_words_and_status_alone() {
     let board = Arc::new(TodoBoard::new(vec![operator_row(
@@ -351,12 +345,8 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     assert!(!said.contains("wait_on"), "{said}");
 }
 
-/// **The offer names the running job the row is LIKE, not the first handle in the table.**
-///
-/// pg-noop, 2026-10-11: the check named the first running job, the model attached it to the
-/// operator's row, and the next check asked about its own criterion row again. The operator:
-/// *"the nag can check if there are running jobs and subagents and do similarity checks on
-/// subagents prompts and job description"*.
+/// The offer names the running job the row is LIKE, not the first handle in the table: a wrong
+/// offer gets attached and the row is asked about again.
 #[test]
 fn the_offer_names_the_running_job_most_like_the_row() {
     let plan = vec![operator_row(
@@ -397,14 +387,8 @@ fn the_offer_names_the_running_job_most_like_the_row() {
     assert!(!said.contains("reads like"), "{said}");
 }
 
-/// **An ended job whose completion the model has not digested keeps its row QUIET** — and an
-/// unnarrowed reader is told why rather than asked about the row.
-///
-/// The operator, 2026-10-11: *"when wait on condition happens - say job finishes, we must delay the
-/// nag for a bit to let the model process the result"*. Measured on pg-noop the same day: the
-/// moment the gate job ended its CRITERION row was askable again, while the completion that said
-/// the gate was green had not reached the model. The harness reports such an ending through
-/// `RunningJobs::digesting`; this pins what the plan check makes of it.
+/// An ending the model has not digested keeps the row quiet: the job is over but its completion has
+/// not reached the model, so `RunningJobs::digesting` holds the check off.
 #[test]
 fn an_ending_the_model_has_not_digested_keeps_the_row_quiet() {
     let mut row = item(CRITERION, TodoStatus::InProgress);
@@ -478,11 +462,8 @@ fn a_finished_childs_undigested_completion_keeps_the_row_quiet() {
     );
 }
 
-/// **A job's NAME in `needs` goes on the board as its handle**, the way `wait_on` puts it (R92.14).
-///
-/// Before, `todos` stored the raw name: `job_fate` asked the process table about a job called
-/// `gate`, found none, answered Unknown — and Unknown reads as ENDED, so the row was ready while
-/// the gate it waited on was still running.
+/// A job's name in `needs` is stored as its handle: the raw name finds no job in the table, and an
+/// unknown fate reads as ENDED, which would ready the row while its job still runs.
 #[test]
 fn a_job_named_in_needs_is_stored_as_its_handle() {
     let board = Arc::new(TodoBoard::new(Vec::new()));

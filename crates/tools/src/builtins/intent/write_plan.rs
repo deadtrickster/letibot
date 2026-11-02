@@ -1,51 +1,23 @@
-//! `write_plan` — the scoped write plan mode keeps (D9).
-//!
-//! # The absurdity this removes
-//!
-//! Plan mode's first cut dropped every write tool, which made it *"no writes"*. The
-//! operator's correction: plan mode is **no writes to the work**, and writing the
-//! plan is one of the two things a plan *is*. A planner that cannot record its plan
-//! has to carry the plan in the context it is about to hand over — which is the
-//! worst place to keep it, since a handover is exactly where that context is lost.
-//!
-//! # The boundary moved from the verb to the target
-//!
-//! Not *"the `write` tool is absent"* but *"a write whose target is a plan document
-//! is reachable and nothing else is."* And it is a **capability boundary rather than
-//! a check**, per brief §2.4: this tool takes a `name`, not a `path`.
-//!
+//! `write_plan` - the scoped write plan mode keeps: plan mode is no writes to the work, and
+//! writing the plan is one of the two things a plan is. The boundary is the target, not the
+//! verb: this tool takes a `name`, not a `path`.
 //! ```text
 //!   write      path: "src/main.rs"        →  not seated in plan mode at all
 //!   write_plan name: "rewrite-the-parser" →  plans/rewrite-the-parser.md
 //!   write_plan name: "../src/main.rs"     →  refused: that is not a name
 //! ```
 //!
-//! There is no argument in which a path to `src/` can be spelled. The tool composes
-//! the path itself from [`PLAN_DIR`] and a single filename segment; a `name`
-//! carrying `/`, `..`, a leading `.` or a NUL is refused as **not a name**, which is
-//! a different refusal from "not allowed" and is the one that teaches the right
-//! thing. That is a stronger property than a guard on `write`'s `path`, because a
-//! guard has to be right about every spelling of an escape and this has to be right
-//! about one character class.
-//!
-//! # It is still a write, and it is still adjudicated
-//!
-//! [`Access::Write`], so it goes to the gate like any other write, and the backend
-//! must have been opened writable. A read-only session cannot write its plan — but
-//! that is the session being read-only, not plan mode taking something away, and
-//! the two are worth keeping distinguishable. What plan mode changes is that
-//! `write` and `edit` are *not seated*, while this one is.
+//! There is no argument in which a path to `src/` can be spelled: the tool composes the path
+//! from [`PLAN_DIR`] and one filename segment, and a `name` with `/`, `..`, a leading `.` or a
+//! NUL is refused as not a name. It is still [`Access::Write`], so the gate decides it.
 
 use serde_json::Value;
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-/// Where plan documents live, relative to the session root.
-///
-/// One directory, named once. A configurable location would put the boundary back
-/// in configuration, where nothing checks it — and the whole point of D9's shape is
-/// that the target set is knowable from the tool rather than from a setting.
+/// Where plan documents live, relative to the session root. One directory, named once: a
+/// configurable location would put the boundary back in configuration, where nothing checks it.
 pub const PLAN_DIR: &str = "plans";
 
 /// The extension every plan document gets. Plans are prose for people to read, and
@@ -59,11 +31,8 @@ const MAX_PLAN_BYTES: usize = 128 * 1024;
 
 pub struct WritePlan;
 
-/// Turn a model-supplied `name` into a path under [`PLAN_DIR`], or say why it is
-/// not a name.
-///
-/// The rejections are deliberately about *shape*, not about permission: a name
-/// with a slash in it is not a name that was refused, it is not a name.
+/// Turn a model-supplied `name` into a path under [`PLAN_DIR`], or say why it is not a name.
+/// The rejections are about shape, not permission: a name with a slash in it is not a name.
 fn plan_path(name: &str) -> Result<String, String> {
     let n = name.trim();
     if n.is_empty() {
@@ -275,10 +244,9 @@ mod tests {
                 r.render()
             );
         }
-        // `.ssh` never reaches the tool at all: the gate's NEVER_WRITE list stops
-        // it first, with `Denied` rather than `Failed`. Two independent mechanisms
-        // arriving at the same answer is the shape this crate wants, and asserting
-        // only on one of them would have hidden the other.
+        // `.ssh` never reaches the tool: the gate's NEVER_WRITE list stops it first, with
+        // `Denied` rather than `Failed`. Two mechanisms arriving at one answer is the shape
+        // this crate wants, and asserting on one of them would hide the other.
         let r = h.call("write_plan", r#"{"name":".ssh","content":"x"}"#);
         assert!(
             matches!(

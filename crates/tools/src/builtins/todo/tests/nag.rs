@@ -2,10 +2,8 @@
 
 use super::*;
 
-/// **The trigger is pending work and nothing else.** The obvious way to get this
-/// wrong is a message that fires whenever a turn ends, which teaches the model to
-/// clear its todos to make it stop — worse than no check at all. So the silence cases
-/// are asserted first and with the same weight as the firing one.
+/// The trigger is pending work and nothing else: a message that fires at every turn's end teaches
+/// the model to clear its todos to make it stop, which is worse than no check at all.
 #[test]
 fn a_plan_with_nothing_open_has_nothing_to_say() {
     assert!(nag_for(&[]).is_none(), "no plan at all");
@@ -19,10 +17,8 @@ fn a_plan_with_nothing_open_has_nothing_to_say() {
     );
 }
 
-/// **THE CHOICE IS STICKY, and this is the test for it.** The check names a row once; a row
-/// added elsewhere on the plan must not change which row the agent is being held to. Without
-/// the choice, `open_priority`'s head would move to the new row and the question would wander
-/// with it.
+/// The named row is sticky: a row added elsewhere on the plan must not move the question, or
+/// `open_priority`'s head would take the check to whatever was added last.
 #[test]
 fn the_check_keeps_asking_about_the_row_it_named() {
     let plan = vec![
@@ -90,10 +86,8 @@ fn the_choice_moves_on_when_the_named_row_leaves_the_queue() {
     assert_eq!(named, "second", "the answered row is not a choice any more");
     assert!(text.contains("second"), "{text}");
 
-    // The same for a row the operator set aside, seen from the one place the narrowing
-    // happens: `the_plan_as_checked` is the CALLER's filter (a postponed row is not work this
-    // check may speak about), so by the time this function is handed the plan the row the last
-    // check named is simply not in it and the head of the queue is the new choice.
+    // A postponed row is dropped by the caller's filter, so this function is handed a plan the
+    // last choice is simply not in and the head is the new choice.
     let after_a_postponement = vec![item("second", TodoStatus::Pending)];
     let (_, named) = unfinished_plan_for(
         &after_a_postponement,
@@ -119,12 +113,8 @@ fn the_choice_moves_on_when_the_named_row_leaves_the_queue() {
     );
 }
 
-/// **A row the model marked in progress is said to be in progress, and nothing more** (R93.B2).
-///
-/// It used to be argued with — *"marked in progress and still open"*, *"you were asked about this
-/// one already and it has not been started"* — and the model answered the argument instead of the
-/// row: 113 identical *"still in progress"* replies in one session. The state is said; the notice is
-/// the same notice on a repeat, which is also what the idle clock's backoff counts.
+/// A row in progress is said to be in progress and nothing more: an argument gets answered instead
+/// of the row, and an identical notice on a repeat is what the idle clock's backoff counts.
 #[test]
 fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
     let plan = vec![item("the migration", TodoStatus::InProgress)];
@@ -166,12 +156,8 @@ fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
     assert_eq!(first, repeat);
 }
 
-/// **The queue's ORDER, asserted as an order.** The operator: *"priority queues - in progress
-/// items than not done, one-by-one."*
-///
-/// Five items in, five out, and the two things that matter are both visible here: `in_progress`
-/// before `pending` regardless of where each sits in the list, and list order kept WITHIN a band
-/// (a stable sort — otherwise the operator's pending row could leapfrog the model's).
+/// `in_progress` before `pending` whatever each row's position, and list order kept WITHIN a band:
+/// the sort must be stable, or the operator's pending row could leapfrog the model's.
 #[test]
 fn the_open_work_is_queued_in_progress_first_then_not_done() {
     let todos = vec![
@@ -232,13 +218,8 @@ fn serving_the_queue_one_by_one_walks_the_work() {
     );
 }
 
-/// **It names ONE item, and it names the RIGHT one.** The operator: *"i think the nagger
-/// should mention only one todo at a time, so a model will not be defocused."*
-///
-/// A list invites a model to touch all of it — read five open rows, do a little of each, end the
-/// next turn with five still open — which is the failure this check exists to prevent, arriving
-/// on the check's own message. And WHICH one is not the first by accident: an item the model
-/// marked `in_progress` is the one it told the board it was doing, so that is what gets named.
+/// One item, not a list: a list invites a model to do a little of each, which is the failure this
+/// check exists to prevent. The row named is the one it marked in progress.
 #[test]
 fn an_open_plan_names_one_item_and_what_to_do_about_it() {
     let msg = nag_for(&[
@@ -328,10 +309,8 @@ fn theirs(content: &str, status: TodoStatus) -> TodoItem {
     }
 }
 
-/// **R77: the operator's row is named first, wherever it sits on the board.** The live case:
-/// session `s-1789919514688401228`, the operator's *make tier 1 green* row 21 of 22, pending and
-/// last — and every check named the model's first ready row and counted theirs into *"(N more
-/// open)"*. Ahead of the model's in-progress row, and ahead of the model's sticky choice.
+/// The operator's row is named first wherever it sits on the board, ahead of the model's
+/// in-progress row and ahead of the model's sticky choice.
 #[test]
 fn the_operators_row_added_last_is_named_ahead_of_the_models() {
     let mut plan = vec![

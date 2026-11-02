@@ -1,47 +1,21 @@
-//! `task` — spawn a subagent to do a subtask and return its result.
-//!
-//! The tool holds a [`TaskRunner`]; the harness installs the real one (a nested
-//! turn with a restricted role) and the default refuses by name. Keeping the seam
-//! here means the tool is registered and seatable before the subagent loop lands.
-//!
-//! # A subagent inherits, and may be downgraded — never upgraded
-//!
-//! A subagent runs under its parent's permission ruleset, and `access` narrows
-//! it further: a survey needs no writes, a formatter needs no network. The
-//! [`Downgrade`] is applied to the tools seated, the backend opened and the
-//! ruleset, and it is the **union** of the parent's own downgrade and the one
-//! asked for, so a downgraded session cannot spawn a wider child by naming a
-//! wider role. The role picks which tools; the downgrade says which classes of
-//! them are gone whatever the role.
-//!
-//! # Where it runs
-//!
-//! `where` names the substrate: `host` (the parent's own boundary, the
-//! default) or `firecode` (a VM, firecracker or libvirt). Placement never widens
-//! permissions either — a subagent in a VM is still the parent's ruleset, minus
-//! the downgrade, inside a boundary. The firecode placement is a declared seam:
-//! a build without that backend refuses by name rather than running on the host
-//! and calling it a VM.
+//! `task`: spawn a subagent and collect its answer; starting it is not running it.
+//! A child inherits its parent's ruleset and `access` may narrow it, never widen it; `where`
+//! picks the substrate and changes no permission. The runner is a seam whose default refuses.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::json;
 
-// **The child's state and its evidence, from the one place that judges them** — the idle
-// plan-check's `todo.rs` (`child_doing`, `ChildDoing`, `child_evidence`), so `task_result` and the
-// check's own sentence about the same child cannot come to two different answers. `RunningChild` is
-// the reading itself, which this tool carries and does not build.
+// The child's state and its evidence come from the one judgement both doors read, so
+// `task_result` and the idle plan-check cannot answer differently about one child.
 use crate::builtins::todo::{ChildDoing, RunningChild, child_doing, child_evidence};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 pub use crate::schema::Downgrade;
 use crate::schema::{Access, ToolSchema};
 
 /// Where a subagent runs.
-///
-/// **Not `Copy`, and that is the remote host's doing**: a placement can now carry a name,
-/// and a name is a `String`. Every reader of it clones or borrows, which is the right
-/// shape anyway — a placement is a fact about a spawn, and a spawn decides it once.
+/// Not `Copy`: a placement may carry a host name, and a name is a `String`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Placement {
     /// The parent's own boundary, whatever it is.
@@ -49,10 +23,8 @@ pub enum Placement {
     Host,
     /// A firecode VM. Which hypervisor is the backend's business.
     Firecode,
-    /// **Another machine, over ssh** (`docs/remote-hosts.md`: `where: "host:lab2x1"`).
-    /// The name is one the operator declared in `~/.config/letibot/hosts.toml` — never a
-    /// project's — so the string here is always a name that was checked against that
-    /// file at the call.
+    /// Another machine, over ssh (`where: "host:lab2x1"`). The name is one the operator
+    /// declared in the hosts file, checked against it at the call.
     Remote(String),
     /// **A firecode VM on that machine** (`--host NAME --vm`, `where: "host:NAME:vm"`): the
     /// tools run in a guest booted by the host's own `firecode`, so the boundary is a VM.
@@ -72,10 +44,8 @@ fn placement_seam(placement: &Placement) -> String {
              it and take what you want.\n"
                 .to_string()
         }
-        // **A branch, and this one is true.** The remote works on a checkout of the
-        // repository, so its commits are commits — they come back by `git fetch` when the
-        // session ends, and the line names the branch they land on so the parent does not
-        // have to guess it (`docs/remote-hosts.md`, "The tree").
+        // A branch, and a true one: the remote works on a checkout, so its commits come back
+        // by `git fetch`, and the line names the branch so the parent need not guess it.
         Placement::Remote(host) => format!(
             "  seam: the child works on {host} in its own checkout of this repository; what it \
              commits comes back here as the branch `remote/{host}/<its short id>` when it ends. \
@@ -92,19 +62,9 @@ fn placement_seam(placement: &Placement) -> String {
     }
 }
 
-/// **The `where` argument, refused when it cannot be honoured on this host.** A `firecode`
-/// placement on a box with no `firecode` used to spawn a child that died at its start —
-/// `placing this session in a firecode VM: io: running firecode: No such file or directory` —
-/// and the parent learned it only from `task_result`, a round later. Now the call is refused
-/// with nothing spawned and `host` named as the way to go on.
-///
-/// A `host:NAME` placement is refused the same way and for the same reason: the name has to
-/// be one the operator declared, and the refusal lists the ones that are.
-///
-/// `firecode` is the CLI to look for when the caller names one (a test's stub), `None` for the
-/// host's own answer (`$FIRECODE_BIN`, else `firecode` on PATH). The hosts are passed in for
-/// the same reason: a test says which file, production says
-/// [`crate::remote::Hosts::load`].
+/// The `where` argument, refused when it cannot be honoured here: nothing is spawned and the
+/// refusal names `host` as the way on. `firecode` is the CLI to look for when the caller names
+/// one; the hosts are passed in so a test can say which file.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn placement_arg(
     args: &serde_json::Value,
@@ -180,10 +140,9 @@ fn verify_arg(
 }
 
 impl Placement {
-    /// **`host`, `firecode`, `host:NAME`, or `host:NAME:vm` for a VM on that machine.**
-    ///
-    /// The name keeps its case — a hostname is not a keyword — while the keywords are
-    /// matched case-insensitively, because `where: Firecode` is what a model writes.
+    /// `host`, `firecode`, `host:NAME`, or `host:NAME:vm` for a VM on that machine. The name
+    /// keeps its case, a hostname not being a keyword, while keywords are matched
+    /// case-insensitively because that is how a model writes them.
     pub fn parse(s: &str) -> Result<Placement, String> {
         let trimmed = s.trim();
         let lower = trimmed.to_ascii_lowercase();
@@ -257,101 +216,39 @@ pub struct TaskSpec {
     pub role: String,
     pub downgrade: Downgrade,
     pub placement: Placement,
-    /// **Which model the child runs on** — the operator's ask, 2026-10-05: *"I want to be
-    /// able to have subagents using different models. say you deepseek should be able to
-    /// run local model"*, and the other direction too: *"local qwen in main session
-    /// should be able to run cloud glm"*.
-    ///
-    /// `None` inherits the parent's model, which is what every earlier build did and stays
-    /// the default. `Some("local")` is the daemon's own server; `Some("provider/model")` a
-    /// cloud preset, resolved by the daemon through the same door `/models` uses — so a
-    /// name a person can type is a name a child can run on, and a key the picker finds is
-    /// a key the spawn finds.
+    /// Which model the child runs on. `None` inherits the parent's, `Some("local")` is the
+    /// daemon's own server, and `Some("provider/model")` a cloud preset resolved through the
+    /// same door `/models` uses, so a name a person can type is a name a child can run on.
     pub model: Option<String>,
-    /// **Where the child's files live**, when `task_start` arranged a tree for it.
-    ///
-    /// `None` is a plain `task` call, which works in the parent's own workspace — the
-    /// behaviour every earlier build had, and the one `task` keeps. `Some` is a
-    /// `task_start` call, and the child's workspace is the worktree the runner created
-    /// before it spawned the child: the placement is a fact the spawn carries, not a
-    /// thing the caller remembers to say. See [`WorktreePlacement`] for why the field
-    /// rides the spec rather than a second argument.
+    /// Where the child's files live, when `task_start` arranged a tree for it. `None` is a
+    /// plain `task` call working in the parent's workspace; `Some` is a worktree the runner
+    /// created before the spawn. See [`WorktreePlacement`] for why it rides the spec.
     pub worktree: Option<WorktreePlacement>,
-    /// **The tree a `firecode` placement COPIES**, when the caller knows a tree the resolution
-    /// below would not name.
-    ///
-    /// `None` — every `task` and `task_start` call — is *the child's own copy source*:
-    /// `Config::vm_copy_source` resolves the child's workspace to the repository it is about, and
-    /// only falls back to the workspace itself when there is no repository to name. That resolution
-    /// is the fix for the shape this field was added for, so a caller with nothing better to say
-    /// should say nothing: a session seated a level ABOVE its repositories (the operator's box:
-    /// `--workspace /home/dead/Projects/letibot`, whose repository is
-    /// `/home/dead/Projects/letibot/letibot`) now copies the repository, where every build before
-    /// this field copied the folder — 72.8 GiB of siblings, refused by the ceiling, measured
-    /// 2026-10-10.
-    ///
-    /// The caller that knows BETTER says so here, and the review queue is that caller: a reviewer
-    /// reads a branch (`git diff <base>...<branch>`), so it is booted on a copy of the entry's own
-    /// repository (`mergequeue::review_copy_source`) and not on the folder the daemon happens to be
-    /// seated in — and not necessarily on the repository the session hosting the review is seated
-    /// in either, since one queue serves every repository under its workspace. It rides the spec for
-    /// the reason [`TaskSpec::worktree`] does: the spawn is the one place that turns a spec into a
-    /// session, and a child whose VM copied one tree while the caller's record says another is the
-    /// same silent-provenance defect as a model name that does not match.
+    /// The tree a `firecode` placement copies, when the caller knows one the default resolution
+    /// would not name. `None` resolves the child's workspace to the repository it is about, and a
+    /// VM that copied one tree while the record says another lies silently.
     pub vm_source: Option<PathBuf>,
-    /// **The acceptance check a VM-placed child is held to** — a shell command firecode runs in
-    /// the child's project after the child has finished and before the VM stops, whose exit
-    /// status is the verdict (`firecode up --verify`).
-    ///
-    /// Without it a placed child's "done" is its own word, and a child once answered "the recipe
-    /// is running in the background" while its VM was about to take that run down. The tiers
-    /// that most need placing — an e2e suite, a test stack — are the ones that already have a
-    /// runnable check, so the parent says what it is and the harness, not the child, runs it.
-    /// The verdict comes back in the child's answer, beside where its work was delivered.
-    /// `None` on the host: there is no VM to run it in after the child.
+    /// The acceptance check a VM-placed child is held to: a shell command firecode runs after the
+    /// child finishes and before the VM stops, whose exit status is the verdict. Without it a
+    /// placed child's "done" is its own word. `None` on the host: no VM to run it in.
     pub vm_verify: Option<String>,
-    /// **The child's name — its slug — when the caller has one to give.**
-    ///
-    /// The operator: *"lets do slugs for subagents too"*. A background job is named by the
-    /// agent's own word for the work (`bash(slug: "release-build")`), and a child was named by its
-    /// session id, `s-1789919514688401228-sub-3`, which rings no bell. `task_start` already had a
-    /// name for every child it placed — the slug its worktree and branch `agent/<slug>` are cut
-    /// from — so that is the child's name, and a plain `task` names its child the same way: the
-    /// `slug` argument when the caller gave one, otherwise [`slug_from_prompt`], the derivation
-    /// `task_start` makes.
-    ///
-    /// `None` is *the runner derives it*: the runner is the one that knows the session's other
-    /// children, so it is the one that makes the name unique among them (`-2`, `-3`, …, as
-    /// [`unique_slug`] does for a worktree). `Some` is `task_start`'s slug, already made unique
-    /// against the repository's branches, or a plain `task`'s named one.
+    /// The child's name, its slug, when the caller has one to give: a child named by its session id
+    /// rings no bell. `None` is the runner derives it, which knows the session's other children and
+    /// so makes the name unique among them, as [`unique_slug`] does for a worktree.
     pub slug: Option<String>,
-    /// **A tool's own helper, not the model's child** — `digest`'s part readers. The tool that
-    /// starts one waits for it and reads its answer itself ([`TaskRunner::consumed`]); the model
-    /// never asked for it, never got its handle and is never handed its settlement. So a daemon
-    /// restart neither resumes it (the call that wanted its answer is gone) nor re-delivers it,
-    /// and it is not listed among the session's children afterwards.
-    ///
-    /// The operator, 2026-10-14, of a restart that handed the model twelve readers' answers
-    /// eighteen hours after their `digest` had read them: *"finished helper/reader children
-    /// shouldn't appear in the restored set at all"*.
+    /// A tool's own helper, not the model's child: `digest`'s part readers. The tool that starts
+    /// one waits for it and reads its answer ([`TaskRunner::consumed`]), so the model never gets
+    /// its handle, and a restart neither resumes nor re-delivers it.
     pub helper: bool,
-    /// **The skills this child is started with** — their bodies preloaded into its prompt, on
-    /// top of the index every session gets. Names are checked against the registry before the
-    /// child exists, so a typo is a refusal and not a session that never got its instructions.
-    /// Empty means *none of its own*, which for a child is its parent's list (the spawn clones
-    /// the parent's config and this field is only written when the call named one).
+    /// The skills this child is started with, their bodies preloaded into its prompt on top of
+    /// the index every session gets. Names are checked before the child exists, so a typo is a
+    /// refusal. Empty means none of its own, which for a child is its parent's list.
     pub skills: Vec<String>,
 }
 
-/// **What one `task_start` call asked for**, beyond the prompt and the [`TaskSpec`].
-///
-/// The request, before the runner has done anything with it: the slug the worktree and
-/// branch are named by, the base the branch is cut from, and whether the exception was
-/// asked for (the main checkout rather than a fresh worktree). The runner answers it
-/// with a [`WorktreePlacement`] — the path, branch and base SHA that actually exist —
-/// and the two are different shapes on purpose: the request is what the caller typed,
-/// the placement is what the filesystem now is, and a tool that reported the request as
-/// the placement would be the defect this tree keeps finding by looking for it.
+/// What one `task_start` call asked for, beyond the prompt and the [`TaskSpec`]: the slug, the base
+/// the branch is cut from, and whether the main checkout was asked for. The runner answers with a
+/// [`WorktreePlacement`]: the request is what the caller typed, the placement is what is on disk.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorktreeSpec {
     /// The slug the worktree and branch are named by. Empty is *derive it from the
@@ -364,22 +261,15 @@ pub struct WorktreeSpec {
     /// `false` is the default — a `task_start` that did not name the main tree creates
     /// a worktree, and the main tree is the thing it exists to keep the child out of.
     pub main_tree: bool,
-    /// **The repository to cut the worktree from**, when it is not the one the session root is
-    /// in — a session may run a level above its repositories (`~/Projects`), and then the root
-    /// is in no repository at all. Relative to the session root, or absolute. `None` is the
-    /// session root's own repository, which is what every earlier build used.
+    /// The repository to cut the worktree from, when it is not the one the session root is in:
+    /// a session may run a level above its repositories, and then the root is in none. Relative
+    /// to the session root, or absolute. `None` is the session root's own repository.
     pub repo: Option<String>,
 }
 
-/// **Where a `task_start` child works, as the runner arranged it.**
-///
-/// The answer to a [`WorktreeSpec`]: the path the child's files live in, the branch
-/// they are on, and the base SHA the branch was cut from. It rides the [`TaskSpec`]
-/// (as its `worktree` field) rather than a second argument to [`TaskRunner::start`]
-/// because the spawn is the one place that turns a spec into a session, and a session
-/// whose workspace is not the worktree the tool just reported is the same silent
-/// provenance defect as a model name that does not match — the child would be working
-/// in the parent's tree while the answer said it was in its own.
+/// Where a `task_start` child works, as the runner arranged it: the path, the branch and the base
+/// SHA. It rides the [`TaskSpec`] rather than a second argument to [`TaskRunner::start`], because
+/// the spawn is where a spec becomes a session, and a session elsewhere lies about its provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreePlacement {
     /// The path the child works in. A worktree path for the default, the main
@@ -395,14 +285,9 @@ pub struct WorktreePlacement {
     pub main_tree: bool,
 }
 
-/// **The handle a `task_start` call returns, with the placement it arranged.**
-///
-/// A plain `task` returns a bare handle, because the child works where the parent
-/// works and there is nothing else to say. A `task_start` returns this: the handle
-/// `task_result` collects by, plus the path, branch and base SHA the child was put in,
-/// so the caller and the operator see where the child is working without re-reading
-/// the brief. The placement is the point of the tool — a handle that does not say
-/// where the child is is a handle the operator has to go and find.
+/// The handle a `task_start` call returns, with the placement it arranged: a plain `task` returns a
+/// bare handle, since the child works where the parent works. The placement is the point, a handle
+/// that does not say where the child is leaving the operator to go and find it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeHandle {
     /// The handle `task_result` collects by.
@@ -411,23 +296,9 @@ pub struct WorktreeHandle {
     pub placement: WorktreePlacement,
 }
 
-/// **The slug a `task_start` child's worktree and branch are named by**, derived
-/// from the prompt when the caller did not name one.
-///
-/// Short, kebab, and readable: the first few words of the prompt, lowercased, with
-/// everything that is not a letter or a digit collapsed to a single hyphen, capped
-/// at a length that keeps the path and the branch legible in a `git worktree list`.
-///
-/// **Deterministic in the prompt, on purpose.** Two different subtasks get two
-/// different slugs, and the same subtask asked twice gets the same slug — which is
-/// what makes the refusal of an existing path meaningful: a second `task_start` for
-/// the same work finds the first one's worktree and says so by name, rather than
-/// silently creating a second tree for work that already has one. A caller that
-/// wants a different name for the same work names it with the `slug` argument; the
-/// derivation is the default, not a lock.
-///
-/// Pure, so it is testable without a repo: the slug is a fact about the prompt, and
-/// the filesystem work that uses it lives in the runner.
+/// The slug a `task_start` child's worktree and branch are named by, derived from the prompt when
+/// the caller did not name one. Deterministic in the prompt on purpose: the same subtask asked
+/// twice gets the same slug, which is what makes refusing an existing path meaningful.
 pub fn slug_from_prompt(prompt: &str) -> String {
     const MAX: usize = 40;
     const WORDS: usize = 4;
@@ -460,10 +331,9 @@ pub fn slug_from_prompt(prompt: &str) -> String {
     }
 }
 
-/// **Why a slug the caller named cannot name a worktree and a branch** (TODO R92.17), or
-/// `None`. The slug becomes a directory (`agent-<slug>`) and a branch (`agent/<slug>`), and it was
-/// only trimmed: `/` nested directories and could clash with a ref, `..` escaped
-/// `.claude/worktrees`, a space made a branch git refuses after the directory was already made.
+/// Why a slug the caller named cannot name a worktree and a branch, or `None`: the slug becomes
+/// a directory and a ref, and a trimmed one let `/` nest, `..` escape the worktrees folder and a
+/// space make a branch git refuses after the directory already existed.
 pub fn slug_refusal(slug: &str) -> Option<String> {
     let why = if slug.contains("..") {
         "it contains `..`, which would leave the worktrees folder"
@@ -490,11 +360,9 @@ pub fn slug_refusal(slug: &str) -> Option<String> {
     ))
 }
 
-/// **The first free slug from `base`** — `base`, then `base-2`, `base-3`, … — where `taken` says
-/// whether one is already used (its worktree's path exists, or its branch does). A slug derived
-/// from the prompt collides whenever two briefs begin alike (the `-2` trees on disk were made by
-/// hand); a derived one is the default, not a name anybody chose, so the next free one is taken
-/// instead of refusing the spawn (TODO R92.17).
+/// The first free slug from `base`: `base`, then `base-2`, `base-3`, where `taken` says whether
+/// one is used. A derived slug collides whenever two briefs begin alike, and being nobody's
+/// choice it yields to the next free one rather than refusing the spawn.
 pub fn unique_slug(base: &str, taken: impl Fn(&str) -> bool) -> String {
     if !taken(base) {
         return base.to_string();
@@ -505,33 +373,23 @@ pub fn unique_slug(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .unwrap_or_else(|| format!("{base}-{}", std::process::id()))
 }
 
-/// **One child, by the names it answers to** — its handle (the session id the runner minted) and
-/// its slug, the name [`TaskSpec::slug`] gave it.
-///
-/// `own` says whether THIS session started it. A runner's handle list is shared with the whole
-/// tree (`task_result` may collect any handle in it), so a parent's list carries its
-/// grandchildren too; a name is looked for among its own children first, which is the
-/// *"unique among this session's subagents"* the rule promises.
+/// One child, by the names it answers to: its handle, and its slug, the name [`TaskSpec::slug`]
+/// gave it. `own` says whether THIS session started it: a handle list is shared with the tree, so a
+/// name is looked for among its own children first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChildName {
     pub handle: String,
     pub slug: Option<String>,
     pub own: bool,
-    /// **No `subagent_run` row was ever written for this child** — its spawn lost the store to
-    /// another writer, or it is older than the store's first record, so the runner read it from the
-    /// child's own session instead of from a record — **and how far it got**, which is the one
-    /// thing a list row can say about a child nothing recorded. A lost child has no collected
-    /// answer and nothing that resumes it, so the listing says so rather than drawing it exactly
-    /// as a recorded one.
+    /// No `subagent_run` row was ever written for this child, its spawn having lost the store to
+    /// another writer or predated its first record, and how far it got: a lost child has no answer
+    /// and nothing that resumes it, so the listing says so.
     pub lost: Option<LostChild>,
 }
 
-/// **How far a child with no record got** — the class the listing and the single-handle answer
-/// both read, so a parent can tell a child that died mid-`bash` from one that never opened.
-///
-/// The judgement is the runner's (`harnessd::subagent_record::how_far`, over the same last-row
-/// rule that makes a text an answer), because the tools crate cannot see a store. What lives here
-/// is only what a row's words need.
+/// How far a child with no record got: the class both the listing and the single-handle answer
+/// read, so a parent can tell a child that died mid-`bash` from one that never opened. The
+/// judgement is the runner's, since the tools crate cannot see a store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LostChild {
     /// **Its last row is an answer** — an `Assistant` with no call after it. The text a reader
@@ -544,15 +402,9 @@ pub enum LostChild {
     Stopped(String),
 }
 
-/// **What the text of a child with no record IS**, in one sentence — the caveat both doors carry,
-/// so a parent is never handed a turn that stopped mid-way under the name of a finished answer.
-///
-/// The sentence is one copy on purpose: the list row and the answer to `task_result task=<handle>`
-/// are two renderings of one fact, and `SubagentRecord::settled`'s comment says why the fact is
-/// not obvious — during a shutdown an interrupted turn *comes back as an ANSWER, whatever the
-/// child had written when it stopped, so no status here can be trusted to be the child's last
-/// word*. Nothing here may say the child finished, and nothing here may guess WHY the row is
-/// missing: that is `no_record_cause`'s to say, from the store's own class.
+/// What the text of a child with no record is, in one sentence: the caveat both doors carry, so a
+/// parent is never handed a turn that stopped mid-way under the name of a finished answer. Nothing
+/// here may say the child finished or guess why the row is missing.
 pub const NOT_A_FINISHED_ANSWER: &str =
     "whatever it had written when it stopped, not a finished answer";
 
@@ -565,21 +417,16 @@ impl ChildName {
     }
 }
 
-/// **The one spelling of a child's name in a sentence**: `slug · handle`, or the handle alone.
-///
-/// The same function a job's label is ([`crate::exec::job_label`]), on purpose: the operator's
-/// ask was parity with jobs, and two spellings of *how a background thing is called* would be
-/// two strings for a reader to learn. The full handle stays in it because it is what the model
-/// collects by and what an older reader of the transcript keys on.
+/// The one spelling of a child's name in a sentence: `slug · handle`, or the handle alone, the same
+/// function a job's label is ([`crate::exec::job_label`]). The full handle stays, since it is what
+/// the model collects by.
 pub fn subagent_label(slug: Option<&str>, handle: &str) -> String {
     crate::exec::job_label(slug, handle)
 }
 
-/// **A label split back into its name and handle** — the inverse of [`subagent_label`], for a
-/// reader of a sentence written either way: `fix-login · s-1-sub-3` is `(Some("fix-login"),
-/// "s-1-sub-3")`, and a bare handle (every notice from before children had names) is `(None,
-/// handle)`. Only an `s-` handle on the right is a child's, so a label that merely contains a
-/// `·` is not misread.
+/// A label split back into its name and handle, the inverse of [`subagent_label`], for a reader
+/// of a sentence written either way. Only an `s-` handle on the right is a child's, so a label
+/// that merely contains a `·` is not misread.
 pub fn split_subagent_label(label: &str) -> (Option<&str>, &str) {
     match label.rsplit_once(" · ") {
         Some((slug, handle)) if handle.starts_with("s-") && !slug.trim().is_empty() => {
@@ -589,13 +436,9 @@ pub fn split_subagent_label(label: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// **Which child the caller meant**, over a list of children in hand.
-///
-/// Pure, so the rules are assertable without a runner — the job rule, kept: **the handle wins**
-/// (an exact session id always names its child, whatever another child is called), and **a name
-/// that fits more than one child is not a name**. A name is looked for among this session's own
-/// children first and only then in the rest of the tree, so a grandchild that happens to share a
-/// child's name does not make the child's name ambiguous.
+/// Which child the caller meant, over a list of children in hand. Pure, so the rules are assertable
+/// without a runner: the handle wins, and a name that fits more than one child is not a name. A
+/// name is looked for among this session's own children first, then in the rest of the tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickedChild {
     /// Exactly one child: its handle.
@@ -627,14 +470,9 @@ pub fn pick_child(children: &[ChildName], asked: &str) -> PickedChild {
     }
 }
 
-/// **A child, from what the caller wrote: its handle, or its slug.**
-///
-/// `task_result`, `task_message`, `task_resume` and `job_kill` take either, as `job_output` takes a
-/// job's id or name. A name that fits exactly one child is its handle; a name two children carry
-/// is **refused, naming them** — guessing would act on a child the caller did not name. A string
-/// that is neither a handle nor a name of a child here is handed on **unchanged**: the runner's own
-/// refusal names it as it was asked, and `task_message` may address a peer session that is no
-/// child of this one at all.
+/// A child, from what the caller wrote: its handle, or its slug. A name two children carry is
+/// refused, naming them; a string that is neither is handed on unchanged, so the runner's refusal
+/// names it as asked and `task_message` may address a peer.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub fn resolve_child(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation> {
     resolve_child_in(&runner.children(), asked)
@@ -695,15 +533,9 @@ fn slug_taken(under: &str, slug: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// **The path a `task_start` worktree is created at**, from the repo's workspace and
-/// the slug.
-///
-/// `<workspace>/.claude/worktrees/agent-<slug>` — the same shape the operator's own
-/// worktrees take, so a `git worktree list` in the main tree shows the child's tree
-/// beside the operator's, and the child is a fact on disk rather than a handle the
-/// operator has to go and find. Pure, so the tool and the runner compute the same
-/// path from the same inputs: a tool that reported a path the runner did not create
-/// would be the same claim-versus-fact defect the rest of this tree refuses.
+/// The path a `task_start` worktree is created at, from the repo's workspace and the slug:
+/// `<workspace>/.claude/worktrees/agent-<slug>`, the shape the operator's own worktrees take. Pure,
+/// so tool and runner compute one path, a reported path the runner did not create being a claim.
 pub fn worktree_path(workspace: &str, slug: &str) -> String {
     match worktree_home(std::path::Path::new(workspace)) {
         Some(home) => format!("{}/agent-{slug}", home.display()),
@@ -711,17 +543,9 @@ pub fn worktree_path(workspace: &str, slug: &str) -> String {
     }
 }
 
-/// **Where a repository's worktrees live, when its layout says** — the operator: *"default path
-/// for worktrees is not in .claude but in ~/Projects/<name>/worktrees. if the repos in the
-/// ~/Projects/<name>/<name> or like in stroppy - inside the org path"*.
-///
-/// * a repository in a folder of its own name (`~/Projects/letibot/letibot`) keeps them beside it,
-///   in that folder's `worktrees` (`~/Projects/letibot/worktrees`);
-/// * a repository in an org folder of several (`~/Projects/stroppy-io/stroppy`) keeps them in the
-///   org's `worktrees`, one folder per repository so two repositories' slugs cannot collide
-///   (`~/Projects/stroppy-io/worktrees/stroppy`).
-///
-/// `None` for any other layout, which keeps `.claude/worktrees` inside the repository.
+/// Where a repository's worktrees live, when its layout says: a repository in a folder of its own
+/// name keeps them beside it, and one in an org folder keeps them in the org's `worktrees`, one
+/// folder per repository. `None` keeps `.claude/worktrees` in the repository.
 pub fn worktree_home(repo: &std::path::Path) -> Option<std::path::PathBuf> {
     let name = repo.file_name()?;
     let parent = repo.parent()?;
@@ -736,26 +560,16 @@ pub fn worktree_home(repo: &std::path::Path) -> Option<std::path::PathBuf> {
     (repos >= 2).then(|| parent.join("worktrees").join(name))
 }
 
-/// **The branch a `task_start` worktree is cut onto**, from the slug.
-///
-/// `agent/<slug>` — the branch is the deliverable, and its name says what it is:
-/// an agent's work, cut from the base the caller named (or the repo's HEAD), to be
-/// landed by a merge queue rather than pushed. See [`TaskStartTool`] for the rule
-/// that it is never pushed.
+/// The branch a `task_start` worktree is cut onto, from the slug: `agent/<slug>`, named for what
+/// it is, an agent's work cut from the base the caller named and to be landed by a merge queue
+/// rather than pushed. See [`TaskStartTool`] for that rule.
 pub fn worktree_branch(slug: &str) -> String {
     format!("agent/{slug}")
 }
 
-/// **The rule a worktree child is given with its task**: the branch is the deliverable, so the
-/// work goes onto it, and a finished child's tree is clean.
-///
-/// Appended to the brief of every `task_start` child that has a fresh worktree (the main-tree
-/// exception has no branch of its own to deliver). Asked for by the report of 2026-10-12, from
-/// pg-noop's model: *"Seven times tonight a child has ended with its work outside its branch,
-/// and each time the recovery was the same two commands; the pattern is now so routine that it
-/// belongs in the brief rather than in the salvage."* The daemon checks the same fact when the
-/// child's turn ends (`harnessd`'s `harness::deliverable`), so this sentence is the rule and the
-/// check is its enforcement — neither stands in for the other.
+/// The rule a worktree child is given with its task: the branch is the deliverable, so the work
+/// goes onto it and the finished child's tree is clean. The daemon checks the same fact when the
+/// turn ends, so this sentence is the rule and that check its enforcement.
 pub fn worktree_brief(path: &str, branch: &str) -> String {
     format!(
         "[the deliverable] You work in the worktree `{path}` on branch `{branch}`, and the \
@@ -765,25 +579,9 @@ pub fn worktree_brief(path: &str, branch: &str) -> String {
     )
 }
 
-/// Where a spawned subagent has got to.
-///
-/// **The reading is the child's PRESENT, and the variant is its turn's record** — two facts, and
-/// the whole of the defect this shape fixes is that they are not the same one. `Running`/`Done`
-/// are what the daemon's slot holds about the child's FIRST turn (it settles when that turn ends);
-/// `child` is what the daemon can see about the child *now*, from the same builder the idle
-/// plan-check reads (`harnessd`'s `sessions::child_reading`).
-///
-/// **Why the present had to be carried at all.** A parent holding a row open on a child could ask
-/// `task_result` three times and get one sentence — *"still working"* — about a child that might be
-/// working, might have finished its turn and be parked waiting for a word, or might be wedged
-/// mid-call. The three are tellable apart ([`ChildDoing`]) and the
-/// first of them needs no judgement at all, only a fact: a child with **no turn in flight** is
-/// between turns, and the one thing that moves it is `task_message`.
-///
-/// **`None` is not "nothing is happening"** — it is *this runner keeps no such record*, which is
-/// every fake and `NoTaskRunner`, and it renders exactly as it did before this field existed. A
-/// reading is only ever attached for a child whose thread is still alive: a thread that has ended
-/// has no present to report, and the answer is what the parent wanted anyway.
+/// Where a spawned subagent has got to: the variant is the child's first turn's record, `child` is
+/// its present, and the difference is what lets a parent tell a child working from one parked
+/// between turns from one wedged mid-call. `None` means this runner keeps no such record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStatus {
     /// Still working — the child's turn has not ended. `note` is the daemon's own progress line
@@ -820,15 +618,9 @@ impl TaskStatus {
         }
     }
 
-    /// **The child's present as one clause** — the state, the evidence, and the move that state
-    /// asks for — or `None` when there is no reading to give.
-    ///
-    /// The state and its evidence come from the tools crate's ONE judgement
-    /// (`todo::child_doing` / `todo::child_evidence`), so a parent that has read the idle
-    /// plan-check's sentence about this child and then calls `task_result` reads the same state in
-    /// the same words. What differs is only the MOVE, because the reader is holding a different
-    /// tool: the check names `task_result` (it has no child of its own to steer), and this names
-    /// `task_message` — which is the whole of the idle fix.
+    /// The child's present as one clause: the state, the evidence, and the move that state asks
+    /// for, or `None` when there is no reading to give. The state and its evidence are the tools
+    /// crate's one judgement; only the move differs, and here it names `task_message`.
     pub fn child_now(&self) -> Option<String> {
         let doing = self.doing()?;
         let child = match self {
@@ -861,21 +653,14 @@ impl TaskStatus {
     }
 }
 
-/// **What a finished `task_start` child's branch became** — the answer to
-/// [`TaskRunner::finished`], in the tool layer's own vocabulary.
-///
-/// The tool layer does not know what a merge queue is, and that is the point of this enum: a
-/// `task_start` child leaves a BRANCH behind, the branch is the deliverable, and where it goes
-/// is the runner's business. What the tool needs is the one sentence a person reads — *it is
-/// in the queue*, *it was already there*, *there is no branch to land* — and a refusal when
-/// the enqueue could not be done.
+/// What a finished `task_start` child's branch became, the answer to [`TaskRunner::finished`]. The
+/// tool layer does not know what a merge queue is, and that is the point: what it needs is the one
+/// sentence a person reads, plus a refusal when the enqueue could not be done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finished {
-    /// The child's branch was put in the queue for landing: this is the entry, or — when the
-    /// finish was noticed twice, which is ordinary — the same entry it already had. The two
-    /// are one value because they are one FACT: *this branch is in the queue*. A separate
-    /// `Already` variant would make a caller branch on a difference nobody can act on, and the
-    /// id is carried so a reader can find the row.
+    /// The child's branch was put in the queue for landing: this is the entry, or, when the finish
+    /// was noticed twice, the same entry it already had. The two are one value because they are one
+    /// fact, and the id is carried so a reader can find the row.
     Queued {
         /// The entry's id, which is the child's own handle.
         id: String,
@@ -887,41 +672,17 @@ pub enum Finished {
     NoBranch { why: String },
 }
 
-/// Starts subagents and collects them. **Starting is not running.**
-///
-/// The trait used to have one method, `run`, which spawned a child and blocked
-/// until it answered. The daemon runs a round's calls in order on one thread, so
-/// a `task` held every call behind it for as long as the child lived: measured
-/// 2026-09-17, a block of `todo_write`, `task` and three `web_search` calls sat
-/// unfinished for the fifteen minutes the subagent ran, and the operator — and
-/// the model, in its own reasoning — read it as a hang. The operator's reading of
-/// the shape: *"task by definition must be background task no? because non
-/// background is what? a simple bash?"* Right. A subagent is minutes of work by
-/// construction, so the call that starts one returns a handle, the same way
-/// `bash --background` does, and the answer is collected by its own call.
+/// Starts subagents and collects them. Starting is not running: a round's calls run in order on one
+/// thread, so a blocking start would hold every call behind it for as long as the child lived,
+/// which reads as a hang. A subagent is minutes of work, so starting one returns a handle.
 pub trait TaskRunner: Send + Sync {
     /// Start the subtask and return the handle it can be collected by. Returns
     /// when the child is **spawned**, not when it is finished.
     fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String>;
 
-    /// **Arrange the tree, then start the child** — the `task_start` door.
-    ///
-    /// The difference from [`Self::start`] is the order: the worktree is created
-    /// *before* the child is spawned, and the refusal (a path that already exists
-    /// or is already a worktree) is answered by this call rather than by a child
-    /// that was never started. The operator's ask, in their words: *"we will need
-    /// a new tool - task_start or what that will arrange worktree, firecode and
-    /// subagent"* — the placement is arranged by the tool, not remembered by the
-    /// caller, because the two mistakes this exists to prevent are a child spawned
-    /// into the main tree and a child killed instead of corrected for being in the
-    /// wrong place.
-    ///
-    /// Returns the handle **and** the placement the child was put in — the path,
-    /// branch and base SHA — so the answer can say where the child is working
-    /// without the operator re-reading the brief. A runner that cannot arrange a
-    /// tree refuses by name rather than spawning a child in the parent's workspace
-    /// and calling it placed: the same claim-versus-fact rule [`Self::kill`] and
-    /// [`Self::send`] follow.
+    /// Arrange the tree, then start the child: the `task_start` door. The order is the difference
+    /// from [`Self::start`], an existing path being refused here rather than by a child that never
+    /// started; a runner that cannot arrange a tree refuses by name, as [`Self::kill`] does.
     fn start_worktree(
         &self,
         _prompt: &str,
@@ -940,32 +701,23 @@ pub trait TaskRunner: Send + Sync {
     /// finish. A zero timeout is a poll.
     fn collect(&self, handle: &str, timeout: std::time::Duration) -> TaskStatus;
 
-    /// **Where a child has got to, for a READER** (`task_result`) — [`Self::collect`] by default.
-    /// A runner that records children answers here for one a daemon restart left without a
-    /// slot, from its record, so the listing, the single answer and `task_resume` read one
-    /// state. Not for a watcher: a recorded settlement is not one arriving now.
+    /// Where a child has got to, for a READER (`task_result`): [`Self::collect`] by default, and a
+    /// runner that records children answers from its record for one a restart left without a slot,
+    /// so the listing, the single answer and `task_resume` read one state.
     fn look(&self, handle: &str, timeout: std::time::Duration) -> TaskStatus {
         self.collect(handle, timeout)
     }
 
-    /// **Whether this child has no record, and how far it got** — the class the listing and the
-    /// single-handle answer both carry. `None` for a recorded child and for a runner that keeps no
-    /// store.
-    ///
-    /// **A keyed question, and that is the point.** The listing can only carry the children a row
-    /// was DUE for (`children_without_runs`), while a model may name any of its children — on the
-    /// operator's box 517 of one session's 573 predate the store's first record. Answering from the
-    /// list would leave exactly those children's answers bare, which is the defect this closes.
+    /// Whether this child has no record, and how far it got: `None` for a recorded child and for a
+    /// runner that keeps no store. A keyed question, because the listing carries only the children
+    /// a row was due for, while a model may name any of its children.
     fn lost(&self, _handle: &str) -> Option<LostChild> {
         None
     }
 
-    /// **This child's settlement has been read** — by `task_result`, which hands the answer to
-    /// the model, or by the tool that started a helper and waited for it (`digest`). A runner
-    /// that records children marks the record delivered, so a daemon restart does not hand the
-    /// same answer over a second time as if it were news (2026-10-14: twelve `digest` readers,
-    /// read by their tool the morning before, were announced to the model as just finished).
-    /// A runner that records nothing has nothing to mark.
+    /// This child's settlement has been read, by `task_result` or by the tool that started a
+    /// helper. A runner that records children marks the record delivered, so a restart does not
+    /// hand the same answer over as news. A runner that records nothing has nothing to mark.
     fn consumed(&self, _handle: &str) {}
 
     /// The handles this session has started, oldest first — what `task_result`
@@ -975,10 +727,9 @@ pub trait TaskRunner: Send + Sync {
         Vec::new()
     }
 
-    /// **The children a handle or a name may resolve to**, with their slugs — what
-    /// [`resolve_child`] reads and what the sentences about a child label it by. The default is
-    /// [`Self::started`] with no names, so a runner that keeps none resolves handles exactly as
-    /// before and labels every child by its handle.
+    /// The children a handle or a name may resolve to, with their slugs: what [`resolve_child`]
+    /// reads and what the sentences about a child label it by. The default is [`Self::started`]
+    /// with no names, so a runner that keeps none resolves handles as before.
     fn children(&self) -> Vec<ChildName> {
         self.started()
             .into_iter()
@@ -999,21 +750,9 @@ pub trait TaskRunner: Send + Sync {
             .and_then(|c| c.slug)
     }
 
-    /// **The session that started this one** — the address a child speaks to its parent by,
-    /// under the reserved handle [`PARENT_HANDLE`].
-    ///
-    /// The upward edge of the same tree [`Self::children`] is the downward one of, and it was
-    /// missing for a plain reason: a child holds the delegation trio, and `task_message` takes
-    /// **any live session's id**, so the channel was there — but nothing handed the child the
-    /// one id it cannot guess. `Config::parent_session_id` is on the session's own row and in no
-    /// disclosure, so a model that wanted to answer its parent had to be told the id by the
-    /// operator, or guess.
-    ///
-    /// **Why an id here rather than a name in the prompt.** The handle is resolved at the
-    /// runner, which is the half that owns the tree, so the child never carries an id that a
-    /// resume could stale and the model never has to copy a 30-character string. `None` is the
-    /// honest answer for a session at the top of its tree, and [`TaskMessageTool`] refuses the
-    /// handle by name there rather than inventing an addressee.
+    /// The session that started this one: the address a child speaks to its parent by, under
+    /// [`PARENT_HANDLE`]. The upward edge lacked an address, not a door, since `task_message` takes
+    /// any live id but nothing told a child the one it cannot guess.
     fn parent(&self) -> Option<String> {
         None
     }
@@ -1023,32 +762,9 @@ pub trait TaskRunner: Send + Sync {
         subagent_label(self.slug_of(handle).as_deref(), handle)
     }
 
-    /// **A `task_start` child has finished: its branch goes to be landed** — the seam the
-    /// merge queue's enqueue hangs on.
-    ///
-    /// The operator's ask, in their words: *"we need a gated merge to main, and worktree
-    /// cleanup"*, and *"a permanent subagent that lazily starts as soon as task_start was
-    /// finished and item put into the queue"*. A `task_start` child works on a branch that is
-    /// **never pushed** — the tool says so in as many words — so the branch is a deliverable
-    /// with nobody to carry it until this call exists. `task_start`'s own docstring used to
-    /// carry the `TODO(merge-queue)` that stood here; this is that door.
-    ///
-    /// **Why the runner and not the tool.** The enqueue needs the brief the child was given,
-    /// the placement it worked in and the store the queue lives in, and the tool layer has
-    /// none of the three: it has no git, no store and no session. The runner arranged the
-    /// tree, so the runner is the one that knows what to hand over — and the tool is left
-    /// with the one thing it can honestly say, which is the sentence a person reads.
-    ///
-    /// **`NoBranch` is the ordinary answer for a plain `task`**, and it is not a failure: a
-    /// `task` child works in the parent's own workspace, so there is no branch of its own to
-    /// land. A runner that arranges nothing answers that rather than refusing, because a
-    /// refusal would put a line about the merge queue under every `task_result` a model ever
-    /// reads.
-    ///
-    /// **`Err` is a real failure and it is said rather than swallowed**, by the rule
-    /// [`Self::kill`] and [`Self::send`] follow: a branch reported as queued that is not in
-    /// the queue is worse than one that says it could not be, because the parent then
-    /// believes the work is on its way to main.
+    /// A `task_start` child has finished: its branch goes to be landed, the seam the merge queue's
+    /// enqueue hangs on, and it is the runner and not the tool, which has no brief, no placement
+    /// and no store. `NoBranch` is the ordinary answer for a plain `task`; `Err` is a real failure.
     fn finished(&self, handle: &str) -> Result<Finished, String> {
         let _ = handle;
         Ok(Finished::NoBranch {
@@ -1058,19 +774,9 @@ pub trait TaskRunner: Send + Sync {
         })
     }
 
-    /// **Stop a subagent.** `Ok` is what was done, in the words the operator gets;
-    /// `Err` is why it could not be, said rather than swallowed.
-    ///
-    /// The operator's ruling, when `job_kill` was found to reach only the host's process
-    /// table: *"expand"*. A subagent is not a process, so it cannot be reaped the way a
-    /// job is — and it is still the same handle-shaped thing a model reaches for a stop
-    /// with, which is the rest of the same ruling: *"in a way agent is a background job."*
-    ///
-    /// **The kill is an interrupt of the child's turn**, because that turn is the only
-    /// thing a subagent is doing: it does not own a process, a cgroup or a scope, and the
-    /// one door that reaches a turn already running is the session's own steering — the
-    /// same door a head's Esc-esc uses. A runner that cannot do that says so rather than
-    /// returning a kill it did not perform.
+    /// Stop a subagent. `Ok` is what was done, in the words the operator gets; `Err` is why it
+    /// could not be, said rather than swallowed. A subagent is not a process, so the kill is an
+    /// interrupt of the child's turn, the only thing it is doing.
     fn kill(&self, handle: &str) -> Result<String, String> {
         Err(format!(
             "this session's runner cannot stop `{handle}`: a subagent is stopped by \
@@ -1078,33 +784,9 @@ pub trait TaskRunner: Send + Sync {
              can do. Nothing was stopped."
         ))
     }
-    /// **Say something to a session that is still working** — the operator's ruling,
-    /// 2026-10-06: *"in the tree all subagents must be addressable by their parents. that is
-    /// how live corrections delivered."*
-    ///
-    /// `Ok` is what was done, in the words the operator gets; `Err` is why it could not be,
-    /// said rather than swallowed — the rule [`TaskRunner::kill`] follows, and for the same
-    /// reason: a message reported as delivered that nobody heard is worse than one refused,
-    /// because the sender then believes the session was corrected.
-    ///
-    /// **A message is not a second prompt.** It is recorded as an agent's utterance rather
-    /// than the operator's, so it can neither authorise the act it races nor be read as
-    /// something a person typed. **Both states of a session are reachable, and they are
-    /// different deliveries**: one with a turn RUNNING hears it at its next round boundary,
-    /// and one BETWEEN turns has a turn started for it with this message as what the turn is
-    /// about (the operator's ruling, *"fix task_message - it should enqueue"*). The one thing
-    /// a runner must not do is accept a message nothing will read: a handle whose session is
-    /// gone, or whose thread has ended, is refused by name.
-    ///
-    /// **The handle may name a peer, and that is not a widening of this door's job.** The
-    /// operator struck the parent-shaped framing of it — *"well gatekeeper is not a child so we
-    /// are not doing up"* — so one session sending another session a message is the ordinary
-    /// case, and the refusal is for a session that does not exist rather than for one that is
-    /// not this session's child.
-    ///
-    /// **And one handle is not a session's id at all**: `parent`, resolved through [`Self::parent`]
-    /// before any child is looked up, so a child can answer the session that started it without
-    /// being told a 30-character id. See [`PARENT_HANDLE`].
+    /// Say something to a session that is still working, or to a peer: the handle may name any live
+    /// session. A message is not a second prompt, being an agent's utterance, so it authorises
+    /// nothing. A running turn hears it at its next boundary.
     fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
         Err(format!(
             "this session's runner cannot message `{handle}`: a subagent is reached through \
@@ -1113,63 +795,23 @@ pub trait TaskRunner: Send + Sync {
         ))
     }
 
-    /// **Stop every child this session still owns.**
-    ///
-    /// The operator's design, in their words: *"think about it like it is an erlang
-    /// supervision tree. we talk to parents and they own lifecycle."* Two of the tree's edges
-    /// are already here — `start` makes a child, and `collect`/`send`/`kill` each talk to one
-    /// — and this is the third: **a parent that is being stopped stops its children first**,
-    /// so the tree never leaves work computing for nobody. That shape was measured the same
-    /// night: a stalled grandchild survived the parent that owned it, because the interrupt
-    /// reached exactly one session.
-    ///
-    /// **The children, not the subtree.** A runner stops what IT started and answers for
-    /// those; each child does the same when the stop reaches it, so the walk down is one
-    /// level per session and no runner needs to know its grandchildren. That is the whole of
-    /// what *"we talk to parents"* means in code, and the reason this is not a `kill` over a
-    /// list of handles nobody holds.
-    ///
-    /// One result per child, in the words [`TaskRunner::kill`] gives, so a caller can say
-    /// what was stopped and what refused rather than a count that hides a refusal — the rule
-    /// this trait already holds to. A runner that starts nothing returns nothing, which is
-    /// the honest answer for a session with no children rather than a failure.
-    ///
-    /// **Not the restart policy.** Nothing here decides whether a child should be started
-    /// again; a parent's decision about what its child's exit MEANS is the second half of the
-    /// operator's design and is not built. See the TODO beside `HarnessTaskRunner`'s own
-    /// implementation.
+    /// Stop every child this session still owns: a parent being stopped stops its children first,
+    /// so the tree never leaves work computing for nobody. The children, not the subtree, so the
+    /// walk down is one level per session, one result each.
     fn stop_all(&self) -> Vec<(String, Result<String, String>)> {
         Vec::new()
     }
 
-    /// **Wait until every child this session started has left its own thread**, up to
-    /// `timeout`; `true` when they all have.
-    ///
-    /// The fourth edge of the same supervision tree [`Self::stop_all`] is the third of, and
-    /// the one that was missing: a parent can start a child, talk to it, stop it — and had
-    /// **no way to wait for it to be gone**. A child's thread is spawned detached (nothing
-    /// keeps a `JoinHandle`), so neither the daemon's shutdown nor a test that drove one
-    /// could tell "the child has finished" from "the child is still running", and the
-    /// difference is not cosmetic: a thread still inside `libllama` when the process runs its
-    /// exit handlers is a SIGSEGV *after every test passed* — measured, `harnessd`'s
-    /// `message_between_turns`, where `_dl_fini` finalizes `libggml-cuda` while a child is
-    /// mid-`tokenize`. See [`crate::builtins::task::TaskRunner::stop_all`]'s caller and
-    /// `Harness::wait_for_children`.
-    ///
-    /// **A wait, not a stop.** It sends nothing and changes no child's state; it is the
-    /// observation the caller makes AFTER it has closed the tree (or stopped the children),
-    /// which is why a runner that starts nothing answers `true` rather than refusing: there
-    /// is nothing of its own to wait for.
+    /// Wait until every child this session started has left its own thread, up to `timeout`; `true`
+    /// when they all have. A child's thread is spawned detached, so nothing can tell one that has
+    /// finished from one still running, and a thread still inside `libllama` at exit is a SIGSEGV.
     fn wait_for_children(&self, _timeout: std::time::Duration) -> bool {
         true
     }
 
-    /// **How many children this session started still have a thread** — the ones
-    /// [`Self::stop_all`] would stop. A session with any is not idle, whatever its own queue
-    /// says: a child it is waiting on can settle at any moment and must find its parent's
-    /// reader there. Read by the idle-child policy (`harness::serve_child`), which parks a
-    /// subagent only when nothing of its subtree is alive. A runner that starts nothing has
-    /// none.
+    /// How many children this session started still have a thread, the ones [`Self::stop_all`]
+    /// would stop. A session with any is not idle, whatever its own queue says: a child it waits on
+    /// can settle at any moment and must find its parent's reader there.
     fn live_children(&self) -> usize {
         0
     }
@@ -1181,19 +823,9 @@ pub trait TaskRunner: Send + Sync {
         0
     }
 
-    /// **Bring back the children a daemon that is gone left running** — called once, when this
-    /// session is opened by a daemon.
-    ///
-    /// The operator, 2026-10-12: *"we should bring subagents back - i cant afford to wait till
-    /// they finish. we should record them (session persist anyway) and restart automatically"*.
-    /// A runner records each child it starts; this reads those records for children whose task
-    /// had not ended when their daemon went down, and resumes each one in its own session — or
-    /// says why it did not. A runner that records nothing has nothing to bring back.
-    ///
-    /// `mode` is the daemon's decision about the down time (the operator: *"if some threshold
-    /// passed - say more than 1 hours after the stop, we start to simply remind the model"*):
-    /// [`RestoreMode::Resume`] brings each child back, [`RestoreMode::Remind`] only reports it, so
-    /// the model can decide and bring it back itself with [`TaskRunner::resume`].
+    /// Bring back the children a daemon that is gone left running, called once when this session is
+    /// opened. [`RestoreMode::Resume`] brings each back, [`RestoreMode::Remind`] only reports it,
+    /// so the model can resume it itself. A runner that records nothing has nothing to bring back.
     fn resume_recorded(&self, _mode: RestoreMode) -> Vec<RestartedChild> {
         Vec::new()
     }
@@ -1262,15 +894,13 @@ impl TaskRunner for NoTaskRunner {
 
 pub struct TaskTool {
     runner: Arc<dyn TaskRunner>,
-    /// The firecode CLI a `where: firecode` call is checked against, when the caller names
-    /// one; `None` is the host's answer ([`crate::firecode::firecode_available`]). A field and
-    /// not `$FIRECODE_BIN` for the reason [`crate::firecode::FirecodeSpec::bin`] is one: a test
-    /// that sets the variable races every other reader of it in the test binary.
+    /// The firecode CLI a `where: firecode` call is checked against, when the caller names one;
+    /// `None` is the host's answer ([`crate::firecode::firecode_available`]). A field and not an
+    /// environment variable, which a test setting it would race against every other reader.
     firecode_bin: Option<std::path::PathBuf>,
-    /// **The machines `where: "host:NAME"` may name.** `None` is
-    /// [`crate::remote::Hosts::load`], which reads the operator's file — the only place a
-    /// host may be declared. A field so a test says which file without an environment
-    /// variable that would race the other readers of it.
+    /// The machines `where: "host:NAME"` may name. `None` is [`crate::remote::Hosts::load`], which
+    /// reads the operator's file, the only place a host may be declared. A field so a test says
+    /// which file without an environment variable that would race the other readers of it.
     hosts: Option<crate::remote::Hosts>,
     /// The skills corpus a call's `skills` names are checked against. `None` in a registry a
     /// test built by hand: a call that names one is then refused rather than spawned with a
@@ -1355,11 +985,9 @@ impl Tool for TaskTool {
                 },
                 "required": ["prompt"]
             }),
-            // `Session`, not `Exec`: `task` runs no host command itself — it delegates
-            // to a child turn whose own gate governs its write/exec/network calls. As
-            // `Exec` it would hit the operator's rule that exec always asks (a subagent
-            // spawn is not a shell, and opencode does not gate it), and a subagent that
-            // could not even be spawned without a head would never run.
+            // `Session`, not `Exec`: `task` runs no host command itself, delegating to a child turn
+            // whose own gate governs its calls. As `Exec` it would hit the rule that exec always
+            // asks, and a subagent that could not be spawned without a head would never run.
             Access::Session,
         )
     }
@@ -1487,10 +1115,8 @@ impl Tool for TaskTool {
             // A plain `task` works in the parent's workspace: no worktree is arranged.
             worktree: None,
             // And a VM placement copies that workspace's own copy source, which is the repository
-            // it is about whenever there is one to name (`Config::vm_copy_source`) — or the one the
-            // model NAMES with `repo`, which a session above several repositories must: a VM holds
-            // one repository (the operator: *"VMs are per repo anyway — at least must be"*). The
-            // spawn resolves it against the session root and refuses one that is not a repository.
+            // it is about whenever there is one to name, or the one the model NAMES with `repo`: a
+            // VM holds one repository. The spawn refuses one that is not a repository.
             vm_source: vm_repo,
             vm_verify,
             slug,
@@ -1508,10 +1134,8 @@ impl Tool for TaskTool {
         if let Some(w) = wake {
             ctx.want_completion(&handle, w);
         }
-        // **`Backgrounded`, not `Ok`** — the same reason `bash --background`
-        // gives: the outcome names a fact about the world, *this is running and
-        // has not answered yet*, and an `Ok` here would be grounding for an
-        // answer nothing has produced.
+        // `Backgrounded`, not `Ok`: the outcome names a fact about the world, this is running and
+        // has not answered yet, and an `Ok` here would be grounding for an answer nothing produced.
         Invocation::backgrounded(
             handle.clone(),
             std::time::Duration::ZERO,
@@ -1560,56 +1184,9 @@ fn first_line(prompt: &str) -> String {
     format!("{}…", l.chars().take(100).collect::<String>())
 }
 
-/// `task_start` — arrange a subagent's placement *before* it spawns it.
-///
-/// The operator's ask, in their words: *"we will need a new tool - task_start or
-/// what that will arrange worktree, firecode and subagent"*. The two mistakes of a
-/// previous session are its spec: a child was spawned into the main tree, and then
-/// that child was killed instead of corrected. Placement must live in the tool, not
-/// in the caller's memory — so this tool creates the worktree first, refuses a path
-/// that already exists by name and without spawning anything, and only then starts
-/// the child in the tree it just made.
-///
-/// **The default is never the main tree.** A `task_start` that did not name the main
-/// checkout creates a fresh worktree at `<workspace>/.claude/worktrees/agent-<slug>`
-/// on branch `agent/<slug>`, cut from the base the caller named (or the repo's HEAD).
-/// Working in the main checkout is the exception, and it requires the explicit
-/// `main_tree` argument — the same shape as `where: firecode`, a declared seam rather
-/// than a default.
-///
-/// **The build cache is shared deliberately.** The child's environment carries
-/// `CARGO_TARGET_DIR` pointing at the main tree's `target/`, because cargo's own lock
-/// serialises concurrent builds and a fresh worktree otherwise pays a cold build of
-/// the whole graph. The runner is where that environment is set — the tool layer has
-/// no git and no exec of its own.
-///
-/// **The branch is the deliverable, and it is never pushed.** The tool does not push,
-/// and will not: the branch is to be landed by a merge queue.
-///
-/// **TODO(merge-queue): CLOSED — the branch is enqueued when the child finishes.**
-///
-/// This docstring used to carry the seam: *"the merge queue does not exist yet. The branch is
-/// the deliverable and the landing is somebody else's job; this tool leaves the branch where it
-/// is and says so."* The queue exists, and the door is [`TaskRunner::finished`]: when a
-/// `task_start` child finishes, the runner mints the entry — the branch, the base SHA, the
-/// priority, the `needs` and **the brief the child was given**, which is the one thing the
-/// reviewer reads — and writes it to the session store the merge-queue daemon serves.
-///
-/// **The tool does not do it, and the split is deliberate.** The enqueue needs the brief, the
-/// placement and the store, and this layer has no git, no store and no session; it has the
-/// handle and the sentence. So the tool asks the runner when it sees the child finish
-/// (`task_result` on a `Done`) and reports what the runner answered — and the runner ALSO
-/// enqueues at the child's own settlement, because a branch whose answer is never collected is
-/// still a branch that finished. One entry, one id (the handle), so the two notices are one
-/// act rather than two.
-///
-/// **The branch is still never pushed by this tool**, and that has not changed: the queue
-/// fast-forwards main and pushes, and the tool's rule is that the deliverable is a branch.
-///
-/// **A child in the wrong PLACE is corrected with `task_message`, not killed.**
-/// Killing is for wrong work. A child that is in the wrong tree is a placement
-/// mistake, and the remedy is to tell it where to be — the same live correction
-/// `task_message` exists for — not to throw the work away.
+/// `task_start`: arrange a subagent's placement before it spawns it. Placement lives in the tool,
+/// not in the caller's memory: the worktree is created first, an existing path is refused by name,
+/// and only then does the child start in the tree just made.
 pub struct TaskStartTool {
     runner: Arc<dyn TaskRunner>,
     /// The machines `where: "host:NAME"` may name — see [`TaskTool::with_hosts`].
@@ -1681,10 +1258,9 @@ impl Tool for TaskStartTool {
                 },
                 "required": ["prompt"]
             }),
-            // `Session`, exactly as `task` is: this arranges a tree and delegates to a
-            // child turn whose own gate governs its write/exec/network calls. The git
-            // work happens in the runner, not here — the tool layer has no git and no
-            // exec of its own.
+            // `Session`, exactly as `task` is: this arranges a tree and delegates to a child turn
+            // whose own gate governs its write, exec and network calls. The git work happens in the
+            // runner; this layer has no git and no exec.
             Access::Session,
         )
     }
@@ -1749,10 +1325,9 @@ impl Tool for TaskStartTool {
             .map(|r| r.trim().trim_end_matches('/').to_string())
             .filter(|r| !r.is_empty() && r != ".");
 
-        // **The slug, derived from the prompt when the caller did not name one.** The
-        // derivation is the default, not a lock: a caller that wants a different name
-        // for the same work names it with `slug`. A named one is checked before anything is
-        // made (R92.17).
+        // The slug, derived from the prompt when the caller did not name one: the derivation is the
+        // default, not a lock, so a caller wanting another name for the same work passes `slug`. A
+        // named one is checked before anything is made.
         if let Some(s) = &slug_arg
             && let Some(why) = slug_refusal(s)
         {
@@ -1764,16 +1339,9 @@ impl Tool for TaskStartTool {
         let named = slug_arg.is_some();
         let mut slug = slug_arg.unwrap_or_else(|| slug_from_prompt(prompt));
 
-        // **The workspace, or the refusal that names its absence.** A `task_start`
-        // with no workspace to arrange a worktree in is a call that cannot be done,
-        // and it says so rather than guessing at a path.
-        //
-        // **A remote session's workspace is on another machine**, and this tool creates
-        // git worktrees with the local `git` against a local path — so it refuses by name
-        // rather than making one here under a path that belongs there. The way to have a
-        // remote child is `task` with the host named: its own `open` arranges the checkout
-        // on that machine (`SshBackend::place`), which is the same thing done where the
-        // tree is.
+        // The workspace, or the refusal that names its absence. A remote session's workspace is on
+        // another machine, and this tool creates worktrees with the local `git`, so it refuses
+        // rather than making one under a path that belongs there.
         if let Some(host) = ctx.backend.host_label() {
             return Invocation::failed(
                 "task_start arranges a worktree on this machine, and this session's tools run \
@@ -1794,11 +1362,9 @@ impl Tool for TaskStartTool {
             );
         };
 
-        // **The refusal of an existing path, by name and without spawning anything.**
-        // The default is a fresh worktree, and a path that already exists — a
-        // directory, or a worktree a previous `task_start` made — is refused here
-        // rather than by a child that was never started. The main tree is the
-        // exception and does not create a path, so it is not checked.
+        // The refusal of an existing path, by name and without spawning anything: a path that
+        // already exists, a directory or a worktree an earlier `task_start` made, is refused here
+        // rather than by a child that never started.
         if !main_tree {
             // Under the named repository, when there is one — the runner arranges it there.
             let under = match &repo {
@@ -1910,11 +1476,9 @@ impl Tool for TaskStartTool {
             ctx.want_completion(&handle.handle, w);
         }
 
-        // **The placement is in the answer.** The handle names the path, the branch
-        // and the base SHA, so the caller and the operator see where the child is
-        // working without re-reading the brief. The main tree is named as the
-        // exception when it was the exception, and a firecode spawn says the VM got
-        // a copy rather than pretending it is the same directory.
+        // The placement is in the answer: the handle names the path, the branch and the base SHA,
+        // so the caller and the operator see where the child works without re-reading the brief.
+        // The main tree is named as the exception, and a firecode spawn says the VM got a copy.
         let where_line = if handle.placement.main_tree {
             "the main checkout (the exception — a fresh worktree is the default)".to_string()
         } else {
@@ -2014,17 +1578,9 @@ impl Tool for TaskResultTool {
             for c in &started {
                 let h = &c.handle;
                 let status = self.runner.look(h, std::time::Duration::ZERO);
-                // **The listing says the STATE, not liveness** — a row that says `running` about a
-                // child between turns is the sentence this change exists to stop printing, and the
-                // word comes from the same judgement the single-handle answer uses
-                // (`ChildDoing::said`). A runner that keeps no reading keeps the old words.
-                //
-                // **A child with no record is marked as one, and says HOW FAR IT GOT**: its state
-                // is read from its own session, which is the only witness there is — so a reader is
-                // told which of the two it is looking at rather than drawing a lost child exactly as
-                // a recorded one. The class is the runner's (`LostChild`), so the row and the
-                // single-handle answer cannot say two different things about one child, and it is
-                // worded here because this is the door that has a line to spend.
+                // The listing says the state, not liveness: `running` about a child between turns
+                // is the sentence this stops printing, and the word is the one the single-handle
+                // answer uses. A child with no record is marked as one and says how far it got.
                 let state = match (&c.lost, &status) {
                     // **Answered, and it is NOT a finished answer** — nothing recorded a
                     // settlement, so the text is whatever the child had written when it stopped.
@@ -2070,15 +1626,9 @@ impl Tool for TaskResultTool {
             .and_then(|v| v.as_u64())
             .map(std::time::Duration::from_millis)
             .unwrap_or(std::time::Duration::ZERO);
-        // **R23, which `job_wait` got and this tool did not.** The daemon watches every child
-        // and hands its answer to the model as a turn of its own, so a wait on a watched child
-        // holds the floor for a deadline while the answer is already on its way. The operator,
-        // after a stroppy session spent 240 s inside `task_result`: *"why it decided to wait
-        // for it explicitly if we have completion events"*, and *"on other hosts they just
-        // start subagents and dont wait"*. So a watched child is looked at, not waited on: an
-        // answer or a failure already in is returned as ever, and a child still working is
-        // reported as such at once. Unwatched handles — another session's, a runtime with no
-        // watcher — keep the blocking wait they asked for.
+        // A watched child is looked at, not waited on: the daemon hands its answer to the model as
+        // a turn of its own, so a wait would hold the floor while the answer is already on its way.
+        // Unwatched handles keep the blocking wait they asked for.
         let timeout = if !timeout.is_zero() && ctx.completion_delivered(handle) {
             // **And the wait is the model saying it wants this one** (R79): the answer is
             // delivered the moment it lands rather than held for the next break, which is the
@@ -2100,11 +1650,9 @@ impl Tool for TaskResultTool {
                          while the answer is already on its way. Carry on with something \
                          else; {next}.{}",
                         running_said(&label, &status),
-                        // **The spawn's own line, and it is named as the spawn's.** It used to
-                        // print as *`(last: …)`* — the child's last word — and it is not one: the
-                        // note is written by the progress callback during the child's OPENING
-                        // phase and never again. The child's actual last word is in the reading
-                        // above, so the note is labelled with what it really is.
+                        // The spawn's own line, and it is named as the spawn's: the note is written
+                        // by the progress callback during the child's opening phase and never
+                        // again, so it is not the child's last word. That is in the reading above.
                         note.as_ref()
                             .map(|n| format!(" (the spawn reported: {n})"))
                             .unwrap_or_default()
@@ -2124,16 +1672,9 @@ impl Tool for TaskResultTool {
         }
         match status {
             TaskStatus::Done { ref answer, .. } => {
-                // **A child with no record's text is not a finished answer, and it is said BEFORE
-                // the text.** Nothing recorded its settlement, so the only witness is its own last
-                // row — and an interrupted turn comes back as an answer with whatever the child had
-                // written when it stopped (`SubagentRecord::settled`'s own comment). A parent handed
-                // that bare would read a turn that stopped mid-way as the child's last word.
-                //
-                // **First, and in the payload rather than in a headline**, because this is the
-                // position every truncation keeps: a spilled payload keeps its head half
-                // (`Spiller`), a one-line notice keeps the first line, and a reader who stops at
-                // the first paragraph still learns what it is holding.
+                // A child with no record's text is not a finished answer, and it is said BEFORE the
+                // text: nothing recorded its settlement, so the only witness is its own last row,
+                // and an interrupted turn comes back as an answer with whatever it wrote.
                 let answer = match &lost {
                     Some(LostChild::Answered) => format!(
                         "{NOT_A_FINISHED_ANSWER}: nothing recorded this child's settlement, so \
@@ -2142,23 +1683,9 @@ impl Tool for TaskResultTool {
                     ),
                     _ => answer.clone(),
                 };
-                // **The child has finished, so its branch goes to be landed.** This is the one
-                // door the tool layer has onto a child's finish, and `task_start`'s own answer
-                // already sends the model here (*"call `task_result` with task=…"*), so the
-                // ordinary path reaches it. The runner does the work and says what happened;
-                // a plain `task` child has no branch of its own and answers `NoBranch`, which
-                // is why nothing is appended for it and every existing answer reads exactly as
-                // it did.
-                //
-                // **The answer comes first and the queue line after it**, because the answer
-                // is what the model asked for and the queue line is news about it.
-                //
-                // **And the child's PRESENT comes after both, when the daemon has one.** An
-                // answer is the child's first turn's record: a child that answered and is still
-                // here is a child that is parked, and the only door onto a parked child is its
-                // parent's message. That is the sentence the operator had to learn by sending one
-                // — *"it was between turns … a turn has been started for it"* — and it belongs
-                // where the parent is already reading.
+                // The child has finished, so its branch goes to be landed: the one door the tool
+                // layer has onto a child's finish. A plain `task` child answers `NoBranch`, which
+                // is why nothing is appended for it. The answer comes first, the queue line after.
                 let now = status.child_now().map(|said| format!("\n\n[child] {said}"));
                 match self.runner.finished(handle) {
                     Ok(Finished::Queued { id, branch }) => Invocation::ok(format!(
@@ -2189,15 +1716,9 @@ impl Tool for TaskResultTool {
                          and `transcript` with session=\"{handle}\" reads it."
                 ),
             ),
-            // **The sentence that said one thing about three states.** *"Still working"* was
-            // printed about a child that was working, about one whose turn had ended and was
-            // parked waiting for a word, and about one that had wedged mid-call — the operator's
-            // own measurement, three asks and one sentence. The headline now names the state, and
-            // the body carries what the daemon can see and the move that state asks for. A runner
-            // that keeps no reading gets the old words, byte for byte.
-            // R93.F18: a look (no `timeout_ms`) at a child this session is told about is not a
-            // wait that ran out, and "call again with a longer timeout_ms" contradicted every
-            // text that says its answer is delivered.
+            // The sentence that said one thing about three states: "still working" was printed
+            // about a child working, one parked after its turn and one wedged mid-call. The
+            // headline now names the state, and a look is not a wait that ran out.
             TaskStatus::Running { .. } if timeout.is_zero() && ctx.completion_delivered(handle) => {
                 Invocation::abstained(
                     format!("subagent `{label}` is {}", doing_word(&status)),
@@ -2235,13 +1756,9 @@ impl Tool for TaskResultTool {
     }
 }
 
-/// **The state of a child whose turn has not ended, in words** — `working`, `between turns`,
-/// `quiet` or `showing nothing yet` when the daemon has a reading, and `still working` when it has
-/// none (every fake, and `NoTaskRunner`).
-///
-/// One function, because the R23 sentence and the deadline sentence are two doors onto one child
-/// and must not disagree about which state it is in — the same rule [`TaskStatus::child_now`]
-/// follows for the body.
+/// The state of a child whose turn has not ended, in words: `working`, `between turns`, `quiet` or
+/// `showing nothing yet` when the daemon has a reading, `still working` when it has none. One
+/// function, because the no-wait and deadline sentences must not disagree about which state it is.
 fn doing_word(status: &TaskStatus) -> String {
     match status.doing() {
         Some(doing) => doing.said().to_string(),
@@ -2255,33 +1772,14 @@ fn running_said(label: &str, status: &TaskStatus) -> String {
     format!("`{label}` is {}", doing_word(status))
 }
 
-/// **The one handle a session may address its parent by** — `parent`.
-///
-/// The operator's ask was *"i definitely would want parents and children to be able to chat"*,
-/// and the downward half already worked: a parent holds the handle `task` returned. The upward
-/// half did not, and the missing piece was not a door — `task_message` takes **any live
-/// session's id**, and a child is a session like any other — it was the ADDRESS. A child is told
-/// nothing about the session that started it: `Config::parent_session_id` is on its row in the
-/// store and in no disclosure, so a model that wanted to answer its parent had to be handed the
-/// id by the operator or guess it.
-///
-/// **Reserved, not resolved as a name.** It is read before [`resolve_child`] — before slugs,
-/// before handles — so a session whose id or slug is literally `parent` can never be reached by
-/// it: the word means one thing, and a model that says `parent` is answered by the tree rather
-/// than by whichever child happened to take that name. That is why this is a constant and not a
-/// convention.
-///
-/// **What it is not.** Not a widening of `task_message`'s reach (the door already took any live
-/// session) and not an authority: a child's message is recorded as the child's, so it can
-/// neither authorise an act on the parent nor be read as the operator's words. The parent sees it
-/// in its transcript as an agent's row naming the child, exactly as the child sees its parent's.
+/// The one handle a session may address its parent by: `parent`. Reserved, not resolved as a name:
+/// it is read before [`resolve_child`], so a session whose id or slug is literally `parent` can
+/// never be reached by it. Not an authority: a child's message is recorded as the child's.
 pub const PARENT_HANDLE: &str = "parent";
 
-/// **The session a `task`-shaped handle names**, with [`PARENT_HANDLE`] answered first.
-///
-/// The order is the whole of the rule: `parent` is reserved, so it is answered by
-/// [`TaskRunner::parent`] and by nothing else, and only a handle that is not that word goes on to
-/// [`resolve_child`]'s handles-and-slugs resolution.
+/// The session a `task`-shaped handle names, with [`PARENT_HANDLE`] answered first: `parent` is
+/// reserved, so [`TaskRunner::parent`] answers it and nothing else, and only another handle goes on
+/// to [`resolve_child`]'s handles-and-slugs resolution.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn addressed(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation> {
     if asked.trim() != PARENT_HANDLE {
@@ -2300,26 +1798,9 @@ fn addressed(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation>
     }
 }
 
-/// **`task_message` — say something to a session, running or not.**
-///
-/// The third thing a parent does to work it handed off: `task` starts a child,
-/// `task_result` reads it, `job_kill` stops it, and this **steers** it. Sibling by shape and
-/// by reason — see [`TaskRunner::send`] for why a message is not a second prompt in the
-/// recipient's session, for the two deliveries (a running turn and a session between turns),
-/// and for why a session that is gone is refused rather than queued.
-///
-/// **And it is not only for children.** The operator's correction to this channel, verbatim:
-/// *"well gatekeeper is not a child so we are not doing up"* — a session sends another session
-/// a message, laterally, and the handle may name **any live session**: a subagent this one
-/// started, or a peer (the session a review is hosted by, the session that queued the work).
-/// That is the same door and the same act; only the wording of the refusal was child-shaped.
-///
-/// **Both directions are the same act.** A parent addresses a child by the handle `task`
-/// returned; a child addresses the session that started it by [`PARENT_HANDLE`], which is
-/// resolved through [`TaskRunner::parent`] and never through a name lookup. The recipient's
-/// transcript gains an agent's row naming the sender either way, so a reader can tell *down*
-/// from *up* only by the name in the words — which is the shape the operator asked for:
-/// *"normal messages, like mine but attributed to agents and rendered slightly differently"*.
+/// `task_message`: say something to a session, running or not. The third thing a parent does to
+/// work it handed off: `task` starts a child, `task_result` reads it, `job_kill` stops it, and this
+/// steers it. The handle may name any live session, child or peer.
 pub struct TaskMessageTool {
     runner: Arc<dyn TaskRunner>,
 }
@@ -2391,14 +1872,9 @@ impl Tool for TaskMessageTool {
     }
 }
 
-/// `task_resume` — bring back a subagent a daemon restart left unfinished, in ONE call.
-///
-/// The operator, 2026-10-12: *"if some threshold passed - say more than 1 hours after the stop,
-/// we start to simply remind the model stating that time passed and this is what you wre running
-/// and how to restart that"*. The reminder names this call; it resumes the child in its own
-/// session (same id, same transcript, same worktree and branch, same role and model), continues
-/// its turn with a restart notice, and its result reaches this session the way any child's does.
-/// It is also the door the daemon's own automatic restore goes through.
+/// `task_resume`: bring back a subagent a daemon restart left unfinished, in one call. It resumes
+/// the child in its own session, same id, transcript, worktree, branch, role and model, and
+/// continues its turn with a restart notice.
 pub struct TaskResumeTool {
     runner: Arc<dyn TaskRunner>,
 }

@@ -1,8 +1,6 @@
-//! `lsp` — run a language server and read diagnostics.
-//!
-//! A minimal LSP client: spawn the server for a language, do the handshake, open a
-//! file, pull `textDocument/diagnostic`, and return the diagnostics. Best-effort —
-//! a server that is not installed refuses by name rather than pretending.
+//! `lsp`: run a language server and read the diagnostics for one file.
+//! A minimal client: spawn the server, handshake, open the file, pull `textDocument/diagnostic`.
+//! Best effort: a server that is not installed refuses by name rather than pretending.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -13,7 +11,7 @@ use serde_json::{Value, json};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-/// language -> argv of its server. Best-effort; `which` decides whether it runs.
+/// language -> argv of its server. A server that is not installed fails at the spawn.
 #[derive(Debug, Clone)]
 pub struct LspConfig {
     pub servers: BTreeMap<String, Vec<String>>,
@@ -253,8 +251,8 @@ impl Tool for LspTool {
                 );
             }
         };
-        // **The workspace, not the backend's root** (R18): a language server rooted at
-        // `/` is a server that indexes the whole host instead of the project.
+        // The workspace, not the backend's root: a language server rooted at `/` would
+        // index the whole host instead of the project.
         let root = ctx
             .backend
             .workspace_path()
