@@ -16,12 +16,9 @@ pub(crate) struct OperatorAsk {
     pub(crate) options: Vec<String>,
 }
 
-/// A question card the person put away with Esc: still pending, nothing sent.
-///
-/// Esc is not an answer of any kind, not even an abstention; it takes the card off the screen and
-/// keeps its decision, the words typed under it and the row the highlight was on, so alt-a puts it
-/// back exactly as it was ([`App::bring_back_question`]). `session_id` is where it was asked, so a
-/// switch never brings a card back over the wrong conversation.
+/// A question card the person put away with Esc: still pending, nothing sent. Esc is not an answer of any kind,
+/// and it keeps the decision, the words typed under it and the highlight, so alt-a puts it back. `session_id` is
+/// where it was asked, so a switch never brings it back over the wrong conversation.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AwayCard {
     pub(crate) session_id: String,
@@ -48,10 +45,8 @@ impl AwayCard {
 }
 
 impl App {
-    /// **The operator's rows, out of the union the daemon serves.** The head keeps no second
-    /// list: the daemon persists them, every head sees them, and this is the one place that says
-    /// which half of that list the operator wrote. Sending is the whole list, so a divergence
-    /// between a head's copy and the store is impossible to accumulate.
+    /// The person's rows, out of the union the daemon serves: the head keeps no second list, since the daemon
+    /// persists them and every head sees them, and sending is the whole list, so a divergence cannot accumulate.
     pub(crate) fn operator_todos(&self) -> Vec<letibot_sessionlog::event::TodoEntry> {
         self.todos
             .iter()
@@ -98,10 +93,9 @@ impl App {
         out
     }
 
-    /// Open the question card for a row that waits on the person: `content` names the row, `None`
-    /// takes the first. It is the same card `ask_user_question` draws, with the row's options as its
-    /// choices, and [`App::settle_question`] sends the answer to the row rather than to the daemon.
-    /// No decision is open on the wire, so a resync takes it down and alt-a puts it back.
+    /// Open the question card for a row that waits on the person, or the first one. It is the same card
+    /// `ask_user_question` draws, with the row's options as its choices, and the answer goes to the row rather than
+    /// to the daemon, so a resync takes it down.
     pub(crate) fn open_operator_ask(&mut self, content: Option<&str>) {
         let asks = self.operator_asks();
         let ask = match content {
@@ -109,10 +103,8 @@ impl App {
             None => asks.into_iter().next(),
         };
         let Some(ask) = ask else {
-            // **A board already read says `nothing`, not `still being read`** — the settings row
-            // may still quote a question the row no longer carries (see [`App::asks_board`]),
-            // and telling the operator to press alt-a again would be the same stale sentence
-            // twice.
+            // A board already read says `nothing` and not `still being read`: the settings row may still quote a
+            // question the row no longer carries, and telling the person to press alt-a again repeats a stale sentence.
             let unread = self.asks_setting.is_some() && !self.board_read_here();
             self.say(if unread {
                 "the board is still being read — alt-a again in a moment"
@@ -139,10 +131,8 @@ impl App {
             self.redraw = true;
             return;
         }
-        // **What was put away for this row comes back with it** — the words and the highlight —
-        // provided it is still the same question (a row that asks something new starts clean).
-        // Looked up after the front card is stashed, which may itself be this row's.
-        // Another row's card on the screen is put away, not thrown away: its words go with it.
+        // What was put away for this row comes back with it, the words and the highlight, provided it is still the
+        // same question: a row that asks something new starts clean. Looked up after the front card is stashed.
         if self
             .open
             .first()
@@ -257,13 +247,9 @@ impl App {
         }
     }
 
-    /// Esc on a question card: put it away and answer nothing. The question stays pending, since it
-    /// is neither an abstention nor a denial, and the resident line keeps saying so.
-    ///
-    /// The words go with the card: while a question is up the composer is its field, so what is
-    /// typed there is a draft that would otherwise be sent to the model, and alt-a puts it back with
-    /// the highlight. A permission card is put away the same way, so Esc means one thing on every
-    /// decision card instead of reaching the editor behind it.
+    /// Esc on a question card: put it away and answer nothing, since it is neither an abstention nor a denial, and
+    /// the resident line keeps saying so. The words go with the card: while a question is up the composer is its
+    /// field, so what is typed there is a draft that would otherwise be sent as a prompt.
     pub(crate) fn put_question_away(&mut self) {
         let Some(d) = self.open.first() else {
             return;
@@ -303,10 +289,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// **A resync or a switch replaces the open list with the daemon's** — and this head's own
-    /// todo cards are not on it. They are put away (with the front card's words) rather than
-    /// dropped (R90.14): dropped, the card vanished and the composer kept the words typed for it,
-    /// so the next Enter sent a half-typed answer to the model as a prompt.
+    /// A resync or a switch replaces the open list with the daemon's, and this head's own todo cards are not on it:
+    /// they are put away with the front card's words rather than dropped, or the card vanished and the composer kept
+    /// the words typed for it.
     pub(crate) fn stash_todo_cards(&mut self) {
         let mut stashed = false;
         if self
@@ -337,11 +322,9 @@ impl App {
         }
     }
 
-    /// **The board moved: a todo card whose row no longer asks is closed** (R90.12), and one put
-    /// away is forgotten. Another head answered the row, the model completed it or changed the
-    /// question — and the card stayed up, so answering it sent `AnswerTodo` for a question
-    /// nobody was asking. A row still asking the same question keeps its card, its options
-    /// refreshed. Run on every board this head reads for its own session.
+    /// The board moved, so a todo card whose row no longer asks is closed and one put away is forgotten: another head
+    /// answered the row or the model completed it, and answering a card nobody was waiting on sent an answer for a
+    /// question that was gone.
     pub(crate) fn prune_todo_asks(&mut self) {
         let asks = self.operator_asks();
         let live = |req_id: &str, question: &str| {
@@ -443,12 +426,9 @@ impl App {
         true
     }
 
-    /// The front card changed, or did not: run after every key and every frame.
-    ///
-    /// The highlight is reset exactly when `open[0]` is a different card from the one it was reset
-    /// for, so a decision arriving behind the card on screen leaves it alone. A question arriving
-    /// over composer text does not take that text as its answer: the words are held
-    /// ([`App::held_line`]) and come back when no question is in front.
+    /// The front card changed, or did not: run after every key and every frame. The highlight is reset exactly when
+    /// `open[0]` is a different card, and a question arriving over composer text holds that text rather than taking
+    /// it as its answer.
     pub(crate) fn sync_front(&mut self) {
         let front = self
             .open
@@ -530,15 +510,9 @@ impl App {
         }
     }
 
-    /// **alt-a: bring back the oldest pending question of either kind.**
-    ///
-    /// One key for both kinds because the resident line names one key, and the operator should
-    /// not have to know whose question it is to get it back. *Oldest* is read as the order the
-    /// two can actually be compared in: a model's question put away comes first — it is the one
-    /// with a clock, holding a running call — oldest put away first; then a todo row whose card
-    /// was put away (its draft comes back with it); then the first row waiting on the operator,
-    /// in board order, which is what alt-a always opened. Todo rows carry no time of asking, so
-    /// board order is the only order they have.
+    /// alt-a: bring back the oldest pending question of either kind. One key for both, since the resident line names
+    /// one key, and oldest is read as the order the two can be compared in: a model's question first, since it has a
+    /// clock, then a todo row's card, then the first row waiting.
     pub(crate) fn bring_back_question(&mut self) {
         // **The prompt card put away comes back first** (R90.5): it is the operator's own
         // command blocked on a line, and alt-a was no way back to it at all — only `!send`.
@@ -606,11 +580,8 @@ impl App {
         self.open_operator_ask(kept.as_deref());
     }
 
-    /// **Open the new-todo card**, and put the composer where the card expects it.
-    ///
-    /// **The composer is the field**, so it is emptied and handed to the card: a half-typed prompt
-    /// left under a card whose Enter adds an item is the shape that costs somebody a message, which
-    /// is the same reason `mode_confirm` takes the keyboard. leticl's `%todo-draft-open`.
+    /// Open the new-todo card, and put the composer where it expects it: the composer is the field, so it is emptied
+    /// and handed over, since a half-typed prompt left under a card whose Enter adds an item costs somebody a message.
     pub(crate) fn open_todo_card(&mut self) {
         if self.session_id.is_empty() {
             self.say("not attached to a session yet");
@@ -658,15 +629,8 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Is a starter-todo seed due for THIS project?** The three-part gate, in one place
-    /// because the attach and the seed itself both ask it — a second spelling is how a project
-    /// gets seeded by one reading and skipped by the other.
-    ///
-    /// The gate is leticl's `%seed-operator-todos` verbatim: the switch is on, the workspace is
-    /// known (a project it cannot name is not a project it may put rows into — a head loads
-    /// before the socket exists), and the record does not hold this workspace. **The record, not
-    /// the list**: a starter row the operator deleted must not come back, which is what an *is
-    /// the list empty* test would do on every restart.
+    /// Is a starter-todo seed due for this project? The switch is on, the workspace is known and the record does not
+    /// hold it. The record and not the list, since a starter row the person deleted must not come back.
     pub(crate) fn todo_seed_due(&self) -> bool {
         self.todo_template != crate::prefs::TodoTemplate::Off
             && !self.wiring.workspace.is_empty()
@@ -675,10 +639,9 @@ impl App {
                 .contains(&todo_seed_key(&self.wiring.workspace))
     }
 
-    /// Where the starter todos come from: `todo_template`'s three shapes as a path — leticl's
-    /// `todo-template-path`, which its own docstring rules: *“one function because the setting
-    /// has three shapes and two callers must not spell them differently.”* `None` when the
-    /// switch is off or this head has no config directory to read a default from.
+    /// Where the starter todos come from: `todo_template`'s three shapes as a path, one function because the setting
+    /// has three shapes and two callers must not spell them differently. `None` when the switch is off or this head
+    /// has no config directory.
     pub(crate) fn todo_template_file(&self) -> Option<std::path::PathBuf> {
         match &self.todo_template {
             crate::prefs::TodoTemplate::Off => None,
@@ -691,18 +654,9 @@ impl App {
         }
     }
 
-    /// Copy the template `TODO.md`'s items onto the person's half of the board, the moment the head
-    /// has learned its list.
-    ///
-    /// The template is parsed by the same reader the repo section uses, so a starter list is written
-    /// in the format already used by hand. Items only: the checkbox rows and not the headings, with
-    /// `[x]` seeding a completed row and anything else an open one. The body rides in `content`,
-    /// since this head keeps no second list and the wire has one field, and body lines join with a
-    /// middle dot so each stays a segment.
-    ///
-    /// Once per project and marked even when nothing was added, or every start re-reads the file; a
-    /// missing file is not marked, so the one about to be written still gets its chance. Refusals are
-    /// notes rather than silences, and the rows go out through `/todo TEXT`'s own door.
+    /// Copy the template `TODO.md`'s items onto the person's half of the board, the moment the head has learned its
+    /// list: parsed by the same reader the repo section uses, items only, with `[x]` seeding a completed row. A body
+    /// line joins into `content`, since this head keeps no second list.
     pub(crate) fn seed_todos(&mut self) {
         if !self.todo_seed_due() {
             return;
@@ -736,10 +690,9 @@ impl App {
             return;
         }
         let mut mine = self.operator_todos();
-        // **A template item over the title cap is NOT seeded, and it is said** — the seed's own rule
-        // (*"refusals are notes, not silences"*), because from the operator's side a row that
-        // silently did not arrive is indistinguishable from a file that was never read. The title is
-        // what is measured (`title_refusal`), and the body joined after ` — ` below is the DETAIL.
+        // A template item over the title cap is not seeded, and it is said: from the person's side a row that
+        // silently did not arrive is indistinguishable from a file never read, and the rest of the template still
+        // lands.
         let mut skipped: Vec<(String, String)> = Vec::new();
         for r in &items {
             let mut content = r.text.trim().to_string();
@@ -795,12 +748,9 @@ impl App {
         self.say(&said);
     }
 
-    /// **Record that this project has had its starter todos** — and do it BEFORE the send, for
-    /// leticl's own reason: a record that waits for an acknowledgement re-fires on the next
-    /// start if the write failed quietly, and the operator gets the duplicates this feature
-    /// exists to avoid. The write is a UNION with whatever the file holds
-    /// (`merge_todo_seed`) because two heads share one `head.toml` and a dropped record is a
-    /// project that re-seeds.
+    /// Record that this project has had its starter todos, and do it before the send: a record that waits for an
+    /// acknowledgement re-fires on the next start if the write failed quietly, and the person gets the duplicates
+    /// this feature exists to avoid.
     pub(crate) fn mark_seeded(&mut self) {
         let key = todo_seed_key(&self.wiring.workspace);
         if !self.todo_seed.contains(&key) {
@@ -810,20 +760,8 @@ impl App {
             let mut p = self.prefs();
             p.todo_seed = crate::prefs::merge_todo_seed(&path, &self.todo_seed);
             self.todo_seed = p.todo_seed.clone();
-            // **And the retired set, for the reason `merge_todo_seed` exists one line up.**
-            //
-            // `prefs()` carries THIS head's `dismissed` and `prefs::save` writes the whole file,
-            // so this write is a REPLACEMENT of the record that remembers which notices were
-            // collapsed — and a head that has dismissed nothing yet writes an empty list over
-            // another head's. The notes that head retired then come back: on its next read of the
-            // file (`refresh_retired`) and in full in any head that starts afterwards. A seed is a
-            // write nobody asked for, so it cannot be the one that forgets — the union is the same
-            // rule `save_prefs(RetiredWrite::Union)` follows, and this path is the only write in
-            // the head that does not go through it.
-            //
-            // **The merged set is written and NOT adopted.** Another head's dismissals are news
-            // to this one, and `refresh_retired` is where that news is taken — where the operator
-            // is looking or acting — not at a seed that runs on an attach.
+            // And the retired set, for the reason `merge_todo_seed` exists: `prefs()` carries THIS head's `dismissed`
+            // and `prefs::save` writes the whole file, so this write replaces the record of which notes were retired.
             p.retired = crate::prefs::merge_retired(&path, &self.dismissed);
             if let Err(e) = crate::prefs::save(&path, &p) {
                 self.say(&format!("seed not recorded: {e}"));
@@ -831,14 +769,8 @@ impl App {
         }
     }
 
-    /// **How many rows the done group holds right now** — both halves of the board, whichever way
-    /// the group is folded.
-    ///
-    /// **One number, and it does not move with the fold.** The line that draws it is one line
-    /// speaking for the pane, and it says the same thing open or shut (`done (3)` / `done (3) · d
-    /// shows them`): a reader who opens the group and sees a different number reads that as a bug.
-    /// The toggle's notice is the other reader, and it needs the count with the group open too —
-    /// *"the 3 done rows are back"* is a sentence about a number that already exists.
+    /// How many rows the done group holds right now, both halves of the board whichever way the group is folded:
+    /// one number, and it does not move with the fold, since the line speaks for the whole pane.
     pub(crate) fn todos_done_count(&self) -> usize {
         use letibot_sessionlog::event::TodoStatus;
         let mine = self
@@ -863,20 +795,9 @@ impl App {
             .cloned()
     }
 
-    /// **`d` on the todos pane: fold the done group away, or open it.**
-    ///
-    /// # The cursor is carried across BY IDENTITY, not by its index
-    ///
-    /// `todos_sel` is an index into [`App::todos_stops`], and folding takes entries OUT of that
-    /// list — so an index kept across the toggle lands on whichever row slid into the hole, which
-    /// is the same two-enumerations wound the stops exist to close, arriving from the other side.
-    /// The stop is therefore read before the switch moves and found again among the stops that are
-    /// left; only a stop that is now folded away falls back to the index, clamped, which puts the
-    /// cursor on the row that followed it.
-    ///
-    /// **Opening the group puts its rows back at the END of the list** ([`board_drawn`]), so a
-    /// cursor found by identity is the cursor that stays on the row the reader was looking at, and
-    /// not one that slid by however many rows the group holds.
+    /// `d` on the todos pane: fold the done group away, or open it. The cursor is carried across by identity and
+    /// not by its index, since folding takes entries OUT of `todos_stops` and an index kept across it lands on
+    /// whichever row slid into the hole.
     pub(crate) fn toggle_todos_fold_done(&mut self) {
         let was = self.selected_todo_stop();
         self.todos_fold_done = !self.todos_fold_done;
@@ -911,45 +832,9 @@ impl App {
         self.say(&format!("{line}{saved}"));
     }
 
-    /// **EVERY ROW OF THE TODOS PANE THE CURSOR MAY LAND ON, in the order the pane draws them** —
-    /// leticl's `todos-stops`, and the ONE enumeration everything about the cursor reads.
-    ///
-    /// Its docstring is the operator's two reports, and both were the same defect: R44's first cut
-    /// spread this over a `-1` sentinel and the repo's own stop indices, and then *"arrows dont go
-    /// here"* — the cursor moving to a row whose line the pane computed from another list's
-    /// arithmetic — and *"mouse doesnt click"* — a click on the add row computing a negative index,
-    /// thrown away. **Two enumerations was the defect.**
-    ///
-    /// Four kinds, and the tag carries IDENTITY rather than position: a position is a fact about
-    /// the list when it was DRAWN, and a list changes between a draw and a keypress (a `TodosUpdated`
-    /// arriving, a row removed), so every action would land on whatever took its neighbour's place.
-    ///
-    /// **The model's rows ARE stops, and Enter on one READS it.**
-    ///
-    /// They were not, and the reason was sound while it held: no key acted on one — the model
-    /// moves its own row's status and the operator may not — and a cursor that stops where no key
-    /// acts is a cursor the operator presses keys into and nothing happens. **Enter now acts on
-    /// every row: it opens the row's whole text** ([`App::todos_open`]), which is the operator's
-    /// own report against this pane — *"in todo list i cant expand your todo items - only
-    /// truncated titles available"*, about the model's rows, which are the long ones. So the rule
-    /// is kept rather than bent: a stop is where a key acts, and reading is an act. **Reading is
-    /// not moving** — nothing here changes a row's state, which is the R44 boundary that still
-    /// holds.
-    ///
-    /// The repo's headings are still skipped, and that is not the same rule broken: the rule is
-    /// *a stop must have a key*, not *every key must have a row*. A heading is a section label
-    /// rather than a row with words of its own, and a reader who wants the section has the items
-    /// under it.
-    ///
-    /// **A folded row is not a stop**, and that is the same rule again from the other side: while
-    /// `d` has the done group shut, its rows are not drawn ([`board_drawn`],
-    /// [`repo_drawn`]), so a cursor that could still stop on one would be a cursor on a row nobody
-    /// can see — and both readers of this list (the arrows and a click) take it from here.
-    ///
-    /// **The ORDER is [`board_drawn`]'s and [`repo_drawn`]'s too**, and that is the half a
-    /// docstring cannot hold on its own: the done rows are no longer where the board has them but
-    /// gathered at the end, so a walk over the board's own order would be a second enumeration of
-    /// the order as well as of the rows — the same defect one layer down.
+    /// Every row of the todos pane the cursor may land on, in the order the pane draws them, and the ONE enumeration
+    /// everything about the cursor reads. Two readings of where the cursor is were the defect the operator reported
+    /// twice.
     pub(crate) fn todos_stops(&self) -> Vec<TodoStop> {
         let mut out = vec![TodoStop::Add];
         for line in board_drawn(&self.todos, self.todos_fold_done) {
@@ -971,13 +856,8 @@ impl App {
         out
     }
 
-    /// **The pane row the stop at the cursor was DRAWN on**, read out of
-    /// [`App::todos_stop_rows`] — the record the pane wrote while drawing, and not arithmetic over
-    /// the lists it drew from. leticl's `todos-lines` second value, an `aref` of the third.
-    ///
-    /// The clamp is the one thing here that is not a read: a list can change under the cursor — a
-    /// `TodosUpdated` arriving, a row removed, another workspace — and a key pressed against a
-    /// shorter list must land on a row rather than on an index that no longer exists.
+    /// The pane row the stop at the cursor was drawn on, read out of [`App::todos_stop_rows`], which is the record
+    /// the pane wrote while drawing and not arithmetic over the lists it drew from.
     pub(crate) fn todos_row_of(&self) -> usize {
         let at = self
             .todos_sel
@@ -995,19 +875,11 @@ impl App {
         }
     }
 
-    /// Re-read `TODO.md` when it has changed since the last read, and not
-    /// otherwise. Called on open and before every draw of the pane.
-    ///
-    /// A failed `stat` — the file was deleted, or was never there — reads again,
-    /// so the pane's own "no TODO.md" line is the answer and stays current if one
-    /// appears. That costs a failed `open` per draw in the case where there is
-    /// nothing to show, which is the case nobody is watching.
+    /// Re-read `TODO.md` when it has changed since the last read, and not otherwise: called on open and before every
+    /// draw. A failed `stat` reads again, so the pane's *no TODO.md* line is said either way.
     pub(crate) fn refresh_repo_todos(&mut self) {
-        // **Resolved, like the read it guards** — the mtime watch and the parse must look at the
-        // same file, or a nested layout re-reads on every draw (the watch misses, so `now` is
-        // None, so the cache never holds). Both ask `todos_path`, which is the list's own
-        // question: the header's branch is `project_dir`'s, and a folder's `TODO.md` says
-        // nothing about where the repository is.
+        // Resolved, like the read it guards: the mtime watch and the parse must look at the same file, or a nested
+        // layout re-reads on every draw. Both ask `todos_path`.
         let path = crate::gitfield::todos_path(&self.wiring.workspace);
         let now = std::fs::metadata(&path)
             .ok()
@@ -1020,13 +892,8 @@ impl App {
     }
 }
 
-/// **What a todo row waits on that this head can open** — a job, or a child session. The
-/// operator: *"\"waits on j97\" - make j97 a link to the real job, also render job slug"*.
-///
-/// The row's `when` job condition when it has one, else its first `needs` edge on a job or a
-/// child — the same choice the pane's `waits on …` has always drawn, so what is drawn and what
-/// a click opens are one reading of the row. A row waiting on the operator is not one of these:
-/// its act is the question card, which Enter already opens.
+/// What a todo row waits on that this head can open: a job, or a child session, and the handle is a link to the
+/// real thing. The row's `when` job condition when it has one, else its first `needs` edge on a job or a child.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WaitOn {
     /// A job handle, `j97`.
@@ -1048,10 +915,8 @@ pub(crate) fn wait_of(t: &letibot_sessionlog::event::TodoEntry) -> Option<WaitOn
     }
 }
 
-/// **One drawn `waits on …` link**: the pane row it is on, the columns its words cover
-/// (`from..to`, the pane's own columns, only the part that was not cut off), the row it belongs
-/// to — **its place among the session rows the pane DREW**, which is `1 + todo` of the stops, not
-/// its index on the board — and what it opens.
+/// One drawn `waits on …` link: the pane row it is on, the columns its words cover, and the row it belongs to,
+/// which is its place among the session rows the pane DREW and not an index into the board.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WaitLink {
     pub(crate) row: usize,
@@ -1062,10 +927,8 @@ pub(crate) struct WaitLink {
 }
 
 impl App {
-    /// **The words a wait is drawn as** — `j97 · pg-timing` for a job the head knows a slug for,
-    /// the bare handle otherwise; a child as the subagents pane names it (its short id, and its
-    /// role when the head knows one) rather than the whole `s-…-sub-…` id, which the row's
-    /// detail view still carries.
+    /// The words a wait is drawn as: a job with the slug the head knows, the bare handle otherwise, and a child as
+    /// the subagents pane names it rather than the whole id, which the pane could not fit.
     pub(crate) fn wait_label(&self, w: &WaitOn) -> String {
         match w {
             WaitOn::Job(h) => match self.job_slug(h) {
@@ -1124,18 +987,8 @@ impl App {
         })
     }
 
-    /// **Open what a row waits on** — the act a click on its `waits on …` link and `w` on the
-    /// selected row share.
-    ///
-    /// * **A job opens its output**, the view Enter on that job in the jobs pane opens — the
-    ///   window over the job's own bytes, running or ended, with Esc back to the todos.
-    /// * **A job the daemon's table does not list** opens its completion notice whole when the
-    ///   conversation has one (the popup a click on the notice opens), and otherwise says so and
-    ///   opens nothing: a handle is matched exactly, so no other job can be opened in its place.
-    /// * **A child is read without leaving** — the subagents pane's `p`, the peek — since a link in
-    ///   a list of rows is for looking, and going into the child is the subagents pane's Enter.
-    ///   The id is the daemon's to resolve; one it does not hold is refused by name, as `/peek`
-    ///   is.
+    /// Open what a row waits on, which is what a click on its link and `w` on the selected row share: a job opens
+    /// its output, the same window Enter on that job in the jobs pane opens, and a child opens its session.
     pub(crate) fn open_wait(&mut self, w: &WaitOn) -> Option<Action> {
         self.redraw = true;
         if self.session_id.is_empty() {
@@ -1201,26 +1054,9 @@ impl App {
     }
 }
 
-/// **The title cap, at the OPERATOR's own door** — the refusal `/todo TEXT`, the new-todo card and
-/// the template seed all ask, so one rule is spelled once for the person the same way
-/// `todo_write` spells it for the model.
-///
-/// The rule and the number are `letibot_tokencore::store::TODO_TITLE_MAX`'s, and the head reads them
-/// from the WIRE's copy of them (`letibot_sessionlog::event`) because that is where every other
-/// todo fact the head holds comes from — `TodoEntry`, `TodoStatus`, `TodoBy` — and because the head
-/// does not link the store: the crate is a dev-dependency here (the apparatus machinery), and the
-/// TUI binary has no business pulling rusqlite in for a constant. The wire's copy is pinned to the
-/// store's by a test in that crate, which does see both. The arithmetic: the operator's terminal is
-/// 160 cells, the todos pane draws a row at 156, and a row's own furniture — the mark, its `/todo`
-/// number, `— model` — takes 21, so a longer title is CUT at the pane's right edge and read by
-/// nobody. What is capped is the TITLE, so the part after ` — ` is the row's detail and is not
-/// capped — which is the shape the card's own Detail field already writes.
-///
-/// **It is asked where a row is CREATED and not where the half is sent.** `SetOperatorTodos`
-/// replaces the operator's half wholesale, so the rows that come back with it include every row
-/// written before this cap — a check at the door would refuse the operator's own `/todo done 2`
-/// because an old row is long, and would make a row older than the cap impossible to close. The
-/// head is the writer of the operator's words, and this is the moment they are written.
+/// The title cap at the person's own door: the refusal `/todo TEXT`, the new-todo card and the template seed all
+/// ask, so one rule is spelled once for the person the way `todo_write` spells it for the model. The number is the
+/// token crate's.
 pub(crate) fn title_refusal(text: &str) -> Option<String> {
     use letibot_sessionlog::event::{TODO_TITLE_MAX, todo_title};
     let title = todo_title(text);
@@ -1239,47 +1075,19 @@ pub(crate) fn title_refusal(text: &str) -> Option<String> {
 pub(crate) enum TodoStop {
     /// The `[+] add todo item` control, at the head of the list.
     Add,
-    /// **One of the operator's own rows, BY ITS WORDS.** There is no id on the wire —
-    /// `TodoEntry` is `content`, `status`, `by`, and the operator has ruled out a bump for one — so
-    /// the words are the identity, which is the same key `/todo done N` uses. A row renamed is a
-    /// different row, and that is the honest reading of a list with no ids.
+    /// One of the person's own rows, by its words: there is no id on the wire, so the words are the identity, which
+    /// is the same key `/todo done N` uses. A row renamed is a different row, and the overlay says so.
     Mine(String),
-    /// **One of the MODEL's rows — `Mine`'s other half, by its words**, and the rows the operator's
-    /// report was about: *"in todo list i cant expand your todo items"*. They are stops now because
-    /// Enter READS a row ([`App::todos_open`]) and a stop is where a key acts; nothing here moves
-    /// one, which is the boundary that used to be the reason they were skipped (see
-    /// [`App::todos_stops`]).
-    ///
-    /// It carries the words rather than the author, and that is the board's own rule: a row's
-    /// identity is its exact text, and the lookup that draws the overlay takes the first row with
-    /// those words that is not the operator's — which is the same row, because the stops are built
-    /// in the list's own order. A `Parent <id>` or a `queue` row is one of these too: none of the
-    /// three is the operator's to move.
+    /// One of the model's rows, by its words, and the rows the operator's report was about: they are stops now
+    /// because Enter READS a row and a stop is where a key acts.
     Theirs(String),
     /// A row of the workspace's `TODO.md`, by index into `repo_todos` — the file's own order IS
     /// its identity, because the pane re-reads the file.
     Repo(usize),
 }
 
-/// **One line of the session's list, in the order the pane draws it** — a board row, or the
-/// `done (N)` line the finished rows are gathered under.
-///
-/// # Why the order is a value
-///
-/// The operator: *"done todos still not in their own group"*. The rows still owed have to come
-/// first and the done ones after them, and **that reordering is exactly where a second enumeration
-/// is born**: the pane drawing the board's order while the stops walk it, one line apart, is the
-/// defect [`App::todos_stops`] carries a monument to — *"arrows dont go here"* — and it would
-/// arrive here from the other side, the ORDER instead of the rows. So the order is computed once
-/// ([`board_drawn`], [`repo_drawn`]) and both readers walk it.
-///
-/// # And why the cursor is not a stop on the group line
-///
-/// The line speaks for rows and acts on none: `d` is the key that folds it, and it is the pane's
-/// key rather than a row's, so a cursor that could land here would be a stop where no key of the
-/// ROW acts. rano's sibling panes make their `finished (N)` line a stop with Enter bound to the
-/// fold; this pane's fold is `d` — the operator's own key, and the one the bar names — and a second
-/// door onto it from the cursor would be a key the bar does not mention.
+/// One line of the session's list, in the order the pane draws it: a board row, or the `done (N)` line the
+/// finished rows are gathered under. The order is a value because the done rows go to a group of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoardLine {
     /// A board row, by its index in [`App::todos`].
@@ -1289,24 +1097,9 @@ pub(crate) enum BoardLine {
     DoneGroup { done: usize },
 }
 
-/// **The board as the pane draws it**: every row still owed in board order, the `done (N)` line,
-/// then the done rows — or, folded, nothing of them but the line.
-///
-/// **Done is `completed` and only `completed`.** A row set aside and a row struck off are on the
-/// board because they are NOT finished — setting one aside is the operator saying *not yet*, and
-/// striking one off keeps it in history rather than removing it — so a group that swept them in
-/// with the finished rows would bury the two states the operator put there by hand. They stay in
-/// the first half, where they were.
-///
-/// **The done rows keep BOARD order, not completion order.** The wire carries no completion time —
-/// `TodoEntry` is words, status, author, a `when` and its `needs` — so *newest last* is not a fact
-/// this head has. Board order is one it does have, and it is the one a reader can check against
-/// the board the daemon served.
-///
-/// **The rows' NUMBERS are not this function's business**, and that is deliberate: a number is the
-/// row's place on the whole board (`/todo done N` takes it), and it is counted over the board —
-/// [`crate::ui::panes::todos`], which draws them — precisely so that a row moving in here does not
-/// renumber the ones left.
+/// The board as the pane draws it: every row still owed in board order, the `done (N)` line, then the done rows,
+/// or nothing of them but the line when folded. Done is `completed` and only `completed`, since a row set aside and
+/// one struck off are on the board for not being finished.
 pub(crate) fn board_drawn(
     todos: &[letibot_sessionlog::event::TodoEntry],
     folded: bool,
@@ -1333,11 +1126,8 @@ pub(crate) fn board_drawn(
     out
 }
 
-/// **One line of the repository's list, in the order the pane draws it.**
-///
-/// The file's half is grouped the same way and one step less far: a `TODO.md` is sections, and a
-/// section's items belong to the heading over them — so the grouping is per SECTION, and each
-/// heading stays where the file has it, with its own cookie (`[2/7]`) counting the file.
+/// One line of the repository's list, in the order the pane draws it: the file is grouped per SECTION, and a
+/// section's items belong to the heading over them, one step less far than the session's own list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RepoLine {
     /// A `##` heading — the file's outline, drawn where the file has it, and never a stop.
@@ -1350,12 +1140,8 @@ pub(crate) enum RepoLine {
     DoneGroup { done: usize, indent: usize },
 }
 
-/// **The repository's `TODO.md` as the pane draws it** — each section's heading, its items still
-/// owed in file order, its `done (N)` line, and the items the file marks `[x]`.
-///
-/// A heading is not a group of its own: it is the file's own label and it is drawn in place, with
-/// the file's cookie. Empty sections stay empty (the parser gives them a heading and no items, and
-/// org does not mark an empty one done either).
+/// The repository's `TODO.md` as the pane draws it: each section's heading, its items still owed in file order, its
+/// `done (N)` line and the items the file marks `[x]`. A heading is drawn in place and is not a group of its own.
 pub(crate) fn repo_drawn(rows: &[TodoRow], folded: bool) -> Vec<RepoLine> {
     let mut out = Vec::with_capacity(rows.len() + 1);
     let mut i = 0;
@@ -1392,16 +1178,8 @@ pub(crate) fn repo_drawn(rows: &[TodoRow], folded: bool) -> Vec<RepoLine> {
     out
 }
 
-/// **A todo being filed from the card** — its fields, and which one owns the composer.
-///
-/// The FOCUS was a `bool` while there were two fields, and a third is exactly what a bool cannot
-/// hold: *typing the detail?* answers nothing about a `when` field, so every reader of that flag
-/// would have grown a second one and the two could disagree. One enum, and Tab cycles it.
-///
-/// **The composer holds the focused field and the draft holds the rest**, which is what keeps the
-/// row being typed from being a keystroke behind — leticl's `%todo-draft-focus`, and the reason
-/// [`TodoDraft::take`] exists: every key that LEAVES a field commits the composer into it first, so
-/// nothing typed is ever lost to a Tab.
+/// A todo being filed from the card: its fields, and which one owns the composer. The focus was a `bool` while
+/// there were two fields, and a third is what a bool cannot hold.
 pub(crate) struct TodoDraft {
     pub(crate) title: String,
     pub(crate) detail: String,
@@ -1462,10 +1240,8 @@ impl TodoDraft {
     }
 }
 
-/// **A workspace's key in the seeded-projects record** — its FNV-1a hash, in `note_key`'s
-/// shape: the record lives in `head.toml` as a comma list, so a key that contains a comma or
-/// whitespace (as a path can) would corrupt the list, and hashing is the same answer
-/// `note_key` gives for the same reason.
+/// A workspace's key in the seeded-projects record: its FNV-1a hash, in `note_key`'s shape, since the record is a
+/// comma list in `head.toml` and a path may contain a comma.
 pub(crate) fn todo_seed_key(ws: &str) -> String {
     format!("{:016x}", fnv1a(ws))
 }
