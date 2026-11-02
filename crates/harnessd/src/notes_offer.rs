@@ -1,80 +1,6 @@
-//! **A note that offers itself** — the read hint, composed at the tail of the
-//! request and never in it.
-//!
-//! The operator's ask: *"so, regarding digest - one liner without heading is bad,
-//! and the truncation is also bad. but we cant let the notes consume entire
-//! context lol. so the question is, how model can make a choice to consult notes
-//! on its own… ideal solution is of course that a note is offered where
-//! appropriate."* And the ruling on the mechanism: *"we can do a simple
-//! similarity match over corpus - like having a vector db over notes. and then
-//! inject hints and similarity score"*.
-//!
-//! # The one constraint that decides where this lives
-//!
-//! The notes section is in the **cached prefix**, and changing anything in the
-//! prefix invalidates every cached token after it — `standing_notes`'s own
-//! measurement, from `docs/compaction.md` §2/§3: *144.6 s to re-prefill 150k
-//! tokens against 0.8 s for a cache hit*. So an offer is
-//!
-//! * **never a note injected into the prompt** — that is a prefix change and it
-//!   would re-prefill the conversation to say *"there is a note you might want"*;
-//! * **and not a transcript row either**, which is the sharper half. The module
-//!   that landed the index put the hint here: *"The delivery is a transcript row,
-//!   never the prefix."* The operator's ruling is further out: an offer is
-//!   **provisional**, and its outcome keeps it or kills it — *"we offer a note and
-//!   if model takes it - good, if it doesnt follow up with the note read - we can
-//!   discard the offer from context altogether"*. A row cannot be un-said; an
-//!   assembly can be recomposed. So the offer is composed **per round by the
-//!   request assembly**, handed to the engine as a trailing item that is not in
-//!   `session.items`, and dropped entirely when the round does not take it.
-//!
-//! *An offer that was taken needs no special handling:* the model's `read` is an
-//! ordinary tool call, its result is an ordinary transcript row, and the note's
-//! text is now permanent context. The offer's only job was to make the fetch
-//! happen.
-//!
-//! # The four rules, which are what keep it from becoming a nag
-//!
-//! The design's own lesson, learned from the digest's teasers: *"a hint is a nag
-//! by another name. It must be **earned** (a score floor), **rare** (once per note
-//! per turn at most), and **silent when unsure** — the first time a reader learns
-//! to ignore the hint line, the feature is dead."*
-//!
-//! 1. **Earned.** [`OFFER_FLOOR`], measured — see `letibot_tools::similarity`'s
-//!    module doc for the numbers, and the honest gap between them.
-//! 2. **Rare.** At most one note per round, and a note once per turn. A round
-//!    that already offered a note does not offer a second; a note already offered
-//!    this turn is not offered again even if it is still the best match.
-//! 3. **Silent when unsure.** No score over the floor, no line. A corpus that is
-//!    empty, a subject with no terms, a note already read in this session — all
-//!    of them are silence rather than a weaker hint.
-//! 4. **Never a fetch.** The line names the path and stops. It does not read the
-//!    note, quote it, or summarise it: *"Never a `read`. A hint that silently
-//!    spends the model's context on a note is the injected-material failure
-//!    `docs/memory.md` §5 measures; the model decides whether to open what was
-//!    offered."*
-//!
-//! # The comparison subject
-//!
-//! The person's prompt and the turn's tool results — never the whole
-//! conversation, which is the design's own rule and the one that decides whether
-//! a hint fires on what is happening now or on everything that ever happened.
-//! [`subject`] walks the transcript backwards from the end, takes the tool
-//! results, and stops at the person's own last row.
-//!
-//! # The take-up, which is what tunes the floor
-//!
-//! *"The take-up is observable, which is what keeps the floor honest: the signal
-//! is did a tool call in the next round touch that path? Log offers and take-ups;
-//! tune the floor from that ratio. And the same log answers a second question — an
-//! offer nobody ever takes is a note to rewrite or retire."*
-//!
-//! So every offer that reaches a request is settled once the round's tool calls
-//! are known, and one line per offer lands in
-//! `<data dir>/logs/<session>/notes-offers.jsonl`: the path, the score, whether it was
-//! taken, and what took it. The log is best-effort — a hint that fails to write a
-//! line about itself is still a hint, and a notes feature that breaks a turn
-//! because a file could not be appended to would be worse than no notes.
+//! A note that offers itself - the read hint, composed at the TAIL of the request: never the
+//! prefix (a prefix change re-prefills the conversation) and never a row (a row cannot be un-said).
+//! Earned by a score floor, rare, silent when unsure, never a fetch, and recomposed each round.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -84,47 +10,18 @@ use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 use crate::standing_notes;
 use letibot_tools::similarity::Corpus;
 
-/// **The score a note has to reach before it is offered at all.**
-///
-/// The hint's floor, and the reason it is not lower: *"the first time a reader
-/// learns to ignore the hint line, the feature is dead."* MEASURED 2026-10-12
-/// against this box's 23 standing notes — the numbers and the arithmetic are in
-/// `letibot_tools::similarity`'s module doc. In short: across ten prompts about
-/// work unrelated to that corpus the best score any note reached was 0.133, and
-/// across four prompts squarely about a note the scores were 0.181, 0.126, 0.419
-/// and 0.366. 0.14 is above every negative measured and below three of the four
-/// positives.
-///
-/// **It is a starting point, not a finding**, and the design says so itself:
-/// *"tune the floor from that ratio"* — the take-up log
-/// (`<data dir>/logs/<session>/notes-offers.jsonl`) is the measurement that moves it.
-///
-/// **Moved to 0.18 on that measurement, 2026-10-10.** The fixtures had the honest
-/// positives at 0.366–0.419; live offers land far lower, and the log of **121 offers
-/// with 19 taken** says where the two populations actually divide: the lowest score
-/// ever taken was 0.183, and of the 61 offers below it **not one was taken**. At 0.18
-/// the offer count halves — 60 instead of 121 — and the take-ups stay 19, all of
-/// them; 0.20 would cost one (41 offers, 18 taken) and 0.22 would cost ten (23
-/// offers, 9 taken). Above the floor the shape is a cliff, not a slope, which is what
-/// a floor is for.
-///
-/// The operator's word for the volume at 0.14 was *"the notes keep pilin up.
-/// unacceptable"*, and the other half of that fix is the memory: a note is offered
-/// once per SESSION, not once per turn — see [`Offers::recall`].
+/// The score a note has to reach before it is offered at all - the hint's floor, because *the
+/// first time a reader learns to ignore the hint line, the feature is dead*. MEASURED and moved to
+/// 0.18 from the take-up log: nothing below 0.183 was ever taken. Tune it from that ratio.
 pub const OFFER_FLOOR: f64 = 0.18;
 
-/// How many characters of the subject are scored, taken from the most recent end.
-///
-/// A cap and not a budget, for a reason that is about the subject rather than
-/// about cost: the subject is *what is happening now*, and a 200 KB file the last
-/// tool call printed is not what is happening now. Past the cap the older
-/// material is dropped — the walk in [`subject`] goes backwards, so what survives
-/// is the most recent text, which is the text a hint should fire on.
+/// How many characters of the subject are scored, taken from the most recent end. A cap and not a
+/// budget: the subject is *what is happening now*, and a 200 KB file the last tool call printed is
+/// not. [`subject`] walks backwards, so what survives the cut is the most recent text.
 pub const SUBJECT_CHARS: usize = 8_000;
 
-/// The file the take-up log is appended to, in the session's logs directory
-/// (`Config::daemon_logs`; it was `<workspace>/.letibot/`, which made every child's worktree look
-/// dirty — TODO R92.4).
+/// The file the take-up log is appended to, in the session's logs directory - it was
+/// `<workspace>/.letibot/`, which made every child's worktree look dirty.
 pub const LOG: &str = "notes-offers.jsonl";
 
 /// One note, offered, with the score that earned it.
@@ -135,14 +32,9 @@ pub struct Offer {
 }
 
 impl Offer {
-    /// The line the model is given, as a transcript item that is **not** in the
-    /// log: the request assembly renders it after everything the session holds,
-    /// and the next round composes a fresh one from scratch.
-    ///
-    /// Written in the harness's own voice and saying so, because a row that
-    /// cannot be told from the operator's words is how a harness's suggestion
-    /// comes to read as an instruction the person gave. It names the path and
-    /// stops: no excerpt, no summary, no `read` on the model's behalf.
+    /// The line the model is given, as a transcript item that is not in the log: the request
+    /// assembly renders it after everything the session holds, and the next round composes a fresh
+    /// one. Written in the harness's own voice and saying so, and it names the path and stops.
     pub fn tail(&self) -> TranscriptItem {
         TranscriptItem::User {
             speaker: Speaker::Agent,
@@ -162,13 +54,9 @@ impl Offer {
     }
 }
 
-/// The offers this turn has already made, and the one the round in flight is
-/// carrying.
-///
-/// Lives on the `Harness` for the length of a turn. Two facts are kept apart on
-/// purpose: [`Offers::offered`] is the turn's memory (a note is offered once),
-/// and [`Offers::open`] is the round's (an offer that has been composed and not
-/// yet settled).
+/// The offers this turn has already made, and the one the round in flight is carrying. Two facts are
+/// kept apart on purpose: [`Offers::offered`] is the session's memory (a note is offered once), and
+/// [`Offers::open`] is the round's (an offer composed and not yet settled).
 #[derive(Debug, Default)]
 pub struct Offers {
     offered: HashSet<PathBuf>,
@@ -181,20 +69,9 @@ impl Offers {
         Offers::default()
     }
 
-    /// **Seed the memory with what this SESSION has already been offered.**
-    ///
-    /// The memory used to be the turn's alone — *"rare (once per note per turn at
-    /// most)"* — which is right about one turn and wrong about a session. Measured
-    /// 2026-10-10 on this box, in one workspace: of 120 offers, 19 were taken, one
-    /// note had been offered 22 times and another 20, and every repeat is a row in
-    /// the operator's transcript. Their words: *"the notes keep pilin up.
-    /// unacceptable"*. A note is offered once per session now, not once per turn.
-    ///
-    /// **The log is the memory, rather than a set beside it.** It already carries the
-    /// session id and the path of every offer — [`Offers::settle`] writes both — so
-    /// the fact survives a daemon restart, and there is no second copy of it to
-    /// disagree with the file. A line that cannot be parsed is skipped: this is the
-    /// notes path, where a hint that fails is still a hint.
+    /// Seed the memory with what this SESSION has already been offered. The memory used to be the
+    /// turn's alone, which is wrong about a session
+    /// The log is the memory, so the fact survives a restart and there is no second copy of it.
     pub fn recall(&mut self, logs: &Path, session: &str) {
         let Ok(text) = std::fs::read_to_string(logs.join(LOG)) else {
             return;
@@ -212,19 +89,9 @@ impl Offers {
         }
     }
 
-    /// **Compose this round's offer**, or decide to say nothing. `false` is the
-    /// common case and the one the design asks for.
-    ///
-    /// The corpus is the notes the harness injects — the same three sources, in
-    /// the same order, read once through [`standing_notes::gather`] — so an offer
-    /// can only ever name a note a `read` can then find.
-    ///
-    /// A note is skipped when this turn already offered it, when the session has
-    /// already read it, and **when the prompt already carries it whole**. Each of
-    /// those is an offer to fetch something the model is looking at, which is the
-    /// purest form of the nag this module exists not to be — and the last one is
-    /// not hypothetical: below the notes budget every note is injected verbatim,
-    /// and the note most likely to score is exactly the one that is already there.
+    /// Compose this round's offer, or decide to say nothing. `false` is the common case. The
+    /// corpus is [`standing_notes::gather`]; a note is skipped when this session already offered
+    /// read or wrote it, or when the prompt already carries it whole - the purest nag of all.
     pub fn compose(
         &mut self,
         workspace: &Path,
@@ -252,7 +119,7 @@ impl Offers {
             .flatten()
             .filter_map(read_of)
             .collect();
-        // **And the notes this session wrote**, which no `read` call will have recorded: see
+        // And the notes this session wrote, which no `read` call will have recorded: see
         // [`written_of`]. Their author has the content already.
         let wrote: HashSet<PathBuf> = items
             .iter()
@@ -263,12 +130,9 @@ impl Offers {
             .flatten()
             .filter_map(written_of)
             .collect();
-        // The best note over the floor that is neither spent, nor already in the
-        // conversation, nor already in the prompt. `best` answers with one, so a
-        // note that is skipped is skipped for good this round rather than fallen
-        // through to — which is the honest reading of "silent when unsure"
-        // anyway: if the top match is one we must not offer, the round says
-        // nothing.
+        // The best note over the floor that is neither spent, nor already in the conversation, nor
+        // already in the prompt. `best` answers with ONE, so a note that is skipped is skipped for
+        // good this round: if the top match must not be offered, the round says nothing.
         let Some((path, score)) = corpus.best(&text) else {
             return false;
         };
@@ -288,9 +152,8 @@ impl Offers {
         true
     }
 
-    /// The trailing item this round's request carries — empty when the round
-    /// decided to say nothing, which is the same code path as *the model ignored
-    /// the offer*: nothing is composed, so nothing is sent.
+    /// The trailing item this round's request carries - empty when the round decided to say nothing
+    /// which is the same code path as *the model ignored the offer*.
     pub fn tail(&self) -> Vec<TranscriptItem> {
         self.open
             .as_ref()
@@ -298,17 +161,9 @@ impl Offers {
             .unwrap_or_default()
     }
 
-    /// **Settle the round's offer against what the round actually did**, and log
-    /// both sides.
-    ///
-    /// The signal is the design's own: *"did a tool call in the next round touch
-    /// that path?"* A take-up is a `read` of the offered path, or a `notes` read
-    /// of it — nothing else counts, because nothing else puts the note in the
-    /// conversation.
-    ///
-    /// Logged whichever way it went, because the ratio is the whole point: a note
-    /// offered and never taken is a note to rewrite, retire, or stop offering,
-    /// and a note offered and taken is evidence the floor is not too high.
+    /// Settle the round's offer against what the round actually did, and log both sides. A
+    /// take-up is a `read` of the offered path, or a `notes` read of it, because nothing else puts
+    /// the note in the conversation. Logged either way, because the ratio tunes [`OFFER_FLOOR`].
     pub fn settle(&mut self, logs: &Path, session: &str, calls: &[ToolCall]) -> Option<&Offer> {
         let offer = self.open.take()?;
         let taken = calls.iter().any(|c| {
@@ -346,18 +201,9 @@ impl Offers {
     }
 }
 
-/// **Whether the prompt already carries this note whole.**
-///
-/// The injected section writes each file as `### <path>` and then its text, or —
-/// when the file did not fit what was left of the notes budget — as
-/// `### <path> — N line(s), indexed: …` and then headings. So the question is
-/// which of those two shapes the section holds for this path, and it is asked of
-/// the prompt rather than remembered beside it, because a copy of that fact is a
-/// copy that can disagree with the block the model was actually given.
-///
-/// A path the prompt does not name at all is not carried: it may have arrived
-/// after the prompt was composed, and offering a note nobody has seen is the
-/// whole point of this module.
+/// Whether the prompt already carries this note whole. The injected section writes `### <path>`
+/// and then the text, or `### <path> - N line(s), indexed: …` when the file did not fit. Asked of
+/// the prompt, because a copy of that fact can disagree with the block the model was given.
 pub fn carried_verbatim(system: &str, path: &Path) -> bool {
     let marker = format!("### {}", path.display());
     system.lines().any(|line| {
@@ -366,21 +212,9 @@ pub fn carried_verbatim(system: &str, path: &Path) -> bool {
     })
 }
 
-/// The subject a hint is scored against: **the person's prompt and the turn's
-/// tool results**, and nothing else.
-///
-/// Walked backwards from the end of the transcript, so the most recent material
-/// is what survives [`SUBJECT_CHARS`]. Tool results are taken as they are found;
-/// the walk stops at the person's own last row, which is where the current turn
-/// begins. Rows the harness wrote in its own voice (`Speaker::Agent`) are not the
-/// person's words and do not stop the walk — a notice between two tool results
-/// must not hide the prompt under it.
-///
-/// **Newest first, and the order is not read.** The only consumer is a bag of
-/// terms, so what the order buys is the one thing that matters: when the turn has
-/// produced more than [`SUBJECT_CHARS`] of text it is the RECENT text that
-/// survives the cut, because *what is happening now* is the question and the
-/// first tool result of a long turn is history.
+/// The subject a hint is scored against: the person's prompt and the turn's tool results, and
+/// nothing else. Walked backwards, so the most recent material survives [`SUBJECT_CHARS`]; the walk
+/// stops at the person's own last row, and a harness notice does not stop it.
 pub fn subject(items: &[TranscriptItem]) -> String {
     let mut out = String::new();
     for item in items.iter().rev() {
@@ -390,9 +224,8 @@ pub fn subject(items: &[TranscriptItem]) -> String {
                 if *speaker == Speaker::Agent {
                     continue;
                 }
-                // The person's own row ends the walk, and it is taken too: the
-                // prompt is half of what a hint should fire on. Every text part
-                // of it, joined.
+                // The person's own row ends the walk, and it is taken too: the prompt is half of
+                // what a hint should fire on. Every text part of it, joined.
                 for p in parts {
                     if let UserPart::Text { text } = p {
                         out.push_str(text);
@@ -409,19 +242,9 @@ pub fn subject(items: &[TranscriptItem]) -> String {
             break;
         }
     }
-    // **The cut lands on a character boundary, never through one.** `truncate`
-    // panics when the length it is handed is not a boundary of the string, and
-    // this string is the operator's own words plus the turn's tool results —
-    // full of `—`, `⚠`, `→`, box-drawing from a `capture-pane` and Cyrillic.
-    // Measured 2026-10-10, on this box: an `assertion failed:
-    // self.is_char_boundary(new_len)` raised right here took `thread 'main'` down
-    // with it, so the daemon died from the offer path — a path whose own contract
-    // is that a hint which fails is still a hint, and whose worst case was meant
-    // to be a missing line in a log. Three panics in one evening, one of them a
-    // subagent's thread, each beside the offer it was composing.
-    //
-    // Walk to the nearest boundary at or below the cap: byte 0 is always one, so
-    // the search cannot come up empty.
+    // The cut lands on a character boundary, never through one - `truncate` panics otherwise
+    // and this string is the operator's words plus tool results, full of `-`, `⚠` and Cyrillic.
+    // Byte 0 is always a boundary.
     let cut = SUBJECT_CHARS.min(out.len());
     let cut = (0..=cut)
         .rev()
@@ -431,15 +254,9 @@ pub fn subject(items: &[TranscriptItem]) -> String {
     out
 }
 
-/// **A note this session WROTE** — `notes` with `add`/`append`/`replace`, or a `write`/`edit`
-/// naming one.
-///
-/// The sibling of [`read_of`], and the same argument taken one step further: a session that wrote
-/// a note has its content, because it composed every word of it. Offering it back is an offer to
-/// fetch what the model just produced — and it wins its round for a structural reason, since a
-/// note about what you are doing scores highest against the subject you are writing about.
-/// MEASURED 2026-10-10, one evening: four of fourteen offers were notes the same session had just
-/// written, each at the top of its round.
+/// A note this session WROTE - `notes` with `add`/`append`/`replace`, or a `write`/`edit` naming
+/// one. Its author has the content already, and such a note wins its round: a note about what you
+/// are doing scores highest against the subject you are writing about.
 pub fn written_of(call: &ToolCall) -> Option<PathBuf> {
     let args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
     match call.name.as_str() {
@@ -456,13 +273,9 @@ pub fn written_of(call: &ToolCall) -> Option<PathBuf> {
     }
 }
 
-/// **The note a tool call would put into the conversation** — `read`'s `path`, or
-/// a `notes` read's `path`/`name`. `None` for every other call.
-///
-/// Deliberately narrow: `grep`, `search` and `glob` can all *mention* a note
-/// without opening it, and counting those as take-ups would make the ratio
-/// measure interest rather than use. What the log is for is *did the offer turn
-/// into the note being read*, which only a read can answer.
+/// The note a tool call would put into the conversation - `read`'s `path`, or a `notes` read's
+/// `path`/`name`. Deliberately narrow: `grep`, `search` and `glob` can mention a note without
+/// opening it, and counting those would make the ratio measure interest rather than use.
 pub fn read_of(call: &ToolCall) -> Option<PathBuf> {
     let args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
     match call.name.as_str() {
@@ -480,14 +293,9 @@ pub fn read_of(call: &ToolCall) -> Option<PathBuf> {
     }
 }
 
-/// Whether two spellings name the same note: the path a call carries may be
-/// absolute, workspace-relative, or a bare name (`notes` accepts all three, and
-/// `list` reports the absolute one), so the comparison is by trailing components
-/// rather than by string equality.
-///
-/// Two notes with the same file name in two sources (`AGENTS.md` in a workspace
-/// and a box-wide `AGENTS.md`) are the ambiguous case, and it is resolved toward
-/// *not the same note* only when both paths are absolute and differ.
+/// Whether two spellings name the same note: the path a call carries may be absolute
+/// workspace-relative, or a bare name, so the comparison is by trailing components. Two notes with
+/// the same file name in two sources are *not the same note* when both paths are absolute.
 pub fn same_note(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
@@ -495,9 +303,8 @@ pub fn same_note(a: &Path, b: &Path) -> bool {
     if a.is_absolute() && b.is_absolute() {
         return false;
     }
-    // `.md` optional on either side: the `notes` tool takes a bare stem and the
-    // offer names the file, so `the-offer-and-the-tail` and
-    // `/ws/.letibot/notes/the-offer-and-the-tail.md` are one note.
+    // `.md` optional on either side: the `notes` tool takes a bare stem and the offer names the
+    // file, so `the-offer-and-the-tail` and `/ws/.letibot/notes/the-offer-and-the-tail.md` are one.
     let norm = |p: &Path| p.display().to_string().trim_end_matches(".md").to_string();
     let (a, b) = (norm(a), norm(b));
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
@@ -511,14 +318,13 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// A JSON string, escaped by `serde_json` rather than by hand — a note's path is
-/// usually a plain path, and "usually" is how a log line becomes unparseable.
+/// A JSON string, escaped by `serde_json` rather than by hand - a note's path is usually a plain
+/// path, and "usually" is how a log line becomes unparseable.
 fn json(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
 }
 
-/// **The offer's census, in its own file** — the shape `standing_notes` has, and
-/// for the same reason: these tests read the module's private state (`Offers`'
-/// two facts) and its fixtures are the module's own business.
+/// The offer's census, in its own file - the shape `standing_notes` has, and for the same
+/// reason: these tests read the module's private state and its fixtures are its own business.
 #[cfg(test)]
 mod tests;

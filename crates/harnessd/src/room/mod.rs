@@ -1,49 +1,6 @@
-//! **The room, from the daemon's side** — the `--room` coordinator mode, the session's own
-//! connection to it, and the bell that turns an event into a turn.
-//!
-//! `docs/room.md` § *What the daemon still owes* is the list this module answers, and the split
-//! between the files is that list's own order:
-//!
-//! * **[`coordinator`]** — the `--room` mode: a whole `harnessd` with no project, its own socket
-//!   under the data directory, the lease that makes it the only one on the box, the tie-breaker
-//!   session prompted with `open_questions`, and the refusal to start at all when there is no
-//!   model to arbitrate with.
-//! * **[`link`]** — one connection per top-level session, the tool's verbs behind it, the beat run
-//!   on the session's behalf while its turn runs, and the callback that turns a room event into a
-//!   wake.
-//! * **[`wake`]** — the queue between the link's reader thread and `Harness::wake`, because the
-//!   thread that hears the bell is not the thread that runs the turn.
-//! * **[`remind`]** — the pass that turns the room's answer (*what do I hold, and what am I waiting
-//!   on*) into one row per item on the session's own board, so the idle check carries the reminder
-//!   and no model call is needed. It is the one of the four that runs on the daemon's idle tick
-//!   rather than on a thread of its own, because a board may only be written by the thread that
-//!   drives the harness.
-//! * **[`supervise`]** — the restart the pane's fifth control asks for: the frame, and the launcher
-//!   that is asked with it. The coordinator never restarts itself — the pane is fed by the instance
-//!   it would kill, and a control that kills its own feed cannot report the outcome.
-//! * **[`agents`]** — one agent per tag, owned by the box's own session: seated by derivation,
-//!   re-seated when it dies, and counted so that a tag whose agent keeps dying says so.
-//! * **[`roster`]** — who is in a project's room: the project's sessions, their subagents at any
-//!   depth, and the `system` agents that serve them, grouped the way the tree draws them. The room
-//!   cannot see a subagent (the door refuses it), so the daemon that can sends the list.
-//!
-//! # The names are derived, and they must not move
-//!
-//! A room is per **box and per project** — one coordinator, one socket, one lease, and one room per
-//! project (`letibot_room::tree`). The SOCKET, the lease and the coordinator's own session id
-//! (`s-room-<host key>`) come from the host and from nothing else, because a box has one coordinator;
-//! a room's NAME is `<host key>/<project key>`, and the project key is the twelve hex characters
-//! `letibot_sessionlog::workspace_key` computes — the same key `s-gatekeeper-<key>` is spelled from.
-//! A session does not name a room: [`roster`] and `Harness::open` derive the project from the root of
-//! the session's chain and dial that room, which is what makes *a project has a room* a fact rather
-//! than a convention.
-//!
-//! # A box with no coordinator is not an error
-//!
-//! Every daemon on this box looks for the same socket and most boxes have nothing there. That is
-//! not a failure and must not be one: the `room` tool then refuses by name (the room is a daemon of
-//! its own) and everything else about the session is exactly what it was. What IS a failure is a
-//! coordinator that starts and cannot arbitrate — see [`coordinator::configure`].
+//! The room, from the daemon's side - the `--room` coordinator, a session's connection to it
+//! and the bell that turns an event into a turn; `docs/room.md` holds the split between the files.
+//! Every name here is DERIVED from the box, and a box with no coordinator is not an error.
 
 use std::path::PathBuf;
 
@@ -55,11 +12,11 @@ pub mod roster;
 pub mod supervise;
 pub mod wake;
 
-/// **The environment variable that puts the room's socket somewhere else** — a test's door, and
+/// The environment variable that puts the room's socket somewhere else - a test's door, and
 /// the reason no fixture has to touch the box's real data directory.
 pub const SOCKET_ENV: &str = "LETIBOT_ROOM_SOCKET";
 
-/// **This box's room** — where the coordinator serves, or `None` when there is no data directory
+/// This box's room - where the coordinator serves, or `None` when there is no data directory
 /// and no override, which is a box with nowhere to put a socket.
 pub fn socket_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(SOCKET_ENV).filter(|v| !v.is_empty()) {
@@ -69,7 +26,7 @@ pub fn socket_path() -> Option<PathBuf> {
     Some(letibot_room::socket_path(&dir, &letibot_room::host_key()))
 }
 
-/// **The coordinator's lease on this box** — the file that makes *one coordinator* true.
+/// The coordinator's lease on this box - the file that makes *one coordinator* true.
 pub fn lease_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(SOCKET_ENV).filter(|v| !v.is_empty()) {
         // The lease lives beside the socket it belongs to, so a test that moves one moves both.
@@ -79,29 +36,26 @@ pub fn lease_path() -> Option<PathBuf> {
     Some(letibot_room::lease_path(&dir, &letibot_room::host_key()))
 }
 
-/// **The coordinator's own session id** — `s-room-<host key>`, derived from the box and never
-/// invented. `letibot --session host` resolves to it (`cli`'s own resolution), so the operator can
-/// always reach the one agent that arbitrates this machine.
+/// The coordinator's own session id - `s-room-<host key>`, derived and never invented, so
+/// `letibot --session host` always reaches the one agent that arbitrates this machine.
 pub fn session_id() -> String {
     letibot_room::coordinator_session(&letibot_room::host_key())
 }
 
-/// **The session a person named by one of the two derived spellings** — `host` for the box's owner,
-/// `host:<tag>` for one tag's agent — or `None` when what they typed is an ordinary session id.
-///
-/// One function, so `--session`, a launcher and a test cannot resolve a derived name three ways.
+/// The session a person named by a derived spelling - `host`, or `host:<tag>` for a tag's
+/// agent - or `None` for an ordinary session id. One function, so three callers cannot disagree.
 pub fn session_named(name: &str) -> Option<String> {
     letibot_room::named_session(&letibot_room::host_key(), name)
 }
 
-/// **The tag a session is the agent of**, when it is one — the derivation read backwards, against
+/// The tag a session is the agent of, when it is one - the derivation read backwards, against
 /// this box's own key.
 pub fn tag_of(session: &str) -> Option<String> {
     letibot_room::tag_of_session(&letibot_room::host_key(), session)
 }
 
-/// **Is there a coordinator to talk to?** A socket file that exists is the whole test — connecting
-/// is what finds out whether anything is behind it, and that answer is a sentence the tool shows.
+/// Is there a coordinator to talk to? A socket file that exists is the whole test; whether
+/// anything is behind it is the tool's sentence to say.
 pub fn socket_exists() -> bool {
     socket_path().map(|p| p.exists()).unwrap_or(false)
 }

@@ -1,47 +1,11 @@
-//! **The plugin layers a session has, and the panes they answer** — W4 of
-//! `docs/plugins-slice1.md`: the wiring between the daemon's sessions and the stack
-//! `crates/plugins` implements (C2) and the pane document `crates/sessionlog` owns (C3, C4).
+//! The plugin layers a session has, and the panes they answer: the daemon's half of the plugin
+//! stack - which session holds which `Stack`, when a look runs, and what reaches a head.
 //!
-//! # What is here, and what is not
-//!
-//! | piece | is |
-//! |---|---|
-//! | [`PluginHost`] | one session's [`letibot_plugins::Stack`], its [`letibot_plugins::Recorder`], the panes a head has opened, and the clock a hot reload rides |
-//! | [`rano::RanoLoader`] | the one `Loader` production uses: rano compiles the module, this answers a hook |
-//! | [`look`] | `{"read": path}` — the host does the I/O, against the workspace, under the layer's `read` capability |
-//!
-//! Not here, deliberately: the answer protocol, the precedence and the gate. Those are
-//! `letibot_plugins`' and are tested there with fakes; this module is the daemon's half — which
-//! session has which stack, when a look runs, and what reaches a head.
-//!
-//! # Why a host per session
-//!
-//! The layers are discovered per session (`docs/plugins-plan.md` §2.1): the session's own dir,
-//! its project's `.letibot/plugins`, and the user's. So two sessions on one daemon have two
-//! stacks, and a pane id (`plan-dashboard/dashboard`) is one session's.
-//!
-//! # The rules this file keeps from the contracts
-//!
-//! * **A pane's answer is data until the host validates it.** A view that fails
-//!   `sessionlog::pane::View::validate` — or an answer that is not a view at all — is published as
-//!   ONE panel saying *why* and *what fixes it* (C3's rule, and W4's brief): never silence,
-//!   because an empty dashboard and a broken plugin look identical on a screen and mean opposite
-//!   things.
-//! * **A look is the host's act.** Slice 1 runs `read` and refuses `exec` ([`look::EXEC_REFUSED`]),
-//!   and never lets the module touch the filesystem itself.
-//! * **Only a gated candidate is applied.** [`letibot_plugins::Stack::apply`] is handed the same
-//!   `Candidate` the gate replayed (`crates/plugins/src/gate.rs`'s own note), and a refusal keeps
-//!   the old layer and tells the session's model what the report said.
-//! * **The gate's build never runs on the worker.** The tick only stats files; the gate — which
-//!   runs `cargo` — is a thread of its own.
-//!
-//! # What slice 1 does not have, and why it is written down
-//!
-//! **No look runs for a pane nobody opened.** [`PluginHost::announce`] publishes each pane's first
-//! frame with `may_look: false`, so a dashboard on a session's list costs a wasm call and no file
-//! read until a head opens it. The refresh clock (`every_s`) exists only for panes on that list
-//! that a head has opened, and `ClientFrame::PaneClose` (protocol 51) takes a pane off it — a
-//! closed pane is a pane the host stops asking.
+//! The answer protocol, the precedence and the gate belong to `letibot_plugins`. What this file
+//! keeps: an answer the host cannot use is published as one panel saying why, never silence (an
+//! empty dashboard and a broken plugin look alike on a screen); a look is the host's act, so
+//! slice 1 reads and never execs; only a candidate the gate replayed is applied, and the gate
+//! never runs on the worker; and no look runs for a pane nobody opened.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -67,53 +31,42 @@ pub mod look;
 pub mod rano;
 pub mod room_feed;
 pub mod scaffold;
-// **A tool a layer declares, and the looks its hook asks the host to run** — `tool_` in
-// `docs/plugins-plan.md` §4.8. It is a module rather than a section of this file because it is a
-// `Tool` (it goes in the registry beside `read` and `bash`) and because the three look primitives
-// it runs are a filesystem API of their own.
+// A tool a layer declares, and the looks its hook asks the host to run: it is a `Tool` in the
+// registry beside `read` and `bash`, and its three look primitives are a filesystem API.
 pub mod tool;
 
-/// **How often the hot-reload tick looks** — `docs/plugins-plan.md` §2.3 makes a change take
-/// effect on the next hook call, and this is the longest a person waits after saving one. Two
-/// seconds is `mergequeue::watch`'s own poll, for the same reason: a stat per layer is free.
+/// How often the hot-reload tick looks: the longest a person waits after saving a layer. Two
+/// seconds, as `mergequeue::watch` polls - a stat per layer is free.
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
 
-/// **The rectangle a pane draws in when the head did not say one.** C4's `PaneOpen` carries the
-/// pane's own `w` and `h` (protocol 51); a head built before that sends neither, and a dashboard
-/// laid out for a wide screen is the honest default rather than a guess about a terminal.
+/// The rectangle a pane draws in when the head did not say one: a head too old to send its own
+/// `w` and `h` gets a wide screen rather than a guess about its terminal.
 pub const SIZE_W: u32 = 120;
 pub const SIZE_H: u32 = 40;
 
-/// The contract version every pane input carries (C3): the host says which one it speaks.
-///
-/// **It is the SDK's own number and not a copy.** It said `1` while the contract had grown to 2
-/// (`feeds`, `folded`, a row's `enter`), so a layer that read `v` to decide whether it would be
-/// handed a feed was told *no* by a host that was about to hand it one.
+/// The contract version every pane input carries. It is the SDK's constant and not a copy: a
+/// hardcoded `1` outlived the contract's growth to 2, so a layer that read `v` was told no feed
+/// by the host about to hand it one.
 const PANE_V: u32 = letibot_plugin::pane::V;
 
 /// One session's layers, its recorded inputs, and the panes a head has opened.
 pub struct PluginHost {
     session: String,
     workspace: PathBuf,
-    /// **The session's own plugin directory** — where `plugin scaffold` writes and where a
-    /// session-scope layer is discovered from (C2's session scope). Kept beside the stack
-    /// because the stack only knows the layers it FOUND, and a scaffold's job is the directory a
-    /// layer will be written into before any discovery can see it.
+    /// The session's own plugin directory - where `plugin scaffold` writes and where a
+    /// session-scope layer is discovered. Beside the stack, which only knows what it found.
     session_dir: Option<PathBuf>,
     inner: Mutex<Inner>,
-    /// How the gate's step 1 is performed. `CargoBuilder` in the daemon; a table of answers in a
-    /// test, because a test that ran cargo would need the wasm target and a real crate to build.
+    /// How the gate's build step is performed: `CargoBuilder` in the daemon, a table of answers
+    /// in a test, which cannot pay for the wasm target and a crate to build.
     builder: Arc<dyn Builder>,
-    /// **Where a pane's `sessions` feed comes from** — the daemon's own registry, set by
-    /// [`PluginHost::with_sessions`] at the one place the daemon builds a host
-    /// (`Sessions::open_plugins`). `None` in a host a test built, and then a layer that declares
-    /// the feed is handed no key at all rather than an empty list (see [`feed`]).
+    /// Where a pane's `sessions` feed comes from - the daemon's registry, set by
+    /// [`PluginHost::with_sessions`]. `None` in a host a test built, and a layer that declares
+    /// the feed is then handed no key at all rather than an empty list (see [`feed`]).
     sessions: Option<Arc<dyn feed::SessionFeed>>,
-    /// **Where a pane's view of the room comes from** — this session's own connection to the box's
-    /// coordinator (`crate::room::link::SessionRoom`), set by [`PluginHost::with_room`] at the one
-    /// place the daemon builds a host. `None` in a host a test built, and on a box with no
-    /// coordinator; a layer that declares the `room` feed is then handed **no key at all** rather
-    /// than an empty room (see [`room_feed`]).
+    /// Where a pane's view of the room comes from - the session's own connection to the box's
+    /// coordinator, set by [`PluginHost::with_room`]. `None` in a test's host and on a box with no
+    /// coordinator, and the `room` feed is then no key at all rather than an empty room.
     room: Option<Arc<dyn room_feed::RoomFeed>>,
 }
 
@@ -123,11 +76,8 @@ struct Inner {
     /// The panes a head has opened, by id, with what the pane returned and when it wants asking
     /// again.
     panes: BTreeMap<String, Open>,
-    /// **The rectangle each pane was last asked to draw in**, by pane id — `ClientFrame::PaneOpen`'s
-    /// `w` and `h`, which only a head knows. Kept beside `panes` rather than inside an `Open`
-    /// because a close is not a forget: a pane opened again on the same screen should draw at the
-    /// size it was last drawn at, and the entry it would have lived in is exactly what a close
-    /// removes.
+    /// The rectangle each pane was last asked to draw in. Beside `panes` rather than inside an
+    /// `Open` because a close is not a forget: reopened on the same screen, it draws at that size.
     sizes: BTreeMap<String, (u32, u32)>,
     /// Layer ids with a gate running right now, so a poll that sees the same change twice does
     /// not compile it twice.
@@ -135,20 +85,18 @@ struct Inner {
     /// What has already been said on the session's log. A failure said once is news; the same
     /// failure said every two seconds is noise a model learns to ignore.
     said: BTreeSet<String>,
-    /// What the session's MODEL has not been told yet. Drained by the worker
-    /// ([`PluginHost::take_notices`]) because a notice is a transcript row, and only a harness can
-    /// write one of those.
+    /// What the session's model has not been told yet. Drained by the worker, because a notice is
+    /// a transcript row and only a harness writes one of those.
     notices: Vec<String>,
     /// When the next hot-reload poll is due.
     poll_at: Instant,
-    /// **Pins whose bytes moved before this host existed** — `with_trust`'s answer, held for the
-    /// first tick that can say them. See [`PluginHost::with_trust`].
+    /// Pins whose bytes moved before this host existed, held for the first tick that can say them.
     broken_pins: Vec<letibot_plugins::BrokenPin>,
 }
 
 /// What the host knows about one open pane.
 struct Open {
-    /// The `state` the pane answered with, handed back to it on the next call — §1, principle 5:
+    /// The `state` the pane answered with, handed back to it on the next call - §1, principle 5
     /// state belongs to the host, and a plugin is stateless between calls.
     state: Option<Value>,
     /// The look the pane's last answer asked for, so a refresh can run it again.
@@ -189,12 +137,9 @@ impl Req {
 }
 
 impl PluginHost {
-    /// **Discover a session's layers**, from the three scopes C2 names.
-    ///
-    /// `session_dir` is the session's own plugin directory and `user_dir` the letibot config dir
-    /// (`<user_dir>/plugins` is read from it); `workspace` is the project root, whose
-    /// `.letibot/plugins` is the project scope and whose files a `read` look resolves against.
-    /// Every one of them may be absent, which is an empty scope and not an error.
+    /// Discover a session's layers, from the three scopes: the session's own dir, the project's
+    /// `.letibot/plugins` (whose files a `read` look resolves against) and the user's. Any of them
+    /// may be absent, which is an empty scope and not an error.
     pub fn discover(
         session: impl Into<String>,
         workspace: impl Into<PathBuf>,
@@ -231,30 +176,22 @@ impl PluginHost {
         }
     }
 
-    /// **Hand this host the daemon's session list**, so a pane that declares the `sessions` feed is
-    /// given one. A builder rather than a constructor argument because it is the daemon's fact and
-    /// not a layer's: a host built by a test has no list and says so by handing nothing.
+    /// Hand this host the daemon's session list, so a pane declaring the `sessions` feed is given
+    /// one. A builder and not a constructor argument: the list is the daemon's fact, not a layer's.
     pub fn with_sessions(mut self, source: Arc<dyn feed::SessionFeed>) -> PluginHost {
         self.sessions = Some(source);
         self
     }
 
-    /// **Hand this host the session's own connection to the box's room**, so a pane that declares
-    /// the `room` feed is given one and its four controls have somewhere to go.
-    ///
-    /// A builder for the same reason [`PluginHost::with_sessions`] is: which room a session is in is
-    /// the daemon's fact, and a host a test built has none and says so by handing nothing.
+    /// Hand this host the session's own connection to the box's room, so a pane declaring the
+    /// `room` feed is given one and its four controls have somewhere to go.
     pub fn with_room(mut self, source: Arc<dyn room_feed::RoomFeed>) -> PluginHost {
         self.room = Some(source);
         self
     }
 
-    /// [`PluginHost::discover`] with the two dirs this box's conventions give it: the session's own
-    /// state dir under the letibot data dir, and `$XDG_CONFIG_HOME/letibot`.
-    ///
-    /// The session scope is `<data dir>/sessions/<id>/plugins`, where a session's own layers would
-    /// be written (C2's "the session's own plugin directory"). It does not exist until something
-    /// writes one, and a scope that does not exist is empty.
+    /// [`PluginHost::discover`] with the dirs this box's conventions give it: the session scope
+    /// `<data dir>/sessions/<id>/plugins` and `$XDG_CONFIG_HOME/letibot`. An absent scope is empty.
     pub fn for_session(
         session: &str,
         workspace: &Path,
@@ -270,22 +207,14 @@ impl PluginHost {
             loader,
             builder,
         )
-        // **D17's book, read once at discovery** and re-read on the poll: a placed layer is free
-        // only when a person recorded a hash of these exact bytes. A host built with
-        // `discover` and no book (a test standing a stack up) has every placed layer unpinned,
-        // which is the fail-closed direction.
+        // The trust book, read once here and re-read on the poll: a placed layer is free only when
+        // a person recorded a hash of these exact bytes. No book (a test's stack) pins nothing.
         .with_trust(letibot_plugins::Trust::open_default())
     }
 
-    /// **Hand this host D17's trust book** — which placed layers a person has pinned, and which
-    /// ones have changed since. See [`letibot_plugins::Trust`].
-    ///
-    /// **A pin that broke while no daemon was running is news, and this is where it arrives.**
-    /// `Stack::set_trust` re-decides every layer and answers the pins whose bytes moved — and it
-    /// records them as said as it answers them, so a caller that dropped the answer would silence
-    /// the warning for exactly the case it exists for. So they are queued, and the first
-    /// [`PluginHost::tick`] says them (`plugin_untrusted`). Nothing runs free in the meantime: the
-    /// refusal sentences already name both hashes.
+    /// Hand this host the trust book: which placed layers a person has pinned, and which changed
+    /// since. A pin that broke while no daemon was running is news, and this is where it arrives
+    /// the moved pins are queued, and the first [`PluginHost::tick`] says them.
     pub fn with_trust(self, trust: Arc<letibot_plugins::Trust>) -> PluginHost {
         let news = self.lock().stack.set_trust(trust);
         if !news.is_empty() {
@@ -294,23 +223,15 @@ impl PluginHost {
         self
     }
 
-    /// **What D17's book says about a layer this host holds** — by id, by manifest name, or by
-    /// the directory it sits in. `None` when this stack has no such layer.
-    ///
-    /// A clone rather than a reference because the stack lives behind the host's mutex, and the
-    /// caller that needs this (`PluginTool`, for the sentence a refusal carries) is holding it
-    /// across a call.
+    /// What the trust book says about a layer this host holds - by id, manifest name, or the
+    /// directory it sits in. A clone because the caller holds the host's lock across its call.
     pub fn layer(&self, what: &str) -> Option<letibot_plugins::Layer> {
         self.lock().stack.layer_named(what).cloned()
     }
 
-    /// [`PluginHost::layer`] with the SCOPE it must be — for a caller that has one.
-    ///
-    /// A tool's `DeclaredTool` names its layer by directory name, and two scopes may hold layers
-    /// of one name (a session fix and the project layer it was promoted from). A name alone is
-    /// then two answers to *is this layer pinned*, so the caller that knows the scope says it;
-    /// the fallback is the name-only lookup, because a layer that has moved scope (a project
-    /// layer promoted from a session) is still the layer the declaration meant.
+    /// [`PluginHost::layer`] with the scope it must be: two scopes can hold layers of one name (a
+    /// session fix and the project layer it was promoted from), so a name alone is two answers to
+    /// *is this pinned*. The fallback is the name-only lookup, for a layer that has moved scope.
     pub fn layer_in(&self, what: &str, scope: Scope) -> Option<letibot_plugins::Layer> {
         let inner = self.lock();
         inner
@@ -327,33 +248,15 @@ impl PluginHost {
             .cloned()
     }
 
-    /// **Whether the layer answering `hook` runs freely** — a built-in, or a layer whose bytes a
-    /// person pinned. Asked by an `exec` look before the gate: D17's first two arms.
+    /// Whether the layer answering `hook` runs freely: a built-in, or a layer whose bytes a person
+    /// pinned. An `exec` look asks this before the gate.
     pub fn free_layer(&self, hook: &str) -> bool {
         self.answering(hook).is_some_and(|a| a.trusted)
     }
 
-    /// This host as the daemon uses it: rano loads the modules and cargo builds them.
-    ///
-    /// # And the built-ins that answer a hook the DAEMON dispatches
-    ///
-    /// A head installs the whole built-in table itself (`letibot_builtins::install`, in the TUI's
-    /// own stack) because the built-ins are mostly panes, and a pane is the head's to draw. The
-    /// daemon's stack is the one a `tool_` hook is resolved through, so it needs the built-in
-    /// layers that declare a tool — and only those: installing the pane ones here as well would
-    /// announce every pane twice, once from each stack.
-    ///
-    /// **And only the ones this session DECLARED a tool from.** `crate::plugins::declared_tools`
-    /// is the same read the prompt was composed from, so the two cannot disagree about what this
-    /// session asked for, and a session that asked for nothing installs nothing. That is not
-    /// tidiness: MEASURED 2026-10-28, compiling this binary's tool layer costs **1.97 s** of CPU in
-    /// a debug host, and a session that seats no layer tool can never call it — the `PluginTool`
-    /// that would is what the declaration seated. Installing it anyway cost every session open two
-    /// seconds and made `letibot-bridge`'s `no_spin` window all compile.
-    ///
-    /// A built-in whose module the engine refuses is recorded in the stack's own failure list and
-    /// said to the model by `say_failures`, so a broken built-in is a sentence rather than a tool
-    /// that silently is not there.
+    /// This host as the daemon uses it: rano loads the modules and cargo builds them. The daemon's
+    /// stack seats only the built-ins that declare a tool this session declared, because compiling
+    /// one costs seconds of CPU and a session that seats no layer tool can never call it.
     pub fn production(session: &str, workspace: &Path) -> PluginHost {
         let host = PluginHost::for_session(
             session,
@@ -365,18 +268,9 @@ impl PluginHost {
         host
     }
 
-    /// **Put the built-in layers a session declared a tool from at the bottom of this stack.**
-    ///
-    /// The match is on the tool's NAME: a built-in that declares `claude_transcript` is installed
-    /// for a session whose declarations include `claude_transcript`, and not otherwise. The layer
-    /// above it is what the model was offered — the built-in is the module that answers, which is
-    /// why a project's ask can be a manifest with no `plugin.wasm`.
-    ///
-    /// **A built-in whose PANE this daemon answers is not installed here**, and the cost is why:
-    /// compiling one module is 1.4–2.0 s of CPU in a debug host (`.letibot/notes/
-    /// a-built-in-layer-costs-two-seconds-per-session-open.md`), and a session that no head ever
-    /// attaches to would pay it for a screen nobody draws. `ensure_the_room_pane` installs the one
-    /// such layer at the door a head comes through.
+    /// Put the built-in layers a session declared a tool from at the bottom of this stack, matched
+    /// on the tool's name. A project's ask can then be a manifest with no module: the built-in is
+    /// the module that answers.
     fn install_builtin_tools(&self, declared: &[DeclaredTool]) {
         if declared.is_empty() {
             return;
@@ -398,37 +292,21 @@ impl PluginHost {
                     .stack
                     .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
             {
-                // `register_builtin_bytes` has already recorded the failure on the stack; this is
-                // the line a person reading the daemon's log sees while it happens.
+                // The stack has recorded the failure; this is the line the daemon's log shows.
                 eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
             }
         }
     }
 
-    /// **Install the built-in whose pane this DAEMON answers** — the room's — the first time a head
-    /// comes through a door that needs it.
-    ///
-    /// The built-in panes are otherwise the HEAD's (`letibot_builtins::install` in the TUI's own
-    /// stack): a pane is a screen, and the head owns the screen. The room's is the exception, and
-    /// the reason is the whole slice — its four controls are the HOST's verbs, and the host that can
-    /// perform them is this daemon, over the session's own connection to the coordinator. A head
-    /// that drew it would have a pane whose keys send nothing.
-    ///
-    /// **Lazily, and that is a measurement, not a habit.** Compiling one built-in module costs
-    /// 1.4–2.0 s of CPU in a debug host, and this layer is 218 KB — so installing it at every
-    /// session open would put two seconds on every `leticode` on a box with a coordinator, for a
-    /// pane most sessions never show. A session's pane is only worth a compile once a HEAD is
-    /// looking at that session, so the install happens at [`PluginHost::attach`] (and at `open`,
-    /// for a head that asks without having announced).
-    ///
-    /// Nothing happens on a box with no coordinator: `room` is `None` and there is no queue to draw.
+    /// Install the built-in whose pane this daemon answers - the room's - the first time a head
+    /// comes through a door that needs it: its four controls are the host's verbs, so the daemon
+    /// that can perform them is the one that must draw it. Lazily, because a compile costs seconds.
     fn ensure_the_room_pane(&self) {
         if self.room.is_none() {
             return;
         }
-        // **A layer that already answers the hook is the one that will draw it** — ours would sit
-        // below it and never be called, and a project that shipped its own room pane has said
-        // which one it wants.
+        // A layer that already answers the hook is the one that draws it - ours would sit below it
+        // and never be called, and a project that shipped its own room pane has said which it wants.
         if self.lock().stack.layers().iter().any(|l| {
             l.manifest
                 .hooks
@@ -459,16 +337,9 @@ impl PluginHost {
         &self.session
     }
 
-    /// **Ask one hook of this session's stack**, recording the input for the gate's replay.
-    ///
-    /// `None` when nothing in this session exports the hook at all — a session with no layers, or
-    /// one whose layers are all about panes — which is what makes a session that patches nothing
-    /// cost what it cost before there were plugins: no record, no call, no allocation beyond the
-    /// input nobody built.
-    ///
-    /// The failure path is the stack's own (`docs/plugins-plan.md` §1 principle 4): a layer that
-    /// traps, runs out of fuel or answers something that is not JSON is skipped, the layer below
-    /// answers, and the failure is said to the model — which is the one that can fix it.
+    /// Ask one hook of this session's stack, recording the input for the gate's replay. `None` when
+    /// nothing here exports the hook, which keeps a session that patches nothing as cheap as it was.
+    /// A layer that traps is skipped, the layer below answers, and the model is told.
     pub fn ask(
         &self,
         hub: &Arc<Hub>,
@@ -490,13 +361,9 @@ impl PluginHost {
         Some(resolved)
     }
 
-    /// **One notice through the `notice` hook** (`docs/plugins-plan.md` §4.3): the sentence to
-    /// record, or `None` when a layer dropped it.
-    ///
-    /// The kinds and which of them may be dropped are `letibot_plugin::notice`'s, not this
-    /// function's: a projection over them is a second answer to *what is the model owed*, and the
-    /// host is the only place that question has one. A layer that tries to drop a kind the model
-    /// is owed is refused and told why, rather than silently obeyed.
+    /// One notice through the `notice` hook: the sentence to record, or `None` when a layer dropped
+    /// it. Which kinds may be dropped is `letibot_plugin::notice`'s answer, not this function's, and
+    /// a layer that drops one the model is owed is refused and told why.
     pub fn notice(&self, hub: &Arc<Hub>, kind: &str, text: &str, facts: Value) -> Option<String> {
         let input = letibot_plugin::notice::Notice::new(kind, text, facts);
         let input = match serde_json::to_value(&input) {
@@ -549,11 +416,9 @@ impl PluginHost {
         }
     }
 
-    /// **A layer's answer the host could not use**, said once — to the model, which is the one that
-    /// can fix the layer, and to the session's log, so a person watching sees why nothing changed.
-    ///
-    /// Not through the `notice` hook: a layer that fails must not be able to fail again about its
-    /// own failure.
+    /// A layer's answer the host could not use, said once - to the model, which can fix the layer
+    /// and to the session's log, so a person watching sees why nothing changed. Not through the
+    /// `notice` hook: a layer that fails must not fail again about its own failure.
     fn complain(&self, hub: &Arc<Hub>, layer: &str, what: &str) {
         let said = format!("a plugin layer's answer was refused: {what}");
         {
@@ -574,22 +439,16 @@ impl PluginHost {
         });
     }
 
-    /// The pane ids this session's layers export: `<manifest name>/<hook name>`.
-    ///
-    /// From the manifest's declared hooks rather than from the loaded module's exports, which are
-    /// the same list wherever a module loaded at all (`Manifest::admit` refuses a layer whose two
-    /// disagree). A layer whose module failed to load is listed with the rest: the pane exists and
-    /// answers nothing, which is a screen saying so rather than a pane that is not there.
+    /// The pane ids this session's layers export: `<manifest name>/<hook name>`, read from the
+    /// manifest rather than the module, whose exports `Manifest::admit` has already made equal. A
+    /// layer whose module failed to load is listed too: a pane that answers nothing says so.
     pub fn panes(&self) -> Vec<String> {
         pane_names(&self.lock().stack)
     }
 
-    /// **Say what discovery could not load, and publish every pane's first frame.**
-    ///
-    /// This is the half that makes a head's panes list possible: C4 has a head learn a pane from
-    /// `SessionEvent::PluginPane`, and the view a call answers is also its title — so a session
-    /// with layers has panes before anybody opens one. **No look runs here**: a dashboard nobody
-    /// has opened must not read files on the session's behalf.
+    /// Say what discovery could not load, and publish every pane's first frame, so a head knows a
+    /// session's panes before anybody opens one. No look runs here: a dashboard nobody opened must
+    /// not read files on the session's behalf.
     pub fn announce(&self, hub: &Arc<Hub>) {
         self.say_failures_now(hub);
         for pane in self.panes() {
@@ -602,7 +461,7 @@ impl PluginHost {
         std::mem::take(&mut self.lock().notices)
     }
 
-    /// When this host next has something to do: the next poll or the earliest pane refresh — or
+    /// When this host next has something to do: the next poll or the earliest pane refresh - or
     /// nothing, for a session with no layers at all.
     pub fn next_at(&self) -> Option<Instant> {
         let inner = self.lock();
@@ -619,18 +478,12 @@ impl PluginHost {
             .min()
     }
 
-    /// **The daemon's idle pass**: hot reload if its clock is up, then every pane whose `every_s`
-    /// has come round.
-    ///
-    /// The CHEAP half runs here — a stat per layer, which is what `poll_changes` is — and only a
-    /// change starts a thread. So a session on this clock costs a few `stat`s every two seconds,
-    /// and the gate, which runs `cargo`, never runs on the worker: a turn must not wait for a
-    /// compiler.
+    /// The daemon's idle pass: hot reload if its clock is up, then every pane whose `every_s` has
+    /// come round. Only the cheap half runs here - a stat per layer - and a change starts a thread
+    /// because the gate runs `cargo` and a turn must not wait for a compiler.
     pub fn tick(self: Arc<Self>, hub: Arc<Hub>) {
-        // **D17's book moves under us, and a pin that broke is news.** Before the hot-reload
-        // poll, because a pin a person took in the HEAD has to be in force here at the next tick
-        // — and a layer rebuilt after its pin has to stop being free in the same place, whether
-        // or not the gate has caught up with the module.
+        // The trust book moves under us: a pin taken in the head is in force here at the next
+        // tick, and a layer rebuilt after its pin stops being free at once, gate or no gate.
         let broken = {
             let mut inner = self.lock();
             let mut broken = std::mem::take(&mut inner.broken_pins);
@@ -661,13 +514,9 @@ impl PluginHost {
         self.refresh_due(&hub);
     }
 
-    /// **Gate every changed layer now, synchronously** — the whole of the hot-reload tick, minus
-    /// the thread.
-    ///
-    /// Each changed module is a [`letibot_plugins::Candidate`]; the gate replays it against a
-    /// shadow of this stack and keeps the module it loaded **on the candidate**, which is what
-    /// lets `Stack::apply` swap in exactly the bytes that were replayed rather than a second
-    /// compile of them. A refusal leaves the stack exactly as it was.
+    /// Gate every changed layer now, synchronously - the hot-reload tick minus the thread. The gate
+    /// keeps the module it loaded on the candidate, so `Stack::apply` swaps in exactly the bytes
+    /// that were replayed; a refusal leaves the stack as it was.
     pub fn gate_now(&self, hub: &Arc<Hub>) -> usize {
         let mut cands = {
             let mut inner = self.lock();
@@ -712,12 +561,9 @@ impl PluginHost {
         applied
     }
 
-    /// **A layer was pinned and its bytes moved** — said once, by name, in both registers a person
-    /// reads: the head's warning stream and the model's notice.
-    ///
-    /// It is `plugin_untrusted` and not `plugin_refused`: nothing was refused and nothing is
-    /// broken. What happened is that a layer a person said *these bytes are mine* about is not
-    /// that layer any more, so every call it makes is adjudicated again until somebody pins it.
+    /// A layer was pinned and its bytes moved - said once, by name, to the head's warnings and the
+    /// model's notices. `plugin_untrusted` and not `plugin_refused`: nothing was refused and nothing
+    /// is broken, but every call it makes is adjudicated again until somebody pins it.
     fn say_broken_pin(&self, hub: &Arc<Hub>, broken: &letibot_plugins::BrokenPin) {
         let said = format!(
             "the plugin layer `{}` ({}) is not pinned any more: its bytes changed after it was \
@@ -746,10 +592,8 @@ impl PluginHost {
         });
     }
 
-    /// **A candidate was refused: the old layer stays, and somebody is told.**
-    ///
-    /// The model is told because it is the one that can fix the plugin, and the head is told so a
-    /// person watching sees why the pane did not change (C3's *"told either way"*).
+    /// A candidate was refused: the old layer stays, and both the model (which can fix it) and the
+    /// head (so a person sees why the pane did not change) are told.
     fn refused(&self, hub: &Arc<Hub>, layer: &str, why: &str) {
         let said = format!(
             "the plugin layer `{layer}` was refused by the shadow gate, and the version answering \
@@ -769,17 +613,9 @@ impl PluginHost {
         });
     }
 
-    /// **The stack changed: bring every screen into line with it.**
-    ///
-    /// Three things, and they are three because a pane list can change in three ways at once: a
-    /// pane that was open and is still there is asked AGAIN WITH ITS LOOK (a reload is a new
-    /// version of the answer, not a reason to redraw the frame that asks for the file); a pane
-    /// that is gone is published as `PluginPaneGone`; and a pane that is new is announced, which
-    /// is how a head learns a title for a pane it has never heard of (C4).
-    ///
-    /// Called from the hot-reload gate, from `plugin load` and from `plugin disable`/`enable` —
-    /// one function, because three answers to *what is on a screen now* is how they start to
-    /// disagree.
+    /// The stack changed: bring every screen into line with it. A pane still there is asked again
+    /// with its look (a reload is a new version of the answer, not a reason to redraw the frame that
+    /// asks for the file), a gone one is published as `PluginPaneGone`, and a new one is announced.
     fn refresh_panes(&self, hub: &Arc<Hub>) {
         let panes = self.panes();
         let (stale, open): (Vec<String>, Vec<String>) = {
@@ -825,8 +661,8 @@ impl PluginHost {
                 .collect()
         };
         for pane in due {
-            // **The look comes first, because that is what a refresh is**: the pane asked for the
-            // file, not for a call — a second call with no new look would draw the same numbers.
+            // The look comes first, because that is what a refresh is: the pane asked for the
+            // file, not for a call - a second call with no new look would draw the same numbers.
             let (spec, by) = {
                 let inner = self.lock();
                 match inner.panes.get(&pane) {
@@ -850,11 +686,9 @@ impl PluginHost {
         }
     }
 
-    /// The capabilities the layer that answered declared — what a look is checked against.
-    ///
-    /// The manifest, and not a grant: `docs/plugins-plan.md` §3 says a capability is *enforced by
-    /// the host at the moment a plugin declares a look*, and this is that moment. A layer nobody
-    /// can name gets nothing, which is the safe direction.
+    /// The capabilities the layer that answered declared - what a look is checked against. The
+    /// manifest and not a grant: a capability is enforced where the look is declared, which is
+    /// here. A layer nobody can name gets nothing, which is the safe direction.
     fn caps_of(&self, layer: &str) -> Vec<Capability> {
         self.lock()
             .stack
@@ -863,11 +697,8 @@ impl PluginHost {
             .unwrap_or_default()
     }
 
-    /// **The rectangle a head is drawing this pane in** — `ClientFrame::PaneOpen`'s `w` and `h`,
-    /// recorded before the pane is asked so the C3 input carries it.
-    ///
-    /// `(0, 0)` is a head built before protocol 51, which has no size to give; it asks for
-    /// [`SIZE_W`]×[`SIZE_H`] rather than for a pane zero columns wide.
+    /// The rectangle a head is drawing this pane in, recorded before the pane is asked so the
+    /// input carries it. `(0, 0)` is a head older than protocol 51, and gets the default size.
     fn record_size(&self, pane: &str, (w, h): (u32, u32)) {
         let size = if w == 0 || h == 0 {
             (SIZE_W, SIZE_H)
@@ -884,15 +715,9 @@ impl PluginHost {
         say_failures(hub, &mut inner, &failures);
     }
 
-    /// **The feeds a pane is handed, by the answering layer's own declaration** — and only those.
-    ///
-    /// The layer is found the way [`Stack::call`] finds it (the first in stack order that is not
-    /// disabled, speaks this contract and exports the hook), so the declaration read here is the
-    /// declaration of the layer whose answer will be drawn.
-    ///
-    /// `sessions` and `room` are built; the four other feeds the contract names are still planned,
-    /// and a layer that declares one is handed **no key** — not an empty list, which would say
-    /// *there are none* (see [`feed`], [`room_feed`]).
+    /// The feeds a pane is handed, by the answering layer's own declaration - and only those. A
+    /// layer declaring a feed the host does not build is handed no key, not an empty list, which
+    /// would say there are none.
     fn feeds_for(&self, hook: &str) -> BTreeMap<String, Value> {
         let mut out = BTreeMap::new();
         for want in self.declared_feeds(hook) {
@@ -919,9 +744,8 @@ impl PluginHost {
         out
     }
 
-    /// **The feeds the layer that will answer `hook` declared**, by name — read off the stack, and
-    /// only off the layer [`Stack::call`] will reach (the first in stack order that is not disabled,
-    /// speaks this contract and exports the hook).
+    /// The feeds the layer that will answer `hook` declared - read off the stack, and only off the
+    /// layer [`Stack::call`] will reach.
     fn declared_feeds(&self, hook: &str) -> Vec<letibot_plugin::pane::Feed> {
         self.lock()
             .stack
@@ -936,7 +760,7 @@ impl PluginHost {
             .unwrap_or_default()
     }
 
-    /// **The acts the layer that will answer `hook` declared** — the allowlist [`View::validate_for`]
+    /// The acts the layer that will answer `hook` declared: the allowlist [`View::validate_for`]
     /// checks a row's `enter` and its letters against, and the words this host will perform.
     fn declared_actions(&self, hook: &str) -> Vec<String> {
         self.lock()
@@ -952,12 +776,9 @@ impl PluginHost {
             .unwrap_or_default()
     }
 
-    /// **One pane, asked once** — and, when the answer asks for a look and this pass may run one,
-    /// asked again with the look's result.
-    ///
-    /// The answer is published as `SessionEvent::PluginPane` whatever it is: a view that validates
-    /// as the plugin wrote it, and one that does not as a single panel saying why (see this
-    /// module's header).
+    /// One pane, asked once - and, when the answer asks for a look and this pass may run one
+    /// asked again with the look's result. Whatever the answer is, it is published as
+    /// `SessionEvent::PluginPane`: a view as the plugin wrote it, or one panel saying why not.
     fn render(&self, hub: &Arc<Hub>, pane: &str, req: Req) {
         let Some((manifest, name)) = pane.split_once('/') else {
             // A pane id is `<manifest name>/<hook name>`; anything else names no hook, so there is
@@ -965,12 +786,11 @@ impl PluginHost {
             return;
         };
         let hook = format!("pane_{name}");
-        // **The feeds, before the lock.** `feeds_for` reads the stack to learn what the answering
-        // layer declared, and the mutex is not reentrant: asking inside `render`'s own guard is a
-        // deadlock, which reads as a daemon that stopped answering panes.
+        // Before the lock: `feeds_for` reads the stack, and the mutex is not reentrant, so asking
+        // inside this function's own guard is a deadlock that reads as a daemon ignoring panes.
         let feeds = self.feeds_for(&hook);
-        // **The acts the answering layer declared**, read before the lock for the same reason the
-        // feeds are: `declared_actions` takes the stack's mutex and this one is not reentrant.
+        // Before the lock for the same reason: `declared_actions` takes the same, non-reentrant
+        // stack mutex.
         let declared_actions = self.declared_actions(&hook);
         let mut interior = self.lock();
         let size = interior
@@ -986,11 +806,9 @@ impl PluginHost {
             let resolved = interior.stack.call(&hook, &input);
             say_failures(hub, &mut interior, &resolved.failures);
             let Some(answer) = resolved.answer else {
-                // **A call that failed and a hook nobody answers are different screens.**
-                // Failure: the layer trapped, ran out of fuel or answered something that is not
-                // JSON, so the pane says why (C3's rule) rather than a head drawing a name it
-                // cannot fill. Nothing at all: the layer that had it is gone, disabled, or its
-                // module failed to load — the pane is gone, and one nobody opened says nothing.
+                // A failed call and a hook nobody answers are different screens: a failure says
+                // why, while no answer means the layer is gone or disabled - and a pane nobody
+                // opened says nothing.
                 let was_open = interior.panes.remove(pane).is_some();
                 let failure = resolved
                     .failures
@@ -1051,8 +869,8 @@ impl PluginHost {
             open.every_s = view.every_s;
             open.next_at =
                 (view.every_s > 0).then(|| Instant::now() + Duration::from_secs(view.every_s));
-            // **One look per pass.** A look's result is the next call's input, and an answer that
-            // asks for another is what `every_s` schedules — not what a render loops on.
+            // One look per pass. A look's result is the next call's input, and an answer that
+            // asks for another is what `every_s` schedules - not what a render loops on.
             if step == 0
                 && req.may_look
                 && let Some(spec) = view.look.clone()
@@ -1076,21 +894,13 @@ impl PluginHost {
     }
 }
 
-// -------------------------------------------------------------------------------------------
 // The `plugin` tool's half of this module: scaffold, build, load, stack, disable/enable, test.
-//
-// Every one of these asks the LIVE stack — the one `PaneDriver` draws panes from — because a
-// second stack would be a second answer to *what is in force*, which is the one question a
-// layered design cannot afford two of (`docs/plugins-plan.md` §2.3).
-// -------------------------------------------------------------------------------------------
+// Every one of them asks the LIVE stack, because a second stack would be a second answer to
+// *what is in force*, and a layered design cannot afford two of those.
 
-/// **A refusal the `plugin` tool hands a model**: the sentence saying what did not happen, and the
-/// detail it is fixed from — a compiler's own words, the gate's report, the layers there are.
-///
-/// Two fields rather than one string, because a failed build is exactly the case: the reason is
-/// *"cargo build failed"* and the detail is forty lines of `error[E0425]`, which is the part a
-/// model edits. The tool's own [`letibot_tools::builtins::plugin::Refusal`] is the same shape
-/// because it crosses a crate boundary; [`desk`] is the one place the two are converted.
+/// A refusal the `plugin` tool hands a model: the sentence saying what did not happen, and the
+/// detail it is fixed from - a compiler's own words, the gate's report, the layers there are.
+/// Two fields because a failed build needs both: the reason, and the forty lines a model edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refused {
     pub why: String,
@@ -1143,13 +953,9 @@ impl PluginHost {
         ))
     }
 
-    /// **`plugin build`** — the plugin's source compiled for `wasm32-unknown-unknown`, and the
-    /// artifact installed as its `plugin.wasm`.
-    ///
-    /// It is the gate's own step 1 through the gate's own [`Builder`], so the two can never
-    /// disagree about what a build is: `--offline`, `--release`, the wasm target, and the
-    /// artifact copied from wherever cargo put it. The compiler's own words come back as the
-    /// detail of a refusal, verbatim — a summary of an `E0425` is a model editing the wrong line.
+    /// `plugin build` - the plugin's source compiled for wasm, and the artifact installed as its
+    /// `plugin.wasm`. It goes through the gate's own [`Builder`], and the compiler's words come back
+    /// verbatim: a summary of an `E0425` is a model editing the wrong line.
     pub fn build(&self, name: &str) -> Result<String, Refused> {
         let dir = self.layer_dir(name)?;
         match self.builder.build(&dir) {
@@ -1183,16 +989,9 @@ impl PluginHost {
         }
     }
 
-    /// **`plugin load`** — the shadow gate (§2.4), then a synthetic call of every pane the
-    /// candidate exports, then the swap, hot.
-    ///
-    /// The gate's own five steps are `letibot_plugins::gate`'s and are not repeated here. What
-    /// this adds is the step a NEW layer needs and a modified one does not: the gate replays the
-    /// inputs a hook has already been asked, and a layer nobody has ever called has none — so
-    /// without a synthetic call a first-time pane would be applied having never run once. That is
-    /// exactly the measured rake of this slice (a committed `.wasm` that had never been executed
-    /// and trapped on every call), so the call is made on the SHADOW, before anything on a screen
-    /// changes, and a trap or a view the host would refuse keeps the live stack untouched.
+    /// `plugin load` - the shadow gate, then a synthetic call of every pane the candidate exports
+    /// then the swap, hot. The gate replays recorded inputs and a new layer has none, so without the
+    /// synthetic call a first-time pane would be applied having never run.
     pub fn load(&self, hub: &Arc<Hub>, name: &str) -> Result<String, Refused> {
         let dir = self.layer_dir(name)?;
         let (stack, rec) = {
@@ -1223,10 +1022,9 @@ impl PluginHost {
             ));
         }
 
-        // **The shadow runs it, and the live stack does not.** A clone, the candidate applied to
-        // the clone, every recorded input of every pane hook the candidate exports plus one
-        // synthetic first frame — and each answer parsed and validated as the view the host's keys
-        // must be able to drive.
+        // The shadow runs it, not the live stack: the candidate applied to a clone, every recorded
+        // input of every pane hook it exports plus one synthetic first frame, each answer parsed
+        // and validated as a view this host's keys can drive.
         let mut shadow = stack.clone();
         shadow
             .apply(cand.clone())
@@ -1251,9 +1049,8 @@ impl PluginHost {
         let mut said = Vec::new();
         for hook in &hooks {
             let mut inputs = rec.inputs(hook).to_vec();
-            // **A layer nobody has asked has no recorded inputs**, so one of its own kind's
-            // first frames goes too — that is what makes `load` a proof that the layer runs at all
-            // rather than a check on an empty replay.
+            // A layer nobody has asked has no recorded inputs, so one of its kind's first frames
+            // goes too - that is what makes `load` a proof that the layer runs at all.
             inputs.push(synthetic_for(hook, &self.feeds_for(hook)));
             for input in inputs {
                 let resolved = shadow.call(hook, &input);
@@ -1345,12 +1142,8 @@ impl PluginHost {
         ))
     }
 
-    /// **`plugin stack`** — what is in force, newest first.
-    ///
-    /// The answering layer per hook is the topmost ENABLED layer that exports it, which is what
-    /// the order means; whether that layer then passes or masks is a question only a call answers,
-    /// so it is `plugin test`'s and the wording here says so rather than pretending to have
-    /// measured it.
+    /// `plugin stack` - what is in force, newest first. The answering layer per hook is the topmost
+    /// enabled one that exports it; whether it then passes or masks only a call answers.
     pub fn stack_doc(&self) -> String {
         let inner = self.lock();
         let stack = &inner.stack;
@@ -1438,9 +1231,8 @@ impl PluginHost {
         let failures = stack.failures();
         out.push_str("\nfailures: ");
         if failures.is_empty() {
-            // A declaration-only layer (a `plugin.toml` and no `plugin.wasm` — the documented
-            // install of a built-in's tool) has no bytes and no failure to report, so the sentence
-            // says which state `sha —` above is rather than claiming every layer loaded.
+            // A declaration-only layer (a `plugin.toml`, no module - the documented install of a
+            // built-in's tool) has no bytes and nothing failed, so say what `sha -` means.
             out.push_str(
                 "none — nothing on disk failed to load. A layer with only a `plugin.toml` is a \
                  declaration, not a failure: the module that answers it is one the host already \
@@ -1459,11 +1251,9 @@ impl PluginHost {
         out
     }
 
-    /// **`plugin disable` / `plugin enable`** — the bisect for *"which of my fixes broke this"*.
-    ///
-    /// `what` is a layer id (`s2`), a plugin's name (`plan-dashboard`) or a pane id
-    /// (`plan-dashboard/dashboard`); a name that matches more than one layer is refused with the
-    /// ids, never guessed at.
+    /// `plugin disable` / `plugin enable` - the bisect for *which of my fixes broke this*. `what`
+    /// is a layer id, a plugin's name or a pane id; a name matching two layers is refused with the
+    /// ids rather than guessed at.
     pub fn set_enabled(
         &self,
         hub: &Arc<Hub>,
@@ -1495,19 +1285,16 @@ impl PluginHost {
         ))
     }
 
-    /// **`plugin test`** — one hook called with one input, and the whole answer reported: what it
-    /// answered, the layer that answered, the fuel, any trap, and whether the host would accept it.
-    ///
-    /// A PANE ID is asked through the whole stack, because that is the question a head asks. A
-    /// LAYER id is asked with every other disk layer disabled, because that is the question a bisect
-    /// asks — *what does MY layer say* — and the answer says which of the two was asked.
+    /// `plugin test` - one hook called with one input, and the whole answer reported. A pane id is
+    /// asked through the whole stack, because that is a head's question; a layer id is asked with
+    /// every other disk layer off, because that is a bisect's question.
     pub fn test(&self, what: Option<&str>, input: Option<&Value>) -> Result<String, Refused> {
         let (hook, only, label) = {
             let inner = self.lock();
             self.resolve_hook(&inner.stack, what)?
         };
-        // **The synthetic input is of the HOOK's kind**, not a pane's: a `condition` handed a C3
-        // first frame would answer nothing and read as a broken layer.
+        // The synthetic input is of the HOOK's kind, not a pane's: a `condition` handed a pane's
+        // first frame answers nothing and reads as a broken layer.
         let input = input
             .cloned()
             .unwrap_or_else(|| synthetic_for(&hook, &self.feeds_for(&hook)));
@@ -1549,9 +1336,8 @@ impl PluginHost {
                     .layer(&by)
                     .map(|l| l.scope.to_string())
                     .unwrap_or_else(|| "?".to_string());
-                // **The acts the answering layer declared**, so a diagnostic asks the same
-                // question the running host asks: a row reaching a verb the manifest never named
-                // is refused here too, rather than reported as a pane that is fine.
+                // The acts the answering layer declared, so the diagnostic asks what the running
+                // host asks: a row reaching a verb the manifest never named is refused here too.
                 let declared = asked
                     .layer(&by)
                     .map(|l| l.manifest.actions.clone())
@@ -1603,10 +1389,8 @@ impl PluginHost {
         Ok(out)
     }
 
-    /// **Which hook `test` asks, and whether it is asked alone.**
-    ///
-    /// A pane id is the whole stack's question; a layer id (or a plugin name, or a pane id, which
-    /// [`one_layer`] resolves the same way) is that layer's own.
+    /// Which hook `test` asks, and whether it is asked alone: a pane id is the whole stack's
+    /// question, a layer id is that layer's own.
     fn resolve_hook(
         &self,
         stack: &Stack,
@@ -1691,16 +1475,15 @@ impl PluginHost {
     }
 }
 
-/// C3's input, once, for a caller that has none of its own: the first frame of any pane — nothing
+/// C3's input, once, for a caller that has none of its own: the first frame of any pane - nothing
 /// looked at, nothing pressed, no state.
 fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
     input_value(&None, &Req::fresh(), (SIZE_W, SIZE_H), feeds)
 }
 
-/// **The first frame of any hook**, for `plugin test` and for `load`'s replay of a layer nobody has
-/// asked yet: the SDK's own synthetic example of that kind, which is also what `plugin_hooks`
-/// prints. A layer that cannot answer this one traps on its own first frame, the cheapest defect to
-/// find — and each kind's example is the plan's own.
+/// The first frame of any hook, for `plugin test` and for `load`'s replay of a layer nobody has
+/// asked yet: the SDK's own synthetic example of that kind. A layer that cannot answer it traps on
+/// its own first frame, which is the cheapest defect to find.
 fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
     use letibot_plugin::{condition, notice, tool_call, tool_result};
     let value = if hook.starts_with("pane_") {
@@ -1717,10 +1500,9 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
     value.unwrap_or(Value::Null)
 }
 
-/// **Would the host accept this answer for `hook`?** — the same parse the running host does, in one
-/// place, so `plugin test` and `load` cannot disagree with what a session would live with.
-///
-/// `Ok` is the one line a person reads (what the answer WOULD do); `Err` is the refusal.
+/// Would the host accept this answer for `hook`? - the same parse the running host does, in one
+/// place, so `plugin test` and `load` cannot disagree with what a session would live with. `Ok` is
+/// the one line a person reads (what the answer would do); `Err` is the refusal.
 fn accepted(hook: &str, answer: &Value, declared: &[String]) -> Result<String, String> {
     use letibot_plugin::{condition, notice, tool_call, tool_result};
     if hook.starts_with("pane_") {
@@ -1788,11 +1570,9 @@ fn accepted(hook: &str, answer: &Value, declared: &[String]) -> Result<String, S
     })
 }
 
-/// **One layer, by id, by manifest name, or by pane id** — and never a guess between two.
-///
-/// A name that matches two layers (a session fix and the project layer it was promoted from) is
-/// refused with the ids, because *disable the plugin called x* has two answers there and a host
-/// that picked one would be moving a layer nobody named.
+/// One layer, by id, by manifest name, or by pane id - and never a guess between two. A name that
+/// matches two layers is refused with the ids: *disable the plugin called x* has two answers
+/// there, and picking one would move a layer nobody named.
 fn one_layer<'a>(stack: &'a Stack, what: &str) -> Result<&'a letibot_plugins::Layer, Refused> {
     let what = what.trim();
     if let Some(layer) = stack.layer(what) {
@@ -1837,7 +1617,7 @@ fn one_layer<'a>(stack: &'a Stack, what: &str) -> Result<&'a letibot_plugins::La
 }
 
 /// How an input reads in a sentence, whatever kind it is: a pane's frame, a notice, a call, a
-/// result, or a watch — the fields the reader needs to recognise WHICH input went wrong.
+/// result, or a watch - the fields the reader needs to recognise WHICH input went wrong.
 fn describe_any_input(input: &Value) -> String {
     if input.get("size").is_some() || input.get("event").is_some() {
         return describe_input(input);
@@ -1907,8 +1687,8 @@ fn truncate(text: &str, width: usize) -> String {
 
 impl PaneDriver for PluginHost {
     fn attach(&self, _session_id: &str, hub: &Arc<Hub>) {
-        // **The room's pane is installed at this door**, because a head arriving is the first
-        // moment the pane is worth a compile (see [`PluginHost::ensure_the_room_pane`]).
+        // The room's pane is installed at this door: a head arriving is the first moment the pane
+        // is worth a compile (see [`PluginHost::ensure_the_room_pane`]).
         self.ensure_the_room_pane();
         self.announce(hub);
     }
@@ -1920,17 +1700,16 @@ impl PaneDriver for PluginHost {
         self.render(hub, pane, Req::fresh());
     }
 
-    /// **The pane is off the screen, so it comes off the refresh clock.** Nothing else is touched:
-    /// the layer's view is dropped with the entry, and the next open asks for a fresh one anyway
-    /// (C4's *a view is a moment*). The rectangle the pane was drawn in stays recorded, so a
-    /// reopen on the same screen does not go back to the host's default for one frame.
+    /// The pane is off the screen, so it comes off the refresh clock. The view goes with the entry
+    /// and the next open asks for a fresh one; the rectangle stays, so a reopen on the same screen
+    /// does not fall back to the default for one frame.
     fn close(&self, _session_id: &str, pane: &str) {
         self.lock().panes.remove(pane);
     }
 
     fn action(&self, _session_id: &str, hub: &Arc<Hub>, pane: &str, item: &str, action: &str) {
-        // **`look` re-runs the look now**, because that is what the key meant: a person asked for
-        // the file to be read again, not for the pane to be called with its old answer.
+        // `look` re-runs the look now, because that is what the key meant: the file read again
+        // not the pane called with its old answer.
         if action == "look" {
             let (spec, by) = {
                 let inner = self.lock();
@@ -1951,28 +1730,18 @@ impl PaneDriver for PluginHost {
             );
             return;
         }
-        // **A room pane's keys are the ROOM's four verbs, and this host performs them.** The layer
-        // drew the row and said which entry and which verb; what a claim or a release DOES is the
-        // room's state machine, one process away, over this session's own connection — so the act
-        // is taken here rather than handed back to the layer as an `event` word, which would be a
-        // layer deciding what the queue does.
-        //
-        // The row's words were already gated: `View::validate_for` refuses a view whose `enter` or
-        // whose letter names a verb the layer did not declare, so what arrives here is one of the
-        // four the manifest listed.
+        // A room pane's keys are the room's own verbs and this host performs them: what a claim
+        // does is the room's state machine, one process away, so the act is taken here and not
+        // handed back to the layer. `View::validate_for` has already gated the row's words.
         if let Some(room) = self.room.as_ref()
             && pane_hook(pane) == ROOM_HOOK
         {
-            // **The fifth control is not a room verb.** A restart is a daemon lifetime: it goes to
-            // the supervisor that starts coordinators, and the coordinator never performs it on
-            // itself — the pane is fed by the instance it would kill. Its own note (`room_restarted`)
-            // and its refusal (`room_restart_refused`) are the two sentences, and both are said:
-            // a control whose outcome nobody printed is a control a person cannot trust.
+            // The fifth control is not a room verb: a restart is a daemon lifetime, asked of the
+            // supervisor that starts coordinators, because the pane is fed by the instance it
+            // would kill. Both outcomes are said, since a silent control is one nobody can trust.
             if action == RESTART_VERB {
-                // **The act runs off this thread**, because this one is the head's own connection
-                // and a launcher that overran its minute would leave the person's prompts, keys
-                // and interrupts queued behind it. The outcome is the notice either way — a
-                // control whose result nobody printed is a control a person cannot trust.
+                // Off this thread, because it is the head's own connection: a launcher that
+                // overran its minute would leave the person's prompts and keys queued behind it.
                 match crate::room::supervise::InFlight::take() {
                     None => {
                         let _ = hub.publish(SessionEvent::Warning {
@@ -1991,10 +1760,9 @@ impl PaneDriver for PluginHost {
                             .name("room-restart".to_string())
                             .spawn(move || {
                                 let _running = running;
-                                // **Two literal codes**, not one variable:
-                                // `crates/sessionlog/tests/warning_codes.rs` scans this tree for
-                                // `Warning { code: "…" }` literals, and a code that reaches the wire
-                                // through a variable is a code the guard cannot see.
+                                // Two literal codes, not one variable: a warning-code guard scans
+                                // this tree for `Warning { code: "…" }` literals, and a code that
+                                // arrives through a variable is one it cannot see.
                                 match room.restart() {
                                     Ok(said) => {
                                         let _ = hub.publish(SessionEvent::Warning {
@@ -2015,9 +1783,8 @@ impl PaneDriver for PluginHost {
                     }
                 }
             } else if let Err(why) = room.act(item, action) {
-                // **A refusal is said, not swallowed.** A key that does nothing is
-                // indistinguishable from a key that was not pressed, and the room's own sentence
-                // names who holds the tag or what the state is.
+                // A refusal is said, not swallowed: a key that does nothing is indistinguishable
+                // from a key nobody pressed, and the room's sentence names who holds the tag.
                 hub.publish(SessionEvent::Warning {
                     code: "room_act_refused".into(),
                     detail: format!("`{action}` on `{item}`: {why}"),
@@ -2037,20 +1804,14 @@ impl PaneDriver for PluginHost {
     }
 }
 
-/// **The hook whose rows are the room's four controls.**
-///
-/// `plugins/builtin/room` declares `hooks = ["pane_room"]`, so a head opens it as `room/room`. The
-/// match is on the HOOK and not on the layer's name, because what makes a key the room's verb is
-/// what the pane is drawing: a project that ships its own layer over `pane_room` is drawing the
-/// same room, and its rows are the same four controls.
+/// The hook whose rows are the room's four controls. The match is on the hook and not the layer's
+/// name: what makes a key a room verb is what the pane draws, so a project shipping its own layer
+/// over `pane_room` is drawing the same room.
 pub const ROOM_HOOK: &str = "room";
 
-/// **The pane's fifth control, and the one verb here that is not the room's.**
-///
-/// `claim`, `release`, `abandon` and `rule` are the room's own state machine; `restart` is a daemon
-/// lifetime, asked of the supervisor (`crate::room::supervise`). It is declared in the layer's
-/// manifest like the other four (`plugins/builtin/room/plugin.toml`), so `View::validate_for` still
-/// refuses a verb nobody reviewed.
+/// The pane's fifth control, and the one verb here that is not the room's: `claim`, `release`
+/// `abandon` and `rule` are the room's state machine, while `restart` is a daemon lifetime asked of
+/// the supervisor. It is declared in the manifest like the other four, so `validate_for` gates it.
 pub const RESTART_VERB: &str = "restart";
 
 /// The hook part of a pane id (`<manifest name>/<hook name>`, without the `pane_` prefix).
@@ -2081,10 +1842,9 @@ fn pane_names(stack: &Stack) -> Vec<String> {
     out
 }
 
-/// C3's input, once: the state the pane returned, the look's result, the key that was pressed, the
-/// rectangle, and **the feeds the answering layer declared**. Every field is present, because a
-/// plugin deserialises this into a struct and a missing key is a plugin that cannot tell *no look*
-/// from *an empty one* — `feeds` is a map, and empty is a layer that declared none.
+/// A pane's input: the state it returned, the look's result, the key pressed, the rectangle, and
+/// the feeds its layer declared. Every field is present, because a plugin deserialises this into a
+/// struct and a missing key cannot be told from an empty one.
 fn input_value(
     state: &Option<Value>,
     req: &Req,
@@ -2106,13 +1866,9 @@ fn input_value(
     })
 }
 
-/// **The plugin's answer, as a view this host can drive** — or the sentence saying why not.
-///
-/// `validate` is the contract's own keys and shapes; `validate_for` is the layer's MANIFEST, and it
-/// is the one that matters here: a row that asks the host to perform a verb the layer did not
-/// declare is refused before it is drawn, rather than drawn and then refused per keypress. The
-/// daemon is the host that performs those verbs, so it is the host that must hold the line — a
-/// head's own check would be a second one, on a view that already crossed the wire.
+/// The plugin's answer, as a view this host can drive - or the sentence saying why not.
+/// `validate_for` is the check that matters here: a row asking for a verb the layer never declared
+/// is refused before it is drawn, because the daemon is what performs those verbs.
 fn validated(answer: &Value, pane: &str, by: &str, declared: &[String]) -> Result<View, String> {
     let view: View = serde_json::from_value(answer.clone()).map_err(|e| {
         format!("the answer is not a C3 view ({e}), while `{pane}` was resolved from `{by}`")
@@ -2121,8 +1877,8 @@ fn validated(answer: &Value, pane: &str, by: &str, declared: &[String]) -> Resul
     Ok(view)
 }
 
-/// **A pane that could not answer, as a pane that says so** — C3's rule, and the reason this
-/// function exists: an empty dashboard and a broken plugin look identical on a screen.
+/// A pane that could not answer, as a pane that says so: an empty dashboard and a broken plugin
+/// look identical on a screen.
 fn unavailable(pane: &str, layer: &str, why: &str) -> Value {
     let view = View {
         title: pane.to_string(),
@@ -2149,8 +1905,8 @@ fn unavailable(pane: &str, layer: &str, why: &str) -> Value {
     serde_json::to_value(&view).unwrap_or(Value::Null)
 }
 
-/// Say each stack failure once, and queue it for the model — which is the one that can fix a
-/// layer, and the reason §1 principle 4 calls the fall-through *loud*.
+/// Say each stack failure once and queue it for the model, which is the one that can fix a layer -
+/// which is what makes the fall-through loud rather than silent.
 fn say_failures(hub: &Arc<Hub>, inner: &mut Inner, failures: &[Failure]) {
     for failure in failures {
         let said = failure.to_string();
@@ -2168,19 +1924,15 @@ fn say_failures(hub: &Arc<Hub>, inner: &mut Inner, failures: &[Failure]) {
     }
 }
 
-/// **Where a session's own layers live**: `<data dir>/sessions/<id>/plugins` — C2's session
-/// scope, and the directory `plugin scaffold` writes into.
-///
-/// One function, because three callers have to agree about it and a disagreement is a plugin the
-/// scaffold writes where nothing discovers it: [`PluginHost::for_session`] discovers this scope,
-/// `plugin scaffold` writes into it, and the daemon's `Sessions::open_plugins` builds the host
-/// over it. `None` only when the data dir itself cannot be resolved (no `$HOME`, no `XDG_DATA_HOME`).
+/// Where a session's own layers live: `<data dir>/sessions/<id>/plugins`. One function because
+/// three callers must agree - discovery, `plugin scaffold` and the daemon's host - and a
+/// disagreement is a plugin written where nothing discovers it. `None` when the data dir is unknown.
 pub fn session_plugins_dir(session: &str) -> Option<PathBuf> {
     crate::mergequeue::git::letibot_data_dir()
         .map(|dir| dir.join("sessions").join(session).join("plugins"))
 }
 
-/// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` — where the user scope's layers are.
+/// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` - where the user scope's layers are.
 fn user_config_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
@@ -2189,35 +1941,9 @@ fn user_config_dir() -> Option<PathBuf> {
         .map(|base| base.join("letibot"))
 }
 
-/// **The tools this session's layers declare**, in precedence order, one per tool name.
-///
-/// Read at `Harness::open`, before any module is loaded and before the daemon has a hub to build a
-/// plugin host with — a declared tool is prompt bytes, and the prompt is composed first. So this
-/// reads `plugin.toml`s only ([`Stack::declared_tools`] does the three disk scopes).
-///
-/// # Why the built-in scope is NOT read here
-///
-/// **A built-in is what the binary carries; it is not what this session asked for.** MEASURED
-/// 2026-10-28 against this tree's own rule — `crates/harnessd/tests/wired.rs` pins the default
-/// session's tool set and says *"the next addition is not a decision until it is written down here
-/// too"* — appending the built-in table's declarations here seated `claude_transcript` in every
-/// session, including the one opened with no seat, no project layer and no flag. A session that
-/// passes no flag must get what it got before, and this function is the one place that decides it.
-///
-/// So a tool is seated when a layer **in force for this session** declares it — the session's own,
-/// the project's, or the user's — and that declaration is the ask: it is a file a person wrote,
-/// in a scope a person installs, and the stack resolves the hook through it to whatever answers
-/// below. For the binary's own layers that means the built-in's `plugin.toml`, copied into
-/// `<project>/.letibot/plugins/claude-transcript/`, with **no `plugin.wasm`**: the manifest is the
-/// declaration the prompt is built from and the module that answers it is the one the binary
-/// already carries (`PluginHost::production` installs it, and only for a tool this session
-/// declared — see there). The built-in's `[[tools]]` block is therefore the text a person installs
-/// and what `admit` checks the module against; it is not a tool every session is offered.
-///
-/// **First declaration of a name wins**, which is the stack's own rule: session over project over
-/// user. A project layer that declares a built-in's tool replaces its schema and description, and
-/// the hook is resolved through the same stack at call time — so the override can be a manifest
-/// and a module, or a manifest alone with the built-in's module still answering below it.
+/// The tools this session's layers declare, in precedence order, one per tool name. Read at
+/// `Harness::open` - a declared tool is prompt bytes - and only from `plugin.toml`s: the built-in
+/// scope is what the binary carries, not what this session asked for.
 pub fn declared_tools(session: &str, workspace: &Path) -> Vec<DeclaredTool> {
     let mut all = Stack::declared_tools(
         session_plugins_dir(session).as_deref(),
@@ -2229,7 +1955,7 @@ pub fn declared_tools(session: &str, workspace: &Path) -> Vec<DeclaredTool> {
     all
 }
 
-/// What one hook's answer was, and the layer it came from — the by-line a rewrite is reported
+/// What one hook's answer was, and the layer it came from - the by-line a rewrite is reported
 /// with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Answered<T> {
@@ -2237,13 +1963,9 @@ pub struct Answered<T> {
     pub by: String,
 }
 
-/// **The `monitor` call a layer's `arm` becomes** — the same door the model's own calls and
-/// `pr_watch` use, so the coalescing, the already-watched refusal and the TTL caps are the tool's
-/// and not this function's.
-///
-/// `repeat` is on, matching the harness's own pull-request watch: a watch armed to notice one
-/// push's checks is worth having for the next push's too, and the layer can say otherwise by
-/// retiring it.
+/// The `monitor` call a layer's `arm` becomes - the same door the model's own calls use, so the
+/// coalescing, the already-watched refusal and the TTL caps stay the tool's. `repeat` is on, as the
+/// harness's own pull-request watch is: a watch for one push's checks is worth having for the next.
 pub fn arm_call(arm: &letibot_plugin::tool_result::Arm) -> letibot_transcript::ToolCall {
     let name = arm.plugin.clone();
     let arguments = serde_json::json!({
@@ -2259,20 +1981,16 @@ pub fn arm_call(arm: &letibot_plugin::tool_result::Arm) -> letibot_transcript::T
     }
 }
 
-/// **The layer that answers a hook, as a look needs it**: its id, the name its `plugin.toml`
-/// declares, the scope it came from, and what it said it may look at.
-///
-/// A name AND an id because the two are read by different readers: the id (`s3`, `b-github-pr`) is
-/// what `plugin stack`, `set_disabled` and every message about a layer use, and the name is what a
-/// person wrote in the manifest — the one a sentence to a model should carry, since `s3` means
-/// nothing without the stack beside it.
+/// The layer that answers a hook, as a look needs it: its id, its manifest name, its scope, and
+/// what it may look at. A name and an id because two readers want different ones - mechanisms use
+/// the id (`s3`), and a sentence to a model carries the name.
 pub struct Answering {
     pub id: String,
     pub name: String,
     pub scope: Scope,
     pub capabilities: Vec<Capability>,
-    /// **Whether this layer runs freely** — a built-in, or a layer whose bytes a person pinned
-    /// (D17). An `exec` look of an unpinned one goes through the gate; of a free one, it runs.
+    /// Whether this layer runs freely: a built-in, or a layer whose bytes a person pinned. An
+    /// `exec` look of an unpinned layer goes through the gate; of a free one, it runs.
     pub trusted: bool,
 }
 
@@ -2284,10 +2002,9 @@ impl std::fmt::Display for Answering {
 }
 
 impl PluginHost {
-    /// **The layer that answers `hook`** — the topmost ENABLED layer that exports it, which is the
-    /// one the stack would ask first: a look a lower layer declared is only run when the upper one
-    /// asked below, and then the upper one's capabilities are still the ones in force for the
-    /// answer that came back.
+    /// The layer that answers `hook`: the topmost enabled one that exports it, which is the one the
+    /// stack asks first. A look a lower layer declared runs only when the upper one asked below
+    /// and the upper one's capabilities are still the ones in force for the answer that came back.
     pub fn answering(&self, hook: &str) -> Option<Answering> {
         let inner = self.lock();
         inner
@@ -2304,22 +2021,16 @@ impl PluginHost {
             })
     }
 
-    /// The capabilities the layer that answers `hook` declared — what a look runs under.
+    /// The capabilities the layer that answers `hook` declared - what a look runs under.
     pub fn capabilities_for(&self, hook: &str) -> Vec<Capability> {
         self.answering(hook)
             .map(|l| l.capabilities)
             .unwrap_or_default()
     }
 
-    /// **The layer `id`, as the sentence a model reads** — its manifest name and its scope,
-    /// `pr-watch (project)`.
-    ///
-    /// `s3` is a layer's identity to every mechanism (the stack view, `disable`, the audit rows),
-    /// and it is nothing to a reader: three characters with no meaning unless they have
-    /// `plugin stack` open beside them. So a sentence that has to tell a model *whose words these
-    /// are* says the name somebody wrote, and the scope that says how far the layer reaches. A
-    /// layer nobody can find (a stacked answer whose layer went away) is answered by its id, which
-    /// is the honest nothing rather than an invented name.
+    /// The layer `id`, as the sentence a model reads: its manifest name and scope, `pr-watch
+    /// (project)`. `s3` is a layer's identity to every mechanism and nothing to a reader, and a
+    /// layer nobody can find is answered by its id rather than an invented name.
     pub fn layer_sentence(&self, id: &str) -> String {
         let inner = self.lock();
         match inner.stack.layer(id) {
@@ -2328,17 +2039,9 @@ impl PluginHost {
         }
     }
 
-    /// **A look the gate would not run**, said **once** — per layer, program and reason, because
-    /// the sentence names all three and it is the dedup key.
-    ///
-    /// A condition polls: `every_s` is ninety seconds or more, and a refusal that repeated itself
-    /// every firing would be the same warning forever, which is how a model learns to skip them.
-    /// A refusal that CHANGES — the operator granted the program, the layer declared another one,
-    /// the gate's own reason moved — is a different sentence and is news again. That is the rule
-    /// `complain` follows for a layer's malformed answer, and the reason is the same.
-    ///
-    /// It reaches the session's log and the model's queue both: the model is the one that can
-    /// change the layer, and the operator is the one who can grant what the look needs.
+    /// A look the gate would not run, said once - per layer, program and reason, since the sentence
+    /// names all three and is its own dedup key. A refusal repeated on every firing is how a model
+    /// learns to skip them; one that changes is news again.
     pub fn look_refused(&self, hub: &Arc<Hub>, said: String) {
         {
             let mut inner = self.lock();
@@ -2354,29 +2057,21 @@ impl PluginHost {
         });
     }
 
-    /// **The last inputs this session's host asked `hook` with**, newest last — the record
-    /// `docs/plugins-plan.md` §5 calls *"the last inputs of each hook per session, so a layer is
-    /// written and tested against the very call or firing that went wrong"*, and what the gate's
-    /// replay runs over.
-    ///
-    /// Public because the record is the session's, not this module's: a head drawing what a layer
-    /// has been asked, `plugin test`'s replay and a test that wants to see the input a look's result
-    /// came back in all read the same ring, and a second reader of it would be a second record.
+    /// The last inputs this session's host asked `hook` with, newest last - what the gate's replay
+    /// runs over. Public because the record is the session's, not this module's: a head, `plugin
+    /// test`'s replay and a test all read the same ring.
     pub fn recorded(&self, hook: &str) -> Vec<Value> {
         self.lock().rec.inputs(hook).to_vec()
     }
 
-    /// The tree a look resolves against — the session's own workspace.
+    /// The tree a look resolves against - the session's own workspace.
     pub fn workspace(&self) -> PathBuf {
         self.workspace.clone()
     }
 
-    /// **One result through the `on_tool_result` hook** (`docs/plugins-plan.md` §4.2): the call,
-    /// how it ended, and what the model would read.
-    ///
-    /// `None` when nothing answers the hook (a session with no layers), or when the stack's answer
-    /// is a pass or a mask. An answer that is not the contract is refused and reported, and the
-    /// call's own result stands — a result the model is owed is never lost to a layer's typo.
+    /// One result through the `on_tool_result` hook: the call, how it ended, and what the model
+    /// would read. `None` when nothing answers, or the answer is a pass or a mask; an answer that is
+    /// not the contract is refused and the call's own result stands.
     pub fn on_tool_result(
         &self,
         hub: &Arc<Hub>,
@@ -2409,12 +2104,9 @@ impl PluginHost {
 }
 
 impl PluginHost {
-    /// **One call through the `on_tool_call` hook** (`docs/plugins-plan.md` §4.1) — before the
-    /// gate, so that what a layer rewrites is what the gate then adjudicates.
-    ///
-    /// `None` when nothing answers the hook, or when the answer is a pass or a mask. An answer that
-    /// is not the contract is refused and reported, and the call runs as the model proposed it —
-    /// the gate still decides, so a layer's typo cannot admit anything.
+    /// One call through the `on_tool_call` hook - before the gate, so what a layer rewrites is what
+    /// the gate then adjudicates. `None` when nothing answers; an answer that is not the contract is
+    /// refused and the call runs as proposed, because the gate still decides.
     pub fn on_tool_call(
         &self,
         hub: &Arc<Hub>,
@@ -2452,12 +2144,9 @@ impl PluginHost {
     }
 }
 
-/// **The runtime's `on_tool_call`, backed by one session's plugin host.**
-///
-/// A slot rather than the host itself, for the reason [`desk::SessionPlugins`] is: the runtime is
-/// built when the HARNESS opens, and the host when the DAEMON opens the session
-/// (`Sessions::open_plugins`) — the one place a hub and a pane driver exist. A session the daemon
-/// does not serve (a subagent) leaves the slot empty, and its calls run exactly as they did.
+/// The runtime's `on_tool_call`, backed by one session's plugin host. A slot and not the host
+/// itself: the runtime is built when the harness opens, the host when the daemon opens the session
+/// so a session the daemon does not serve leaves the slot empty and its calls run as they did.
 pub struct CallHooks {
     slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
     hub: Arc<Hub>,
@@ -2481,12 +2170,9 @@ impl letibot_tools::runtime::CallHook for CallHooks {
             .unwrap_or_else(|e| e.into_inner())
             .clone()?;
         let answered = host.on_tool_call(&self.hub, call, standing)?;
-        // **An `answer` is somebody else's words standing in for a result.** The tool never ran,
-        // and the payload — the layer's own sentence — cannot say so: it reads exactly like output
-        // a tool produced. So the result carries one line naming the layer in the words a person
-        // wrote (`name (scope)`, not `s3`) and saying the tool did not run. A `refuse` needs none:
-        // its OUTCOME already says a plugin layer refused it, and a rewrite runs and carries its
-        // own note.
+        // An `answer` is somebody else's words standing in for a result, and the payload cannot
+        // say so: it reads like a tool's own output. So the result carries one line naming the
+        // layer as a person wrote it. A `refuse` needs none - its outcome already says so.
         let note = matches!(
             answered.out.verdict(),
             letibot_plugin::tool_call::Verdict::Answer(_)
@@ -2511,17 +2197,9 @@ impl PluginHost {
     }
 }
 
-/// **Where a write's provenance goes** — D17's third arm, on the daemon's side of
-/// `letibot_tools::provenance::Sink`.
-///
-/// It filters to what is about a layer (`Trust::note_write` does: a `plugin.toml`, a module, or a
-/// file beside one) and appends to the trust book, so *who wrote these bytes* is a fact on disk.
-/// A record is one line per path, rewritten by the newest write — the question a person asks is
-/// *who put this here*, not *how many times*.
-///
-/// **The book is its own `Arc<Trust>`, not the host's.** The runtime is built when the harness
-/// opens and the host when the daemon opens the session, so the two cannot share an object; they
-/// share the FILE, which is the thing that matters, and the host's stack re-reads it on its poll.
+/// Where a write's provenance goes, on the daemon's side of `letibot_tools::provenance::Sink`. It
+/// filters to what is about a layer and appends to the trust book, so *who wrote these bytes* is a
+/// fact on disk. The book is its own `Arc<Trust>` and not the host's: they share the FILE.
 pub struct Provenance {
     trust: Arc<letibot_plugins::Trust>,
     session: String,
@@ -2559,7 +2237,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A module that answers from a file beside it, so a test can change what a layer says by
-    /// writing to disk — which is what a hot reload is.
+    /// writing to disk - which is what a hot reload is.
     struct FileModule {
         hooks: Vec<String>,
         answer: PathBuf,
@@ -2571,9 +2249,9 @@ mod tests {
         }
 
         fn call(&self, _hook: &str, input: &str) -> Result<Option<String>, String> {
-            // **Two frames, like the real example**: a pane handed a look's result answers its
+            // Two frames, like the real example: a pane handed a look's result answers its
             // dashboard, and one that is not answers the frame that asks for it. `second.json` is
-            // that dashboard, and its absence makes a layer a single answer.
+            // that dashboard; without it a layer answers once.
             let got_look = serde_json::from_str::<Value>(input)
                 .map(|v| !v["look"].is_null())
                 .unwrap_or(false);
@@ -2608,10 +2286,9 @@ mod tests {
         }
     }
 
-    /// **The gate's step 1, without cargo**: the layer's `next.json` becomes its `plugin.wasm` and
-    /// its `answer.json`, and a `FAIL` file makes the build fail. A test that ran the real
-    /// `CargoBuilder` would need the wasm target and a real crate to build, which is exactly what
-    /// the `Builder` seam exists to avoid.
+    /// The gate's build step without cargo: the layer's `next.json` becomes its `plugin.wasm` and
+    /// its `answer.json`, and a `FAIL` file makes the build fail. The real `CargoBuilder` needs the
+    /// wasm target and a crate to build, which is what the seam is for.
     struct FileBuilder;
 
     impl Builder for FileBuilder {
@@ -2821,7 +2498,7 @@ mod tests {
         );
         assert_eq!(allowed["exit"], json!(0), "{allowed}");
 
-        // A file OUTSIDE the declared tree, which exists — the check is on where a path resolves
+        // A file OUTSIDE the declared tree, which exists - the check is on where a path resolves
         // to, and a path that is merely absent fails earlier and for a different reason.
         let other = tempdir("readpath-out");
         let outside = other.join("not-declared.json");
@@ -2843,9 +2520,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------------------------
-    // The `tool_` seam
-    // -----------------------------------------------------------------------------------------
+    // The `tool_` seam.
 
     /// A module that answers one scripted answer per call, so a test can stand in the middle of a
     /// look round trip: round 0 asks for data, round 1 answers from it.
@@ -2924,14 +2599,9 @@ mod tests {
         (root, declared)
     }
 
-    /// The tool, wired to a host built over `root` — the two halves `Harness::open` and
-    /// `Sessions::open_plugins` put together, in the order they put them.
-    ///
-    /// **The layer is PINNED**, which is what D17 asks of anything placed after the binary: a
-    /// layer whose bytes nobody recorded is adjudicated on every call, and the tests in this
-    /// module are about the seam between a tool and its layer rather than about that ladder. The
-    /// ladder's own tests are [`a_layer_nobody_pinned_is_adjudicated_on_every_call`] and
-    /// [`a_pinned_layer_runs_freely_and_a_changed_one_is_refused_by_name`].
+    /// The tool, wired to a host built over `root` - the two halves `Harness::open` and
+    /// `Sessions::open_plugins` put together. The layer is pinned, because an unpinned one is
+    /// adjudicated on every call and these tests are about the seam, not the ladder.
     fn tool_for(
         root: &Path,
         declared: DeclaredTool,
@@ -2940,7 +2610,7 @@ mod tests {
         tool_for_with(root, declared, hub, true)
     }
 
-    /// [`tool_for`], with the pin taken or not — the one argument the ladder's tests vary.
+    /// [`tool_for`], with the pin taken or not - the one argument the ladder's tests vary.
     fn tool_for_with(
         root: &Path,
         declared: DeclaredTool,
@@ -2978,12 +2648,9 @@ mod tests {
         )
     }
 
-    /// **D17's third arm: a model's write records the sha256 of what it wrote.**
-    ///
-    /// The tool reports the bytes; `Provenance` is what turns that into a record in the trust
-    /// book, and `Trust::note_write` is what decides the report is about a layer at all. The hash
-    /// is cross-checked against the one `Trust::pin` computes from the same file, so the record
-    /// and the pin cannot disagree about which bytes they are talking about.
+    /// A model's write records the sha256 of what it wrote: the tool reports the bytes, and
+    /// `Trust::note_write` decides whether they are about a layer at all. The hash is checked
+    /// against the one `Trust::pin` computes from the same file, so record and pin agree.
     #[test]
     fn a_models_write_records_the_sha256_of_the_bytes_it_wrote() {
         let root = tempdir("provenance");
@@ -3026,12 +2693,9 @@ mod tests {
         );
     }
 
-    /// **D17's second arm: a layer nobody pinned is adjudicated on EVERY call.**
-    ///
-    /// The subject of the decision is the call itself — the tool's name, its arguments and the
-    /// class its layer's capabilities make it — and it is `admit_unasked`, so a layer can never
-    /// put a question to a person. This test stands a decider in for the gate, because what is
-    /// under test is the seam: *did this tool ask, on this call, before the layer answered?*
+    /// A layer nobody pinned is adjudicated on every call. The subject is the call itself, and it is
+    /// `admit_unasked`, so a layer can never put a question to a person; the decider stands in for
+    /// the gate, and what is under test is *did this tool ask before the layer answered?*
     #[test]
     fn a_layer_nobody_pinned_is_adjudicated_on_every_call() {
         struct Says(GateDecision, std::sync::Mutex<Vec<String>>);
@@ -3062,7 +2726,7 @@ mod tests {
         let hub = Hub::new("s-tool");
         let tool = tool_for_with(&root, declared[0].clone(), &hub, false);
 
-        // **Admitted by the ladder, and only then does the layer answer.**
+        // Admitted by the ladder, and only then does the layer answer.
         let admits = Says(GateDecision::Admit, std::sync::Mutex::new(Vec::new()));
         let out = tool.call(Some(&admits), &json!({}));
         assert_eq!(out.payload, "answered", "the ladder admitted it");
@@ -3071,12 +2735,12 @@ mod tests {
             vec!["probe/Read".to_string()],
             "the gate was asked once, about this tool"
         );
-        // **Every call**, not the first: a layer whose bytes nobody pinned is decided again each
-        // time it is asked for something.
+        // Every call, not the first: a layer whose bytes nobody pinned is decided again each time
+        // it is asked for something.
         let _ = tool.call(Some(&admits), &json!({}));
         assert_eq!(admits.1.lock().unwrap().len(), 2);
 
-        // **Refused by the ladder, and the refusal names the layer and both hashes.**
+        // Refused by the ladder, and the refusal names the layer and both hashes.
         let refuses = Says(
             GateDecision::Refuse {
                 outcome: letibot_transcript::ToolOutcome::NotRun {
@@ -3101,8 +2765,8 @@ mod tests {
         assert!(out.payload.contains("not pinned"), "{}", out.payload);
         assert!(out.payload.contains("sha256"), "{}", out.payload);
 
-        // **And with no gate at all, it does not run either** — `run` is the caller that has
-        // none, and a layer nobody pinned runs only where the ladder can be asked.
+        // And with no gate at all, it does not run either - `run` is the caller that has none, and
+        // a layer nobody pinned runs only where the ladder can be asked.
         let out = tool.run(&json!({}));
         assert!(matches!(
             out.outcome,
@@ -3111,9 +2775,8 @@ mod tests {
         assert!(out.payload.contains("no gate"), "{}", out.payload);
     }
 
-    /// **D17's first and third arms, end to end**: a pinned layer runs freely (the gate is never
-    /// asked), and a byte change after the pin un-pins it — the refusal names the layer and both
-    /// hashes, and the session is told once by name.
+    /// A pinned layer runs freely - the gate is never asked - and a byte change after the pin
+    /// un-pins it: the refusal names the layer and both hashes, and the session is told once.
     #[test]
     fn a_pinned_layer_runs_freely_and_a_changed_one_is_refused_by_name() {
         struct Never;
@@ -3156,9 +2819,9 @@ mod tests {
         let out = tool.call(Some(&Never), &json!({}));
         assert_eq!(out.payload, "answered", "a pinned layer runs freely");
 
-        // **The bytes move** — the module is rebuilt, which is the shape the rule exists for.
-        // The stack picks the rebuild up the way it does in the daemon: the poll sees it, the gate
-        // applies it, and the pin is decided again against what was applied.
+        // The bytes move: the module is rebuilt, which is the shape the rule exists for. The stack
+        // picks it up as the daemon does - the poll sees it, the gate applies it - and the pin is
+        // decided again against what was applied.
         std::fs::write(dir.join("plugin.wasm"), b"a module, rebuilt").expect("a rebuild");
         let pending = host.lock().stack.poll_changes();
         assert_eq!(pending.len(), 1, "the rebuild is a candidate");
@@ -3170,7 +2833,7 @@ mod tests {
         assert_eq!(news.len(), 1, "the pin broke: {news:?}");
         assert_eq!(news[0].name, "claude-transcript");
         // The layer is adjudicated again, so the decider that panics for a free layer is replaced
-        // by one that refuses — which is what an unpinned layer's call meets.
+        // by one that refuses - which is what an unpinned layer's call meets.
         struct Refuses;
         impl crate::plugins::tool::Decides for Refuses {
             fn admit_unasked(&self, _: &str, _: Access, _: &Value) -> Option<GateDecision> {
@@ -3294,7 +2957,7 @@ mod tests {
 
     #[test]
     fn a_symlink_inside_the_declared_tree_is_refused_for_where_it_points() {
-        // `~/.claude/projects` really holds one of these (`memory` → a folder under `~/Projects`),
+        // `~/.claude/projects` really holds one of these (`memory` → a folder under `~/Projects`)
         // and the check is on the RESOLVED path for exactly this reason.
         let tree = tempdir("tool-symlink");
         let outside = tempdir("tool-symlink-out");
@@ -3371,13 +3034,9 @@ mod tests {
 
     #[test]
     fn the_builtin_transcript_layer_is_on_the_daemons_stack_and_answers_its_hook() {
-        // **The whole seam, with the real module**: the project installs the binary's own
-        // `plugin.toml` (that declaration is the ask — `crates/harnessd/src/plugins.rs`'s
-        // `declared_tools` seats nothing the session did not declare), `crates/builtins` compiled
-        // `plugins/builtin/claude-transcript` for `wasm32-unknown-unknown` and the host puts it at
-        // the bottom of this session's stack for that reason, rano loads it here, `admit` compares
-        // its exports with the manifest's `[[tools]]`, and the hook runs. If any of those five is
-        // wrong this test is red before anything reaches a model.
+        // The whole seam with the real module: the project installs the binary's own
+        // `plugin.toml` - that declaration is the ask - the host puts the compiled built-in at the
+        // bottom of the stack, and rano loads it.
         let workspace = tempdir("builtin-tool");
         let builtin = letibot_builtins::table()
             .iter()
@@ -3389,13 +3048,9 @@ mod tests {
         // the whole point of a built-in layer.
         std::fs::write(layer.join("plugin.toml"), builtin.manifest).expect("the manifest");
         let host = PluginHost::production("s-tool", &workspace);
-        // **And the documented install is CLEAN.** The project wrote a `plugin.toml` and no
-        // `plugin.wasm` — that is the install (`docs/plugins-plan.md` §4.8), because the module
-        // that answers is the one the binary carries — so discovery must record nothing against
-        // this stack and the session must be told nothing. MEASURED before the fix: two failures
-        // (`plugin.wasm: No such file or directory`, twice) went out as `plugin_layer` warnings on
-        // every session in the project, for a correct install, on the code that means *this layer
-        // is exploding*. `stack.failures()` and the notices are what this test now looks at.
+        // And the documented install is clean: a `plugin.toml` with no module, because the module
+        // that answers is the one the binary carries. A missing module here is not a layer that is
+        // exploding, and saying so once made every session in the project carry the warning.
         {
             let inner = host.lock();
             assert!(
@@ -3404,11 +3059,9 @@ mod tests {
                 inner.stack.failures()
             );
         }
-        // It is a tool and not a pane: nothing of the transcript layer's is announced to a head.
-        // **The room's pane is not here either**, and that is the measurement: this host has no
-        // room feed, and the room's layer is installed lazily at the door a head comes through
-        // (`ensure_the_room_pane`) — a module costs 1.4–2.0 s to compile and a session nobody looks
-        // at must not pay it.
+        // It is a tool and not a pane, so nothing of the layer's is announced to a head. The room's
+        // pane is not here either: this host has no room feed, and that layer is installed lazily
+        // at the door a head comes through, because a module costs seconds to compile.
         assert!(host.panes().is_empty(), "{:?}", host.panes());
         let hub = Hub::new("s-tool");
         host.announce(&hub);
@@ -3442,7 +3095,7 @@ mod tests {
             resolved.failures
         );
         let answer = resolved.answer.expect("an answer");
-        // Round zero asks the host for a listing — the guest does no I/O, so the only correct
+        // Round zero asks the host for a listing - the guest does no I/O, so the only correct
         // first answer is a look, and that is the contract working end to end.
         assert_eq!(
             answer["looks"][0]["list"],
@@ -3451,18 +3104,9 @@ mod tests {
         );
     }
 
-    /// **A session that declared no tool from a layer gets no built-in layer at all** — the other
-    /// half of the test above, and the half that costs CPU.
-    ///
-    /// MEASURED 2026-10-28: compiling this binary's tool layer is 1.97 s in a debug host, and the
-    /// first cut of §4.8 installed it for EVERY session — so every open paid it, `letibot-bridge`'s
-    /// `no_spin` window was entirely compile, and `letibot-harnessd`'s idle-exit test found its
-    /// 800 ms window already gone when `Sessions::open_first` returned. A session that seats no
-    /// layer tool cannot call the layer: the `PluginTool` that would is what a declaration seats.
-    ///
-    /// The assertion is `ask` answering `None` — *nothing in this stack exports the hook* — which
-    /// is the same door `Stack::call` goes through, so it is a fact about what is installed rather
-    /// than a claim about it.
+    /// A session that declared no tool from a layer gets no built-in layer at all - the half of the
+    /// test above that costs CPU. Compiling the binary's tool layer is ~2 s in a debug host, and a
+    /// session that seats no layer tool cannot call it: the `PluginTool` is what a declaration seats.
     #[test]
     fn a_session_that_declared_no_tool_installs_no_builtin_layer() {
         let workspace = tempdir("builtin-none");
@@ -3600,7 +3244,7 @@ mod tests {
         );
         assert_eq!(seen[0].1["title"], json!("plan"));
         assert_eq!(seen[1].1["title"], json!("plan · v0.2.0"));
-        // **And the pane is now on the refresh clock**, from the answer that asked for 30 s.
+        // And the pane is now on the refresh clock, from the answer that asked for 30 s.
         let inner = host.lock();
         let open = inner
             .panes
@@ -3610,8 +3254,8 @@ mod tests {
         assert!(open.next_at.is_some());
     }
 
-    /// **A refused candidate leaves the old view alone; a passing one changes it** — the two
-    /// halves of §2.3, through the same `Stack::apply` the daemon uses.
+    /// A refused candidate leaves the old view alone; a passing one changes it - through the same
+    /// `Stack::apply` the daemon uses.
     #[test]
     fn a_refused_candidate_keeps_the_old_view_and_a_passing_one_changes_it() {
         let (root, hub) = project("gate", A_VIEW);
@@ -3654,7 +3298,7 @@ mod tests {
         );
     }
 
-    /// The recorder is what the gate replays, so a pane call has to land in it — and the pane has
+    /// The recorder is what the gate replays, so a pane call has to land in it - and the pane has
     /// to see the `state` it returned last time (§1, principle 5).
     #[test]
     fn a_pane_hands_its_state_back_and_the_input_is_recorded() {
@@ -3673,15 +3317,14 @@ mod tests {
             "the first call knows nothing"
         );
         assert_eq!(inputs[1]["state"], json!({"n": 2}), "the second is told");
-        // **The contract version is the SDK's own number**, not a copy: it said `1` while the
-        // contract had grown to 2, so a layer that read `v` to decide whether it would be handed a
-        // feed was told *no* by a host that was about to hand it one.
+        // The contract version is the SDK's own number, not a copy: a hardcoded `1` outlived the
+        // contract's growth to 2, so a layer that read `v` was told no feed by the host handing it.
         assert_eq!(inputs[1]["v"], json!(letibot_plugin::pane::V));
         assert_eq!(inputs[1]["size"], json!({"w": SIZE_W, "h": SIZE_H}));
         assert!(inner.panes.contains_key("plan-dashboard/dashboard"));
     }
 
-    /// A stop's action reaches the pane — read off the input the host recorded, because that input
+    /// A stop's action reaches the pane - read off the input the host recorded, because that input
     /// IS what the plugin was handed.
     #[test]
     fn a_pane_is_handed_the_event_that_was_pressed() {
@@ -3708,9 +3351,8 @@ mod tests {
         assert_eq!(input["event"]["action"], json!("expand"));
     }
 
-    /// **A hook no layer answers is silence, not a blank view.** The two screens are different:
-    /// `PluginPaneGone` closes a pane that was open, and nothing at all is a pane a head has never
-    /// heard of.
+    /// A hook no layer answers is silence, not a blank view: `PluginPaneGone` closes a pane that
+    /// was open, while nothing at all is a pane a head has never heard of.
     #[test]
     fn a_pane_nobody_answers_publishes_nothing() {
         let (root, hub) = project("gone", A_VIEW);
@@ -3722,10 +3364,9 @@ mod tests {
         );
     }
 
-    /// **A module that answers its own input's `size`** — the only place a test can read, from
-    /// outside, that the rectangle a head sent reached the plugin. The title is C3's one field
-    /// that is free text, so the plugin reports the rectangle there and the assertion is the
-    /// answer the head would draw.
+    /// A module that answers its own input's `size`, which is the only way a test can see from
+    /// outside that the head's rectangle reached the plugin. The title is free text, so the
+    /// rectangle goes there.
     struct SizeModule;
 
     impl Module for SizeModule {
@@ -3757,9 +3398,9 @@ mod tests {
         }
     }
 
-    /// **The rectangle the head is drawing the pane in reaches the plugin** — C4's `PaneOpen`
-    /// `w`/`h`, which exist because the daemon has no screen: a dashboard laid out for 120×40 in a
-    /// 70-column pane wraps every label for a terminal nobody is looking at.
+    /// The rectangle the head is drawing the pane in reaches the plugin. `PaneOpen`'s `w`/`h` exist
+    /// because the daemon has no screen: a dashboard laid out for 120×40 in a 70-column pane wraps
+    /// every label for a terminal nobody is looking at.
     #[test]
     fn the_rectangle_a_head_sends_is_the_one_the_pane_is_asked_at() {
         let (root, hub) = project("size", A_VIEW);
@@ -3777,15 +3418,15 @@ mod tests {
             Some(json!("77\u{d7}21")),
             "the plugin was handed the head's rectangle"
         );
-        // **A resize is the same frame again**, with the new rectangle — one way to say *draw it
-        // at this size*, whether it is the first time or the fifth.
+        // A resize is the same frame again with the new rectangle: one way to say *draw it at this
+        // size*, whether it is the first time or the fifth.
         host.open("s-plugins", &hub, "plan-dashboard/dashboard", (100, 30));
         assert_eq!(
             views(&hub).last().map(|(_, v)| v["title"].clone()),
             Some(json!("100\u{d7}30"))
         );
-        // **And a head built before protocol 51 sends neither** — `0` is *the head did not say*,
-        // which asks for the host's default rather than for a pane zero columns wide.
+        // A head older than protocol 51 sends neither: `0` is *the head did not say*, which asks
+        // for the host's default rather than a pane zero columns wide.
         host.open("s-plugins", &hub, "plan-dashboard/dashboard", (0, 0));
         assert_eq!(
             views(&hub).last().map(|(_, v)| v["title"].clone()),
@@ -3793,9 +3434,9 @@ mod tests {
         );
     }
 
-    /// **A pane the head closed comes off the refresh clock** — C4's `PaneClose`. Without it the
-    /// host believes somebody is looking at a closed dashboard for the rest of the session, and
-    /// asks it again every `every_s`: a wasm call and a look per interval, for a screen nobody has.
+    /// A pane the head closed comes off the refresh clock. Without it the host believes somebody
+    /// is looking at it for the rest of the session and asks it again every `every_s`: a wasm call
+    /// and a look per interval, for a screen nobody has.
     #[test]
     fn a_closed_pane_is_not_refreshed_again() {
         let (root, hub) = project("close", A_VIEW);
@@ -3811,7 +3452,7 @@ mod tests {
         let pane = "plan-dashboard/dashboard";
         host.open("s-plugins", &hub, pane, (80, 24));
         assert!(host.lock().panes.contains_key(pane), "the pane is open");
-        // **Due now**, rather than waiting five seconds for it.
+        // Due now, rather than waiting five seconds for it.
         host.lock().panes.get_mut(pane).expect("open").next_at =
             Some(Instant::now() - Duration::from_secs(1));
         let before = views(&hub).len();
@@ -3841,17 +3482,11 @@ mod tests {
         assert_eq!(views(&hub).len(), after);
     }
 
-    // ---------------------------------------------------------------------------------------
-    // The hook fixture: a layer that answers any hook from a table
-    //
-    // The pane fixture above answers one hook from one file, which is enough for a pane — its
-    // name never varies. A hook KIND is resolved by name, and every question these tests ask is
-    // about names: which layer answers `notice_monitor`, what the layer below says when the top
-    // one traps, what happens to a hook nobody exports. So the answers live in a table keyed by
-    // (layer directory, hook), and a layer can answer one kind and pass the next.
-    // ---------------------------------------------------------------------------------------
+    // The hook fixture: a layer that answers any hook from a table. The pane fixture above answers
+    // one hook from one file, which is enough for a pane; a hook kind is resolved by name, so the
+    // answers live in a table keyed by (layer directory, hook).
 
-    /// What one hook of one layer says — one answer per call, the last one repeating, so a layer
+    /// What one hook of one layer says - one answer per call, the last one repeating, so a layer
     /// can ask below on its first call and answer on the second. `None` is a trap.
     type Script = Vec<Option<Value>>;
 
@@ -3873,8 +3508,8 @@ mod tests {
             self.layer_with_caps(root, name, &[], hooks)
         }
 
-        /// The same layer with **capabilities declared** — the only thing §3's enforcement and the
-        /// gate behind it can be asked about, since a look is checked against this list.
+        /// The same layer with capabilities declared - the only thing enforcement can be asked
+        /// about, since a look is checked against this list.
         fn layer_with_caps(
             self: &Table,
             root: &Path,
@@ -3993,7 +3628,7 @@ mod tests {
         vec![Some(answer)]
     }
 
-    /// **A layer rewords a notice, and the model reads its sentence.**
+    /// A layer rewords a notice, and the model reads its sentence.
     #[test]
     fn a_layer_rewords_a_notice() {
         let root = tempdir("notice-reword");
@@ -4015,7 +3650,7 @@ mod tests {
             said.as_deref(),
             Some("[monitor] CodeRabbit reviewed o/r#24: 3 comments — read them")
         );
-        // And the input it was handed is the host's own shape, with the kind on it — the same
+        // And the input it was handed is the host's own shape, with the kind on it - the same
         // document `plugin_hooks` prints.
         let seen = host.lock().rec.inputs("notice_monitor").to_vec();
         assert_eq!(seen.len(), 1, "the input is recorded for the gate's replay");
@@ -4023,9 +3658,8 @@ mod tests {
         assert_eq!(seen[0]["v"], json!(letibot_plugin::V));
     }
 
-    /// **A mask switches the hook off from that layer down**, and the harness's sentence is what
-    /// the model reads — which is the difference between a notice nobody patched and a notice a
-    /// layer silenced.
+    /// A mask switches the hook off from that layer down, and the harness's sentence is what the
+    /// model reads - the difference between a notice nobody patched and one a layer silenced.
     #[test]
     fn a_masked_hook_leaves_the_harnesss_own_sentence() {
         let root = tempdir("notice-mask");
@@ -4049,7 +3683,7 @@ mod tests {
         );
     }
 
-    /// **A layer asks below and the lower layer really is called** — the witness is the lower
+    /// A layer asks below and the lower layer really is called: the witness is the lower
     /// layer's trap arriving in this call's failures while the top layer still answers.
     #[test]
     fn a_layer_asks_below_and_the_lower_layer_is_called() {
@@ -4088,9 +3722,8 @@ mod tests {
         );
     }
 
-    /// **A disabled layer is not asked at all**, and a hook nobody answers is not recorded: the
-    /// bisect has to be visible in the recorder too, or a replay would run against inputs from a
-    /// layer that was off.
+    /// A disabled layer is not asked at all, and a hook nobody answers is not recorded: the bisect
+    /// has to be visible in the recorder too, or a replay would run against a layer that was off.
     #[test]
     fn a_disabled_layer_is_not_asked() {
         let root = tempdir("notice-disabled");
@@ -4115,8 +3748,8 @@ mod tests {
         assert_eq!(host.lock().rec.inputs("notice_monitor").len(), 0);
     }
 
-    /// **A layer that traps falls to the one below, and the model is told which failed** — the
-    /// loud half of §1 principle 4.
+    /// A layer that traps falls to the one below, and the model is told which failed - the loud
+    /// half of the fall-through.
     #[test]
     fn a_trapping_layer_falls_down_and_is_reported() {
         let root = tempdir("notice-trap");
@@ -4148,8 +3781,8 @@ mod tests {
         );
     }
 
-    /// **A session with no layers says the harness's sentence, and pays nothing for it** — the
-    /// promise that a session that patches nothing behaves as it did before there were plugins.
+    /// A session with no layers says the harness's sentence and pays nothing for it: a session that
+    /// patches nothing behaves as it did before there were plugins.
     #[test]
     fn a_session_with_no_layers_is_unchanged() {
         let root = tempdir("notice-none");
@@ -4168,9 +3801,9 @@ mod tests {
         assert!(hub.retained().is_empty(), "and nothing was published");
     }
 
-    /// **A firing may be dropped and a settlement may not** (§4.3): the kinds a project never
-    /// wants are the firing and the nudge, and a layer that tries to silence a fact the model is
-    /// owed is refused and told why.
+    /// A firing may be dropped and a settlement may not: the kinds a project never wants are the
+    /// firing and the nudge, and a layer that tries to silence a fact the model is owed is refused
+    /// and told why.
     #[test]
     fn a_dropped_firing_is_silent_and_a_dropped_settlement_is_refused() {
         let root = tempdir("notice-drop");
@@ -4203,8 +3836,8 @@ mod tests {
         );
     }
 
-    /// **An answer that is not the contract is refused, not obeyed** — a layer that says
-    /// `{"text": 5}` must not silence a notice, and the model is told its layer is wrong.
+    /// An answer that is not the contract is refused, not obeyed: a layer that says `{"text": 5}`
+    /// must not silence a notice, and the model is told its layer is wrong.
     #[test]
     fn an_answer_that_is_not_a_notice_is_refused() {
         let root = tempdir("notice-wrong-shape");
@@ -4228,17 +3861,15 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------------------
-    // `on_tool_result` (§4.2): the result, before the model reads it
-    // ---------------------------------------------------------------------------------------
+    // `on_tool_result`: the result, before the model reads it.
 
     /// The call every result test here answers: the plan's own example, a pull request opened.
     fn a_call() -> letibot_plugin::Call {
         letibot_plugin::Call::new("bash", json!({"command": "gh pr create --fill"}))
     }
 
-    /// **A layer adds a sentence to a result** — the hook's whole first use: the call printed a
-    /// pull request URL and the model is told what is watching it now.
+    /// A layer adds a sentence to a result - the hook's whole first use: the call printed a pull
+    /// request URL and the model is told what is watching it now.
     #[test]
     fn a_layer_appends_to_a_result() {
         let root = tempdir("result-append");
@@ -4263,7 +3894,7 @@ mod tests {
             )
         );
         assert_eq!(answered.by, "p1");
-        // And the input is the host's own shape: the call as an object, the outcome as a word,
+        // And the input is the host's own shape: the call as an object, the outcome as a word
         // the payload the model would have read.
         let seen = host.lock().rec.inputs("on_tool_result").to_vec();
         assert_eq!(seen.len(), 1);
@@ -4276,7 +3907,7 @@ mod tests {
         assert_eq!(seen[0]["v"], json!(letibot_plugin::V));
     }
 
-    /// **A layer replaces a result**, and a suffix alone is a different answer.
+    /// A layer replaces a result, and a suffix alone is a different answer.
     #[test]
     fn a_layer_replaces_a_result() {
         let root = tempdir("result-replace");
@@ -4297,8 +3928,8 @@ mod tests {
         );
     }
 
-    /// **A mask leaves the result exactly as the call produced it** — the hook switched off from
-    /// that layer down, which is what a mask means.
+    /// A mask leaves the result exactly as the call produced it - the hook switched off from that
+    /// layer down, which is what a mask means.
     #[test]
     fn a_masked_result_hook_leaves_the_call_own_words() {
         let root = tempdir("result-mask");
@@ -4321,8 +3952,8 @@ mod tests {
         );
     }
 
-    /// **A layer asks below and edits what it is told** — the shape §2.1 describes for the
-    /// dotenv-style fix, over a result rather than a notice.
+    /// A layer asks below and edits what it is told: the dotenv-style fix's shape, over a result
+    /// rather than a notice.
     #[test]
     fn a_result_layer_asks_below_and_answers_for_itself() {
         let root = tempdir("result-below");
@@ -4356,7 +3987,7 @@ mod tests {
         );
     }
 
-    /// **A disabled layer is not asked**, and a hook nobody answers is not recorded.
+    /// A disabled layer is not asked, and a hook nobody answers is not recorded.
     #[test]
     fn a_disabled_result_layer_is_not_asked() {
         let root = tempdir("result-disabled");
@@ -4374,8 +4005,8 @@ mod tests {
         assert_eq!(host.lock().rec.inputs("on_tool_result").len(), 0);
     }
 
-    /// **A trapping layer falls to the one below, and the model is told** — a result the model is
-    /// owed is never lost to a layer's trap.
+    /// A trapping layer falls to the one below, and the model is told: a result the model is owed
+    /// is never lost to a layer's trap.
     #[test]
     fn a_trapping_result_layer_falls_down_and_is_reported() {
         let root = tempdir("result-trap");
@@ -4403,7 +4034,7 @@ mod tests {
         );
     }
 
-    /// **A session with no layers hands the result back untouched, and records nothing.**
+    /// A session with no layers hands the result back untouched, and records nothing.
     #[test]
     fn a_session_with_no_layers_rewrites_no_result() {
         let root = tempdir("result-none");
@@ -4414,8 +4045,8 @@ mod tests {
         assert!(host.lock().rec.inputs("on_tool_result").is_empty());
     }
 
-    /// **An `arm` becomes the `monitor` call the model would have typed** — one door for a watch,
-    /// so the coalescing and the refusals are the tool's and not a second implementation's here.
+    /// An `arm` becomes the `monitor` call the model would have typed - one door for a watch, so
+    /// the coalescing and the refusals stay the tool's.
     #[test]
     fn an_arm_is_a_monitor_call() {
         let arm = letibot_plugin::tool_result::Arm::new("coderabbit", json!({"pr": "o/r#24"}));
@@ -4432,9 +4063,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------------------
-    // `on_tool_call` (§4.1): the call, before the gate
-    // ---------------------------------------------------------------------------------------
+    // `on_tool_call`: the call, before the gate.
 
     fn standing() -> letibot_tools::runtime::Standing {
         letibot_tools::runtime::Standing {
@@ -4443,7 +4072,7 @@ mod tests {
         }
     }
 
-    /// **A layer rewrites a call's arguments**, and the answer says what it wants.
+    /// A layer rewrites a call's arguments, and the answer says what it wants.
     #[test]
     fn a_layer_rewrites_a_call() {
         let root = tempdir("call-rewrite");
@@ -4467,7 +4096,7 @@ mod tests {
             letibot_plugin::tool_call::Verdict::Rewrite(_)
         ));
         assert_eq!(answered.by, "p1");
-        // The input carries the session's own facts — the mode is the gate's word for how much
+        // The input carries the session's own facts - the mode is the gate's word for how much
         // this session may do unasked, and a layer is allowed to be narrower than *always*.
         let seen = host.lock().rec.inputs("on_tool_call").to_vec();
         assert_eq!(seen.len(), 1);
@@ -4478,7 +4107,7 @@ mod tests {
         assert_eq!(seen[0]["v"], json!(letibot_plugin::V));
     }
 
-    /// **A layer refuses a call, and a layer answers one** — the two ways of not running it.
+    /// A layer refuses a call, and a layer answers one - the two ways of not running it.
     #[test]
     fn a_layer_can_refuse_or_answer_a_call() {
         let root = tempdir("call-refuse");
@@ -4522,13 +4151,9 @@ mod tests {
         );
     }
 
-    /// **An `answer` verdict reaches the model with one line saying who answered it, in the
-    /// layer's own name and scope** — `docs/plugins-plan.md` §4.1's `answer`, whose payload is a
-    /// layer's sentence and would otherwise read exactly like a tool's output.
-    ///
-    /// The `Answered` id (`s3`, `p1`) is what the stack and the audit rows use, and it is what a
-    /// model must NOT be handed: this is the one place the two are composed, so a change to how a
-    /// layer is named moves here and nowhere else.
+    /// An `answer` verdict reaches the model with one line saying who answered it, in the layer's
+    /// own name and scope: the payload is a layer's sentence and would otherwise read like a tool's
+    /// output. The `Answered` id (`s3`) is what the audit rows use and a model must not be handed.
     #[test]
     fn an_answered_call_is_attributed_by_name_and_scope() {
         let root = tempdir("call-answer-note");
@@ -4558,8 +4183,8 @@ mod tests {
             patched.by
         );
 
-        // **A refusal carries none**, because its outcome already says a layer refused it — and
-        // a pass carries none either, because nothing was said.
+        // A refusal carries none, because its outcome already says a layer refused it - and a pass
+        // carries none either, because nothing was said.
         let refused = tempdir("call-refuse-note");
         let table = Table::new();
         table.layer(
@@ -4578,8 +4203,8 @@ mod tests {
         assert_eq!(patched.note, None);
     }
 
-    /// **A mask lets the call through untouched** — the hook switched off from that layer down,
-    /// which for this kind means the model's call is the one that runs.
+    /// A mask lets the call through untouched - the hook switched off from that layer down, which
+    /// for this kind means the model's call is the one that runs.
     #[test]
     fn a_masked_call_hook_lets_the_call_through() {
         let root = tempdir("call-mask");
@@ -4600,8 +4225,8 @@ mod tests {
         assert!(host.on_tool_call(&hub, &asked, &standing()).is_none());
     }
 
-    /// **A layer asks below before deciding** — the shape a fix uses when it wants to *narrow* what
-    /// a lower layer already said rather than replace it.
+    /// A layer asks below before deciding: the shape a fix uses when it wants to narrow what a
+    /// lower layer said rather than replace it.
     #[test]
     fn a_call_layer_asks_below_and_answers_for_itself() {
         let root = tempdir("call-below");
@@ -4631,7 +4256,7 @@ mod tests {
         );
     }
 
-    /// **A disabled layer is not asked**, and a hook nobody answers is not recorded.
+    /// A disabled layer is not asked, and a hook nobody answers is not recorded.
     #[test]
     fn a_disabled_call_layer_is_not_asked() {
         let root = tempdir("call-disabled");
@@ -4650,7 +4275,7 @@ mod tests {
         assert_eq!(host.lock().rec.inputs("on_tool_call").len(), 0);
     }
 
-    /// **A trapping layer falls to the one below, and the model is told** — a call is never left
+    /// A trapping layer falls to the one below, and the model is told: a call is never left
     /// undecided because a layer broke.
     #[test]
     fn a_trapping_call_layer_falls_down_and_is_reported() {
@@ -4680,7 +4305,7 @@ mod tests {
         );
     }
 
-    /// **A session with no layers shows nothing to a layer and records nothing.**
+    /// A session with no layers shows nothing to a layer and records nothing.
     #[test]
     fn a_session_with_no_layers_passes_every_call_through() {
         let root = tempdir("call-none");
@@ -4693,15 +4318,11 @@ mod tests {
         assert!(hub.retained().is_empty());
     }
 
-    // ---------------------------------------------------------------------------------------
-    // `condition` (§4.4): a monitor whose policy is a layer
-    // ---------------------------------------------------------------------------------------
+    // `condition`: a monitor whose policy is a layer.
 
-    /// The daemon's half, over this test's host — the real look runner and the real stack.
-    ///
-    /// No gate: these tests are about the condition's shape (the interval, the state, the look
-    /// results), and an `exec` look here is refused for want of one. The tests that DO adjudicate
-    /// one pass their own [`Gate`](conditions::Unasked); see `an_exec_look_goes_through_the_gate`.
+    /// The daemon's half, over this test's host - the real look runner and the real stack. No gate
+    /// these tests are about the condition's shape, and the ones that DO adjudicate pass their own
+    /// [`Gate`](conditions::Unasked).
     fn conditions(host: &Arc<PluginHost>) -> Arc<conditions::HostConditions> {
         conditions_with(host, None)
     }
@@ -4717,8 +4338,8 @@ mod tests {
         )
     }
 
-    /// **A layer's condition arms, and its answer is what the watch follows** — the arming call,
-    /// the interval, the cap, and the state, through the seam the daemon fills.
+    /// A layer's condition arms, and its answer is what the watch follows: the arming call, the
+    /// interval, the cap and the state, through the seam the daemon fills.
     #[test]
     fn a_layers_condition_arms_with_its_own_interval_and_cap() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -4748,7 +4369,7 @@ mod tests {
             "the plugin's own cap, inside the tree's week"
         );
         assert!(armed.condition.describe().contains("coderabbit"));
-        // The read look ran under the layer's `read` capability and is now ready to hand over —
+        // The read look ran under the layer's `read` capability and is now ready to hand over -
         // which is the half that proves the seam reaches the workspace.
         assert_eq!(
             armed.condition.met(),
@@ -4761,8 +4382,8 @@ mod tests {
         assert!(seen[0]["look"].is_null(), "arming asks with no look");
     }
 
-    /// **A watch nobody answers is refused by name**, and so is one whose layer is off — the two
-    /// are the same sentence to a model, and it names the hook.
+    /// A watch nobody answers is refused by name, and so is one whose layer is off - the two are
+    /// the same sentence to a model, and it names the hook.
     #[test]
     fn a_condition_nobody_answers_is_refused() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -4793,8 +4414,8 @@ mod tests {
         assert!(conditions(&host).arm("coderabbit", json!({})).is_err());
     }
 
-    /// **A condition layer that traps falls to the one below**, which is how a session fixes a
-    /// broken watch without deleting it.
+    /// A condition layer that traps falls to the one below, which is how a session fixes a broken
+    /// watch without deleting it.
     #[test]
     fn a_trapping_condition_layer_falls_down() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -4819,8 +4440,8 @@ mod tests {
         );
     }
 
-    /// **An `exec` look the layer did not declare runs nothing, and says which capability it
-    /// wanted** — the enforcement point §3 names, exercised through a real armed watch.
+    /// An `exec` look the layer did not declare runs nothing, and says which capability it wanted -
+    /// the enforcement point, exercised through a real armed watch.
     #[test]
     fn an_exec_look_without_the_capability_is_refused() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -4838,8 +4459,8 @@ mod tests {
             )],
         );
         let host = Arc::new(table_host(&root, &table));
-        // **The gate is never reached.** The capability is checked first, because a program the
-        // layer never declared is not a call anybody adjudicates — so this probe must stay empty.
+        // The gate is never reached: the capability is checked first, because a program the layer
+        // never declared is not a call anybody adjudicates. So this probe must stay empty.
         let probe = Arc::new(ProbeGate::admitting());
         let armed = conditions_with(&host, Some(probe.clone()))
             .arm("shell", json!({}))
@@ -4872,13 +4493,10 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------------------
-    // An `exec` look goes through the adjudicator (§1 principle 2), without asking
-    // ---------------------------------------------------------------------------------------
+    // An `exec` look goes through the adjudicator, without asking.
 
-    /// **A gate a test answers with, and what it was asked.** The seam's own fixture: one
-    /// decision, and every command line the look offered it, so a test can say both what the gate
-    /// would do and whether it was consulted at all.
+    /// A gate a test answers with, and what it was asked: one decision, and every command line the
+    /// look offered it, so a test can say both what it would do and whether it was consulted.
     struct ProbeGate {
         answer: fn() -> GateDecision,
         seen: Mutex<Vec<String>>,
@@ -4947,8 +4565,8 @@ mod tests {
         table
     }
 
-    /// **Run the watch until it fires, with a deadline** — a look that is a real child is polled
-    /// on the next tick, so a test that called `met()` once would be racing the process.
+    /// Run the watch until it fires, with a deadline: a look that is a real child is polled on the
+    /// next tick, so a test that called `met` once would be racing the process.
     fn until_fired(condition: &Arc<dyn letibot_tools::exec::monitor::Condition>) -> String {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -4963,13 +4581,9 @@ mod tests {
         }
     }
 
-    /// **A built-in's `exec` look runs FREELY** — D17's first arm, which is the operator's own
-    /// sentence: *"Only the builtins run freely"*, `exec` included. The layer is the binary's own
-    /// bytes and nobody placed it at run time, so there is nobody to ask and nothing to pin.
-    ///
-    /// The gate here refuses everything it is shown, so this test fails in two ways without the
-    /// arm: the probe would have been asked (it must not be), and the look's own exit would have
-    /// been a refusal rather than the program's.
+    /// A built-in's `exec` look runs freely - *"Only the builtins run freely"*, `exec` included
+    /// the layer is the binary's own bytes, so there is nobody to ask. The gate here refuses
+    /// everything, so without that arm the probe would have been asked and the look refused.
     #[test]
     fn a_builtins_exec_look_runs_without_the_gate() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -5034,14 +4648,9 @@ mod tests {
         assert_eq!(handed["look"]["exit"], json!(0), "the program really ran");
     }
 
-    /// **The look belongs to the layer whose ANSWER asked for it, not to the one that declares the
-    /// hook** — the reviewer's hole, closed.
-    ///
-    /// A PINNED layer sits on top and passes the hook; the answer therefore comes from an UNPINNED
-    /// layer below it, and the `exec` look in that answer is the unpinned layer's. Judged by the
-    /// topmost declarer (what this used to do) the look ran unadjudicated, because the top layer
-    /// was free — so an unpinned layer could run a program through a pinned layer's good name.
-    /// Judged by the answering layer it is adjudicated, and this gate refuses everything.
+    /// The look belongs to the layer whose answer asked for it, not to the one that declares the
+    /// hook. A pinned layer on top passes the hook, so the answer comes from an unpinned layer below
+    /// and the `exec` look is that layer's - judged by the topmost declarer it ran unadjudicated.
     #[test]
     fn an_exec_look_is_judged_by_the_layer_whose_answer_asked_for_it() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -5106,10 +4715,9 @@ mod tests {
         );
     }
 
-    /// **A pin that broke while no daemon was running is still SAID.** `with_trust` re-decides every
-    /// layer and `refresh_trust` records a broken pin as said as it answers it, so a host that
-    /// dropped that answer would silence `plugin_untrusted` for exactly the restart case it exists
-    /// for. The first tick says it.
+    /// A pin that broke while no daemon was running is still said: `with_trust` re-decides every
+    /// layer and records a broken pin as said as it answers, so a host that dropped that answer
+    /// would silence `plugin_untrusted` for exactly the restart case it exists for.
     #[test]
     fn a_pin_that_broke_before_the_host_existed_is_said_on_its_first_tick() {
         let root = tempdir("pin-broken-restart");
@@ -5127,7 +4735,7 @@ mod tests {
         std::fs::write(dir.join("plugin.wasm"), b"a module, rebuilt and longer")
             .expect("a rebuild");
 
-        // A host built NOW — the restart — is the first thing to see the broken pin.
+        // A host built NOW - the restart - is the first thing to see the broken pin.
         let host = Arc::new(table_host(&root, &table).with_trust(book.clone()));
         let hub = Hub::new("s-plugins");
         Arc::clone(&host).tick(hub.clone());
@@ -5145,8 +4753,8 @@ mod tests {
         assert_eq!(warned(&hub, "plugin_untrusted").len(), 1);
     }
 
-    /// **A look the gate admits RUNS** — and what the gate was asked is the call a `bash` of that
-    /// argv would have been, every word quoted.
+    /// A look the gate admits runs - and what the gate was asked is the call a `bash` of that argv
+    /// would have been, every word quoted.
     #[test]
     fn an_exec_look_the_gate_admits_runs() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -5179,8 +4787,8 @@ mod tests {
         );
     }
 
-    /// **A look the gate would have ASKED about does not run**, the layer is told why, and the
-    /// session is told once.
+    /// A look the gate would have asked about does not run, the layer is told why, and the session
+    /// is told once.
     #[test]
     fn an_exec_look_the_gate_would_ask_about_does_not_run() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -5226,8 +4834,8 @@ mod tests {
         assert!(said[0].contains("shell (project)"), "{}", said[0]);
     }
 
-    /// **A look a rule of the operator's denies does not run either**, and the sentence is the
-    /// other class: somebody said no.
+    /// A look a rule of the operator's denies does not run either, and the sentence is the other
+    /// class: somebody said no.
     #[test]
     fn an_exec_look_the_gate_denies_does_not_run() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -5256,14 +4864,14 @@ mod tests {
         assert!(why.contains("REFUSED by the permission config"), "{why}");
     }
 
-    /// **The notice is once per (layer, program, reason)** — a watch polls every ninety seconds,
-    /// and the same refusal is not news the second time. A refusal that CHANGES is.
+    /// The notice is once per (layer, program, reason): a watch polls every ninety seconds, and the
+    /// same refusal is not news the second time. A refusal that changes is.
     #[test]
     fn a_refused_look_is_said_once_until_it_changes() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
         let root = tempdir("look-once");
         // One answer that both asks for the look and fires on it, so every arming asks the gate
-        // exactly once — the shape a watch repeating its interval has.
+        // exactly once - the shape a watch repeating its interval has.
         let table = Table::new();
         table.layer_with_caps(
             &root,
@@ -5308,9 +4916,8 @@ mod tests {
             warned(&hub, "plugin_look")
         );
 
-        // **And a reason that changed is news again** — the layer is fixed, or the gate's own
-        // reason moved, and silence would leave the session believing the first sentence. The
-        // same host, so the only thing that differs is the sentence.
+        // And a reason that changed is news again: the layer is fixed, or the gate's own reason
+        // moved, and silence would leave the session believing the first sentence.
         let other = ProbeGate::refusing(|| {
             GateDecision::refuse_and_tell(
                 letibot_transcript::ToolOutcome::NotRun {
@@ -5334,8 +4941,8 @@ mod tests {
         );
     }
 
-    /// **A session with no gate runs no program a layer declared** — *no gate* is not *every gate
-    /// open*, which is the direction the whole entry fails in.
+    /// A session with no gate runs no program a layer declared - *no gate* is not *every gate open*
+    /// which is the direction the whole entry fails in.
     #[test]
     fn a_session_with_no_gate_runs_no_exec_look() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -5358,8 +4965,8 @@ mod tests {
         );
     }
 
-    /// A gate that admits everything — the fixture the deferred look needs, since what this test is
-    /// about is the MUTEX and not the decision.
+    /// A gate that admits everything - the fixture the deferred look needs, since what that test is
+    /// about is the mutex, not the decision.
     struct Admits;
 
     impl letibot_tools::Gate for Admits {
@@ -5368,14 +4975,9 @@ mod tests {
         }
     }
 
-    /// **A look is DEFERRED while the session's gate is busy with somebody else's card** — not
-    /// blocked, and not refused.
-    ///
-    /// `ToolRuntime::run` holds the gate's mutex across the model's own decision, card and all, on
-    /// purpose — for minutes. A look that waited on it would park the session's one monitor thread,
-    /// and every other watch on it, behind that card; so the look takes the lock with `try_lock`,
-    /// and a busy gate is *not now*: nothing runs, the layer is told nothing that reads as a
-    /// refusal, no notice goes to the session, and the watch asks again next tick.
+    /// A look is DEFERRED while the session's gate is busy with somebody else's card - not blocked
+    /// and not refused. `ToolRuntime::run` holds that mutex for minutes, and a look that waited
+    /// would park the session's monitor thread and every other watch on it, so it uses `try_lock`.
     #[test]
     fn an_exec_look_is_deferred_while_the_gate_is_busy() {
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
@@ -5387,8 +4989,8 @@ mod tests {
         let host = Arc::new(table_host(&root, &table));
         let hub = Hub::new("s-plugins");
 
-        // **The REAL runtime and the REAL `Unasked` impl**, because the deferral IS `try_lock` on
-        // this mutex: a fixture gate would prove nothing about it.
+        // The REAL runtime and the REAL `Unasked` impl: the deferral IS `try_lock` on this mutex
+        // so a fixture gate would prove nothing about it.
         let backend = tempdir("look-busy-backend");
         let runtime = Arc::new(
             letibot_tools::ToolRuntime::new(
@@ -5404,8 +5006,8 @@ mod tests {
             Some(gate),
         );
 
-        // **Hold the lock exactly as the model's own decision does**, and fire the look from
-        // another thread: it must come back promptly, with nothing run and nothing said.
+        // Hold the lock exactly as the model's own decision does, and fire the look from another
+        // thread: it must come back promptly, with nothing run and nothing said.
         let held = runtime.gate.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = std::sync::mpsc::channel();
         {
@@ -5438,10 +5040,9 @@ mod tests {
             "a deferred look was handed to the layer as a result"
         );
 
-        // **And with the gate free the same look runs**, which is what makes the assertions above
+        // And with the gate free the same look runs, which is what makes the assertions above
         // about the LOCK rather than about a look that never works. A fresh host, because the
-        // fixture's script is spent one answer per arming: the deferred arming took the one that
-        // declared the look.
+        // fixture's script is spent one answer per arming.
         drop(held);
         let table = shell_layer(&root, "sh", json!(["sh", "-c", script]));
         let host = Arc::new(table_host(&root, &table));
@@ -5456,12 +5057,10 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------------------------
-    // The room's pane: the feed the daemon builds, and the four keys it performs
-    // -----------------------------------------------------------------------------------------
+    // The room's pane: the feed the daemon builds, and the four keys it performs.
 
     /// A project layer that answers `pane_room`, declares the four controls, and reads the `room`
-    /// feed — the manifest a project would write over the built-in.
+    /// feed - the manifest a project would write over the built-in.
     fn room_project(tag: &str, answer: &str, actions: &str) -> PathBuf {
         let root = tempdir(tag);
         let layer = root.join(".letibot/plugins/room");
@@ -5480,7 +5079,7 @@ mod tests {
         root
     }
 
-    /// A real room on a socket — the thing a room pane is drawn from.
+    /// A real room on a socket - the thing a room pane is drawn from.
     fn a_room(tag: &str) -> (PathBuf, letibot_room::Server) {
         let dir = tempdir(tag);
         let path = dir.join("room.sock");
@@ -5489,9 +5088,8 @@ mod tests {
         (dir, server)
     }
 
-    /// **Wait for the pane's picture of the room to catch up.** The feed is read on a thread of its
-    /// own, once a second, so a test waits for it rather than sleeping a fixed second — and the
-    /// pane's own *not read yet* frame is a fact, not a failure.
+    /// Wait for the pane's picture of the room to catch up: the feed is read on a thread of its
+    /// own, once a second, so a test waits for it rather than sleeping a fixed second.
     fn until_the_room_is_read(link: &crate::room::link::SessionRoom, items: usize) {
         use crate::plugins::room_feed::RoomFeed as _;
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -5509,9 +5107,9 @@ mod tests {
         }
     }
 
-    /// **A module that answers the same JSON every time** — for a test that presses more keys than
-    /// it scripted frames. [`Rounds`] is the right tool when the ANSWER is the subject; here the
-    /// subject is what the host does with a row, and the row is the same row every time.
+    /// A module that answers the same JSON every time, for a test that presses more keys than it
+    /// scripted frames. [`Rounds`] is the right tool when the ANSWER is the subject; here the
+    /// subject is what the host does with a row, and the row is the same every time.
     struct Same {
         hooks: Vec<String>,
         answer: String,
@@ -5546,12 +5144,9 @@ mod tests {
         }
     }
 
-    /// **A row's key is performed by the HOST, and the feed it was drawn from is the room's.**
-    ///
-    /// This is the slice in one test: the daemon builds the `room` feed (so the layer is told what
-    /// is queued and who holds it), the layer answers a row carrying `{"verb":"claim","id":"i1"}`,
-    /// and the daemon performs it — the room's own state machine is what moves, over the session's
-    /// own connection.
+    /// A row's key is performed by the HOST, and the feed it was drawn from is the room's. The layer
+    /// answers a row carrying a verb and an id, and the daemon performs it: the room's own state
+    /// machine moves, over the session's connection.
     #[test]
     fn a_room_panes_key_is_performed_by_the_host() {
         let (dir, server) = a_room("room-key");
@@ -5600,7 +5195,7 @@ mod tests {
         .with_room(link);
 
         host.open("s-room-pane", &hub, "room/room", (80, 24));
-        // **The feed the layer was handed is the room's** — the item, its tag, and the room's own
+        // The feed the layer was handed is the room's: the item, its tag, and the room's own
         // identity sentence.
         let inputs = host.lock().rec.inputs("pane_room").to_vec();
         assert_eq!(inputs.len(), 1, "one render, one call");
@@ -5617,7 +5212,7 @@ mod tests {
         assert_eq!(feed["tags"][0]["rows"][0]["entry"], json!("i1"));
         assert_eq!(feed["tags"][0]["rows"][0]["claimable"], json!(true));
 
-        // **And the key moves the room.** The layer said *claim entry i1*; the daemon performed it.
+        // And the key moves the room: the layer said *claim entry i1*, and the daemon performed it.
         host.action("s-room-pane", &hub, "room/room", "i1", "claim");
         assert_eq!(
             server.items()[0].holder(),
@@ -5633,8 +5228,8 @@ mod tests {
             "the frame after the key is the state the key made"
         );
 
-        // **A key the room refuses is SAID** — a key that did nothing is indistinguishable from
-        // one that was not pressed. `#2` is somebody else's, so a release of it is `NotHeld`.
+        // A key the room refuses is said: a key that did nothing is indistinguishable from one
+        // nobody pressed. `#2` is somebody else's, so a release of it is `NotHeld`.
         other
             .request(&letibot_room::Request::Post {
                 id: "p2".into(),
@@ -5661,12 +5256,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The pane's restart is a FRAME to the supervisor, and its outcome is said.**
-    ///
-    /// The control is not a room verb: the layer names `restart`, and the HOST asks the supervisor
-    /// that starts coordinators. This is the whole requirement in one test — the act reaches the
-    /// supervisor with the session's name on it, the outcome reaches the person as a notice, and the
-    /// note the act left is in the feed the next frame is drawn from.
+    /// The pane's restart is a FRAME to the supervisor, and its outcome is said. The control is not
+    /// a room verb: the layer names `restart` and the host asks the supervisor that starts
+    /// coordinators, and the note it leaves is in the next frame's feed.
     #[test]
     fn the_restart_control_asks_the_supervisor_and_its_outcome_is_said() {
         use crate::room::supervise::{RestartFrame, RoomSupervisor};
@@ -5714,9 +5306,8 @@ mod tests {
         .with_room(link);
         host.open("s-room-pane", &hub, "room/room", (80, 24));
 
-        // **The act runs off the connection's thread** (a launcher that overran its minute must not
-        // leave the person's own keys queued behind it), so the test waits for the frame rather
-        // than reading it a line later.
+        // The act runs off the connection's thread - a launcher that overran its minute must not
+        // leave the person's keys queued behind it - so the test waits for the frame.
         host.action("s-room-pane", &hub, "room/room", "restart", "restart");
         let until = |what: &str, f: &dyn Fn() -> bool| {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -5746,14 +5337,13 @@ mod tests {
             "the fixture's socket has no lease, so nothing was running to stop"
         );
 
-        // **The outcome is said**, not swallowed: a key whose result nobody printed is a key a
-        // person cannot trust.
+        // The outcome is said, not swallowed: a key whose result nobody printed is a key a person
+        // cannot trust.
         until("the outcome is said", &|| {
             !warned(&hub, "room_restarted").is_empty()
         });
-        // **And the note is in the next frame the pane is drawn from** — when, and why. The pane's
-        // own clock (`every_s`) is what asks for it in production; the test asks, which is the same
-        // render on the same path.
+        // And the note is in the next frame: when, and why. The pane's own clock asks for it in
+        // production; the test asks, which is the same render on the same path.
         host.open("s-room-pane", &hub, "room/room", (80, 24));
         let inputs = host.lock().rec.inputs("pane_room").to_vec();
         let feed = &inputs.last().expect("a render after the key")["feeds"]["room"];
@@ -5773,7 +5363,7 @@ mod tests {
             "{note}"
         );
 
-        // **A supervisor that refuses is a notice too** — the middle register, with the reason.
+        // A supervisor that refuses is a notice too: the middle register, with the reason.
         struct Refuse;
         impl RoomSupervisor for Refuse {
             fn restart(&self, _frame: &RestartFrame) -> Result<String, String> {
@@ -5815,8 +5405,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A row carrying a verb the manifest did not declare is refused before it is drawn** — the
-    /// gate `View::validate_for` keeps, on the daemon's side of the wire.
+    /// A row carrying a verb the manifest did not declare is refused before it is drawn - the gate
+    /// `View::validate_for` keeps, on the daemon's side of the wire.
     #[test]
     fn a_room_row_reaching_an_undeclared_verb_is_refused() {
         let answer = r#"{"title":"the room","panels":[{"id":"queues","title":"queues",
@@ -5852,11 +5442,9 @@ mod tests {
             "and the session's model is told once"
         );
 
-        // **The restart is a declared action like the four, and it is refused like them too.** A
-        // project layer that ships its own room pane and does NOT list `restart` gets its row
-        // refused: the gate is the manifest, not the verb's familiarity. This is the half that
-        // makes *declared* mean something — the built-in's manifest lists five, and a layer that
-        // lists four cannot reach the fifth.
+        // The restart is a declared action like the four, and it is refused like them too: a layer
+        // that ships its own room pane and does not list `restart` gets its row refused, because the
+        // gate is the manifest and not the verb's familiarity.
         let answer = r#"{"title":"the room","panels":[{"id":"server","key":"s",
             "title":"the server","summary":[{"tree":{"rows":[{"id":"restart","cells":["restart"],
             "enter":{"verb":"restart","id":"restart"}}]}}]}]}"#;
@@ -5886,15 +5474,9 @@ mod tests {
         );
     }
 
-    /// **The committed `room` module RUNS**, against a real room, through the daemon's own host.
-    ///
-    /// The rake this exists for is measured: `plugins/examples/plan-dashboard`'s committed `.wasm`
-    /// had never been executed and trapped on its first call
-    /// (`.letibot/notes/the-pane-contracts-two-look-keys.md`). A guest that compiles for
-    /// `wasm32-unknown-unknown` is not a guest that has run, so this test loads the module the
-    /// binary carries, asks it for a pane with a real room behind it, and asserts the answer is the
-    /// LAYER's — the tag, the item's body, and the room's identity — rather than the host's
-    /// `unavailable` panel.
+    /// The committed `room` module runs, against a real room, through the daemon's own host. A guest
+    /// that compiles is not a guest that has run - the example's committed `.wasm` had never been
+    /// executed and trapped on its first call - so this asserts the answer is the LAYER's.
     #[test]
     fn the_builtin_room_layer_answers_its_pane_with_a_real_room_behind_it() {
         let (dir, server) = a_room("room-builtin");
@@ -5925,9 +5507,8 @@ mod tests {
         let workspace = tempdir("room-builtin-ws");
         let host = PluginHost::production("s-room-builtin", &workspace).with_room(link);
         let hub = Hub::new("s-room-builtin");
-        // **Nothing is compiled until a head looks.** The room's module is 218 KB and costs
-        // 1.4–2.0 s of CPU in a debug host, so a session that nobody attaches to must not pay for
-        // it — `ensure_the_room_pane` is called from `attach` and from this door.
+        // Nothing is compiled until a head looks: the room's module is 218 KB and costs seconds of
+        // CPU in a debug host, so a session nobody attaches to must not pay for it.
         assert!(
             host.panes().is_empty(),
             "a session with no head has no pane: {:?}",
@@ -5960,7 +5541,7 @@ mod tests {
             "and the room's own identity, which is what keeps an empty queue from reading as a \
              quiet one: {drawn}"
         );
-        // **The row's key is the manifest's verb**, so a press would reach the host's act.
+        // The row's key is the manifest's verb, so a press would reach the host's act.
         assert!(drawn.contains("\"verb\":\"claim\""), "{drawn}");
 
         drop(other);

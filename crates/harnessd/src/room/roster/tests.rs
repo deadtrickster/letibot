@@ -1,4 +1,4 @@
-//! **The tree, as a function of six values** — the grouping, pinned without a registry, a store or
+//! The tree, as a function of six values - the grouping, pinned without a registry, a store or
 //! a git. `crates/harnessd/tests/room_tree.rs` is the same rules through a real daemon; this is the
 //! part a diff can be read against.
 
@@ -17,7 +17,7 @@ fn row<'a>(session: &'a str, title: &'a str, parent: Option<&'a str>) -> Row<'a>
     }
 }
 
-/// **The four kinds of row the operator's sentence names**, in one list: the project's own
+/// The four kinds of row the operator's sentence names, in one list: the project's own
 /// sessions, a subagent at depth 2, and the review queue's session under `system`.
 #[test]
 fn the_project_s_own_sessions_their_subagents_and_its_system_agent() {
@@ -37,14 +37,13 @@ fn the_project_s_own_sessions_their_subagents_and_its_system_agent() {
         vec![
             ("s-a", Group::Top, 0),
             ("s-a-sub-1", Group::Sub, 1),
-            // **Depth 2**, which is the row the tree draws one level further down and the room has
-            // to hold all the same.
+            // Depth 2 - the row the tree draws one level further down, and the room holds it.
             ("s-a-sub-2", Group::Sub, 2),
             ("s-gatekeeper-aaaaaaaaaaaa", Group::Gatekeeper, 0),
         ],
         "the project's own sessions first, then `system`"
     );
-    // **The name the tree draws a gatekeeper under** — `<project>/<system>/<gatekeepers>`.
+    // The name the tree draws a gatekeeper under - `<project>/<system>/<gatekeepers>`.
     let gate = &members[3];
     assert_eq!(
         gate.where_in("letibot"),
@@ -54,7 +53,7 @@ fn the_project_s_own_sessions_their_subagents_and_its_system_agent() {
     assert_eq!(members[0].where_in("letibot"), "letibot");
 }
 
-/// **Two projects do not leak into each other** — the room's key is the project's, so the roster of
+/// Two projects do not leak into each other - the room's key is the project's, so the roster of
 /// one holds none of the other's rows.
 #[test]
 fn a_row_of_another_project_is_not_in_this_one_s_roster() {
@@ -79,8 +78,8 @@ fn a_row_of_another_project_is_not_in_this_one_s_roster() {
     assert_eq!(there[0].session, "s-b");
 }
 
-/// **A child hangs under the project of the ROOT of its chain**, even when its own workspace is
-/// somewhere else — a review clone under `/tmp`, a worktree beside the repository.
+/// A child hangs under the project of the ROOT of its chain, even when its own workspace is
+/// somewhere else - a review clone under `/tmp`, a worktree beside the repository.
 #[test]
 fn a_child_of_another_workspace_is_placed_by_its_root() {
     let rows = vec![
@@ -94,7 +93,7 @@ fn a_child_of_another_workspace_is_placed_by_its_root() {
             live: true,
         },
     ];
-    // The clone is not in any repository, so its own workspace would be its own project — and the
+    // The clone is not in any repository, so its own workspace would be its own project - and the
     // ROOT is what says otherwise.
     let project_of = |w: &str| w.to_string();
     let members = members_of(&rows, PROJECT, project_of);
@@ -110,7 +109,7 @@ fn a_child_of_another_workspace_is_placed_by_its_root() {
     assert_eq!(members[1].group, Group::Reviewer);
 }
 
-/// **A gatekeeper is `gatekeepers`, and everything under it is a `reviewer`** — the order the tree
+/// A gatekeeper is `gatekeepers`, and everything under it is a `reviewer` - the order the tree
 /// reads its marks in, which is what keeps one queue from being drawn as three.
 #[test]
 fn the_gatekeeper_is_the_queue_and_its_children_are_reviewers() {
@@ -134,12 +133,12 @@ fn the_gatekeeper_is_the_queue_and_its_children_are_reviewers() {
         vec![Group::Gatekeeper, Group::Reviewer, Group::Reviewer],
         "a reviewer of a reviewer is still a reviewer"
     );
-    // A row with no title is drawn by its id, because a member a person cannot recognise is a row
-    // the tree draws as an id anyway.
+    // A row with no title is drawn by its id: a member a person cannot recognise is a row the
+    // tree draws as an id anyway.
     assert_eq!(members[0].label, "s-gatekeeper-aaaaaaaaaaaa");
 }
 
-/// **The notes keeper is its own group** — it is a child of nobody, it repairs memory and it runs
+/// The notes keeper is its own group - it is a child of nobody, it repairs memory and it runs
 /// nothing, so drawing it as a subagent would say it works for a session.
 #[test]
 fn the_notes_keeper_is_a_keeper_and_a_brief_is_a_reviewer() {
@@ -167,7 +166,7 @@ fn the_notes_keeper_is_a_keeper_and_a_brief_is_a_reviewer() {
     assert_eq!(group("s-review-1"), Group::Reviewer);
 }
 
-/// **A folder that is no repository is no project**, and the empty project is the box's own room —
+/// A folder that is no repository is no project, and the empty project is the box's own room -
 /// so the sessions that have none (a one-shot, a fixture, the coordinator's own arbiter and its tag
 /// agents) land there rather than in a project minted per temp directory.
 #[test]

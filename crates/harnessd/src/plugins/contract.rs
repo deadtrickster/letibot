@@ -1,27 +1,10 @@
-//! **`plugin_hooks`: the contracts, written by the host that enforces them.**
+//! `plugin_hooks`: the contracts, written by the host that enforces them.
 //!
-//! The operator: *"`plugin_hooks` — the contracts of §4 with a worked example each, read from the
-//! host itself so it cannot drift from what the host accepts"* (`docs/plugins-plan.md` §5).
-//!
-//! # How "cannot drift" is kept, rather than promised
-//!
-//! The worked example below is **built out of the host's own types** ([`View`], [`Panel`],
-//! [`Block`] …), not typed as a string: a field that is renamed, a `serde(rename)` that moves, a
-//! block kind that gains a spelling — each of those breaks the *compilation* of this file rather
-//! than leaving a document that says the old thing. The names a model reads are then read back
-//! out of that example's JSON, and the constants it is told about (`HOST_KEYS`, `MIN_EVERY_S`) are
-//! the host's own constants.
-//!
-//! The example is also **round-tripped and validated** by the test at the bottom: it parses into a
-//! [`View`] and passes [`View::validate`], which is the same check the daemon runs over a plugin's
-//! answer before publishing it. A worked example the host would refuse is worse than none, because
-//! a model copies it.
-//!
-//! # One kind today
-//!
-//! `pane` is the only hook kind this host runs (`docs/plugins-plan.md` §7 step 2 is the next
-//! package: `on_tool_call`, `on_tool_result`, `notice`, `condition`). A name this host does not
-//! run is refused with the one it does, never answered with silence.
+//! The worked example is built out of the host's own types, not typed as a string, so a renamed
+//! field or a moved `serde(rename)` breaks this file's compilation instead of leaving a document
+//! that says the old thing. The names a model reads are read back out of that example's JSON, and
+//! the test at the bottom parses and validates it the way the daemon validates a plugin's answer
+//! an example the host would refuse is worse than none, because a model copies it.
 
 use std::collections::BTreeMap;
 
@@ -40,7 +23,7 @@ pub const KINDS: &[&str] = &[
     "condition",
 ];
 
-/// **The documentation for one hook kind** — or for every kind, each on its own page.
+/// The documentation for one hook kind - or for every kind, each on its own page.
 pub fn hooks_doc(kind: Option<&str>) -> Result<String, String> {
     match kind.map(str::trim).filter(|k| !k.is_empty()) {
         None => Ok(KINDS
@@ -59,11 +42,9 @@ pub fn hooks_doc(kind: Option<&str>) -> Result<String, String> {
     }
 }
 
-/// **One patch point's page**, or `None` for a kind that is not one of the four.
-///
-/// Built the same way the pane's is: the input is the SDK's own synthetic example SERIALISED, the
-/// answer is an SDK VALUE serialised, and the field lists are read back out of those two documents.
-/// A renamed field moves the page; a field the page claims and the type does not have cannot exist.
+/// One patch point's page, or `None` for a kind that is not one of the four. Built the way the
+/// pane's is: the input is the SDK's synthetic example serialised and the answer is an SDK value
+/// serialised, so a renamed field moves the page.
 fn patch_doc(kind: &str) -> Option<String> {
     let (in_value, out_value, contract, rules): (Value, Value, &str, String) = match kind {
         "notice" => {
@@ -209,8 +190,8 @@ traps, or answers something the host refuses, never reaches a running session.
     ))
 }
 
-/// **The worked example**, built from the host's types. Every field a model is told about appears
-/// in it, so the document and the contract are the same object.
+/// The worked example, built from the host's types. Every field a model is told about appears in
+/// it, so the document and the contract are the same object.
 fn example() -> View {
     View {
         title: "deploy · v0.2.0".into(),
@@ -308,11 +289,11 @@ fn example() -> View {
     }
 }
 
-/// The example as the JSON a plugin answers — the document, not a transcription of it.
+/// The example as the JSON a plugin answers - the document, not a transcription of it.
 fn example_json() -> Value {
     let view = example();
     // Through `serde_json` exactly as the host parses a plugin's answer: an example that did not
-    // survive this round trip is an example the host would refuse.
+    // survive this round trip is one the host would refuse.
     let text = serde_json::to_string(&view).expect("a view serialises");
     serde_json::from_str(&text).expect("and parses back")
 }
@@ -325,8 +306,8 @@ fn keys(v: &Value) -> String {
     }
 }
 
-/// **The shapes a manifest has to declare**, read off the host's own table so the document cannot
-/// name a version the host does not speak (`crates/plugins::MOVED`).
+/// The shapes a manifest has to declare, read off the host's own table so the document cannot
+/// name a version the host does not speak.
 fn moved_shapes() -> String {
     let shapes: Vec<String> = letibot_plugins::MOVED
         .iter()
@@ -351,8 +332,8 @@ fn pane_doc() -> String {
     let line_keys = keys(&example["panels"][0]["summary"][0]["lines"][0]);
     let row_keys = keys(&example["panels"][0]["view"][0]["table"]["rows"][0]);
     let finding_keys = keys(&example["findings"][0]);
-    // And the block kinds, from the host's own serializer — a sixth kind added to `Block` would
-    // not appear here, so this list is checked against the variants by the test at the bottom.
+    // And the block kinds, from the host's own serializer - a sixth kind added to `Block` would
+    // not appear here, so the test at the bottom checks this list against the variants.
     let block_kinds = ["lines", "table", "tree", "markdown", "kv"]
         .iter()
         .map(|k| format!("`{k}`"))
@@ -515,9 +496,8 @@ the host would refuse never reaches a screen.
 mod tests {
     use super::*;
 
-    /// **The worked example is one the host accepts** — the same parse and the same
-    /// `View::validate` the daemon runs over a plugin's answer before publishing it. A document
-    /// nobody can copy is worse than no document, and a model copies examples.
+    /// The worked example is one the host accepts - the same parse and the same `View::validate`
+    /// the daemon runs over a plugin's answer. A document nobody can copy is worse than none.
     #[test]
     fn the_worked_example_parses_and_validates() {
         let view: View = serde_json::from_value(example_json()).expect("the example is a View");
@@ -525,8 +505,8 @@ mod tests {
             .expect("the example passes the host's own check");
     }
 
-    /// **Every field the document lists comes from the example**, which is built from the host's
-    /// types — so a renamed field is a document that moves with it, not a stale sentence.
+    /// Every field the document lists comes from the example, which is built from the host's types
+    /// - so a renamed field is a document that moves with it, not a stale sentence.
     #[test]
     fn the_document_names_the_fields_the_hosts_types_have() {
         let doc = pane_doc();
@@ -566,9 +546,9 @@ mod tests {
         );
     }
 
-    /// **Every kind has a page, every page carries its own types' fields, and a name that is not a
-    /// kind is refused with the ones there are.** The four patch points' pages are built the same
-    /// way the pane's is, so a renamed field in `crates/plugin-sdk` moves the document.
+    /// Every kind has a page, every page carries its own types' fields, and a name that is not a
+    /// kind is refused with the ones there are. The four patch points' pages are built the way the
+    /// pane's is, so a renamed field in `crates/plugin-sdk` moves the document.
     #[test]
     fn every_kind_is_documented_and_a_stranger_is_refused() {
         let pane = hooks_doc(Some("pane")).expect("the pane contract");

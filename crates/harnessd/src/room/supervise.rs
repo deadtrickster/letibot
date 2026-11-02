@@ -1,73 +1,34 @@
-//! **Asking the room's supervisor to restart it** — the door the pane's restart control goes
-//! through, and why it is not the coordinator.
-//!
-//! `docs/room.md` § *Still owed* 1 is the operator's own words: *"and since we are going full blown
-//! agents orchestration again — that panel must explicitly let me to restart the server"*. The same
-//! list draws the line this module is built on: the restart is **asked of the daemon that
-//! supervises the coordinator and not performed by the coordinator on itself**.
-//!
-//! # What the supervisor IS on this box, measured
-//!
-//! A coordinator is a whole `harnessd --room`, started **detached** by the launcher
-//! (`scripts/letibot`'s `room_ensure`, which runs before any run path opens a session) with its
-//! socket, its lease and its log named from the HOST. Nothing else on this box starts one, and
-//! nothing resident watches it: the launcher is a program, and its two verbs are `--room` (make sure
-//! one is serving) and `--room --stop`. So the supervisor is **the launcher**, and asking it is
-//! running it — `--room --stop`, then `--room`. That is also what keeps the room VISIBLE: the
-//! launcher writes the record `letibot --ls` and `letibot --stop` read, so a room the pane restarted
-//! is still a room the operator can see and stop. A daemon that spawned `harnessd --room` itself
-//! would leave a coordinator with no record, which is a second way for a room to become invisible.
-//!
-//! # Why the coordinator cannot do it
-//!
-//! Two reasons, and the first is the one the operator would feel. **The pane is fed by the instance
-//! it would kill**: the coordinator holds the connection that draws the queues, so a coordinator
-//! that stopped itself mid-act could not say what happened — the person would be left looking at a
-//! frozen pane, unable to tell a restart from a hang. The second is the room's own design: it keeps
-//! no store, so a coordinator that restarted itself would also have to be the thing that decided it
-//! should exist, which is the lease's job ([`letibot_room::CoordinatorLease`]) and not a room verb's.
-//!
-//! For the same reason the **coordinator's own daemon is never given a supervisor**
-//! (`coordinator::configure` clears the flag): the arbiter's pane is drawn by the process a restart
-//! would kill.
-//!
-//! # The frame
-//!
-//! [`RestartFrame`] is the act: when it was asked, by which session, and whether anything was
-//! running to stop. It is handed to [`RoomSupervisor::restart`], and the production implementation
-//! writes it as one JSON line on the launcher's stdin — a launcher ignores it, and a supervisor
-//! that wants to record *why* it was asked has it without a second channel. The same frame is what
-//! a test asserts on: a control whose act could not be observed is a control nobody can review.
+//! Asking the room's supervisor to restart it - the door the pane's restart control goes
+//! through, and why it is not the coordinator. The supervisor is the LAUNCHER (`--room --stop`, then
+//! `--room`): the pane is fed by the instance a restart would kill, so it cannot do it itself.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// **How long one launcher verb may take.** The launcher's own stop waits ten seconds for the
-/// coordinator to go and its start waits ten for the socket to bind, so a minute is generous by a
-/// factor of three and still bounds the act — a person pressing a key must not be left guessing.
+/// How long one launcher verb may take. The launcher's own stop and start each wait ten
+/// seconds, so a minute is generous and still bounds the act.
 pub const RESTART_WITHIN: Duration = Duration::from_secs(60);
 
-/// **Where the launcher is, when it is not on `PATH`** — a test's door, and the reason no fixture
+/// Where the launcher is, when it is not on `PATH` - a test's door, and the reason no fixture
 /// has to run the box's real launcher (which would stop the operator's room).
 pub const SUPERVISOR_ENV: &str = "LETIBOT_ROOM_SUPERVISOR";
 
-/// **The act, as the supervisor is handed it** — and as a test asserts on it.
+/// The act, as the supervisor is handed it - and as a test asserts on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestartFrame {
     /// When it was asked. The room's one clock, milliseconds since the epoch.
     pub at_ms: u64,
     /// The session whose pane it was. Empty when the daemon asked for itself.
     pub by: String,
-    /// **Was there a room to stop?** The difference between a restart and a start, and the reason
-    /// the marker's cause can say *the key did not empty the queue — the room had already gone*.
+    /// Was there a room to stop? The difference between a restart and a start, and the reason
+    /// the marker's cause can say *the key did not empty the queue - the room had already gone*.
     pub was_running: bool,
     /// The words the person's key stands for.
     pub why: String,
 }
 
 impl RestartFrame {
-    /// **The frame on the wire** — one line of JSON, which is what the supervisor reads on stdin.
-    ///
+    /// The frame on the wire - one line of JSON, which is what the supervisor reads on stdin.
     /// A line rather than fields on an argv: an argv is a list of words with no names, and the
     /// supervisor's first two words are already spoken for (`--room --stop`).
     pub fn line(&self) -> String {
@@ -82,31 +43,24 @@ impl RestartFrame {
     }
 }
 
-/// **The door a pane's restart control goes through.** One implementation in production (the
+/// The door a pane's restart control goes through. One implementation in production (the
 /// launcher); a test stands in its own, which is what makes *the act is a frame* assertable with no
 /// process and no socket.
 pub trait RoomSupervisor: Send + Sync {
     /// Restart the box's room. `Ok` is a sentence saying what happened; `Err` is the refusal, in
-    /// words a person can act on — and it is PUBLISHED (`room_restart_refused`), never silence.
+    /// words a person can act on - and it is PUBLISHED (`room_restart_refused`), never silence.
     fn restart(&self, frame: &RestartFrame) -> Result<String, String>;
 }
 
-/// **One restart at a time in this process, and the act runs off the caller's thread.**
-///
-/// A box has one room, so two stops and two starts is not a restart — it is a race between two
-/// launchers, and the loser would report a failure that is really a collision. The scope is the
-/// process because the resource is the box's.
-///
-/// It is an RAII value and not a pair of calls: the act runs on a thread of its own (the caller is
-/// a head's connection, and a launcher that overran its minute would leave that person's prompts
-/// and keys queued behind it), and a guard that released on the way out of a `match` arm would be
-/// released before the thread had started.
+/// One restart at a time in this process, and the act runs off the caller's thread. A box has one
+/// room, so two stops and two starts is a race, and the loser would report a collision as a failure.
+/// RAII because a guard released in a `match` arm would go before the thread had started.
 pub struct InFlight(());
 
 static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl InFlight {
-    /// **Take the right to restart**, or `None` when one is already running here.
+    /// Take the right to restart, or `None` when one is already running here.
     pub fn take() -> Option<InFlight> {
         use std::sync::atomic::Ordering;
         IN_FLIGHT
@@ -122,7 +76,7 @@ impl Drop for InFlight {
     }
 }
 
-/// **The box's launcher, asked with the two verbs a person would type.**
+/// The box's launcher, asked with the two verbs a person would type.
 pub struct Launcher {
     program: PathBuf,
     within: Duration,
@@ -144,9 +98,8 @@ impl Launcher {
         }
     }
 
-    /// **`$LETIBOT_ROOM_SUPERVISOR`, else `letibot` on `PATH`** — `None` on a box with neither,
-    /// which is a box where the control cannot be offered (and the pane says so rather than
-    /// drawing a key that would refuse).
+    /// `$LETIBOT_ROOM_SUPERVISOR`, else `letibot` on `PATH` - `None` on a box with neither
+    /// where the control cannot be offered (and the pane says so rather than drawing a dead key).
     pub fn found() -> Option<Launcher> {
         if let Some(named) = std::env::var_os(SUPERVISOR_ENV).filter(|v| !v.is_empty()) {
             let path = PathBuf::from(named);
@@ -180,7 +133,7 @@ impl Launcher {
 
 impl RoomSupervisor for Launcher {
     fn restart(&self, frame: &RestartFrame) -> Result<String, String> {
-        // **The frame goes to the STOP**, which is where the act begins: a supervisor that wants
+        // The frame goes to the STOP, which is where the act begins: a supervisor that wants
         // the note reads it there, and the launcher ignores its stdin entirely.
         let stop = letibot_tools::rpc::run_bounded_fed(
             &self.program,
@@ -199,7 +152,7 @@ impl RoomSupervisor for Launcher {
     }
 }
 
-/// **The last word a program left**, on one line and bounded — a launcher's own sentence is the
+/// The last word a program left, on one line and bounded - a launcher's own sentence is the
 /// refusal, and a refusal nobody can read is the silence this module exists to remove.
 fn tail(out: &std::process::Output) -> String {
     let text = if out.stderr.iter().any(|b| !b.is_ascii_whitespace()) {
@@ -220,7 +173,7 @@ fn tail(out: &std::process::Output) -> String {
     }
 }
 
-/// **Is `name` a program on `PATH`?** A path walk rather than a shell, because the answer is asked
+/// Is `name` a program on `PATH`? A path walk rather than a shell, because the answer is asked
 /// inside `Harness::open` and a `sh -c` per session open is a fork nobody needs.
 fn on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -234,7 +187,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// **The frame is one line, and it carries every field** — the act is observable, which is what
+    /// The frame is one line, and it carries every field - the act is observable, which is what
     /// makes *the control was pressed* a fact rather than a guess.
     #[test]
     fn the_frame_is_one_line_of_json() {
@@ -257,8 +210,8 @@ mod tests {
         );
     }
 
-    /// **The launcher is asked with the two verbs a person would type, and the frame goes to the
-    /// stop.** A stand-in script records both the argv and its stdin, so what is asserted is the
+    /// The launcher is asked with the two verbs a person would type, and the frame goes to the
+    /// stop. A stand-in script records both the argv and its stdin, so what is asserted is the
     /// frame the supervisor RECEIVED rather than the fact that something was run.
     #[test]
     fn the_launcher_is_asked_with_both_verbs_and_handed_the_frame() {
@@ -266,11 +219,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("calls");
         let script = dir.join("letibot");
-        // **`write_stub` and not `write` + `chmod`**: a file written by this thread is `ETXTBSY` to
+        // `write_stub` and not `write` + `chmod`: a file written by this thread is `ETXTBSY` to
         // every `fork` in the binary until each child has exec'd, so the naive spelling fails about
-        // one run in three under load (`.letibot/notes/a-written-then-exec39d-file-races-every-fork-in-its-binary.md`).
-        // The probe run takes no arguments, so it must record nothing: `write_stub` proves the file
-        // by exec'ing it, and a stand-in that logged that would be logging its own proof.
+        // one run in three under load. Its probe run takes no arguments, so the stub records nothing.
         letibot_tools::testing::write_stub(
             &script,
             &format!(
@@ -297,8 +248,7 @@ mod tests {
         let text = std::fs::read_to_string(&log).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "--room --stop", "{lines:?}");
-        // **The frame is the STOP's stdin**, which is where the act begins: a supervisor that
-        // wants the note reads it there, and the launcher ignores its stdin entirely.
+        // The frame is the STOP's stdin, which is where the act begins.
         assert_eq!(
             lines[1],
             frame.line().trim_end(),
@@ -308,7 +258,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A refusal is the program's own words**, said rather than swallowed — and it stops before
+    /// A refusal is the program's own words, said rather than swallowed - and it stops before
     /// the start, because a stop that did not stop is not a restart.
     #[test]
     fn a_launcher_that_refuses_is_a_sentence_and_not_a_silence() {
@@ -343,7 +293,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **One restart at a time per process**, and the right comes back when the act ends — a box
+    /// One restart at a time per process, and the right comes back when the act ends - a box
     /// has one room, so two stops and two starts is a race rather than a restart.
     #[test]
     fn only_one_restart_runs_at_a_time_and_the_right_comes_back() {
@@ -358,7 +308,7 @@ mod tests {
         assert!(InFlight::take().is_some());
     }
 
-    /// **A supervisor is a door a test can stand in** — the trait's own reason for existing.
+    /// A supervisor is a door a test can stand in - the trait's own reason for existing.
     #[test]
     fn a_fixture_supervisor_records_the_frame_it_was_handed() {
         struct Recorder(Mutex<Vec<RestartFrame>>);

@@ -1,27 +1,13 @@
-//! The host changelog's scope behind the `host_changelog` tool.
-//!
-//! The sibling of [`crate::notes_scope`] and the same seam for the same reason: `letibot-tools`
-//! cannot know where this box keeps its config, which host it is, or which session is calling, so
-//! the tool declares a [`ChangelogScope`] and this answers it.
-//!
-//! Three facts, and each is read from the one place that already knows it:
-//!
-//! * **the file** — the config dir's `host-changelog.jsonl`, beside `providers.toml` and
-//!   `prompts.toml`, by the same rule `Prompts::path` and `Config::global_notes` use;
-//! * **the host** — `letibot_room::host_name()`, `uname -n`'s answer, which is what a person
-//!   comparing two boxes would type. A change made on a declared machine names that machine in
-//!   the call; this is the default;
-//! * **the writer** — the session's own id, bound at open, so every line says which session
-//!   recorded it and a person can go and read that conversation.
-//!
-//! **The path is a function and not a field**, so a test that moves `XDG_CONFIG_HOME` between two
-//! calls of one process gets the file it just moved to.
+//! The host changelog's scope behind the `host_changelog` tool - the sibling of
+//! [`crate::notes_scope`], for the same reason: `letibot-tools` cannot know where this box keeps
+//! its config, which host it is, or which session is calling.
 
 use std::path::PathBuf;
 
 use letibot_tools::builtins::changelog::{ChangelogScope, FILE};
 
-/// The file a box's host changelog lives in.
+/// The file a box's host changelog lives in - a function and not a field, so a test that moves
+/// `XDG_CONFIG_HOME` between two calls gets the file it just moved to.
 pub fn path() -> PathBuf {
     letibot_provider::keys::config_file()
         .parent()
@@ -35,7 +21,7 @@ pub struct ConfigChangelog {
 }
 
 impl ConfigChangelog {
-    /// Over the session the harness opened — the id every line will carry.
+    /// Over the session the harness opened - the id every line will carry.
     pub fn new(who: String) -> Self {
         ConfigChangelog { who }
     }

@@ -1,20 +1,6 @@
-//! The standing-notes scope behind the `notes` tool.
-//!
-//! The sibling of [`crate::transcript_source`] and [`crate::decision_source`],
-//! and the same seam for the same reason: `letibot-tools` cannot know where
-//! the workspace or the config dir are, so the tool declares a
-//! [`NotesScope`] and this implements it.
-//!
-//! Both answers are the same facts the reader uses, read the same way:
-//!
-//! * the workspace, from the session's own `Config` — which by the time a
-//!   harness registers tools is the *stored* workspace for a resumed session
-//!   and not merely the daemon's start directory, so the tool's notes and the
-//!   reader's notes are notes about the same tree;
-//! * the box-wide dir, from the same `Config` ([`Config::global_notes`]) rather
-//!   than a second read of `$HOME`, so the two can never disagree about where the
-//!   operator's notes live and a fixture's session cannot write into the
-//!   operator's own.
+//! The standing-notes scope behind the `notes` tool - the sibling of [`crate::transcript_source`]
+//! and [`crate::decision_source`], for the same reason: `letibot-tools` cannot know where the
+//! workspace or the config dir are. Both answers come from the session's own [`Config`].
 
 use std::path::PathBuf;
 
@@ -27,7 +13,7 @@ pub struct ConfigNotes {
 }
 
 impl ConfigNotes {
-    /// Over a workspace and a box-wide notes directory the harness has already settled —
+    /// Over a workspace and a box-wide notes directory the harness has already settled -
     /// for a resumed session, the store's answer rather than the daemon's start directory.
     pub fn new(workspace: PathBuf, global: PathBuf) -> Self {
         ConfigNotes { workspace, global }

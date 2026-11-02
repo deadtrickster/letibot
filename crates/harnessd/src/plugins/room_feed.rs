@@ -1,66 +1,42 @@
-//! **The `room` feed** — one host's agents' queues, per tag, as a pane reads them.
+//! The `room` feed: one host's agents' queues, per tag, as a pane reads them.
 //!
-//! `docs/room.md` § *Still owed* 1 is the pane this feed exists for: the queues per tag, the
-//! arbiter, and the person's four controls. The room keeps no store and lives in another process
-//! (`harnessd --room`), so the daemon that draws the pane holds a [`RoomFeed`] — in production the
-//! session's own connection to the room (`crate::room::link::SessionRoom`) — and this module is the
-//! one place the snapshot it answers becomes the JSON a layer is handed.
+//! The room keeps no store and lives in another process (`harnessd --room`), so the daemon that
+//! draws the pane holds a [`RoomFeed`] - in production the session's own connection to the room -
+//! and this module is the one place that snapshot becomes the JSON a layer is handed.
 //!
-//! # What a row carries, and why each field is here
+//! A row carries its tag, state, claimant (and whether that is this session), the age of its beat
+//! and its abandonment count: a tag is a lock, so the queue is the unit of contention, and
+//! `claimable` is the predicate rather than `state == open`, because an abandoned item is claimable
+//! and does not say open.
 //!
-//! | field | is | why |
-//! |---|---|---|
-//! | `tag` | the queue's name | a tag is a LOCK: the queue is the unit of contention |
-//! | `state` | `open`/`claimed`/`abandoned`/`done`/`dropped` | the lifecycle, in the room's own words |
-//! | `claimant` | who holds it | and `mine`, whether that is this session — the difference between *release* and nothing |
-//! | `beat_age_ms` | how long since the holder last said it was working | the lease is measured on it, so `stale` is one comparison |
-//! | `abandonments` | how many claimants it has lost | at [`letibot_room::ABANDON_THRESHOLD`] it freezes |
-//! | `claimable` | may anybody take it now | the predicate, not `state == open` — an abandoned item is claimable and does not say `open` |
+//! Two things only the host can answer: the clock (a wasm guest has no `SystemTime`, so every age
+//! arrives already subtracted) and the room's own identity sentence, without which *restarted
+//! clean* and *restarted empty* read the same.
 //!
-//! # Two things only the host can answer
-//!
-//! * **The clock.** A guest compiled for `wasm32-unknown-unknown` has no `SystemTime` — asking for
-//!   one is a panic, and a panic in a guest is a trap. So every age arrives as milliseconds against
-//!   the host's `now_ms` and the layer subtracts nothing.
-//! * **The room's own identity.** *Restarted clean* and *restarted empty* are the same thing here
-//!   unless it is said: the room keeps no store, so an empty room is empty at every start, and
-//!   `identity` is the sentence (`Server::identity`) that tells a reader how long it has been up and
-//!   how much has happened since.
-//!
-//! # The clock is quantised, and that is not a detail
-//!
-//! The host answers a pane once per distinct `Input` (`sessions_pane::Host::ask` keys its cache on
-//! the serialised input), so a feed carrying the clock to the millisecond is a cache that misses on
-//! every frame: one wasm call and one serialisation of the whole room per draw. A row's finest fact
-//! here is a `{}s` age, so a second's bucket cannot change a drawn frame — and it turns *a call per
-//! tick* into *a call per second*. `.letibot/notes/a-clock-in-a-plugin-feed-is-a-wasm-call-per-frame.md`
-//! is the measurement.
+//! The clock is quantised to the second because the host answers a pane once per distinct input: a
+//! feed carrying milliseconds would miss its cache on every frame, and a row's finest fact is a
+//! second anyway.
 
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-/// The resolution of the feed's clock — one second, the finest thing a row can say.
+/// The resolution of the feed's clock - one second, the finest thing a row can say.
 pub const CLOCK_QUANTUM_MS: u64 = 1_000;
 
-/// **Where a pane's view of the room comes from.** The daemon's one implementation speaks the room's
-/// wire (`crate::room::link::SessionRoom`); a test stands in its own, which is what makes the shape
-/// below testable with no socket and no coordinator.
+/// Where a pane's view of the room comes from. The daemon's one implementation speaks the room's
+/// wire; a test stands in its own, which is what makes the shape below testable with no socket.
 pub trait RoomFeed: Send + Sync {
     /// The room as it stands, or the sentence saying why it could not be read.
     fn snapshot(&self) -> RoomSnapshot;
 
-    /// **One of the person's four controls, on the entry a row names.** The HOST performs it; the
-    /// layer only decided which row to draw. `Err` is the refusal, in the room's own words.
+    /// One of the person's four controls, on the entry a row names. The HOST performs it; the layer
+    /// only decided which row to draw. `Err` is the refusal, in the room's own words.
     fn act(&self, entry: &str, verb: &str) -> Result<String, String>;
 
-    /// **The pane's fifth control — restart the box's room.** Not a room verb: it is a daemon
-    /// lifetime, asked of the supervisor that starts coordinators (`crate::room::supervise`), and
-    /// this host is the one that asks because the coordinator must not stop itself.
-    ///
-    /// The default is the refusal, so a fixture that has no supervisor has to say nothing to be
-    /// honest: a pane whose host cannot restart the room offers no key, and a key that arrives
-    /// anyway is answered in words rather than in silence.
+    /// The pane's fifth control - restart the box's room. Not a room verb: it is a daemon lifetime
+    /// asked of the supervisor that starts coordinators, because the coordinator must not stop
+    /// itself. The default is the refusal, so a host with no supervisor offers no key.
     fn restart(&self) -> Result<String, String> {
         Err(
             "this host was not given a supervisor for the box's room, so it cannot restart it \
@@ -70,27 +46,24 @@ pub trait RoomFeed: Send + Sync {
     }
 }
 
-/// **What the pane is told about the restart** — whether this host may ask for one, why not when it
-/// may not, and the note the last one left.
-///
-/// The marker is the operator's third requirement: *an orchestration server that returns with no
-/// memory of the last minute is the opaque thing this feature exists to remove*. When, and why —
-/// the control was pressed, the daemon restarted it, or it crashed.
+/// What the pane is told about the restart - whether this host may ask for one, why not when it may
+/// not, and the note the last one left. The marker is the operator's own requirement: a server that
+/// returns with no memory of the last minute is the opaque thing this exists to remove.
 #[derive(Debug, Clone, Default)]
 pub struct RestartView {
     /// May this host ask a supervisor to restart the room?
     pub available: bool,
-    /// Why not, when not — the sentence the pane prints instead of offering the key.
+    /// Why not, when not - the sentence the pane prints instead of offering the key.
     pub why: Option<String>,
     /// The note the last restart left, if one did.
     pub marker: Option<letibot_room::Marker>,
 }
 
-/// **The room, as a pane reads it** — the state a `room` feed is built from, before the ages are
-/// turned into milliseconds against one clock.
+/// The room, as a pane reads it - the state a `room` feed is built from, before the ages are turned
+/// into milliseconds against one clock.
 #[derive(Debug, Clone, Default)]
 pub struct RoomSnapshot {
-    /// `Server::identity()` — *started T ago and holding N item(s)*. The sentence that makes
+    /// `Server::identity` - *started T ago and holding N item(s)*, the sentence that makes
     /// *restarted clean* and *restarted empty* two readings.
     pub identity: String,
     /// The session that arbitrates, when one is named.
@@ -103,24 +76,23 @@ pub struct RoomSnapshot {
     pub items: Vec<letibot_room::Item>,
     /// The open questions, oldest first.
     pub questions: Vec<letibot_room::Question>,
-    /// **Which tags have an agent** — who it is, how many times it had to be re-seated, and when
-    /// the one now seated began. A tag absent from this list has no agent, and the pane says that
-    /// rather than leaving the column blank: *nobody is watching this queue* is a fact.
+    /// Which tags have an agent - who it is, how many times it had to be re-seated, and when the
+    /// one now seated began. A tag absent from this list has no agent, and the pane says that rather
+    /// than leaving the column blank: *nobody is watching this queue* is a fact.
     pub agents: Vec<letibot_room::TagAgent>,
-    /// **The project's tree** — every session in this room, in the order the tree draws them. The
-    /// room holds it because its daemon described it (`Request::Members`); a snapshot from a room
-    /// nobody has described holds nobody.
+    /// The project's tree - every session in this room, in the order the tree draws them. A snapshot
+    /// from a room nobody has described holds nobody.
     pub members: Vec<letibot_room::Member>,
-    /// **Why the room could not be read**, when it could not. The pane draws this sentence instead
-    /// of an empty room: *nothing is queued* and *nobody answered* are two facts, and a screen that
-    /// shows one for the other is a screen a person cannot act on.
+    /// Why the room could not be read, when it could not. The pane draws this instead of an empty
+    /// room: *nothing is queued* and *nobody answered* are two facts, and a screen that shows one for
+    /// the other is a screen a person cannot act on.
     pub unreadable: Option<String>,
-    /// **The restart**: whether this host may ask for one, and the note the last one left.
+    /// The restart: whether this host may ask for one, and the note the last one left.
     pub restart: RestartView,
 }
 
-/// **The `room` feed as a pane is handed it** — the queues per tag, each row's ages against the
-/// host's clock, the open questions, and the room's own identity.
+/// The `room` feed as a pane is handed it - the queues per tag, each row's ages against the host's
+/// clock, the open questions, and the room's own identity.
 pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
     let now = now / CLOCK_QUANTUM_MS * CLOCK_QUANTUM_MS;
     let snap = source.snapshot();
@@ -130,13 +102,13 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
     }
     let mut tags: Vec<Value> = Vec::new();
     let mut all = Counts::default();
-    // **Who owns each queue** — keyed once, so the loop below asks one map per tag instead of
-    // scanning a list, and so the two readers of *does this tag have an agent* cannot disagree.
+    // Who owns each queue - keyed once, so the loop below asks one map per tag and the two readers
+    // of *does this tag have an agent* cannot disagree.
     let agents: BTreeMap<&str, &letibot_room::TagAgent> =
         snap.agents.iter().map(|a| (a.tag.as_str(), a)).collect();
     for (tag, mut rows) in per_tag {
-        // **First come, first served** — the room's own order (`(posted_ms, id)`), restated here
-        // because this feed is a second reader of that rule and the two must agree about the head.
+        // First come, first served - the room's own order, restated because this feed is a second
+        // reader of that rule and the two must agree about the head.
         rows.sort_by_key(|i| (i.posted_ms, i.id));
         let mut counts = Counts::default();
         let drawn: Vec<Value> = rows
@@ -147,17 +119,16 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
                 row_of(item, now, snap.lease_ms, here)
             })
             .collect();
-        // **The agent's block, computed before the tag is moved into the row** — `json!` builds in
+        // The agent's block, computed before the tag is moved into the row: `json!` builds in
         // order, so `"tag": tag` above it would leave nothing for this to look up.
         let agent = match agents.get(tag.as_str()) {
             Some(a) => json!({
                 "session": a.session,
-                // **Up is the room's own `connected` list** — the same fact the arbiter's `up` is,
-                // because the socket is the daemon's liveness and an agent that is not connected
-                // cannot rule on anything.
+                // Up is the room's own `connected` list - the socket is the daemon's liveness, and
+                // an agent that is not connected cannot rule on anything.
                 "up": snap.connected.iter().any(|c| c == &a.session),
-                // **The count is the point**: a tag whose agent keeps dying is a fact about that
-                // tag, and it is drawn beside the tag rather than swallowed.
+                // The count is the point: a tag whose agent keeps dying is a fact about that tag
+                // and it is drawn beside the tag rather than swallowed.
                 "reseats": a.reseats,
                 "since_ms": a.since_ms,
                 "age_ms": now.saturating_sub(a.since_ms),
@@ -167,8 +138,8 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
         tags.push(json!({
             "tag": tag,
             "counts": counts.value(),
-            // **The agent, or `null` for a tag nobody owns** — the layer prints *no agent* rather
-            // than leaving a column blank, which would read as *an agent, details unknown*.
+            // The agent, or `null` for a tag nobody owns - the layer prints *no agent* rather than
+            // leaving a column blank, which would read as *an agent, details unknown*.
             "agent": agent,
             "rows": drawn,
         }));
@@ -179,10 +150,9 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
         .map(|q| {
             json!({
                 "id": q.id,
-                // **The entry a `rule` act names**, and the prefix the decision is appended to:
+                // The entry a `rule` act names, and the prefix the decision is appended to
                 // `q3:retry`, `q3:drop`, `q3:hand:<session>`. The decision is part of the row's
-                // identity because it is what the person picks — a row that says *retry* is a row
-                // whose Enter means retry.
+                // identity because it is what the person picks.
                 "entry": format!("q{}", q.id),
                 "item": q.facts.item,
                 "tag": q.facts.tag,
@@ -199,24 +169,24 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
         })
         .collect();
     json!({
-        // **The host's clock**, so a layer that wants an age of its own can measure one.
+        // The host's clock, so a layer that wants an age of its own can measure one.
         "now_ms": now,
-        // **Which session's pane this is** — a row's `mine` is this session's claim.
+        // Which session's pane this is - a row's `mine` is this session's claim.
         "here": here,
         "identity": snap.identity,
         "arbiter": snap.arbiter.as_ref().map(|session| json!({
             "session": session,
-            // **Is it up?** The socket is the daemon's liveness, so *connected* is the answer —
-            // and an arbiter that is not is a room whose questions wait for a person.
+            // Is it up? The socket is the daemon's liveness, so *connected* is the answer - and an
+            // arbiter that is not is a room whose questions wait for a person.
             "up": snap.connected.iter().any(|c| c == session),
         })),
         "connected": snap.connected,
         "lease_ms": snap.lease_ms,
         "threshold": snap.threshold,
         "unreadable": snap.unreadable,
-        // **The restart, as the pane reads it**: the key when this host may ask for one, the
-        // sentence when it may not, and the note the last one left. `sentence` is composed here
-        // because a guest has no clock and the age is the half of the note a person reads first.
+        // The restart, as the pane reads it: the key when this host may ask for one, the sentence
+        // when it may not, and the note the last one left. `sentence` is composed here because a
+        // guest has no clock and the age is the half of the note a person reads first.
         "restart": restart_of(&snap.restart, now),
         "tags": tags,
         "questions": questions,
@@ -224,7 +194,7 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
     })
 }
 
-/// What one tag's queue — or the whole room — holds, by state.
+/// What one tag's queue - or the whole room - holds, by state.
 #[derive(Debug, Default, Clone, Copy)]
 struct Counts {
     items: usize,
@@ -253,8 +223,8 @@ impl Counts {
             letibot_room::State::Dropped { .. } => self.dropped += 1,
             letibot_room::State::Open => {}
         }
-        // **Frozen is its own count**, not a sixth state: a raised item is `abandoned` AND
-        // unclaimable, and a reader counting states alone would say its tag has work in it.
+        // Frozen is its own count, not a sixth state: a raised item is `abandoned` AND unclaimable
+        // and a reader counting states alone would say its tag has work in it.
         if item.question.is_some() {
             self.frozen += 1;
         }
@@ -274,16 +244,15 @@ impl Counts {
     }
 }
 
-/// **One item, as a row is drawn from it** — the state, the claimant, the age of its beat and the
-/// count of claimants it has lost, which is the whole of what a reader needs to decide whether to
-/// leave it alone or take it.
+/// One item, as a row is drawn from it - the state, the claimant, the age of its beat and the count
+/// of claimants it has lost, which is what a reader needs to decide whether to take it.
 fn row_of(item: &letibot_room::Item, now: u64, lease_ms: u64, here: &str) -> Value {
     let claim = item.claim();
     let beat_age = claim.map(|c| now.saturating_sub(c.beat_ms));
     json!({
         "id": item.id,
-        // **The entry the acts name** — `i12`. The `i` is what tells the host's parse which of the
-        // two kinds of entry it was handed.
+        // The entry the acts name - `i12`. The `i` is what tells the host's parse which of the two
+        // kinds of entry it was handed.
         "entry": format!("i{}", item.id),
         "tag": item.tag,
         "body": one_line(&item.body),
@@ -292,14 +261,13 @@ fn row_of(item: &letibot_room::Item, now: u64, lease_ms: u64, here: &str) -> Val
         "posted_age_ms": now.saturating_sub(item.posted_ms),
         "claimant": claim.map(|c| c.by.clone()),
         "claim_age_ms": claim.map(|c| now.saturating_sub(c.claim_ms)),
-        // **The age of its beat** — the number the lease is measured on, and the one fact that says
+        // The age of its beat: the number the lease is measured on, and the one fact that says
         // whether this claim is about to be taken back.
         "beat_age_ms": beat_age,
         "stale": beat_age.is_some_and(|age| age > lease_ms),
-        // **Two facts about one claim, and they are opposite ones** — what the holder is waiting
-        // on (which is why a reminder about it is quiet) and what it said it is doing when it took
-        // the row (which is not). Drawn as two, because one column that said *waits: seen #1;
-        // working on it* told a reader the holder was blocked by its own work.
+        // Two facts about one claim, and they are opposite ones: what the holder is waiting on
+        // (which is why a reminder about it is quiet) and what it said it is doing when it took the
+        // row (which is not). Drawn as two, because one column said *waits: seen #1; working on it*.
         "waits_on": claim.and_then(|c| c.waits_on.as_ref().map(|w| w.text.clone())),
         "doing": claim.and_then(|c| c.said.as_ref().map(|w| w.text.clone())),
         "abandonments": item.abandonments(),
@@ -307,25 +275,22 @@ fn row_of(item: &letibot_room::Item, now: u64, lease_ms: u64, here: &str) -> Val
         "claimable": item.claimable(),
         "frozen": item.question.is_some(),
         "question": item.question,
-        // **Is this session the claimant?** A row this session holds leads with `release`, so the
-        // pane has to be told — a layer cannot work it out from an id it was never given.
+        // Is this session the claimant? A row this session holds leads with `release`, so the pane
+        // has to be told - a layer cannot work it out from an id it was never given.
         "mine": claim.is_some_and(|c| c.by == here),
         "live": item.live(),
     })
 }
 
-/// **A body on one line** — an item's body is a person's sentence and may be several, and a control
+/// A body on one line: an item's body is a person's sentence and may be several, and a control
 /// character in a row is a row that breaks the grid it is drawn in.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// **The restart block a pane reads** — may this host ask for one, why not when it may not, and the
-/// note the last one left, with its age measured against the host's clock.
-///
-/// The sentence is composed HERE rather than in the guest for the feed's own reason: a guest
-/// compiled for `wasm32-unknown-unknown` has no `SystemTime`, so every age arrives already
-/// subtracted and the layer only prints it.
+/// The restart block a pane reads - may this host ask for one, why not when it may not, and the note
+/// the last one left, with its age against the host's clock. The sentence is composed here because
+/// a guest has no `SystemTime`, so every age arrives already subtracted.
 fn restart_of(view: &RestartView, now: u64) -> Value {
     let marker = view.marker.as_ref().map(|m| {
         json!({
@@ -378,8 +343,8 @@ mod tests {
                     said: None,
                 },
             },
-            // **Posted before it was claimed**, which is the only order the room can produce —
-            // and the one the feed's sort is measured against.
+            // Posted before it was claimed, which is the only order the room can produce - and the
+            // one the feed's sort is measured against.
             ..open(id, tag, "8 GB", "s-a", claim_ms)
         }
     }
@@ -418,8 +383,8 @@ mod tests {
             items,
             questions: Vec::new(),
             members: Vec::new(),
-            // **No tag has an agent unless a test says so** — the room's own answer for a daemon
-            // whose upkeep has seated none.
+            // No tag has an agent unless a test says so - the room's own answer for a daemon whose
+            // upkeep has seated none.
             agents: Vec::new(),
             unreadable: None,
             restart: RestartView {
@@ -445,7 +410,7 @@ mod tests {
         room(&Fixed(snap), "s-a", NOW)
     }
 
-    /// **The feed's shape, on the three rows a pane is read for**: a tag with two items, one of them
+    /// The feed's shape, on the three rows a pane is read for: a tag with two items, one of them
     /// claimed with the age of its beat, and an abandoned one with its count.
     #[test]
     fn a_tag_with_two_items_and_a_claimed_one_carries_its_beat_age() {
@@ -459,7 +424,7 @@ mod tests {
         assert_eq!(value["lease_ms"], json!(90_000));
         assert_eq!(value["threshold"], json!(3));
 
-        // **Two tags, in name order, each with its own queue.**
+        // Two tags, in name order, each with its own queue.
         assert_eq!(value["tags"].as_array().unwrap().len(), 2);
         assert_eq!(value["tags"][0]["tag"], json!("disk"));
         assert_eq!(value["tags"][1]["tag"], json!("ram"));
@@ -472,7 +437,7 @@ mod tests {
         assert_eq!(ram[0]["posted_age_ms"], json!(60_000));
         assert_eq!(ram[0]["claimant"], json!(null));
 
-        // **The claimed one**: who holds it, the age of its beat, and the held time.
+        // The claimed one: who holds it, the age of its beat, and the held time.
         assert_eq!(ram[1]["entry"], json!("i2"));
         assert_eq!(ram[1]["state"], json!("claimed"));
         assert_eq!(ram[1]["claimant"], json!("s-b"));
@@ -482,7 +447,7 @@ mod tests {
         assert_eq!(ram[1]["claimable"], json!(false));
         assert_eq!(ram[1]["mine"], json!(false), "`s-a` is not the claimant");
 
-        // **The abandoned one**: its count, and that it is claimable again — the state says
+        // The abandoned one: its count, and that it is claimable again - the state says
         // `abandoned` and the predicate says yes, which is why `claimable` is a field.
         let disk = &value["tags"][0]["rows"][0];
         assert_eq!(disk["state"], json!("abandoned"));
@@ -501,9 +466,7 @@ mod tests {
         assert_eq!(value["tags"][1]["counts"]["items"], json!(2));
     }
 
-    /// **A tag with an agent says so; a tag with none says that too** — the operator's requirement
-    /// for the pane: *"a tag with an agent says so (who it is, whether it is up, its re-seat count),
-    /// and a tag with none says that too rather than looking the same"*.
+    /// A tag with an agent says so; a tag with none says that too, rather than looking the same.
     #[test]
     fn a_tag_with_an_agent_says_who_and_a_tag_with_none_says_that() {
         let mut snap = snapshot(vec![
@@ -516,8 +479,8 @@ mod tests {
             reseats: 2,
             since_ms: NOW - 30_000,
         }];
-        // **Up is the room's own `connected` list** — the same fact the arbiter's `up` is, and the
-        // one that says whether this agent can rule on anything.
+        // Up is the room's own `connected` list - the same fact the arbiter's `up` is, and the one
+        // that says whether this agent can rule on anything.
         snap.connected = vec!["s-room-box-1a2b3c4d-ram".to_string()];
         let value = feed(snap.clone());
 
@@ -527,20 +490,20 @@ mod tests {
         assert_eq!(ram["reseats"], json!(2), "the count is drawn, not smoothed");
         assert_eq!(ram["age_ms"], json!(30_000));
 
-        // A tag nobody owns is `null`, which is a fact the layer prints as *no agent* — not a
+        // A tag nobody owns is `null`, which is a fact the layer prints as *no agent* - not a
         // column left out, which would read as *an agent, details unknown*.
         assert_eq!(value["tags"][0]["tag"], json!("disk"));
         assert_eq!(value["tags"][0]["agent"], json!(null));
 
-        // **And an agent that is not connected is drawn as down**, which is the reading that
-        // matters: a tag whose agent died is a queue nobody is ruling on.
+        // And an agent that is not connected is drawn as down, which is the reading that matters: a
+        // tag whose agent died is a queue nobody is ruling on.
         let mut down = snap;
         down.connected = Vec::new();
         let value = feed(down);
         assert_eq!(value["tags"][1]["agent"]["up"], json!(false));
     }
 
-    /// **A claim whose beat has stopped is `stale`**, and the lease is what decides it.
+    /// A claim whose beat has stopped is `stale`, and the lease is what decides it.
     #[test]
     fn a_beat_older_than_the_lease_is_stale_and_one_at_the_boundary_is_not() {
         let value = feed(snapshot(vec![
@@ -556,7 +519,7 @@ mod tests {
         assert_eq!(rows[1]["stale"], json!(true), "one past it is not");
     }
 
-    /// **The identity, the arbiter and who is connected** — the three facts that make an empty room
+    /// The identity, the arbiter and who is connected - the three facts that make an empty room
     /// readable, and the ones a pane prints before it prints a queue.
     #[test]
     fn the_room_says_who_it_is_and_whether_the_arbiter_is_up() {
@@ -576,7 +539,7 @@ mod tests {
         assert_eq!(value["arbiter"]["up"], json!(true));
     }
 
-    /// **A room that could not be read says so** rather than drawing an empty queue.
+    /// A room that could not be read says so rather than drawing an empty queue.
     #[test]
     fn an_unreadable_room_carries_the_sentence() {
         let snap = RoomSnapshot {
@@ -591,7 +554,7 @@ mod tests {
         assert_eq!(value["tags"], json!([]));
     }
 
-    /// **A row's body is one line**, whatever a person typed into it.
+    /// A row's body is one line, whatever a person typed into it.
     #[test]
     fn a_body_is_flattened_to_one_line() {
         let mut item = open(1, "ram", "8 GB\nand a\tfast disk", "s-a", 0);
@@ -603,7 +566,7 @@ mod tests {
         );
     }
 
-    /// **The clock is quantised to the second**, so a pane's cache hits for the rest of it.
+    /// The clock is quantised to the second, so a pane's cache hits for the rest of it.
     #[test]
     fn the_clock_moves_once_a_second() {
         let snap = snapshot(vec![claimed(1, "ram", "s-b", NOW, NOW - 4_000)]);
@@ -616,9 +579,8 @@ mod tests {
         assert_eq!(third["now_ms"], json!(NOW + 1_000));
     }
 
-    /// **The restart note arrives with its age, its cause and its sentence** — the three things the
-    /// operator asked the pane to be able to say, and the reason the age is subtracted here rather
-    /// than in a guest that has no clock.
+    /// The restart note arrives with its age, its cause and its sentence - the reason the age is
+    /// subtracted here rather than in a guest that has no clock.
     #[test]
     fn a_restart_note_carries_when_and_why() {
         let mut snap = snapshot(Vec::new());
@@ -652,7 +614,7 @@ mod tests {
         }
     }
 
-    /// **A host with no supervisor says so instead of offering the key** — and a room nobody has
+    /// A host with no supervisor says so instead of offering the key - and a room nobody has
     /// restarted carries no note at all, which is not the same as a note that says nothing.
     #[test]
     fn a_host_with_no_supervisor_says_why_and_no_note_is_null() {

@@ -1,38 +1,17 @@
-//! **The feeds a pane is handed, built where the data lives** — `docs/plugins-plan.md` §4.9,
-//! "Feeds".
+//! The feeds a pane is handed, built where the data lives.
 //!
-//! # Why this module exists
+//! A pane never runs anything for its data: it declares which of the host's own facts it reads
+//! (`feeds = ["sessions"]`) and is handed exactly those. The head built its own feed in process
+//! from the day feeds landed; the daemon did not, so a layer on disk that declared one drew an
+//! empty pane - and a declaration the host does not honour is worse than none.
 //!
-//! A pane never runs anything for its data: it **declares** which of the host's own facts it reads
-//! (`plugin.toml`'s `feeds = ["sessions"]`) and is handed exactly those, under their names, in
-//! `Input::feeds`. That was true of the head's in-process session list from the day feeds landed
-//! (`crates/tui/src/app/sessions_pane.rs` builds one for the picker) and **was not true of a pane
-//! the daemon draws**: `input_value` wrote `v`, `state`, `look`, `event` and `size`, so a layer on
-//! disk that declared a feed was handed nothing and drew an empty pane. A declaration the host
-//! does not honour is worse than no declaration: it reads as a broken plugin.
+//! Only `sessions` is fed today. A layer declaring `monitors`, `jobs`, `todos` or `git` is handed
+//! no key at all rather than an empty list: `[]` would say *there are none*, which is a different
+//! fact from *this host cannot answer that yet*.
 //!
-//! So the daemon builds the feeds too, from the one thing it holds that a head does not — the
-//! registry, which knows every session this daemon has opened *and* every row the store holds for
-//! one it has not.
-//!
-//! # What is fed, and what is not
-//!
-//! Only `sessions` today: it is the feed that exists (`letibot_plugin::pane::Feed::ALL` names four
-//! more, and they are still planned). A layer that declares `monitors`, `jobs`, `todos` or `git` is
-//! handed **no key at all** rather than an empty list — `[]` would tell it *there are none*, which
-//! is a different fact from *this host cannot answer that yet*, and only the layer can draw the
-//! difference.
-//!
-//! # The three fields only a host can fill
-//!
-//! * `now` — the host's clock. A guest compiled for `wasm32-unknown-unknown` has no `SystemTime`;
-//!   asking for one is a panic, not a zero (`.letibot/notes/the-pane-contracts-two-look-keys.md`).
-//!   So an age is the host's arithmetic and the layer's drawing.
-//! * `moved_ms` on each session — when it last appended a row, off the store's own row. The age of
-//!   that number is the answer to *is that one stuck?*, which is what a list of agents is read for.
-//! * `repo` on each session — the folder of the workspace's git **common** directory, so a session
-//!   in `…/letibot/worktrees/agent-x` is grouped with the checkout it was cut from. A plugin cannot
-//!   work this out from a path (a worktree may live anywhere), so the host that can ask git does.
+//! Three fields only a host can fill: `now` (a wasm guest has no clock, so asking is a panic), and
+//! per session `moved_ms` (when it last appended a row - the age answers *is that one stuck?*) and
+//! `repo` (the workspace's git common directory, which a plugin cannot work out from a path).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,21 +22,20 @@ use letibot_sessionlog::registry::Registry;
 pub(crate) use letibot_metrics::now_ms;
 use serde_json::{Value, json};
 
-/// **Where a pane's session list comes from.** One implementation in the daemon (the registry);
-/// a test stands in its own, which is what makes a pane's feed testable without a daemon.
+/// Where a pane's session list comes from. One implementation in the daemon (the registry); a test
+/// stands in its own, which is what makes a pane's feed testable without a daemon.
 pub trait SessionFeed: Send + Sync {
     /// Every session this host knows, live and on disk, as the `sessions` feed spells one.
     fn rows(&self) -> Vec<Value>;
 }
 
-/// **The daemon's own list**: the registry's briefs — which already join the live sessions with
-/// the store's rows (`Registry::list`) — plus the repository each workspace is in.
+/// The daemon's own list: the registry's briefs - which already join the live sessions with the
+/// store's rows - plus the repository each workspace is in.
 pub struct RegistryFeed {
     registry: Arc<Registry>,
-    /// **The repository of each workspace, asked of git once.** A `git rev-parse` per session per
-    /// frame would be a process per row every five seconds, and a workspace's repository does not
-    /// change while a daemon runs. A workspace git cannot answer for is cached as empty too, so a
-    /// folder outside any repository costs one call and not one per frame.
+    /// The repository of each workspace, asked of git once: a `rev-parse` per session per frame
+    /// would be a process per row every five seconds, and a workspace's repository does not change
+    /// while a daemon runs. A workspace git cannot answer for is cached as empty too.
     repos: Mutex<HashMap<PathBuf, String>>,
 }
 
@@ -101,7 +79,7 @@ impl SessionFeed for RegistryFeed {
                     "title": b.title,
                     "slug": b.slug,
                     "parent": b.parent_session_id,
-                    // The origin's wire word — the same one the store holds.
+                    // The origin's wire word - the same one the store holds.
                     "origin": b.origin.as_str(),
                     "live": b.live,
                     "running": b.status.running,
@@ -120,9 +98,8 @@ impl SessionFeed for RegistryFeed {
     }
 }
 
-/// **The `sessions` feed as a pane is handed it**: the rows, the session the pane belongs to (the
-/// one whose pane this is — that is what `here` means to a pane the daemon draws), the host's home
-/// and the host's clock.
+/// The `sessions` feed as a pane is handed it: the rows, the session the pane belongs to (which is
+/// what `here` means to a pane the daemon draws), the host's home and the host's clock.
 pub fn sessions(source: &dyn SessionFeed, here: &str) -> Value {
     json!({
         "sessions": source.rows(),
@@ -132,22 +109,14 @@ pub fn sessions(source: &dyn SessionFeed, here: &str) -> Value {
     })
 }
 
-/// The host's home, so a layer can draw `~/…` — the same shortening the head's own list does.
+/// The host's home, so a layer can draw `~/…` - the same shortening the head's own list does.
 fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
 }
 
-/// **The folder of `workspace`'s git common directory** — the checkout a worktree was cut from,
-/// which is what a person means by *this project*.
-///
-/// `--git-common-dir` rather than `--show-toplevel` on purpose: inside a worktree the top level IS
-/// the worktree (`…/letibot/worktrees/agent-x`), and grouping by it would put every worktree in a
-/// project of its own. `--path-format=absolute` because a plain repository answers `.git`, which
-/// would otherwise be resolved against whatever directory the daemon happens to be in.
-///
-/// **`pub(crate)` because the room's roster asks the same question** (`crate::room::roster`): a
-/// member hangs under its project, and a second spelling of *which folder is this project* is how a
-/// pane's tree and a room's roster come to disagree about where a worktree belongs.
+/// The folder of `workspace`'s git common directory - the checkout a worktree was cut from, which is
+/// what a person means by *this project*. `--git-common-dir`, not `--show-toplevel`, because inside
+/// a worktree the top level IS the worktree; absolute, because a plain repo answers `.git`.
 pub(crate) fn repository_of(workspace: &Path) -> String {
     if !workspace.is_dir() {
         return String::new();
@@ -187,8 +156,8 @@ pub(crate) fn repository_of(workspace: &Path) -> String {
 mod tests {
     use super::*;
 
-    /// **A feed says `0` and `""` rather than guessing** — the two facts only the host can answer,
-    /// and the two a plugin must draw as *not told* rather than as *now* and *its own folder*.
+    /// A feed says `0` and `""` rather than guessing: the two facts only the host can answer, and
+    /// the two a plugin must draw as *not told* rather than as *now* and *its own folder*.
     #[test]
     fn a_workspace_outside_a_repository_is_an_empty_answer() {
         assert_eq!(repository_of(Path::new("/definitely/not/here")), "");
@@ -202,8 +171,8 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
     }
 
-    /// **A worktree's repository is the checkout it was cut from**, not the worktree — the whole
-    /// reason `--git-common-dir` is asked instead of `--show-toplevel`.
+    /// A worktree's repository is the checkout it was cut from, not the worktree - the whole reason
+    /// `--git-common-dir` is asked instead of `--show-toplevel`.
     #[test]
     fn a_worktrees_repository_is_the_checkout_not_the_worktree() {
         let root = std::env::temp_dir().join(format!("letibot-feed-git-{}", std::process::id()));
@@ -238,9 +207,9 @@ mod tests {
             tree.to_str().unwrap(),
         ]);
         assert!(made, "the worktree");
-        // **git answers a RESOLVED path**, and on this box `/var` is a symlink to `/private/var`
-        // — so the expectation is canonicalised rather than compared against the spelling this
-        // test made the directory with.
+        // git answers a RESOLVED path, and on some boxes `/var` is a symlink to `/private/var` - so
+        // the expectation is canonicalised rather than compared against the spelling this test made
+        // the directory with.
         let want = std::fs::canonicalize(&repo)
             .expect("the checkout")
             .display()

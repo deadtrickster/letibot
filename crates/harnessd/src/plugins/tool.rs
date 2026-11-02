@@ -1,56 +1,25 @@
-//! **A tool a layer declares, seated where the model can call it** — `docs/plugins-plan.md` §4.8,
-//! and the `tool_` seam the manifest's `[[tools]]` is the declaration half of.
-//!
-//! # The shape, in one paragraph
+//! A tool a layer declares, seated where the model can call it: the `tool_` seam the manifest's
+//! `[[tools]]` is the declaration half of.
 //!
 //! A layer's `plugin.toml` says `[[tools]] name = "claude_transcript"`, so the host seats a tool of
-//! that name with that description and that JSON Schema. When the model calls it, the host asks the
-//! stack for `tool_claude_transcript` with
-//! `{"v":1,"name":…,"args":{…},"feeds":{…},"looks":[],"state":null}` and the layer answers a
-//! result in the tree's own vocabulary — `ok`, `failed`, `abstained` or `refused`.
+//! that name with that description and schema, and a call asks the stack for
+//! `tool_claude_transcript` with the arguments and feeds. Which layers count is
+//! [`crate::plugins::declared_tools`]'s answer - the three disk scopes - so a built-in's block is
+//! the text a person installs, not a tool every session is handed.
 //!
-//! **Which layers count is [`crate::plugins::declared_tools`]'s answer, and it is the three DISK
-//! scopes** — the session's, the project's, the user's. A built-in's `[[tools]]` block is the text a
-//! person installs (its `plugin.toml` copied into a scope, with no module, and the binary's own
-//! module answers below it); it is not a tool every session is handed. `crates/harnessd/tests/
-//! wired.rs` pins the default session's tool set and says why, and this rule is what keeps that set
-//! where it is.
+//! A hook does no I/O, so a tool asks for it: an answer may be `{"looks":[…],"state":…}` instead
+//! of a result, and the host runs every look, hands the results back in order and asks again, up to
+//! [`MAX_ROUNDS`] times. Every look is bounded and every truncation is in the answer, because a tool
+//! whose reason for existing is *do not put 100 MB into a context* cannot answer a big file with
+//! silence about what it left out.
 //!
-//! # A hook does no I/O, so a tool asks for it
+//! The capability is checked here, and it is the manifest's line: a path resolves against the
+//! workspace (a layer that declared `read`) or one of the trees it named, both sides canonicalised
+//! so a symlink pointing out of a declared tree is refused for what it resolves to.
 //!
-//! §1 principle 1: a plugin never touches the filesystem. A pane therefore *declares a look* and
-//! the host runs it (`crate::plugins::look`). A tool needs the same door and needs it with more
-//! reach than a pane's: `sessions` lists a directory, `search` sweeps a 116 MB transcript, `read`
-//! wants lines 4000–4040 of it, `outline` wants forty specific lines out of fifty thousand. So the
-//! answer may be `{"looks":[…], "state":…}` instead of a result, and the host runs every look,
-//! hands the results back in the same order, and asks again — up to [`MAX_ROUNDS`] times.
-//!
-//! | look | is |
-//! |---|---|
-//! | `{"read": path, "from": 12, "lines": 40}` | numbered lines from `from` |
-//! | `{"read": path, "at": [3, 17, 42]}` | exactly those lines, for a tool that grepped first |
-//! | `{"list": path}` | a directory's entries: name, kind, size, mtime |
-//! | `{"grep": path, "match": "…", "context": 2}` | matches with their line index and byte offset |
-//!
-//! **Every look is bounded and every truncation is in the answer** — `cut` on a line, `more` on a
-//! page — because a tool whose whole reason for existing is *do not put 100 MB into a context*
-//! cannot answer a big file with silence about the part it left out.
-//!
-//! # The capability is checked HERE, and it is the manifest's line
-//!
-//! A look's path resolves against the session's workspace (a layer that declared `read`) or against
-//! one of the trees the layer named as `read:<path>`. Both sides are canonicalised before the
-//! comparison, so a symlink inside a declared tree that points out of it — `~/.claude/projects`
-//! holds one, `memory` → a folder under `~/Projects` — is refused for what it resolves to. Nothing
-//! else is reachable: `~/.ssh` is not under `~/.claude/projects`, and no spelling of a path makes
-//! it so.
-//!
-//! # What a broken layer costs
-//!
-//! A tool call, never a session. A layer that traps, that answers something that is not a result,
-//! that asks for a path it may not read, or that is not loaded at all, produces a `failed` result
-//! whose payload says which of those happened and what fixes it. The stack's own rule (§1
-//! principle 4) applies underneath: a layer that traps is skipped and the one below answers.
+//! A broken layer costs a tool call, never a session: it produces a `failed` result naming what
+//! happened and what fixes it, and the stack's own rule - a trap falls to the layer below - holds
+//! underneath.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -65,18 +34,14 @@ use serde_json::{Value, json};
 
 use crate::plugins::PluginHost;
 
-/// **How many declared tools one session seats.**
-///
-/// §8.4's ceiling counts the tools a ROLE names, and a layer's tool is not one of those: it is a
-/// seat the project added, after the role was resolved, so the role's number cannot be the one that
-/// binds. This is. Four is a number a person can read in a prompt beside thirty-five others without
-/// the union becoming a menu, and a session that wants a fifth is a session whose fifth tool should
-/// be a hook or a `bash` call.
+/// How many declared tools one session seats. The ceiling that counts the tools a role names cannot
+/// bind here: a layer's tool is a seat the project added after the role was resolved. Four is a
+/// number a person can read in a prompt beside thirty-five others without it becoming a menu.
 pub const MAX_TOOLS: usize = 4;
 
-/// **How many ask-look-ask rounds one call may take.** `outline` needs three (a grep for the two
-/// row kinds, then the lines those matched); a fourth is a layer that keeps asking, and the answer
-/// says so rather than looping.
+/// How many ask-look-ask rounds one call may take. `outline` needs three (a grep for the two row
+/// kinds, then the lines those matched); a fourth is a layer that keeps asking, and the answer says
+/// so rather than looping.
 pub const MAX_ROUNDS: usize = 4;
 
 /// How many looks one answer may ask for. A `sessions` listing over eight projects and forty
@@ -104,13 +69,9 @@ const MATCHES_CAP: usize = 40;
 /// The contract version every `tool_` input carries, like every other hook's.
 const TOOL_V: u32 = 1;
 
-/// **The one question a plugin tool puts to a gate** — `Gate::admit_unasked`, reached through the
-/// runtime's own door (`InvokeCtx::admit_unasked`).
-///
-/// A trait rather than the `InvokeCtx` itself because the question is the whole of what this tool
-/// needs from a runtime, and a test that has to build an `InvokeCtx` (a backend, a spiller, a file
-/// ledger) to ask it would be a test of the runtime. [`PluginTool::invoke`] is the only production
-/// caller and it passes the context.
+/// The one question a plugin tool puts to a gate - `Gate::admit_unasked`, through the runtime's own
+/// door. A trait and not the `InvokeCtx` itself, because a test that had to build an `InvokeCtx` to
+/// ask it would be a test of the runtime.
 pub trait Decides {
     /// `None` when there is no gate to ask, which the caller reads as *nothing could judge it*.
     fn admit_unasked(&self, name: &str, access: Access, args: &Value) -> Option<GateDecision>;
@@ -122,9 +83,9 @@ impl Decides for InvokeCtx<'_> {
     }
 }
 
-/// **One tool a layer declared, as the runtime sees it.**
+/// One tool a layer declared, as the runtime sees it.
 pub struct PluginTool {
-    /// The layer that declared it — the sentence a failure carries.
+    /// The layer that declared it - the sentence a failure carries.
     layer: String,
     scope: Scope,
     decl: ToolDecl,
@@ -132,7 +93,7 @@ pub struct PluginTool {
     caps: Vec<Capability>,
     session: String,
     workspace: PathBuf,
-    /// The live host, filled by `Sessions::open_plugins` — the same cell the `plugin` tool holds,
+    /// The live host, filled by `Sessions::open_plugins` - the same cell the `plugin` tool holds
     /// because a session has one stack and two would be two answers to *what is in force*.
     slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
     hub: Arc<Hub>,
@@ -158,13 +119,9 @@ impl PluginTool {
         }
     }
 
-    /// The access class this tool declares — **the most consequential thing the layer may do**.
-    ///
-    /// `access_for` can only narrow (see `letibot_tools::runtime::Tool`), so the schema has to
-    /// carry the widest verb: a layer that may run a program makes its tool an `Exec` tool even if
-    /// most calls read, and one that may only read is a `Read` tool and never reaches the gate.
-    /// A layer that declares nothing at all is `Read`, because a tool that answers from its own
-    /// arguments touches nothing.
+    /// The access class this tool declares - the most consequential thing the layer may do.
+    /// `access_for` can only narrow, so the schema carries the widest verb: a layer that may run a
+    /// program makes its tool `Exec` even if most calls read. Nothing declared is `Read`.
     pub fn access(caps: &[Capability]) -> Access {
         if caps.iter().any(|c| matches!(c, Capability::Exec(_))) {
             Access::Exec
@@ -175,12 +132,9 @@ impl PluginTool {
         }
     }
 
-    /// **The facts a tool hook is handed under `feeds`** — the host's own, read once per call.
-    ///
-    /// Not a capability and not adjudicated: these are the four things the harness already knows
-    /// and the head already shows (a home directory so `~/…` can be spelled, the workspace, the
-    /// session, the clock). A tool that had to guess its own home would spell a path wrong on one
-    /// machine and be refused by its own capability on that machine only.
+    /// The facts a tool hook is handed under `feeds` - the host's own, read once per call, not a
+    /// capability and not adjudicated. A tool that had to guess its own home would spell a path wrong
+    /// on one machine and be refused by its own capability on that machine only.
     fn feeds(&self) -> Value {
         json!({
             "home": std::env::var("HOME").unwrap_or_default(),
@@ -216,26 +170,22 @@ impl Tool for PluginTool {
     }
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        // **D17's second arm, at the one door a model's call comes through.** A layer whose bytes
-        // nobody pinned is adjudicated on every call, without a card; a built-in or a pinned layer
-        // runs freely. `ctx` is passed because the gate lives on it — see
-        // [`PluginTool::call`].
+        // The trust decision, at the one door a model's call comes through: a layer whose bytes
+        // nobody pinned is adjudicated on every call, without a card, and a built-in or a pinned
+        // layer runs freely. `ctx` is passed because the gate lives on it.
         self.call(Some(ctx), args)
     }
 }
 
 impl PluginTool {
-    /// **The call, without the runtime's context** — this tool reads nothing from it, and a test
-    /// that had to build an `InvokeCtx` would be a test of the runtime rather than of the seam.
-    ///
-    /// **A trust decision needs a gate, so a caller with no context has none**: an unpinned
-    /// layer's tool is `not_run` with the sentence saying so, which is the fail-closed direction
-    /// for the one caller that is not the runtime (a test standing the seam up).
+    /// The call, without the runtime's context - this tool reads nothing from it. A trust decision
+    /// needs a gate, so a caller with no context has none: an unpinned layer's tool is `not_run`
+    /// which is the fail-closed direction for the one caller that is not the runtime.
     pub fn run(&self, args: &Value) -> Invocation {
         self.call(None, args)
     }
 
-    /// **The whole call**: D17's decision first, then the layer.
+    /// The whole call: the trust decision first, then the layer.
     pub fn call(&self, decider: Option<&dyn Decides>, args: &Value) -> Invocation {
         let Some(host) = self.slot.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
             return Invocation::not_run(
@@ -256,21 +206,9 @@ impl PluginTool {
         self.answer(&host, args)
     }
 
-    /// **May this call run?** — `None` when it may, and the `not_run` result that says why when it
-    /// may not.
-    ///
-    /// Three arms, and the middle one is the whole of D17:
-    ///
-    /// * the declaring layer is a **built-in or pinned** → run freely, the gate is not consulted;
-    /// * it is **not pinned** → `Gate::admit_unasked`, every call. No card, so a layer can never
-    ///   put a question to a person, and the ladder's refusal is the answer;
-    /// * the layer is not on the stack at all → refused, because a tool whose declaration this
-    ///   host cannot find is a tool nobody can say is pinned.
-    ///
-    /// The subject of the call is the tool itself: its name, its arguments, and the class its
-    /// layer's capabilities make it ([`PluginTool::access`]). That is what a `permission` rule is
-    /// written against, and it is why an unpinned layer's read-only tool gets an audit row even
-    /// though a read is admitted.
+    /// May this call run? - `None` when it may. A built-in or pinned layer runs freely; an unpinned
+    /// one goes to `admit_unasked` on every call, without a card; a layer no longer on the stack is
+    /// refused. The subject is the tool itself - its name, arguments, and the class its caps make it.
     fn admit(
         &self,
         host: &PluginHost,
@@ -332,12 +270,11 @@ impl PluginTool {
         ))
     }
 
-    /// **The call, answered by the stack** — the loop of `tool_` rounds and the result it settles
-    /// on.
+    /// The call, answered by the stack - the loop of `tool_` rounds and the result it settles on.
     fn answer(&self, host: &PluginHost, args: &Value) -> Invocation {
         let hook = self.decl.hook();
-        // **Round 0 has looked at nothing**, and every round replaces the results wholesale: the
-        // layer asked for these looks and this call is its answer to them.
+        // Round 0 has looked at nothing, and every round replaces the results wholesale: the layer
+        // asked for these looks and this call is its answer to them.
         let mut looks: Vec<Value> = Vec::new();
         let mut state = Value::Null;
         for _ in 0..MAX_ROUNDS {
@@ -389,7 +326,7 @@ impl PluginTool {
                             reason.unwrap_or_else(|| format!("`{by}` abstained")),
                             payload,
                         ),
-                        // **`refused` is `NotRun` and not `Failed`**: the layer did nothing, and a
+                        // `refused` is `NotRun` and not `Failed`: the layer did nothing, and a
                         // failure would read to the model as a tool that broke rather than as one
                         // that would not act. Its own sentence says why.
                         "refused" => Invocation::not_run(
@@ -477,7 +414,7 @@ enum Answer {
     Nonsense(String),
 }
 
-/// **Read an answer, without trusting a byte of it.** The layer is somebody else's code; the only
+/// Read an answer, without trusting a byte of it. The layer is somebody else's code; the only
 /// thing this function may assume is that the bytes arrived.
 fn answer_of(answer: &Value) -> Answer {
     let Some(object) = answer.as_object() else {
@@ -521,15 +458,11 @@ fn answer_of(answer: &Value) -> Answer {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Looks
-// ---------------------------------------------------------------------------------------------
+// Looks.
 
-/// **Run one look a tool asked for**, against the capabilities of the layer that asked.
-///
-/// Every failure is a `{"exit":1,"error":…}` and never a raised error: the plugin is the half that
-/// knows what to say about a refusal, and a host that raised would take the call with it. Same
-/// argument as `crate::plugins::look`, which is where the pane's version of this lives.
+/// Run one look a tool asked for, against the capabilities of the layer that asked. Every failure is
+/// a `{"exit":1,"error":…}` and never a raised error: the plugin is the half that knows what to say
+/// about a refusal, and a host that raised would take the call with it.
 pub fn run_look(spec: &Value, caps: &[Capability], workspace: &Path) -> Value {
     let Some(object) = spec.as_object() else {
         return look_error(format!("{spec} is not a look — a look is a JSON object"));
@@ -561,11 +494,9 @@ fn look_error(why: impl std::fmt::Display) -> Value {
     json!({"exit": 1, "error": why.to_string()})
 }
 
-/// **Resolve a path a layer asked for, or say why it may not have it.**
-///
-/// The rule is the manifest's: the workspace if the layer declared `read`, and each tree it named
-/// as `read:<path>` — and nothing else, ever. Both the root and the wanted path are canonicalised,
-/// so a symlink inside a declared tree that points out of it is refused for what it resolves to.
+/// Resolve a path a layer asked for, or say why it may not have it. The rule is the manifest's: the
+/// workspace if the layer declared `read`, and each tree it named as `read:<path>`, nothing else.
+/// Both sides are canonicalised, so a symlink pointing out of a tree is refused for where it points.
 fn resolve(path: &str, caps: &[Capability], workspace: &Path) -> Result<PathBuf, String> {
     if path.trim().is_empty() {
         return Err("a look named an empty path".to_string());
@@ -629,10 +560,9 @@ fn resolve(path: &str, caps: &[Capability], workspace: &Path) -> Result<PathBuf,
     })
 }
 
-/// `~/…` expanded against this process's home, or an absolute path as it stands.
-///
-/// `pub(crate)` because a pane's look (`crate::plugins::look`) resolves a `read:<path>` root the
-/// same way: one expansion, in one place, so a `~/` cannot mean two things in one session.
+/// `~/…` expanded against this process's home, or an absolute path as it stands. `pub(crate)` so a
+/// pane's look resolves a `read:<path>` root the same way: one expansion, so a `~/` cannot mean two
+/// things in one session.
 pub(crate) fn expand(declared: &str) -> Option<PathBuf> {
     if let Some(rest) = declared.strip_prefix("~/") {
         let home = std::env::var_os("HOME")?;
@@ -652,7 +582,7 @@ fn line_value(n: usize, bytes: &[u8], cap: usize) -> Value {
     })
 }
 
-/// **Lines from a file, by range or by list**, streamed so a 116 MB transcript costs one line.
+/// Lines from a file, by range or by list, streamed so a 116 MB transcript costs one line.
 fn read_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
     let cap = spec
         .get("max_line_bytes")
@@ -715,8 +645,8 @@ fn read_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
             line = &line[..line.len() - 1];
         }
         out.push(line_value(n, line, cap));
-        // A list of line numbers is answered as soon as the last of them is in hand: the rest of
-        // the file is not read to find out whether it says anything.
+        // A list of line numbers is answered as soon as the last of them is in hand: the rest of the
+        // file is not read to find out whether it says anything.
         if let Some(list) = &at {
             if out.len() >= list.len() {
                 break;
@@ -731,8 +661,8 @@ fn read_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
     json!({"exit": 0, "lines": out, "more": more})
 }
 
-/// **A directory's entries**, newest first is the plugin's business, not the host's: this answers
-/// them in name order and says when the list was cut.
+/// A directory's entries. Newest first is the plugin's business, not the host's: this answers them
+/// in name order and says when the list was cut.
 fn list_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
     let limit = spec
         .get("limit")
@@ -771,8 +701,8 @@ fn list_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0),
             ),
-            // A dangling symlink — `~/.claude/projects` holds one (`memory`) — is an entry with
-            // no metadata, and dropping it would hide a name the layer may be looking for.
+            // A dangling symlink - `~/.claude/projects` holds one - is an entry with no metadata
+            // and dropping it would hide a name the layer may be looking for.
             Err(_) => (false, 0, 0),
         };
         out.push(json!({"name": name, "dir": dir, "size": size, "mtime": mtime}));
@@ -786,11 +716,9 @@ fn list_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
     json!({"exit": 0, "entries": out, "more": more})
 }
 
-/// **Every line of a file that contains `match`**, with its line index and byte offset.
-///
-/// The byte offset is what makes a hit addressable: a model that wants to read around one can ask
-/// for the line number, and a caller that has a file open can seek to the byte. The line number is
-/// what `read`'s `at` takes, so the two halves of this vocabulary compose.
+/// Every line of a file that contains `match`, with its line index and byte offset. The offset is
+/// what makes a hit addressable - a caller with the file open can seek to it - and the line number
+/// is what `read`'s `at` takes, so the two halves of this vocabulary compose.
 fn grep_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
     let Some(needle) = spec.get("match").and_then(Value::as_str) else {
         return look_error("a `grep` look needs `match` — the text to look for".to_string());
@@ -854,10 +782,8 @@ fn grep_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
         while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
             line = &line[..line.len() - 1];
         }
-        // **The hit's own line and offset, taken before the context is read**: `after_lines` moves
-        // both, and a byte offset reconstructed from truncated text is a number that points
-        // somewhere else. The line's own bytes are counted here, before its context, so every
-        // offset after a hit is still the start of a line.
+        // The hit's own line and offset, taken before the context is read: `after_lines` moves both
+        // and an offset reconstructed from truncated text points somewhere else.
         let (hit_line, hit_byte) = (n, offset);
         offset += read as u64;
         if hay(line) {
@@ -865,7 +791,6 @@ fn grep_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
                 more = true;
                 break;
             }
-            // **The hit's own line and offset** — see above.
             let after = after_lines(&mut reader, &mut offset, &mut n, &mut scanned, context, cap);
             matches.push(json!({
                 "line": hit_line,
