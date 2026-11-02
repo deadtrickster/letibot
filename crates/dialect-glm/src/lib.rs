@@ -61,17 +61,13 @@ pub use render::{
 };
 
 /// The shipped jinja this dialect was validated against, verbatim, extracted from the model's first
-/// shard rather than retyped.
-///
-/// It is the renderer's input, not documentation.
+/// shard. It is the renderer's input, not documentation.
 pub const TEMPLATE: &str = include_str!("../template/glm-5.3-flash.jinja");
 
 /// The name this dialect is known by, in the gate and in the store.
 pub const NAME: &str = "glm-5.3-flash";
 
-/// The literal spelling of every GLM token this dialect emits.
-///
-/// Each is a single vocab entry, `CONTROL` or `USER_DEFINED` in the GGUF's token table, which is why
+/// The literal spelling of every GLM token this dialect emits, each a single vocab entry, which is why
 /// they are emitted as `RenderSpan::Control` and never as text.
 pub mod tokens {
     use letibot_dialect::{ControlRole, ControlToken};
@@ -103,10 +99,8 @@ pub mod tokens {
     pub const ENDOFTEXT: ControlToken = t(ControlRole::EndOfTurn, "<|endoftext|>");
 }
 
-/// Every control token GLM uses, for the token core to resolve once.
-///
-/// The order is only the order failures are declared in: lookup is by literal, and a role with
-/// several literals returns all of them, so nothing depends on which entry comes first.
+/// Every control token GLM uses, for the token core to resolve once. The order only decides where a
+/// failure is reported: lookup is by literal, and a role with several literals returns all of them.
 pub const GLM_TOKENS: &[ControlToken] = &[
     tokens::GMASK,
     tokens::SOP,
@@ -130,22 +124,17 @@ pub const GLM_TOKENS: &[ControlToken] = &[
     tokens::ENDOFTEXT,
 ];
 
-/// What ends a generation.
-///
-/// `<|user|>` and `<|observation|>` are the two ways a turn legitimately ends, a reply or a tool
-/// call awaiting a result, and `<|endoftext|>` is the vocab eos. Each carries the role it plays, so
-/// a resolution failure can say which of the three stopped working rather than printing a literal.
+/// What ends a generation: `<|user|>` and `<|observation|>` are the two ways a turn legitimately ends
+/// and `<|endoftext|>` is the vocab eos. Each carries its role, so a resolve failure names which one.
 pub const GLM_STOP_TOKENS: &[StopToken] = &[
     StopToken::borrowed(ControlRole::EndOfTurn, "<|endoftext|>"),
     StopToken::borrowed(ControlRole::TurnStartUser, "<|user|>"),
     StopToken::borrowed(ControlRole::TurnStartTool, "<|observation|>"),
 ];
 
-/// The declared mitigations for this model.
-///
-/// A repeating-token collapse poisons a slot rather than erroring and has never been reached here,
-/// so it costs nothing to watch for. `ReasoningStall` is not a cap on thinking: long thinking is
-/// fine, and it is a signal that the turn stopped progressing.
+/// The declared mitigations. A repeating-token collapse poisons a slot rather than erroring and has
+/// never been reached here, so it costs nothing to watch for; `ReasoningStall` is not a cap on
+/// thinking, it is a signal that the turn stopped progressing.
 pub const GLM_GUARDS: &[Guard] = &[
     Guard::RepetitionRun { run: 64 },
     Guard::RepetitionNgram {
@@ -155,22 +144,16 @@ pub const GLM_GUARDS: &[Guard] = &[
     Guard::ReasoningStall { tokens: 65536 },
 ];
 
-/// SHA-256 of the shipped jinja.
-///
-/// Computed from the file rather than pasted beside it, so a model update that changes the template
-/// invalidates the spec automatically. This is the dialect's identity in the store.
+/// SHA-256 of the shipped jinja, computed from the file rather than pasted beside it, so a model
+/// update that changes the template invalidates the spec. This is the dialect's identity in the store.
 pub fn template_sha() -> [u8; 32] {
     static SHA: OnceLock<[u8; 32]> = OnceLock::new();
     *SHA.get_or_init(|| sha256::sha256(TEMPLATE.as_bytes()))
 }
 
-/// GLM as data.
-///
-/// A function rather than a `const` because `template_sha` hashes the embedded file and hashing is
-/// not a `const fn` here. Everything else borrows, so the only cost is two small `Vec`s.
-///
-/// `system_update_mode` is `InHistory`: a `system` message at index 2 renders in place between the
-/// surrounding turns, so a mid-session prompt change is appended and costs only its own tokens.
+/// GLM as data. A function rather than a `const` because `template_sha` hashes the embedded file and
+/// hashing is not a `const fn`; `system_update_mode` is `InHistory`, since a `system` message at index
+/// 2 renders in place and a mid-session change costs only its own tokens.
 pub fn glm_spec() -> DialectSpec {
     DialectSpec {
         name: std::borrow::Cow::Borrowed(NAME),
@@ -184,10 +167,8 @@ pub fn glm_spec() -> DialectSpec {
     }
 }
 
-/// The reasoning-effort line the template emits near the head of every prompt.
-///
-/// It sits before the tools block and before message 0, so changing it invalidates the entire
-/// prefix. Only `low` and `high` are honoured; anything else, absent included, renders `Max`.
+/// The reasoning-effort line the template emits near the head of every prompt: changing it
+/// invalidates the whole prefix. Only `low` and `high` are honoured, and absent renders `Max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningEffort {
     Low,
@@ -248,11 +229,8 @@ mod tests {
 
     #[test]
     fn every_glm_token_has_a_real_role() {
-        // The GAP-2 regression test. Eight of these used to be declared `TurnEnd`,
-        // which GLM does not use, purely because the enum had no variant for them --
-        // so `get(TurnEnd)` answered a question about `<sop>`. Both the bucket and the
-        // lookup that made it dangerous are gone; this keeps the bucket from coming
-        // back under its new name.
+        // The GAP-2 regression test: eight of these were once declared `TurnEnd`, a role GLM does not
+        // use, purely because the enum had no variant for them. This keeps that bucket from coming back.
         let ct = ControlTokens::borrowed(GLM_TOKENS);
         let unroled: Vec<&str> = ct
             .all_with_role(ControlRole::Other)

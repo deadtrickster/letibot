@@ -50,10 +50,9 @@ impl Parser for GlmParser {
         };
         let mut buf = String::new();
         let mut run: Vec<u32> = Vec::new();
-        // Offsets into `tokens`: where the buffered run began, where the open
-        // reasoning block began, where the open tool call began. Every span's range
-        // is expressed in these, so a caller can commit exactly the tokens a span
-        // owns without re-walking the stream.
+        // Offsets into `tokens`: where the buffered run began, where the open reasoning block began,
+        // where the open tool call began. Every span's range is expressed in these, so a caller can
+        // commit exactly the tokens a span owns.
         let mut run_start = 0usize;
         let mut block_start = 0usize;
         let mut call_start = 0usize;
@@ -163,12 +162,8 @@ impl Parser for GlmParser {
         if !run.is_empty() {
             buf.push_str(&decoder.decode(&run));
         }
-        // The final flush honours the mode. A turn cut inside its reasoning ends in
-        // `Mode::Reasoning`, and flushing that buffer as content would promote the
-        // deliberation to visible output — §5.7's `ReasoningOnly` failure reading as
-        // a `TruncatedText` success. Qwen's parser has always done this; this one
-        // did not, which is why `crates/turn` carried a re-segmentation pass that
-        // re-derived the channel from token ids after the fact.
+        // The final flush honours the mode: a turn cut inside its reasoning ends in `Reasoning`, and
+        // flushing that as content would promote the deliberation to visible output.
         if mode == Mode::Reasoning {
             if !buf.is_empty() {
                 out.push(ParsedSpan::Reasoning {
@@ -183,14 +178,9 @@ impl Parser for GlmParser {
     }
 }
 
-/// Recover an argument value from its `<arg_value>` body.
-///
-/// The render side emits strings raw and everything else as JSON, so the inverse is:
-/// if the text parses as a non-string JSON value, it was one; otherwise it was a
-/// string. That is lossy in exactly one corner — a **string** argument whose text is
-/// itself valid JSON, e.g. `"3"` or `"[1]"`, comes back as a number or an array. The
-/// corner is pinned by a test rather than papered over; the shipped format simply
-/// does not carry the type.
+/// Recover an argument value from its `<arg_value>` body: if the text parses as a non-string JSON
+/// value it was one, otherwise it was a string. Lossy in one corner, a string whose text is itself
+/// valid JSON, which is pinned by a test because the format does not carry the type.
 fn reconstruct_arg(text: String) -> Value {
     match serde_json::from_str::<Value>(&text) {
         Ok(Value::String(_)) | Err(_) => Value::String(text),
@@ -198,11 +188,8 @@ fn reconstruct_arg(text: String) -> Value {
     }
 }
 
-/// A decoder over a fixed table, for tests and for anyone who has literal→id already.
-///
-/// The real one is `letibot_tokencore::VocabDecoder`, which has a vocabulary. This one
-/// exists so the round-trip property can be checked with no GGUF, no FFI and no GPU —
-/// which is the whole reason `RenderSpan` is text plus control tokens rather than ids.
+/// A decoder over a fixed table, so the round-trip property is checked with no GGUF, no FFI and no
+/// GPU -- which is the whole reason a span is text plus control tokens rather than ids.
 #[derive(Debug, Clone, Default)]
 pub struct TableDecoder {
     text: std::collections::HashMap<u32, String>,

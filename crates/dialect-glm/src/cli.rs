@@ -48,11 +48,9 @@ struct Fixture {
     /// fails the gate just as loudly as an undeclared one.
     #[serde(default)]
     divergences: Vec<Divergence>,
-    /// Places byte equality is not *available*, as opposed to not holding — the
-    /// oracle emits something unreproducible (a per-process nonce) and both sides
-    /// have to be folded onto a canonical form before they can be compared at all.
-    /// Also two-sided checked: a normalisation that turns out to be unnecessary is
-    /// reported, because an unnecessary rewrite is a place a real diff could hide.
+    /// Places byte equality is not available: the oracle emits something unreproducible and both
+    /// sides are folded onto a canonical form. Two-sided checked, because an unnecessary rewrite is a
+    /// place a real diff could hide.
     #[serde(default)]
     normalise: Vec<Divergence>,
 }
@@ -78,10 +76,8 @@ fn default_dialect() -> String {
     "glm-5.3-flash".to_string()
 }
 
-/// Run the renderer over `args`, returning the process exit code.
-///
-/// `args` is what followed the program name — `letibot-render --dialect … FIXTURE.json`
-/// and `letibot render --dialect … FIXTURE.json` both arrive here identically.
+/// Run the renderer over `args`, returning the process exit code. `args` is what followed the program
+/// name, so the binary and the dispatcher arrive here identically.
 pub fn run(args: &[String]) -> i32 {
     let mut args = args.iter().cloned();
     let mut dialect_name = default_dialect();
@@ -137,11 +133,8 @@ pub fn run(args: &[String]) -> i32 {
     0
 }
 
-/// One fixture becomes every prefix of itself, with and without a generation prompt.
-///
-/// §7.2 asks for "the same fixture truncated at every prefix boundary", and it is the
-/// most valuable thing the corpus does: a renderer that is right about a whole
-/// conversation and wrong about its third prefix is a renderer whose cache never hits.
+/// One fixture becomes every prefix of itself, with and without a generation prompt: a renderer right
+/// about a whole conversation and wrong about its third prefix is one whose cache never hits.
 fn expand(fx: &Fixture) -> Vec<Value> {
     let effort = match fx.reasoning_effort.as_deref() {
         Some("low") => ReasoningEffort::Low,
@@ -250,12 +243,8 @@ fn span_json(s: &RenderSpan) -> Value {
     }
 }
 
-/// The same conversation, in the shape `/apply-template` expects.
-///
-/// This is the only place the two sides can drift, and it is deliberately dumb: it
-/// re-groups items into messages and copies text. It never renders. A mapping bug
-/// therefore shows up as a *mismatch* (the oracle renders a conversation we did not
-/// render), not as a mutual agreement on the wrong thing.
+/// The same conversation in the shape `/apply-template` expects: deliberately dumb, so a mapping bug
+/// shows up as a mismatch rather than as mutual agreement on the wrong thing.
 fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value {
     let mut msgs: Vec<Value> = Vec::new();
     if !prefix.system.is_empty() {
@@ -323,11 +312,8 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
                 msgs.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    // The payload verbatim, which is what the renderer emits. Under
-                    // the harness these bytes are already `ToolResult::render`'s
-                    // envelope; a fixture supplies them directly. Either way the two
-                    // sides are given the same string, so the gate tests the render
-                    // and not our wording.
+                    // The payload verbatim, which is what the renderer emits: either way both sides
+                    // are given the same string, so the gate tests the render and not our wording.
                     "content": payload,
                 }));
             }

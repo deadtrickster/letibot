@@ -43,18 +43,10 @@ pub fn hf_tojson(value: &Value) -> String {
     String::from_utf8(buf).expect("serde_json emits UTF-8")
 }
 
-/// One line of GLM's `<tools>` block, from an OpenAI-shaped tool schema.
-///
-/// The template unwraps `{"type":"function","function":{…}}`, drops `defer_loading`
-/// and `strict`, and emits the remaining keys **in the order llama.cpp produced
-/// them**, which is `common_chat_tools_to_json_oaicompat`'s fixed order: `name`,
-/// `description`, `parameters` — with `description` present as `""` even when the
-/// caller omitted it. That normalisation is not the template's; it is the server's,
-/// and a renderer that skips it emits a shorter line than the model was trained on.
-///
-/// This lives here rather than in the dialect because `StablePrefix.tools_json`
-/// holds finished text: whoever fills that field must produce these bytes, and
-/// there should be exactly one implementation of "these bytes".
+/// One line of GLM's `<tools>` block: the template unwraps the function and emits `name`,
+/// `description`, `parameters` in that fixed order, with `description` present as `""` when the
+/// caller omitted it. That normalisation is the server's, and skipping it emits a shorter line than
+/// the model was trained on.
 pub fn glm_tool_json(tool: &Value) -> String {
     let f = tool.get("function").unwrap_or(tool);
     let mut out = serde_json::Map::new();
@@ -79,11 +71,8 @@ pub fn glm_tool_json(tool: &Value) -> String {
     hf_tojson(&Value::Object(out))
 }
 
-/// One `<arg_value>` body.
-///
-/// `{{ v | tojson(ensure_ascii=False) if v is not string else v }}` — a string
-/// argument is emitted **raw**, everything else as JSON. So `{"path":"a.txt"}`
-/// renders `a.txt`, not `"a.txt"`.
+/// One `<arg_value>` body: a string argument is emitted raw and everything else as JSON, so
+/// `{"path":"a.txt"}` renders `a.txt`.
 pub fn arg_value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
