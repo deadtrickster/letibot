@@ -1,32 +1,11 @@
-//! **`condition` — what a monitor watches** (`docs/plugins-plan.md` §4.4).
+//! `condition` - what a monitor watches: the plugin says what to look at, the host runs it, and
+//! the plugin is asked again with the result to say whether it fired and what to look at next.
 //!
-//! A monitor today is a Rust `Condition`: `GithubCondition` spawns `gh` at most once per interval,
-//! polls the child with `try_wait` so a slow network never stalls the poller, keeps a baseline,
-//! and fires when something new happened. This kind is that shape, answered by a plugin: the
-//! plugin says what to look at, the host runs it, the plugin is asked again with the result and
-//! says whether it fired and what to look at next.
+//! A `look` in an answer is a declaration, not an act: the host spawns it under the layer's
+//! declared capability, so a hook call is pure and the shadow gate's replay means something.
 //!
-//! # The plugin never runs anything
-//!
-//! `look` in an answer is a *declaration*, not an act (`docs/plugins-plan.md` §1 principle 1): the
-//! host spawns it, under the layer's declared capability, and hands the result back in the next
-//! input's `look`. So a hook call is pure, the same input gives the same output, and the shadow
-//! gate's replay means something.
-//!
-//! # `look` is a result on the way in and an ask on the way out
-//!
-//! Two types, [`LookResult`] and [`LookAsk`], because the two directions mean opposite things and
-//! a single struct with both fields would be a document a plugin can read backwards: the input's
-//! `look` is `{"exit": 0, "stdout": "…"}` — what the host saw — and the answer's is
-//! `{"exec": ["gh", "pr", "view", …]}` or `{"read": "path"}` — what to run next. This is the same
-//! collision `docs/plugins-slice1.md` C2 and C3 had over one word, resolved the way that one was:
-//! by naming the two things differently in the type while the wire keeps the plan's spelling.
-//!
-//! # State belongs to the host
-//!
-//! `state` is opaque JSON the plugin returns and the host stores with the monitor, so a restart, a
-//! reload and a newer build of the plugin all keep the baseline a watch needs (§1 principle 5). A
-//! `null` on the first call is *nothing has been looked at yet*.
+//! The input's `look` is a result and the answer's is an ask - two types, because one struct with
+//! both fields would be a document a plugin can read backwards. `state` is the host's, so it survives.
 
 use serde_json::Value;
 
@@ -74,10 +53,9 @@ impl LookResult {
     }
 }
 
-/// The answer's `look`: what to run next. Two kinds, and both are the host's act.
+/// The answer's `look`: what to run next. Both kinds are the host's act.
 ///
-/// The wire is `{"exec": ["prog", "arg"]}` or `{"read": "path"}` — externally tagged, so the key
-/// IS the kind and there is no second place to say it.
+/// Externally tagged, so the key IS the kind and there is no second place to say it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LookAsk {
@@ -88,12 +66,9 @@ pub enum LookAsk {
     Read(String),
 }
 
-/// **One watch of one pull request**, shared with every other watch on it (§4.4's `github`).
+/// One watch of one pull request, shared with every other watch on it.
 ///
-/// The host already coalesces: `monitor` refuses a second watch on a pull request another watch
-/// holds, and names the one to use instead. A plugin condition that declares this takes part in
-/// that rule, so a project that watches pull requests through a plugin and through `github` does
-/// not spend two looks on one pull request.
+/// The host coalesces, so a pull request watched through a plugin and through `github` is one look.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Github {
     /// `owner/repo#N`.

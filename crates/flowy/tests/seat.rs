@@ -617,14 +617,9 @@ fn two_sessions_on_one_seat_talk_through_the_daemon_with_the_room_as_the_record(
     assert_eq!(said[2]["body"], "@other-seat/s-9 over to you");
 }
 
-/// A nag is LEVEL-triggered; the seat delivers its EDGES. The four things that
-/// must all hold, and the reason each was easy to get wrong:
-///   * an unchanged level is silent (else the same line every 20 s, forever);
-///   * a NEW id in an unchanged count still speaks (one row done, one arrived —
-///     a count-only check would never mention the second);
-///   * a bucket emptying speaks once (else the seat's last word on a bucket is
-///     the arrival, and "is it still open?" is unanswerable);
-///   * the first reading is a standing total, not N arrivals.
+/// A nag is LEVEL-triggered; the seat delivers its EDGES. An unchanged level must
+/// stay silent, a NEW id in an unchanged count must still speak, and a bucket
+/// emptying must speak once or "is it still open?" is unanswerable.
 #[test]
 fn the_board_is_sampled_as_a_level_and_delivered_as_edges() {
     use letibot_flowy::client::Nag;

@@ -1,25 +1,11 @@
-//! **`on_tool_result` — what happens after a call** (`docs/plugins-plan.md` §4.2).
-//!
-//! The bug it was written for: the model opens a pull request with `gh pr create`, and nothing
-//! watches it — so the harness grew `pr_watch`, a hard-coded intercept that recognised one
-//! command and said one sentence. This is that intercept, as a hook: a layer sees the call and its
-//! result and may append to the result, rewrite it, and arm monitors. When the GitHub family
-//! becomes plugins (§7 step 3) the built-in `pr_watch` goes and one of these does the work.
-//!
-//! # Successful results only, and that is a decision
-//!
-//! A call that failed did nothing to react to; its result is the failure's own words, which the
-//! model has to read exactly. So the hook runs on `Ok` and `Backgrounded` (a job that started did
-//! happen) and never on a refusal or a failure — `outcome` says which, so a layer can read it and
-//! behave, but a layer is not given a hook where its own reason could bury a real error.
-//!
-//! # Arming goes through the operator's door
+//! `on_tool_result` - what happens after a call: a layer may append to the result, rewrite it, and
+//! arm monitors. It runs on `Ok` and `Backgrounded` only: a call that failed did nothing to react
+//! to, and its result is the failure's own words, which the model has to read exactly.
 //!
 //! `arm` is not a second way to start a monitor: the host turns each entry into the same `monitor`
-//! call the model would type, runs it the way `pr_watch` runs its own, and so the coalescing, the
-//! already-watched refusal, the TTL caps and the name collision rules all apply unchanged. What a
-//! layer gets from this field is *the harness noticed something* — never *a monitor with no
-//! rules*.
+//! call the model would type, so the coalescing, the already-watched refusal, the TTL caps and the
+//! name collision rules all apply. A layer gets *the harness noticed something*, not an unruled
+//! monitor.
 
 use serde_json::Value;
 
@@ -134,11 +120,9 @@ impl ToolResultOut {
         }
     }
 
-    /// **The result this answer means** — a replacement, or a suffix, or neither.
-    ///
+    /// The result this answer means - a replacement, or a suffix, or neither.
     /// Both may appear: *this is what it was* and *here is what I noticed about it* are two
-    /// different sentences and a layer may want both. `Unchanged` when the answer names neither,
-    /// which is the common case and must cost nothing.
+    /// sentences, and `Unchanged` is the common case, which must cost nothing.
     pub fn said(&self) -> Said<'_> {
         use std::borrow::Cow;
         match (&self.payload, &self.append) {

@@ -1,9 +1,9 @@
-//! **Cutting text to a bound**, once — a tool payload, a queue row, a card and a status line all
-//! cut text, and a second copy of the arithmetic is a second place a multibyte character can be
-//! split. Every function here walks boundaries, so no cut lands inside a character.
+//! Cutting text to a bound, once - a tool payload, a queue row, a card and a status line all
+//! cut text, and a second copy of the arithmetic is a second place a multibyte character can
+//! be split. Every function here walks boundaries, so no cut lands inside a character.
 //!
-//! It is in this crate for the reason [`crate::sanitize`] is: the cutting is needed on both sides
-//! of a boundary that cannot see across itself, and this is the crate both already see.
+//! It is in this crate for the reason [`crate::sanitize`] is: the cutting is needed on both
+//! sides of a boundary that cannot see across itself, and this is the crate both already see.
 
 /// The longest prefix of `s` of at most `max` characters.
 pub fn chars_head(s: &str, max: usize) -> &str {

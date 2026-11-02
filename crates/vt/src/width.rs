@@ -1,37 +1,7 @@
-//! How many cells a character takes. Zero, one or two.
+//! How many cells a character takes: zero, one or two.
 //!
-//! # Where these ranges come from
-//!
-//! `crates/ui/src/width.rs` is this tree's measurement layer, and its `is_wide`/`is_zero_width`
-//! are the ranges the tree is willing to carry: the East-Asian Wide and Fullwidth blocks a code
-//! assistant actually meets, the combining-mark and variation-selector ranges, and the emoji
-//! planes. A cell grid needs the first two of those — a CJK filename in `mc` is two columns per
-//! ideograph, and a combining acute must not claim a column of its own — and this module takes
-//! **those ranges, unchanged**, rather than inventing a second table. `crates/ui`'s tests walk a
-//! corpus and assert that the two functions agree, so a divergence is a failing test rather than
-//! a discovery.
-//!
-//! # What is deliberately not here, and the column it costs
-//!
-//! **The emoji planes.** A single emoji code point is two columns wide in every terminal on this
-//! box, so this is a real loss, and it is taken deliberately: an emoji as a *program draws one*
-//! is not one code point. `👨‍👩‍👧` is three code points joined by ZWJ, a flag is two regional
-//! indicators, and a skin tone is a second code point — `crates/ui/src/width.rs` handles all
-//! three, because it walks **grapheme clusters**. A grid has no cluster model: it has cells, one
-//! per code point, and giving each code point of a ZWJ sequence two cells would draw the family
-//! as six columns of separate people, which is worse than drawing it as three narrow ones. The
-//! honest version of this would be a cluster-aware grid, and that is a design this crate does not
-//! have.
-//!
-//! **The cost, stated so the pane can be priced**: an emoji occupies one cell here and two in the
-//! reader's terminal, so a row containing one is **one column narrow per emoji** and anything
-//! drawn after it on that row shifts left by one. It is the same trade `crates/ui/src/width.rs`
-//! makes for a character outside its ranges, and it is visible rather than silent.
-//!
-//! # This is not UAX #11
-//!
-//! There is no Unicode database here and no generated table. A character outside the listed
-//! ranges is one column.
+//! The ranges are `crates/ui`'s own, unchanged, and its tests assert the two agree. The emoji planes
+//! are not here: a grid has no cluster model, so a ZWJ family would draw as six separate people.
 
 /// Columns one character claims in the grid: zero, one or two.
 pub fn char_width(c: char) -> usize {
@@ -47,10 +17,8 @@ pub fn char_width(c: char) -> usize {
     if is_wide(u) { 2 } else { 1 }
 }
 
-/// Combining marks, joiners, and selectors — the ranges a model's output actually contains.
-///
-/// The same list as `crates/ui/src/width.rs::is_zero_width`, which is where it was written and
-/// where the reasoning for it lives.
+/// Combining marks, joiners and selectors: the same list as `crates/ui`'s `is_zero_width`, where
+/// the reasoning for it lives.
 fn is_zero_width(u: u32) -> bool {
     matches!(u,
         0x0300..=0x036f      // combining diacritical marks
@@ -74,11 +42,7 @@ fn is_zero_width(u: u32) -> bool {
     )
 }
 
-/// East-Asian Wide and Fullwidth — the ranges a grid can honour, because each code point is
-/// one glyph of two columns.
-///
-/// The same list as `crates/ui/src/width.rs::is_wide` **minus the emoji planes**, for the reason
-/// the module header gives.
+/// East-Asian Wide and Fullwidth, the same list as `crates/ui`'s `is_wide` minus the emoji planes.
 fn is_wide(u: u32) -> bool {
     matches!(u,
         0x1100..=0x115f      // Hangul Jamo initial

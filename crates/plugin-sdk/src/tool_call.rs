@@ -1,32 +1,11 @@
-//! **`on_tool_call` — the tool call, before the gate** (`docs/plugins-plan.md` §4.1).
+//! `on_tool_call` - the tool call, before the gate: a layer may narrow it, rewrite it, refuse it,
+//! or answer it without letting it run at all.
 //!
-//! The operator's original motivation: *"the model armed nine monitors for three PRs"*, and a
-//! session that could patch it the same afternoon. A layer here sees the call the model proposed,
-//! and may narrow it, rewrite it, refuse it, or answer it without letting it run at all.
-//!
-//! # It can never admit anything
-//!
-//! The hook runs **before the gate**, and the rewritten call is the call the gate then
-//! adjudicates. So every route through this kind ends at the same boundary:
-//!
-//! | the layer says | what happens |
-//! |---|---|
-//! | nothing, or `{"pass": true}` | the model's call runs, gated as it always is |
-//! | `{"arguments": …}` | the **rewritten** call is gated — a rewrite that needs permission still asks, and one that reaches further than the original is refused by the same rules the original would meet |
-//! | `{"refuse": "…"}` | nothing runs; the model reads the sentence as the call's result |
-//! | `{"answer": "…"}` | nothing runs; the model reads that text as the call's result |
-//!
-//! A layer cannot answer *admitted*, because there is no field for it: the class of the call, the
-//! mode, the adjudicator, the session's boundary and the operator's own card are decided in Rust
-//! after this returns (§1 principle 3). What a layer can do is make a call smaller — and that is
-//! the whole point of the hook.
-//!
-//! # One hook for the kind, not per plugin
-//!
-//! Every layer that wants to intercept calls exports `on_tool_call`. Layers stack: the top layer
-//! answers, and it may `{"below": …}` to see what the layer beneath would have said and edit it —
-//! the usual shape of *change one field of a lower answer*. That is how two fixes coexist instead
-//! of the newer one silently replacing the older.
+//! The hook runs before the gate, and the rewritten call is the call the gate then adjudicates, so
+//! every route through this kind ends at the same boundary. A layer cannot answer *admitted*
+//! because there is no field for it: the class, the mode, the adjudicator and the operator's card
+//! are decided in Rust after this returns. What a layer can do is make a call smaller.
+//! Every layer exports the same name: the top answers, and it may ask the layer beneath.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -116,10 +95,8 @@ pub struct ToolCallOut {
     #[serde(default, skip_serializing_if = "is_false")]
     pub pass: bool,
     /// The arguments to run it with instead.
-    ///
-    /// **`null` here is a rewrite, not silence** — see [`present`]: a layer narrowing a call to
-    /// no arguments at all is narrowing it, and serde's usual reading of `null` as *absent*
-    /// would let the model's call through unchanged instead.
+    /// `null` here is a rewrite, not silence (see [`present`]): a layer narrowing a call to no
+    /// arguments is narrowing it, and serde's reading of `null` as absent would run the model's call.
     #[serde(
         default,
         deserialize_with = "present",
@@ -128,8 +105,7 @@ pub struct ToolCallOut {
     pub arguments: Option<Value>,
     /// Do not run it, and tell the model this.
     ///
-    /// A layer that means this must write the sentence: `null` is *said nothing* and lets the
-    /// call run, because a refusal nobody can act on is not a refusal.
+    /// A layer that means this must write the sentence: `null` is silence and lets the call run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refuse: Option<String>,
     /// Do not run it, and answer the model with this. As with `refuse`, `null` is silence.
@@ -183,12 +159,9 @@ impl ToolCallOut {
         }
     }
 
-    /// **What this answer means**, in the order the host applies it: refuse, then answer, then a
-    /// rewrite, then pass.
-    ///
-    /// The order is the restrictive one on purpose. An answer naming two of them is a layer
-    /// saying *at least this much*, and a reader of a call that ran must never have to work out
-    /// whether the layer that refused it also wanted different arguments.
+    /// What this answer means, in the order the host applies it: refuse, answer, rewrite, pass.
+    /// The restrictive order is on purpose: a reader of a call that ran must never have to work
+    /// out whether the layer that refused it also wanted different arguments.
     pub fn verdict(&self) -> Verdict<'_> {
         if let Some(why) = &self.refuse {
             return Verdict::Refuse(why);

@@ -1,24 +1,11 @@
 //! Subscriptions to entities: a todo somebody decided to watch for comments, a
-//! diagram for a change, a thread for its replies.
+//! diagram for a change, a thread for its replies. The inbox delivers what is said
+//! TO a seat; a subscription is the other direction, and the three kinds ride three
+//! transports because that is what the node has: a thread is already delivered so
+//! the attention table decides, a todo arrives on the node's SSE envelope, and an
+//! artifact body edit writes no event, so it is polled against a baseline.
 //!
-//! The inbox delivers what is said TO a seat. A subscription is the other
-//! direction — the seat deciding what it wants to hear about — and the three
-//! kinds ride three different transports, because that is what the node has:
-//!
-//! | kind | how it is heard | what the node offers |
-//! |---|---|---|
-//! | thread | the inbox, with the thread in the attention table's override set | nothing extra — chat is already delivered, the table decides |
-//! | todo | `GET /api/stream?topics=todos`, the node's own SSE, an envelope per move | push; the envelope says THAT a row moved, and the row is re-read |
-//! | artifact | `GET /api/artifact/{id}`, compared to a baseline every [`ARTIFACT_TICK`] | a body edit writes no event, so there is nothing to subscribe to; polling is honest about that |
-//!
-//! Envelopes, not deltas — the stream's own rule, kept: on a todo envelope the
-//! watcher re-reads the events above the envelope's hlc and hands over the one
-//! about the watched row. A duplicate is a wasted read, an out-of-order one is
-//! invisible, and nothing partial is ever applied.
-//!
-//! The baseline for an artifact is read **at subscription**, not on the first
-//! tick — a baseline read half a minute late has already missed the change it
-//! exists to detect (`exec/monitor.rs`, on path monitors, says the same).
+//! Envelopes, not deltas: a duplicate is a wasted read, nothing partial is applied.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};

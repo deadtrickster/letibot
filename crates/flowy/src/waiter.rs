@@ -1,24 +1,11 @@
-//! One waiter per name, enforced — against `flowy inbox` itself.
+//! One waiter per name, enforced against `flowy inbox` itself. flowy allows many
+//! writers under one name and exactly one reader, enforced by a claim file under
+//! `$XDG_RUNTIME_DIR/flowy` holding a pid. So this writes the same file, in the same
+//! format, in the same directory: each guard refuses a name the other holds,
+//! because two guards that cannot see each other's claim are no guard.
 //!
-//! flowy allows many writers under one name and exactly one reader. Its CLI
-//! enforces that locally by writing a claim — `$XDG_RUNTIME_DIR/flowy/inbox-<name>.pid`
-//! holding a pid, with a `.kind` sidecar saying `tracked` or `forked` — and
-//! testing liveness with `kill -0`. `DECISIONS.md` D2 names the consequence for
-//! this harness: the interactive session's `flowy-listen-loop` and harnessd must
-//! not both hold a seat's reader, *"a test harness that starts harnessd without
-//! stopping the Monitor gets `LISTENER REFUSED`, which is the correct outcome and
-//! should be asserted rather than worked around."*
-//!
-//! So this writes **the same file, in the same format, in the same directory**,
-//! and reads it the same way. A `flowy inbox --as NAME` started while harnessd
-//! holds NAME is refused by flowy's own guard, naming harnessd's pid; a harnessd
-//! started while `flowy inbox` holds it is refused here, naming that pid. Two
-//! guards that cannot see each other's claim are no guard.
-//!
-//! The one asymmetry flowy has is kept: a **tracked** waiter stands down a
-//! **forked** one. The successor flowy forks at delivery is detached — it hears
-//! everything and can wake nobody — and a listener that can wake a session must
-//! be able to replace it, or a session ends up with a live listener and silence.
+//! A tracked waiter stands down a forked one, because a detached successor can wake
+//! nobody and a listener that can wake a session must replace it.
 
 use std::path::{Path, PathBuf};
 

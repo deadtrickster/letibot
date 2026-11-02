@@ -1,16 +1,11 @@
-//! **The first letibot pane plugin**: a project plan's tiers, stages, agents and hosts, drawn from
-//! `<project>/.letibot/status.json` — the status file the agents keep as data rather than prose
-//! (`docs/plugins-slice1.md` C5).
+//! The first letibot pane plugin: a project plan's tiers, stages, agents and hosts, drawn from
+//! `<project>/.letibot/status.json` - the status file the agents keep as data rather than prose.
 //!
-//! Everything the plugin is lives in one pure function, [`view`]: an input in, a `View` out. It
-//! has no memory but the `state` the host hands back, no clock but the one it is given (the status
-//! file's `updated` is compared against it), and no capability but `read`. That is why the native
-//! tests below can assert the whole dashboard without a wasm host — and why the `.wasm` is thin:
-//! [`pane_dashboard`] parses the input, calls `view`, and serialises the answer.
-//!
-//! What is *not* here, deliberately: the layer stack's answer protocol (`{"pass": true}`,
-//! `{"mask": true}`, `{"look": {"below": …}}`). A pane plugin in this slice is the bottom layer of
-//! its own stack, and the protocol belongs to the host that resolves it.
+//! Everything the plugin is lives in one pure function, [`view`]: an input in, a `View` out. It has
+//! no memory but the `state` the host hands back, no clock but the one it is given, and no
+//! capability but `read`. That is why the native tests below can assert the whole dashboard without
+//! a wasm host, and why [`pane_dashboard`] is thin.
+//! What is not here, deliberately: the layer stack's answer protocol, which belongs to the host.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -59,14 +54,9 @@ pub fn view_at(input: &Value, now: i64) -> Value {
     view_before(input, Some(now))
 }
 
-/// **The clock this pane has, or nothing at all.**
-///
-/// A wasm32 guest has no `SystemTime::now`: std's answer there is a PANIC, and a panic in this
-/// module is a trap — which the host draws as one unavailable panel and no dashboard (measured:
-/// the committed `.wasm` was never executed until the daemon loaded it, and every call trapped on
-/// `time not implemented on this platform`). So the age of the status file is measured where a
-/// clock exists and simply NOT measured where it does not — `None` is *could not ask*, never
-/// *it is fresh*, and no finding claims a freshness nobody computed.
+/// The clock this pane has, or nothing at all. A wasm32 guest has no `SystemTime::now`: std's
+/// answer there is a PANIC, and a panic here is a trap. `None` is *could not ask*, never *it is
+/// fresh*, so no finding claims a freshness nobody computed.
 fn now() -> Option<i64> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -459,10 +449,9 @@ fn yours_panel(status: &Status) -> Panel {
     }
 }
 
-/// **Everything that tripped, in one list.** A snapshot that is old is named with its age; a
-/// blocked row is its own finding, because "one of twelve rows is stuck" is not something the
-/// overview can say; and a file that parsed clean is a `passed` finding rather than silence, so
-/// the list distinguishes "nothing is wrong" from "nothing was read".
+/// Everything that tripped, in one list. A snapshot that is old is named with its age; a blocked row
+/// is its own finding, because *one of twelve rows is stuck* is not something the overview can say;
+/// and a file that parsed clean is a `passed` finding, so *nothing is wrong* is not *nothing was read*.
 fn findings(status: &Status, now: Option<i64>) -> Vec<Finding> {
     let mut out = Vec::new();
 
@@ -763,11 +752,9 @@ fn to_value(view: View) -> Value {
 // `rano_abi` and `rano_alloc`: the two exports every rano plugin has.
 rano_plugin::abi!();
 
-/// **`pane_dashboard`, the hook the host calls**: a C3 input in, a C3 `View` out.
-///
-/// `None` — the ABI's "leave it alone" — is for text this plugin cannot read as JSON at all, which
-/// is a host defect rather than a dashboard state; every state the plan can be in is answered with
-/// a view, because a trap shows the operator nothing.
+/// `pane_dashboard`, the hook the host calls: a C3 input in, a C3 `View` out.
+/// `None` - the ABI's *leave it alone* - is for text this plugin cannot read as JSON at all, which
+/// is a host defect rather than a dashboard state. Every state the plan can be in is answered.
 #[unsafe(no_mangle)]
 pub extern "C" fn pane_dashboard(ptr: u32, len: u32) -> u32 {
     rano_plugin::hook(ptr, len, |text| {

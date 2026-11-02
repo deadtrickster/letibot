@@ -1,69 +1,11 @@
-//! **`web_fetch` behind `curl`, rendered for the model, not for a browser.**
+//! `web_fetch` behind `curl`, rendered for the model, not for a browser.
 //!
-//! `letibot-tools` ships `web_fetch` as a tool that refuses: the schema is fixed
-//! (it is prompt bytes in the stable prefix, so the argument names had to be right
-//! before anything cached against them) and [`Fetcher`] is the seam an
-//! implementation attaches through. This crate is one implementation.
+//! `letibot-tools` ships `web_fetch` as a tool that refuses, and `Fetcher` is the seam an
+//! implementation attaches through. This crate is one, over a `curl` subprocess, so a hang is
+//! a dead child rather than a dead turn.
 //!
-//! The transport is a `curl` subprocess, and that is deliberate: the TLS stack,
-//! the compression and the protocol edge cases belong to a binary that is already
-//! on the box, this crate's dependency list stays free of any of it, and a hang
-//! or a crash in the fetch is a dead child, not a dead turn. What curl does not
-//! have — and what nobody should ask curl to have — is the policy, which lives
-//! here in the open:
-//!
-//! - **DNS must resolve to a public address, and the connection is pinned to the
-//!   address that was checked.** The host is resolved with the ordinary resolver
-//!   first, every address is checked against the private set (loopback, RFC1918,
-//!   link-local, CGNAT, unique-local, unspecified, and IPv4-mapped IPv6, which is
-//!   the same set wearing a sixth hat), and the first public address is then
-//!   handed to curl as `--resolve` — so the name cannot resolve somewhere else
-//!   between the check and the connect. Loopback is first among the refused for a
-//!   reason this box knows personally: the model server itself listens on
-//!   127.0.0.1, and a fetch tool that would dial it on request is a fetch tool
-//!   the operator has to think about every time a page suggests a url.
-//! - **Same-origin redirects only, followed by hand.** A `Location` that leaves
-//!   the origin — host, port, or https downgraded to http — is a refusal, and
-//!   every hop re-resolves and re-pins. `--location` would follow anywhere, and
-//!   a redirect to an intranet host is the classic way a fetch tool becomes a
-//!   port scanner. The model can fetch the new address as its own call, where
-//!   the decision is visible.
-//! - **The body is capped while it is read**, and a fetch that stops early says
-//!   so (`FetchedPage::truncated`) instead of presenting a half page as a page.
-//!
-//! # The body is rendered, not dumped
-//!
-//! Raw HTML in a tool result is the noise the quarantine envelope was meant to
-//! sit *around*, not ship: markup, nav menus and boilerplate are prompt bytes
-//! that defocus the reader and cost tokens for nothing. So an HTML body goes
-//! through the pipeline the LLM-reader services converged on — the same one
-//! Firefox Reader Mode uses, cited for ~70% token reduction against raw HTML:
-//!
-//! 1. **Reader-mode extraction** ([`dom_smoothie`], a Rust implementation that
-//!    closely follows Mozilla's Readability.js): the scoring exists to find the
-//!    thread in a forum page and drop the nav, the ads and the boilerplate
-//!    around it. The page's own url is handed in, so relative links resolve.
-//! 2. **Markdown conversion** ([`htmd`], turndown.js-inspired, passes
-//!    turndown's own test cases): headings stay headings, lists stay lists,
-//!    tables stay tables, links keep their targets — the semantic blocks the
-//!    model needs to know where it is. `format: text` renders prose with
-//!    [`html2text`] instead; `format: html` passes the document through
-//!    verbatim, for the rare call that wants the markup itself.
-//!
-//! When the extraction finds no confident main content — an index page, an API
-//! reference, anything the article heuristics were never written for — the whole
-//! document is converted instead, and [`FetchedPage::notes`] says which path
-//! ran. A silent rewrite of a page is the defect the quarantine exists to make
-//! visible; the note is that visibility.
-//!
-//! # What this does not do
-//!
-//! It does not run JavaScript. A page that renders in the browser only comes
-//! back as the shell the server sent; many forums and docs sites keep a print
-//! or plain view that renders without it, and asking for that address is the
-//! model's move, not this crate's. It does not keep state between calls: no
-//! cookie jar, no session, every fetch a fresh process. It does not cache. And
-//! it never presents a body it did not receive whole without saying so.
+//! The policy curl does not have lives here: DNS must resolve to a public address and the
+//! connection is pinned to the one checked, redirects stay same-origin, and the body is capped.
 
 use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -78,12 +20,9 @@ use letibot_tools::builtins::external::web::{
 // github.com: the page is chrome, the file is the page
 // ---------------------------------------------------------------------------
 
-/// github.com's own first path segments — never an owner, always a site page.
-/// Not the whole of github's reserved list (which github does not publish in
-/// full); the site's own surfaces, which is the part a model is ever handed.
-/// A name on this list means "there is no repo here", so the rewrite stops
-/// before it can build `raw…/settings/profile/HEAD/README.md` — an address
-/// nobody asked for and nothing serves.
+/// github.com's own first path segments: never an owner, always a site page. Not the whole
+/// of github's reserved list, only the site's own surfaces. A name here means "there is no
+/// repo", so the rewrite stops before building an address nothing serves.
 const GITHUB_SITE_SEGMENTS: &[&str] = &[
     "about",
     "billing",
@@ -108,23 +47,9 @@ const GITHUB_SITE_SEGMENTS: &[&str] = &[
     "trending",
 ];
 
-/// The `gh` argv that answers a github.com page **better than the page** —
-/// the shapes whose value is the discussion or the diff, not the chrome.
-///
-/// The operator, 2026-10-04: *"regarding issues and pulls and commits — we have
-/// gh tool here. so maybe if it is present and authenticated it is worth using
-/// it for fetching pull requests and issues and commits."* `gh issue view` and
-/// `gh pr view` render the title, the body AND the comments as markdown, which
-/// is exactly what a reader of an issue wants and exactly what the HTML page
-/// buries under navigation; `gh api` answers a commit as the structured JSON
-/// the model reads natively. A tree has no such view — the ref and the path
-/// share one path component list and cannot be split without asking the API
-/// which branches exist — so trees stay the page they are, said rather than
-/// silently guessed.
-///
-/// Returns the argv and a word for the note ("issue", "pull request",
-/// "commit"), or `None` when the address is not one of these. `/pull/N/files`
-/// and its siblings view the PR itself, because the suffix tabs are chrome too.
+/// The `gh` argv that answers a github.com page better than the page: the shapes whose value
+/// is the discussion or the diff, not the chrome. `gh issue view` and `gh pr view` render the
+/// title, body and comments as markdown; a tree has no such view, so trees stay pages.
 fn gh_args(url: &UrlParts) -> Option<(Vec<String>, &'static str)> {
     if url.host != "github.com" && url.host != "www.github.com" {
         return None;
@@ -175,12 +100,9 @@ fn gh_present() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Run `gh`, capped and timed out the way curl is capped and timed out.
-///
-/// A hang is a dead child and a refusal, not a dead turn — the same rule the
-/// crate's transport doc states for curl, held for the second binary it is
-/// willing to spawn. `Err` carries gh's own stderr, which is where "not
-/// authenticated" says itself.
+/// Run `gh`, capped and timed out the way curl is. A hang is a dead child and a refusal, not
+/// a dead turn. `Err` carries gh's own stderr, which is where "not authenticated" says
+/// itself.
 fn run_gh(argv: &[String], cap: usize) -> Result<(Vec<u8>, bool), String> {
     let mut child = Command::new("gh")
         .args(argv)
@@ -230,34 +152,9 @@ fn run_gh(argv: &[String], cap: usize) -> Result<(Vec<u8>, bool), String> {
     Ok((out, truncated))
 }
 
-/// Rewrite a github.com address to the raw file it names — or, for a bare
-/// repo, its README.
-///
-/// MEASURED, 2026-10-04, on this harness's own tooling: fetching a repo page
-/// returned 262 KB of navigation chrome with the README below the cap, while
-/// the same document from `raw.githubusercontent.com` came back as 26 KB of
-/// actual text. Every path here was chosen against that:
-///
-/// * `/OWNER/REPO/blob/REF/PATH` (and github's own `/raw/` alias) → the same
-///   `REF` and `PATH` on `raw.githubusercontent.com`, query and fragment
-///   stripped — `?plain=1` is a rendering hint for the HTML view and noise for
-///   a raw file.
-/// * `/OWNER/REPO` → `HEAD/README.md`: `HEAD` is raw's own spelling of the
-///   default branch, so the master/main guess is not ours to make. The file
-///   name is case-sensitive there, so a second candidate `readme.md` follows,
-///   tried only on a 404 — and if both miss, the 404 that comes back names the
-///   first, which is the honest answer for a repo with no readme at all.
-/// * Everything else — `/tree/…` (a directory listing), `/issues/N`, `/pull/N`,
-///   `/releases`, `/wiki`, `/commit/…` — is left as the HTML page it is. Those
-///   have no raw spelling, and a rewrite that guessed one would be a fetch of
-///   something the caller did not name.
-///
-/// Returns `None` when nothing about the address is ours to change. The
-/// rewrite is a **named decision, not a redirect**: it happens at the front
-/// door, the note says what was asked for and what was fetched instead, and
-/// every check that guards an ordinary fetch (host pinning, the redirect
-/// policy on the new origin) runs on the rewritten address exactly as it
-/// would have on the original.
+/// Rewrite a github.com address to the raw file it names, or, for a bare repo, its README:
+/// `blob/REF/PATH` becomes the same ref and path on `raw.githubusercontent.com`, and a bare
+/// repo becomes `HEAD/README.md`. Everything else stays the page it is; `None` says so.
 fn github_raw(url: &UrlParts) -> Option<Vec<String>> {
     if url.host != "github.com" && url.host != "www.github.com" {
         return None;
@@ -309,10 +206,9 @@ fn rewrite_note(asked: &UrlParts, first: &str) -> String {
 /// slow print view is still a page, and 30s covers one.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The body cap, in bytes read from curl. 256 KiB of HTML is a book chapter;
-/// whatever survives extraction into prompt bytes is a fraction of that, and
-/// a page that will not fit is reported (`truncated`) rather than silently
-/// shortened.
+/// The body cap, in bytes read from curl. 256 KiB of HTML is a book chapter; what survives
+/// extraction is a fraction of that, and a page that will not fit is reported (`truncated`)
+/// rather than silently shortened.
 pub const MAX_BODY: usize = 256 * 1024;
 
 /// Redirect hops followed by hand. Five is already more than any honest site
@@ -325,10 +221,9 @@ const TEXT_WIDTH: usize = 100;
 
 const USER_AGENT: &str = concat!("letibot-webfetch/", env!("CARGO_PKG_VERSION"));
 
-/// Appended to the body on stdout by curl's `--write-out`, and split off
-/// again by its **last** occurrence. A body that contains the sentinel cannot
-/// forge it: the real one is always written after the body, so the last
-/// occurrence is the real one.
+/// Appended to the body by curl's `--write-out` and split off again at its last occurrence.
+/// A body containing the sentinel cannot forge it: the real one is always written after the
+/// body.
 const SENTINEL: &str = "\n--letibot-fetch-meta--";
 
 /// curl, attached.
@@ -345,10 +240,8 @@ pub struct CurlFetcher {
 }
 
 impl CurlFetcher {
-    /// Attach, checking that curl is there. The error is the operator's to
-    /// read: refusing at attach rather than at the first fetch, where it
-    /// would be a transport error that names nothing — the same rule the
-    /// Brave provider follows for a missing key.
+    /// Attach, checking that curl is there. Refusing at attach rather than at the first
+    /// fetch, where it would be a transport error naming nothing.
     pub fn attach() -> Result<CurlFetcher, String> {
         let out = Command::new("curl")
             .arg("--version")
@@ -378,10 +271,9 @@ impl CurlFetcher {
         })
     }
 
-    /// The pieces given outright — for a test against a local stand-in.
-    /// `version` is whatever the test says, and the host check is off,
-    /// because the stand-in lives on loopback, the one host the policy
-    /// refuses.
+    /// The pieces given outright, for a test against a local stand-in. `version` is whatever
+    /// the test says and the host check is off, because the stand-in lives on loopback, the
+    /// one host the policy refuses.
     pub fn for_test(version: &str) -> CurlFetcher {
         CurlFetcher {
             version: version.into(),
@@ -397,11 +289,9 @@ impl Fetcher for CurlFetcher {
         // explicit that a fetcher does its own checks, because the tool's
         // are one refactor away from gone.
         let mut url = parse_url(&request.url).map_err(FetchError::Refused)?;
-        // **A github.com address becomes the raw file it names, before anything
-        // else runs.** The note goes on the result rather than in a log: a silent
-        // rewrite is the defect the quarantine exists to make visible, and the
-        // caller should be able to cite what they asked for against what came
-        // back. `final_url` shows the raw address; the note shows the original.
+        // A github.com address becomes the raw file it names, before anything else runs. The
+        // note goes on the result rather than in a log, because a silent rewrite is the
+        // defect the quarantine exists to make visible and the caller must be able to cite it.
         let (candidates, mut notes) = match github_raw(&url) {
             Some(raws) => {
                 let note = rewrite_note(&url, &raws[0]);
@@ -409,13 +299,9 @@ impl Fetcher for CurlFetcher {
             }
             None => (vec![url.to_string()], Vec::new()),
         };
-        // **Issues, PRs and commits go to `gh` when it is on the box** — the
-        // operator's call, and the same bargain as the raw rewrite: the page's
-        // value is the discussion or the diff, `gh` renders exactly that, and
-        // the note says which door answered. gh absent leaves the page untouched;
-        // gh present but refusing (not authenticated says itself in gh's stderr)
-        // still answers with the HTML page, and a note carries why gh did not —
-        // never silently.
+        // Issues, PRs and commits go to `gh` when it is on the box: the page's value is the
+        // discussion or the diff, and the note says which door answered. gh absent or refusing
+        // still answers with the HTML page, with a note saying why.
         if let Some((argv, kind)) = gh_args(&url)
             && gh_present()
         {
@@ -601,10 +487,9 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
                 if buf.len() + n > cap {
                     buf.extend_from_slice(&scratch[..cap - buf.len()]);
                     truncated = true;
-                    // The cap is ours, not curl's: stop the child, because a
-                    // body that will not fit is not worth the rest of the
-                    // download. The metadata line never arrives for a killed
-                    // run, so the headers file carries the status instead.
+                    // The cap is ours, not curl's: stop the child, because a body that will
+                    // not fit is not worth the rest of the download. A killed run never
+                    // writes the metadata line, so the headers file carries the status.
                     let _ = child.kill();
                     break;
                 }
@@ -740,12 +625,9 @@ fn render_body(
         return (String::new(), Vec::new());
     }
     let body = String::from_utf8_lossy(raw).into_owned();
-    // **A body that is not HTML is already plain — pass it through.** The
-    // reader-mode pipeline is for documents; a `text/plain` body (a raw file, a
-    // `.md` from raw.githubusercontent, a curl of an API endpoint) that goes
-    // through it comes out ESCAPED — `\#`, `\*\*` — which is a corruption of
-    // exactly the bodies the github rewrite exists to serve. Found by running
-    // the crate's own example against a real repo the day the rewrite landed.
+    // A body that is not HTML is already plain, so pass it through. The reader-mode pipeline
+    // is for documents; a `text/plain` body that goes through it comes out ESCAPED - `\#`,
+    // `\*\*` - which corrupts exactly the bodies the github rewrite exists to serve.
     if !content_type.to_lowercase().contains("html") {
         return (body, Vec::new());
     }
@@ -755,12 +637,9 @@ fn render_body(
     }
 }
 
-/// Reader mode first, the whole document as the fallback. The scoring in
-/// Mozilla's Readability.js exists to find the thread in a forum page and
-/// drop the nav around it; an index page or an API reference is exactly what
-/// it was never written for, and the fallback is what keeps those honest —
-/// with a note either way, because a silent rewrite of a page is the defect
-/// the quarantine exists to make visible.
+/// Reader mode first, the whole document as the fallback: the scoring finds the thread in a
+/// forum page and drops the nav, and an index page or an API reference is what it was never
+/// written for. A note either way, because a silent rewrite is the defect.
 fn extract_and_convert(html: &str, final_url: &str, format: PageFormat) -> (String, Vec<String>) {
     let total = html.len();
     let mut reader = match dom_smoothie::Readability::new(html, Some(final_url), None) {
@@ -807,9 +686,8 @@ fn convert(html: &str, format: PageFormat) -> String {
     }
 }
 
-/// The markdown converter, with the tags whose contents are program text and
-/// layout rather than prose. turndown.js drops these the same way; a page's
-/// script reaching the model as text is exactly the noise this pipeline
+/// The markdown converter, with the tags whose contents are program text and layout rather
+/// than prose dropped. A page's script reaching the model as text is the noise this pipeline
 /// exists to kill.
 fn markdown_converter() -> htmd::HtmlToMarkdown {
     htmd::HtmlToMarkdown::builder()
@@ -986,10 +864,9 @@ fn first_public_addr(host: &str, port: u16) -> Result<IpAddr, String> {
     ))
 }
 
-/// Same-origin redirects only, and never a scheme downgrade. A redirect that
-/// leaves the origin is the classic way a fetch tool is turned into a port
-/// scanner; the model can fetch the new address as its own call, where the
-/// decision is visible.
+/// Same-origin redirects only, and never a scheme downgrade. A redirect that leaves the
+/// origin is the classic way a fetch tool becomes a port scanner; the model can fetch the
+/// new address as its own call, where the decision is visible.
 fn check_redirect(from: &UrlParts, to: &UrlParts) -> Result<(), String> {
     if from.host != to.host {
         return Err(format!(
@@ -1085,10 +962,8 @@ mod tests {
 
     // -- the github.com rewrite ----------------------------------------------
 
-    /// **The rewrite is a table, and the table is the whole policy.** Every rule
-    /// in one place: what becomes raw, what stays a page, what the README guess
-    /// is. Measured motive in `github_raw`'s own doc — 262 KB of chrome against
-    /// 26 KB of document, on this harness's own tooling, the day this was written.
+    /// The rewrite is a table, and the table is the whole policy: what becomes raw, what stays
+    /// a page, what the README guess is.
     #[test]
     fn github_pages_become_the_raw_files_they_name() {
         let raws = |url: &str| github_raw(&parse_url(url).unwrap());
@@ -1155,17 +1030,9 @@ mod tests {
         }
     }
 
-    /// **The rewrite is NAMED on the result, never silent** — the crate's own
-    /// rule, applied to itself. A model that cites what it fetched must be able
-    /// to see what it asked for against what came back, and the note is where
-    /// the two meet.
-    ///
-    /// The note is the unit here rather than an end-to-end fetch: the loopback
-    /// stand-in cannot answer for `raw.githubusercontent.com` (the rewrite names
-    /// that host by design, and dialing the real one from a test is a test that
-    /// needs the network), so the table above pins WHICH address and this pins
-    /// WHAT THE CALLER IS TOLD — the two halves of the policy, each where it
-    /// can be checked without a wire.
+    /// The rewrite is NAMED on the result, never silent: a model that cites what it fetched
+    /// must see what it asked for against what came back. The note is the unit here rather
+    /// than an end-to-end fetch, because the loopback stand-in cannot answer for a real host.
     #[test]
     fn the_rewrite_is_named_with_both_addresses_and_never_silent() {
         let asked = parse_url("https://github.com/o/r/blob/main/README.md").unwrap();
@@ -1182,14 +1049,9 @@ mod tests {
         );
     }
 
-    /// **`gh` answers the shapes whose value is the discussion, not the page**
-    /// — and the shapes that don't go to gh stay pages, named.
-    ///
-    /// The operator, 2026-10-04: *"we have gh tool here. so maybe if it is
-    /// present and authenticated it is worth using it for fetching pull requests
-    /// and issues and commits."* The table pins which addresses reach gh at all;
-    /// whether gh runs is presence-and-auth at fetch time, and the note on the
-    /// result says which door answered.
+    /// `gh` answers the shapes whose value is the discussion, not the page, and the shapes
+    /// that do not go to gh stay pages, named. Whether gh runs is presence-and-auth at fetch
+    /// time, and the note on the result says which door answered.
     #[test]
     fn issues_pulls_and_commits_reach_gh_and_the_rest_do_not() {
         let argv = |url: &str| gh_args(&parse_url(url).unwrap());
@@ -1219,11 +1081,9 @@ mod tests {
         assert_eq!(a, vec!["api", "repos/o/r/commits/abc123"]);
         assert_eq!(kind, "commit");
 
-        // **Everything else stays a page, and the list is deliberate**: a tree's
-        // ref and path cannot be split without asking the API which branches
-        // exist; a release and a wiki have no gh view; an issue by name (not
-        // number) and a bare repo are not these shapes; github's own pages are
-        // never a repo; and hosts that are not github never reach gh at all.
+        // Everything else stays a page, and the list is deliberate: a tree's ref and path
+        // cannot be split without asking the API which branches exist, a release and a wiki
+        // have no gh view, and hosts that are not github never reach gh at all.
         for page in [
             "https://github.com/o/r/tree/main/src",
             "https://github.com/o/r/releases",
@@ -1387,11 +1247,9 @@ mod tests {
         assert!(!text.contains('<'), "{text}");
     }
 
-    /// **A body that is not HTML passes through UNTOUCHED.** Found live: the
-    /// github rewrite serves a README as `text/plain`, the pipeline escaped its
-    /// markdown (`\#`, `\*\*`), and the file the rewrite existed to deliver
-    /// arrived corrupted. An HTML body still converts, in the same test, so the
-    /// fix cannot rot into "nothing converts".
+    /// A body that is not HTML passes through UNTOUCHED: the github rewrite serves a README
+    /// as `text/plain`, and the pipeline escaping its markdown corrupted the file. An HTML
+    /// body still converts in the same test, so the fix cannot rot into "nothing converts".
     #[test]
     fn a_plain_body_passes_through_and_an_html_body_still_converts() {
         let readme = "# gitstatus\n\n**10x faster** than `git status`.\n";
@@ -1471,10 +1329,9 @@ mod tests {
 
     // -- the stand-in -------------------------------------------------------
 
-    /// A tiny HTTP stand-in: answers each connection with the next response
-    /// in the list, then closes. Loopback only, and the fetcher under test
-    /// has its host check off — the one host the policy refuses is the one a
-    /// test can bind.
+    /// A tiny HTTP stand-in: answers each connection with the next response in the list, then
+    /// closes. Loopback only, and the fetcher under test has its host check off, since the one
+    /// host the policy refuses is the one a test can bind.
     fn standin(responses: Vec<String>) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();

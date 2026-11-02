@@ -1,39 +1,11 @@
 //! What a session is woken for: a level per room, a thread override, and the
 //! human-broadcast clause as a named switch.
 //!
-//! # flowy's definitions, kept exactly
-//!
-//! `wakesFor` (`internal/flowy/inbox.go`) has three levels and each edge was paid
-//! for by a delivery that went wrong on the fleet:
-//!
-//! | level | wakes for |
-//! |---|---|
-//! | `all` | everything in the room |
-//! | `addressed` | what names you — an `@name` in the body arrives as an addressee — **plus a person's unaddressed broadcast**, because *"who is here?"* names nobody and the human's messages were otherwise the least likely in the room to be answered |
-//! | `mentions` | only what names you. The person's-broadcast clause is off |
-//! | `off` | nothing — a room you are in but asked not to be told about |
-//!
-//! Your own messages never wake you. A `todo.note` reaches the seat the row was
-//! assigned to (or raised by, when unowned) and nobody else — the node has
-//! already decided that, and a note arriving is a note for this seat. A direct
-//! message has no room and names you: it is addressed.
-//!
-//! # flowy's shape, dropped
-//!
-//! The level is one flag per poll on the node, because a reader belongs to a
-//! name and a name has one waiter. A client that holds state can do better, and
-//! `docs/implementation-plan.md` §12.2b says the harness should: the level is a
-//! **table keyed by room**, with a session default, and a **thread** set that
-//! overrides the room — *watch this conversation whatever the room's level is*.
-//!
-//! # The clause that failed in both directions
-//!
-//! First a person's *"who is here?"* reached nobody, because agents pass
-//! unaddressed traffic by habit. Then a person's message addressed to ONE agent
-//! woke every `--to-me` waiter in the room, and a seat acted on work meant for
-//! someone else. Both fixes are inside `addressed` on the node, and both are
-//! kept here — but as [`Attention::wake_on_human_broadcast`], a switch with a
-//! name, rather than a property of the word "addressed".
+//! The level is a table keyed by room with a session default, because a client
+//! that holds state can do better than one flag per poll. The person's-broadcast
+//! clause is a switch with a name, not a property of the word "addressed": as a
+//! property it failed both ways - an unaddressed "who is here?" reached nobody,
+//! and one addressed to a single agent woke every waiter in the room.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1,13 +1,11 @@
-//! Fakes, so the whole of §2.1–§2.4 is testable without a wasm engine, a cargo, or a network.
+//! Fakes, so the whole of the plugin machinery is testable without a wasm engine, a cargo, or a
+//! network.
 //!
-//! A stand-in `plugin.wasm` here is a **JSON script**, not a module: [`FakeLoader`] reads it and
-//! produces a [`Fake`], a module whose answers come from a table. That is the point of the
-//! `Loader` seam — a module is anything that can report its hooks and answer a hook with text, so
-//! every question this crate's tests ask (precedence, pass, mask, a look below, a trap, a replay)
-//! is a question about the stack, not about compiling wasm.
-//!
-//! Nothing here is compiled into the library: the module is `#[cfg(test)]`, so rano stays the only
-//! engine in the tree and this crate's dependency list stays at three.
+//! A stand-in `plugin.wasm` here is a JSON script, not a module: [`FakeLoader`] reads it and
+//! produces a [`Fake`], a module whose answers come from a table. That is the point of the `Loader`
+//! seam - a module is anything that can report its hooks and answer with text, so every question
+//! these tests ask is a question about the stack, not about compiling wasm.
+//! Nothing here is compiled into the library: the module is `#[cfg(test)]`, so rano stays the only engine.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -199,9 +197,8 @@ fn parse_script(bytes: &[u8]) -> Result<Fake, String> {
 }
 
 /// The `Loader` the tests use: a scripted `plugin.wasm` in, a [`Fake`] out.
-///
 /// It records what it was handed, so a test can assert that discovery passed a manifest's
-/// capabilities to the engine — the list the engine grants imports from.
+/// capabilities to the engine - the list the engine grants imports from.
 pub(crate) struct FakeLoader {
     failing: Option<String>,
     loaded: Mutex<Vec<(PathBuf, Vec<Capability>)>>,
@@ -251,8 +248,7 @@ impl Loader for FakeLoader {
         Ok(Box::new(parse_script(&bytes)?))
     }
 
-    /// The bytes path, over the same scripts — a built-in is a script with no file behind it.
-    ///
+    /// The bytes path, over the same scripts - a built-in is a script with no file behind it.
     /// The name stands in for a path in the record, so a test can assert that the capabilities a
     /// built-in's manifest declares were handed to the engine like any other layer's.
     fn load_bytes(

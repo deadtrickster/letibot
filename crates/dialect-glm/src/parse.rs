@@ -1,31 +1,11 @@
 //! Token ids in, spans out.
 //!
-//! # Why the decoder is an argument
-//!
-//! `parse(&[u32]) -> Vec<ParsedSpan>` asked a crate with no vocab to produce
-//! `Content(String)`. It could not, and the workaround was a builder that stashed a
-//! decoder and a panic for callers who forgot. Under T2 the decoder is in the
-//! contract ([`TokenDecoder`]) and is passed in, so the type says what parsing needs
-//! and there is no way to call it wrong.
-//!
-//! # Boundaries are decided by token id, never by scanning text
-//!
-//! A control token is **one** vocab entry, so the decoder answers `control_role` for
-//! exactly the ids that are boundaries. Text that merely spells `</think>` is several
-//! ids and cannot be one — the same guarantee `RenderSpan`'s Text/Control split gives
-//! on the way out, restated on the way back in.
-//!
-//! Runs of ordinary tokens are decoded **as runs**, not one id at a time: on a BPE
-//! vocabulary, detokenizing a sequence and concatenating per-token pieces are
-//! different operations, and only the first is right.
-//!
-//! # What roles buy here
-//!
-//! This parser used to compare decoded control text against `GLM_TOKENS` literals,
-//! because eight of GLM's tokens had no `ControlRole` to match on. They have one now,
-//! so the match below is on roles: it is a `match` the compiler checks rather than a
-//! chain of string comparisons, and a second dialect that spells `<arg_key>`
-//! differently would need no new code path.
+//! Boundaries are decided by token id, never by scanning text: a control token is one vocab
+//! entry, so `control_role` answers for exactly the ids that are boundaries, and text that
+//! merely spells `</think>` is several ids and cannot be one. Runs of ordinary tokens are
+//! decoded as runs, because on a BPE vocabulary detokenizing a sequence and concatenating
+//! per-token pieces are different operations. The decoder is an argument, so the type says
+//! what parsing needs; the match below is on roles, which the compiler checks.
 
 use letibot_dialect::{ControlRole, ControlToken, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};
@@ -64,10 +44,9 @@ impl Parser for GlmParser {
         };
         let mut buf = String::new();
         let mut run: Vec<u32> = Vec::new();
-        // Offsets into `tokens`: where the buffered run began, where the open
-        // reasoning block began, where the open tool call began. Every span's range
-        // is expressed in these, so a caller can commit exactly the tokens a span
-        // owns without re-walking the stream.
+        // Where the buffered run, the open reasoning block and the open tool call began, in
+        // `tokens`. Every span's range is one of these, so a caller commits exactly the tokens a
+        // span owns without re-walking the stream.
         let mut run_start = 0usize;
         let mut block_start = 0usize;
         let mut call_start = 0usize;
@@ -177,12 +156,8 @@ impl Parser for GlmParser {
         if !run.is_empty() {
             buf.push_str(&decoder.decode(&run));
         }
-        // The final flush honours the mode. A turn cut inside its reasoning ends in
-        // `Mode::Reasoning`, and flushing that buffer as content would promote the
-        // deliberation to visible output — §5.7's `ReasoningOnly` failure reading as
-        // a `TruncatedText` success. Qwen's parser has always done this; this one
-        // did not, which is why `crates/turn` carried a re-segmentation pass that
-        // re-derived the channel from token ids after the fact.
+        // The final flush honours the mode: a turn cut inside its reasoning would otherwise be
+        // flushed as content, promoting the deliberation to visible output.
         if mode == Mode::Reasoning {
             if !buf.is_empty() {
                 out.push(ParsedSpan::Reasoning {
@@ -197,14 +172,9 @@ impl Parser for GlmParser {
     }
 }
 
-/// Recover an argument value from its `<arg_value>` body.
-///
-/// The render side emits strings raw and everything else as JSON, so the inverse is:
-/// if the text parses as a non-string JSON value, it was one; otherwise it was a
-/// string. That is lossy in exactly one corner — a **string** argument whose text is
-/// itself valid JSON, e.g. `"3"` or `"[1]"`, comes back as a number or an array. The
-/// corner is pinned by a test rather than papered over; the shipped format simply
-/// does not carry the type.
+/// The render side emits strings raw and everything else as JSON, so the inverse tries JSON
+/// first. Lossy in one corner - a string whose text is itself valid JSON comes back as a
+/// number - which a test pins, because the shipped format does not carry the type.
 fn reconstruct_arg(text: String) -> Value {
     match serde_json::from_str::<Value>(&text) {
         Ok(Value::String(_)) | Err(_) => Value::String(text),
@@ -212,11 +182,8 @@ fn reconstruct_arg(text: String) -> Value {
     }
 }
 
-/// A decoder over a fixed table, for tests and for anyone who has literal→id already.
-///
-/// The real one is `letibot_tokencore::VocabDecoder`, which has a vocabulary. This one
-/// exists so the round-trip property can be checked with no GGUF, no FFI and no GPU —
-/// which is the whole reason `RenderSpan` is text plus control tokens rather than ids.
+/// A decoder over a fixed table, so the round-trip property can be checked with no GGUF, no
+/// FFI and no GPU. The real one is `letibot_tokencore::VocabDecoder`.
 #[derive(Debug, Clone, Default)]
 pub struct TableDecoder {
     text: std::collections::HashMap<u32, String>,

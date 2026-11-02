@@ -1,17 +1,11 @@
-//! **What a streaming SSE response costs the allocator** — and why this is its own file.
+//! What a streaming SSE response costs the allocator - and why this is its own file.
 //!
-//! The framing tests next door (`chunked_body.rs`) pass on the old code as well, and that is the
-//! honest result: they pin the framing's BEHAVIOUR, which was correct and had no coverage at all.
-//! What changed in `Body` is how many times the allocator is called getting that behaviour, and
-//! only a counter can see it.
+//! The framing tests next door pin the framing's behaviour, which was correct and had
+//! no coverage. What changed in `Body` is how many times the allocator is called
+//! getting that behaviour, and only a counter can see it.
 //!
-//! **One measuring test per binary.** Cargo runs the tests within one file on parallel threads,
-//! and the counter is global, so two tests in one file count each other's allocations — measured
-//! at 5.72 per frame here when the real figure is under 2, with the number wandering between
-//! runs. The same mistake cost the frame-allocation test in `letibot-tui` an afternoon.
-//!
-//! Counted over a stream of frames rather than one: the chunk buffer and the size line are both
-//! per-CHUNK costs, and one frame per chunk is the real shape of an SSE response.
+//! One measuring test per binary: cargo runs the tests within one file on parallel
+//! threads and the counter is global, so two tests in one file count each other.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -42,10 +36,9 @@ mod alloc_stats {
 #[global_allocator]
 static COUNTING: alloc_stats::Counting = alloc_stats::Counting;
 
-/// `n` as lowercase hex plus `\r\n`, written into `out`. Returns how many bytes were used.
-///
-/// A hand-written encoder because `format!` allocates — see the call site for why that matters
-/// here in a way it does not in the other test files.
+/// `n` as lowercase hex plus `\r\n`, written into `out`. Returns how many bytes were
+/// used. Hand-written because `format!` allocates, and the fake server runs in the
+/// test process where the counting allocator would see it.
 fn hex_into(out: &mut [u8], mut n: usize) -> usize {
     let mut digits = [0u8; 16];
     let mut len = 0;
@@ -84,11 +77,9 @@ fn chunked_server(chunks: Vec<Vec<u8>>) -> (letibot_http::Endpoint, std::thread:
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
               Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
         );
-        // **Allocation-free, and that is not tidiness — it is the measurement.** This fake server
-        // runs IN THE TEST PROCESS, so the counting allocator counts it too: `format!("{:x}\r\n",
-        // …)` here is one `String` per chunk, and it was read as one allocation per chunk in the
-        // CLIENT. It cost an afternoon of bisecting `next_bytes` for a cost that was never there.
-        // The size line is written by hand from a fixed buffer instead.
+        // Allocation-free, and that is the measurement, not tidiness: this fake server
+        // runs IN THE TEST PROCESS, so the counting allocator counts it too, and a
+        // `format!` here reads as an allocation per chunk in the CLIENT.
         let mut head = [0u8; 24];
         for c in &chunks {
             let n = hex_into(&mut head, c.len());
@@ -105,23 +96,13 @@ fn chunked_server(chunks: Vec<Vec<u8>>) -> (letibot_http::Endpoint, std::thread:
     )
 }
 
-// ---------------------------------------------------------------------------------------------
-// **And the allocation count**, which is what the change to this file was for.
-//
-// The six tests above pass on the old code as well, and that is the honest result: they pin the
-// framing's BEHAVIOUR, which was correct and untested. What changed here is how many times the
-// allocator is called getting that behaviour, and only a counter can see it.
-//
-// Counted over a stream of frames, because a single frame is too small a sample to tell a reused
-// buffer from a fresh one: the chunk buffer and the size line are both per-CHUNK costs, and one
-// frame per chunk is the real shape of an SSE response.
+// -----------------------------------------------------------------------------
+// And the allocation count. The six tests above pass on the old code as well, and
+// that is honest: they pin the framing's BEHAVIOUR. Only a counter sees the cost.
 
-/// Every `data:` payload of a chunked SSE body, through the real client.
-/// Count the frames, WITHOUT keeping their payloads.
-///
-/// The first version of this collected `d.clone()` for each payload, which is an allocation per
-/// frame spent by the TEST rather than by the client — and it was a third of the measured number.
-/// Counting is all this needs; what the payloads SAY is the other file's business.
+/// Every `data:` payload of a chunked SSE body, through the real client, counting the
+/// frames WITHOUT keeping their payloads: collecting them is an allocation per frame
+/// spent by the TEST rather than by the client.
 fn count_frames(endpoint: &letibot_http::Endpoint) -> usize {
     let body = letibot_http::get(endpoint, "/v1/chat/completions").expect("the request");
     let mut n = 0usize;
@@ -133,12 +114,9 @@ fn count_frames(endpoint: &letibot_http::Endpoint) -> usize {
     n
 }
 
-/// **A streaming response does not allocate per chunk** — the changed behaviour, counted.
-///
-/// The bound is asserted rather than the exact number, so a small change to the frame struct does
-/// not fail it. Before the chunk buffer and the size line were reused this was three allocations
-/// per chunk — the size `String`, the chunk `Vec`, and the drained frame copy — plus one per
-/// `data:` line, which is the only one that has to stay.
+/// A streaming response does not allocate per chunk - the changed behaviour, counted.
+/// The bound is asserted rather than the exact number, so a small change to the frame
+/// struct does not fail it; the only allocation that has to stay is the `data:` line.
 #[test]
 fn a_streaming_response_does_not_allocate_per_chunk() {
     use std::sync::atomic::Ordering;
@@ -170,17 +148,9 @@ fn a_streaming_response_does_not_allocate_per_chunk() {
         "HTTP_ALLOCS frames={FRAMES} per_chunk={frames_per_chunk:.1} total={allocs} \
          per_frame={per_frame:.2}"
     );
-    // **What the 2 is, so the bound means something.** The client's steady state per frame is
-    // exactly two:
-    //
-    //   1. the `data:` line's `String` — the frame owns it, and it has to outlive the borrow of
-    //      `pending` that it was parsed from, so this one is inherent; and
-    //   2. the `Vec<String>` that holds it, built fresh per frame because the frame is moved into
-    //      the callback (`SmallVec` would remove it; a dependency would too).
-    //
-    // Everything else — the chunk buffer, the size line, the drained frame copy — is now zero per
-    // chunk, and this bound is tight enough to notice any of them coming back: one per chunk is
-    // one per frame at the shape below, so a regression lands at 3.06.
+    // What the 2 is, so the bound means something: the `data:` line's `String`, which
+    // has to outlive the borrow of `pending` it was parsed from, and the `Vec<String>`
+    // holding it. Everything else is zero per chunk, so a regression lands at 3.06.
     assert!(
         per_frame < 2.5,
         "{per_frame:.2} allocations per frame over {FRAMES} frames (was 4.05 before the chunk \

@@ -1,13 +1,11 @@
 //! The real Brave API. `BRAVE_LIVE=1 cargo test -p letibot-websearch --test brave_live`.
 //!
-//! The one thing the stand-in in `fake_brave.rs` cannot check: whether Brave's
-//! actual JSON field names are the ones this crate reads. Those were written
-//! from the documented shape, so until this runs, `web.results[].description`
-//! and friends are an assumption.
+//! The one thing the stand-in cannot check: whether Brave's actual JSON field names are the
+//! ones this crate reads. Those were written from the documented shape, so until this runs,
+//! `web.results[].description` and friends are an assumption.
 //!
-//! Costs one query against the operator's key (free tier: 1/second), so it is
-//! one search and it asserts on structure, never on what the web happens to say
-//! today.
+//! Costs one query against the operator's key, so it is one search and it asserts on
+//! structure, never on what the web happens to say today.
 
 use letibot_tools::builtins::external::web::{SearchProvider, SearchQuery};
 use letibot_websearch::Brave;

@@ -1,56 +1,12 @@
 //! `letibot-render` as a FUNCTION, so more than one binary can be it.
 //!
-//! # Why this is a module and not a `main`
-//!
-//! `letibot-render` is the GLM renderer the fidelity gate execs — by PATH, with
-//! arguments, and it knows nothing about subcommands. So the one-binary multicall has
-//! to be reachable from the name `letibot-render`, and the code that does the work
-//! has to be callable from two places: the binary this crate still builds, and the
-//! dispatcher.
-//!
-//! MEASURED before the move: the body was 368 lines in `src/bin/letibot-render.rs`,
-//! with `main` at 85 and the rest helpers (`expand`, `case`, `span_json`,
-//! `to_openai_messages`, `user_content`). Moving it here and having the bin call it
-//! is a MOVE, not a rewrite — the fixture output was captured before and compared
-//! after, byte for byte, because a renderer that renders one byte differently
-//! re-prefills every conversation.
-//!
-//! # The two mechanical changes, both forced by being a function
-//!
-//!   * `std::env::args().skip(1)` becomes the `args` parameter, so the caller
-//!     decides what the arguments are and a test can pass them;
-//!   * `std::process::exit(n)` and `return;` become `return n` and `return 0`, so the
-//!     caller decides whether the process ends. A library that exits takes the
-//!     decision away from whoever called it, and the dispatcher has its own exit
-//!     convention to honour.
-//!
-//! (moved) `letibot-render` — the seam between the Rust renderers and the Python fidelity
-//! gate.
-//!
-//! The gate must not know what a `TranscriptItem` is. It reads fixtures it cannot
-//! interpret, POSTs a body it did not build, and compares two strings. Everything
-//! that requires understanding the transcript — expanding a fixture into its prefix
-//! truncations, mapping items onto OpenAI messages, deciding whether a generation
-//! prompt belongs on the end — happens here, once, in the language that owns those
-//! types.
-//!
+//! The fidelity gate execs it by PATH and knows nothing about subcommands, so this has to
+//! be callable from both the binary and the multicall dispatcher. The gate must not know
+//! what a `TranscriptItem` is, so expanding a fixture, mapping items onto OpenAI messages
+//! and deciding whether a generation prompt belongs all happen here, once:
 //! ```text
 //! letibot-render --dialect glm-5.3-flash --profile faithful FIXTURE.json [FIXTURE.json …]
 //! ```
-//!
-//! `--profile` has one value left. It used to select between `faithful` and
-//! `server-bug-compatible`, a render that reproduced minja's cross-iteration
-//! `set`-inside-`for` leak; T2 removed that profile, because a template-driven renderer
-//! cannot produce it without reintroducing someone else's bug on purpose. The flag
-//! stays, and stays strict, so an old command line is told the profile was removed
-//! rather than having it quietly treated as a filename.
-//!
-//! stdout is a JSON array of **cases**, one per (fixture, prefix length, generation
-//! prompt on/off). See `tests/fidelity/README.md` for the fixture and case formats.
-//!
-//! This binary lives in `dialect-glm` because that is the only crate the strand owns.
-//! When a second dialect lands it should move to a crate of its own; `--dialect` is
-//! already the switch that will select between them.
 
 use crate::{GlmRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, glm_tool_json};
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};
@@ -76,11 +32,9 @@ struct Fixture {
     /// fails the gate just as loudly as an undeclared one.
     #[serde(default)]
     divergences: Vec<Divergence>,
-    /// Places byte equality is not *available*, as opposed to not holding — the
-    /// oracle emits something unreproducible (a per-process nonce) and both sides
-    /// have to be folded onto a canonical form before they can be compared at all.
-    /// Also two-sided checked: a normalisation that turns out to be unnecessary is
-    /// reported, because an unnecessary rewrite is a place a real diff could hide.
+    /// Places byte equality is not available, as opposed to not holding - the oracle emits
+    /// something unreproducible (a per-process nonce) and both sides have to be folded onto a
+    /// canonical form first. Two-sided checked: an unnecessary rewrite is a place a diff hides.
     #[serde(default)]
     normalise: Vec<Divergence>,
 }
@@ -106,10 +60,8 @@ fn default_dialect() -> String {
     "glm-5.3-flash".to_string()
 }
 
-/// Run the renderer over `args`, returning the process exit code.
-///
-/// `args` is what followed the program name — `letibot-render --dialect … FIXTURE.json`
-/// and `letibot render --dialect … FIXTURE.json` both arrive here identically.
+/// Run the renderer over `args`, returning the process exit code. `args` is what followed
+/// the program name, so `letibot-render …` and `letibot render …` arrive here identically.
 pub fn run(args: &[String]) -> i32 {
     let mut args = args.iter().cloned();
     let mut dialect_name = default_dialect();
@@ -165,11 +117,9 @@ pub fn run(args: &[String]) -> i32 {
     0
 }
 
-/// One fixture becomes every prefix of itself, with and without a generation prompt.
-///
-/// §7.2 asks for "the same fixture truncated at every prefix boundary", and it is the
-/// most valuable thing the corpus does: a renderer that is right about a whole
-/// conversation and wrong about its third prefix is a renderer whose cache never hits.
+/// One fixture becomes every prefix of itself, with and without a generation prompt: a
+/// renderer that is right about a whole conversation and wrong about its third prefix is
+/// one whose cache never hits.
 fn expand(fx: &Fixture) -> Vec<Value> {
     let effort = match fx.reasoning_effort.as_deref() {
         Some("low") => ReasoningEffort::Low,
@@ -278,12 +228,9 @@ fn span_json(s: &RenderSpan) -> Value {
     }
 }
 
-/// The same conversation, in the shape `/apply-template` expects.
-///
-/// This is the only place the two sides can drift, and it is deliberately dumb: it
-/// re-groups items into messages and copies text. It never renders. A mapping bug
-/// therefore shows up as a *mismatch* (the oracle renders a conversation we did not
-/// render), not as a mutual agreement on the wrong thing.
+/// The same conversation, in the shape `/apply-template` expects. Deliberately dumb - it
+/// re-groups items and copies text, never renders - so a mapping bug shows up as a mismatch
+/// rather than as mutual agreement on the wrong thing.
 fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value {
     let mut msgs: Vec<Value> = Vec::new();
     if !prefix.system.is_empty() {
@@ -349,15 +296,13 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
             } => {
                 flush(&mut turn, &mut msgs);
                 msgs.push(json!({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    // The payload verbatim, which is what the renderer emits. Under
-                    // the harness these bytes are already `ToolResult::render`'s
-                    // envelope; a fixture supplies them directly. Either way the two
-                    // sides are given the same string, so the gate tests the render
-                    // and not our wording.
-                    "content": payload,
-                }));
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                // The payload verbatim, which is what the renderer emits: under the harness these bytes
+                // are already `ToolResult::render`'s envelope, and a fixture supplies them directly, so
+                // both sides get the same string and the gate tests the render, not our wording.
+                                    "content": payload,
+                                }));
             }
         }
     }

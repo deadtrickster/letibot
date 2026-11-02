@@ -78,12 +78,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-/// **Is the guest target installed on this toolchain?**
-///
-/// Asked of `rustc` itself — `--print sysroot` and the standard library's own directory — rather
-/// than of `rustup`, because a box may have a toolchain that did not come from rustup and a build
-/// script must not require one. A `rustc` that cannot answer is treated as *not installed*: the
-/// build then stops with the sentence naming the command.
+/// Is the guest target installed on this toolchain? Asked of `rustc` itself
+/// (`--print sysroot`, the standard library's own directory) rather than of `rustup`,
+/// because a build script must not require a rustup toolchain.
 fn wasm_target_installed() -> bool {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let out = match Command::new(rustc).args(["--print", "sysroot"]).output() {
@@ -118,11 +115,9 @@ fn guests(root: &Path) -> Vec<(String, PathBuf)> {
     found
 }
 
-/// **Build one guest and answer where the module is.**
-///
-/// The child's environment is stripped of the four things that would make it the host's build
-/// rather than the guest's — see the crate doc — and its target directory is the guest's own,
-/// under `OUT_DIR`, so no build of the host can be waiting on it.
+/// Build one guest and answer where the module is. The child's environment loses
+/// the four things that would make it the host's build, and its target directory is
+/// the guest's own under `OUT_DIR`, so no host build waits on it.
 fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
     let target = out.join("target").join(name);
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());

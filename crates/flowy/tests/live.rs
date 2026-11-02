@@ -1,10 +1,9 @@
 //! Against the real node, with the real seat, from the usual path.
 //!
-//! Runs only with `FLOWY_LIVE=1`; everything else skips loudly (D10's rule: a
-//! check that did not run is not a pass). It takes no message off the seat's
-//! inbox unless the reader is free — and when the reader is held by a live
-//! `flowy inbox`, the assertion is D2's: the second listener is REFUSED, naming
-//! the pid, and nothing is killed.
+//! Runs only with `FLOWY_LIVE=1`; everything else skips loudly, because a check
+//! that did not run is not a pass. It takes no message off the seat's inbox unless
+//! the reader is free, and when a live `flowy inbox` holds it the assertion is that
+//! the second listener is REFUSED, naming the pid, and nothing is killed.
 
 use letibot_flowy::creds::{Onboarding, discover};
 use letibot_flowy::seat::{PollOutcome, Seat, SeatState};
@@ -185,10 +184,9 @@ fn the_real_node_answers_nag_with_the_fields_this_struct_names() {
     let creds = discover(&Onboarding::usual()).expect("a seat on the usual path");
     let node = letibot_flowy::client::Node::new(creds.endpoint.clone(), &creds.agent, &creds.token);
     let nag = node.nag().expect("GET /api/nag");
-    // Not asserting values — they are whatever the board says today. Asserting
-    // that the SHAPE parsed: a node answering `{}` would deserialize to all
-    // zeros and look identical to an empty board, so check a field the node
-    // always sets.
+    // Not asserting values - they are whatever the board says today. Asserting the
+    // SHAPE parsed: a node answering `{}` deserializes to all zeros and looks like
+    // an empty board, so check a field the node always sets.
     assert!(
         nag.stale_after_seconds > 0,
         "stale_after_seconds came back {} — either the node does not send it or \

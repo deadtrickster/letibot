@@ -1,22 +1,11 @@
-//! **A palette bound to the block it is painting inside.**
+//! A palette bound to the block it is painting inside.
 //!
-//! The role table itself — what a [`Role`] looks like under a [`Palette`] — is rano's
-//! (`rano::style`), and this crate used to carry a copy of it (`style.rs`) that had already
-//! started to drift from rano's. What rano does not have is this: string painting that
-//! closes a span back to its *enclosing* block rather than to the terminal default. rano's
-//! own medium does that with a cell buffer and [`rano::style::Look::patch`]; the head still
-//! paints strings, so it keeps the string form here.
+//! The role table itself is rano's; what rano does not have is string painting that closes a
+//! span back to its ENCLOSING block rather than to the terminal default.
 //!
-//! # The sequences are spelled once
-//!
-//! rano's [`Palette::open`] spells a role's sequence from its look on every call and hands
-//! back a new `String`; letibot's copy of the table handed back a `&'static str`. A frame
-//! paints its chrome on every tick, so the difference is allocations per frame — measured by
-//! `crates/tui/tests/frame_allocations.rs`, which went from 150 to 190 a settled frame when
-//! the head first called rano's `open` directly. [`Sgr`] is the same table read once:
-//! every sequence rano spells for a role, a program's background slot and reverse video is
-//! computed the first time it is asked for and kept, so the head's hot path allocates what it
-//! did. The bytes are rano's; only the caching is here.
+//! [`Sgr`] is rano's table read once: `Palette::open` spells a sequence and hands back a new
+//! `String` on every call, and a frame paints its chrome on every tick, so the head's hot path
+//! would allocate per frame. Every sequence is computed once and kept - the bytes are rano's.
 
 use std::sync::OnceLock;
 
@@ -83,23 +72,9 @@ impl Sgr for Palette {
     }
 }
 
-/// A palette **bound to the style of the block it is painting inside**.
-///
-/// # The defect this type exists to make unrepresentable
-///
-/// [`Palette::paint`] closes a span with `RESET`, which restores the *terminal
-/// default*. That is right at the top level and wrong everywhere else, and the
-/// operator found the difference by looking at the screen: the model's reasoning
-/// is dim grey, the reasoning contained a heading and an inline code span, and
-/// each of those closed to white — so the block "tries to be grey, then goes
-/// green and becomes white for several rows and then grey again".
-///
-/// A reset is not a restore. Inside a themed block the close has to re-establish
-/// the block's own style, and the only way that cannot be forgotten one call site
-/// at a time is for the closing sequence to come from a value that knows what it
-/// is inside. That value is this one: [`Painter::close`] is `RESET` at the top
-/// level and `RESET` + the block's opening sequence inside one, and every span
-/// painted through a `Painter` closes with it.
+/// A palette bound to the style of the block it is painting inside. `Palette::paint` closes a
+/// span with `RESET`, which restores the terminal default, so a coloured span inside a dim
+/// block went white; a close that knows its block is the only fix no call site can forget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Painter {
     palette: Palette,
@@ -145,10 +120,9 @@ impl Painter {
         self.palette.sgr(r)
     }
 
-    /// **A program's own background slot**, `0`–`15`, as a sequence: empty under
-    /// [`Palette::None`] and for a slot above the sixteen. See
-    /// [`Palette::background_look`] for why this is a slot and not a role; the screen is
-    /// its one caller, and a payload row never comes through here (`ansi.rs`'s header).
+    /// A program's own background slot, `0`-`15`, as a sequence: empty under [`Palette::None`]
+    /// and for a slot above the sixteen. A slot rather than a role because the cube's indices
+    /// are absolute RGB; the screen is its one caller and a payload row never comes here.
     pub fn background(self, slot: u8) -> &'static str {
         match table().background[palette_index(self.palette)].get(slot as usize) {
             Some(s) => s,
@@ -162,10 +136,9 @@ impl Painter {
         &table().reverse[palette_index(self.palette)]
     }
 
-    /// What re-establishes the enclosing block after a span: a reset, plus the
-    /// block's own opening sequence when there is a block.
-    ///
-    /// Empty under [`Palette::None`], where there is nothing to close.
+    /// What re-establishes the enclosing block after a span: a reset, plus the block's own
+    /// opening sequence when there is a block. Empty under [`Palette::None`], where there is
+    /// nothing to close.
     pub fn close(self) -> String {
         if self.palette == Palette::None {
             return String::new();
@@ -187,12 +160,9 @@ impl Painter {
         format!("{o}{s}{}", self.close())
     }
 
-    /// `s`, already carrying escapes of its own, made safe to place inside the
-    /// block: every reset in it is turned into a restore of the block's style.
-    ///
-    /// The escape hatch for text painted by something that was never told what it
-    /// is inside — a syntax highlighter's line, a diff's gutter. Preferred over
-    /// re-painting, which would double the sequences.
+    /// `s`, already carrying escapes of its own, made safe to place inside the block: every
+    /// reset in it becomes a restore of the block's style. The escape hatch for text painted by
+    /// something never told what it is inside - a highlighter's line, a diff's gutter.
     pub fn rebase_resets(self, s: &str) -> String {
         let close = self.close();
         if self.base.is_none() || close == RESET {
@@ -265,11 +235,9 @@ mod tests {
         }
     }
 
-    /// **A program's background is the reader's own theme slot**, spelled the way a terminal
-    /// spells them — the eight, then the bright eight at `100` — and nothing past the sixteen;
-    /// and reverse is the user block's one spelling. These were `&'static str` in the copy of
-    /// the table this crate kept; they are rano's looks now, and these are the bytes the
-    /// screen writes, so they are pinned here.
+    /// A program's background is the reader's own theme slot, spelled the way a terminal spells
+    /// them - the eight, then the bright eight at `100` - and nothing past the sixteen; and
+    /// reverse is the user block's one spelling. These are the bytes the screen writes.
     #[test]
     fn a_programs_background_and_reverse_are_the_bytes_they_were() {
         let p = Painter::new(Palette::Colour);

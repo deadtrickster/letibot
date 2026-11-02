@@ -1,31 +1,16 @@
-//! **Overriding the session list, the way the plan says it should be done** — one small layer that
-//! asks for the layer below and edits what it finds, instead of re-implementing the list.
+//! Overriding the session list, the way the plan says it should be done: one small layer that asks
+//! for the layer below and edits what it finds, instead of re-implementing the list.
 //!
 //! Copy this directory into `<project>/.letibot/plugins/sessions/` (the `plugin.wasm` beside this
-//! file is what the host loads; `cargo build --offline --release --target wasm32-unknown-unknown`
-//! rebuilds it) and open the session list: the `system` branch is renamed to `the harness's own`,
-//! says what this project thinks of it, and stops listing it. Everything else — the order, the
-//! projects, the rows, the numbers, the keys — is exactly what the built-in answered.
-//!
-//! # Why `below` is the whole point
-//!
-//! `docs/plugins-plan.md` §2.1: a layer that asks below is called again with the lower layer's
-//! answer under `below`, and is the dotenv `${VAR}` of this design. The built-in `sessions` layer
-//! (in the binary) decides the list; this one changes two lines of it. A policy change is then a
-//! diff of what changed, not a second copy of a list that will drift from the first.
-//!
-//! # What it does NOT do
-//!
-//! It reads the feed the host hands it only to pass it down: the request is echoed back as
-//! `{"below": <the same input>}`, because a layer that rebuilt the request would be a layer that
-//! had to know the request's shape. And it names no verb it did not declare: the rows it keeps
-//! carry the acts they arrived with (`switch`, `fold`), which `plugin.toml` declares.
+//! file is what the host loads) and open the session list: the `system` branch is renamed, says what
+//! this project thinks of it, and stops listing it. Everything else is what the built-in answered.
+//! The request is echoed back as `{"below": <the same input>}`, so a policy change is a diff of what
+//! changed, and no verb is named that `plugin.toml` does not declare.
 
 use letibot_guest_abi as abi;
 use serde_json::{Value, json};
 
-/// **The branch this project hides** — `system (N)`, the harness's own agents under a project.
-///
+/// The branch this project hides - `system (N)`, the harness's own agents under a project.
 /// Matched by the WORDS of its line rather than by its id, because the id is a path
 /// (`<project>/system`) and this layer is one project's: a constant id would be a constant path.
 const SYSTEM: &str = "system (";
@@ -49,11 +34,9 @@ fn answer(bytes: &[u8]) -> Option<String> {
     }
 }
 
-/// **The edit**: the group's name and legend, and its rows taken out of the list.
-///
-/// A row this layer does not understand is left exactly as it was — a same-shaped row from a
-/// different build of the built-in still moves through here unchanged, which is what keeps this
-/// example from being a fork.
+/// The edit: the group's name and legend, and its rows taken out of the list. A row this layer does
+/// not understand is left exactly as it was - a same-shaped row from a different build of the
+/// built-in still moves through here unchanged, which is what keeps this example from being a fork.
 fn edit(mut view: Value) -> Option<Value> {
     // The branch's position, read before anything is written: a list this layer has no business
     // with is answered back exactly as it arrived.

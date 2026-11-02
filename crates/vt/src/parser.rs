@@ -1,48 +1,12 @@
 //! The byte state machine: whatever a `read` handed us, applied to a screen.
 //!
-//! # Why this is a state machine and not a parser per chunk
-//!
-//! A pty hands a program's output over in whatever sizes the kernel felt like. `ESC [ 3 1 m`
-//! arrives as `ESC [ 3` and then `1 m` constantly, and a character's three UTF-8 bytes are split
-//! across two reads just as often. A parser that ran per chunk would print `[3` as **text** — a
-//! screen showing the bytes of its own escape sequences, which is the defect this module exists
-//! to make impossible. So the parser keeps what it has seen: a partial sequence, a partial
-//! parameter list, a partial character, an unterminated string.
-//!
-//! The tests below feed the same bytes in one call and at **every** split point, and assert the
-//! same events come out. That is the property, and it is asserted rather than assumed.
-//!
-//! # The subset, stated
-//!
-//! | family | handled |
-//! |---|---|
-//! | `C0` | `BEL BS HT LF VT FF CR ESC` executed or dropped, never printed |
-//! | `ESC` | `7 8 D E M c = > H N O \` and the designators `( ) * + # %` |
-//! | `CSI` | parameters, `;` and `:` separators, one intermediate, the private markers `< = > ?` |
-//! | `OSC` | consumed to `BEL` or `ST`, content dropped |
-//! | `DCS SOS PM APC` | consumed to `ST`, content dropped |
-//! | `C1` | `CSI` (`0x9b`), `OSC` (`0x9d`), `DCS`/`SOS`/`PM`/`APC`, the rest dropped |
-//! | UTF-8 | decoded across feeds; a byte that cannot complete becomes one `U+FFFD` |
-//!
-//! What is *not* handled, and why it costs nothing here:
-//!
-//! - **`SO`/`SI` and the `G1`–`G3` designators.** `ESC ( 0` is honoured — that is terminfo's
-//!   `smacs`, which is how `mc` and `less` draw a box — and the rest of the charset machinery is
-//!   not, because a program that means to switch charsets on this box sends `smacs`.
-//! - **A reply to anything.** `CSI 6n` (report cursor position), `CSI 5n` and `CSI c` (device
-//!   attributes) are *received and dropped*: this crate has no output path by design, so a
-//!   program that waits for an answer waits. `mc` does not ask. **The fix is not here and is not
-//!   a missing parser state** — the sequence arrives whole and is recognised, so what is missing
-//!   is somewhere for the *question* to go, and the pane is where the answer comes from; see
-//!   `Screen`'s header, which names the other half and the TODO it lives in.
-//! - **`DECALN`** (`ESC # 8`) and the other test sequences: consumed, no effect.
+//! A pty hands output over in whatever sizes it felt like, so a parser per chunk would print `[3`
+//! as text -- a screen showing its own escape bytes. The parser keeps what it has seen: a partial
+//! sequence, parameter list, character or string. The tests feed the same bytes one call and at
+//! every split point and assert the same events.
 
-/// The most parameters a sequence can carry, which is `xterm`'s own order of magnitude.
-///
-/// A longer list is **not** a parse error: the extra parameters are dropped and the ones before
-/// them still apply. Dropping rather than refusing matters for `SGR`, where a truncated list must
-/// not turn a later `1` into a bold — see [`crate::attr::apply_sgr`], which consumes the
-/// extended-colour forms whole for the same reason.
+/// The most parameters a sequence can carry. A longer list is not a parse error: the extra
+/// parameters are dropped and the ones before them still apply.
 pub const MAX_PARAMS: usize = 16;
 
 /// One complete `CSI` sequence.
@@ -68,12 +32,8 @@ impl Csi {
         &self.params[..self.len as usize]
     }
 
-    /// Parameter `i`, or `None` when the program wrote none.
-    ///
-    /// **`None` and `Some(0)` are different**, and the sequences that act on them need the
-    /// difference: `CSI J` erases below and `CSI 1 J` erases above, while `CSI H` is row 1 and
-    /// `CSI 0 H` is row 1 because a zero parameter means the default. [`Csi::n`] is the accessor
-    /// for the sequences where the two agree.
+    /// Parameter `i`, or `None` when the program wrote none. `None` and `Some(0)` differ: `CSI H`
+    /// is row 1 either way, while `CSI J` erases below and `CSI 1 J` erases above.
     pub fn param(&self, i: usize) -> Option<u16> {
         self.params().get(i).copied()
     }
@@ -166,17 +126,14 @@ impl Parser {
         Parser::default()
     }
 
-    /// Feed bytes, handing each complete thing to `f`.
-    ///
-    /// Bytes that complete nothing yet are **kept**, which is the whole point: a sequence split
-    /// across two calls is one sequence.
+    /// Feed bytes, handing each complete thing to `f`. Bytes that complete nothing yet are kept,
+    /// which is the whole point: a sequence split across two calls is one sequence.
     pub fn advance(&mut self, bytes: &[u8], mut f: impl FnMut(Event)) {
         for &b in bytes {
             if self.utf8_len > 0 {
-                // **A continuation byte belongs to the character under way**, and it is checked
-                // before the state machine because `0x80`–`0x9f` is both a continuation range and
-                // the C1 controls: without this, the second byte of `日` would be read as a C1
-                // control and the character would never arrive.
+                // A continuation byte belongs to the character under way, and it is checked before
+                // the state machine because `0x80`-`0x9f` is both a continuation range and the C1
+                // controls.
                 if (0x80..=0xbf).contains(&b) && self.state == State::Ground {
                     self.utf8(b, &mut f);
                     continue;
@@ -353,10 +310,8 @@ impl Parser {
         }
     }
 
-    /// `OSC` and the `DCS` family: consumed, and the content dropped.
-    ///
-    /// `bel_ends` is the one difference between them: a `BEL` ends an `OSC` and is content in a
-    /// `DCS`.
+    /// `OSC` and the `DCS` family: consumed, content dropped. `bel_ends` is the one difference --
+    /// a `BEL` ends an `OSC` and is content in a `DCS`.
     fn string(&mut self, b: u8, bel_ends: bool) {
         match b {
             0x1b => self.state = State::StrEsc,
@@ -428,10 +383,8 @@ impl Parser {
     }
 }
 
-/// The DEC Special Graphics set, which `ESC ( 0` puts in place of ASCII `0x5f`–`0x7e`.
-///
-/// This is the table terminfo calls `acsc`, and it is why a box drawn by `mc` or `less` on a
-/// terminal without Unicode arrives as `lqqqk` and has to come out as `┌───┐`.
+/// The DEC Special Graphics set, which `ESC ( 0` puts in place of ASCII `0x5f`-`0x7e`: the table
+/// terminfo calls `acsc`, and why `mc`'s box arrives as `lqqqk`.
 fn dec_graphics(b: u8) -> char {
     match b {
         b'_' => ' ',
@@ -508,12 +461,9 @@ mod tests {
             .collect()
     }
 
-    /// **A stream is the same however it is split.**
-    ///
-    /// This is the classic defect and the reason this is a state machine: a `read` boundary inside
-    /// `ESC [ 3 1 m`, inside a parameter list, inside an `OSC`, inside the bytes of a character.
-    /// Feeding one byte at a time is the worst case a pty can produce, and it is asserted here
-    /// alongside every single split point.
+    /// A stream is the same however it is split: a boundary inside `ESC [ 3 1 m`, inside a
+    /// parameter list, inside an `OSC`, inside a character's bytes. One byte at a time is the worst
+    /// case a pty can produce.
     #[test]
     fn a_stream_is_the_same_however_it_is_split() {
         let streams: Vec<&[u8]> = vec![
@@ -677,10 +627,8 @@ mod tests {
         }
     }
 
-    /// **`ESC ( 0` is the box-drawing charset, and it is why `mc`'s frames arrive as letters.**
-    ///
-    /// `lqqqk` is `┌───┐` in DEC Special Graphics, which is what terminfo's `smacs`/`acsc` pair
-    /// exists for. `ESC ( B` puts ASCII back.
+    /// `ESC ( 0` is the box-drawing charset: `lqqqk` is `┌───┐` in DEC Special Graphics, and
+    /// `ESC ( B` puts ASCII back.
     #[test]
     fn the_dec_graphics_charset_turns_a_box_drawn_in_ascii_into_a_box() {
         assert_eq!(printed(b"\x1b(0lqqqk\x1b(B"), "┌───┐");

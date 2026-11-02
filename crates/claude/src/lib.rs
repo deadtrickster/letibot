@@ -1,142 +1,11 @@
-//! **Reading a Claude Code conversation into this head's rows.**
-//!
-//! `letibot --session cc-<uuid>` opens the UI immediately and imports the conversation
-//! in the background, rows landing as they are read — the same shape R6 gave
-//! `oc-` (see `crates/opencode/src/lib.rs`), one namespace over. This crate is the
-//! **reading** half: it opens Claude Code's transcript directory, walks one transcript,
-//! and turns each JSONL line into a [`TranscriptItem`] this head already knows how to
-//! draw. It renders nothing, publishes nothing, and knows nothing about the daemon — so
-//! the four rules below are testable in isolation, which is the whole reason the halves
-//! are split (this crate, the wiring in `letibot-harnessd`).
-//!
-//! # Where the conversation is, and what is never opened
-//!
-//! `~/.claude/projects/<mangled-project>/<uuid>.jsonl`, one JSON object per line. The id
-//! this head carries is the file's stem: `cc-e90320f4-b550-4aa0-aa11-1c2673df88e8`.
-//! Beside the transcript a session may own `<uuid>/subagents/agent-<id>.jsonl` (a
-//! subagent's own conversation, with a `.meta.json` naming its type and the `Task` call
-//! it answers) and `<uuid>/tool-results/`. **Only the transcript is read**; the two
-//! directories are counted and named, never walked (see *`isSidechain`* below).
-//!
-//! **This crate reads transcripts and nothing else.** It never opens
-//! `~/.claude/credentials`, `~/.claude/settings.json`, `~/.ssh`, or any file whose
-//! subject is a secret: [`Source::open`] takes one directory, [`Source::sessions`] lists
-//! `*.jsonl` one level down, and there is no path here that could render a credential
-//! into a transcript. The transcripts themselves are read-only, which is rule 4.
-//!
-//! # The four rules that make this an import and not a forgery
-//!
-//! 1. **An imported row says it is imported, and whose it was.** Carried by
-//!    [`SessionMeta`]: the transcript's uuid, the `cwd` it ran in, the git branch, and
-//!    the model and Claude Code version that answered. The row itself cannot say it — no
-//!    [`TranscriptItem`] has an origin field — so the session does, in its header. See
-//!    [`SessionMeta::origin`].
-//! 2. **The ledger does not claim the spend.** [`Report::spend`] is Claude Code's own
-//!    `cost-state` line — `totalCostUSD` and the per-model token counts — in another
-//!    provider's units and another vendor's money. It is reported for a label and is
-//!    never folded into this session's budget. **It is the LAST such line, not a sum**:
-//!    the field is cumulative, so adding the lines would multiply the bill by the number
-//!    of times Claude Code wrote it down.
-//! 3. **Time is taken, never invented.** Every [`Row`] carries `ts_ms` off the line it
-//!    came from ([`parse_ts`]), and a line with no `timestamp` gets `0` — the source
-//!    having none — rather than the previous row's time, which would be a clock this
-//!    crate made up. Nothing here calls `now`.
-//! 4. **Nothing is written to Claude Code's directory.** The transcript is opened with
-//!    [`std::fs::File::open`] and read; there is no writer in this crate, and the tests
-//!    prove the file's bytes and mtime are the same after a read as before it.
-//!
-//! # What a line becomes, and why one block can be two rows
-//!
-//! Lines are read in file order, which is the conversation's order, and mapped by their
-//! `type` and then by each content block's own `type`:
-//!
-//! | claude | this head |
-//! |---|---|
-//! | `user` · `message.content` a string | [`TranscriptItem::User`], speaker from [`declared_speaker`] |
-//! | `user` · `{"type":"text"}` | [`TranscriptItem::User`] |
-//! | `user` · `{"type":"tool_result"}` | [`TranscriptItem::ToolResult`], paired to its call by `tool_use_id` |
-//! | `user` · `{"type":"image"}` | a [`Scrap`] — *"an image the operator pasted"*, see below |
-//! | `assistant` · `{"type":"text"}` | [`TranscriptItem::Assistant`], no calls |
-//! | `assistant` · `{"type":"thinking"}` | [`TranscriptItem::Reasoning`] (an empty one is counted, not a row) |
-//! | `assistant` · `{"type":"tool_use"}` | an [`TranscriptItem::Assistant`] carrying the one [`ToolCall`] |
-//! | `assistant` · `{"type":"redacted_thinking"}` | a [`Scrap`] — the thought itself was removed by the source |
-//! | `system` · `subtype: away_summary` | [`TranscriptItem::Assistant`] — the model's own recap, said to a returning operator |
-//! | `system` · `subtype: compact_boundary` | [`TranscriptItem::SegmentMark`] — zero-width, renders nothing, names the compaction in its label |
-//! | `system` · `subtype: informational` | a [`Scrap`] — a notice from the tool, not a conversation row |
-//! | `system` · `subtype: turn_duration` | counted, no row: a stopwatch is not a sentence |
-//! | `type: summary` | [`TranscriptItem::Assistant`] — the continuation summary, which is what was said |
-//! | `cost-state` | the spend side-channel (rule 2), no row |
-//! | `attachment`, `queue-operation`, `api-request*`, `file-history-*`, `ai-title`, `agent-name`, `last-prompt`, `mode`, `permission-mode`, `atis-latch`, `dev-mods` | counted per type, no row — Claude Code's own bookkeeping |
-//! | anything else | a [`Scrap`] once for the type, and a count in [`Report::unknown_types`] |
-//!
-//! **A `tool_use` and its `tool_result` are two rows on purpose**, exactly as opencode's
-//! `tool` part is. The head labels a tool card from the nearest preceding
-//! `Assistant { tool_calls }` row (`crates/tui/src/app.rs`), because that row is the only
-//! place the arguments survive; Claude Code keeps the call in an `assistant` line and the
-//! result in a later `user` line, so mapping either one alone would lose half of every
-//! card. The pairing is by `tool_use_id`, and the call's `name` is carried onto the
-//! result from the call — a result whose call this build never saw is counted
-//! ([`Report::unpaired_results`]) and named `tool` rather than left blank, so the card
-//! still says *something* rather than rendering an anonymous outcome.
-//!
-//! **A message is written one block per line.** Claude Code's `assistant` lines repeat
-//! the message's `id` and each carries a different slice of its content — MEASURED on the
-//! 116 MB transcript of 2026-10-28: 14,736 assistant lines, 4,456 of them sharing an id
-//! with another line, and **zero repeated `text` blocks and zero repeated `tool_use` ids**
-//! across them. So the reader does not dedupe by message id: a block appears once, on the
-//! line that carries it, and that line is where it is emitted.
-//!
-//! # An unknown type is counted and said, never dropped
-//!
-//! The same rule R3 applies to an unreadable frame: an importer that skips what it does
-//! not recognise reproduces **inside the transcript** the exact failure R3 exists to
-//! prevent. So an unrecognised line type becomes a [`Scrap`] — **once for the type**, at
-//! its first line, saying what it is — and every occurrence is counted in
-//! [`Report::unknown_types`]. Once, not once per line: `api-request-blob` alone is 4,076
-//! lines in the measured transcript and would bury the conversation it is interleaved
-//! with. The count is the fact, and the count is in the report the finish line prints.
-//!
-//! # `isSidechain`: a subagent's branch is NOT this conversation, and the skip says so
-//!
-//! A Claude Code subagent has its own transcript — `<uuid>/subagents/agent-<id>.jsonl`,
-//! whose first line is `{"isSidechain": true, "agentId": …}` and whose `.meta.json` names
-//! its `agentType`, its `description` and the `toolUseId` of the `Task` call that spawned
-//! it (21 such files sit beside the measured 116 MB transcript). The same flag appears
-//! inline in older transcripts, where the branch was written into the parent's file.
-//!
-//! **This importer skips it, and says so at the point of the skip.** Two reasons, and the
-//! first is what makes skipping lose nothing:
-//!
-//! * **The parent's conversation already has the child in it.** The `Task` call is a
-//!   `tool_use` in the parent and the child's final report is its `tool_result` — both
-//!   rows are in the parent's file and both are imported. What is in the branch is the
-//!   child's own working conversation: its prompt, its tool loop, its dead ends.
-//! * **This head models that as a child session, not as rows.** A subagent here is its
-//!   own session with its own transcript, seat and gate. Replaying a child's turns into
-//!   the parent would put another agent's words in the parent's mouth — the exact
-//!   confusion [`Speaker`] was added to end — and its tool calls into a conversation that
-//!   never made them.
-//!
-//! So the first line of each branch becomes a [`Scrap`] naming it (`agentId` when the
-//! source gives one), the branch's lines are counted ([`Report::sidechain_lines`]), and
-//! [`Report::summary`] says how many branches and how many sibling transcripts were
-//! deliberately left alone. A skip a reader can see is not the silent drop R3 forbids.
-//!
-//! # What is deliberately not carried
-//!
-//! * **Pictures.** A `user` line can carry `{"type":"image"}` with the bytes inline as
-//!   base64 (27 blocks in the measured corpus). The row is a [`Scrap`] saying what the
-//!   picture was, not a `UserPart::Image`: this head's `UserPart::Image` holds a data URI
-//!   that rides every prompt rebuild, and deciding to store megabytes of another tool's
-//!   screenshots is the attachment work's question, not an importer's.
-//! * **Claude Code's context.** `attachment` lines are system reminders, tool listings,
-//!   skills, plans, diagnostics, environment snapshots and the contents of files it
-//!   attached — 10,358 lines in 32 kinds in the measured transcript. They are how Claude
-//!   Code talked to *its* model, not what was said in the conversation; they are counted
-//!   by kind ([`Report::attachments`]) and named once.
-//! * **Its wire captures.** `api-request`, `api-request-blob` and `api-request-shape` are
-//!   the request bodies Claude Code sent, 76,103 lines of them in one file. Counted, not
-//!   read.
+//! Reading a Claude Code conversation into this head's rows: one JSONL line at a time, with
+//! `letibot --session cc-<uuid>`, rendering nothing and publishing nothing. It reads the
+//! transcript and nothing else - no credentials, no subagent directories, no writes - so these
+//! rules are testable in isolation. An imported row says whose it was through [`SessionMeta`],
+//! because no [`TranscriptItem`] carries an origin. Claude Code's spend is reported from its
+//! LAST `cost-state` line, never summed and never folded into this session's budget. Time is
+//! taken off each line and never invented. An unknown type or an `isSidechain` branch is one
+//! [`Scrap`] per kind plus a count, never a silent drop.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -352,10 +221,9 @@ pub struct Scrap {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Event {
-    /// **The importer's own counter** — bytes of the file consumed against its size. Not
-    /// derived from what has not arrived: *an indicator must be the fact, not a rendering
-    /// of the fact.* The denominator is the file's length, which is known before the first
-    /// row without a counting pass; a line count would cost a second pass over 116 MB.
+    /// The importer's own counter: bytes of the file consumed against its size, which is known
+    /// before the first row. A line count would cost a second pass over the whole file, and an
+    /// indicator must be the fact rather than a rendering of it.
     Progress {
         bytes: u64,
         total: u64,
@@ -499,12 +367,9 @@ impl Source {
         &self.dir
     }
 
-    /// **Every transcript, newest first** — one row per `<project>/<uuid>.jsonl`, with the
-    /// first operator line, the model and the `cwd` read from the file's head.
-    ///
-    /// `subagents/` is not listed: a subagent's conversation is a branch of its parent,
-    /// not a session of its own (see the module doc), and listing it would offer a person
-    /// a second copy of a child.
+    /// Every transcript, newest first: one row per `<project>/<uuid>.jsonl`, with the first
+    /// operator line, the model and the `cwd` read from the file's head. `subagents/` is not
+    /// listed - a subagent's conversation is a branch of its parent, not a session of its own.
     pub fn sessions(&self) -> Result<Vec<SessionMeta>> {
         let mut out = Vec::new();
         let projects = std::fs::read_dir(&self.dir).map_err(|e| ImportError::NoDirectory {
@@ -553,10 +418,9 @@ impl Source {
         Ok(Tree { root, subagents })
     }
 
-    /// **Just the session's `cwd`**, so the imported session's tools are confined to the
-    /// tree the conversation was had in rather than the daemon's start directory. Empty
-    /// when the transcript recorded none — the caller keeps its own root then, which is
-    /// the same rule the stored workspace follows.
+    /// Just the session's `cwd`, so the imported session's tools are confined to the tree the
+    /// conversation was had in. Empty when the transcript recorded none, and the caller keeps its
+    /// own root then, which is the same rule the stored workspace follows.
     pub fn directory(&self, id: &str) -> Result<String> {
         Ok(self.tree(id)?.root.cwd.unwrap_or_default())
     }
@@ -696,10 +560,9 @@ struct Head {
     title: Option<String>,
 }
 
-/// **How much of a transcript the listing reads.** The first operator line is the third
-/// line of a real session and never past the first page of one; the cap exists so that a
-/// transcript that begins with ten thousand `attachment` lines (a resumed session can)
-/// still answers in milliseconds.
+/// How much of a transcript the listing reads. The first operator line is never past the first
+/// page of a real session, and the cap exists so that a transcript beginning with ten thousand
+/// `attachment` lines still answers in milliseconds.
 const HEAD_LINES: u64 = 400;
 
 fn head_scan(path: &Path) -> Head {
@@ -774,12 +637,9 @@ fn head_scan(path: &Path) -> Head {
                         break;
                     }
                 }
-                // **Only a line that HAD the operator's words ends the search.** The first
-                // `user` line of a resumed session is often machinery — a
-                // `<command-name>`, a `<local-command-stdout>`, a meta notice — and setting
-                // this before the check left a listing row reading *(no operator line)* for
-                // two of the thirteen transcripts on this box while their second user line
-                // said exactly what the conversation was about.
+                // Only a line that HAD the operator's words ends the search: the first `user`
+                // line of a resumed session is often machinery, and setting this before the check
+                // leaves the listing saying *(no operator line)* about a conversation that has one.
                 have_first = !head.first.is_empty();
             }
             _ => {}
@@ -802,19 +662,9 @@ fn first_line_of(text: &str) -> String {
     format!("{cut}…")
 }
 
-/// **Who a `user` line's words belong to, as the source itself declares it** — R42's two
-/// speakers, read off Claude Code's own fields rather than guessed from the text.
-///
-/// MEASURED over the 13 transcripts on this box (2026-10-28): `origin.kind` is `human`
-/// 938 times, `task-notification` 655, `peer` 439, `auto-continuation` 3 and absent
-/// 11,487; `promptSource` is `typed` 840, `queued` 54, `suggestion_accepted` 44,
-/// `system` 1,097 and absent 11,487. So the declaration is there for the lines that need
-/// it, and absent is the older spelling of *the operator*, which is also what a head drew
-/// for those rows before the field existed — the reading
-/// `TranscriptItem::User::speaker`'s own doc takes for an absent field.
-///
-/// `isMeta` wins over both: a meta line is Claude Code's own text shown to the model
-/// (a `<local-command-caveat>`, a subagent's hand-back), never the person's.
+/// Who a `user` line's words belong to, as the source itself declares it: `origin.kind` and
+/// `promptSource`, read rather than guessed from the text. Absent is the older spelling of the
+/// operator. `isMeta` wins over both - a meta line is Claude Code's own text shown to the model.
 fn declared_speaker(v: &Value) -> Speaker {
     if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
         return Speaker::Agent;
@@ -868,10 +718,9 @@ fn frame(text: &str) -> Option<Frame<'_>> {
     }
 }
 
-/// **A frame at the START of the text**, whether or not anything follows it. This is the
-/// one the stripper needs: Claude Code puts `<local-command-caveat>` and
-/// `<command-name>` in front of the person's own words, and what is behind them is what
-/// they said.
+/// A frame at the START of the text, whether or not anything follows it. This is the one the
+/// stripper needs: Claude Code puts `<local-command-caveat>` and `<command-name>` in front of the
+/// person's own words, and what is behind them is what they said.
 fn leading_frame(text: &str) -> Option<Frame<'_>> {
     let t = text.trim();
     let rest = t.strip_prefix('<')?;
@@ -893,10 +742,8 @@ fn leading_frame(text: &str) -> Option<Frame<'_>> {
     Some(Frame {
         tag,
         body: &tail[..at],
-        // **Plus one for the `<` that was stripped**, so `end` is an index into the text
-        // this was handed rather than into the slice after it — the caller slices the
-        // original, and an off-by-one there silently kept the whole frame as the operator's
-        // words (measured: `<bash-input> gh pr merge 1</bash-input>` came out whole).
+        // Plus one for the `<` that was stripped, so `end` indexes the text this was handed and
+        // not the slice after it. An off-by-one here keeps the whole frame as the operator's words.
         end: 1 + open_end + at + close.len() + gt + 1,
     })
 }
@@ -933,10 +780,9 @@ const OTHER_AGENT: &[&str] = &[
     "cross-session-message",
 ];
 
-/// **What a `user` line's text becomes.** A frame that carries the person's act is carried
-/// in this head's own spelling for that act (`! cmd`); a frame that names another author is
-/// theirs; a frame that is Claude Code's plumbing is said, not drawn; and a frame this
-/// build does not know is said in the report rather than invented as a row.
+/// What a `user` line's text becomes: a frame carrying the person's act is spelled in this head's
+/// own form (`! cmd`), a frame naming another author is theirs, Claude Code's plumbing is said and
+/// not drawn, and a frame this build does not know is said in the report rather than invented.
 fn classify(text: &str, declared: Speaker) -> Said {
     let t = text.trim();
     if t.is_empty() {
@@ -1157,10 +1003,9 @@ fn interpret(
                     .to_string(),
             );
         }
-        // Bookkeeping this build reads and does not draw: counted in `by_type` and, where
-        // it matters, read for the listing (a title) or the spend (cost-state). No scrap:
-        // these are not conversation, and one sentence per kind would be a page of notices
-        // about a file's own index.
+        // Bookkeeping this build reads and does not draw: counted in `by_type` and, where it
+        // matters, read for the listing or the spend. No scrap - one sentence per kind would be a
+        // page of notices about a file's own index.
         "ai-title"
         | "agent-name"
         | "last-prompt"
@@ -1701,11 +1546,9 @@ fn str_field(v: &Value, key: &str) -> String {
         .to_string()
 }
 
-/// **An ISO-8601 timestamp to ms since the epoch** — rule 3's only clock.
-///
-/// Claude Code writes `2026-10-07T12:28:34.023Z`. The fraction is optional, an offset is
-/// accepted because the field is ISO-8601 and not a private format, and anything else is
-/// `None` — a time this crate cannot read is a row with no time, never a guessed one.
+/// An ISO-8601 timestamp to ms since the epoch: rule 3's only clock. The fraction is optional and
+/// an offset is accepted because the field is ISO-8601, but anything else is `None` - a time this
+/// crate cannot read is a row with no time, never a guessed one.
 pub fn parse_ts(s: &str) -> Option<u64> {
     let s = s.trim();
     let b = s.as_bytes();
@@ -1800,16 +1643,9 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// **The idempotency rule, as a function of the two facts it reads** — Package H's `cc-`
-/// arm, in the one place it can be tested without a daemon.
-///
-/// A session whose id begins `cc-` names a Claude Code conversation to read in, and the
-/// rest of the id is the transcript's own uuid. **Only when the session is not already a
-/// resume**: re-running the same `--session cc-<uuid>` finds the stored session and
-/// resumes it, and importing a second time would append a second copy of the conversation
-/// to a session that already holds it — the one way an import can corrupt a transcript.
-/// The `oc-` arm beside it in `Harness::open` follows the same rule, and this is that rule
-/// spelled out rather than repeated.
+/// The idempotency rule, in the one place it can be tested without a daemon. A `cc-` session names
+/// a conversation to read in, and only when the session is NOT already a resume: importing again
+/// would append a second copy of the conversation to a session that already holds it.
 pub fn import_target(resumed: bool, session_id: &str) -> Option<&str> {
     if resumed {
         return None;
@@ -1817,10 +1653,8 @@ pub fn import_target(resumed: bool, session_id: &str) -> Option<&str> {
     session_id.strip_prefix("cc-").filter(|id| !id.is_empty())
 }
 
-/// **Where Claude Code's transcripts are on this box**, if they are anywhere.
-///
-/// `$CLAUDE_PROJECTS_DIR` wins (a test, or another install); otherwise
-/// `~/.claude/projects`, the measured location. Absence is reported by [`Source::open`] as
+/// Where Claude Code's transcripts are, if they are anywhere: `$CLAUDE_PROJECTS_DIR` wins (a test,
+/// or another install), otherwise `~/.claude/projects`. Absence is reported by [`Source::open`] as
 /// `NoDirectory`, with this path in the sentence.
 pub fn default_projects_dir() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("CLAUDE_PROJECTS_DIR") {

@@ -1,8 +1,8 @@
-//! The writer's tests: the conservative subset, the round trip back through the reader,
-//! and the append path's three refusals and its way back.
+//! The writer's tests: the conservative subset, the round trip back through the reader, and the
+//! append path's three refusals and its way back.
 //!
-//! Every assertion about a backup compares **bytes**, never a size: a short write, a full
-//! disk and a page of zeroes all have the right size, and only one of them is a backup.
+//! Every assertion about a backup compares bytes, never a size: a short write, a full disk and a
+//! page of zeroes all have the right size, and only one of them is a backup.
 
 use super::*;
 use crate::{Event, Source};
@@ -181,10 +181,9 @@ fn what_the_writer_writes_the_reader_reads_back() {
             }
         })
         .unwrap();
-    // **Five rows, from four lines**: the writer put the assistant's text and its call on
-    // one line (one content array, as the format allows) and the reader maps a block at a
-    // time, so a line with two blocks comes back as two rows. That is the pair of
-    // contracts meeting, not a discrepancy.
+    // Five rows from four lines: the writer put the assistant's text and its call on one line,
+    // and the reader maps a block at a time, so a line with two blocks comes back as two rows.
+    // That is the pair of contracts meeting, not a discrepancy.
     assert_eq!(rows.len(), 5, "the four lines the handover carried");
     assert_eq!(report.rows, 5);
     // The reader found the file by the id the handover named.
@@ -519,10 +518,9 @@ fn ids_are_fresh_v4_uuids_and_the_stamps_are_utc() {
     }
 }
 
-/// `PsLive` is the real check and is exercised here against this box: it must not report
-/// *this* test process as a Claude for a directory nobody is in. It is a smoke test, not a
-/// proof — the refusals above are proved with a fake, which is the only way to prove a
-/// refusal about a process a test cannot start.
+/// `PsLive` is the real check, exercised here against this box: it must not report this test
+/// process as a Claude for a directory nobody is in. A smoke test, not a proof - a refusal about a
+/// process a test cannot start is proved with a fake, as above.
 #[test]
 fn the_real_live_check_answers_and_does_not_claim_a_claude_in_an_empty_directory() {
     let dir = tmp("pslive");

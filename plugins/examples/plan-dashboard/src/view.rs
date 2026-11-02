@@ -14,11 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::status::Status;
 
 /// The C3 input.
-///
 /// The host also sends `"v"`, `"event"` and `"size"`, and this pane acts on none of them: its
-/// actions are `say` and `look`, both of which the host performs itself, so no `event` ever comes
-/// back to it. serde ignores what a struct does not name, so they are documented here rather than
-/// carried as fields a reader would take for state this pane keeps.
+/// actions are `say` and `look`, both performed by the host.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Input {
     #[serde(default)]

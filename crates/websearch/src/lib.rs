@@ -116,11 +116,9 @@ pub fn resolve_key(flag: Option<&str>) -> Result<(String, KeySource), String> {
     resolve_key_from(flag, |var| std::env::var(var).ok(), providers_file())
 }
 
-/// [`resolve_key`] with the environment and the providers file handed in rather than read.
-/// **So its test sets no variable**: it used to unset `BRAVE_API_KEY` and set
-/// `XDG_CONFIG_HOME` for the rest of the binary's life, under every other test running at that
-/// moment — and a `setenv` beside a C-side `getenv` that std's environment lock does not cover
-/// (glibc's own, in DNS lookups or time zones) is undefined behaviour (R67 item 17).
+/// `resolve_key` with the environment and the providers file handed in rather than read, so
+/// its test sets no variable: a `setenv` beside a C-side `getenv` that std's lock does not
+/// cover is undefined behaviour, and it would outlive the test for every other one.
 fn resolve_key_from(
     flag: Option<&str>,
     env: impl Fn(&str) -> Option<String>,

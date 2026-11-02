@@ -1,10 +1,8 @@
-//! **A guest module cannot afford a date crate, and does not need one.** The only timestamp this
-//! plugin reads is the status file's `updated`, which is always the one shape (RFC3339, `Z` or an
-//! offset), so a civil-date to seconds conversion is a tenth of what `chrono` would cost in the
-//! `.wasm` and it is testable against the arithmetic it really is.
+//! A guest module cannot afford a date crate, and does not need one: the only timestamp this plugin
+//! reads is the status file's `updated`, which is always one shape (RFC3339, `Z` or an offset), so a
+//! civil-date to seconds conversion is a tenth of what `chrono` would cost in the `.wasm`.
 
-/// **Seconds since the Unix epoch for an RFC3339 stamp**, or `None` when the text is not one.
-///
+/// Seconds since the Unix epoch for an RFC3339 stamp, or `None` when the text is not one.
 /// The calendar arithmetic is Howard Hinnant's `days_from_civil`: proleptic Gregorian days, which
 /// is what every timestamp in a status file means and what `date -u` prints back.
 pub fn epoch(stamp: &str) -> Option<i64> {

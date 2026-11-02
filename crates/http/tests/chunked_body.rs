@@ -1,34 +1,18 @@
-//! **The chunked-transfer framing, against a server that actually chunks.**
+//! The chunked-transfer framing, against a server that actually chunks.
 //!
-//! This arm had no test. The provider suite's fake server answers with `Content-Length`, so every
-//! green test in this workspace went through `Framing::Length` and the chunked path — the one a
-//! real llama.cpp endpoint uses, and the one that carries the SSE frames a turn is made of — was
-//! never executed by the suite at all. That is how a framing bug survives: the tests look like
-//! they cover the stream, and they cover one of its two framings.
-//!
-//! # What it pins, and why each case is here
-//!
-//! Three things about a chunked SSE body are easy to get wrong and none are hypothetical:
-//!
-//! 1. **A frame split across two chunks.** A long tool-call argument does not respect a TCP
-//!    segment. If the reader treated a chunk boundary as a frame boundary the JSON would be cut in
-//!    half — and the failure is a malformed frame at the far end, not here.
-//! 2. **Two frames inside one chunk.** The opposite shape, and the one that catches a reader that
-//!    consumes one frame per chunk.
-//! 3. **A frame boundary landing exactly on a chunk boundary.** The off-by-two that only appears
-//!    when the `\n\n` is the last thing in a chunk.
-//!
-//! Plus the chunk-size line's extensions (`1a;ext=1`), which the parser splits off, and a body
-//! delivered in many small chunks so the reader's chunk buffer is reused rather than reallocated
-//! for each one — the change this test was written alongside.
+//! The provider suite's fake server answers with `Content-Length`, so every green test
+//! in this workspace went through `Framing::Length` and the chunked path - the one a
+//! real llama.cpp endpoint uses, and the one that carries the SSE frames a turn is
+//! made of - was never executed at all.
+//! Three things are easy to get wrong: a frame split across two chunks, two frames in
+//! one chunk, and a frame boundary landing on a chunk boundary.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
-/// A one-shot HTTP server that answers with the given chunked body, in the given chunks.
-///
-/// The endpoint comes back as `Endpoint`, not as a URL: `Endpoint::parse` takes `HOST:PORT` and a
-/// `http://…` string is a hostname it will try to resolve.
+/// A one-shot HTTP server that answers with the given chunked body, in the given
+/// chunks. The endpoint comes back as `Endpoint`, not a URL, because `Endpoint::parse`
+/// takes `HOST:PORT` and an `http://` string is a hostname it will try to resolve.
 fn chunked_server(chunks: Vec<Vec<u8>>) -> (letibot_http::Endpoint, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();

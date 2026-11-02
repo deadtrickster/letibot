@@ -1,11 +1,9 @@
 //! The conversation record: what the harness stores, and what a dialect renders.
 //!
-//! This crate is deliberately tiny and has no dependency on a vocab, a model, an
-//! FFI or a running server. Both the dialect crate (which renders) and the token
-//! core (which tokenizes and persists) depend on it, and they must be buildable
+//! This crate is deliberately tiny and has no dependency on a vocab, a model, an FFI
+//! or a running server. Both the dialect crate (which renders) and the token core
+//! (which tokenizes and persists) depend on it, and they must be buildable
 //! independently of each other.
-//!
-//! See `docs/implementation-plan.md` §4.2.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,12 +24,9 @@ pub mod citation;
 /// and a second copy of the arithmetic is a second place a character can be split.
 pub mod text;
 
-/// **Who asked for a tool call** — R24 part two, decision 1.
-///
-/// One variant today, and the enum exists rather than a `bool` or an `Option<String>` for the
-/// reason this tree reaches for an enum on a fact that can grow: a second origin (a peer agent,
-/// a flowy seat, a scheduled job) is a variant rather than a second field on a struct that
-/// already has one. `SystemOrigin` is the precedent for the naming.
+/// Who asked for a tool call. An enum rather than a `bool` because a second origin (a
+/// peer agent, a seat, a scheduled job) is a variant rather than another field on a
+/// struct that already has one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallOrigin {
@@ -41,31 +36,9 @@ pub enum CallOrigin {
     Operator { who: String },
 }
 
-/// One entry in the conversation, in the order the model produced or consumed it.
-///
-/// **Reasoning is a sibling of `Assistant`, not a field on it.** This is the single
-/// most consequential shape decision in the type, and it is borrowed from Grok
-/// Build's `ConversationItem` along with its rationale:
-///
-/// > "The interleaved order of `[reasoning, tool_call, reasoning, …, message]`
-/// > produced by the model stays byte-stable across turns. That stability is what
-/// > lets the server-side prefix KV-cache hit."
-///
-/// Reasoning-as-a-field forces last-write-wins when one turn emits several
-/// reasoning blocks around several tool calls, and loses the interleaving. GLM and
-/// Qwen both interleave, so a field would be wrong for every model we target.
-/// **Who a `User` row's words came from** — R42.
-///
-/// Two values, and they are the two the requirement names as needing to be distinguishable:
-/// *the operator typed this* and *this session appended it*. The names are
-/// [`letibot_tools::authorise::Speaker`]'s own — `operator` and `agent` — so a head has one
-/// vocabulary for the fact wherever it meets it, and the authorisation trail's record and the
-/// transcript row cannot spell the same speaker two ways.
-///
-/// **Why not the tools' type.** This crate is what the wire is made of and it must not depend
-/// on the classifier that judges it (`letibot-tools` depends on *this*, not the reverse), so
-/// the vocabulary is repeated here rather than imported. Two strings, one meaning, and both
-/// endpoints of the same sentence about who spoke.
+/// Who a `User` row's words came from: the operator typed it, or this session appended
+/// it. The vocabulary is `letibot_tools::authorise::Speaker`'s, repeated rather than
+/// imported because `letibot-tools` depends on this crate and not the reverse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Speaker {
@@ -90,11 +63,12 @@ impl Speaker {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-// **A box would change the wire type's shape for every matcher in the tree.** `System` is the large
-// variant (`text` plus `SystemOrigin`) and the lint wants it boxed; that is an API change rippling
-// through every `match` on a transcript item, and it is the operator's decision rather than a
-// tidy-up smuggled into a red gate. Everything else clippy says about this crate is fixed.
+/// One entry in the conversation, in the order the model produced or consumed it.
+/// Reasoning is a SIBLING of `Assistant`, not a field on it: a field forces
+/// last-write-wins across several blocks and loses the interleaving a prefix cache needs.
 #[allow(clippy::large_enum_variant)]
+// The box would change the wire type's shape for every matcher in the tree, and that is
+// the operator's decision rather than a tidy-up smuggled into a red gate.
 pub enum TranscriptItem {
     System {
         text: String,
@@ -102,60 +76,18 @@ pub enum TranscriptItem {
     },
     User {
         parts: Vec<UserPart>,
-        /// **Who these words came from** — R42.
-        ///
-        /// Everything this session appends is a `User` item: the operator's prompt, a head's
-        /// steering, §5.7's salvage notice, the intent check's *"you said you would X"*, and a
-        /// job settlement (`harnessd::harness`). On the wire they were indistinguishable, so a
-        /// head drew a job's completion exactly as it drew the person typing — the operator's
-        /// own report: *"why job completion events arrive as my messages?"*
-        ///
-        /// **The daemon has known all along.** It records the same fact on its authorisation
-        /// trail, with its own words for why it matters (`harness.rs`): *"Walking the
-        /// transcript and calling all of them the operator's words would let the harness
-        /// authorise itself, and an agent whose own text can authorise an action is the shape
-        /// a prompt injection would most like to take."* That record was built for the oracle
-        /// and stopped there; this carries it to the head. The provenance is known only at the
-        /// moment of appending, so it is recorded there.
-        ///
-        /// **And the reader is the other party the gate serves.** The oracle already refuses
-        /// to let agent text authorise an action; a head that draws agent text as the
-        /// operator's is showing the reader the exact lie the oracle is defended against.
-        ///
-        /// # Absent means `Operator`, and that is the same reading `TrailMirror::seed` takes
-        ///
-        /// A row written before this field existed cannot say who spoke, and the honest
-        /// reading available is the operator — which is what a head drew for it anyway, so
-        /// nothing regresses and no version bumps. The alternative (a third *unknown* value)
-        /// would put a new word on every old row for no gain: what the field is FOR is telling
-        /// the two apart going forward, and *absent* is not a fact about the future.
-        ///
-        /// `None` and `Some(Operator)` are therefore the same rendering, while
-        /// `Some(Agent)` is a different one — the distinction the requirement asks a head to
-        /// be able to draw.
+        /// Who these words came from. Everything this session appends is a `User` item -
+        /// steering, a salvage notice, a job settlement - so without this a head draws a
+        /// job's completion exactly as it draws the person typing.
         #[serde(default)]
         speaker: Speaker,
     },
     Reasoning {
         text: String,
         field: ReasoningField,
-        /// **The operator stopped this thought, or it ran out of room.**
-        ///
-        /// Not the same claim as `Assistant::truncated`, which marks an answer
-        /// that was cut. This marks a DRAFT that was abandoned -- and a draft is
-        /// the one thing in a transcript that nothing downstream depends on, so
-        /// it is the one thing a renderer may decline to replay.
-        ///
-        /// Why it has to be marked at all, measured 2026-09-18: a session where
-        /// the model began counting parentheses by hand produced 25464 tokens of
-        /// `+ 0 + 0 + 0 + 0` before the operator stopped it. That block was
-        /// committed and replayed on every later turn -- a tenth of the window,
-        /// forever -- and the model, reading its own abandoned loop as history,
-        /// started counting by hand again. The operator: "it counts them again by
-        /// hand lol".
-        ///
-        /// Absent on the wire means `false`, so rows written before the field
-        /// existed still read.
+        /// The operator stopped this thought, or it ran out of room. Not the same claim as
+        /// `Assistant::truncated`, which marks an answer that was cut: a draft is the one
+        /// thing a renderer may decline to replay, and replaying a loop teaches the model it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
     },
@@ -174,72 +106,25 @@ pub enum TranscriptItem {
         name: String,
         outcome: ToolOutcome,
         payload: String,
-        /// Both sides of the file a file-editing call changed, bounded to what
-        /// differs — the raw material of the two-panel diff a head draws.
-        ///
-        /// It lives on the row and not only on the `ToolFinished` event because
-        /// the row is the durable artifact: the event log is the daemon's
-        /// memory, and a head that attaches after a restart is handed rows, not
-        /// events. Without it the card rendered from history and the change it
-        /// made did not (operator, 2026-09-18: *"it renders history, why can it
-        /// render the edit card and not the diff"*). Display-only: the prompt
-        /// builders read `payload` and never this, so the tokens a row renders
-        /// to — and the hash chain over them — do not move. Absent on rows
-        /// written before the field existed, and what lets those still load is that a
-        /// **missing key for an `Option` field deserialises as `None`** — not the
-        /// `#[serde(default)]` beside it, which is explicit rather than load-bearing.
-        /// (Measured 2026-09-23: deleting the attribute, every test still passes.)
+        /// Both sides of the file an edit changed, bounded to what differs: the raw material
+        /// of the two-panel diff, on the row because a head attaching after a restart is
+        /// handed rows rather than events. Display-only - the prompt builders read `payload`.
         #[serde(default)]
         edit: Option<ToolEditExcerpt>,
-        /// **Who asked for this call** — R24 part two, decision 1.
-        ///
-        /// A head labels a tool card from the nearest preceding `Assistant { tool_calls }`,
-        /// which by construction cannot see a call nobody proposed. So a call the OPERATOR
-        /// ran — a `web_fetch` they typed themselves — would be drawn as the model's, which is
-        /// a lie about who acted on the one row whose whole subject is what happened.
-        ///
-        /// **It cannot be inferred, which is why it is a field.** The absence of a proposing
-        /// row is *also* what a row from a resumed daemon looks like, and this tree already
-        /// renders that case deliberately (*"a row this head did not watch shows no
-        /// duration"*) — so inferring would make the two indistinguishable, which is the
-        /// defect R17 is about.
-        ///
-        /// **`who`, and not a unit variant.** The store already separates one person from
-        /// another (`verdict_by` holds `human:dead` 121 and `human:leticl` 37), so a bare
-        /// `Operator` would name the actor at a different granularity from the adjudication
-        /// for the same call — and one of the two would be wrong.
-        ///
-        /// `None` is **a call the model proposed**, which is every row written before this
-        /// field existed — hence `#[serde(default)]` and no version bump, the shape `never_ran`
-        /// and `edit` on this same variant already set.
-        /// No version bump, and the reason is serde's own rule rather than an attribute: a
-        /// missing key for an `Option` field deserialises as `None`. The `#[serde(default)]`
-        /// is kept only because the three fields around it have one.
+        /// Who asked for this call. A head labels a tool card from the nearest preceding
+        /// assistant call, which cannot see a call nobody proposed, so an operator-run call
+        /// would be drawn as the model's. `None` is a call the model proposed.
         #[serde(default)]
         origin: Option<CallOrigin>,
-        /// **Bytes this call read that are not text** — an image, today; see
-        /// [`crate::ToolOutcome`]'s sibling in `letibot_tools::media` for the argument.
-        ///
-        /// It lives on the row for the reason `edit` does and one more: the row is the durable
-        /// artifact a prompt is rebuilt FROM, and an image that reached the model once and not on
-        /// the next round would be a picture the model saw and then forgot — the failure that looks
-        /// like a model ignoring a picture rather than a head dropping it.
-        ///
-        /// **The data URI is stored inline and that is a real cost, stated here rather than
-        /// discovered.** Base64 is 4/3 of the file, it rides every JSONL line and every store write,
-        /// and it is re-sent on every prompt rebuild — which is exactly opencode's situation and why
-        /// it strips media on compaction (`compaction.ts`, `stripMedia`). R24/R27 own what this tree
-        /// does about that; this field is what makes the question askable.
-        ///
-        /// Absent on every row written before it existed, and on every call that read no picture.
+        /// Bytes this call read that are not text, stored inline so a prompt rebuilt from the
+        /// row still carries the picture: one that reached the model once and not the next
+        /// round would be a picture the model saw and then forgot.
         #[serde(default)]
         media: Option<media::Media>,
     },
-    /// A zero-width delimiter. **Renders to nothing.**
-    ///
-    /// It exists in v1 only so that per-segment decay, user-assisted compaction and
-    /// agentic memory have something to address later. If those never arrive it has
-    /// cost one row and zero rendered bytes.
+    /// A zero-width delimiter that renders to nothing, kept so per-segment decay and
+    /// user-assisted compaction have something to address later. If those never arrive it
+    /// has cost one row and zero rendered bytes.
     SegmentMark {
         segment_id: String,
         label: String,
@@ -249,18 +134,9 @@ pub enum TranscriptItem {
 }
 
 impl TranscriptItem {
-    /// Roughly how many bytes of text this row carries — the measure a **size bound**
-    /// needs.
-    ///
-    /// Counts the strings a reader would see and ignores structure, ids and enums: it is
-    /// a bound's input, not a serialisation, and it has to be cheap enough to call per
-    /// row per append. A row whose text this cannot reach (`None` bodies, a mark) counts
-    /// as zero, which is safe because it errs toward keeping the row.
-    ///
-    /// **One definition, and it is here rather than on either side of the wire.** The
-    /// daemon bounds its view by this and the head decides whether a transcript is too
-    /// big to walk by this, and two copies of "what counts as size" would drift into two
-    /// different answers to one question.
+    /// Roughly how many bytes of text this row carries: a size bound's input, not a
+    /// serialisation, so it counts the strings a reader would see and ignores structure.
+    /// One definition, because two copies of "what counts as size" would drift.
     pub fn bytes(&self) -> usize {
         let parts = |parts: &[UserPart]| -> usize {
             parts
@@ -293,15 +169,9 @@ impl TranscriptItem {
     }
 }
 
-/// The before/after of a file-editing call, bounded to what differs — the raw
-/// material of the two-panel diff a head draws.
-///
-/// One definition, here, because this is the one crate both sides of the old
-/// lift can see: `letibot-tools` (which builds it at the call site) and
-/// `letibot-sessionlog` (which carries it on the wire) cannot name each other,
-/// and two copies of a nine-field struct with a field-by-field lift between
-/// them is how copies drift. The runtime and the log re-export it; the wire
-/// shape is unchanged.
+/// The before/after of a file-editing call, bounded to what differs. One definition, here,
+/// because `letibot-tools` builds it and `letibot-sessionlog` carries it and neither can
+/// name the other, so two copies of a nine-field struct is how copies drift.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolEditExcerpt {
     /// Relative to the session root, as the head should label it.
@@ -344,12 +214,9 @@ pub enum SegmentEdge {
     Close,
 }
 
-/// Which wire field the model expects its own prior reasoning replayed into.
-///
-/// Getting this wrong does not error. It makes every prompt diverge from its own
-/// cache entry at the first assistant turn, so the prefix cache never hits and the
-/// entry count grows without bound — measured at 291 entries / 612 GB and four OOM
-/// kills before the cause was found.
+/// Which wire field the model expects its own prior reasoning replayed into. Getting this
+/// wrong does not error: every prompt diverges from its cache entry at the first assistant
+/// turn, so the prefix cache never hits and the entry count grows without bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningField {
@@ -368,13 +235,9 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// How a command came to be running in the background rather than inline.
-///
-/// Three ways in and no fourth, because a fourth would be a promotion nobody
-/// decided the rule for. The distinction is not bookkeeping: *"the model asked"*
-/// and *"the runtime decided"* differ in whether the model already knows, and
-/// *"a person decided"* differs from both in that there is somebody to attribute
-/// it to.
+/// How a command came to be running in the background rather than inline. Three ways in and
+/// no fourth, because the distinction decides whether the model already knows and whether
+/// there is somebody to attribute it to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "how", rename_all = "snake_case")]
 pub enum Backgrounding {
@@ -403,29 +266,9 @@ impl Backgrounding {
     }
 }
 
-/// A **closed** vocabulary. Adding a variant is a deliberate act.
-///
-/// `Abstained` is not a flavour of `Ok`, and that distinction is the whole reason
-/// this is an enum rather than a bool. It is the case the oracle project measured:
-/// retrieval honestly reported that the corpus did not cover the question, and the
-/// model wrote a confident answer on top of it anyway. A tool runtime that collapses
-/// "no answer" into "success with empty payload" makes that failure invisible.
-///
-/// # `Backgrounded` is here for the same reason `Abstained` is
-///
-/// A command that was moved to the background is **still running and still
-/// recoverable**, and every outcome that already existed says something false
-/// about it:
-///
-/// | reported as | what the model concludes |
-/// |---|---|
-/// | `Ok` with an empty payload | the command produced nothing |
-/// | `Failed` | retry — and now there are two of them |
-/// | `Timeout` | it was abandoned; `Timeout` means exactly that |
-///
-/// So it is its own variant rather than a sentence in a payload, and it carries
-/// the handle and the recovery verb, because a fact the model has to guess the
-/// next action from is a fact it will guess wrong.
+/// A closed vocabulary: adding a variant is a deliberate act. `Abstained` is not a flavour of
+/// `Ok`, and `Backgrounded` is not `Ok` with an empty payload either - each names a state the
+/// model would otherwise conclude something false about.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ToolOutcome {
@@ -514,10 +357,8 @@ mod tests {
 
     #[test]
     fn truncated_survives_a_round_trip() {
-        // The flag is the transcript's own record that §5.7's kept text or §5.8's
-        // kept partial did not finish naturally. If it were dropped on the way out,
-        // the row would read back as a completed turn — the exact defect §5.7
-        // exists to abolish.
+        // The transcript's own record that kept text or a kept partial did not finish
+        // naturally. Dropped on the way out, the row would read back as a completed turn.
         let item = TranscriptItem::Assistant {
             text: "the part that made it out".into(),
             tool_calls: vec![],
@@ -574,11 +415,8 @@ mod tests {
 
     #[test]
     fn a_row_written_before_the_edit_existed_reads_as_none() {
-        // Rows the store already holds predate the field. `#[serde(default)]`
-        // is what lets them still load — and what keeps a resumed daemon from
-        // refusing a session it served yesterday. The old row is built by
-        // stripping the key off a real serialisation, not by hand-typing the
-        // wire shape and hoping.
+        // Rows the store already holds predate the field, and `#[serde(default)]` is what lets
+        // them still load - so a resumed daemon does not refuse a session it served yesterday.
         let item = TranscriptItem::ToolResult {
             call_id: "c1".into(),
             name: "edit".into(),
@@ -595,17 +433,9 @@ mod tests {
         assert_eq!(back, item);
     }
 
-    /// **Who asked for the call, and that an old row says `None`** — R24 part two, decision 1.
-    ///
-    /// Two properties, and the second is the one a head's card depends on:
-    ///
-    ///  * an operator-run call round-trips **with the identity**, so the row and the
-    ///    adjudication for the same call name the actor the same way (`human:dead` is what the
-    ///    gate records);
-    ///  * a row written **before the field existed** reads as `None`, which is
-    ///    *the model proposed it* — not *nobody did*. That is what keeps a resumed daemon from
-    ///    refusing a session it served yesterday, and it is why the field is `default` rather
-    ///    than versioned, the same shape `edit` and `never_ran` already set on this variant.
+    /// Who asked for the call, and that an old row says `None`. An operator-run call
+    /// round-trips with the identity so the row and its adjudication name the actor the same
+    /// way; a row written before the field reads as "the model proposed it", not "nobody did".
     #[test]
     fn an_operator_run_call_carries_its_identity_and_an_old_row_reads_as_the_models() {
         let mine = TranscriptItem::ToolResult {
@@ -688,13 +518,9 @@ mod tests {
         assert!(operator.contains("deadtrickster"), "{operator}");
     }
 
-    /// **A `User` row with no `speaker` reads as the operator, and an `agent` row does not** —
-    /// R42's wire half, and the two facts the requirement asks to be distinguishable.
-    ///
-    /// The absent case is the one leticl named as the reason a head cannot infer this: a row
-    /// written before the field existed says nothing about who spoke, so the honest reading is
-    /// the one a head already drew — and the alternative, a third *unknown* value, would put a
-    /// new word on every old row for no gain.
+    /// A `User` row with no `speaker` reads as the operator, and an `agent` row does not. The
+    /// absent case is the honest reading, and a third unknown value would put a new word on
+    /// every old row for no gain.
     #[test]
     fn a_user_row_says_who_spoke_and_an_old_row_reads_as_the_operator() {
         let wire = r#"{"type":"user","parts":[{"kind":"text","text":"hi"}]}"#;

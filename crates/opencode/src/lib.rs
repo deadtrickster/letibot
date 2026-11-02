@@ -1,70 +1,11 @@
-//! **Reading an opencode conversation into this head's rows.**
+//! Reading an opencode conversation into this head's rows.
 //!
-//! R6. `letibot --session oc-<opencode-session-id>` opens the UI immediately and
-//! imports the conversation in the background, rows landing as they are read. This
-//! crate is the **reading** half: it opens opencode's SQLite database, walks one
-//! session's whole tree, and turns each `part` into a [`TranscriptItem`] this head
-//! already knows how to draw. It renders nothing, publishes nothing, and knows
-//! nothing about the daemon — so the four rules below are testable in isolation,
-//! which is the whole reason the halves are split (R6a here, the wiring in
-//! `letibot-harnessd`).
-//!
-//! # The four rules that make this an import and not a forgery
-//!
-//! 1. **An imported row says it is imported, and whose it was.** Carried by
-//!    [`Tree`]: the root session's id, its `directory`, and the provider/model it ran
-//!    under. The row itself cannot say it — no [`TranscriptItem`] has an origin field
-//!    — so the session does, in its header. See [`SessionMeta::origin`].
-//! 2. **The ledger does not claim the spend.** [`Report::spend`] is the opencode
-//!    session's real `cost` and tokens, in another provider's units, summed from
-//!    `step-finish`. It is reported for a label and is never folded into this
-//!    session's budget.
-//! 3. **Time is taken, never invented.** Every [`Row`] carries `time_created` off the
-//!    row it came from ([`Row::ts_ms`]). Nothing here calls `now`.
-//! 4. **Nothing is written to opencode's database.** [`Source::open`] opens with
-//!    `SQLITE_OPEN_READ_ONLY` and **not** `immutable=1`: opencode's WAL is live and an
-//!    immutable open reads a torn snapshot. `account` and `credential` are readable by
-//!    the operator's ruling, but for **auth**, not for rows — this crate reads
-//!    neither, and there is no path here that could render one into a transcript.
-//!
-//! # What a part becomes, and why one part is sometimes two rows
-//!
-//! Parts are read in `time_created` order and mapped by their `type` tag:
-//!
-//! | opencode `type` | this head |
-//! |---|---|
-//! | `text` (role `user`) | [`TranscriptItem::User`] |
-//! | `text` (role `assistant`) | [`TranscriptItem::Assistant`], no calls |
-//! | `reasoning` | [`TranscriptItem::Reasoning`] |
-//! | `tool` | an [`TranscriptItem::Assistant`] carrying the one [`ToolCall`], **then** a [`TranscriptItem::ToolResult`] |
-//! | `patch` | a [`Scrap`] — *"N files changed"*, never an empty diff (see below) |
-//! | `compaction` | a [`Scrap`] |
-//! | `step-start` / `step-finish` | a boundary / the spend side-channel (rule 2) |
-//! | anything else | a [`Scrap`] and a count in [`Report::unknown_tags`] |
-//!
-//! **A `tool` part is two rows on purpose.** The head labels a tool card from the
-//! nearest preceding `Assistant { tool_calls }` row — `a head that attached after a
-//! turn still says which file was read`, because the row is the only place the
-//! arguments survive (`crates/tui/src/app.rs:6360`). opencode keeps the call and its
-//! result in one row (`state.input` and `state.output`), so mapping the part to a
-//! lone `ToolResult` would lose every command. Emitting the call in its own
-//! `Assistant` row immediately before the result is what keeps the card legible, and
-//! it is the shape the engine already produces when a model calls without prose.
-//! Order is preserved exactly: one part in, one or two rows out, in `time_created`
-//! order, no regrouping.
-//!
-//! **`patch` must not render an empty diff.** It is a hash and a file list, not a
-//! diff — the content lives in opencode's `snapshot/` git object store, which is not
-//! opened here. So the row is a sentence naming how many files changed, reported and
-//! counted, rather than a diff pane that would claim a change was shown.
-//!
-//! # An unknown tag is counted, never dropped
-//!
-//! The same rule R3 applies to an unreadable frame (`crates/tui/src/app.rs`): an
-//! importer that skips what it does not recognise reproduces **inside the transcript**
-//! the exact failure R3 exists to prevent. Seven tags appeared in one real session
-//! measured 2026-09-21 and there will be others, so an unrecognised `type` becomes a
-//! [`Scrap`] and a count in [`Report::unknown_tags`] — visible, not silent.
+//! It opens opencode's SQLite database, walks one session's tree and turns each part into
+//! a `TranscriptItem` this head already draws. It renders nothing, publishes nothing and
+//! knows nothing about the daemon, which is what makes the rules testable in isolation:
+//! an imported row says it is imported and whose it was, the ledger never claims the
+//! spend, time is taken from the row rather than invented, opencode's database is opened
+//! read-only and never written, and an unknown tag becomes a counted scrap, not a drop.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -303,17 +244,9 @@ pub struct Source {
 }
 
 impl Source {
-    /// **Open the database read-only.**
-    ///
-    /// `SQLITE_OPEN_READ_ONLY` and **not** `immutable=1` (which rusqlite would need
-    /// `SQLITE_OPEN_URI` for anyway): opencode's WAL is live — a 6 MB `-wal` and a
-    /// `-shm` were present on this box while opencode was not even in the foreground —
-    /// and an immutable open ignores the WAL and reads a torn snapshot. Read-only
-    /// still **sees** the WAL, so no `immutable`.
-    ///
-    /// The open is proven here with the cheapest query, because SQLite opens lazily:
-    /// a path that is a directory, or not a database, would otherwise fail on the
-    /// first real read and be reported as something else.
+    /// Open the database read-only, and not `immutable=1`: opencode's WAL is live, and an
+    /// immutable open ignores it and reads a torn snapshot, while read-only still sees it.
+    /// The open is proven here with the cheapest query, because SQLite opens lazily.
     pub fn open(path: &Path) -> Result<Self> {
         let conn =
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
@@ -338,9 +271,8 @@ impl Source {
     }
 
     /// The whole tree of `root`: root first in `children` order, plus the part count.
-    ///
-    /// `NoSuchSession` when `root` names nothing — which is a different sentence from
-    /// `NoDatabase`, and the operator asked for the two to be told apart.
+    /// `NoSuchSession` when `root` names nothing, which is a different sentence from
+    /// `NoDatabase` and the operator asked for the two to be told apart.
     pub fn tree(&self, root: &str) -> Result<Tree> {
         let ids = self.tree_ids(root)?;
         if ids.is_empty() {
@@ -368,10 +300,9 @@ impl Source {
         })
     }
 
-    /// **Read the whole tree, oldest part first.** One callback per event, so the
-    /// caller can publish as it goes and keep the screen live — the ordering is the
-    /// requirement, and a function that returned a `Vec` would have read everything
-    /// before drawing anything.
+    /// Read the whole tree, oldest part first, one callback per event so the caller can
+    /// publish as it goes and keep the screen live. A function returning a `Vec` would have
+    /// read everything before drawing anything.
     pub fn read_tree(&self, root: &str, sink: &mut dyn FnMut(Event)) -> Result<Report> {
         let tree = self.tree(root)?;
         let ids = self.tree_ids(root)?;
@@ -703,12 +634,9 @@ fn interpret(
                     payload,
                     edit: None,
                     origin: None,
-                    // **An imported row carries no media, and that is a fact about the importer
-                    // rather than a gap left by accident.** opencode stores an attachment as a file
-                    // part whose content is on disk under its own `storage/`, and this importer
-                    // reads the message log — so an imported conversation shows the sentence a
-                    // reader can see and not the picture, which is the same rule every other
-                    // un-imported field on this row follows.
+                    // An imported row carries no media: opencode stores an attachment as a
+                    // file part whose content is on disk, and this importer reads the message
+                    // log, so the conversation shows the sentence and not the picture.
                     media: None,
                 },
                 report,
@@ -845,11 +773,9 @@ fn tokens_from(t: &serde_json::Value) -> Tokens {
     }
 }
 
-/// **Where opencode's database is on this box**, if it is anywhere.
-///
-/// `$OPENCODE_DB` wins (a test, or another install); otherwise
-/// `~/.local/share/opencode/opencode.db`, the measured location. Absence is
-/// reported by [`Source::open`] as `NoDatabase`, with this path in the sentence.
+/// Where opencode's database is on this box, if it is anywhere: `$OPENCODE_DB` wins,
+/// otherwise `~/.local/share/opencode/opencode.db`. Absence is reported by `Source::open`
+/// as `NoDatabase`, with this path in the sentence.
 pub fn default_db_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("OPENCODE_DB") {
         return Some(PathBuf::from(p));

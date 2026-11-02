@@ -1,12 +1,11 @@
-//! **The nick list's policy, tested where it lives.**
+//! The nick list's policy, tested where it lives.
 //!
 //! The sort rule, the column's arithmetic, the marks and the scope are what a project overrides and
 //! what the operator reads, so they are tested here rather than through an engine: the module is a
-//! `cdylib` for the host and an `rlib` for these, and nothing below knows that a wasm ABI exists.
-//!
-//! **The rows are rendered the way the host renders them** — [`drawn`] is rano's `row_line` for the
-//! part this layer controls (a two-column lead, then the cells joined by one space). A width test
-//! that measured the answer instead of the drawing would pass on a row the head then stretches.
+//! `cdylib` for the host and an `rlib` for these, and nothing below knows a wasm ABI exists.
+//! The rows are rendered the way the host renders them - [`drawn`] is rano's `row_line` for the part
+//! this layer controls. A width test that measured the answer instead of the drawing would pass on
+//! a row the head then stretches.
 
 use super::*;
 

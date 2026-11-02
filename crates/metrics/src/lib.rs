@@ -1,32 +1,11 @@
-//! **Metrics and operator feedback** — the event row, and the one way to send one.
+//! Metrics and operator feedback: the event row, and the one way to send one.
 //!
-//! `docs/metrics.md` is the design and TODO R81 schedules it. The short of it: every decision
-//! R61–R79 took was made from a hand query, a log grep or one anecdote, and each should have been
-//! a `SELECT`. So the daemon writes one append-only row per observation — a turn, a model round, a
-//! tool call, a delivery, a wake, a nag, a compaction, an operator's mark — into a SIBLING file,
-//! `~/.local/share/letibot/metrics.db`, never into the store (the operator's decision 1,
-//! 2026-10-11: eleven daemons already share the store's one writer lock).
+//! Every decision here was made from a hand query, a log grep or one anecdote, and each
+//! should have been a `SELECT`. So the daemon writes one append-only row per observation
+//! into a sibling file, `metrics.db`, never the store that eleven daemons already share.
 //!
-//! # The one rule: [`emit`] never blocks and never touches SQL
-//!
-//! The c12d044 lesson — the worker sat 29–89 s behind a store read nobody had timed — is that
-//! anything on the worker's path is paid by every prompt. So an instrument builds a small
-//! [`Event`] and hands it to a **bounded** channel with `try_send`. A full channel drops the event
-//! and counts it ([`dropped`]); the writer thread reports the count as a `metrics.dropped` row. No
-//! lock shared with the store, no allocation beyond the event, no file. The writer — one thread
-//! per daemon, behind the `store` feature — drains the channel and commits a batch a second.
-//!
-//! **Off is free.** Nothing is installed until the daemon calls [`store::start`] (the `[metrics]
-//! enabled` switch, on by default — decision 6), so a head, a test and a daemon with metrics off
-//! all reach an [`emit`] that returns at the first branch.
-//!
-//! # Typed at the site, generic in the file
-//!
-//! A row is `kind`, `name`, `outcome`, three integer slots and a small JSON `attrs` (§2.2), so a
-//! new kind is a new constant and a new view — never an `ALTER`, and a build that knows fewer
-//! kinds writes beside one that knows more. [`kind`] names every kind this tree writes; what each
-//! slot means per kind is the table in `docs/metrics.md` §2.3, and the views in [`store::VIEWS`]
-//! are where that table becomes column names.
+//! The one rule: `emit` never blocks and never touches SQL - a bounded channel, and a
+//! full one drops the event and counts it. Nothing is installed until `store::start`.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -89,12 +68,9 @@ pub mod kind {
     pub const FEEDBACK: &str = "operator.feedback";
     /// The writer's own health: events dropped on a full channel since the last report.
     pub const DROPPED: &str = "metrics.dropped";
-    /// **A key the writer is holding back** (`docs/metrics.md` §2.9) — one repeating event over its
-    /// per-second budget, which on 2026-10-27 meant a defect and not activity.
-    ///
-    /// `name` = the suppressed kind; `session_id`/`outcome` the key's; n1 = events held back in
-    /// that second, n2 = events seen in it (the rate, per second); `attrs.key` is
-    /// `session|kind|name|outcome` and `attrs.budget` the budget that was exceeded.
+    /// A key the writer is holding back: one repeating event over its per-second budget.
+    /// `name` is the suppressed kind, n1 the events held back in that second, n2 the
+    /// events seen in it; `attrs.key` is `session|kind|name|outcome`.
     pub const SUPPRESSED: &str = "metrics.suppressed";
 }
 
@@ -106,11 +82,9 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// **One observation** — a row of `event` before it is written.
-///
-/// `daemon` and `build` are not here: they are the writer's, filled once per row from what
-/// [`store::start`] was given. `root_id` may be left `None`: the writer fills it from the tree
-/// [`session_parent`] taught it, so a site deep in a subagent need not walk its ancestry.
+/// One observation, a row of `event` before it is written. `daemon` and `build` are the
+/// writer's, filled once per row from what `store::start` was given; `root_id` may be
+/// `None`, and the writer fills it from the tree `session_parent` taught it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// **The moment of the observation**, not of the write — a batch lands up to a second later.
@@ -241,10 +215,9 @@ pub enum Msg {
     Flush(SyncSender<()>),
 }
 
-/// **The bounded channel and its drop counter** — the whole of the emitting side.
-///
-/// Its own type rather than two statics so the never-blocks property can be tested on a
-/// channel nobody drains, without installing anything process-wide.
+/// The bounded channel and its drop counter, the whole of the emitting side. Its own type
+/// rather than two statics so the never-blocks property can be tested on a channel nobody
+/// drains, without installing anything process-wide.
 #[derive(Debug)]
 pub struct Emitter {
     tx: SyncSender<Msg>,

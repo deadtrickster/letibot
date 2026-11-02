@@ -1,39 +1,11 @@
-//! The shadow gate: build, load, shadow, replay, report — §2.4, the mechanical check every change
-//! to a stack takes before it answers.
-//!
-//! > *"before applying we must check compilation etc on a shadow session - do a dry run when a
-//! > temporary session copy has changes applied"*
+//! The shadow gate: build, load, shadow, replay, report - the mechanical check every change to a
+//! stack takes before it answers.
 //!
 //! It is the merge gate's role for layers, and like the merge gate it is run by the daemon and not
-//! by an agent: nobody who can be asked to verify their own fix is asked. The five steps run in
-//! order and the first failure stops, because a report that mixes a build error into a replay diff
-//! is read by a model that then edits the wrong thing.
-//!
-//! 1. **build** — the layer's source is built, offline, for `wasm32-unknown-unknown`, and the
-//!    result is copied over `plugin.wasm`. What is applied is then what the source says: a
-//!    hand-copied module that disagreed with its source has already been overwritten by the time
-//!    step 2 reads it.
-//! 2. **load** — compiled through the stack's own [`Loader`], then admitted: this host's contract,
-//!    and a manifest whose `hooks` are exactly what the module exports.
-//! 3. **shadow** — a **clone** of the stack with the candidate applied. Not the live one: a
-//!    candidate the gate refuses must leave the session exactly as it was, which is the whole of
-//!    *"a bad candidate never replaces the good one"* (§2.3). The shadow has no effects, and it
-//!    never runs a look a hook declares: a look is the host's act on the world, and §2.4 step 3
-//!    says a dry run runs only what is read-only. This crate does not run looks at all — the
-//!    `look` field in an answer is data a caller acts on later. **And `reading` is not a list here
-//!    either**: when a shadow does run one, the question *is this a read* is
-//!    `letibot_tools::Gate::admit_unasked`'s — the ladder §4.4's live `exec` look goes through —
-//!    so a dry run and the real one cannot disagree about which command is a read.
-//! 4. **replay** — every recorded input of every hook the candidate exports, through the live
-//!    stack and the shadow stack. A trap, exhausted fuel or malformed output that the live stack
-//!    did not also produce is a failure; the answers are diffed.
-//! 5. **report** — the build log, the load result, the fuel per hook, and the diff. A change meant
-//!    to alter behaviour has a diff and the diff is the point; a squash or a refactor must have
-//!    none.
-//!
-//! The module the gate loaded is kept **on the candidate**, and [`crate::Stack::apply`] swaps in
-//! exactly that one — so the module that answers is the module that was replayed, not a second
-//! compile of the same bytes.
+//! by an agent: nobody who can be asked to verify their own fix is asked. The steps run in order
+//! and the first failure stops, because a report that mixes a build error into a replay diff is
+//! read by a model that then edits the wrong thing.
+//! The module the gate loaded is kept on the candidate, so what answers was replayed, not recompiled.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,10 +19,8 @@ use crate::{Candidate, Module, Recorder, Stack, sha256_file};
 /// How the gate's step 1 is performed, so tests never run cargo.
 pub trait Builder: Send + Sync {
     /// Build `dir`'s source, install the result as `<dir>/plugin.wasm`, and return the build log.
-    ///
-    /// The log comes back whether the build worked or not: it is the report's first field and the
-    /// thing the model fixes the source from. An error also returns it, because *"it failed"* with
-    /// no compiler output is a report nobody can act on.
+    /// The log comes back whether the build worked or not: it is what the model fixes the source
+    /// from, and *"it failed"* with no compiler output is a report nobody can act on.
     fn build(&self, dir: &Path) -> Result<String, BuildError>;
 }
 
@@ -70,32 +40,17 @@ impl std::fmt::Display for BuildError {
 impl std::error::Error for BuildError {}
 
 /// The production builder: `cargo build --offline --release --target wasm32-unknown-unknown` in
-/// the layer's directory, then the crate's own `.wasm` becomes `plugin.wasm`.
-///
-/// `--offline` is not a preference. A plugin build must not be the first thing in a session to
-/// reach the network, and a dependency that is not in the local cache is then a refusal a person
-/// can read instead of a build that stalls behind a registry.
-///
-/// This is the one place the crate starts a process, and it is not covered by a test — a test that
-/// ran it would need the wasm target installed and a real crate to build, which is exactly what
-/// this crate's tests exist not to need. The `Loader` seam is what is tested; this is the thin end
-/// that production hangs on it.
+/// the layer's directory, then the crate's own `.wasm` becomes `plugin.wasm`. `--offline` because
+/// a plugin build must not reach the network first; the `Loader` seam is what the tests cover.
 pub struct CargoBuilder;
 
 impl Builder for CargoBuilder {
     fn build(&self, dir: &Path) -> Result<String, BuildError> {
         let out = Command::new("cargo")
             .current_dir(dir)
-            // **The plugin's build is its own crate, in its own target directory.**
-            //
-            // MEASURED 2026-10-26, building a scaffolded plugin from a session whose daemon was
-            // started with `CARGO_TARGET_DIR` set: cargo put the guest at
-            // `$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/<crate>.wasm` — outside the layer
-            // this function then looks in — so a build that SUCCEEDED (`Finished release profile`)
-            // was reported as *"cargo succeeded but there is no built module"*. The inheritance is
-            // also wrong on its own terms: a guest is a different crate for a different target, and
-            // sharing the host's target directory makes it contend for that directory's lock with
-            // every build the session runs.
+            // The plugin's build is its own crate in its own target directory: an inherited
+            // `CARGO_TARGET_DIR` puts the guest outside the layer this function then looks in, and
+            // a guest sharing the host's directory contends for its lock with every session build.
             .env_remove("CARGO_TARGET_DIR")
             .args([
                 "build",

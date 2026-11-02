@@ -1,43 +1,11 @@
-//! **Who wrote a layer, on disk** — DECISIONS.md D17, as the operator restated it on 2026-10-31:
-//! *"Only the builtins run freely; anything I place later needs a pin."*
+//! Who wrote a layer, on disk: only the builtins run freely, and anything placed later needs a pin.
 //!
-//! # The ladder, in three arms
-//!
-//! 1. **A built-in runs freely**, `exec` included. It is the binary's own bytes — nobody placed
-//!    them at run time — and [`crate::Stack::register_builtin_shared`] marks it free by
-//!    definition, not by anything in this file.
-//! 2. **A placed layer needs a pin.** A pin is the SHA-256 of the layer's module and of its
-//!    `plugin.toml`, recorded by a person saying *these bytes are mine*. A layer whose bytes match
-//!    a pin is free. One that matches nothing is **unpinned**, and every call it makes is
-//!    adjudicated without a card (`Gate::admit_unasked`) rather than run.
-//! 3. **A byte change after the pin un-pins it.** The pin is not a permission granted to a
-//!    directory; it is a statement about bytes. So a layer rebuilt or edited after it was pinned
-//!    is unpinned again, and [`Standing::sentence`] names the layer and BOTH hashes — what the
-//!    person pinned and what is on disk now.
-//!
-//! # Provenance is recorded, not inferred
-//!
-//! [`Trust::note_write`] records the SHA-256 of a plugin module or manifest at the moment a tool
-//! writes it, so *who wrote these bytes* is a fact on disk rather than a guess from a path — a
-//! layer in a project's `.letibot/plugins/` is not the operator's because of where it sits.
-//!
-//! **The ladder does not consult provenance**, and that is deliberate: an unpinned layer is
-//! adjudicated whatever wrote it, so the weaker fact (a guess about authorship) can never widen
-//! what runs. The record is what a person reads when deciding whether to pin — `/plugin trust`
-//! reports it — and what a later audit answers *who put this here* with.
-//!
-//! # The file, and why it is one
-//!
-//! Pins and write records live in one JSON file in the letibot config directory
-//! (`$XDG_CONFIG_HOME/letibot/plugin-trust.json`), not in a layer's own directory: a pin written
-//! beside the bytes it pins would be a pin a model can write, which is the one thing the ladder
-//! cannot survive. It is a file rather than a store table because two processes read it — the
-//! daemon's stack, which answers tools, and the head's, which draws panes — and a pin a person
-//! takes in one must be in force in the other within its next poll.
-//!
-//! A missing file is *nothing is pinned*, and so is one that will not parse: the ladder's
-//! fail-closed direction is the unpinned one, so a corrupt file costs a card-free adjudication and
-//! never a free run.
+//! A built-in is the binary's own bytes, so it runs freely. A pin is the SHA-256 of a layer's
+//! module and of its `plugin.toml`, recorded by a person saying *these bytes are mine*; a layer
+//! whose bytes match nothing is unpinned, and every call it makes is adjudicated without a card.
+//! A pin is about bytes and not a directory, so a rebuild or an edit after it was pinned un-pins it.
+//! Provenance is recorded and never consulted: a guess about authorship must not widen what runs,
+//! so an unpinned layer is adjudicated whatever wrote it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -48,11 +16,9 @@ use serde_json::{Value, json};
 
 use crate::{MANIFEST, Manifest, WASM, sha256_file, sha256_hex};
 
-/// **One person's statement about one layer's bytes**: *this module and this manifest are mine*.
-///
-/// The name and the directory are for a reader — `/plugin trust` lists them, and the sentence a
-/// refusal carries quotes the name. Neither is what the pin decides: [`Trust::standing`] compares
-/// the two hashes and nothing else, which is what makes a rebuild un-pin the layer.
+/// One person's statement about one layer's bytes: *this module and this manifest are mine*.
+/// The name and the directory are for a reader - `/plugin trust` lists them, a refusal quotes the
+/// name. Neither decides: `Trust::standing` compares the two hashes, which un-pins a rebuild.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pin {
     /// The layer's manifest name at the moment it was pinned.
@@ -90,12 +56,9 @@ pub struct Standing {
 }
 
 impl Standing {
-    /// **The sentence an unpinned or re-written layer is refused with** — the layer by name, and
-    /// both hashes when there is a pin to compare against.
-    ///
-    /// Written here rather than at each refusal site because three callers say it (a tool call, an
-    /// `exec` look, the stack's own audit notice) and three spellings of *this layer is not
-    /// pinned* would be three things a person has to recognise.
+    /// The sentence an unpinned or re-written layer is refused with - the layer by name, and both
+    /// hashes when there is a pin to compare against. Written here rather than at each of the three
+    /// refusal sites, because three spellings of *not pinned* would be three things to recognise.
     pub fn sentence(&self, layer: &str, module: &str, manifest: &str) -> String {
         match &self.pin {
             Some(pin) if pin.module != module || pin.manifest != manifest => format!(
@@ -129,15 +92,9 @@ fn sha_or_dash(sha: &str) -> String {
     }
 }
 
-/// **A revocation, as a statement with a time on it** — DECISIONS.md D17's *"trust is listed and
-/// revocable"*, and the reason it is a row rather than an absence.
-///
-/// The book has two writers in two processes (the daemon records a write, the head takes or takes
-/// back a pin) and neither holds the other's copy. So **every statement carries its time**, and a
-/// merge is decided by that time and nothing else: a pin only stands if it is newer than the
-/// revocation of the same layer. Without the row, *not pinned* would be indistinguishable from
-/// *never mentioned*, and a peer's stale copy would put back a pin a person had just taken back —
-/// with a model's ordinary `write` into the layer directory as the thing that triggered the save.
+/// A revocation, as a statement with a time on it: trust is listed and revocable, so taking a pin
+/// back is a row and not an absence. Without the row *not pinned* would be indistinguishable from
+/// *never mentioned*, and a peer's stale copy would put back a pin a person had just taken back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Revoked {
     dir: String,
@@ -145,7 +102,6 @@ struct Revoked {
 }
 
 /// The book: the pins, the revocations, and the writes that were recorded.
-///
 /// One row per layer directory for each of the first two (the newest wins), one row per path for a
 /// write. `merge` is the only way two books are combined, and it is by `at_ms`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -216,14 +172,9 @@ impl Book {
         book
     }
 
-    /// **Two books as one**, by time: the newest statement about a layer directory wins, whichever
-    /// process it came from.
-    ///
-    /// This is the whole of the cross-process safety. A stale copy's pin is older than the
-    /// revocation a person just took, so the merge keeps the revocation; a stale copy's pin is
-    /// older than a re-pin taken after a byte change, so the merge keeps the newer pin. A tie — two
-    /// processes writing the same layer in the same millisecond — is broken towards `b`, the book
-    /// being merged in, which is the one whose statement the caller is making now.
+    /// Two books as one, by time: the newest statement about a layer directory wins, whichever
+    /// process it came from. That is the whole of the cross-process safety - a stale copy's pin
+    /// loses to the revocation or re-pin a person just took. A tie is broken towards `b`.
     fn merge(a: Book, b: Book) -> Book {
         let mut out = Book::default();
         for pin in a.pins.iter().chain(b.pins.iter()) {
@@ -247,10 +198,9 @@ impl Book {
                 None => out.writes.push(written.clone()),
             }
         }
-        // **A pin a later revocation supersedes does not go in the file at all.** Keeping the row
-        // would be a file that says *pinned* about a layer nobody may trust — a person reading it
-        // (or a future reader of this code) would have to know to compare two timestamps, and the
-        // one thing a book of statements must not do is read as the opposite of what it means.
+        // A pin a later revocation supersedes does not go in the file at all: the row would say
+        // *pinned* about a layer nobody may trust, and a reader would have to compare timestamps -
+        // a book of statements must not read as the opposite of what it means.
         out.pins.retain(|p| {
             let revoked = out
                 .revoked
@@ -333,8 +283,7 @@ impl Book {
     }
 }
 
-/// **The trust book, as both processes read it** — see the module doc for where it lives and why.
-///
+/// The trust book, as both processes read it.
 /// Held behind an `Arc` by a [`crate::Stack`]: the stack is shared and a call takes `&self`, so the
 /// book is a `Mutex` inside and every method takes `&self`.
 pub struct Trust {
@@ -388,15 +337,9 @@ impl Trust {
         }
     }
 
-    /// **Where this box's book is**, before it is opened — and the one door an override goes
-    /// through.
-    ///
-    /// `LETIBOT_PLUGIN_TRUST` names a book explicitly, and an EMPTY value means *no book at all*
-    /// (nothing is pinned and nothing is recorded). It exists for two real cases and not for
-    /// tidiness: a test binary that drives the real desk must not write the operator's own
-    /// `~/.config/letibot/plugin-trust.json` (`crates/harnessd/tests/plugins_tool.rs` sets it for
-    /// exactly that reason), and a box with one home and two configurations needs to say which
-    /// book a daemon reads. The same shape `LETIBOT_HOSTS` and `LETIBOT_STORE` take.
+    /// Where this box's book is, before it is opened - and the one door an override goes through.
+    /// `LETIBOT_PLUGIN_TRUST` names a book explicitly, and an EMPTY value means *no book at all*.
+    /// It exists so a test that drives the real desk never writes the operator's own config file.
     pub fn default_path() -> Option<PathBuf> {
         if let Some(named) = std::env::var_os("LETIBOT_PLUGIN_TRUST") {
             return (!named.is_empty()).then(|| PathBuf::from(named));
@@ -443,12 +386,9 @@ impl Trust {
         *self.lock() != before
     }
 
-    /// **The file every writer locks**, beside the book: `plugin-trust.lock`.
-    ///
-    /// A sidecar and not the book itself, because the book is written by `rename` — a lock held on
-    /// the old inode says nothing about the new one. `None` when there is no book on disk (an
-    /// in-memory one) or when the file cannot be opened, and a save without it is a save that may
-    /// lose a concurrent writer's statement: the degraded path, said out loud rather than hidden.
+    /// The file every writer locks, beside the book: `plugin-trust.lock`. A sidecar and not the
+    /// book itself, because the book is written by `rename` - a lock held on the old inode says
+    /// nothing about the new one. `None` degrades to a save that may lose a concurrent statement.
     fn lock_file(&self) -> Option<std::fs::File> {
         let file = self.file.as_deref()?;
         let path = file.with_extension("lock");
@@ -463,22 +403,9 @@ impl Trust {
             .ok()
     }
 
-    /// **Write the book, under a lock, merging with whatever is on disk at that instant.**
-    ///
-    /// Two things are needed and they are not the same thing:
-    ///
-    /// * **A merge by time** ([`Book::merge`]), so a peer's stale copy can neither undo a
-    ///   revocation nor undo a re-pin — its statement is older than the one in the file.
-    /// * **The read, the merge and the write as ONE act**, which is what the exclusive lock on
-    ///   `<book>.lock` buys. Without it two processes interleave inside `save` itself: each reads
-    ///   a book without the other's statement, each computes a merge, and the second's rename
-    ///   discards the first's. A revocation then survives only if the two never overlapped, which
-    ///   is not a guarantee — it is luck with a narrow window.
-    ///
-    /// The lock is released when the `File` drops (or by `unlock`), including on a panic. A file
-    /// whose lock cannot be taken — an exotic filesystem, a read-only directory — degrades to the
-    /// merge alone rather than to no save at all: losing a concurrent statement is bad, losing the
-    /// operator's own pin outright is worse.
+    /// Write the book, under a lock, merging with whatever is on disk at that instant. The merge by
+    /// time means a peer's stale copy can undo neither a revocation nor a re-pin, and the exclusive
+    /// lock makes the read, the merge and the write one act - without it the second rename wins.
     fn save(&self) {
         let Some(file) = self.file.as_deref() else {
             return;
@@ -539,11 +466,9 @@ impl Trust {
         }
     }
 
-    /// **Pin a layer directory's bytes as they are now**, and answer what was pinned.
-    ///
-    /// The hashes are read from the files rather than taken from a caller: the pin has to be about
-    /// what is on disk, and a caller that passed a hash it remembered would be pinning the layer
-    /// it meant to write.
+    /// Pin a layer directory's bytes as they are now, and answer what was pinned.
+    /// The hashes are read from the files rather than taken from a caller: a caller that passed a
+    /// hash it remembered would be pinning the layer it meant to write.
     pub fn pin(&self, name: &str, dir: &Path) -> Result<Pin, String> {
         let manifest = sha256_file(&dir.join(MANIFEST))
             .map_err(|why| format!("`{}` has no manifest to pin: {why}", dir.display()))?;
@@ -606,9 +531,8 @@ impl Trust {
             .collect()
     }
 
-    /// **Record that a tool wrote these bytes**, when they are a plugin artifact.
-    ///
-    /// `None` when the path is not one — a write of `README.md` is not provenance about a layer,
+    /// Record that a tool wrote these bytes, when they are a plugin artifact.
+    /// `None` when the path is not one - a write of `README.md` is not provenance about a layer,
     /// and a file of every write on the box would bury the ones that matter.
     pub fn note_write(&self, path: &Path, bytes: &[u8], session: &str) -> Option<Written> {
         if !is_plugin_artifact(path) {
@@ -651,11 +575,9 @@ impl Trust {
     }
 }
 
-/// **The one window this file has, made reachable for a test** — `save` runs the installed hook
+/// The one window this file has, made reachable for a test - `save` runs the installed hook
 /// between its read and its write, which is exactly where a second process's write would land.
-///
-/// The same shape the job watcher's `hold_settlements_for_test` takes: a seam with no production
-/// caller, `#[cfg(test)]` all the way through, so the shipped binary has no such hook to trip.
+/// A seam with no production caller, `#[cfg(test)]` all the way through.
 #[cfg(test)]
 pub(crate) mod test_seam {
     use std::sync::Mutex;
@@ -722,8 +644,7 @@ fn stamp_of(path: &Path) -> (u64, u64) {
     }
 }
 
-/// **Is this write about a layer?** — a module, a manifest, or a file beside one.
-///
+/// Is this write about a layer? - a module, a manifest, or a file beside one.
 /// A layer's source is a plugin artifact too: a `.rs`/`.js` in a directory with a `plugin.toml` is
 /// what the module is built from, and a record of it is what a reviewer reads.
 fn is_plugin_artifact(path: &Path) -> bool {
@@ -946,14 +867,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **The direction that matters: a STALE peer must not undo the operator's own act.**
-    ///
-    /// The reviewer's case, exactly: the operator pins, the operator revokes in the head, and a
-    /// daemon whose book still holds the pin saves a write record afterwards — a model's ordinary
-    /// `write` into the layer directory is enough to trigger it. A merge that let the in-memory
-    /// entry win, or that treated *absent from my copy* as *never pinned*, put the pin back and the
-    /// layer ran free again. It is the timestamps that stop it, and this test holds a book that
-    /// never saw the revocation for the whole sequence.
+    /// The direction that matters: a STALE peer must not undo the operator's own act.
+    /// The operator pins and then revokes in the head, and a daemon whose book still holds the pin
+    /// saves a write record afterwards. It is the timestamps that stop it putting the pin back.
     #[test]
     fn a_stale_book_cannot_put_back_a_pin_a_person_took_away() {
         let root = tempdir("stale-revoke");
@@ -1002,17 +918,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **The interleaving the merge alone cannot survive**: a second writer lands INSIDE `save`'s
-    /// own window — between this process's read of the book and its rename over it.
-    ///
-    /// This is the reviewer's finding, made deterministic. Two books over one file; the first is
-    /// paused by [`test_seam`] exactly where a peer's write would land, and the peer then pins a
-    /// DIFFERENT layer. Without the exclusive lock the peer reads a book that does not have the
-    /// first's statement, merges, writes, and the first's rename then discards it — so the operator's
-    /// pin is silently gone. With the lock the peer waits, and both statements are in the file.
-    ///
-    /// Three assertions, and the last one is the one that cannot be passed by luck: the second
-    /// writer is still waiting, its pin succeeded, and the book holds both.
+    /// The interleaving the merge alone cannot survive: a second writer lands INSIDE `save`'s own
+    /// window, between this process's read of the book and its rename over it. The first is paused
+    /// by [`test_seam`] there, and the peer then pins a DIFFERENT layer, which must survive.
     #[test]
     fn a_write_that_lands_between_a_read_and_its_rename_is_not_lost() {
         use std::sync::mpsc;

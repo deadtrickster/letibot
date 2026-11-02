@@ -1,28 +1,11 @@
-//! **rano ABI v1 from the guest's side**: the input the host wrote, an arena to answer in, and
-//! the result block.
+//! rano ABI v1 from the guest's side: the input the host wrote, an arena to answer in, and the
+//! result block.
 //!
-//! # The ABI in six lines
-//!
-//! A text hook is `(i32, i32) -> i32`: the host calls `rano_alloc(n)` first, writes the input's
-//! JSON at the offset it answered, and then calls the hook with `(offset, len)`. The hook answers
-//! the offset of an **8-byte result block** holding `out_ptr` and `out_len` as little-endian
-//! `u32`s — or `-1` for *unchanged*, which is the layer passing and the stack asking the next one
-//! down (`docs/plugins-plan.md` §2.1). The module must also export `rano_abi() -> 1`.
-//!
-//! # Why an arena and not the allocator
-//!
-//! A guest in this host is called in a fresh store each time and may be called every frame, so
-//! what it answers has to be bounded work *and* bounded memory. Leaking a `Box` per answer works
-//! once; a pane drawn twenty times a second would grow until the host's 64 MiB ceiling. So the
-//! answer goes into a fixed arena that [`reset`] empties at the start of every hook, and the
-//! input sits in a region of its own — the host may still be reading the request while the guest
-//! writes the answer.
-//!
-//! # Single-threaded, and that is the target's own fact
-//!
-//! `wasm32-unknown-unknown` with no atomics is one thread of execution, which is what makes the
-//! `UnsafeCell`s below sound with no lock: two hooks never overlap, because rano calls one at a
-//! time on one store.
+//! A text hook is `(i32, i32) -> i32`: the host calls `rano_alloc(n)`, writes the input's JSON at
+//! the offset it answered, then calls the hook with `(offset, len)`. The hook answers the offset of
+//! an 8-byte result block holding `out_ptr` and `out_len`, or `-1` for *unchanged*, which passes.
+//! The answer goes into a fixed arena rather than the allocator because a guest may be called every
+//! frame, and no lock is needed because `wasm32-unknown-unknown` without atomics is one thread.
 
 use std::cell::UnsafeCell;
 
@@ -61,10 +44,9 @@ static OUT: Shared<Arena> = Shared(UnsafeCell::new(Arena {
 /// The result block the host reads after a hook answers: `out_ptr`, `out_len`.
 static BLOCK: Shared<[u32; 2]> = Shared(UnsafeCell::new([0, 0]));
 
-/// **Where the host writes the input** — the address `rano_alloc` hands back.
-///
-/// `rano_alloc` is exported from here rather than from each guest so that every built-in module
-/// answers the same way, and so that a guest's `Cargo.toml` cannot forget it.
+/// Where the host writes the input - the address `rano_alloc` hands back. Exported from here
+/// rather than from each guest so every built-in module answers the same way, and so a guest's
+/// `Cargo.toml` cannot forget it.
 #[unsafe(no_mangle)]
 pub extern "C" fn rano_alloc(n: i32) -> i32 {
     match usize::try_from(n) {
@@ -81,17 +63,9 @@ pub extern "C" fn rano_abi() -> i32 {
     1
 }
 
-/// The input of the hook being called, as bytes — the region `rano_alloc` answered with.
-///
-/// **`ptr` is an ABSOLUTE address in this module's memory**, not an offset into the arena: `rano_alloc`
-/// answers the arena's own address and the host writes at it, so the window is
-/// `[arena_start + 0, arena_start + IN_CAP)` and a pointer outside it is a host that broke its own
-/// contract — answered *unchanged* rather than by a panic or a slice out of bounds.
-///
-/// # Safety
-///
-/// Called only from inside a hook, with the `(ptr, len)` rano handed that hook. The bounds check
-/// makes that claim true for every input the host can actually send.
+/// The input of the hook being called, as bytes - the region `rano_alloc` answered with.
+/// `ptr` is an ABSOLUTE address in this module's memory, not an offset, so a pointer outside the
+/// arena is a host that broke its own contract: answered *unchanged* rather than by a panic.
 pub fn input(ptr: i32, len: i32) -> &'static [u8] {
     let base = INPUT.0.get() as usize;
     let at = usize::try_from(ptr).unwrap_or(usize::MAX);
@@ -136,12 +110,9 @@ pub fn answer(text: &str) -> i32 {
     BLOCK.0.get() as usize as i32
 }
 
-/// **Answer the hook with what `f` makes of its input** — the three lines every export in
-/// `plugins/builtin` is, so a guest's `lib.rs` is its logic and nothing else.
-///
-/// A hook whose logic answers nothing is `-1`: *unchanged*, the layer passes, and the stack asks
-/// the layer below — the fail-down rule of `docs/plugins-plan.md` §1, principle 4, which is what
-/// makes a broken built-in a plain list rather than a broken screen.
+/// Answer the hook with what `f` makes of its input - the three lines every export in
+/// `plugins/builtin` is, so a guest's `lib.rs` is its logic and nothing else. A hook whose logic
+/// answers nothing is `-1`, and the stack asks the layer below - the fail-down rule.
 pub fn hook(ptr: i32, len: i32, f: impl FnOnce(&[u8]) -> Option<String>) -> i32 {
     reset();
     let bytes = input(ptr, len);

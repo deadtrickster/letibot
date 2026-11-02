@@ -1,14 +1,11 @@
-//! **`letibot stats`** — the read side: §3's questions as queries, each answering a table.
+//! `letibot stats` - the read side: the questions as queries, each answering a table.
 //!
-//! Opens `metrics.db` **read-only**, loads the views ([`crate::store::VIEWS`], `TEMP`), and never
-//! writes, never starts a daemon. Phase 1's verbs (§5): the day's summary, turns, worker waits
-//! (Q3), deliveries and wakes (Q1/Q2), tool reliability (Q8), latency and throughput per model
-//! (Q7), the operator's marks with their turns' numbers (Q15), one session's timeline, and raw
-//! SQL with the views loaded.
+//! Opens `metrics.db` read-only, loads the views as `TEMP`, and never writes and never
+//! starts a daemon. The verbs run from the day's summary through turns, worker waits,
+//! deliveries, tool reliability, per-model latency, the marks and one session's timeline.
 //!
-//! Percentiles are computed here rather than in SQL: `PERCENT_RANK` over a window is the doc's
-//! spelling, and it costs a sort per partition the reader does anyway — reading the column and
-//! sorting it once is the same work with one less clause to get wrong.
+//! Percentiles are computed here rather than in SQL: sorting the column once is the same
+//! work as `PERCENT_RANK` over a window, with one less clause to get wrong.
 
 use std::collections::BTreeMap;
 use std::path::Path;

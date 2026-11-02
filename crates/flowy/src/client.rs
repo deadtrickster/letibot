@@ -1,22 +1,11 @@
 //! The node's API, as the connector uses it. Bearer-authenticated, blocking,
 //! over [`letibot_http`].
 //!
-//! Every method here is a door that exists on the node today (`GET /api/node`'s
-//! route table, checked against build `0.8.0+d1f2415` on 2026-09-14). Nothing is
-//! written against an endpoint that was asked for and has not landed —
-//! `docs/flowy-monitor.md` lists those separately, and the seat is built to the
-//! long-poll shape the node has.
-//!
-//! # Three kinds of failure, kept apart
-//!
-//! [`NodeError::Unreachable`] is the encoder gone (closed loop §5): the seat goes
-//! stalled and says so. [`NodeError::Refused`] is the node answering *no* — a bad
-//! token, a room that is not yours, an argument it did not like — and it carries
-//! the node's own sentence, because flowy's refusals are written to be read.
-//! [`NodeError::NoReader`] is the one refusal a listener must treat specially:
-//! the same sentence appears when a token has been SWITCHED, and re-declaring
-//! there loses every message since the switch. It carries the labels that do
-//! exist so the caller can see which case it is in.
+//! Every method is a door the node already has, so nothing is written against an
+//! endpoint that has not landed. Three failures are kept apart: `Unreachable` is
+//! the encoder gone, `Refused` carries the node's own sentence, and `NoReader`
+//! must be read specially - the same sentence appears when a token has been
+//! SWITCHED, and re-declaring there loses every message since the switch.
 
 use std::time::Duration;
 
@@ -183,17 +172,8 @@ pub struct Artifact {
 }
 
 /// What `GET /api/nag` answers: the seat's board state, as counts with the ids
-/// behind them.
-///
-/// **Read off the node, not off the docs** (build `0.8.0+d1f2415`, 2026-09-15).
-/// A note asking for this work said `stale` was the one count with no `_ids`
-/// companion; the node returns `stale_ids` like every other. Field names here
-/// were taken from an actual response body, because the only in-tree mention of
-/// them describes the CLI rather than the API.
-///
-/// Every field is `#[serde(default)]`: a node that grows a count must not break
-/// a seat, and one that drops a count must leave the seat reading zero rather
-/// than failing to parse.
+/// behind them. Every field is `#[serde(default)]`, so a node that grows or drops
+/// a count leaves a seat reading zero rather than failing to parse.
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 pub struct Nag {
     /// Open rows assigned to this seat.
@@ -354,14 +334,9 @@ impl Node {
         self.get("/api/node")
     }
 
-    /// `GET /api/nag`: the seat's own board STATE — what is assigned, waiting,
-    /// owed and stale right now.
-    ///
-    /// The one read in this client that is not about something that HAPPENED.
-    /// `inbox_wait` answers *what was said since my cursor*; this answers *what
-    /// is true about my queue*, and a queue that has been full for an hour
-    /// generates no events at all. See [`crate::seat::NagState`] for why that
-    /// distinction is the whole point.
+    /// `GET /api/nag`: the seat's own board STATE - what is assigned, waiting,
+    /// owed and stale right now. This is a read of what is TRUE, not of what
+    /// happened: a queue full for an hour generates no event at all.
     pub fn nag(&self) -> Result<Nag, NodeError> {
         parse(self.get("/api/nag")?)
     }
@@ -378,8 +353,7 @@ impl Node {
     }
 
     /// Block up to [`POLL_WINDOW`] for something this reader should hear.
-    ///
-    /// `focus` is the project everything is delivered from; elsewhere, only what
+    /// `focus` is the project everything is delivered from; elsewhere only what
     /// names the seat. `Some("")` is not sent.
     pub fn inbox_wait(
         &self,
@@ -487,10 +461,9 @@ impl Node {
         parse(v.get("events").cloned().unwrap_or(Value::Array(vec![])))
     }
 
-    /// The last `limit` messages in a room, oldest first — the antecedents of a
+    /// The last `limit` messages in a room, oldest first - the antecedents of a
     /// mention, which a delivery alone does not carry. `order=recent` is the
-    /// node's word for the tail (the other is `log`, from the start); the first
-    /// spelling here was `desc`, and the node refused it by name.
+    /// node's word for the tail (the other is `log`, from the start).
     pub fn room_read(&self, room: &str, limit: usize) -> Result<Vec<Event>, NodeError> {
         let v = self.get(&format!(
             "/api/chat/{}?limit={limit}&order=recent",

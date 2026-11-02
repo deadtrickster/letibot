@@ -1,17 +1,11 @@
-//! JSON text that is byte-identical to what the shipped template produces.
+//! JSON text that is byte-identical to what the shipped GLM template produces.
 //!
-//! GLM's jinja calls `{{ v | tojson(ensure_ascii=False) }}` in two places — the
-//! tool schema block and a tool call's non-string argument values. Both land in the
-//! prompt verbatim, so **the separators are part of the prompt bytes**, not a
-//! formatting preference.
-//!
-//! Hugging Face's `tojson` filter (`transformers/utils/chat_template_utils.py`) is
-//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)`, and llama.cpp's
-//! jinja matches it. `serde_json`'s compact writer uses `,`/`:` with no spaces, so a
-//! naive `to_string` diverges on every tool schema. Hence this formatter.
-//!
-//! Verified against `POST /apply-template` on 2026-09-09: `{"a": 1, "b": "two"}`,
-//! `[1, 2, "x"]`, and `"héllo →"` unescaped.
+//! GLM's jinja calls `{{ v | tojson(ensure_ascii=False) }}` for the tool schema block
+//! and for a tool call's non-string argument values, so the separators are prompt
+//! bytes rather than a formatting preference. Hugging Face's `tojson` is
+//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)` and llama.cpp's
+//! jinja matches it, while `serde_json`'s compact writer uses `,`/`:` - hence this
+//! formatter.
 
 use serde_json::Value;
 use serde_json::ser::Formatter;
@@ -48,18 +42,9 @@ pub fn hf_tojson(value: &Value) -> String {
     String::from_utf8(buf).expect("serde_json emits UTF-8")
 }
 
-/// One line of GLM's `<tools>` block, from an OpenAI-shaped tool schema.
-///
-/// The template unwraps `{"type":"function","function":{…}}`, drops `defer_loading`
-/// and `strict`, and emits the remaining keys **in the order llama.cpp produced
-/// them**, which is `common_chat_tools_to_json_oaicompat`'s fixed order: `name`,
-/// `description`, `parameters` — with `description` present as `""` even when the
-/// caller omitted it. That normalisation is not the template's; it is the server's,
-/// and a renderer that skips it emits a shorter line than the model was trained on.
-///
-/// This lives here rather than in the dialect because `StablePrefix.tools_json`
-/// holds finished text: whoever fills that field must produce these bytes, and
-/// there should be exactly one implementation of "these bytes".
+/// One line of GLM's `<tools>` block, from an OpenAI-shaped tool schema. It must carry the
+/// server's own normalisation (unwrapped, `description` defaulted to `""`, `name`/`description`/
+/// `parameters` order) or the line is shorter than the model was trained on.
 pub fn glm_tool_json(tool: &Value) -> String {
     let f = tool.get("function").unwrap_or(tool);
     let mut out = serde_json::Map::new();
@@ -84,11 +69,8 @@ pub fn glm_tool_json(tool: &Value) -> String {
     hf_tojson(&Value::Object(out))
 }
 
-/// One `<arg_value>` body.
-///
-/// `{{ v | tojson(ensure_ascii=False) if v is not string else v }}` — a string
-/// argument is emitted **raw**, everything else as JSON. So `{"path":"a.txt"}`
-/// renders `a.txt`, not `"a.txt"`.
+/// One `<arg_value>` body: a string argument is emitted raw, everything else as JSON,
+/// so `{"path":"a.txt"}` renders `a.txt`. The template asks for exactly that.
 pub fn arg_value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -103,7 +85,7 @@ mod tests {
 
     #[test]
     fn separators_match_the_shipped_template() {
-        // Captured from POST /apply-template, 2026-09-09.
+        // Captured from POST /apply-template.
         assert_eq!(
             hf_tojson(&json!({"a": 1, "b": "two"})),
             r#"{"a": 1, "b": "two"}"#

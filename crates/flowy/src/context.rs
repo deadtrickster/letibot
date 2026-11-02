@@ -1,29 +1,11 @@
 //! The fabric, as a block in the system prompt: what skills are on the shelf
-//! and what memories exist — so the model knows what it could load, and loads
-//! a body only when it needs one.
+//! and what memories exist, so the model knows what it could load.
 //!
-//! Given by the operator 2026-09-14: *"skills are summaries of full pages,
-//! memories are titles."* A skill's summary is its first paragraph; a memory
-//! is its title and id. Both are cheap in tokens and both are pointers — the
-//! `skill` tool loads a skill, and the `flowy` CLI (`flowy get`, through `bash`)
-//! reads a memory. The block names a door only when the session has it: see
-//! [`Reach`].
+//! Skills are summaries and memories are titles, because both are pointers - a
+//! body costs tokens, and the `skill` tool or the `flowy` CLI reads one. The
+//! block names a door only when the session has it: see [`Reach`].
 //!
-//! # Offline is a state, not an empty block
-//!
-//! `docs/tool-design-brief.md` §3b keeps a no-flowy mode, and closed loop §5
-//! says a lost encoder is declared, not papered over. So the block comes from
-//! one of three places and says which: the node, read just now; the last copy
-//! cached on disk, with its age; or nowhere, in which case the block says the
-//! fabric is unreachable and no copy exists. A session with no seat has no
-//! block at all, and the disclosure says `fabric: OFF`.
-//!
-//! # When it is read
-//!
-//! At session open, into the system prompt — message 0, which is never
-//! rewritten. After a compaction, or on a resume, a fresh reading that differs
-//! from the last one goes in as a **system update** (§5.3: appended, never
-//! rewritten), so a stale block is corrected without a cold re-prefill.
+//! Offline is a state, not an empty block: the block names its source.
 
 use std::path::{Path, PathBuf};
 
@@ -64,12 +46,9 @@ pub struct FabricContext {
     pub memories: Vec<MemoryLine>,
 }
 
-/// **Which doors to the rest the session reading the block actually has.**
-///
-/// The block is a list of pointers, and a pointer is only worth printing with the
-/// way to follow it — but only when that way is seated. A seat without `skill` told
-/// to `skill load` something, or one without `bash` told to run `flowy get`, is a
-/// prompt naming a tool the model does not have (R93.G4, G7).
+/// Which doors to the rest the session reading the block actually has. A pointer
+/// is only worth printing with the way to follow it: a seat told to use a door it
+/// was not given is a prompt naming a tool the model does not have.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Reach {
     /// The `skill` tool is seated: a shelf skill loads by id or title.
@@ -254,10 +233,9 @@ impl FabricContext {
     }
 }
 
-/// The first paragraph that is not a heading, a blockquote or an HTML
-/// comment, cut to [`SUMMARY_CHARS`] on a word boundary with an ellipsis.
-/// Markdown emphasis is left alone; it costs nothing and a summary that
-/// reads like the page is easier to match to it.
+/// The first paragraph that is not a heading, a blockquote or an HTML comment,
+/// cut to [`SUMMARY_CHARS`] on a word boundary with an ellipsis. Markdown
+/// emphasis is left alone: it costs nothing and reads like the page.
 pub fn first_paragraph(body: &str) -> String {
     let mut para = String::new();
     for block in body.split("\n\n") {

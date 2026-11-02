@@ -1,13 +1,12 @@
-//! Fetch one address through the crate's fetcher, printing exactly what the
-//! model would see — the debug aid for this crate's policies.
+//! Fetch one address through the crate's fetcher, printing exactly what the model would see.
 //!
 //! ```sh
 //! cargo run -q -p letibot-webfetch --example fetch -- https://github.com/romkatv/gitstatus
 //! ```
 //!
-//! Exists because every policy in this crate is meant to be checkable from a
-//! shell: the github rewrite, the gh door, the cap, the notes. A policy you can
-//! only observe through a running daemon is a policy nobody re-checks.
+//! Every policy in this crate is meant to be checkable from a shell - the github rewrite, the gh
+//! door, the cap, the notes - because a policy observable only through a running daemon is a
+//! policy nobody re-checks.
 use letibot_tools::builtins::external::web::{FetchRequest, Fetcher, PageFormat};
 
 fn main() {

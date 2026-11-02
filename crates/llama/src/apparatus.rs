@@ -1,14 +1,11 @@
-//! **Whether a vocabulary is on this machine AND this build can load it.**
+//! Whether a vocabulary is on this machine AND this build can load it.
 //!
-//! [`letibot_tokencore::apparatus`] answers the first question, and on its own it is the wrong
-//! one: a GGUF can exist and be unloadable — a split shard whose siblings are missing, or an
-//! architecture this llama.cpp does not know — and a test that skipped only on `is_file` then
-//! failed inside [`crate::load`] instead of saying the apparatus was absent. Forty-seven harnessd
-//! tests went red on one such file, and not one of them was a defect.
+//! [`letibot_tokencore::apparatus`] answers the first question and on its own it is the
+//! wrong one: a GGUF can exist and be unloadable, a split shard whose siblings are
+//! missing or an architecture this llama.cpp does not know, and a test that skipped on
+//! `is_file` alone failed inside [`crate::load`] rather than saying the apparatus was absent.
 //!
-//! So presence here means **the load succeeded once**, and the answer is kept for the path, its
-//! length and its modification time: a test binary asks this before every test that needs a
-//! vocabulary, and a load costs about a second.
+//! So presence here means the load succeeded once, cached by path, length and mtime.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

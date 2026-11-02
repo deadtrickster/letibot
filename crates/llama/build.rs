@@ -2,19 +2,10 @@
 //! fork's `libllama`.
 //!
 //! Where the checkout and its library are is `build-support.rs`, included rather than
-//! copied — five crates need the same answer and they had five copies of it (why:
-//! `docs/build-notes.md`). This is the only one of the five that ASSERTS: it is the only
-//! crate that links the library, so a box with no llama.cpp must fail here, with the list
-//! of paths tried, rather than link a binary that cannot start.
-//!
-//! **The search is not politeness — it is the merge gate.** MEASURED 2026-10-26: `main`
-//! went red at `0f9ddad8` on the gate's `cargo clippy --all-targets`, exit 101, and not
-//! from a lint: this script asserted its way out looking for `/home/dead/Projects/llama.cpp`
-//! — the *Linux* box's path — because the gate is a child of a daemon running on a Mac
-//! whose environment carries neither `LETIBOT_LLAMA_DIR` nor `LETIBOT_LLAMA_LIB`. The
-//! checkout was there the whole time; only the path was, and only inside whatever shell
-//! had exported it. A build script that can find its header only when a human exported a
-//! variable cannot be run by a queue, and the queue is what says whether the tree is good.
+//! copied, because five crates need the same answer. This is the only one of the five
+//! that ASSERTS: it is the only crate that links the library, so a box with no llama.cpp
+//! must fail here, with the list of paths tried, rather than link a binary that cannot
+//! start.
 
 include!("build-support.rs");
 
@@ -40,9 +31,8 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=dylib=llama");
     // The shim calls `ggml_backend_dev_by_type` to name the CPU device for a
-    // vocabulary load (see csrc/shim.c): that symbol lives in libggml, which
-    // libllama itself imports at runtime. Naming it here keeps the shim's one
-    // dependency explicit instead of relying on the link order picking it up.
+    // vocabulary load: that symbol lives in libggml, which libllama imports at runtime.
+    // Naming it here keeps the shim's one dependency explicit.
     println!("cargo:rustc-link-lib=dylib=ggml");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }
@@ -63,10 +53,8 @@ fn locate_checkout() -> std::path::PathBuf {
 }
 
 /// The directory holding `libllama`, or a failure that lists every path tried.
-///
 /// `LETIBOT_LLAMA_LIB` is an instruction rather than a hint, so a directory that was
-/// named and holds nothing is a failure naming it — not a quiet fall back to one that
-/// does.
+/// named and holds nothing is a failure naming it, not a quiet fall back to one that does.
 fn locate_lib(checkout: &std::path::Path) -> std::path::PathBuf {
     let candidates = llama_lib_candidates(checkout);
     let lib = match std::env::var_os("LETIBOT_LLAMA_LIB") {

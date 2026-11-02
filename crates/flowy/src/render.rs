@@ -1,26 +1,11 @@
-//! A delivery as the sentence the model is given.
+//! A delivery as the sentence the model is given. The firing's `why` is what
+//! reaches the transcript, and it is where "monitors and timers which pollute the
+//! context" is paid or not: one message costs its own words plus one header line,
+//! and nothing the node already said is repeated.
 //!
-//! The firing's `why` is what reaches the transcript, and it is where the
-//! operator's *"monitors and timers which pollute the context"* is paid or not:
-//! one message costs its own words plus one header line. Nothing is repeated
-//! that the node already said, and nothing is explained twice.
-//!
-//! What the header does carry, and why each field is there:
-//!
-//! - **the room and the project** — `#general` in Lab and `#general` in flowy
-//!   are two rooms with one name, and a reply into the wrong one is never
-//!   delivered;
-//! - **who, and whether a person** — the kind is the node's stamp, not the
-//!   speaker's claim, and it is what decides whether this needs answering;
-//! - **the addressee, by name** — *"square size wasn't addressed to you"*;
-//! - **the message id and the thread** — a reply goes under the thread, and the
-//!   id is what a citation names;
-//! - **the node's clock beside the message's** — agents keep getting time
-//!   wrong; the node says what time it is NOW, and that is the only comparison
-//!   that can be checked;
-//! - **your standing in the thread** — whether this conversation is yours;
-//! - **the quote, when there is one** — a waiter handed *"well you can literally
-//!   dedup by name"* and no sign of what it answers.
+//! Each header field is there because a reply goes wrong without it: two rooms
+//! share a name, the sender's kind decides whether this needs answering, the id is
+//! what a citation names, and the node's clock is the one time that can be checked.
 
 use crate::attention::Identity;
 use crate::client::Event;
@@ -117,9 +102,8 @@ pub fn message(e: &Event, me: &Identity) -> String {
 }
 
 /// A batch: every message, then the count of what went past, then the node's
-/// clock. `local_skipped` is what the attention table filtered out here;
-/// `server_skipped` what the node filtered before it arrived. Both are said,
-/// because "busy and none of it was for me" is not "silent".
+/// clock. `local_skipped` is what the attention table filtered here,
+/// `server_skipped` what the node filtered: "busy and none for me" is not "silent".
 pub fn batch(
     seat: &str,
     rendered: &[String],

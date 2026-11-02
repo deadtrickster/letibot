@@ -232,18 +232,9 @@ pub use instructions::{BoxDirs, CANONICAL_INSTRUCTION_FILE, INSTRUCTION_FILE, in
 /// surprise.
 pub const FILE_NAME: &str = "leticode.toml";
 
-/// **The user level's path**: `~/.config/letibot/leticode.toml`, the same config
-/// dir `providers.toml` and `prompts.toml` live in.
-///
-/// Derived from [`letibot_provider::keys::config_file`] rather than from `$HOME`
-/// spelled a second time, so the one file that knows where the config dir is is
-/// the one that answers — a `$XDG_CONFIG_HOME` honoured by `providers.toml` and
-/// ignored here would be two answers to one question.
-///
-/// **A fixed path, with no walk-up.** That is the whole difference from
-/// [`LeticodeConfig::discover`]: a project file is *found*, because a session
-/// started in a subdirectory has to reach the project's settings, and a user file
-/// is *at an address*, because "mine" does not depend on where you stand.
+/// The user level's path: `~/.config/letibot/leticode.toml`, derived from
+/// `config_file` so one file answers where the config dir is. Fixed, with no
+/// walk-up: "mine" does not depend on where you stand, a project file does.
 pub fn user_path() -> PathBuf {
     letibot_provider::keys::config_file()
         .parent()
@@ -251,13 +242,9 @@ pub fn user_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(FILE_NAME))
 }
 
-/// **Load the user level**, at [`user_path`]. The same call as
-/// [`LeticodeConfig::load`], because it is the same file shape — one parser, two
-/// levels.
-///
-/// A missing file is `Ok` with no models, exactly as at the project level: a box
-/// where nobody wrote one runs on the daemon's own standing answer and says so,
-/// rather than on a file that is not there.
+/// Load the user level at `user_path`. The same call as `load`, because it is the
+/// same file shape - one parser, two levels. A missing file is `Ok` with no models,
+/// so a box where nobody wrote one runs on the daemon's own answer and says so.
 pub fn load_user() -> Result<LeticodeConfig, String> {
     LeticodeConfig::load(&user_path())
 }
@@ -292,10 +279,9 @@ impl Level {
         }
     }
 
-    /// The level as a sentence names it. **Each one contains its own word from
-    /// [`Level::as_str`]** — `flag`, `project`, `user`, `built-in` — because that word
-    /// is what a reader scans for and what the operator asked to be told; a prose name
-    /// that shared no substring with it would be a second vocabulary for one fact.
+    /// The level as a sentence names it. Each contains its own word from
+    /// [`Level::as_str`], because that word is what a reader scans for; a prose name
+    /// sharing no substring with it would be a second vocabulary for one fact.
     pub fn describe(self) -> &'static str {
         match self {
             Level::Flag => "the flag level (`--provider` on the command line)",
@@ -312,12 +298,9 @@ impl std::fmt::Display for Level {
     }
 }
 
-/// **The role every spawn lands on**, when the `task` call named no other seat.
-///
-/// A `[roles.subagent]` table is the floor under every child, and a seat's own
-/// table (`[roles.coder]`) refines it — because the operator's ask is about
-/// *"subagents mode"* rather than about one seat, and a project that wants every
-/// child to stop overthinking should have to say it once.
+/// The role every spawn lands on, when the `task` call named no other seat. A
+/// `[roles.subagent]` table is the floor under every child and a seat's own table
+/// refines it, so a project that wants every child to stop overthinking says it once.
 pub const SUBAGENT_ROLE: &str = "subagent";
 
 /// The sampler keys a role's table may set, in the order the operator's own
@@ -325,18 +308,9 @@ pub const SUBAGENT_ROLE: &str = "subagent";
 /// `[model.*]` blocks use, so one vocabulary covers both files.
 pub const SAMPLER_KEYS: &[&str] = &["temperature", "top_p", "top_k", "min_p", "presence_penalty"];
 
-/// **The keys a role's table may not set, and the reason is the operator's own
-/// second sentence.**
-///
-/// *"we dont have the same context limit as with dense obviously"* — a window is
-/// a fact about the box that serves the weights, and it is MEASURED where the
-/// subagent runs (see `child_window_refusal` in `harness.rs`, written after
-/// three children planned against the parent's wall and reached 911k resident
-/// tokens with no compaction item in their logs). A reply cap is the same kind
-/// of fact: it belongs to the call, not to the project's idea of the model.
-/// Naming them here rather than leaving them to the generic unknown-key refusal
-/// is the difference between *"I do not know that key"* and *"I know exactly
-/// what you meant, and this file does not get to decide it"*.
+/// The keys a role's table may not set: a window is MEASURED where the subagent runs
+/// and a reply cap belongs to the call. Refusing them by name says "I know what you
+/// meant, and this file does not get to decide it", not "I do not know that key".
 pub const WINDOW_AND_CAP_KEYS: &[&str] = &[
     "window",
     "context_window",
@@ -348,14 +322,9 @@ pub const WINDOW_AND_CAP_KEYS: &[&str] = &[
     "thinking_budget_tokens",
 ];
 
-/// **How one role samples** — the five keys measured on dense78, each one
-/// `Option` so "the file said nothing" stays a different fact from "the file
-/// said `temperature = 0.0`".
-///
-/// There is no window here and no reply cap, and that is the type doing the
-/// work rather than a rule somebody has to remember: [`WINDOW_AND_CAP_KEYS`]
-/// are refused at the parser, so nothing downstream can be handed a dense78
-/// window along with dense78's sampling.
+/// How one role samples - each key `Option`, so "the file said nothing" stays a
+/// different fact from "the file said `temperature = 0.0`". There is no window and no
+/// reply cap here because [`WINDOW_AND_CAP_KEYS`] refuses them at the parser.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RoleSampling {
     /// How flat the distribution is. dense78: `0.7`.
@@ -373,14 +342,9 @@ pub struct RoleSampling {
 }
 
 impl RoleSampling {
-    /// **The operator's own numbers, measured on `dense78`.**
-    ///
-    /// > *"when used in subagents mode we need to call qwen with the parameters
-    /// > similar to dense78 - otherwise it overthinks terribly"*
-    ///
-    /// These are the standing defaults for a subagent, so a project that writes
-    /// no `leticode.toml` at all still gets children that do not overthink, and
-    /// a project that wants other numbers overrides them key by key.
+    /// The standing numbers for a subagent, measured on `dense78`: a project that
+    /// writes no `leticode.toml` still gets children that do not overthink, and one
+    /// that wants other numbers overrides them key by key.
     pub fn dense78() -> RoleSampling {
         RoleSampling {
             temperature: Some(0.7),
@@ -454,12 +418,9 @@ impl RoleSampling {
     }
 }
 
-/// **One `[roles.X]` entry**: the model that role runs on, and how it samples.
-///
-/// Both are optional and either alone is a complete entry — a role that sets
-/// only `model` runs on that model with the standing parameters, and a role that
-/// sets only samplers runs on whatever model it would have run on anyway, which
-/// is what a project wants when it likes the model and not the verbosity.
+/// One `[roles.X]` entry: the model that role runs on and how it samples. Either
+/// alone is a complete entry - a role that sets only `model` runs on the standing
+/// parameters, and one that sets only samplers keeps the model it would have had.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RoleSettings {
     /// The model this role runs on. `None` is the daemon's own default for it.
@@ -468,24 +429,9 @@ pub struct RoleSettings {
     pub sampling: RoleSampling,
 }
 
-/// **The model configuration one `leticode.toml` level carries**, as parsed from
-/// the project's file or the user's.
-///
-/// Every model field is `None` when the file did not set it, and `None` means
-/// **the level below** — not a guess, and not silently a built-in. The precedence
-/// that turns these into the session's models is stated once, in
-/// [`precedence`]: command line beats the project file, the project file beats
-/// the user file, the user file beats the built-in default, and an unset key
-/// falls through.
-///
-/// **This struct is the whole of what the file may set.** It carries model
-/// names, sampler parameters and nothing else — no seat, no tool list, no access
-/// narrowing, and no window — so a project file cannot widen a capability and
-/// cannot move a wall. The `[roles]` table maps a role name to the model it runs
-/// on and how it samples; it is an override, not a seating, and a role name the
-/// daemon does not know is still a model the operator asked for, so it is
-/// carried rather than refused (the refusal is for a key the version does not
-/// know, which is a typo, not a future role).
+/// The model configuration one `leticode.toml` level carries: names and samplers and
+/// nothing else, so a project file cannot widen a capability or move a wall. `None`
+/// means the level below, and [`precedence`] states that order once.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LeticodeConfig {
     /// The model the session's turns go to. `None` is the daemon's own default
@@ -498,12 +444,9 @@ pub struct LeticodeConfig {
     /// The gatekeeper's model. `None` is the daemon's own default (`[gatekeeper]
     /// model` in providers.toml, else the session's own model).
     pub gatekeeper_model: Option<String>,
-    /// The adjudicator's model. `None` is the daemon's own default.
-    ///
-    /// In this build the adjudicator and the guard are the one oracle seat, so
-    /// this and [`LeticodeConfig::gatekeeper_model`] name the same thing — the
-    /// file may use either word, and [`LeticodeConfig::load`] refuses the file
-    /// that uses both to mean two different models.
+    /// The adjudicator's model. `None` is the daemon's own default. In this build the
+    /// adjudicator and the guard are one oracle seat, so this and `gatekeeper_model`
+    /// name the same thing, and `load` refuses a file that uses both differently.
     pub judge_model: Option<String>,
     /// The `[roles]` section: a named-role override, so a future role needs no
     /// new key. A role name maps to its model and its samplers.
@@ -512,9 +455,8 @@ pub struct LeticodeConfig {
     /// file was found, which is the absent-file case: the level below, and
     /// nothing to name.
     pub path: Option<PathBuf>,
-    /// **Which level this is.** [`Level::Project`] or [`Level::User`] for a file
-    /// this reader produced; [`Level::Builtin`] for the empty value a missing
-    /// file yields. Carried on the value rather than passed alongside it so the
+    /// Which level this is: `Project` or `User` for a file this reader produced,
+    /// `Builtin` for the empty value a missing file yields. Carried on the value so a
     /// disclosure cannot be handed a config and the wrong level for it.
     pub level: Level,
     /// **The `[memory]` table** — a tool call's default cap and ceiling for sessions in this
@@ -639,21 +581,9 @@ fn memory_keys(value: &toml::Value) -> Result<MemoryKeys, String> {
     })
 }
 
-/// **The memory policy a session's `bash` runs under** — the box-wide one (`providers.toml`,
-/// already in `cfg.memory`), then the user's `leticode.toml`, then the nearest project
-/// `leticode.toml` at or above the session's workspace (TODO.md R76 item 7).
-///
-/// Asked per SESSION and not once per daemon, because a resumed session's workspace is its
-/// own (`harness.rs` resolves it from the store) and the project is the one its tools work
-/// in. `read_project` is `false` under `--no-project-config`. A project file that does not
-/// parse leaves the levels below in force and says so on stderr, the way the model keys do.
-///
-/// **A file may narrow the ceiling and may not raise it**, and its `default` may not pass the
-/// ceiling in force. The ceiling is the line above which the OPERATOR is asked, and a
-/// `leticode.toml` sits in the repository, where any session seated with `write` can edit it —
-/// *models are configuration; permissions are not*. So a raise is not applied, and the stderr
-/// line says which key was dropped and why. The comparison is against `MemAvailable` when the
-/// session opens, because a fraction and a size are only comparable on a given box.
+/// The memory policy a session's `bash` runs under: the box-wide one, then the user's
+/// `leticode.toml`, then the nearest project one above the workspace. A file may narrow
+/// the ceiling and not raise it, because models are configuration; permissions are not.
 pub fn memory_policy(
     box_wide: letibot_tools::exec::memory::MemoryPolicy,
     user: &LeticodeConfig,
@@ -721,19 +651,9 @@ pub fn memory_policy_at(
 }
 
 impl LeticodeConfig {
-    /// **The walk-up: find the nearest `leticode.toml` at or above `workspace`.**
-    ///
-    /// The way `.env` and `.git` are found: a session started in a subdirectory
-    /// of the project still finds the project's settings, because the search
-    /// climbs from the session's workspace rather than looking only in the
-    /// directory the daemon happened to be launched in. The nearest file wins —
-    /// the first one met climbing up — and the walk stops at the filesystem
-    /// root, so a box with no project file anywhere is a silent no-file rather
-    /// than a search that never ends.
-    ///
-    /// `None` is the honest answer for a workspace with no `leticode.toml` at or
-    /// above it: the daemon runs on its own defaults, and the disclosure says so
-    /// rather than naming a file that is not there.
+    /// The walk-up: the nearest `leticode.toml` at or above `workspace`, the way `.env`
+    /// and `.git` are found, so a session started in a subdirectory still reaches the
+    /// project's settings. The nearest file wins and the walk stops at the root.
     pub fn discover(workspace: &Path) -> Option<PathBuf> {
         let mut dir = workspace.to_path_buf();
         loop {
@@ -750,36 +670,15 @@ impl LeticodeConfig {
         }
     }
 
-    /// Load one level of `leticode.toml` — the project's or the user's, the same
-    /// shape at either path. A missing file is `Ok` with no models — the level
-    /// below, not an error. A file that does not parse, that
-    /// names a key this version does not know, or that gives one seat two
-    /// different models, is `Err` with the parser's own message (or the key's
-    /// name) and the path, so the operator can see which file said what.
-    ///
-    /// **The loud failures, in the order they are found:**
-    ///
-    /// * a file that will not parse says so and says where — the file, the line,
-    ///   and what the parser expected;
-    /// * a key the version does not know is named, not ignored —
-    ///   `deny_unknown_fields` on the top level is the report for
-    ///   `subagent_modle`, and [`role_settings`] names a bad key inside
-    ///   `[roles.X]` itself, because serde's report for a table it cannot
-    ///   deserialise names the table and not the line;
-    /// * a window or a reply cap in a role's table is refused by name with the
-    ///   operator's own reason (see [`WINDOW_AND_CAP_KEYS`]) — models and
-    ///   samplers are configuration, the room a model has is a measurement;
-    /// * a file that sets a capability rather than a model is refused by name,
-    ///   because the file may set which model answers a role and may not seat a
-    ///   tool on one or lift an access narrowing.
+    /// Load one level of `leticode.toml`, the project's or the user's: the same shape at
+    /// either path. A missing file is `Ok` with no models; a file that will not parse,
+    /// names an unknown key, or gives one seat two models is `Err` with the path.
     pub fn load(path: &Path) -> Result<LeticodeConfig, String> {
         Self::load_as(path, Level::Project)
     }
 
-    /// [`LeticodeConfig::load`], with the level the value carries named by the
-    /// caller. The path is the only thing that differs between the two levels, so
-    /// this is the one reader both go through; `load` is the project level, and
-    /// [`load_user`] the user one.
+    /// `load`, with the level named by the caller. The path is the only thing that
+    /// differs between the two levels, so this is the one reader both go through.
     pub fn load_as(path: &Path, level: Level) -> Result<LeticodeConfig, String> {
         if !path.is_file() {
             return Ok(LeticodeConfig::default());
@@ -815,13 +714,9 @@ impl LeticodeConfig {
             },
         };
 
-        // **One seat, two answers.** The guard and the adjudicator are the one
-        // oracle in this build (`Config::oracle_model`), so `gatekeeper_model`
-        // and `judge_model` are two words for one setting. A file that uses both
-        // to name two DIFFERENT models is not a typo and not a future feature —
-        // it is the file disagreeing with itself about who guards, so it is
-        // refused rather than resolved by whichever line the reader happened to
-        // apply last.
+        // One seat, two answers. The guard and the adjudicator are one oracle in this
+        // build, so `gatekeeper_model` and `judge_model` are two words for one setting;
+        // a file that names two different models is refused rather than resolved.
         if let (Some(g), Some(j)) = (&config.gatekeeper_model, &config.judge_model)
             && g != j
         {
@@ -844,31 +739,16 @@ impl LeticodeConfig {
         self.roles.get(role).and_then(|r| r.model.as_deref())
     }
 
-    /// **The model a spawn of `role` runs on, when the `task` call named none.**
-    ///
-    /// The seat's own `[roles.<seat>] model` first, then the file's
-    /// `subagent_model`, and `None` for a file that set neither — which leaves
-    /// the caller's own standing answer (`local`, the daemon's server) where it
-    /// was. This is the reader that makes `subagent_model` a setting rather than
-    /// a line in a disclosure: a key the file sets and nothing reads is the
-    /// defect this feature exists to forbid.
+    /// The model a spawn of `role` runs on, when the `task` call named none: the seat's
+    /// own `[roles.<seat>] model` first, then `subagent_model`, then `None`, which leaves
+    /// the caller's own answer where it was. A key nothing reads is the defect here.
     pub fn spawn_model(&self, role: &str) -> Option<&str> {
         self.role_model(role).or(self.subagent_model.as_deref())
     }
 
-    /// **How a spawn of `role` samples.**
-    ///
-    /// The subagent's own numbers as the floor — the dense78 set the operator
-    /// measured — then `[roles.subagent]` over them, then the seat's own
-    /// `[roles.<role>]` over that, key by key. So a project can change one
-    /// number for every child, or one number for one seat, and the rest of the
-    /// operator's cure stays in force.
-    ///
-    /// **Never empty, and that is the point of the feature**: the operator's ask
-    /// is that a subagent does not overthink, so a project that says nothing
-    /// still gets the dense78 numbers rather than the daemon's own greedy
-    /// literal. There is no window in the answer because there is none in
-    /// [`RoleSampling`] — the file cannot state one.
+    /// How a spawn of `role` samples: the subagent's own numbers as the floor, then
+    /// `[roles.subagent]` over them, then `[roles.<role>]` over that, key by key. Never
+    /// empty, so a project that says nothing still gets numbers that do not overthink.
     pub fn parameters_for(&self, role: &str) -> RoleSampling {
         let mut out = RoleSampling::dense78();
         if let Some(r) = self.roles.get(SUBAGENT_ROLE) {
@@ -882,18 +762,9 @@ impl LeticodeConfig {
         out
     }
 
-    /// **The two file levels as one, the project's over the user's, key by key.**
-    ///
-    /// This is the merge the precedence describes, applied to the keys that are
-    /// not `main_model` — `subagent_model`, `gatekeeper_model`, `judge_model` and
-    /// `[roles]`. Overriding rather than replacing, per key and per role, so a
-    /// project that changes only `subagent_model` keeps the user file's
-    /// `[roles.subagent]` samplers, which is the same rule
-    /// [`RoleSampling::overridden_by`] applies one level down.
-    ///
-    /// `self` is the LOWER level and `other` the higher one. `path` and `level`
-    /// come from `other` when it has a file, so the merged value names the file
-    /// that spoke most recently rather than a file that set one key.
+    /// The two file levels as one, the project's over the user's, key by key: overriding
+    /// rather than replacing, so a project that changes only `subagent_model` keeps the
+    /// user file's samplers. `path` and `level` come from `other` when it has a file.
     pub fn overridden_by(&self, other: &LeticodeConfig) -> LeticodeConfig {
         let mut roles = self.roles.clone();
         for (role, higher) in &other.roles {
@@ -935,10 +806,9 @@ impl LeticodeConfig {
         }
     }
 
-    /// Which models the file set, as the disclosure says them — and, for a role
-    /// that set parameters, the parameters. Empty when the file set nothing,
-    /// which is the absent-file case and the byte-identical case: a daemon with
-    /// no file at this level discloses nothing from it.
+    /// Which models the file set, as the disclosure says them, and for a role that set
+    /// parameters, the parameters. Empty when the file set nothing, which is the
+    /// absent-file case: a daemon with no file at this level discloses nothing.
     pub fn set_models(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(m) = &self.main_model {
@@ -972,15 +842,9 @@ impl LeticodeConfig {
     }
 }
 
-/// One `[roles.X]` entry, as the file wrote it: either a bare model name (the v1
-/// shape) or a table of `model` plus samplers.
-///
-/// The keys are checked here rather than by serde for the reason `prompts.toml`
-/// checks its section names by hand: the shape is *the operator's own keys*, and
-/// serde's report for a table it cannot deserialise names the table rather than
-/// the offending line. So the value is read as a [`toml::Value`] and each key is
-/// answered by name — including the ones this file deliberately does not get to
-/// set, which get the longer sentence in [`WINDOW_AND_CAP_KEYS`].
+/// One `[roles.X]` entry, as the file wrote it: a bare model name or a table of `model`
+/// plus samplers. The keys are checked here rather than by serde because serde's report
+/// names the table, not the line, and these are the operator's own keys.
 fn role_settings(role: &str, value: &toml::Value) -> Result<RoleSettings, String> {
     let table = match value {
         // The v1 shape: `reviewer = "deepseek/deepseek-reasoner"`.
@@ -1016,13 +880,9 @@ fn role_settings(role: &str, value: &toml::Value) -> Result<RoleSettings, String
             };
             continue;
         }
-        // **Samplers, or a refusal that says which of the two kinds of mistake
-        // this is.** An unknown key names itself; a window or a cap names itself
-        // AND says why this file is the wrong place for it, because the operator
-        // who wrote `window = 57344` here has a real model in mind and the
-        // sentence has to tell them where that number belongs (the `[model.*]`
-        // block in providers.toml, or nowhere: the child's wall is measured on
-        // the box that answers it).
+        // Samplers, or a refusal that says which of the two mistakes this is: an unknown
+        // key names itself; a window or a cap names itself and says why this file is the
+        // wrong place for it, because the number has a real model behind it.
         if WINDOW_AND_CAP_KEYS.contains(&key.as_str()) {
             return Err(format!(
                 "[roles.{role}] sets `{key}`, which a project file does not get to decide: the \
@@ -1058,19 +918,9 @@ fn role_settings(role: &str, value: &toml::Value) -> Result<RoleSettings, String
     Ok(out)
 }
 
-/// The file's shape, as parsed. `deny_unknown_fields` on the top level is the
-/// report for a key this version does not know: a `subagent_modle` is a parse
-/// error carrying the parser's own message, not a silently ignored line. The
-/// `[roles]` table is a map of [`toml::Value`], checked key by key by
-/// [`role_settings`], so a role name the daemon does not know is carried rather
-/// than refused — a future role needs no new key, only a line.
-///
-/// **The shape is the capability boundary.** The struct is four model keys and
-/// a table of role settings, and nothing else. There is no field for a seat, a
-/// tool list, an access narrowing or a context window, so a project file cannot
-/// widen a capability: a line that would — an `allow_bash = true`, a
-/// `role = "runner"` — is a top-level key the version does not know, and
-/// `deny_unknown_fields` refuses it by name.
+/// The file's shape, as parsed. `deny_unknown_fields` on the top level is the report for
+/// a key this version does not know, and the shape IS the capability boundary: four model
+/// keys and a role table, with no field for a seat, a tool list or a window.
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LeticodeConfigFile {
@@ -1084,10 +934,9 @@ struct LeticodeConfigFile {
     judge_model: Option<String>,
     #[serde(default)]
     roles: BTreeMap<String, toml::Value>,
-    /// **The `[queue]` table — the review and merge queues' per-project settings (R61).** Read
-    /// by its own parser (`mergequeue::settings`), which refuses an unknown key inside it by
-    /// name; accepted here only so this reader does not refuse the file for carrying it. It sets
-    /// no model and no capability, so the wall above stands.
+    /// The `[queue]` table, read by its own parser, which refuses an unknown key inside it
+    /// by name; accepted here only so this reader does not refuse the file for carrying
+    /// it. It sets no model and no capability, so the boundary above stands.
     #[serde(default)]
     #[allow(dead_code)]
     queue: Option<toml::Value>,
@@ -1134,29 +983,9 @@ fn kind_of(value: &toml::Value) -> &'static str {
     }
 }
 
-/// **The precedence, stated once.**
-///
-/// Command line beats the project file, the project file beats the user file, the
-/// user file beats the built-in default, and an unset key falls through to the
-/// level below. That is the whole of it, and it is a function rather than a rule
-/// remembered in four places, because precedence that is not stated is precedence
-/// nobody can reason about — and the operator lost hours to a config that
-/// silently did not reach a session, so the rule that decides which model answers
-/// is written down where it is enforced.
-///
-/// `None` from this is the fall-through all the way out: the caller applies the
-/// built-in default, which is [`Level::Builtin`] and is stated rather than
-/// guessed. So the four levels and this function agree by construction — a level
-/// that speaks is a level this returns, and a level that does not is not a
-/// `Some` here.
-///
-/// **What counts as the `cli` argument is the caller's to decide, and the caller
-/// decides it by the same rule the rest of the tree uses**: the command line is
-/// the `cli` level when it chose WHO ANSWERS (`--provider`), and `--model` alone
-/// is the local BINDING rather than that choice — see the module docs, and
-/// `cli.rs`'s `apply_main_model`. Passing `--model` here would make the two file
-/// levels unreachable for every launcher-started daemon, because the launcher
-/// passes `--model` on every start.
+/// The precedence, stated once: command line beats the project file, the project file
+/// beats the user file, the user file beats the built-in default, and an unset key falls
+/// through. `--model` is not the command-line level; it names the local binding.
 pub fn precedence(
     cli: Option<&str>,
     project: Option<&str>,
@@ -1193,12 +1022,9 @@ mod tests {
         path
     }
 
-    /// **The walk-up finds the nearest file and stops at the root.** A session
-    /// started in a subdirectory of the project finds the project's settings,
-    /// because the search climbs from the workspace rather than looking only in
-    /// the directory the daemon was launched in. The nearest file wins — the
-    /// first one met climbing up — and a file in a parent does not shadow one in
-    /// the workspace.
+    /// The walk-up finds the nearest file and stops at the root, so a session started in a
+    /// subdirectory finds the project's settings and a file in a parent does not shadow
+    /// one in the workspace.
     #[test]
     fn the_walk_up_finds_the_nearest_file_and_stops_at_the_root() {
         let root = project_dir("walk_up");
@@ -1238,15 +1064,9 @@ mod tests {
         );
     }
 
-    /// **The precedence, stated once and checked here:** command line beats the
-    /// project file, the project file beats the user file, the user file beats the
-    /// built-in default, and an unset key falls through. A regression here would
-    /// be a model the operator set in one place that is answered by another,
-    /// which is the defect this feature exists to forbid.
-    ///
-    /// **The level comes back with the name**, because "which model" without
-    /// "which file" is the question the operator spent an evening on: the
-    /// disclosure reads this pair off the screen rather than re-deriving it.
+    /// The precedence, stated once and checked here: command line, project file, user
+    /// file, built-in default, with an unset key falling through. The level comes back
+    /// with the name, because "which model" without "which file" is half an answer.
     #[test]
     fn the_precedence_is_flag_then_project_then_user_then_fall_through() {
         // The flag beats both files.
@@ -1270,9 +1090,8 @@ mod tests {
         assert_eq!(Level::default(), Level::Builtin);
     }
 
-    /// **The user level is the same file, read at a fixed path.** The parser is
-    /// one call — [`LeticodeConfig::load_as`] — so the two levels cannot start
-    /// disagreeing about what a key means, and the user level is not a second
+    /// The user level is the same file at a fixed path, read by the same call, so the two
+    /// levels cannot disagree about what a key means and the user level is not a second
     /// grammar to learn.
     #[test]
     fn the_user_file_is_the_same_parser_at_a_fixed_path() {
@@ -1305,12 +1124,9 @@ mod tests {
         );
     }
 
-    /// **An unparsable user file is loud and does not take the daemon down.** The
-    /// fault is the file and the parser's own line number — the thing the
-    /// operator has to fix — and the reader answers `Err` rather than a config
-    /// that silently set nothing. `cli.rs` turns that `Err` into a sentence and a
-    /// session that still starts, which is the behaviour `prompts.toml` already
-    /// has.
+    /// An unparsable user file is loud and does not take the daemon down: the reader
+    /// answers `Err` rather than a config that silently set nothing, and the caller turns
+    /// that into a sentence and a session that still starts.
     #[test]
     fn an_unparsable_user_file_names_the_file_and_the_line() {
         let dir = project_dir("user_unparsable");
@@ -1329,12 +1145,9 @@ mod tests {
             "and the line the parser stopped on: {why}"
         );
 
-        // **And it does not take the daemon down.** `cli.rs` turns this `Err` into a
-        // sentence and runs on the level below; the value it runs on is the empty
-        // config, which is a working config rather than a half-read one — no model,
-        // no roles, nothing half-applied. That is the whole shape of the fallback, and
-        // it is asserted here because the caller's `unwrap_or_default` is where the
-        // "still starts" half lives.
+        // And it does not take the daemon down: the caller turns this `Err` into a
+        // sentence and runs on the empty config, which is a working config rather than a
+        // half-read one. Asserted here because the caller's fallback is where it lives.
         let fell_back = LeticodeConfig::load_as(&path, Level::User).unwrap_or_default();
         assert!(fell_back.main_model.is_none());
         assert!(fell_back.roles.is_empty());
@@ -1351,10 +1164,9 @@ mod tests {
         );
     }
 
-    /// **An unknown key at the user level is named too.** `deny_unknown_fields`
-    /// is the same wall at both levels: a user file is not the place a capability
-    /// sneaks in just because it is yours. `allow_bash` is the shape that would
-    /// widen one, and it is refused by name rather than ignored.
+    /// An unknown key at the user level is named too: `deny_unknown_fields` is the same
+    /// wall at both levels, so a user file is not the place a capability sneaks in just
+    /// because it is yours.
     #[test]
     fn an_unknown_key_in_the_user_file_is_named() {
         let dir = project_dir("user_unknown_key");
@@ -1370,11 +1182,8 @@ mod tests {
         }
     }
 
-    /// **The two file levels merge, key by key, the project's over the user's.**
-    /// This is what makes `subagent_model` in one file and `[roles.subagent]` in
-    /// the other both land: a project that changes one number keeps the user's
-    /// other keys, the same rule [`RoleSampling::overridden_by`] applies one
-    /// level down.
+    /// The two file levels merge key by key, the project's over the user's, so
+    /// `subagent_model` in one file and `[roles.subagent]` in the other both land.
     #[test]
     fn the_project_level_overrides_the_user_level_key_by_key() {
         let dir = project_dir("user_merge");
@@ -1431,10 +1240,8 @@ mod tests {
         assert!(empty.main_model.is_none());
     }
 
-    /// **A key the version does not know is named, not ignored.** A typo'd
-    /// `subagent_modle` is the bug class being fixed: a reader that accepts it
-    /// and reads nothing reproduces the defect one line lower, so the reader
-    /// refuses it by name, with the file and the parser's own message.
+    /// A key the version does not know is named, not ignored: a reader that accepts a
+    /// typo'd `subagent_modle` and reads nothing reproduces the defect one line lower.
     #[test]
     fn an_unknown_key_is_named_not_ignored() {
         let dir = project_dir("unknown_key");
@@ -1447,12 +1254,9 @@ mod tests {
         );
     }
 
-    /// **A typo INSIDE a role's table is named too**, and this is the half serde
-    /// cannot do for us: the top-level command has `deny_unknown_fields`, but a
-    /// `[roles.coder]` table is read key by key, so the report has to be written
-    /// here. `temperatuer = 0.7` that is accepted and read as nothing is exactly
-    /// the defect: the operator writes a number, sees no change, and has no way
-    /// to tell they were ignored.
+    /// A typo inside a role's table is named too, and that is the half serde cannot do:
+    /// `[roles.coder]` is read key by key, so a `temperatuer` that was accepted and read
+    /// as nothing would leave the operator no way to tell they were ignored.
     #[test]
     fn a_typo_inside_a_role_table_is_named_not_ignored() {
         let dir = project_dir("role_typo");
@@ -1466,15 +1270,9 @@ mod tests {
         );
     }
 
-    /// **A window or a reply cap in a role's table is refused by name, and the
-    /// sentence says why.** The operator's own rule is that a subagent's
-    /// SAMPLERS are dense78's and its context limit is not — *"we dont have the
-    /// same context limit as with dense obviously"* — so this file has no way to
-    /// state a wall: a child's window is measured on the box that answers it
-    /// (`child_window_refusal` in `harness.rs`), and a reply cap belongs to the
-    /// call. A file that tries gets the generic unknown-key refusal only if this
-    /// test fails, which is the point: silence here would hand a child dense78's
-    /// sampling AND dense78's wall, and the wall is the half that kills it.
+    /// A window or a reply cap in a role's table is refused by name, and the sentence says
+    /// why: a child's samplers are the operator's numbers but its context limit is not,
+    /// because that is measured on the box that answers it.
     #[test]
     fn a_window_or_a_reply_cap_in_a_role_table_is_refused_by_name() {
         let dir = project_dir("no_window");
@@ -1498,10 +1296,8 @@ mod tests {
         assert!(LeticodeConfig::load(&ok).is_ok());
     }
 
-    /// **A file that will not parse says so and says where** — the file, the
-    /// line, and what the parser expected — and it does not take the session
-    /// down: the daemon runs on its own defaults and says so, the way
-    /// `prompts.toml` already does.
+    /// A file that will not parse says so and says where, and it does not take the session
+    /// down: the daemon runs on its own defaults and says so.
     #[test]
     fn an_unparseable_file_is_loud_and_does_not_take_the_session_down() {
         let dir = project_dir("unparseable");
@@ -1520,10 +1316,9 @@ mod tests {
         assert_eq!(cfg, LeticodeConfig::default(), "absent is the defaults");
     }
 
-    /// **An absent file is simply the defaults.** A box with no `leticode.toml`
-    /// runs exactly as it did: the daemon's own models, and nothing to name. A
-    /// regression here would put a complaint on every start of every daemon on a
-    /// box that has no project file, which is most of them.
+    /// An absent file is simply the defaults: the daemon's own models and nothing to name.
+    /// A regression here would put a complaint on every start of every daemon with no
+    /// project file, which is most of them.
     #[test]
     fn an_absent_file_is_silently_the_defaults() {
         let dir = project_dir("absent");
@@ -1534,12 +1329,9 @@ mod tests {
         assert!(cfg.set_models().is_empty(), "nothing to disclose");
     }
 
-    /// **The file may set a model and may not widen a capability.** A line that
-    /// would seat a tool on a role or lift an access narrowing — an
-    /// `allow_bash = true`, a `role = "runner"` — is a top-level key the version
-    /// does not know, and `deny_unknown_fields` refuses it by name. Models are
-    /// configuration; permissions are not, and the shape of the struct is the
-    /// boundary that says so.
+    /// The file may set a model and may not widen a capability: an `allow_bash` or a
+    /// `role = "runner"` is a top-level key the version does not know, and
+    /// `deny_unknown_fields` refuses it by name.
     #[test]
     fn a_project_file_cannot_widen_a_capability() {
         let dir = project_dir("no_widen");
@@ -1556,12 +1348,9 @@ mod tests {
         assert!(err.contains("role"), "the seat key is named: {err}");
     }
 
-    /// **The well-formed file gives the models it set**, and the disclosure
-    /// names them, so "where did this model come from" is answerable from the
-    /// screen — the parameters it set too, because a project that changes how a
-    /// subagent samples has changed something the operator can only see here. A
-    /// file that sets nothing discloses nothing, which is the absent-file case
-    /// and the byte-identical case.
+    /// The well-formed file gives the models it set and the parameters it set, so "where
+    /// did this model come from" is answerable from the screen. A file that sets nothing
+    /// discloses nothing, which is the absent-file case.
     #[test]
     fn a_well_formed_file_gives_its_models_and_the_disclosure_names_them() {
         let dir = project_dir("well_formed");
@@ -1618,11 +1407,9 @@ mod tests {
         );
     }
 
-    /// **A role the file does not know is carried, not refused.** The `[roles]`
-    /// table is a named-role override, so a future role needs no new key, only a
-    /// line. A role name the daemon does not know is still a model the operator
-    /// asked for, so it is carried — the refusal is for a key the version does
-    /// not know, which is a typo, not a future role.
+    /// A role the file does not know is carried, not refused: `[roles]` is a named-role
+    /// override, so a future role needs a line and no new key. The refusal is for a key
+    /// the version does not know, which is a typo.
     #[test]
     fn a_role_the_file_does_not_know_is_carried_not_refused() {
         let dir = project_dir("future_role");
@@ -1631,17 +1418,9 @@ mod tests {
         assert_eq!(cfg.role_model("some_future_role"), Some("a-model"));
     }
 
-    /// **The subagent runs on dense78's parameters, and the file does not have
-    /// to say so.** The operator: *"when used in subagents mode we need to call
-    /// qwen with the parameters similar to dense78 - otherwise it overthinks
-    /// terribly"*. So the standing answer for a spawn is their five measured
-    /// numbers, and a box with no `leticode.toml` at all gets them — the
-    /// alternative is a fix that only works in projects that already knew about
-    /// it. And the answer carries the five and nothing else: no window, no reply
-    /// cap, because the operator's next sentence is that this is not dense78's
-    /// context limit (*"we dont have the same context limit as with dense
-    /// obviously"*), and the box that serves a child is not always the box that
-    /// measured 57344.
+    /// The subagent runs on the operator's measured parameters and the file does not have
+    /// to say so, because a fix that only works in projects that knew about it is no fix.
+    /// The answer carries samplers and no window: a child's wall is measured where it runs.
     #[test]
     fn the_subagent_runs_on_the_parameters_measured_on_dense78() {
         // The absent-file case: the operator's numbers, stated in code.
@@ -1680,11 +1459,9 @@ mod tests {
         );
     }
 
-    /// **A role's table sets its own numbers over the operator's, key by key**,
-    /// and the two levels are distinct: `[roles.subagent]` is every spawn,
-    /// `[roles.coder]` is coder spawns, and a seat that says nothing keeps the
-    /// rest of the operator's cure. A file that changes `temperature` alone must
-    /// not lose `presence_penalty` — that is the key they named as the cure.
+    /// A role's table sets its own numbers over the operator's, key by key: `[roles.subagent]`
+    /// is every spawn and `[roles.coder]` is coder spawns. A file that changes `temperature`
+    /// alone must not lose `presence_penalty`, which is the key they named as the cure.
     #[test]
     fn a_role_table_sets_the_parameters_key_by_key() {
         let dir = project_dir("role_params");
@@ -1723,12 +1500,9 @@ mod tests {
         assert_eq!(p.min_p, Some(0.0), "and a min_p SET to zero is not absent");
     }
 
-    /// **The model a spawn runs on, and where each name comes from.** A
-    /// `subagent_model` is the file's word for every child; a `[roles.X] model`
-    /// is its word for one seat's children and wins over it; and a file that set
-    /// neither answers `None`, which leaves the caller's own `local` where it
-    /// was. Before this reader existed both keys were parsed, disclosed and read
-    /// by nobody — the defect this whole file is written against.
+    /// The model a spawn runs on, and where each name comes from: `subagent_model` is the
+    /// file's word for every child, a `[roles.X] model` is its word for one seat's children
+    /// and wins, and a file that set neither answers `None`.
     #[test]
     fn a_seat_model_wins_over_the_subagent_model_and_none_means_the_callers_own() {
         let dir = project_dir("spawn_model");
@@ -1754,13 +1528,9 @@ mod tests {
         );
     }
 
-    /// **One seat, two answers, refused by name.** The guard and the adjudicator
-    /// are the single oracle in this build, so `gatekeeper_model` and
-    /// `judge_model` are two words for one setting: either may be used, the same
-    /// model twice is the same statement twice, and two DIFFERENT models is the
-    /// file disagreeing with itself about who guards. Resolving that by
-    /// whichever line the reader applied last is the silent-config defect; the
-    /// file is refused and the session runs on the daemon's own models instead.
+    /// One seat, two answers, refused by name: the guard and the adjudicator are the single
+    /// oracle in this build, so `gatekeeper_model` and `judge_model` are two words for one
+    /// setting. Two different models is the file disagreeing with itself about who guards.
     #[test]
     fn the_two_names_for_the_adjudicator_may_not_disagree() {
         let dir = project_dir("one_oracle");
@@ -1787,10 +1557,9 @@ mod tests {
         assert_eq!(cfg.judge_model.as_deref(), Some("glm-5.3-flash"));
     }
 
-    /// **The project's `[memory] default` beats the box-wide one for a session in it** (R76
-    /// item 7) — the operator's cargo, killed at the box's 64 MiB, gets the project's 4 GiB —
-    /// and the policy names the project file as the source, which is what the `bash`
-    /// description then says. A session elsewhere keeps the box's number.
+    /// The project's `[memory] default` beats the box-wide one for a session in it, and the
+    /// policy names the project file as the source, which is what the `bash` description
+    /// then says. A session elsewhere keeps the box's number.
     #[test]
     fn a_projects_memory_default_overrides_the_box_wide_one_and_says_so() {
         use letibot_tools::exec::memory::{Amount, MemoryPolicy, PolicySource};

@@ -1,16 +1,11 @@
-//! Spool, then ack.
+//! Spool, then ack. flowy's contract is that the mark is not moved on handover, so
+//! a waiter handed messages that dies before writing them out has lost them for
+//! ever. The seat keeps it the same way: one JSON line per event, appended and
+//! flushed before `POST /api/inbox/ack`, so a daemon that dies between the two
+//! comes back to a page it has already spooled - a duplicate rather than a silence.
 //!
-//! flowy's contract: *the mark is not moved on handover. A waiter that is handed
-//! messages and dies before it has written them out has lost them permanently
-//! if the server counted the handover as delivery.* Its CLI writes every
-//! delivered page to a local file before acking, so a crash costs a duplicate
-//! rather than a silence, and `flowy inbox replay` reads the file back.
-//!
-//! The seat keeps that contract with the same shape: one JSON line per event,
-//! appended and flushed **before** `POST /api/inbox/ack`. A daemon that dies
-//! between the two comes back to a page it has already spooled, which is the
-//! duplicate. A daemon that dies after the ack but before a session read the
-//! firing still has the line here, and `flowy replay` hands it over.
+//! A daemon that dies after the ack still has the line here, and `flowy replay`
+//! hands it over.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

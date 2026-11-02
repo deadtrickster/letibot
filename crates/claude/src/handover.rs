@@ -1,73 +1,11 @@
-//! **Carrying a conversation the other way: out of this head and into Claude Code.**
+//! Carrying a conversation the other way: out of this head and into Claude Code.
 //!
-//! The reader next door turns Claude Code's transcript into this head's rows. This module
-//! is the return trip, and it exists because the operator asked for a way back: *"restore
-//! - resume"* cuts both ways, and a conversation that can only be imported is a one-way
-//! door.
-//!
-//! Two shapes, and they are different promises:
-//!
-//! * [`write_handover`] writes a **new** transcript — a fresh session id, a file of our
-//!   own — that `claude --resume <absolute path>` opens. It also writes a Markdown
-//!   transcript beside it: the JSONL's line format is internal to Claude Code, so a plain
-//!   text a person can paste is the fallback a Claude release cannot break.
-//! * [`append_note`] puts **one line** on the end of an existing transcript, so a note
-//!   from this session lands in the conversation the operator already has. That is a
-//!   write into a file another program owns, so it is the one operation here that takes a
-//!   backup first, refuses when it cannot take one, refuses while a `claude` process is
-//!   live for that project, and has a [`revert`] that puts the file back byte for byte.
-//!
-//! # What is the original's format, and what is ours
-//!
-//! Claude Code's transcript format is documented in outline and **internal in detail**:
-//! one JSON object per line, append-only, one file per session, and the documented fields
-//! are `type`, `uuid`, `parentUuid`, `timestamp`, `sessionId`, `cwd`, `gitBranch`,
-//! `version`; an assistant `message.content` is an array of blocks; a `tool_result`
-//! arrives in a later `type:"user"` line with the same `tool_use_id`. The same
-//! documentation says the exact record types *evolve with Claude Code versions* and warns
-//! tooling not to rely on undocumented ones.
-//!
-//! So this writer emits **the conservative subset only**:
-//!
-//! | field | where it comes from |
-//! |---|---|
-//! | `type` | ours: `user` or `assistant`, and nothing else |
-//! | `uuid` | ours: a fresh v4 uuid per line |
-//! | `parentUuid` | ours: the previous line's `uuid`, so the chain is linear and whole |
-//! | `timestamp` | **the row's own time**, in the same ISO-8601 spelling; **omitted** when the row has none, because inventing one is the thing rule 3 forbids |
-//! | `sessionId` | ours: a fresh uuid for a handover; **the file's own** for an append |
-//! | `cwd`, `gitBranch` | the session's, as this head knows it |
-//! | `version` | `letibot-<our version>` — see below |
-//! | `message.role`, `message.content` | ours: `text`, `tool_use`, `tool_result` blocks |
-//! | `isMeta`, `promptSource` | ours, **only** on a row this head wrote itself (`Speaker::Agent`), which is Claude Code's own spelling for *text the model was shown and the person did not type* |
-//!
-//! **`version` is deliberately not a Claude Code version.** Claude Code stamps its own
-//! release there, and this writer is not that release: a transcript that claims to have
-//! been written by a Claude it never met is the one lie a handover must not tell. The
-//! field carries `letibot-0.5.1` (this crate's version), so a person reading the file can
-//! see where it came from.
-//!
-//! # What is deliberately not written
-//!
-//! * **`thinking` blocks.** A `thinking` block is a signature plus text, and only the
-//!   provider can mint the signature. A fabricated one is worse than a missing thought:
-//!   Claude would either reject it or replay a lie. So a [`TranscriptItem::Reasoning`] row
-//!   is **skipped and counted** ([`Skipped::thinking`]) and the summary says how many.
-//! * **`usage`, `requestId`, `model`** on assistant messages: this head's accounting is
-//!   not Anthropic's, and a token count in the wrong units is a wrong number.
-//! * **The session's system prompt** ([`TranscriptItem::System`]): Claude Code composes
-//!   its own, and a second one in the transcript would be a prompt nobody sent.
-//! * **A compaction marker** ([`TranscriptItem::SegmentMark`]): the boundary subtypes are
-//!   exactly the undocumented records the documentation warns about. Counted.
-//! * **Media.** A [`letibot_transcript::UserPart::Image`] becomes the sentence
-//!   `[an image]` in the text: the bytes are a data URI this writer does not inline.
-//!
-//! # A resume restores the conversation, not the launch
-//!
-//! `claude --resume <path>` restores the conversation and the state saved in it. It does
-//! **not** restore launch flags — `--mcp-config`, `--settings`, `--add-dir` have to be
-//! passed again. So the handover's job is the conversation; anyone expecting the other
-//! half will be disappointed, and saying so here is cheaper than their finding out.
+//! [`write_handover`] writes a NEW transcript (a fresh session id, a file of ours) that
+//! `claude --resume <path>` opens, plus a Markdown copy beside it - the JSONL line format is
+//! internal to Claude Code, so plain text is the fallback a release cannot break. [`append_note`]
+//! puts one line on a file another program owns, so it backs the file up first, refuses when it
+//! cannot or while a `claude` process is live, and has a [`revert`]. `version` is `letibot-<ours>`,
+//! never a Claude Code release this file never met, and a `thinking` block is skipped and counted.
 
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -178,14 +116,9 @@ impl fmt::Display for Skipped {
     }
 }
 
-/// **Write a whole conversation as a transcript `claude --resume` opens, plus a Markdown
-/// transcript a person can read.**
-///
-/// `items` is `(ts_ms, item)` in the order the conversation happened; `ts_ms` is the row's
-/// own time, and `0` means the source recorded none. `dir` is created if it is not there,
-/// and is deliberately **not** `~/.claude/projects`: by absolute path a resume needs the
-/// file nowhere in particular, and writing into another tool's directory is a thing to do
-/// only when there is no other way.
+/// Write a whole conversation as a transcript `claude --resume` opens, plus a Markdown copy a
+/// person can read. `items` is `(ts_ms, item)` in conversation order, `0` meaning no recorded time.
+/// `dir` is deliberately not `~/.claude/projects`: by absolute path a resume needs the file nowhere.
 pub fn write_handover(items: &[(u64, TranscriptItem)], meta: &Meta, dir: &Path) -> Result<Written> {
     std::fs::create_dir_all(dir).map_err(|e| ImportError::Io {
         path: dir.to_path_buf(),
@@ -494,11 +427,9 @@ impl Live for NoOneLive {
     }
 }
 
-/// **The real check**, through `ps`. A candidate is a process whose command's program is
-/// `claude` and whose command line names this project's directory or this session id, or
-/// whose working directory is the project. A candidate whose working directory cannot be
-/// read counts as live: the check failing is not the same fact as nobody being there, and
-/// this is a write into somebody else's file.
+/// The real check, through `ps`: a process whose program is `claude` and whose command line names
+/// this project's directory or session id, or whose working directory is the project. A candidate
+/// whose directory cannot be read counts as live - a failed check is not nobody being there.
 pub struct PsLive;
 
 impl Live for PsLive {
@@ -568,23 +499,9 @@ fn process_cwd(pid: &str) -> Option<PathBuf> {
         .find_map(|l| l.strip_prefix('n').map(PathBuf::from))
 }
 
-/// **Put one line on the end of a transcript, with a backup first.**
-///
-/// In this order, and each step is a refusal rather than a warning:
-///
-/// 1. **Nobody live.** A `claude` process appending to this project while we append is two
-///    writers on one file, and the check failing counts as somebody being there.
-/// 2. **A backup, proven.** `<name>.jsonl` → `<name>.jsonl.bak-<YYYYmmdd-HHMMSS>` with
-///    `cp -p` semantics (mode and mtime copied), then read back and compared byte for byte.
-///    **No backup, no write** — a note is not worth the risk, and a backup that was written
-///    but not proven is not a backup.
-/// 3. **One `O_APPEND` write**, of one complete line, so a reader of the file never sees a
-///    half line and two writers cannot interleave inside ours.
-///
-/// The line is the conservative one: `type: "user"`, a plain-string `message.content`, a
-/// fresh `uuid`, `parentUuid` = the file's last line's `uuid`, and the file's own
-/// `sessionId`/`cwd`/`gitBranch`/`version` copied off that last line — because a note that
-/// invents a new session id is a note in no conversation.
+/// Put one line on the end of a transcript, with a backup first: nobody live, a backup proven byte
+/// for byte (no backup, no write), then one `O_APPEND` write of one complete line. The line copies
+/// the file's own `sessionId`/`cwd`/`version`, because a note inventing a session id is in no conversation.
 pub fn append_note(path: &Path, text: &str, now_ms: u64, live: &dyn Live) -> Result<Appended> {
     let project = path.parent().unwrap_or(Path::new("."));
     let tail = last_line(path)?;
@@ -666,15 +583,9 @@ pub fn append_note(path: &Path, text: &str, now_ms: u64, live: &dyn Live) -> Res
     })
 }
 
-/// **Copy the file aside, with `cp -p` semantics, and prove the copy.**
-///
-/// The name is `<file>.bak-<YYYYmmdd-HHMMSS>`; a second backup in the same second gets
-/// `-2`, `-3`, … rather than overwriting the first, so the pristine original is always the
-/// oldest backup and every step is revertible.
-///
-/// The proof is a byte-for-byte read-back, not a size comparison: a short write, a full
-/// disk or a page of zeroes from a failing disk all have the right size, and only one of
-/// them is a backup.
+/// Copy the file aside with `cp -p` semantics and prove the copy. A second backup in the same second
+/// gets `-2`, `-3`, so the original is always the oldest. The proof is a byte-for-byte read-back:
+/// a short write or a page of zeroes from a failing disk all have the right size.
 pub fn backup(path: &Path, now_ms: u64) -> Result<PathBuf> {
     let stamp = stamp_utc(now_ms);
     let base = PathBuf::from(format!("{}.bak-{stamp}", path.display()));
@@ -743,11 +654,9 @@ pub fn backup(path: &Path, now_ms: u64) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// **Put the transcript back, byte for byte, from a named backup.**
-///
-/// The backup is *not* consumed: it stays where it is, so a revert can be reverted by
-/// reverting again. And this refuses while a `claude` process is live for the project, for
-/// the same reason the append does — it is a write into a file another program owns.
+/// Put the transcript back, byte for byte, from a named backup. The backup is not consumed, so a
+/// revert can be reverted by reverting again, and this refuses while a `claude` process is live for
+/// the project for the same reason the append does.
 pub fn revert(path: &Path, backup: &Path, live: &dyn Live) -> Result<u64> {
     let bytes = std::fs::read(backup).map_err(|e| ImportError::Io {
         path: backup.to_path_buf(),
@@ -861,11 +770,9 @@ fn last_line(path: &Path) -> Result<Value> {
 
 // --- ids and times ------------------------------------------------------------------
 
-/// **A fresh v4 uuid.** From `/dev/urandom`, because a handover's session id must not
-/// collide with anything: a duplicated id is exactly the failure the documentation names
-/// (*a session id resolves only when one project holds it*), so this cannot be a counter.
-/// A box with no `/dev/urandom` gets a time-and-pid id instead, and [`new_session_id`]'s
-/// caller cannot tell — which is why the fallback still sets the version nibble.
+/// A fresh v4 uuid from `/dev/urandom`, because a handover's session id must not collide with
+/// anything: a duplicated id is exactly the failure the format documents, so this cannot be a
+/// counter. A box with no `/dev/urandom` gets a time-and-pid id instead, still version-nibbled.
 pub fn new_session_id() -> String {
     let mut b = [0u8; 16];
     let filled = std::fs::File::open("/dev/urandom")

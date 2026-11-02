@@ -1,48 +1,11 @@
-//! **Claude Code's own transcripts, as a tool the model can call** — the first user of the
-//! `tool_` seam (`docs/plugins-plan.md` §4.8) and of `read:<path>` (§3).
+//! Claude Code's own transcripts, as a tool the model can call - the first user of the `tool_`
+//! seam and of `read:<path>`.
 //!
-//! # Why this exists
-//!
-//! Claude Code keeps every conversation it ran on this machine as
-//! `~/.claude/projects/<project>/<session>.jsonl` — one JSON object per line, no index, no query
-//! language. So a model asked *"what did we decide in the letibot session yesterday"* has exactly
-//! two options today: guess, or ask the operator to go and read it. `bash` is not an option worth
-//! having — a `grep` over a 116 MB file into a context is the thing this tool exists to prevent,
-//! and it needs the gate, which a confined seat does not have.
-//!
-//! The tree already has the vocabulary for this: `transcript` (`crates/tools/src/builtins/
-//! transcript.rs`) answers *this* session's own store with `sessions`, a text search that returns
-//! line numbers, a range read and bounded pages. This layer answers the same questions about
-//! another agent's store, in the same words, so a model that has learnt one has learnt the other.
-//!
-//! # The four operations, and what each is bounded by
-//!
-//! | `what` | answers | bounded by |
-//! |---|---|---|
-//! | `sessions` | a project's transcripts: size, mtime, and the operator's first line | 16 projects, 12 transcripts each, 16 lines read per transcript |
-//! | `search` | each match's line number, byte offset and context | 10 matches, 1 line of context, 2 000 bytes a line |
-//! | `read` | a numbered line range | 60 lines (400 at most), 2 000 bytes a line |
-//! | `outline` | what the operator asked and what the assistant concluded | 40 lines of each kind |
-//!
-//! Every one of them says when it truncated. That is not politeness: a tool whose whole reason for
-//! existing is *do not put a hundred megabytes into a context* cannot answer a big file with
-//! silence about the part it left out — the model would read a partial answer as a complete one.
-//!
-//! # How a guest with no filesystem reads one
-//!
-//! A plugin does no I/O (§1, principle 1), so this layer does not open a file: it **asks the host**
-//! with `{"looks":[…]}` and the host runs them and calls the hook again with the results in the
-//! same order. `read` (a line range, or a list of line numbers), `list` (a directory's entries with
-//! size and mtime) and `grep` (matches with line index and byte offset) are the three primitives,
-//! and they are the host's because *streaming a 116 MB file* is the host's job. What is here is the
-//! part that is policy: which file, which lines, and how the answer reads.
-//!
-//! # The reach is one line in `plugin.toml`
-//!
-//! `capabilities = ["read:~/.claude/projects"]` — that and nothing else. The host refuses a look
-//! outside it, and it refuses it on the *resolved* path, so `~/.claude/projects/-Users-me-Projects-
-//! letibot/memory`, a symlink into `~/Projects`, is refused for pointing out of the tree. `~/.ssh`
-//! is not under this tree and no spelling of a path makes it so.
+//! Claude Code keeps every conversation as `~/.claude/projects/<project>/<session>.jsonl`, one
+//! JSON object per line, no index. A model asked what was decided yesterday can guess or ask the
+//! operator; `bash` is not an option, since a `grep` over a 116 MB file is what this tool exists
+//! to prevent. Four operations - `sessions`, `search`, `read`, `outline` - each bounded, and each
+//! saying when it truncated: a partial answer read as a complete one is the failure this avoids.
 
 use letibot_guest_abi as abi;
 use serde::Deserialize;
@@ -163,12 +126,9 @@ impl Step {
     }
 }
 
-/// **The ceiling on one answer**, said out loud when it is reached.
-///
-/// Every operation is bounded already, and the bounds multiply: 400 lines at 720 characters is a
-/// quarter of a megabyte. This is the last gate before the answer becomes a tool result the
-/// runtime has to spill — which is the cost this tool exists to avoid — so it cuts on a character
-/// boundary and tells the model what to ask for instead.
+/// The ceiling on one answer, said out loud when it is reached. Every operation is bounded already
+/// and the bounds multiply, so this is the last gate before the answer becomes a tool result the
+/// runtime has to spill - the cost this tool exists to avoid.
 fn cap(payload: String) -> String {
     if payload.len() <= PAYLOAD_CAP {
         return payload;
@@ -877,12 +837,9 @@ enum Row {
     Conclusion { text: String },
 }
 
-/// **One line of `~/.claude/projects/<project>/<uuid>.jsonl`**, read for what a reader would see.
-///
-/// The store is not documented and does not need to be: this reads the fields that are stable in
-/// every version the tool has written — `type`, `isSidechain`, `userType`, `message.role` and
-/// `message.content` — and answers `None` for a row that is not conversation. A row whose `text`
-/// was cut by the host is not parsed at all rather than parsed into a half sentence.
+/// One line of `~/.claude/projects/<project>/<uuid>.jsonl`, read for what a reader would see.
+/// The store is undocumented and need not be: this reads only the fields stable in every version,
+/// and answers `None` for a row that is not conversation.
 fn row_of(text: &str) -> Option<Row> {
     if !text.trim_start().starts_with('{') || !text.trim_end().ends_with('}') {
         return None;
@@ -900,9 +857,10 @@ fn row_of(text: &str) -> Option<Row> {
             // `userType: "internal"` is the harness talking to itself; a `content` that is a list
             // is a tool result being handed back. Neither is the operator asking anything.
             if let Some(t) = value.get("userType").and_then(Value::as_str)
-                && t != "external" {
-                    return None;
-                }
+                && t != "external"
+            {
+                return None;
+            }
             if message.get("role").and_then(Value::as_str) != Some("user") {
                 return None;
             }
@@ -976,13 +934,9 @@ fn listing_root(args: &Args, feeds: &Feeds) -> Result<String, (String, String)> 
     }
 }
 
-/// **Where a project's transcripts are.** `args.project` is a path (`/Users/me/Projects/x`) or the
-/// directory name Claude Code gave it; absent is this session's workspace.
-///
-/// The name is the path with every character that is not a letter, a digit or `-` turned into `-`,
-/// which is what `~/.claude/projects` holds on this box (`/Users/dead/.emacs.d` →
-/// `-Users-dead--emacs-d`). It is a best-effort match and that is safe: a wrong guess is answered
-/// with the directory that is missing, and `sessions` lists the names that exist.
+/// Where a project's transcripts are. `args.project` is a path or the directory name Claude Code
+/// gave it; absent is this session's workspace. A wrong guess is answered with the missing
+/// directory and `sessions` lists the names that exist, so the match may be best-effort.
 fn project_dir(args: &Args, feeds: &Feeds) -> Result<String, (String, String)> {
     let root = root(feeds)?;
     let named = args
@@ -1177,11 +1131,9 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// **When a file last changed**, in the caller's own units: the clock, and how long ago.
-///
-/// The arithmetic is here rather than in a dependency because a guest is embedded in a binary and
-/// a date library for two lines is not worth the bytes. `now_ms == 0` is a caller that has no
-/// clock to compare with, and then only the stamp is printed.
+/// When a file last changed, in the caller's own units: the clock, and how long ago. The arithmetic
+/// is here rather than in a dependency because a guest is embedded in a binary and a date library
+/// for two lines is not worth the bytes. `now_ms == 0` prints the stamp alone.
 fn stamp(ms: u64, now_ms: u64) -> String {
     let secs = ms / 1000;
     let days = (secs / 86_400) as i64;

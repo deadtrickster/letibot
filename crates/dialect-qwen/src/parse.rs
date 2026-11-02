@@ -1,22 +1,11 @@
-//! Token ids → `ParsedSpan`s. The half of a dialect that a template cannot give us.
+//! Token ids in, `ParsedSpan`s out: the half of a dialect a template cannot give us.
 //!
-//! A template says how a turn is *written*. There is no inverse, so this is code,
-//! and it stays code after the template-driven renderer lands.
-//!
-//! # Boundaries by id, never by scanning text
-//!
-//! Every structural boundary Qwen uses is a single vocab entry, so the walk is over
-//! ids and asks the decoder for a role. Text that merely *spells* `</think>` is
-//! several ids and can never be mistaken for the boundary — the same guarantee
-//! `RenderSpan` gives on the way out, restated on the way in.
-//!
-//! What is **not** a single entry is the tool call's body: `<function=`,
-//! `<parameter=` and their closers are ordinary text. So the walk hands the decoded
-//! body of a `<tool_call>…</tool_call>` block to [`parse_call_body`], which is a
-//! small string parser, and everything it cannot read is preserved verbatim rather
-//! than replaced with `{}` — §5.7 has to be able to tell a truncated argument from
-//! an empty one, and that distinction is the difference between re-prompting the
-//! model and executing a call it never finished writing.
+//! A template says how a turn is written and there is no inverse, so this stays code even after
+//! the template-driven renderer lands. Every structural boundary Qwen uses is a single vocab
+//! entry, so the walk is over ids and asks the decoder for a role; text that merely spells
+//! `</think>` is several ids and can never be mistaken for the boundary. The tool call's body
+//! is not: `<function=` and `<parameter=` are ordinary text, so it goes to [`parse_call_body`],
+//! which keeps what it cannot read verbatim - a truncated argument must not read as an empty one.
 
 use letibot_dialect::{ControlRole, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};
@@ -39,10 +28,9 @@ impl Parser for QwenParser {
         let mut run: Vec<u32> = Vec::new();
         let mut in_reasoning = reasoning_open;
         let mut in_call = false;
-        // Offsets into `tokens` for the span ranges: where the buffered run began,
-        // where the open reasoning block began, where the open tool call began. With
-        // `reasoning_open` seeded the block began before this slice, so its range
-        // starts at 0 and the caller's lead tokens stay the caller's to commit.
+        // Offsets into `tokens` for the span ranges: where the buffered run, the open reasoning
+        // block and the open tool call began. A seeded `reasoning_open` began before this slice, so
+        // its range starts at 0 and the caller's lead tokens stay the caller's to commit.
         let mut run_start = 0usize;
         let mut block_start = 0usize;
         let mut call_start = 0usize;
@@ -99,10 +87,9 @@ impl Parser for QwenParser {
             buf.push_str(&decoder.decode(&run));
         }
         if in_call {
-            // `<tool_call>` opened and never closed — a `length` truncation, almost
-            // always. Reported as a call with the body verbatim in `arguments`, so
-            // `LengthPolicy` sees an argument that does not parse and fails the batch
-            // instead of executing half a call.
+            // `<tool_call>` opened and never closed - a `length` truncation, almost always. Reported as a
+            // call with the body verbatim in `arguments`, so `LengthPolicy` sees an argument that does not
+            // parse and fails the batch instead of executing half a call.
             out.push(ParsedSpan::ToolCall {
                 id: None,
                 name: function_name(&buf).unwrap_or_default(),
@@ -129,11 +116,9 @@ fn flush(buf: &mut String, out: &mut Vec<ParsedSpan>, reasoning: bool, start: us
     });
 }
 
-/// `\n<function=NAME>\n<parameter=K>\nV\n</parameter>\n</function>\n` → a call.
-///
-/// Written as a scan rather than a regex for the same reason `letibot-tools` has no
-/// `regex` dependency: the grammar is fixed, it is six literals long, and a partial
-/// match has to be reportable rather than approximated.
+/// `\n<function=NAME>\n<parameter=K>\nV\n</parameter>\n</function>\n` -> a call. Written as a
+/// scan rather than a regex because the grammar is six fixed literals and a partial match has
+/// to be reportable rather than approximated.
 pub fn parse_call_body(raw: &str, range: std::ops::Range<usize>) -> ParsedSpan {
     let Some(name) = function_name(raw) else {
         // No `<function=…>` at all. Keep the bytes; something upstream will have to
@@ -191,19 +176,9 @@ fn function_name(raw: &str) -> Option<String> {
     Some(rest[..gt].to_string())
 }
 
-/// One `<parameter=…>` body, back into JSON.
-///
-/// The template emits a string argument **raw** and everything else through
-/// `tojson`, so the two are not distinguishable by looking at the bytes alone: `40`
-/// is either the integer or the string. The rule here is round-trip exactness — a
-/// value is taken as structured JSON only if re-rendering it produces the identical
-/// bytes — and everything else is a string.
-///
-/// That leaves a real ambiguity: a string argument whose content happens to be
-/// valid JSON (`"40"`, `"true"`, `"[1, 2]"`) parses back as the structured value.
-/// It is **not** papered over: `letibot-tools`' argument salvage coerces against the
-/// declared parameter type, so the schema — which knows which it is — settles it one
-/// layer up, and records the coercion as a `Repair` rather than doing it silently.
+/// One `<parameter=…>` body, back into JSON. The template emits a string raw and everything else
+/// through `tojson`, so the bytes alone do not say which: the rule is round-trip exactness, and
+/// the `"40"` ambiguity is settled against the declared parameter type one layer up.
 fn value_of(text: &str) -> Value {
     match serde_json::from_str::<Value>(text) {
         Ok(v) if !v.is_string() && hf_tojson(&v) == text => v,
@@ -211,11 +186,9 @@ fn value_of(text: &str) -> Value {
     }
 }
 
-/// A [`TokenDecoder`] over an explicit table, for tests and for the fidelity tools.
-///
-/// The real one is `letibot_tokencore::VocabDecoder`. This exists so the parser can
-/// be property-tested with no vocabulary, no FFI and no GPU — which is the whole
-/// reason `TokenDecoder` is in the contract.
+/// A [`TokenDecoder`] over an explicit table, so the parser can be property-tested with no
+/// vocabulary, no FFI and no GPU - which is the whole reason `TokenDecoder` is in the contract.
+/// The real one is `letibot_tokencore::VocabDecoder`.
 pub struct TableDecoder {
     entries: Vec<(u32, String, Option<ControlRole>)>,
 }

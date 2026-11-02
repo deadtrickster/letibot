@@ -1,13 +1,11 @@
-//! **The GGUF vocabulary**: llama.cpp's tokenizer, as a
+//! The GGUF vocabulary: llama.cpp's tokenizer, as a
 //! [`letibot_tokencore::VocabBackend`].
 //!
 //! [`load`] reads the vocabulary out of a GGUF with `vocab_only = true`, so it holds a few
-//! megabytes of token table and no weights — measured at 0.6 s against shard 1 of a
-//! six-way split model, the other five shards never opened. The result is an ordinary
-//! [`Vocab`]; the rules a vocabulary keeps (one id per control literal, no specials from
-//! text, bytes-then-decode) live there, once, for every backend.
-//!
-//! This is the only crate that links llama.cpp. See `Cargo.toml` for why that moved here.
+//! megabytes of token table and no weights, and for a split model the other shards are
+//! never opened. The result is an ordinary [`Vocab`]; the rules a vocabulary keeps (one id
+//! per control literal, no specials from text, bytes-then-decode) live there, once, for
+//! every backend. This is the only crate that links llama.cpp.
 
 pub mod apparatus;
 mod ffi;
@@ -20,10 +18,9 @@ use letibot_tokencore::{TokenId, Vocab, VocabBackend, VocabError};
 
 static LLAMA_INIT: Once = Once::new();
 
-/// Load the vocabulary out of a GGUF.
-///
-/// For a split model, pass the *first* shard. `vocab_only` returns before the loader
-/// reaches any tensor, so the remaining shards are never opened and need not exist.
+/// Load the vocabulary out of a GGUF. For a split model, pass the first shard:
+/// `vocab_only` returns before the loader reaches any tensor, so the remaining shards
+/// are never opened and need not exist.
 pub fn load(path: &Path) -> Result<Vocab, VocabError> {
     LLAMA_INIT.call_once(|| unsafe { ffi::letibot_llama_init(1) });
 
