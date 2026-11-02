@@ -340,7 +340,7 @@ fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
     let bridge = Bridge::new();
     let tree = world.worktree.display().to_string();
     let started = bridge
-        .start(&tree, BRIEF, None, "writes-allowed", None)
+        .start(&tree, BRIEF, None, "writes-allowed", None, false)
         .expect("the bridge starts a session");
     let session = started["session"]
         .as_str()
