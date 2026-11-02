@@ -1,16 +1,8 @@
 //! Layer B: the one question a model is for, and the machinery around it.
 //!
-//! *Was this authorised by the operator?* is the one question a rule engine cannot
-//! answer - the same command is the requested action after "yeah restart" and a
-//! decision nobody made without it. Everything else here is [`crate::intent`]'s.
-//!
-//! Layer B is injectable, so it may only WIDEN: [`OracleAnswer::Authorised`] needs a
-//! [`Widening`], which needs an [`Adjudicable`] witness, and it is handed a
-//! [`ModelBrief`] rather than the command as written.
-//!
-//! Every denial reaches the operator as it happens ([`DenialSink`]), and the corpus row
-//! keeps the verdict and the operator's ruling apart, since the disagreement between
-//! them is the training signal.
+//! Whether an action was authorised by the operator is what no rule engine can answer. Layer B may
+//! only widen: an answer needs an [`Adjudicable`] witness, and denials reach the operator as they
+//! happen.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,11 +41,8 @@ impl Speaker {
     }
 }
 
-/// One thing that was said, and how far away it is.
-///
-/// Recency is evidence: an old "yeah restart" is not the same fact as one from the
-/// last turn. Two measures because a long single turn separates them - turns say how
-/// much has happened since, seconds say how long ago it was.
+/// One thing that was said, and how far away it is. Recency is evidence, so turns say how much has
+/// happened since and seconds say how long ago it was.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Utterance {
     pub speaker: Speaker,
@@ -91,10 +80,8 @@ impl Utterance {
     }
 }
 
-/// How the trail was assembled.
-///
-/// An empty trail and an uncollected one are different facts: a classifier told "the
-/// operator said nothing" when nobody looked denies the thing that was asked for.
+/// How the trail was assembled: an empty trail and an uncollected one are different facts, and a
+/// classifier told "nothing was said" when nobody looked denies what was asked for.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrailProvenance {
@@ -116,14 +103,9 @@ impl TrailProvenance {
     }
 }
 
-/// The operator's own words that bear on this action, with their distance.
-///
-/// Filled through a seam: `letibot-tools` sees one call at a time and `GateCall`
-/// carries no history, so the session loop installs a closure with
-/// [`crate::adjudicate::AdjudicatedGate::with_trail_source`] that walks its transcript
-/// backwards into [`AuthorisationTrail::from_messages`]. Until it does the default is
-/// [`TrailProvenance::NotCollected`] and [`ModelAdjudicator`] refuses rather than
-/// deciding on an input nobody gathered.
+/// The operator's own words that bear on this action, with their distance. Filled through a seam,
+/// since `letibot-tools` sees one call at a time; until a session loop installs one the provenance is
+/// `NotCollected` and [`ModelAdjudicator`] refuses rather than deciding on nothing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuthorisationTrail {
     pub utterances: Vec<Utterance>,
@@ -148,11 +130,9 @@ impl AuthorisationTrail {
         }
     }
 
-    /// Build a trail from what a session loop walked.
-    ///
-    /// `messages_scanned` is the denominator and is not derived from `utterances`:
-    /// "I looked at 41 messages and none were the operator's" and "I looked at 0" are
-    /// different facts, and deriving the count from the result would collapse them.
+    /// Build a trail from what a session loop walked. `messages_scanned` is the denominator and is
+    /// not derived from `utterances`: "41 messages and none were the operator's" and "0" are different
+    /// facts.
     pub fn from_messages(utterances: Vec<Utterance>, messages_scanned: usize) -> Self {
         let operator_messages = utterances
             .iter()
@@ -182,14 +162,9 @@ impl AuthorisationTrail {
         v
     }
 
-    /// Which of the cited numbers name an operator utterance that was shown.
-    ///
-    /// Two ways a number fails: out of range, where the model read something that is
-    /// not there, and in range but the agent's own words - the trail carries agent
-    /// lines too, and an ALLOW citing one is the agent authorising itself.
-    ///
-    /// Returns the surviving indices; empty means nothing cited could authorise
-    /// anything, whatever the model wrote.
+    /// Which of the cited numbers name an operator utterance that was shown. A number fails either by
+    /// being out of range or by naming the agent's own words, and an ALLOW citing those is the agent
+    /// authorising itself.
     pub fn cited_operator_words(&self, cites: &[usize]) -> Vec<usize> {
         cites
             .iter()
@@ -244,23 +219,16 @@ impl AuthorisationTrail {
 // What the model sees
 // ---------------------------------------------------------------------------
 
-/// Everything the oracle is shown, and nothing else.
-///
-/// No field holds the command as written: a classifier shown the raw string reasons
-/// about a meaning the shell has not produced yet. What is here is the post-expansion
-/// reading, plus what layer A concluded and what the operator said.
-///
-/// Not `Clone`: it holds the [`Adjudicable`] witness, and a brief that could be
-/// duplicated is a witness that could be duplicated.
+/// Everything the oracle is shown, and nothing else: no field holds the command as written, since a
+/// classifier shown the raw string reasons about a meaning the shell has not produced. Not `Clone`,
+/// because a brief that could be duplicated is a witness that could be duplicated.
 #[derive(Debug)]
 pub struct ModelBrief {
     pub request_id: String,
     /// The tool as declared.
     pub tool: String,
-    /// One line: what this is, for a reader who will not read the rest.
-    ///
-    /// Built here, not copied from [`AdjudicationRequest::summary`], which quotes the
-    /// arguments as written and would smuggle the raw command in.
+    /// One line: what this is, for a reader who will not read the rest. Built here rather than copied
+    /// from the request's summary, which would smuggle the raw command in.
     pub summary: String,
     /// Layer A's reading, already decided and not up for discussion.
     pub baseline: String,
@@ -274,23 +242,14 @@ pub struct ModelBrief {
     pub regions: Vec<String>,
     pub effect_scope: EffectScope,
     pub trail: AuthorisationTrail,
-    /// Calls this operator answered themselves, in this session, with what they chose:
-    /// the action and the verdict, so the guard has worked examples of this person's
-    /// judgement rather than a tally. `prior` below is the same record reduced to
-    /// "admit, 3 times", which says nothing about what they are like.
-    ///
-    /// Evidence, never precedent, exactly as `prior` is: an example cannot move the
-    /// tier and cannot admit anything.
+    /// Calls this operator answered themselves, with what they chose: worked examples of their
+    /// judgement rather than a tally. Evidence, never precedent, so an example cannot move the tier.
     pub examples: Vec<DecisionExample>,
     /// Which wording of the question this brief asks. See [`BriefVariant`].
     pub variant: BriefVariant,
-    /// What the agent says it is doing, in its own words - and never an authorisation.
-    ///
-    /// It is not in the trail, and that is the safety property: an oracle authorises
-    /// by citing trail indices, so the agent's sentence can connect the operator's
-    /// words to this call but cannot BE the citation. The residual risk is that a
-    /// narrated link is more believable than none; what it buys is that a general
-    /// instruction stops producing a prompt per call.
+    /// What the agent says it is doing, in its own words, and never an authorisation: the oracle
+    /// authorises by citing trail indices, so this can connect the operator's words to the call but
+    /// cannot be the citation.
     pub agent_claim: Option<String>,
     /// The gate's own record on actions of this shape, with counts and ages.
     /// Evidence for the decision, never a substitute: nothing in the admit path reads
@@ -300,10 +259,9 @@ pub struct ModelBrief {
     /// included. The oracle takes it by value to build a [`Widening`]; there is no
     /// other source, and no witness exists for a blocked boundary.
     witness: Option<Adjudicable>,
-    /// The reading did not resolve. An unresolved action is the exact case the oracle
-    /// exists for - the deterministic reader failed - so the brief says so rather than
-    /// passing the attempted structure off as a reading. Whether an ALLOW admits it is
-    /// the witness rule's, in `adjudicate`.
+    /// The reading did not resolve, which is the exact case the oracle exists for, so the brief says so
+    /// rather than passing an attempted structure off as a reading. Whether an ALLOW admits it is the
+    /// witness rule's.
     unresolved: bool,
 }
 
@@ -390,15 +348,9 @@ impl ModelBrief {
     pub fn render(&self) -> String {
         let mut s = String::new();
         s.push_str(
-            // The prompt does not tell the model it cannot forbid anything: the answer
-            // suffix offers DENY, so the sentence contradicted the list and the model
-            // resolved it by never picking DENY. The safety rule is unchanged, because
-            // `OracleAnswer` has no denying variant - only who is told about it. The
-            // widening clause stays, since widening IS something the model can attempt.
-            //
-            // The two wordings differ in what counts as asking: `AskedForIt` answers
-            // only from the operator's words, `Follows` also counts a plain step toward
-            // the request. Which one ships is a measurement, not an argument.
+            // The prompt does not tell the model it cannot forbid anything: the answer suffix offers
+            // DENY, and a sentence that contradicted the list made the model never pick it. The safety
+            // rule is unchanged, because `OracleAnswer` has no denying variant.
             match self.variant {
                 // The wording that ships, kept beside the alternative so a replay can
                 // compare them.
@@ -520,11 +472,8 @@ impl ModelBrief {
 // The oracle
 // ---------------------------------------------------------------------------
 
-/// A widening: *the operator asked for this*.
-///
-/// Constructible only with an [`Adjudicable`], which only
-/// [`AdjudicationRequest::adjudicable`] mints. That is the whole safety argument in
-/// one signature.
+/// A widening: the operator asked for this. Constructible only with an [`Adjudicable`], which is the
+/// whole safety argument in one signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Widening {
     pub request_id: String,
@@ -551,12 +500,9 @@ impl Widening {
     }
 }
 
-/// Why a verdict did not come back as a verdict: three ways an oracle answered and one
-/// way it did not. Collapsing them into one sentence costs the corpus the fact.
-///
-/// [`UnsureKind::as_str`] is the label the corpus stores - a token rather than prose,
-/// because re-parsing prose to recover a label is how a corpus rots, and only a column
-/// can be counted.
+/// Why a verdict did not come back as one: three ways an oracle answered and one way it did not, and
+/// collapsing them costs the corpus the fact. The label is a token rather than prose, because
+/// re-parsing prose to recover a label is how a corpus rots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsureKind {
     /// The model answered `UNSURE`. The baseline stands and the person is asked.
@@ -565,10 +511,9 @@ pub enum UnsureKind {
     BetweenThresholds,
     /// The bytes are not a verdict at all.
     Unreadable,
-    /// The generation stopped at its own ceiling before it reached a verdict: the one
-    /// case whose response is a budget rather than a person. Told apart from
-    /// [`Self::Unreadable`] by the server's `finish_reason`, the only thing that can -
-    /// a reply cut at the ceiling and one that stopped are the same bytes.
+    /// The generation stopped at its own ceiling before it reached a verdict: told apart from
+    /// [`Self::Unreadable`] by the server's `finish_reason`, since a reply cut at the ceiling and one
+    /// that stopped are the same bytes.
     OutOfRoom,
 }
 
@@ -597,11 +542,8 @@ impl UnsureKind {
     }
 }
 
-/// What an oracle may answer. Three variants, and none of them denies.
-///
-/// A denial is layer A's or a human's: "does not authorise" leaves the baseline where it
-/// was, which for an `Ask` means still asking. Letting the oracle deny would let a prompt
-/// injection narrow as well as widen, and a hallucination claim a decision nobody made.
+/// What an oracle may answer. None of them denies: letting it would let a prompt injection narrow as
+/// well as widen, and a hallucination claim a decision nobody made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OracleAnswer {
     Authorised(Widening),
@@ -609,12 +551,8 @@ pub enum OracleAnswer {
     NotAuthorised {
         why: String,
     },
-    /// The oracle cannot tell. Same effect as [`Self::NotAuthorised`], different row:
-    /// "wrong" and "unsure" are different labels.
-    ///
-    /// `kind` is which of the four it was and `why` is the sentence a person reads. Both,
-    /// because the label is how a `GROUP BY` counts it and the sentence is how the
-    /// operator finds out what happened.
+    /// The oracle cannot tell. Same effect as [`Self::NotAuthorised`], different row: "wrong" and
+    /// "unsure" are different labels.
     Unsure {
         why: String,
         kind: UnsureKind,
@@ -638,23 +576,14 @@ pub struct OracleScope {
     /// must not have to read the prose above to tell the two apart, and a grant a human
     /// chose must never render as one that was earned.
     pub declared: bool,
-    /// Tools this oracle may rule on however far their effect lands, named one at a time
-    /// by the operator. [`EffectScope`] is a ladder, so raising `max_scope` to reach one
-    /// off-box tool reaches every off-box tool - and the top rung holds `flowy say`,
-    /// which posts into the room the whole fleet reads.
-    ///
-    /// A list of NAMES, not a rung: it grants past `max_scope` for these tools and for
-    /// nothing else. Empty by default, and a name on it is a grant like every other line
-    /// of `[gatekeeper]` - recorded as `declared`, never as earned.
+    /// Tools this oracle may rule on however far their effect lands. A list of names rather than a
+    /// rung, because raising `max_scope` to reach one off-box tool would reach every one of them.
     pub tools: std::collections::BTreeSet<String>,
 }
 
 impl OracleScope {
-    /// The narrowest useful authority: ordinary work inside the operator's project,
-    /// and nothing that leaves it.
-    ///
-    /// This is where an oracle starts. Everything else escalates, which costs a prompt
-    /// and buys the corpus rows that would justify widening.
+    /// The narrowest useful authority: ordinary work inside the operator's project, and nothing that
+    /// leaves it. Everything else escalates, which buys the corpus rows that justify widening.
     pub fn narrowest(evidence: impl Into<String>) -> Self {
         OracleScope {
             intents: [
@@ -673,14 +602,9 @@ impl OracleScope {
         }
     }
 
-    /// The scope the operator has declared for their own guard, from names.
-    ///
-    /// Authority is meant to be earned by measurement, and this is the door a human who
-    /// owns the box uses to say what their guard is trusted with - a table nobody can
-    /// finish is not a mechanism. `evidence` says DECLARED, so neither the disclosure
-    /// nor the audit row can read it as a number somebody measured. Unparseable names
-    /// are an error rather than a silent narrowing: a setting that quietly did not take
-    /// is worse than one that refused.
+    /// The scope the operator has declared for their own guard, from names. `evidence` says DECLARED,
+    /// so no disclosure reads it as a measured number, and an unparseable name is an error rather than
+    /// a silent narrowing.
     pub fn declared(
         intents: &[String],
         max_scope: Option<&str>,
@@ -691,10 +615,8 @@ impl OracleScope {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .collect();
-        // An unset list is the floor's list, never an empty one: building an empty
-        // intent set from `max_scope` alone would cover NOTHING - narrower than the
-        // default they were widening, and silently so. The two knobs are independent,
-        // and omitting one must not reinterpret the other.
+        // An unset list is the floor's list, never an empty one: an empty intent set built from
+        // `max_scope` alone covers NOTHING, narrower than the default it was widening, and silently.
         if intents.is_empty() {
             let floor = OracleScope::narrowest("");
             let max_scope = match max_scope {
@@ -758,11 +680,8 @@ impl OracleScope {
         }
     }
 
-    /// Whether this authority was granted by a person rather than measured.
-    ///
-    /// A flag rather than a substring test on `evidence`: the sentence is prose and
-    /// a reader that greps it would be a second definition of the distinction, in
-    /// the layer that renders it.
+    /// Whether this authority was granted by a person rather than measured. A flag rather than a
+    /// substring test on `evidence`, which would be a second definition in the layer that renders it.
     pub fn is_declared(&self) -> bool {
         self.declared
     }
@@ -774,11 +693,8 @@ impl OracleScope {
         )
     }
 
-    /// Whether this oracle may be asked about this action at all.
-    ///
-    /// `tool` matters because the reach may be granted per tool as well as per rung. A
-    /// named tool never waives the INTENT check: a grant says how far the effect may
-    /// land, not what the action may be.
+    /// Whether this oracle may be asked about this action at all. A named tool never waives the INTENT
+    /// check: a grant says how far the effect may land, not what the action may be.
     pub fn covers_tool(
         &self,
         tool: &str,
@@ -806,11 +722,9 @@ impl OracleScope {
                 self.max_scope.as_str()
             ));
         }
-        // `Unknown` is the absence of an intent, not an intent to withhold: layer A
-        // already decided an unrecognised program lands at `MayApprove`, so reading
-        // `unknown` as unearned here made the two layers disagree. What still holds the
-        // line is the effect scope checked above, the witness rule, and the never-write
-        // list - none of which reads the intent table.
+        // `Unknown` is the absence of an intent, not an intent to withhold: layer A already lands an
+        // unrecognised program at `MayApprove`, so reading it as unearned made the two layers disagree.
+        // The effect scope, the witness rule and the never-write list hold the line.
         let outside: Vec<&str> = intents
             .iter()
             .filter(|i| **i != Intent::Unknown)
