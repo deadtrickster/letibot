@@ -149,41 +149,36 @@ is *"a real answer given for a fake reason"*. So a watching head declares `Caps 
 }`, and the daemon refuses any `Answer` from it.
 
 **The reviewers are child sessions, and one line each is what the parent's hub carries.**
-`SessionEvent::Subagent` (`opening`/`running` → *started*, `done`/`failed` → *ended*) becomes a
-`subagent` entry in `leticode_events`: the slug, the branch its task named (*"- branch: agent/P1"* -
-the task is the only place a child's branch appears on the wire), and its first line as the verdict.
-A head that attaches mid-review reads the ones still running from the snapshot's `subagents`;
-**following one reviewer's own turns needs a second `leticode_attach` on its session id.**
+`SessionEvent::Subagent` becomes a `subagent` entry in `leticode_events` - the slug, the branch its
+task named (*"- branch: agent/P1"*, the only place a child's branch appears on the wire) and its
+first line as the verdict. A head that attaches mid-review reads the running ones from the
+snapshot's `subagents`; **following one reviewer's turns needs a second `leticode_attach` on its
+session id.**
 
 ## `leticode_transcript`: the conversation, not the store
 
 `leticode_events` is a progress ring whose texts are cut to one line, and a pane that follows a
 session read-only needs the conversation. Reading the store directly is the operator's ruling
-against (*"not a good idea"*): `sessions.db` is one file every daemon on the box shares, so a reader
-there sees sessions it was never told about, and a row there is the STORE's shape. So the tool asks
-the daemon what a head would be handed - `ClientFrame::Peek { shape: Rows }`, whose answer is the
-session's own snapshot, *"the same thing an attach answers with"* - and **no file is opened and no
-second reader exists**; a session this bridge only WATCHES answers the same read.
+against (*"not a good idea"*): `sessions.db` is one file every daemon on the box shares, and a row
+there is the STORE's shape. So the tool asks the daemon what a head would be handed -
+`ClientFrame::Peek { shape: Rows }`, whose answer is the session's own snapshot - and **no file is
+opened and no second reader exists**; a session this bridge only WATCHES answers the same read.
 
 One word per item kind - `user`, `assistant`, `tool_result`, `system`, `reasoning`, `segment_mark` -
 plus three facts a reader cannot derive:
 
-- **`i`, the row's position in the SESSION**, and `next`, the cursor. The arithmetic is against the
-  snapshot's `items_dropped`, because a snapshot is the TAIL of a conversation: a cursor counting
-  window positions would silently re-read or skip every time the window moved.
-- **`cap`, stated in every answer**, and `cut` on any string cut at it: 8 000 CHARACTERS, not bytes
-  (a reader counting what it got and a cap counting bytes disagree the first time a row carries a
-  glyph). An orchestrator should read a real tool result, not its first line.
+- **`i`, the row's position in the SESSION**, and `next`, the cursor, counted against the snapshot's
+  `items_dropped` - a snapshot is the TAIL of a conversation, so a cursor of window positions would
+  silently re-read or skip whenever the window moved.
+- **`cap`, stated in every answer**, and `cut` on any string cut at it: 8 000 CHARACTERS, not bytes.
 - **`content: null` for a row the daemon announced and has not reconciled** - *there is a row here
-  and this build cannot show you what is in it*, which is not the same statement as an empty message.
+  and this build cannot show you what is in it*, which is not an empty message.
 
-A tool result carries its `outcome` in the words `leticode_events` files a call under (`ok`, `failed`,
-`denied`, `not_run`, `backgrounded` …) and the reason for `failed`/`not_run`. A user row carries
-`speaker` (`operator`/`agent`) and names its `attachments` by type, never their bytes, because an
-image's `data_ref` is a data URI of the whole file; `reasoning` is left out unless asked for. A read
-for a session the daemon does not hold is answered `Rejected`, which the bridge turns into an error
-naming the session: a `peek` is the one frame whose answer carries no client id, so the refusal is
-keyed `peek:<session>`.
+A tool result carries its `outcome` (`ok`, `failed`, `denied`, `not_run`, `backgrounded` …) and the
+reason for `failed`/`not_run`; a user row carries `speaker` (`operator`/`agent`) and names its
+`attachments` by type, never their bytes. A read for a session the daemon does not hold is answered
+`Rejected`, keyed `peek:<session>` because a `peek` is the one frame whose answer carries no client
+id.
 
 ## `leticode_mode`: the bridge asks, a person answers
 
