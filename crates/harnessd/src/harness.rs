@@ -6562,8 +6562,6 @@ mod open;
 mod prefix_repair;
 mod turns;
 mod wall;
-pub use turns::{abandoned_calls, one_line};
-pub(crate) use turns::{CapturingSink, MAX_HTTP_RETRIES, Outage, provider_refusal};
 #[cfg(test)]
 pub(crate) use children::steer_for_turn;
 #[cfg(test)]
@@ -6601,6 +6599,10 @@ pub use open::{
 pub(crate) use open::{
     base_role_for_seat, confined_grants, downgraded_ruleset, role_for, role_for_seat,
 };
+pub use turns::abandoned_calls;
+#[cfg(test)]
+pub(crate) use turns::reconcile_rows;
+pub(crate) use turns::{CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provider_refusal};
 pub use wall::{
     CompactReport, ForkReport, ForkTail, ReseatReport, reseated_for_the_model,
     stale_notice_for_the_model,
