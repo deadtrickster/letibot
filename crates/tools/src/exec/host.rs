@@ -501,6 +501,13 @@ impl std::fmt::Debug for Deadlines {
 }
 
 impl Deadlines {
+    /// Keep the record of what this watchdog did, bounded the way the host's other records are.
+    fn record(&self, f: DeadlineFired) {
+        let mut fired = self.fired.lock().unwrap_or_else(|e| e.into_inner());
+        bound_records(&mut fired, RECORD_LIMIT);
+        fired.push(f);
+    }
+
     /// An empty set, with the watchdog already running.
     fn new(tree: Arc<dyn ScopeTree>) -> Arc<Deadlines> {
         let d = Arc::new(Deadlines {
@@ -599,14 +606,11 @@ impl Deadlines {
                     by: DEADLINE_KILL.to_string(),
                 });
                 let reaping = tree.end(&d.job.lifetime().scope);
-                self.fired
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(DeadlineFired {
-                        job: d.job.id.clone(),
-                        after,
-                        reaping,
-                    });
+                self.record(DeadlineFired {
+                    job: d.job.id.clone(),
+                    after,
+                    reaping,
+                });
             }
         }
     }
@@ -705,6 +709,22 @@ pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 /// The capture of a settled job has done its work, so past this budget the oldest are released
 /// ([`super::jobs::Capture::release`]) and the row and its counts stay. A running job keeps its.
 pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
+
+/// **How many records of what a host did one host keeps** - every reaping, every promotion and every
+/// deadline it fired. They are a small record a caller reads back (*the deadline ended this run*, *the
+/// model's command was promoted*), not a history, and nothing pruned them before this: a daemon that
+/// had been up for a month carried every kill it ever made, each with the pids it observed and the
+/// ones that survived (TODO.md R74 item 19).
+pub const RECORD_LIMIT: usize = 512;
+
+/// Keep `records` to `limit`, dropping the OLDEST first: the newest is the one a caller asking *what
+/// just happened* wants, and the front is where the oldest are.
+fn bound_records<T>(records: &mut Vec<T>, limit: usize) {
+    if records.len() > limit {
+        let excess = records.len() - limit;
+        records.drain(..excess);
+    }
+}
 
 /// A job this host did not start: a restarted daemon's record of one, or a peer's, as this layer
 /// needs it. See [`HostProcesses::adopt`] and [`hand_over`].
@@ -1174,12 +1194,16 @@ impl HostProcesses {
     }
 
     fn record(&self, r: Reaping) -> Reaping {
-        self.reaps.lock().expect("reaps").push(r.clone());
+        let mut reaps = self.reaps.lock().expect("reaps");
+        bound_records(&mut reaps, RECORD_LIMIT);
+        reaps.push(r.clone());
         r
     }
 
     fn record_promotion(&self, p: Promotion) -> Promotion {
-        self.promotions.lock().expect("promotions").push(p.clone());
+        let mut promotions = self.promotions.lock().expect("promotions");
+        bound_records(&mut promotions, RECORD_LIMIT);
+        promotions.push(p.clone());
         p
     }
 }
@@ -2422,6 +2446,63 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
+    }
+
+    /// **The record of what a host did is bounded, and the oldest go first** (TODO.md R74 item 19).
+    /// `reaps`, `promotions` and every deadline fired are a small record a caller reads back, not a
+    /// history: nothing pruned them, so a daemon that had been up for a month carried every kill it
+    /// ever made - each holding the pids it observed and the ones that survived.
+    #[test]
+    fn the_records_of_what_a_host_did_are_bounded_and_the_oldest_go_first() {
+        // The rule, on its own: past the limit the FRONT goes, because the newest record is the one a
+        // caller asking *what just happened* wants.
+        let mut v: Vec<u32> = (0..10).collect();
+        bound_records(&mut v, 4);
+        assert_eq!(v, vec![6, 7, 8, 9]);
+        let mut short: Vec<u32> = vec![1, 2];
+        bound_records(&mut short, 4);
+        assert_eq!(short, vec![1, 2], "under the limit nothing is dropped");
+
+        // And through the door a caller uses: a real host, one more promotion than it keeps.
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
+        ) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("letibot-records-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        let scope = |name: &str| super::ScopeId {
+            kind: ScopeKind::Session,
+            name: name.into(),
+            path: root.join(name),
+        };
+        for n in 0..RECORD_LIMIT + 3 {
+            h.record_promotion(Promotion {
+                job: JobId(format!("job-{n}")),
+                command: "sleep 1".into(),
+                slug: None,
+                from: scope("before"),
+                to: scope("after"),
+                ran_for: Duration::ZERO,
+                how: Backgrounding::Asked,
+                migration: None,
+                at: std::time::SystemTime::now(),
+                note: None,
+                output_file: None,
+            });
+        }
+        let kept = h.promotions();
+        assert_eq!(kept.len(), RECORD_LIMIT, "the record is held to its bound");
+        assert_eq!(
+            kept.first().map(|p| p.job.0.as_str()),
+            Some("job-3"),
+            "the three oldest went: {}",
+            kept.first().map(|p| p.job.0.clone()).unwrap_or_default()
+        );
+        assert_eq!(kept.last().map(|p| p.job.0.as_str()), Some("job-514"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Settled output is held to a budget, oldest released first, and a running job's never.

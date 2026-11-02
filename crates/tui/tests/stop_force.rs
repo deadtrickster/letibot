@@ -327,6 +327,11 @@ fn an_orderly_stop_is_not_forced() {
         s.forced.is_none(),
         "a daemon that stopped is never forced: {s:?}"
     );
+    // **No clock here, on purpose (TODO.md R74 item 34).** What the old assertion measured was
+    // `started` (taken before the fixture had attached anything) against the app's own
+    // `STOP_DEADLINE_MS`, so under a loaded box it failed on the box's speed and said nothing about
+    // the product. The property it wanted - this stop took the orderly path - is the assertion
+    // above; the app's own deadline is the force test's subject, not this one's.
     assert_eq!(a.stop_farewell(), None, "it went; nothing to report");
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
@@ -397,6 +402,10 @@ fn an_older_daemon_is_forced_directly() {
     assert!(!s.sent, "no stop frame to an older daemon: {s:?}");
     assert!(s.gone, "{s:?}");
     assert!(is_gone(pid));
+    // **No clock here either (TODO.md R74 item 34)**: `started` is before the fixture's own attach
+    // and stop, so an `elapsed()` against `STOP_DEADLINE_MS` was a claim about the machine. That the
+    // escalation did not wait the ordinary deadline out is the assertion above - no stop frame was
+    // sent - which is the product's decision and not the box's speed.
     let said = a.stop_farewell().expect("a forced stop is said");
     assert!(said.contains(&why), "and in the farewell: {said}");
     assert!(
