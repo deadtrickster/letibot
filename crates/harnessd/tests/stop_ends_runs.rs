@@ -101,7 +101,7 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
     // **A real daemon needs a vocabulary, and `--vocab` is how it is handed one.** Main made
     // that optional — a daemon on the byte vocabulary needs none — and this test's daemon is
     // a local-model one, so it exited with `no vocabulary` until this line existed. The
-    // question is the same one the test's own `present_gguf` gate asks, so it is asked the
+    // question is the same one the test's own `vocab_gguf` gate asks, so it is asked the
     // same way: the operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF.
     if let Some(gguf) = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
@@ -251,10 +251,18 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     // What the daemon says about what it ended. Read while the socket is still up: the
     // sentence is published **before** the hubs close, which is what makes it land on the
     // session log rather than in a file nobody tails.
+    //
+    // **Read until the `Bye`, and not for a fixed five seconds.** A stop that has to kill a
+    // tree waits on the cgroup emptying, and that wait is in seconds: five was enough to be
+    // the whole window on a box where the killed tree is slow to leave, so the sentence was
+    // published into a loop that had already given up. The bound here is the stop's own,
+    // because the claim is *the daemon said it before it closed anything* and a clock of this
+    // test's own cannot measure that.
     let mut sentence: Option<String> = None;
+    let mut said_at: Option<Duration> = None;
     let mut bye_at: Option<Duration> = None;
-    let read_until = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < read_until && sentence.is_none() {
+    let read_until = started + STOP_BUDGET;
+    while Instant::now() < read_until && sentence.is_none() && bye_at.is_none() {
         let Ok(inbound) = rx.recv_timeout(Duration::from_millis(250)) else {
             continue;
         };
@@ -262,8 +270,10 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
             ServerFrame::Event(env) => {
                 if let SessionEvent::Warning { code, detail, .. } = &env.event
                     && code == "daemon_stopping_runs"
+                    && sentence.is_none()
                 {
                     sentence = Some(detail.clone());
+                    said_at = Some(started.elapsed());
                 }
             }
             ServerFrame::Bye { .. } if bye_at.is_none() => {
@@ -292,7 +302,7 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     }
 
     eprintln!("---- the stop took {took:?} (the run's own deadline is 120 s) ----");
-    eprintln!("---- the Bye arrived after {bye_at:?} ----");
+    eprintln!("---- the Bye arrived after {bye_at:?}, the sentence after {said_at:?} ----");
     if let Some(s) = &sentence {
         eprintln!("---- what the daemon said it ended ----\n  {s}");
     }
@@ -302,9 +312,9 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     );
     assert!(
         sentence.is_some(),
-        "the daemon ended a run on the way out and said nothing about it — *it killed the \
-         run* and *it killed the run and told you* are different facts, and the second is \
-         the one that makes a stop auditable"
+        "the daemon ended a run on the way out and said nothing about it before it closed the \
+         hubs (Bye after {bye_at:?}). *It killed the run* and *it killed the run and told you* \
+         are different facts, and the second is the one that makes a stop auditable"
     );
     let said = sentence.unwrap();
     assert!(
