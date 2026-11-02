@@ -1,12 +1,7 @@
-//! **Git, as the queues use it** — every command is one `git -C <dir> …`, its own words on
-//! failure, and nothing that touches the operator's checkout except the one step that has to
-//! (keeping a checkout of the target coherent after the ref moved — [`follow_checkouts`]).
-//!
-//! The landing happens in a DEDICATED worktree ([`landing_worktree_in`]) in letibot's own data
-//! directory (`~/.local/share/letibot/landing/<repo>-<hash>`, never inside the repository's
-//! `.git`), and the target branch moves by a compare-and-swap on its ref
-//! ([`update_ref_cas`]). The v23 queue ran `git -C <repo> merge --ff-only` in whatever the
-//! operator had checked out and recorded `rev-parse main` afterwards (R61 defect 7).
+//! Git, as the queues use it: every command is one `git -C <dir> …` with git's own words on
+//! failure. Landings happen in a dedicated worktree outside the repository
+//! ([`landing_worktree_in`]) and the target moves by a compare-and-swap ([`update_ref_cas`]), so
+//! nothing here touches the operator's checkout except [`follow_checkouts`], which has to.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -31,7 +26,7 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// A command's words on one line — an argument holding a space is quoted, so a credential
+/// A command's words on one line - an argument holding a space is quoted, so a credential
 /// helper's `!gh auth git-credential` cannot read as three arguments in a failure message.
 fn words(args: &[&str]) -> String {
     args.iter()
@@ -67,9 +62,9 @@ pub fn branch_head(repo: &Path, branch: &str) -> Option<String> {
     rev_parse(repo, &format!("refs/heads/{branch}"))
 }
 
-/// **The commit a worktree's own `HEAD` names** — what `git worktree remove --force` is
-/// unrecoverable for when it is a commit no ref holds (a detached head, a branch the row does not
-/// name). `Err` is *it could not be read*, which the sweep keeps for.
+/// The commit a worktree's own `HEAD` names - what `git worktree remove --force` is
+/// unrecoverable for when no ref holds it. `Err` is *it could not be read*, which the sweep keeps
+/// for.
 pub fn head_of(wt: &Path) -> Result<String, String> {
     let sha = git(wt, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
     let sha = sha.trim().to_string();
@@ -82,12 +77,9 @@ pub fn head_of(wt: &Path) -> Result<String, String> {
     Ok(sha)
 }
 
-/// **What a ref is** — three facts git can tell apart, and the queue may not confuse: a ref that is
-/// there (its sha), a ref that is not, and a repository or a ref git cannot read.
-///
-/// [`rev_parse`] answers one `Option` for all three, which is why this exists: `None` from it was
-/// read as *the ref is gone* by the resource sweep, and a repository git could not read then took
-/// a worktree down with it.
+/// What a ref is: there, not there, or unreadable. [`rev_parse`] folds all three into one `Option`
+/// and the sweep read its `None` as *gone* - a repository git could not read then took a worktree
+/// down with it.
 enum RefState {
     Sha(String),
     /// Git said, in so many words, that there is no such ref (exit 1 from `show-ref --verify`).
@@ -95,7 +87,7 @@ enum RefState {
     Unreadable(String),
 }
 
-/// [`RefState`] for `refs/heads/<branch>` — `show-ref --verify` and not `rev-parse`, because its
+/// [`RefState`] for `refs/heads/<branch>` - `show-ref --verify` and not `rev-parse`, because its
 /// exit status separates *no such ref* (1) from *this is not a repository* (128).
 fn ref_state(repo: &Path, branch: &str) -> RefState {
     let out = Command::new("git")
@@ -125,21 +117,16 @@ fn ref_state(repo: &Path, branch: &str) -> RefState {
     }
 }
 
-/// **The proof a deletion needs** — are the commits of a ref (or of a worktree's HEAD) on the
-/// target?
-///
-/// The queue deletes a ref or a tree in three places ([`super::serve::RepoQueue`]'s sweep, its
-/// `landed`, and `supersede_fix_branches`), and the rule is one rule: *nothing in the queue may
-/// delete a ref or a worktree whose commits are not provably on the target.* So the answer is
-/// three-valued on purpose — [`Proof::Gone`] is permission (there is nothing there to lose),
-/// [`Proof::Unproven`] is not, and the safe side of *I could not tell* is keeping.
+/// The proof a deletion needs: are the commits of a ref (or a worktree's HEAD) on the target?
+/// Nothing in the queue may delete a ref or a tree whose commits are not provably there, so the
+/// answer is three-valued - [`Proof::Gone`] is permission, [`Proof::Unproven`] is not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Proof {
     /// The tip is on the target: `git merge-base --is-ancestor` said so.
     On,
     /// The ref does not exist. It holds no commit, so nothing can be lost by removing what is left.
     Gone,
-    /// **The proof could not be taken**, or was taken and refused: the kind is the sweep's key for
+    /// The proof could not be taken, or was taken and refused: the kind is the sweep's key for
     /// saying it once, the sentence is what a person reads.
     Unproven(&'static str, String),
 }
@@ -154,8 +141,8 @@ impl Proof {
     }
 }
 
-/// **Whether local branch `branch`'s commits are on `target`** — [`Proof`]. `what` names the thing
-/// being proved for the sentence a person reads: *"the branch `agent/x`"*.
+/// Whether local branch `branch`'s commits are on `target`. `what` names the thing being proved in
+/// the sentence a person reads: *"the branch `agent/x`"*.
 pub fn ref_proof(repo: &Path, branch: &str, target: &str, what: &str) -> Proof {
     match ref_state(repo, branch) {
         RefState::Absent => Proof::Gone,
@@ -171,8 +158,8 @@ pub fn ref_proof(repo: &Path, branch: &str, target: &str, what: &str) -> Proof {
     }
 }
 
-/// **Whether one commit is on `target`** — the same proof about a worktree's own HEAD, which is the
-/// commit a `git worktree remove --force` is unrecoverable for.
+/// The same proof about one commit - a worktree's own HEAD, which a `git worktree remove --force`
+/// is unrecoverable for.
 pub fn commit_proof(repo: &Path, head: &str, target: &str, what: &str) -> Proof {
     let tip = match ref_state(repo, target) {
         RefState::Sha(tip) => tip,
@@ -200,9 +187,9 @@ pub fn commit_proof(repo: &Path, head: &str, target: &str, what: &str) -> Proof 
     proof_against(repo, head, &tip, target, what)
 }
 
-/// **The same proof about a commit, against a tip git is handed as a revision** — the target as it
-/// was read a moment ago, which is how a superseded fix's branch is judged (`base` is the tip's sha,
-/// not its name). `target` is the label the sentence uses.
+/// The same proof about a commit, against a tip git is handed as a revision - the target as it was
+/// read a moment ago, which is how a superseded fix's branch is judged. `target` is the label the
+/// sentence uses.
 pub fn commit_on(repo: &Path, head: &str, tip_rev: &str, target: &str, what: &str) -> Proof {
     match rev_parse(repo, tip_rev) {
         Some(tip) => proof_against(repo, head, &tip, target, what),
@@ -267,10 +254,9 @@ pub fn commits_over(dir: &Path, base: &str, head: &str) -> Result<usize, String>
         .map_err(|e| format!("git rev-list --count answered `{}`: {e}", n.trim()))
 }
 
-/// **The change a head carries over `onto`, as one stable patch id** — what tells *the branch
-/// was rebased* from *the branch moved* (decision 6: *"a rebase onto a newer main is not a
-/// move"*). The diff is from the merge base of `onto` and `head` to `head`, so two heads carrying
-/// the same change over two different bases answer the same id.
+/// The change a head carries over `onto`, as one stable patch id - what tells *the branch was
+/// rebased* from *the branch moved*. The diff runs from the merge base to `head`, so two heads
+/// carrying one change over different bases answer the same id.
 pub fn change_id(dir: &Path, onto: &str, head: &str) -> Option<String> {
     let base = git(dir, &["merge-base", onto, head]).ok()?;
     let diff = git(dir, &["diff", "--binary", base.trim(), head]).ok()?;
@@ -300,7 +286,7 @@ pub fn change_id(dir: &Path, onto: &str, head: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// **The repository a worktree belongs to** — the main checkout, from the common git directory.
+/// The repository a worktree belongs to - the main checkout, from the common git directory.
 pub fn repo_of_worktree(worktree: &Path) -> Option<PathBuf> {
     let common = git(
         worktree,
@@ -326,7 +312,7 @@ pub fn repo_root(path: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(top))
 }
 
-/// **The repository a workspace means** — itself, a same-named child (the operator's
+/// The repository a workspace means - itself, a same-named child (the operator's
 /// `~/Projects/letibot/letibot`), or its only repository child. `None` when it names none or
 /// several.
 pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
@@ -355,17 +341,11 @@ pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
     }
 }
 
-/// **The repositories a workspace is a session of** — the one [`repo_of_workspace`] reads it as,
-/// or, for a folder that is ONE PROJECT of several repositories, every one of them.
-///
-/// The operator, of `~/Projects/stroppy-io` (`stroppy`, `stroppy-contrib`, `website`, none the
-/// main one): its session served no queue and heard no alarm. And the reason a folder of
-/// repositories is NOT read as serving them stands — on 2026-10-12 a daemon seated at
-/// `/home/dead` took letibot's lease and showed `main RED` to a session about the box's memory —
-/// so what makes a folder one project is a fact, not a guess, and the operator named it: *"they
-/// usually belong to the same org"*. Two or more child repositories whose `origin` remotes all
-/// share one host and owner (`github.com/stroppy-io/…`) are one project; mixed owners, or a child
-/// with no remote, are a folder of unrelated checkouts, and the answer is what it was.
+/// The repositories a workspace is a session of: the one [`repo_of_workspace`] reads it as, or
+/// every child of a folder that is ONE PROJECT - two or more children whose `origin` remotes share
+/// one host and owner. Mixed owners, or a child with no remote, are unrelated checkouts: a folder
+/// is not read as serving them, because a daemon seated too high would take a lease it has no
+/// business holding.
 pub fn repos_of_workspace(workspace: &Path) -> Vec<PathBuf> {
     if let Some(one) = repo_of_workspace(workspace) {
         return vec![one];
@@ -397,8 +377,8 @@ pub fn repos_of_workspace(workspace: &Path) -> Vec<PathBuf> {
     }
 }
 
-/// **The host and owner a remote URL names** — `("github.com", "stroppy-io")` for
-/// `https://github.com/stroppy-io/stroppy.git` and `git@github.com:stroppy-io/stroppy.git` alike,
+/// The host and owner a remote URL names - `("github.com", "stroppy-io")` for
+/// `https://github.com/stroppy-io/stroppy.git` and `git@github.com:stroppy-io/stroppy.git` alike
 /// case-folded. `None` for a path remote or anything without an owner segment.
 pub fn remote_owner(url: &str) -> Option<(String, String)> {
     let rest = if let Some(r) = url.split_once("://").map(|(_, r)| r) {
@@ -420,14 +400,14 @@ pub fn remote_owner(url: &str) -> Option<(String, String)> {
     Some((host, owner))
 }
 
-/// **The queues' name for a repository** — the canonical path of its main checkout, so two
-/// daemons seated at two depths of one repository agree on one lease.
+/// The queues' name for a repository - the canonical path of its main checkout, so two daemons
+/// seated at two depths of one repository agree on one lease.
 pub fn repository_key(any_path_in_it: &Path) -> Option<String> {
     repo_of_worktree(any_path_in_it).map(|p| p.display().to_string())
 }
 
-/// The target branch a repository lands on when the project names none (decision 12 makes it
-/// per project): `main` when it exists, else `master`, else whatever the main checkout has out.
+/// The target branch a repository lands on when the project names none: `main` when it exists
+/// else `master`, else whatever the main checkout has out.
 pub fn default_target(repo: &Path) -> Option<String> {
     for b in ["main", "master"] {
         if branch_head(repo, b).is_some() {
@@ -440,8 +420,8 @@ pub fn default_target(repo: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// **The letibot data directory** — `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`,
-/// where `sessions.db` and `metrics.db` already live. `None` in a bare environment with neither.
+/// The letibot data directory - `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`, where
+/// `sessions.db` and `metrics.db` already live. `None` in a bare environment with neither.
 pub fn letibot_data_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
@@ -450,16 +430,15 @@ pub fn letibot_data_dir() -> Option<PathBuf> {
         .map(|d| d.join("letibot"))
 }
 
-/// The environment variable that puts the landing root somewhere else — what a test that spawns
+/// The environment variable that puts the landing root somewhere else - what a test that spawns
 /// a daemon sets, so no test ever writes into the box's real `~/.local/share/letibot`.
 pub const LANDING_ROOT_ENV: &str = "LETIBOT_LANDING_ROOT";
 
-/// **Where every repository's landing worktree lives**: `$LETIBOT_LANDING_ROOT`, else `<data
-/// dir>/landing`. Read once, by the daemon (`Config::for_the_daemon`); every other caller is
-/// handed the root it uses (`Config::landing_root`, `QueueEnv::landing_root`).
+/// Where every repository's landing worktree lives: `$LETIBOT_LANDING_ROOT`, else
+/// `<data dir>/landing`. Read once by the daemon; every other caller is handed the root it uses.
 ///
-/// A unit test never gets the real data directory from here: under `cfg(test)` this is an `Err`
-/// unless the override is set, and [`guard_not_real`] fails a test that lands or grants under it.
+/// Under `cfg(test)` this is an `Err` unless the override is set, and [`guard_not_real`] fails a
+/// test that lands or grants under the real data directory.
 pub fn landing_root() -> Result<PathBuf, String> {
     if let Some(p) = std::env::var_os(LANDING_ROOT_ENV).filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(p));
@@ -479,8 +458,8 @@ pub fn landing_root() -> Result<PathBuf, String> {
         })
 }
 
-/// **A test must never make anything in the box's real `~/.local/share/letibot`** — under
-/// `cfg(test)`, a landing or a grant under the real data directory panics. Nothing in a build.
+/// A test must never make anything in the box's real `~/.local/share/letibot`: under `cfg(test)`
+/// a landing or a grant under the real data directory panics. Nothing in a build.
 pub fn guard_not_real(root: &Path) {
     #[cfg(test)]
     if let Some(real) = letibot_data_dir() {
@@ -494,11 +473,9 @@ pub fn guard_not_real(root: &Path) {
     let _ = root;
 }
 
-/// **The landing directory of `repo` under `root`** — `<root>/<basename>-<12 hex of sha256 of
-/// the repository's canonical path>`. The basename is for a person reading the directory; the
-/// hash keeps two repositories with one name apart. Any path in the repository (a linked
-/// worktree, a subdirectory) names the same directory, because it is computed from the main
-/// checkout [`repo_of_worktree`] finds.
+/// The landing directory of `repo` under `root`: `<root>/<basename>-<12 hex of sha256 of the
+/// repository's canonical path>`. The basename is for a person reading the directory, the hash
+/// keeps two repositories of one name apart, and any path in the repository names the same one.
 pub fn landing_dir_in(root: &Path, repo: &Path) -> PathBuf {
     use sha2::Digest;
     let canonical = repo_of_worktree(repo)
@@ -513,27 +490,18 @@ pub fn landing_dir_in(root: &Path, repo: &Path) -> PathBuf {
     root.join(format!("{base}-{hex}"))
 }
 
-/// The pre-2026-10-11 place: `<git-common-dir>/letibot-landing`. Only ever read to migrate away.
+/// The old place: `<git-common-dir>/letibot-landing`. Only ever read to migrate away.
 pub const OLD_LANDING_NAME: &str = "letibot-landing";
 
-/// **The queue's own worktree for landing and for gating the target** — under `root`
-/// ([`landing_root`] in the daemon, so letibot's data directory; [`landing_dir_in`]), never the operator's checkout, never a branch's own tree, and
-/// never inside the repository's `.git`. Created detached on first use and reused (its `target/`
-/// build cache with it), reset clean to `at` every time.
+/// The queue's own worktree for landing and for gating the target: under the daemon's landing
+/// root, never the operator's checkout and never inside the repository's `.git`. Created detached
+/// on first use, then reused for its `target/` cache and reset clean to `at` every time.
 ///
-/// It is still a `git worktree` of the repository, so a landing stays a compare-and-swap on
-/// `refs/heads/<target>` in the repository itself ([`update_ref_cas`]); git's own bookkeeping for
-/// it (`.git/worktrees/<name>`) is the one thing in `.git` it implies.
-///
-/// Why not `.git/letibot-landing` any more — the operator, 2026-10-11: *"the merges and branches
-/// shoudlnt land into .git. look at firecode sission - it fights exactly this"*. The firecode
-/// session's own finding: *"The queue runs the gate in a landing worktree,
-/// `.git/letibot-landing` … A git worktree doesn't carry gitignored files, so that tree has no
-/// `images/` and no `vendor/` — no guest rootfs, no kernel, no firecracker. Every check that boots
-/// a VM fails, which is precisely the failed list."* — and *"`.git` is on the never-write list —
-/// I can't inspect the landing worktree, and no grant reaches it."* The tree is now somewhere a
-/// session can be granted to read (`Harness`'s confined view binds it read-only), and the
-/// ignored inputs a gate needs are carried in by `[queue] gate_carry` (`mergequeue::carry`).
+/// It is still a `git worktree`, so a landing stays a compare-and-swap on `refs/heads/<target>` in
+/// the repository itself; git's bookkeeping for it (`.git/worktrees/<name>`) is the one thing in
+/// `.git` it implies. It lives outside for a reason: a worktree does not carry gitignored files
+/// so a landing tree inside `.git` had no `images/`, no `vendor/`, no guest rootfs, and every check
+/// that boots a VM failed there. Ignored inputs a gate needs are carried in by `gate_carry`.
 pub fn landing_worktree_in(root: &Path, repo: &Path, at: &str) -> Result<PathBuf, String> {
     guard_not_real(root);
     let path = landing_dir_in(root, repo);
@@ -563,10 +531,9 @@ pub fn landing_worktree_in(root: &Path, repo: &Path, at: &str) -> Result<PathBuf
     Ok(path)
 }
 
-/// **Move an old `<git-common-dir>/letibot-landing` worktree away**, the first time the new one
-/// is made: `git worktree remove --force`, then `prune`, said in the daemon's log. Nothing else in
-/// `.git` is touched, and a remove git refuses is said and left — never `rm -rf` inside `.git`.
-/// Returns what was said, for the tests.
+/// Move an old `<git-common-dir>/letibot-landing` worktree away the first time the new one is made
+/// `git worktree remove --force`, then `prune`, said in the daemon's log. A remove git refuses is
+/// said and left - never `rm -rf` inside `.git`. Returns what was said, for the tests.
 pub fn migrate_old_landing(repo: &Path) -> Option<String> {
     let common = git(
         repo,
@@ -597,17 +564,16 @@ pub fn migrate_old_landing(repo: &Path) -> Option<String> {
     Some(said)
 }
 
-/// **What a replay refused** — two facts the queue may not fold into one bare *conflict*: git
-/// refused a patch, or the queue refused to guess which commits were the branch's at all.
+/// What a replay refused: two facts the queue may not fold into one bare *conflict* - git refused a
+/// patch, or the queue refused to guess which commits were the branch's at all.
 #[derive(Debug)]
 pub enum RebaseError {
     /// Git refused the replay: a commit of the branch's own does not apply to the new base. The
     /// rebase was aborted and the landing tree is back on the branch's head.
     Conflict(String),
-    /// **Nothing was replayed**, and the sentence says why — the branch's own base could not be
-    /// established, it carries no commit of its own over that base, or the replay would have
-    /// changed what it says. A person has to act, so it is not dressed up as a conflict git could
-    /// have resolved.
+    /// Nothing was replayed, and the sentence says why - no base, no commit of the branch's own, or
+    /// a replay that would have changed what it says. A person has to act, so it is not dressed up
+    /// as a conflict git could have resolved.
     Refused(String),
 }
 
@@ -625,19 +591,16 @@ impl RebaseError {
     }
 }
 
-/// **Rebase the branch's own commits — and nothing else — onto `onto`**, in the landing worktree,
+/// Rebase the branch's own commits, and nothing else, onto `onto` - in the landing worktree
 /// detached; the rebased sha, or a [`RebaseError`].
 ///
 /// A plain `git rebase <onto>` takes `merge-base(head, onto)` for its base, and once the target has
-/// been rewritten that base is a commit on the **old** target: the rebase then replays the old
-/// target onto the new one and the branch's own commit comes along for the ride. Measured
-/// 2026-10-30: one commit of `crates/tui` replayed six commits and conflicted in five files it had
-/// never touched. So the base is found first ([`fork_point`]) and the replay is
-/// `git rebase --onto <onto> <fork>`.
+/// been rewritten that base is a commit on the OLD target: the rebase then replays the old target
+/// onto the new one and the branch's own commit rides along. So the base is found first
+/// ([`fork_point`]) and the replay is `git rebase --onto <onto> <fork>`.
 ///
-/// `bases` is what the row remembers of that base — the tip it was last rebased onto and the base
-/// it was cut from — and `target` is the ref whose reflog remembers the tips it used to point at,
-/// which is what still names the base once nothing else does.
+/// `bases` is what the row remembers of that base - the tip it was last rebased onto, and the base
+/// it was cut from - and `target` is the ref whose reflog remembers the tips it used to point at.
 pub fn rebase_in(
     worktree: &Path,
     head: &str,
@@ -655,10 +618,9 @@ pub fn rebase_in(
     }
     git(worktree, &["checkout", "--detach", "--force", head]).map_err(RebaseError::Conflict)?;
     // When every non-merge commit in `fork..head` is one of the branch's own, the branch is linear
-    // over its base and `git rebase --onto` replays exactly that list — keeping git's own handling
-    // of a patch the target already has. A branch that merged the old target into itself is not
-    // linear: `--onto` would replay what came in with those merges too, so its own commits are
-    // replayed one at a time instead.
+    // over its base and `--onto` replays exactly that list. A branch that merged the old target into
+    // itself is not linear: `--onto` would replay what came in with those merges, so its own commits
+    // are replayed one at a time instead.
     let in_range = commits_in(worktree, &fork, head, false)?;
     if in_range.len() == own.len() {
         if let Err(e) = git(worktree, &["rebase", "--onto", onto, &fork]) {
@@ -674,8 +636,8 @@ pub fn rebase_in(
             "the rebased HEAD has no sha".to_string(),
         ));
     };
-    // **The patches are the branch's, before and after.** A replay that alters what the branch says
-    // is the failure all of the above exists to prevent, so it is measured rather than trusted.
+    // The patches are the branch's, before and after. A replay that alters what the branch says is
+    // the failure all of the above exists to prevent, so it is checked rather than trusted.
     if let Err(said) = patches_unchanged(worktree, (&fork, head), (onto, &rebased)) {
         let _ = git(worktree, &["checkout", "--detach", "--force", head]);
         return Err(RebaseError::Refused(format!(
@@ -686,19 +648,15 @@ pub fn rebase_in(
     Ok(rebased)
 }
 
-/// **The commit the branch was cut from** — the newest base somebody remembers, on the branch's own
-/// first-parent spine.
+/// The commit the branch was cut from - the newest base somebody remembers, on the branch's own
+/// first-parent spine: one of `bases` (the row's `onto_sha`) or a commit `refs/heads/<target>` has
+/// pointed at, which its reflog remembers even after the target was rewritten. First-parent and not
+/// plain ancestry, because a branch that merged the target into itself has newer target commits in
+/// its ancestry than its own fork.
 ///
-/// The spine is the branch's own commits followed by the commits it sits on, and the fork is the
-/// first of those that is *known* to be a base: one of `bases` (the row's `onto_sha`, the base its
-/// review recorded) or a commit `refs/heads/<target>` has pointed at (its reflog, which survives the
-/// target being rewritten). `--first-parent` and not plain ancestry, because a branch that merged
-/// the target into itself has newer target commits in its ancestry than its own fork, and taking one
-/// of those would replay only the commits above the merge.
-///
-/// **There is no fallback to `merge-base(head, onto)`**: that is precisely the base the old target's
-/// history is reachable from, and replaying from it is the defect this exists for. A branch whose
-/// base nobody remembers is refused in words instead.
+/// There is no fallback to `merge-base(head, onto)`: that is the base the old target's history is
+/// reachable from, and replaying from it is the defect this exists for. A branch whose base nobody
+/// remembers is refused in words instead.
 fn fork_point(
     repo: &Path,
     head: &str,
@@ -738,12 +696,12 @@ fn fork_point(
     )))
 }
 
-/// **The branch's own commits**, oldest first: first-parent, merges aside, over `fork`.
+/// The branch's own commits, oldest first: first-parent, merges aside, over `fork`.
 fn own_commits(repo: &Path, fork: &str, head: &str) -> Result<Vec<String>, RebaseError> {
     commits_in(repo, fork, head, true)
 }
 
-/// Every commit in `fork..head` that is not a merge — `first_parent` narrows it to the branch's own
+/// Every commit in `fork..head` that is not a merge - `first_parent` narrows it to the branch's own
 /// spine (see [`fork_point`]); without it this is the set `git rebase --onto` would replay.
 fn commits_in(
     repo: &Path,
@@ -770,9 +728,9 @@ fn commits_in(
         .collect())
 }
 
-/// **Replay exactly these commits**, oldest first, on a detached `onto` — the path for a branch that
-/// merged the old target into itself, where `git rebase --onto` would replay the commits those
-/// merges brought in as well (measured: it conflicts in files the branch never touched).
+/// Replay exactly these commits, oldest first, on a detached `onto` - the path for a branch that
+/// merged the old target into itself, where `--onto` would replay the commits those merges brought
+/// in as well and conflict in files the branch never touched.
 fn replay_each(worktree: &Path, onto: &str, head: &str, own: &[String]) -> Result<(), String> {
     git(worktree, &["checkout", "--detach", "--force", onto])?;
     for commit in own {
@@ -791,8 +749,8 @@ fn replay_each(worktree: &Path, onto: &str, head: &str, own: &[String]) -> Resul
     Ok(())
 }
 
-/// **A pick that came out empty** — the sequencer stopped on a commit and left a tree with nothing
-/// in it: no unmerged path, an index equal to `HEAD`. That is `git rebase`'s `--empty=drop` said in
+/// A pick that came out empty - the sequencer stopped on a commit and left a tree with nothing in
+/// it: no unmerged path, an index equal to `HEAD`. That is `git rebase`'s `--empty=drop` said in
 /// cherry-pick's dialect.
 fn an_empty_pick(repo: &Path) -> bool {
     rev_parse(repo, "CHERRY_PICK_HEAD").is_some()
@@ -803,10 +761,10 @@ fn an_empty_pick(repo: &Path) -> bool {
         && git(repo, &["diff", "--cached", "--quiet"]).is_ok()
 }
 
-/// **The replay did not change what the branch says** — `git range-diff` of the branch's own commits
+/// The replay did not change what the branch says - `git range-diff` of the branch's own commits
 /// before and after: `=` is the same patch, and `<` a commit the new base already carries (git drops
-/// those, and did before this change too). Anything else — a patch altered, or one the branch never
-/// wrote — is the failure the caller must undo, and the line that said so is the answer.
+/// those). Anything else is the failure the caller must undo, and the line that said so is the
+/// answer.
 fn patches_unchanged(repo: &Path, before: (&str, &str), after: (&str, &str)) -> Result<(), String> {
     if after.0 == after.1 {
         // Every one of the branch's commits came out empty, so there is no series to compare and
@@ -823,7 +781,7 @@ fn patches_unchanged(repo: &Path, before: (&str, &str), after: (&str, &str)) -> 
         ],
     )?;
     for line in out.lines() {
-        // `1:  7c361a6 = 1:  20e25b1 subject` — the third field compares the two patches.
+        // `1: 7c361a6 = 1: 20e25b1 subject` - the third field compares the two patches.
         if !matches!(line.split_whitespace().nth(2), Some("=") | Some("<")) {
             return Err(line.trim().to_string());
         }
@@ -831,7 +789,7 @@ fn patches_unchanged(repo: &Path, before: (&str, &str), after: (&str, &str)) -> 
     Ok(())
 }
 
-/// **Move `refs/heads/<target>` from `expect` to `new`, or learn that it moved** — git's own
+/// Move `refs/heads/<target>` from `expect` to `new`, or learn that it moved - git's own
 /// compare-and-swap (`update-ref <ref> <new> <old>`).
 pub fn update_ref_cas(repo: &Path, target: &str, new: &str, expect: &str) -> Result<(), String> {
     git(
@@ -867,11 +825,11 @@ pub fn checkouts_of(repo: &Path, target: &str) -> Vec<PathBuf> {
     out
 }
 
-/// **Bring every checkout of `target` from `old` to `new` the way a fast-forward would** —
-/// `read-tree -m -u old new`, which refuses when a local change overlaps the landing, exactly
-/// as `merge --ff-only` does. Without this the ref moves under a checkout whose index still holds
-/// the old tree, and the operator's next commit would record the old tree — reverting the
-/// landing. `Err` names the checkout that could not follow; the caller undoes the landing.
+/// Bring every checkout of `target` from `old` to `new` the way a fast-forward would -
+/// `read-tree -m -u old new`, which refuses when a local change overlaps the landing. Without it the
+/// ref moves under a checkout whose index still holds the old tree, and the operator's next commit
+/// records the old tree, reverting the landing. `Err` names the checkout that could not follow; the
+/// caller undoes the landing.
 pub fn follow_checkouts(repo: &Path, target: &str, old: &str, new: &str) -> Result<(), String> {
     for wt in checkouts_of(repo, target) {
         git(&wt, &["read-tree", "-m", "-u", old, new]).map_err(|e| {
@@ -884,10 +842,10 @@ pub fn follow_checkouts(repo: &Path, target: &str, old: &str, new: &str) -> Resu
     Ok(())
 }
 
-/// **What a push came to** — the row keeps the sentence.
+/// What a push came to - the row keeps the sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pushed {
-    /// Pushed to `origin` — the sentence says whose credential answered.
+    /// Pushed to `origin` - the sentence says whose credential answered.
     Yes(String),
     /// The repository has no `origin`: nothing to push to, which is the local case.
     NoRemote,
@@ -898,7 +856,7 @@ pub enum Pushed {
 /// The helper `gh` installs for git, named on the command line rather than inherited.
 const GH_HELPER: &str = "!gh auth git-credential";
 
-/// **The words git is given for one push**, and whether `gh`'s helper is among them.
+/// The words git is given for one push, and whether `gh`'s helper is among them.
 ///
 /// Apart from [`push`] because the argv is the whole of *whose credential answers*, and a test can
 /// check it without a network.
@@ -906,15 +864,15 @@ const GH_HELPER: &str = "!gh auth git-credential";
 struct PushPlan {
     /// After `git -C <repo>`: the `-c` words first, then `push`, the destination, the refspec.
     args: Vec<String>,
-    /// True when `gh`'s helper is named — every sentence below is built from this.
+    /// True when `gh`'s helper is named - every sentence below is built from this.
     gh: bool,
 }
 
 fn push_plan(url: &str, target: &str, sha: &str, gh_logged_in: bool) -> PushPlan {
     let refspec = format!("{sha}:refs/heads/{target}");
     match github_https(url).filter(|_| gh_logged_in) {
-        // **The empty `helper=` first, or the named one is never asked**: `credential.helper` is a
-        // list, and a configured helper earlier in it answers first. An empty value resets it.
+        // The empty `helper=` first, or the named one is never asked: `credential.helper` is a list
+        // and a configured helper earlier in it answers first. An empty value resets the list.
         Some(https) => PushPlan {
             args: vec![
                 "-c".into(),
@@ -934,7 +892,7 @@ fn push_plan(url: &str, target: &str, sha: &str, gh_logged_in: bool) -> PushPlan
     }
 }
 
-/// The row's sentence for a push that happened — which way it went, and whose credential answered.
+/// The row's sentence for a push that happened - which way it went, and whose credential answered.
 fn pushed_said(sha: &str, target: &str, plan: &PushPlan) -> String {
     if plan.gh {
         format!(
@@ -946,7 +904,7 @@ fn pushed_said(sha: &str, target: &str, plan: &PushPlan) -> String {
     }
 }
 
-/// The row's sentence for a push that was refused: git's own words, plus — when `gh` answered —
+/// The row's sentence for a push that was refused: git's own words, plus - when `gh` answered -
 /// that it did, so *no access for this account* is not read as *no credential at all*.
 fn failed_said(e: &str, plan: &PushPlan) -> String {
     if plan.gh {
@@ -959,21 +917,17 @@ fn failed_said(e: &str, plan: &PushPlan) -> String {
     }
 }
 
-/// **Push `sha` to `origin`'s `target`** — a fast-forward or a refusal, never a force.
+/// Push `sha` to `origin`'s `target` - a fast-forward or a refusal, never a force.
 ///
-/// **Every GitHub remote is pushed on `gh`'s credential, by name, whenever `gh` is logged in** —
-/// both spellings of the remote, and an https one included. MEASURED 2026-10-28: this box has no
-/// ssh key for github (`git@github.com: Permission denied (publickey)`) while `gh` is
-/// authenticated, so every landing's push failed and `install-gate-build` was skipped with it
-/// (decision 7: nothing is installed that is not where it was pushed). The operator's rule:
-/// *"if gh is allowed and authenticated it must be used for github"*.
+/// Every GitHub remote is pushed on `gh`'s credential by name, both spellings of the remote and an
+/// https one included, whenever `gh` is logged in: a box may have no ssh key for github while `gh`
+/// is authenticated, and then every landing's push fails and the install step is skipped with it.
 ///
 /// An https remote is not evidence that `gh` answers it: what answers is whatever
-/// `credential.helper` git's config holds (osxkeychain, a stale token, another account) — MEASURED
-/// on the operator's Mac, where a control run without the clearing word was answered by
-/// osxkeychain's token and the named helper was never called. So the helper is named and the
-/// inherited list cleared; the url stays https, which is what gh's helper answers for. Another
-/// remote, or a `gh` that is not logged in, keeps the old `origin` push and git's own failure.
+/// `credential.helper` git's config holds - a keychain, a stale token, another account. So the
+/// helper is named and the inherited list cleared, and the url stays https, which is what gh's
+/// helper answers for. Another remote, or a `gh` that is not logged in, keeps the old `origin` push
+/// and git's own failure.
 pub fn push(repo: &Path, target: &str, sha: &str) -> Pushed {
     let Ok(url) = git(repo, &["remote", "get-url", "origin"]) else {
         return Pushed::NoRemote;
@@ -986,13 +940,12 @@ pub fn push(repo: &Path, target: &str, sha: &str) -> Pushed {
     }
 }
 
-/// **The https url of a GitHub remote, whatever spelling it arrived in** — the form `gh`'s
-/// credential helper answers for. `None` for another host, or a url naming no repository.
+/// The https url of a GitHub remote, whatever spelling it arrived in - the form `gh`'s credential
+/// helper answers for. `None` for another host, or a url naming no repository.
 ///
 /// `git@github.com:owner/repo.git` is what a clone prints and `ssh://git@github.com[:port]/…` is
-/// what a `--push` url or a forwarded agent writes; both are translated, and an
-/// `https://github.com/…` url is already the answer and comes back as it stands (gaining `.git`
-/// when it is missing). Being https does NOT mean `gh` answers it — see [`push`].
+/// what a `--push` url or a forwarded agent writes; both are translated, and an https url is
+/// already the answer and comes back as it stands (gaining `.git` when it is missing).
 pub fn github_https(url: &str) -> Option<String> {
     let url = url.trim();
     // A scheme separates host from path with `/`; scp's `git@host:path` with `:`.
@@ -1019,9 +972,9 @@ pub fn github_https(url: &str) -> Option<String> {
     Some(format!("https://github.com/{path}"))
 }
 
-/// Is `gh` installed **and** authenticated? Asked on every push, not remembered: a logged-out
-/// `gh` is a fact about the box that can change under a long-lived daemon, and a remembered
-/// `true` would turn that into an authentication failure in the middle of a landing.
+/// Is `gh` installed and authenticated? Asked on every push, not remembered: a logged-out `gh` is a
+/// fact about the box that can change under a long-lived daemon, and a remembered `true` would turn
+/// that into an authentication failure in the middle of a landing.
 fn gh_authenticated() -> bool {
     Command::new("gh")
         .args(["auth", "status"])
@@ -1032,33 +985,19 @@ fn gh_authenticated() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// **A fresh clone of the branch for a reviewer** (decision 3) — the branch alone, at `head`: what a
-/// VM is booted on instead of the workspace (72.8 GiB, refused by the 8 GiB ceiling, 8 of 21
-/// reviews on 2026-10-11). History comes with it, so `git diff base...head` works inside.
+/// A fresh clone of the branch alone at `head` - what a VM is booted on instead of the workspace
+/// with history, so `git diff base...head` works inside.
 ///
-/// # ONE TREE PER ATTEMPT, and the name is made by a rename
+/// One tree per attempt, named by a rename: `stem` is the row's own stem and the tree made here is
+/// `stem-<pid>-<n>`, returned because the caller must know which tree this attempt got. The clone
+/// is written to `.<name>.tmp` beside it and renamed on, so a reader sees no tree or a complete one.
 ///
-/// `stem` is the row's own stem (`<clones>/review-<row id>`); the tree this call makes is
-/// `stem-<pid>-<n>`, and the path is RETURNED, because the caller — and nobody else — must know
-/// which tree this attempt was given. The clone is written to `.<name>.tmp` beside it and renamed
-/// on when git has finished, so a reader sees either no tree at that name or a complete one.
+/// Nothing is ever removed here. A row re-seated while its previous reviewer is still alive must
+/// not have its tree cloned out from under it, which is what one path per row cost. The token is
+/// `<pid>-<n>` because the reviewer's handle does not exist yet - its working directory is decided
+/// before it is spawned - and the pid is the one fact about a tree another process can check.
 ///
-/// **Nothing is ever removed here.** This function used to `remove_dir_all` whatever stood at
-/// `review-<id>`, and that is what cost the operator four reviews on 2026-10-29: a row is re-seated
-/// (a deadline a second late, a `queue restart`, a daemon re-reading the row) while its previous
-/// reviewer is still alive, the re-seat clones to the same path, and the live reviewer is left
-/// reading a directory that is gone — `bash` answering *the process did not start: No such file or
-/// directory*, `read`/`glob` reporting a workspace with **0 entries**, and a `cannot_decide` about a
-/// branch the reviewer never saw. One path per row is one path two reviewers can share; a path per
-/// ATTEMPT is one no re-seat can touch.
-///
-/// **The token is `<pid>-<n>` and not the reviewer's handle**, because the handle does not exist
-/// yet: a child's working directory is decided before it is spawned (`TaskSpec::worktree`), so the
-/// tree has to exist first. The pid is the daemon that made it, which is the one fact about a tree
-/// another process can check; `n` is a counter, so two attempts in one daemon never collide either.
-///
-/// **The first failure this fixes is the clone itself.** MEASURED 2026-10-29, from the queue's own
-/// words — a reviewer that could not start:
+/// The failure that shape fixes is the clone itself
 ///
 /// ```text
 /// git clone of `agent/a-one-line-citation-is-filled`:
@@ -1066,9 +1005,8 @@ fn gh_authenticated() -> bool {
 ///          for reading: No such file or directory
 ///   fatal: fetch-pack: invalid index-pack output
 /// ```
-///
-/// — a clone whose own directory was removed under it, because a second attempt at the same row
-/// removed it before cloning into it.
+/// - a clone whose own directory was removed under it, because a second attempt at the same row
+///   removed it before cloning into it.
 pub fn clone_branch(repo: &Path, branch: &str, head: &str, stem: &Path) -> Result<PathBuf, String> {
     let parent = stem.parent().unwrap_or(Path::new(""));
     if !parent.as_os_str().is_empty() {
@@ -1092,7 +1030,7 @@ pub fn clone_branch(repo: &Path, branch: &str, head: &str, stem: &Path) -> Resul
     Ok(dir)
 }
 
-/// The clone itself, into a path nobody else knows about — [`clone_branch`]'s first half.
+/// The clone itself, into a path nobody else knows about - [`clone_branch`]'s first half.
 fn clone_into(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result<(), String> {
     let out = Command::new("git")
         .args([
@@ -1117,10 +1055,10 @@ fn clone_into(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result<(), S
     git(dir, &["checkout", "--quiet", "--detach", head]).map(|_| ())
 }
 
-/// **The two names one attempt uses, neither of which any other attempt can be writing** —
+/// The two names one attempt uses, neither of which any other attempt can be writing -
 /// `<stem>-<pid>-<n>` for the tree and `.<stem>-<pid>-<n>.tmp` for the clone being made. Both in
 /// `stem`'s own directory, so the rename between them is one filesystem's business and can never
-/// fail with `EXDEV`, whatever the caller's root is mounted as.
+/// fail with `EXDEV`.
 fn attempt_beside(stem: &Path) -> Result<(PathBuf, PathBuf), String> {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let leaf = stem
@@ -1139,18 +1077,17 @@ fn attempt_beside(stem: &Path) -> Result<(PathBuf, PathBuf), String> {
     Err(format!("every name beside `{}` is taken", stem.display()))
 }
 
-/// **A file the daemon itself wrote into a workspace** — `.letibot/<name>.jsonl`, the logs older
-/// builds kept there (`delivery-log`, `context-claims`, `notes-offers`; R92.4 moved them to the
-/// data directory). Not the child's work, so it neither keeps a tree nor is the child nudged
-/// about it. `path` is a porcelain path, relative to the tree.
+/// A file the daemon itself wrote into a workspace - `.letibot/<name>.jsonl`, the logs older
+/// builds kept there. Not the child's work, so it neither keeps a tree nor is the child nudged about
+/// it. `path` is a porcelain path, relative to the tree.
 pub fn daemon_leftover(path: &str) -> bool {
     let path = path.trim().trim_matches('"');
     path.strip_prefix(".letibot/")
         .is_some_and(|rest| !rest.contains('/') && rest.ends_with(".jsonl"))
 }
 
-/// **`git status --porcelain`'s lines that are the tree's own work** — every untracked file named
-/// (`-uall`, so a directory of the daemon's logs is not one opaque `?? .letibot/`), less
+/// `git status --porcelain`'s lines that are the tree's own work - every untracked file named
+/// (`-uall`, so a directory of the daemon's logs is not one opaque `??.letibot/`), less
 /// [`daemon_leftover`]s.
 pub fn uncommitted_work(wt: &Path) -> Result<Vec<String>, String> {
     let out = git(wt, &["status", "--porcelain", "--untracked-files=all"])?;
@@ -1162,23 +1099,23 @@ pub fn uncommitted_work(wt: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// **The git directory a linked worktree's `.git` names** — a worktree's `.git` is a FILE of one
-/// line, `gitdir: <main checkout>/.git/worktrees/<name>`; the main checkout's own `.git` is a
-/// directory, and this answers `None` for it. That asymmetry is what [`is_worktree_of`] rests on.
+/// The git directory a linked worktree's `.git` names - a worktree's `.git` is a FILE of one line
+/// `gitdir: <main checkout>/.git/worktrees/<name>`; the main checkout's own `.git` is a directory
+/// and this answers `None` for it. That asymmetry is what [`is_worktree_of`] rests on.
 fn linked_gitdir(wt: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(wt.join(".git")).ok()?;
     let rest = text.trim().strip_prefix("gitdir:")?.trim();
     (!rest.is_empty()).then(|| PathBuf::from(rest))
 }
 
-/// **Whether `path` is a linked worktree of `repo`, and never the repository itself** — the rail
-/// under every removal the queues make.
+/// Whether `path` is a linked worktree of `repo`, and never the repository itself - the rail under
+/// every removal the queues make.
 ///
-/// A row's `worktree` column is text somebody wrote, and it is the only thing standing between a
-/// sweep and `rm -rf` of a checkout: the main checkout can never pass (its `.git` is a directory,
-/// not a file naming `<repo>/.git/worktrees/<name>`), and neither can another repository's tree.
-/// The spelling is compared both as written and resolved, because a Mac's `/var` and
-/// `/private/var` name one directory.
+/// A row's `worktree` column is text somebody wrote, and this is the only thing standing between a
+/// sweep and `rm -rf` of a checkout: the main checkout can never pass (its `.git` is a directory
+/// not a file naming `<repo>/.git/worktrees/<name>`), and neither can another repository's tree. The
+/// spelling is compared both as written and resolved, because a Mac's `/var` and `/private/var` name
+/// one directory.
 pub fn is_worktree_of(path: &Path, repo: &Path) -> bool {
     let Some(linked) = linked_gitdir(path) else {
         return false;
@@ -1193,18 +1130,17 @@ pub fn is_worktree_of(path: &Path, repo: &Path) -> bool {
         || std::fs::canonicalize(&linked).is_ok_and(|p| p.starts_with(&resolved))
 }
 
-/// **Remove one worktree of `repo` and everything inside it** — the tree, and the cache a package
-/// keeps in its own tree (a private `target/`, which is what makes a review's tree weigh 32 GB;
-/// MEASURED 2026-10-29).
+/// Remove one worktree of `repo` and everything inside it - the tree, and the cache a package keeps
+/// in its own tree (a private `target/`, which is what makes a review's tree weigh tens of GB).
 ///
 /// Refused, saying why, when the path is not a worktree of this repository ([`is_worktree_of`]) or
-/// when the tree holds uncommitted work — the daemon's own leftover logs are not the tree's work,
-/// but a note the child wrote is, and the branch may not carry it.
+/// when the tree holds uncommitted work: the daemon's own leftover logs are not the tree's work, but
+/// a note the child wrote is, and the branch may not carry it.
 ///
-/// **A tree git can no longer read is kept, not removed.** A `worktree add` whose bookkeeping was
-/// pruned behind it (a `git worktree prune` after a move, a `rm -rf <repo>/.git/worktrees/<name>`)
-/// leaves a directory git answers `fatal: not a git repository` for, and whether that tree holds
-/// work cannot be told: this removes nothing it cannot check, and says which tree it was.
+/// A tree git can no longer read is kept, not removed. A `worktree add` whose bookkeeping was pruned
+/// behind it (a `worktree prune` after a move) leaves a directory git answers `fatal: not a git
+/// repository` for, and whether that tree holds work cannot be told - so nothing it cannot check is
+/// removed, and it says which tree it was.
 pub fn remove_worktree(repo: &Path, wt: &Path, branch: &str) -> Result<(), String> {
     if !wt.exists() {
         // The tree is gone; git's bookkeeping for it may not be.
@@ -1235,13 +1171,12 @@ pub fn remove_worktree(repo: &Path, wt: &Path, branch: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// **Delete one branch of `repo`, and treat "there is no such branch" as done** — a sweep runs on
-/// every pass, and the second pass must not fail where the first one succeeded.
+/// Delete one branch of `repo`, and treat "there is no such branch" as done - a sweep runs on every
+/// pass, and the second pass must not fail where the first one succeeded.
 ///
-/// **The caller must already have taken the proof** ([`ref_proof`] or [`commit_proof`]): this deletes
+/// The caller must already have taken the proof ([`ref_proof`] or [`commit_proof`]): this deletes
 /// whatever it is handed, and a ref whose commits are not on the target is the only copy of that
-/// work. The queue has exactly three callers and each proves first — [`super::serve::RepoQueue`]'s
-/// sweep, its `landed`, and [`retire_if_empty`].
+/// work. The queue's three callers each prove first - the sweep, `landed`, and [`retire_if_empty`].
 pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
     if branch_head(repo, branch).is_none() {
         return Ok(());
@@ -1249,12 +1184,12 @@ pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
     git(repo, &["branch", "-D", branch]).map(|_| ())
 }
 
-/// Remove a branch's own worktree and the branch, after a landing — only when the tree holds
-/// nothing uncommitted (the daemon's own leftover logs are not the tree's work). `Err` says what
-/// was kept and why.
+/// Remove a branch's own worktree and the branch, after a landing - only when the tree holds nothing
+/// uncommitted (the daemon's own leftover logs are not the tree's work). `Err` says what was kept and
+/// why.
 ///
-/// **A landing is a proof, and it is the caller's** — `landed` retires a branch only once the sha
-/// its compare-and-swap put on the target is still on it ([`commit_proof`]).
+/// A landing is a proof, and it is the caller's: `landed` retires a branch only once the sha its
+/// compare-and-swap put on the target is still on it ([`commit_proof`]).
 pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Result<(), String> {
     if let Some(wt) = worktree {
         remove_worktree(repo, Path::new(wt), branch)?;
@@ -1262,20 +1197,17 @@ pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Resul
     delete_branch(repo, branch)
 }
 
-/// **Remove a superseded branch's worktree and the branch, but only when there is nothing in them
-/// to lose** — no commit over `base`, and (through [`retire_branch`]) nothing uncommitted. `Err`
-/// says what was kept and why, which the caller raises where a person reads it.
+/// Remove a superseded branch's worktree and the branch, but only when there is nothing in them to
+/// lose - no commit over `base`, and (through [`retire_branch`]) nothing uncommitted. `Err` says what
+/// was kept and why, which the caller raises where a person reads it.
 ///
-/// The distinction from [`retire_branch`] is what a landing knows and a supersede does not: a
-/// branch that has just landed carries nothing, so its tree may go; a branch cut from a red tip
-/// may carry the fixer's work, and `main` moving past that tip does not make the work wrong — it
-/// makes it a candidate for somewhere else. The tree is the only copy of whatever was never
-/// committed, so it is never thrown away with the branch.
+/// What a landing knows and a supersede does not: a branch that has just landed carries nothing, so
+/// its tree may go; a branch cut from a red tip may carry the fixer's work, and the target moving
+/// past that tip does not make the work wrong - it makes it a candidate for somewhere else. The tree
+/// is the only copy of whatever was never committed, so it is never thrown away with the branch.
 ///
-/// **The proof is [`commit_on`], the same one the sweep and a landing take** — `rev-list --count
-/// base..head == 0` and *head is an ancestor of base* are one fact, and the queue keeps one spelling
-/// of it so that the invariant (*nothing may delete a ref whose commits are not provably on the
-/// target*) has one home.
+/// The proof is [`commit_on`], the same one the sweep and a landing take, so that the invariant -
+/// nothing may delete a ref whose commits are not provably on the target - has one home.
 pub fn retire_if_empty(
     repo: &Path,
     base: &str,

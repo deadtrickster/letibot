@@ -1,10 +1,9 @@
-//! **What a host gate can be wrong about, as values** — the invocation it builds, the exit status
-//! it reads, and the row it writes.
+//! What a host gate can be wrong about, as values - the invocation it builds, the exit status it
+//! reads, and the row it writes.
 //!
-//! Nothing here reaches a network: an `ssh` is built through [`Ssh::connect`] against a temporary
-//! key and known-hosts file, so the argv and the `rsync -e` string are the ones production would
-//! run. The end-to-end half — a fake ssh that really runs the steps — is
-//! `crates/harnessd/tests/gate_host.rs`, which is a test binary of its own because it has to own
+//! Nothing here reaches a network: an `ssh` is built through [`Ssh::connect`] against a temporary key
+//! and known-hosts file, so the argv and the `rsync -e` string are the ones production would run. The
+//! end-to-end half is `crates/harnessd/tests/gate_host.rs`, a binary of its own because it has to own
 //! `$HOME` and `$LETIBOT_HOSTS`.
 
 use super::*;
@@ -38,8 +37,8 @@ fn rig(name: &str) -> (PathBuf, Ssh) {
     (dir, ssh)
 }
 
-/// **The `rsync` invocation, as a value** — the flags that make a copy a copy of the *tree* and
-/// not of the last gate's leftovers, and the `-e` that carries the host's declared key.
+/// The `rsync` invocation, as a value - the flags that make a copy a copy of the *tree* and not of the
+/// last gate's leftovers, and the `-e` that carries the host's declared key.
 #[test]
 fn the_rsync_invocation_carries_the_key_the_deletes_and_the_two_exclusions() {
     let (dir, ssh) = rig("rsync");
@@ -59,7 +58,7 @@ fn the_rsync_invocation_carries_the_key_the_deletes_and_the_two_exclusions() {
             argv[5].clone(),
         ]
     );
-    // The source has a trailing slash — *the contents of this directory*, not the directory.
+    // The source has a trailing slash - *the contents of this directory*, not the directory.
     assert_eq!(argv[6], "/tmp/landing/letibot-abc123/");
     // The destination is the host's own root, absolute, and NOT quoted: rsync protects its remote
     // arguments itself (`protect_args`), and quoting as well measured as a literal `\'…\'` on the
@@ -69,8 +68,7 @@ fn the_rsync_invocation_carries_the_key_the_deletes_and_the_two_exclusions() {
         "tester@lab.invalid:/home/dead/letibot-remote/gate/letibot-abc123/tree"
     );
     // `-e`: this box's ssh, the declared key, and the ControlMaster the rest of the fleet path
-    // multiplexes over — nothing invented. Every word is quoted, because rsync runs the string
-    // through a shell and a path in it may hold a space.
+    // multiplexes over. Every word is quoted, because rsync runs the string through a shell.
     let rsh = &argv[5];
     assert!(rsh.starts_with("'/usr/bin/ssh' "), "{rsh}");
     assert!(rsh.contains(ssh.key().to_string_lossy().as_ref()), "{rsh}");
@@ -85,8 +83,8 @@ fn the_rsync_invocation_carries_the_key_the_deletes_and_the_two_exclusions() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The launcher, as a value**: the step's own text lands in a file (so it needs no quoting), the
-/// subshell is a subshell, and the build cache is the host's, outside the tree.
+/// The launcher, as a value: the step's own text lands in a file (so it needs no quoting), the subshell
+/// is a subshell, and the build cache is the host's, outside the tree.
 #[test]
 fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
     let script = launcher_script(
@@ -121,9 +119,9 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
     assert!(quoted.contains("( echo \"it's fine\" )"), "{quoted}");
 }
 
-/// **A step that must have a cgroup of its own is started in a transient delegated scope**, with the
-/// project's own text quoted once inside it — and the pid file, the subshell and `$?` stay where
-/// they were, because `systemd-run --scope` execs the command in place.
+/// A step that must have a cgroup of its own is started in a transient delegated scope, with the
+/// project's own text quoted once inside it - and the pid file, the subshell and `$?` stay where they
+/// were, because `systemd-run --scope` execs the command in place.
 #[test]
 fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
     let script = launcher_script(
@@ -161,8 +159,8 @@ fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
     );
 }
 
-/// **The prefix is the project's, it is one assignment at the head of the line, and everything after
-/// it is left exactly as written.**
+/// The prefix is the project's, it is one assignment at the head of the line, and everything after it
+/// is left exactly as written.
 #[test]
 fn the_demand_is_read_off_the_head_of_a_step_and_nothing_else_is_touched() {
     assert_eq!(
@@ -194,8 +192,8 @@ fn the_demand_is_read_off_the_head_of_a_step_and_nothing_else_is_touched() {
     );
 }
 
-/// **The three answers a machine can give, and the step that follows from each** — the whole of what
-/// a host gate does differently from the local one.
+/// The three answers a machine can give, and the step that follows from each - the whole of what a host
+/// gate does differently from the local one.
 #[test]
 fn a_step_is_met_dropped_or_wrapped_by_what_the_machine_has() {
     let step = "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace";
@@ -218,7 +216,7 @@ fn a_step_is_met_dropped_or_wrapped_by_what_the_machine_has() {
     assert!(p.dropped);
     assert!(!p.own_scope);
     assert_eq!(none.missing, vec![CGROUP_APPARATUS.to_string()]);
-    // A machine with no boundary drops it whatever its cgroups do — and a step that demands nothing
+    // A machine with no boundary drops it whatever its cgroups do - and a step that demands nothing
     // is never wrapped, because the scope exists for the apparatus and not as a new habit.
     let no_bwrap = apparatus_from("cgroup=own-scope\nbwrap=no\n");
     assert_eq!(no_bwrap.missing, vec![BWRAP_APPARATUS.to_string()]);
@@ -231,9 +229,8 @@ fn a_step_is_met_dropped_or_wrapped_by_what_the_machine_has() {
     assert_eq!(apparatus_from("").missing.len(), 2);
 }
 
-/// **The line a person reads on the row** — it names the demand, what the machine has not got, and
-/// that a skipped apparatus test is not a pass. And a gate that did nothing to the demand says
-/// nothing, so a machine with everything reads as it always did.
+/// The line a person reads on the row - it names the demand, what the machine has not got, and that a
+/// skipped apparatus test is not a pass. A gate that did nothing to the demand says nothing.
 #[test]
 fn the_row_says_the_demand_was_taken_off_and_that_this_is_not_a_pass() {
     let none = apparatus_from("cgroup=no\nbwrap=yes\n");
@@ -265,9 +262,9 @@ fn the_row_says_the_demand_was_taken_off_and_that_this_is_not_a_pass() {
     assert!(!line.contains("NOT A PASS"), "{line}");
 }
 
-/// **The probe is an experiment, not an inspection** — it asks whether a directory can be MADE in
-/// this process's cgroup (`letibot_tools::exec::scope`'s `Cgroup2::probe` is exactly that), it tries
-/// a transient delegated scope before giving up, and it carries the marker a fixture answers on.
+/// The probe is an experiment, not an inspection - it asks whether a directory can be MADE in this
+/// process's cgroup, tries a transient delegated scope before giving up, and carries the marker a
+/// fixture answers on.
 #[test]
 fn the_probe_makes_a_directory_and_tries_a_delegated_scope_before_it_says_no() {
     let script = apparatus_probe();
@@ -295,7 +292,7 @@ fn the_probe_makes_a_directory_and_tries_a_delegated_scope_before_it_says_no() {
     );
 }
 
-/// **A start is detached and a kill is a group kill with the local gate's numbers.**
+/// A start is detached and a kill is a group kill with the local gate's numbers.
 #[test]
 fn the_start_is_detached_and_the_kill_is_a_group_kill() {
     let start = launch_script("/h/run/step-0.sh", "/h/run/step-0.exit");
@@ -317,10 +314,9 @@ fn the_start_is_detached_and_the_kill_is_a_group_kill() {
     );
 }
 
-/// **The status is read before the pid, and the marker comes first** — the order
-/// `a-finishing-job-and-a-killed-job-answer-the-same-poll` says is the only one that can tell a
-/// step that finished from a step that was killed, and a marker so a login shell's chatter is not
-/// parsed as an exit code.
+/// The status is read before the pid, and the marker comes first - the order
+/// `a-finishing-job-and-a-killed-job-answer-the-same-poll` says is the only one that can tell a step
+/// that finished from a step that was killed.
 #[test]
 fn the_poll_reads_the_status_before_the_pid_and_leads_with_its_marker() {
     let poll = poll_script(
@@ -343,8 +339,8 @@ fn the_poll_reads_the_status_before_the_pid_and_leads_with_its_marker() {
     assert!(poll.contains("tail -c +4097 '/h/run/step-0.out'"), "{poll}");
 }
 
-/// **The worktree is reset the way the local landing tree is** — three commands, and a first
-/// `worktree add` when there is none yet.
+/// The worktree is reset the way the local landing tree is - three commands, and a first `worktree
+/// add` when there is none yet.
 #[test]
 fn the_worktree_is_reset_like_the_landing_tree() {
     let script = worktree_script("/h/gate/x/src.git", "/h/gate/x/tree", "0f2d9550");
@@ -362,8 +358,8 @@ fn the_worktree_is_reset_like_the_landing_tree() {
     );
 }
 
-/// **A signal read off a shell's exit status is a signal, not a code** — 137 is `SIGKILL`, and a
-/// step that died of one judged nothing.
+/// A signal read off a shell's exit status is a signal, not a code - 137 is `SIGKILL`, and a step that
+/// died of one judged nothing.
 #[test]
 fn a_shell_status_of_128_plus_n_is_the_signal_and_not_a_red_branch() {
     assert_eq!(exit_of(0), StepExit::Code(0));
@@ -413,8 +409,8 @@ fn a_shell_status_of_128_plus_n_is_the_signal_and_not_a_red_branch() {
     );
 }
 
-/// **A host step's evidence line is dropped for the model, like any other quiet one** (R93.F8) —
-/// the operator's row keeps *where it ran*, the model is not handed the plumbing.
+/// A host step's evidence line is dropped for the model, like any other quiet one - the
+/// operator's row keeps *where it ran*, the model is not handed the plumbing.
 #[test]
 fn the_host_line_is_for_the_operator_and_not_the_model() {
     let judged = judge(
@@ -436,9 +432,8 @@ fn the_host_line_is_for_the_operator_and_not_the_model() {
     );
 }
 
-/// **A host name nobody declared is a verdict with a sentence**, not a hang and not a red branch:
-/// the queue writes `blocked`, the tip is unjudged, and the sentence names the file and the hosts
-/// it does know.
+/// A host name nobody declared is a verdict with a sentence, not a hang and not a red branch: the queue
+/// writes `blocked`, the tip is unjudged, and the sentence names the file and the hosts it does know.
 #[test]
 fn an_undeclared_host_is_unjudged_with_a_sentence_that_names_the_file() {
     let wt = std::env::temp_dir().join(format!("letibot-gate-host-none-{}", std::process::id()));
@@ -472,8 +467,8 @@ fn an_undeclared_host_is_unjudged_with_a_sentence_that_names_the_file() {
     let _ = std::fs::remove_dir_all(&wt);
 }
 
-/// **The seam itself**: an unset host is this machine, and a set one is not — the dispatch that
-/// makes `[queue] gate_host` do anything at all.
+/// The seam itself: an unset host is this machine, and a set one is not - the dispatch that makes
+/// `[queue] gate_host` do anything at all.
 #[test]
 fn an_unset_host_runs_the_gate_here_and_a_set_one_does_not() {
     assert_eq!(gate_host(), None, "nothing set this process's host");
@@ -507,8 +502,8 @@ fn an_unset_host_runs_the_gate_here_and_a_set_one_does_not() {
     );
     assert!(matches!(host.verdict, GateVerdict::Infra(_)), "{host:#?}");
     assert_eq!(host.steps[0].outcome, MergeGateOutcome::NotRun);
-    // **A step that DEMANDS apparatus runs here byte for byte** — no probe, no prefix taken off,
-    // no scope: the local gate is `run_with_memory` and nothing else, whatever the machine has.
+    // A step that DEMANDS apparatus runs here byte for byte - no probe, no prefix taken off, no scope
+    // the local gate is `run_with_memory` and nothing else, whatever the machine has.
     let demanding = vec![format!(
         "{APPARATUS_ENV}=1 sh -c 'echo demand=[$LETIBOT_REQUIRE_APPARATUS]'"
     )];
@@ -536,10 +531,9 @@ fn an_unset_host_runs_the_gate_here_and_a_set_one_does_not() {
     let _ = std::fs::remove_dir_all(&wt);
 }
 
-/// **A host that is declared but unreachable is a sentence in seconds, not a hang** — the whole
-/// point of the bound. The `ssh` here is a script that answers the way a dead host's does (exit
-/// 255), so this measures the mapping from *ssh said 255* to *the gate could not run*, without a
-/// network.
+/// A host that is declared but unreachable is a sentence in seconds, not a hang - the whole point of the
+/// bound. The `ssh` here is a script that answers the way a dead host's does (exit 255), so this measures
+/// the mapping from *ssh said 255* to *the gate could not run* without a network.
 #[test]
 fn an_unreachable_host_is_a_sentence_about_the_machine() {
     let dir = std::env::temp_dir().join(format!("letibot-gate-host-down-{}", std::process::id()));
@@ -588,14 +582,13 @@ fn an_unreachable_host_is_a_sentence_about_the_machine() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A call that ran out of this box's clock is asked again; a call that never started is not** —
-/// the distinction the whole host gate now rests on, as a value.
+/// A call that ran out of this box's clock is asked again; a call that never started is not - the
+/// distinction the whole host gate rests on, as a value.
 ///
-/// A poll that is not answered in time says *the machine was busy forking a shell*, and the answer
-/// it will give is still true when it comes, so it is [`Missed::slow`] and the step goes on. A call
-/// that could not be started says nothing will ever answer, so it is [`Missed::gone`] and the step
-/// is UNJUDGED. Reading the first as the second is what killed a four-minute step on lab2x1 and
-/// halted the queue on 2026-10-30.
+/// A poll that is not answered in time says *the machine was busy forking a shell*, and the answer it will
+/// give is still true when it comes, so it is [`Missed::slow`] and the step goes on. A call that could not
+/// be started says nothing will ever answer, so it is [`Missed::gone`] and the step is UNJUDGED. Reading
+/// the first as the second is what killed a four-minute step on lab2x1.
 #[test]
 fn a_call_that_ran_out_of_the_clock_is_slow_and_one_that_never_started_is_gone() {
     let slow = run(
@@ -627,9 +620,9 @@ fn a_call_that_ran_out_of_the_clock_is_slow_and_one_that_never_started_is_gone()
     assert!(gone.unreached, "nothing will ever answer: {}", gone.why);
 }
 
-/// **The sentence a deadline carries names the bound the last poll was given** — the last poll
-/// before a gate's deadline is bounded by what is left of it, and a verdict that says *not answered
-/// within 30 s* about a poll that was given four is a sentence about the wrong clock.
+/// The sentence a deadline carries names the bound the last poll was given - the last poll before a
+/// gate's deadline is bounded by what is left of it, and a verdict that says *not answered within 30 s*
+/// about a poll that was given four is a sentence about the wrong clock.
 #[test]
 fn the_deadline_sentence_names_the_bound_the_last_poll_was_given() {
     let quiet = said_with_misses("the tail".into(), 0, "never", POLL_BOUND);

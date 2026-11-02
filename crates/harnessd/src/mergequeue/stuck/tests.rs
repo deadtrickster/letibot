@@ -1,10 +1,8 @@
-//! **The census's numbers, and the one thing they must not become: a second counting rule.**
+//! The census's numbers, and the one thing they must not become: a second counting rule.
 //!
-//! Every test here is about a store, because the numbers are the store's — a fixture that built
+//! Every test here is about a store, because the numbers are the store's - a fixture that built
 //! the counts by hand would assert the arithmetic of the test rather than the reading of the
-//! queue. `desk::status` prints the same rows, so the agreement test is a real one: the census
-//! counts them one way (a predicate over rows) and `status` prints them another (a line per row),
-//! and the two have to say the same thing.
+//! queue. `desk::status` prints the same rows, so the agreement test is a real one.
 
 use super::*;
 use crate::mergequeue::serve::tests::TempDir;
@@ -12,9 +10,9 @@ use letibot_tokencore::store::{
     Approval, MergePriority, MergeState, Move, NewReview, ReviewKind, ReviewState,
 };
 
-/// **A landing row in `to`**, entered at `at` — the review it comes from is real, because a merge
-/// row is only ever born from an approval (`Store::approve_review`), and a fixture that inserted
-/// one directly would be a shape the queue cannot produce.
+/// A landing row in `to`, entered at `at` - the review it comes from is real, because a merge row
+/// is only ever born from an approval, and a fixture that inserted one directly would be a shape
+/// the queue cannot produce.
 fn a_landing(store: &Store, repo: &str, id: &str, to: MergeState, at: u64) {
     let review = format!("r-{id}");
     store
@@ -75,7 +73,7 @@ fn a_landing(store: &Store, repo: &str, id: &str, to: MergeState, at: u64) {
         .unwrap();
 }
 
-/// **A review row in `to`** — for the tests that prove what the census does NOT count.
+/// A review row in `to` - for the tests that prove what the census does NOT count.
 fn a_review(store: &Store, repo: &str, id: &str, to: ReviewState, at: u64) {
     store
         .enqueue_review(
@@ -117,9 +115,9 @@ fn store(tag: &str) -> (TempDir, Store) {
     (dir, store)
 }
 
-/// **The eight rows the operator reported, and the ones that are still a pass's own business.**
-/// Three `failed` and five `conflict` are stuck; a `queued` landing, a `gating` one, one that
-/// landed and one whose branch moved are not.
+/// The eight rows the operator reported, and the ones that are still a pass's own business. Three
+/// `failed` and five `conflict` are stuck; a `queued` landing, a `gating` one, one that landed and
+/// one whose branch moved are not.
 #[test]
 fn the_states_a_row_is_stuck_in_are_the_ones_no_pass_will_move() {
     let (_dir, s) = store("stuck-count");
@@ -162,9 +160,9 @@ fn the_states_a_row_is_stuck_in_are_the_ones_no_pass_will_move() {
     );
 }
 
-/// **And they are `desk::status`'s rows.** The census reads them by predicate; `status` prints a
-/// line each. Counting the printed lines that name a stuck state has to give the census's numbers,
-/// or the queue has two counting rules and this test is the only place that would ever say so.
+/// And they are `desk::status`'s rows. The census reads them by predicate and `status` prints a
+/// line each; counting the printed lines that name a stuck state has to give the census's numbers
+/// or the queue has two counting rules and this test is the only place that would say so.
 #[test]
 fn the_census_counts_the_rows_status_prints() {
     let (_dir, s) = store("stuck-agrees");
@@ -193,7 +191,7 @@ fn the_census_counts_the_rows_status_prints() {
     let census = of(&s, &[repo.to_string()]).expect("the census");
     let printed = desk::status(&s, Some(repo)).expect("status");
 
-    // The printed rows, by state word: `  `id` state `branch` → `target` at sha: …`
+    // The printed rows, by state word: ` `id` state `branch` → `target` at sha: …`
     let mut counted: Vec<(&str, usize)> = Vec::new();
     for line in printed.lines() {
         let Some(rest) = line.trim_start().strip_prefix('`') else {
@@ -221,10 +219,9 @@ fn the_census_counts_the_rows_status_prints() {
     );
 }
 
-/// **A review row nobody will move is NOT counted, and that is what keeps the sentence true.**
-/// `serve.rs` re-seats a `rejected` or `cannot_decide` review to `waiting` by itself when the
-/// branch moved past the verdict it gave — so *no pass will move them* would be false for it — and
-/// one lingering rejection would hold the alarm open over an otherwise clean queue.
+/// A review row nobody will move is NOT counted, and that is what keeps the sentence true
+/// `serve.rs` re-seats a `rejected` or `cannot_decide` review by itself when the branch moved past
+/// its verdict, and one lingering rejection would hold the alarm open over a clean queue.
 #[test]
 fn a_parked_review_is_not_a_stuck_landing() {
     let (_dir, s) = store("stuck-reviews");
@@ -237,8 +234,8 @@ fn a_parked_review_is_not_a_stuck_landing() {
     assert!(!census.is_news(u64::MAX / 2));
 }
 
-/// **The age is the oldest row's own `state_ms`** — when it entered the state it is stuck in, which
-/// is the fact nobody had: not when the queue last ran, and not when the census was composed.
+/// The age is the oldest row's own `state_ms`: when it entered the state it is stuck in, which is
+/// the fact nobody had - not when the queue last ran, and not when the census was composed.
 #[test]
 fn the_oldest_row_is_the_oldest_state_change() {
     let (_dir, s) = store("stuck-age");
@@ -253,9 +250,9 @@ fn the_oldest_row_is_the_oldest_state_change() {
     assert_eq!(census.oldest_age_ms(999_000), 0);
 }
 
-/// **A census is news only once the oldest row has STAYED bad** — the transition notice arrived
-/// with the row, so a quarter-hour later is the first moment the count and the age are anything
-/// the project has not already been told.
+/// A census is news only once the oldest row has STAYED bad - the transition notice arrived with
+/// the row, so a quarter-hour later is the first moment the count and the age are anything the
+/// project has not already been told.
 #[test]
 fn a_young_census_is_not_news_and_says_when_it_will_be() {
     let (_dir, s) = store("stuck-news");
@@ -282,7 +279,7 @@ fn a_young_census_is_not_news_and_says_when_it_will_be() {
     assert_eq!(empty.said(), "");
 }
 
-/// **A session in no repository is told nothing** — an empty list is not "every repository", or a
+/// A session in no repository is told nothing: an empty list is not "every repository", or a
 /// session seated above a folder of projects would be nagged about all of them.
 #[test]
 fn a_session_in_no_repository_has_no_census() {
@@ -296,8 +293,8 @@ fn a_session_in_no_repository_has_no_census() {
     assert!(other.is_empty(), "{other:?}");
 }
 
-/// **The age in the words a person reads an alarm in** — hours, because the incident ran for most
-/// of a night and `252 min` is a number a reader has to convert.
+/// The age in the words a person reads an alarm in - hours, because `252 min` is a number a reader
+/// has to convert.
 #[test]
 fn an_age_is_read_in_hours_once_it_is_hours() {
     assert_eq!(age_words(0), "0 s");
@@ -310,7 +307,7 @@ fn an_age_is_read_in_hours_once_it_is_hours() {
     assert_eq!(age_words(4 * 3_600_000 + 12 * 60_000), "4h 12m");
 }
 
-/// **The sentence the project session reads**, byte for byte — it is the deliverable, and the one
+/// The sentence the project session reads, byte for byte - it is the deliverable, and the one
 /// thing in this module a person sees.
 #[test]
 fn the_sentence_says_how_many_and_how_long_and_what_to_do() {
@@ -346,11 +343,9 @@ fn the_sentence_says_how_many_and_how_long_and_what_to_do() {
     );
 }
 
-/// **And the age in that sentence GROWS with the clock** — the property the brief asked for by
-/// name, asserted where it can be asserted honestly: the sentence is a pure function of the census
+/// And the age in that sentence GROWS with the clock: the sentence is a pure function of the census
 /// and the clock, so two deliveries two hours apart say two different ages about one unchanged
-/// queue. (An end-to-end test cannot show this without sleeping for an hour; the two deliveries it
-/// *does* drive are asserted in `crates/harnessd/tests/queue_census.rs`.)
+/// queue. (The two deliveries an end-to-end test can drive are in `tests/queue_census.rs`.)
 #[test]
 fn the_same_rows_said_later_name_a_bigger_age() {
     let (_dir, s) = store("stuck-grown");
@@ -366,20 +361,17 @@ fn the_same_rows_said_later_name_a_bigger_age() {
     assert_ne!(first, later, "the repeat is a new fact, not the same one");
 }
 
-/// **What this read costs on the door every turn ends at** — the measurement the review asked for
-/// before a new hot-path query lands, kept so the next reader can re-run it rather than argue.
+/// What this read costs on the door every turn ends at - the measurement to re-run rather than
+/// argue about, since `Harness::stuck_census` runs from `Sessions::rearm_todo_nag` at every turn's
+/// end. The question is not *is one query cheap* but *is one PROJECT's query cheap when the box
+/// holds twenty others*: twenty other repositories of twenty rows each, and ours, 420 rows in all.
 ///
-/// `Harness::stuck_census` runs from `Sessions::rearm_todo_nag`, which every turn's end calls, so
-/// the question is not *is one query cheap* but *is one PROJECT's query cheap when the box holds
-/// twenty others*. Twenty other repositories of twenty rows each, and ours: 420 rows in all.
+/// The unscoped number is an UNDER-estimate: these rows carry the short `evidence` the fixture
+/// writes, while a real rejected row's is thousands of characters, and `merge_rows(None)`
+/// materialises every one of them. The scoped read is proportional to one project's rows.
 ///
-/// **The unscoped number is an UNDER-estimate**: these rows carry the short `evidence` the fixture
-/// writes, while a real rejected row's is up to 7 828 characters, and `merge_rows(None)`
-/// materialises every one of them. The scoped read is proportional to one project's rows and
-/// nothing else, which is the whole argument for it.
-///
-///     cargo test --release --offline -p letibot-harnessd --lib \
-///         mergequeue::stuck::tests::what_the_scoped_read_costs -- --ignored --nocapture
+/// cargo test --release --offline -p letibot-harnessd --lib \
+/// mergequeue::stuck::tests::what_the_scoped_read_costs -- --ignored --nocapture
 #[test]
 #[ignore = "a measurement, not an assertion: run it with --ignored --nocapture"]
 fn what_the_scoped_read_costs() {

@@ -45,8 +45,8 @@ fn an_entry_is_a_path_inside_the_repository_and_anything_else_is_refused_by_name
     }
 }
 
-/// **The copy**: what the gate needs arrives as a copy, so a gate that writes there does not write
-/// into the operator's checkout — and a file gone from the checkout is gone here too (`--delete`).
+/// The copy: what the gate needs arrives as a copy, so a gate that writes there does not write
+/// into the operator's checkout - and a file gone from the checkout is gone here too (`--delete`).
 #[test]
 fn gate_carry_copies_the_named_ignored_dirs_and_never_links_them() {
     for rsync in [true, false] {
@@ -112,7 +112,7 @@ fn a_path_outside_missing_or_tracked_is_refused_by_name() {
     assert!(e.contains("\"a.txt\"") && e.contains("tracks"), "{e}");
 }
 
-/// **The notice's sentence** — the ignored dirs the checkout has and the landing tree lacks, by
+/// The notice's sentence - the ignored dirs the checkout has and the landing tree lacks, by
 /// name, never `target/`; nothing once they are carried, and nothing when there are none.
 #[test]
 fn the_hint_names_the_missing_ignored_dirs_only_when_nothing_is_carried() {

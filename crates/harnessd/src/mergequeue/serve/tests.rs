@@ -3909,7 +3909,7 @@ fn a_dirty_tree_is_kept_and_says_why() {
 
 /// A terminal landing whose branch carries work the target does not have keeps both, and says why
 /// - the branch is the only copy of that work, so the tree it was worked in goes with it. This is the
-/// half of the sweep a merge row answers to.
+///   half of the sweep a merge row answers to.
 #[test]
 fn a_failed_landings_branch_and_tree_are_kept_and_said() {
     let w = World::new("release-failed");

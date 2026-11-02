@@ -1,11 +1,11 @@
-//! **firecode's capacity refusal is read as a wait; everything else stays a failure** — and the
+//! firecode's capacity refusal is read as a wait; everything else stays a failure - and the
 //! sentences a review that stops for a person is built from.
 
 use letibot_tokencore::store::QueueTransition;
 
 use super::*;
 
-/// **The refusal of 2026-10-12, as the reviewer's failure carried it** — firecode's stderr, line
+/// The refusal of 2026-10-12, as the reviewer's failure carried it - firecode's stderr, line
 /// breaks and indentation included (the sentence that makes it capacity is wrapped across two).
 pub(crate) const FIRECODE_NO_SLOT: &str = "placing this session in a firecode VM: io: firecode up \
 refused (exit status: 1): [firecode] starting a VM and leaving it up (log: \
@@ -42,7 +42,7 @@ fn firecodes_no_free_slot_refusal_is_capacity_with_its_counts_and_its_sudo_lines
     );
 }
 
-/// **A real placement failure is not capacity** — firecode missing, a broken image, a copy over
+/// A real placement failure is not capacity - firecode missing, a broken image, a copy over
 /// the ceiling, a host on which no tap was ever made (waiting frees nothing there).
 #[test]
 fn a_real_placement_failure_is_not_capacity() {
@@ -82,8 +82,8 @@ fn t(from: Option<&str>, to: &str, at: u64, why: &str) -> QueueTransition {
     }
 }
 
-/// **The wait is read off the history**: refusals in a row, the claims between them passed over,
-/// anything else (a counted failure, a restart) ends it — and a raise already made is seen.
+/// The wait is read off the history: refusals in a row, the claims between them passed over
+/// anything else (a counted failure, a restart) ends it - and a raise already made is seen.
 #[test]
 fn the_streak_counts_refusals_in_a_row_and_sees_a_raise_already_made() {
     let wait = |at, extra: &str| {
@@ -134,7 +134,7 @@ fn a_waiting_row_is_held_only_by_its_own_capacity_wait() {
     assert!(!held_until(&why, None, 50));
 }
 
-/// **The gist of a placement failure is firecode's own `error:` sentence**, not its banner — the
+/// The gist of a placement failure is firecode's own `error:` sentence, not its banner - the
 /// hub row of 2026-10-12 showed *"starting a VM and leaving it up (log: …)"* and nothing else.
 #[test]
 fn the_gist_of_a_firecode_refusal_is_its_error_sentence() {
@@ -147,7 +147,7 @@ fn the_gist_of_a_firecode_refusal_is_its_error_sentence() {
     assert_eq!(gist("first line\nsecond"), "first line");
 }
 
-/// **The sentence a `needs_human` turned on** — the reviewer's `BUT …`, as in the verdict of
+/// The sentence a `needs_human` turned on - the reviewer's `BUT …`, as in the verdict of
 /// 2026-10-11 on `agent/panic-groupingsets-join`.
 #[test]
 fn the_decisive_reason_is_the_but_sentence_in_the_reviewers_own_words() {
@@ -197,7 +197,7 @@ fn the_heads_reviewers_could_not_decide_at_are_read_off_the_history() {
     assert_eq!(undecided_heads(&h), vec!["2cefd4b97b", "8e4b727"]);
 }
 
-/// **The branch's wait, across its rows**: a row's first refusal opens it only when no row of the
+/// The branch's wait, across its rows: a row's first refusal opens it only when no row of the
 /// branch is already waiting; it began at the earliest refusal of any; any row's raise is the branch's.
 #[test]
 fn a_branch_waits_once_across_its_rows() {
