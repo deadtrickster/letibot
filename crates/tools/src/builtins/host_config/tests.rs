@@ -173,10 +173,8 @@ fn set_args(setting: &str, value: &str, why: &str, words: &str) -> Value {
     json!({"verb": "set", "setting": setting, "value": value, "why": why, "words": words})
 }
 
-/// **A macOS arm over a scripted runner that keeps its values**: `defaults` reads what a previous
-/// `defaults write` put there, so a read-back is the box's answer and not a canned one. The
-/// commands themselves are matched by their exact argv, because the spelling is half of what the
-/// macOS arm is.
+/// A macOS arm over a scripted runner that keeps its values: `defaults` reads back what a previous
+/// `defaults write` put there, so the read-back is the box's answer and not a canned one.
 fn macos(key_repeat: &str, initial: &str, low_power: &str) -> (Arc<Scripted>, MacOs) {
     let state = Arc::new(Mutex::new((
         key_repeat.to_string(),
@@ -797,10 +795,8 @@ fn a_root_setting_with_no_askpass_refuses_and_runs_nothing() {
     assert!(log.lines().is_empty(), "and nothing was recorded");
 }
 
-/// **With the helper, the command is `sudo -A`, and the helper AND the session it asks on are in
-/// the command's environment.** A helper with no `LETIBOT_SOCKET`/`LETIBOT_SESSION` prints *not
-/// inside a letibot session* and exits 1, so the channel is part of the privilege and not a detail
-/// of it — which is what this asserts, pair by pair.
+/// With the helper the command is `sudo -A`, and both `LETIBOT_SOCKET` and `LETIBOT_SESSION` are in
+/// its environment: a helper without them exits 1, so the channel is part of the privilege.
 #[test]
 fn a_root_setting_with_the_helper_runs_sudo_dash_a() {
     let (script, platform) = linux("powersave", "performance powersave", 660, 25);
@@ -1322,10 +1318,9 @@ fn a_verb_that_is_not_one_names_the_three() {
 // The real box
 // ---------------------------------------------------------------------------
 
-/// **The Linux arm reads this box's real governor**, when the box has one.
-///
-/// A kernel with no cpufreq driver — a VM, or a CPU that does not expose one — has no governor at
-/// all, and that is [`letibot_tokencore::apparatus::present`]'s skip rather than a failure.
+/// The Linux arm reads this box's real governor, when the box has one.
+/// A kernel with no cpufreq driver has no governor at all, and that is
+/// [`letibot_tokencore::apparatus::present`]'s skip rather than a failure.
 #[test]
 fn the_real_linux_arm_reads_this_boxs_governor() {
     let here = std::path::Path::new(GOVERNOR).is_file();

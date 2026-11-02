@@ -1,39 +1,6 @@
-//! `github` — one tool, ten operations, and no credential behind any of them.
-//!
-//! # Why one tool and not ten
-//!
-//! §8.4's ceiling is a hard stop: *"past ~5–7 MCP servers small models get worse at
-//! choosing tools"*, measured on comparable local models, and a role may seat eight.
-//! Ten separate forge tools would consume a role on their own. So this is the shape
-//! crush uses (`docs/tool-survey.md` §2, *"`github` (11 ops)"*): one schema, an `op`
-//! enum, and the per-op argument rules enforced in the tool where a wrong call can
-//! be answered with the right one.
-//!
-//! The cost is real and worth naming: an `op` enum is a second dispatch the model
-//! has to get right, and a wrong `op` is a wasted call. That is what
-//! [`ForgeOp::nearest`] is for — a misspelled op comes back with the list and the
-//! closest match, which is the same treatment [`crate::runtime::ToolRuntime`] gives
-//! a misspelled *tool* name.
-//!
-//! # What the gate can and cannot see
-//!
-//! The tool declares [`Access::Network`] for every op, because a tool declares the
-//! widest thing it can do and the class must be knowable before the arguments are.
-//! So `list_issues` and `merge_pr` reach the gate as the same class, and
-//! [`crate::adjudicate::ActionClass::external`] resolves that conservatively —
-//! irreversible, because a request that has left the box cannot be recalled.
-//!
-//! [`ForgeOp::writes`] is the finer fact, and it is written down here rather than
-//! inferred later: it is what §11.3's policy table would key on if the routing key
-//! ever grows an op field. Today it is used for the boundary sentence a human
-//! adjudicator reads, which is the honest half of it.
-//!
-//! # Nothing is attached, and there is no remote either
-//!
-//! Two things are missing, not one. There is no credential, and `TODO.md` D8
-//! records that **this repository has no remote at all** — so even a token would
-//! have nothing to point at. [`Unavailable`] says both, because a refusal that names
-//! one of two missing things sends the operator to fix half of it.
+//! `github`: one tool, ten operations, and no credential behind any of them.
+//! One tool because a role seats few and a small model chooses worse past a handful of them; an
+//! `op` enum with [`ForgeOp::nearest`] turns a misspelled op into the right one.
 
 use serde_json::Value;
 
@@ -42,9 +9,8 @@ use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
 /// The operations this tool offers.
-///
-/// Closed on purpose. A free-text `op` would put the forge's whole API surface in
-/// the model's imagination and every typo would become a network call.
+/// Closed on purpose: a free-text `op` would put the forge's whole API in the model's imagination
+/// and every typo would become a network call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForgeOp {
     ListPrs,
@@ -106,9 +72,8 @@ impl ForgeOp {
     }
 
     /// Whether this op changes something on the far side.
-    ///
-    /// Not what the gate keys on today — see the module docs — but the fact a
-    /// policy table would want, and the one a human adjudicator is shown.
+    /// Not what the gate keys on, but the fact a policy table would want and the one a human
+    /// adjudicator is shown.
     pub fn writes(&self) -> bool {
         matches!(
             self,
@@ -186,11 +151,9 @@ pub enum ForgeError {
     Transport(String),
 }
 
-/// The seam a forge attaches through.
-///
-/// Named for the shape rather than for the vendor. The tool is called `github`
-/// because that is what the model must type and renaming it later would re-prefill
-/// every conversation; the trait has no reason to carry the same commitment.
+/// The seam a forge attaches through, named for the shape rather than for the vendor.
+/// The tool is called `github` because that is what the model must type; the trait has no reason
+/// to carry the same commitment.
 pub trait Forge: Send + Sync {
     fn call(&self, call: &ForgeCall) -> Result<ForgeResponse, ForgeError>;
 

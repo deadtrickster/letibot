@@ -1,36 +1,6 @@
-//! `web_search` and `web_fetch` — the two halves of "look at something that is not
-//! in this tree", and the seams they attach through.
-//!
-//! Two traits, not one, because they are two pieces of infrastructure: a search
-//! provider is an account with somebody, a fetcher is egress plus, probably, a
-//! headless browser. A session can honestly have one and not the other, and a
-//! single trait would have made that unsayable.
-//!
-//! # Provider-agnostic on purpose
-//!
-//! [`SearchProvider::search`] takes a query and returns hits with source urls.
-//! That is the whole method. There is no result `type`, no `livecrawl`, no
-//! per-provider knob — those are opencode's `websearch` arguments
-//! (`docs/tool-survey.md` §1.1) and they are one provider's vocabulary leaking into
-//! a prompt that has to outlive that provider. Prompt bytes are a cache key: an
-//! argument added for whichever provider gets attached first re-prefills every
-//! conversation when the second one arrives.
-//!
-//! The one narrowing every model reaches for — *"only look on this site"* — is here
-//! as [`SearchQuery::site`], because every provider can express it, and a provider
-//! that expresses it by folding `site:` into the query string says so in
-//! [`SearchResults::rewritten_query`] and the tool prints it. That rule is §9.4's,
-//! borrowed intact from [`crate::builtins::retrieval`]: *the harness must not
-//! silently improve a tool's query*, and a fold is an improvement somebody has to
-//! see.
-//!
-//! # What comes back is not ours
-//!
-//! Both tools funnel their bodies through
-//! [`super::quarantine`]. A snippet is written by whoever optimised for the query
-//! and a page is written by whoever owns the domain; neither is the operator. The
-//! module docs one level up say where that boundary really has to go and what this
-//! does not do about it.
+//! `web_search` and `web_fetch`: the two halves of looking at something outside this tree.
+//! Two traits, because a search provider is an account and a fetcher is egress plus a browser; both
+//! are provider-agnostic and both funnel their bodies through [`super::quarantine`].
 
 use serde_json::Value;
 
@@ -123,11 +93,8 @@ impl SearchProvider for UnavailableSearch {
 }
 
 /// The most hits this tool will ask a provider for.
-///
-/// Not a provider limit — a context one. Ten snippets is already a page of prompt,
-/// and §5's whole argument is that permanent context is the scarce resource. A
-/// caller that asks for more gets the cap and is told, which is a visible
-/// relaxation rather than a silent one.
+/// A context limit, not a provider's: ten snippets is already a page of prompt. A caller asking for
+/// more gets the cap and is told.
 pub const MAX_RESULTS: usize = 10;
 const DEFAULT_RESULTS: usize = 5;
 
@@ -380,10 +347,9 @@ pub struct FetchedPage {
     pub bytes: usize,
     /// The fetcher stopped early. Reported, never inferred from a short body.
     pub truncated: bool,
-    /// What the fetcher did to the body before handing it over — reader-mode
-    /// extraction, or the fallback to the whole document. The tool hangs
-    /// these on the result as notes, because a silent rewrite of a page is
-    /// the defect the quarantine exists to make visible.
+    /// What the fetcher did to the body before handing it over: reader-mode extraction, or the
+    /// fallback to the whole document. The tool hangs these on the result as notes, because a
+    /// silent rewrite of a page is what the quarantine exists to make visible.
     pub notes: Vec<String>,
 }
 
@@ -402,14 +368,8 @@ pub enum FetchError {
 }
 
 /// The seam a fetcher attaches through.
-///
-/// An implementation is responsible for the checks this tool cannot make, and
-/// `docs/tool-survey.md` §1.5 records the best set of them found in the five:
-/// scheme check, no credentials in the url, **DNS must resolve to a public
-/// address**, address-pinned connections, same-origin redirects only. The tool
-/// makes the first two before calling, because they are decidable from the
-/// argument and a refusal is worth more than a round trip; the rest need a
-/// resolver and belong to whoever attaches one.
+/// An implementation owns the checks this tool cannot make (a public resolved address, pinned
+/// connections, same-origin redirects); the tool makes the two decidable from the argument.
 pub trait Fetcher: Send + Sync {
     fn fetch(&self, request: &FetchRequest) -> Result<FetchedPage, FetchError>;
 
@@ -560,11 +520,8 @@ struct UrlRefusal {
 }
 
 /// The two checks that are decidable from the argument alone.
-///
-/// A scheme that is not http(s) is the interesting one, because the common case is
-/// not an attack: it is a model reaching for `web_fetch` when it wanted `read`. So
-/// the refusal names the tool it should have called and hands over the argument it
-/// should have used.
+/// A scheme that is not http(s) is usually a model reaching for `web_fetch` when it wanted `read`,
+/// so the refusal names that tool and the argument it should have used.
 fn check_url(url: &str) -> Result<(), UrlRefusal> {
     let lower = url.to_lowercase();
     if let Some(path) = lower.strip_prefix("file://") {
@@ -612,17 +569,9 @@ fn check_url(url: &str) -> Result<(), UrlRefusal> {
     Ok(())
 }
 
-/// Where a fetched page lands on disk: the session's scratch directory, under
-/// `web/`, named by the content it holds.
-///
-/// The scratch directory is a property of the session, set by whoever opened it,
-/// so a fetched page never touches the operator's tree — it is a working artifact
-/// in the session's own scratch, not a repository entry and not a file the
-/// operator's tools would stumble over. The name is the content hash, the same one
-/// the spill store uses: a re-fetch of the same page lands on the same file, a
-/// different page never collides with it, and two sessions cannot clobber each
-/// other's pages because their scratch directories are different. The extension is
-/// the render format, so a `read` of the file knows what it is looking at.
+/// Where a fetched page lands: the session's scratch directory, under `web/`, named by content.
+/// The scratch is the session's own, so a page never touches the operator's tree; the name is the
+/// content hash, so a re-fetch lands on the same file and two sessions cannot collide.
 fn scratch_path(scratch_dir: &str, format: PageFormat, body: &str) -> String {
     let ext = match format {
         PageFormat::Markdown => "md",
@@ -637,12 +586,8 @@ fn scratch_path(scratch_dir: &str, format: PageFormat, body: &str) -> String {
     )
 }
 
-/// One `read`'s worth of a body: the first `max_read_lines` lines, capped at
-/// `max_read_bytes` of numbered text, in `read`'s own `{:>6}| ` format.
-///
-/// The preview is rendered the way `read` renders the file, so the line numbers
-/// the model sees inline are the line numbers it will pass back as `offset` when
-/// it continues from the file. Returns the preview and how many lines it shows.
+/// One `read`'s worth of a body: the first `max_read_lines` lines, capped at `max_read_bytes`, in
+/// `read`'s own format, so the line numbers inline are the ones passed back as `offset`.
 fn bounded_preview(body: &str, limits: &Limits) -> (String, usize) {
     let mut out = String::new();
     let mut shown = 0usize;
@@ -705,11 +650,9 @@ fn render_page(ctx: &mut InvokeCtx<'_>, req: &FetchRequest, page: FetchedPage) -
         return inv;
     }
 
-    // The whole page is quarantined once, and that quarantined text is what the
-    // model reads in both places: the bounded preview inline, and the file the
-    // scratchpad holds. The envelope travels with the content, so a page that is
-    // read back with `read` in a later turn is still marked as not the
-    // operator's, and the preview and the file agree about where a line is.
+    // The whole page is quarantined once, and that text is what the model reads in both places:
+    // the bounded preview inline and the file the scratchpad holds. The envelope travels with the
+    // content, so a page read back in a later turn is still marked as not the operator's.
     let (quarantined, note) = super::quarantine(call_id, &page.final_url, &page.body);
     if let Some(n) = note {
         notes.push(n);
@@ -732,11 +675,9 @@ fn render_page(ctx: &mut InvokeCtx<'_>, req: &FetchRequest, page: FetchedPage) -
         let path = scratch_path(&scratch, req.format, &page.body);
         match ctx.backend.write(&path, quarantined.as_bytes()) {
             Ok(()) => {
-                // The inline half is one `read`'s worth of the file, and the
-                // pointer says where the rest is and how to continue it. A page
-                // that fits in the preview still gets its file: the model should
-                // learn that the page is a thing it can `read`, not a blob that
-                // happened to fit.
+                // The inline half is one `read`'s worth, and the pointer says where the rest is.
+                // A page that fits still gets its file: the model should learn the page is a
+                // thing it can `read`.
                 let (preview, shown) = bounded_preview(&quarantined, &ctx.limits);
                 let total = quarantined.lines().count();
                 body.push_str(&preview);
@@ -753,10 +694,9 @@ fn render_page(ctx: &mut InvokeCtx<'_>, req: &FetchRequest, page: FetchedPage) -
                 }
             }
             Err(e) => {
-                // A storage failure falls back to the untouched inline content
-                // rather than erroring the call: losing the page is worse than a
-                // long result, and the note says what happened instead of
-                // pretending the file exists.
+                // A storage failure falls back to the untouched inline content rather than
+                // erroring the call: losing the page is worse than a long result, and the note
+                // says what happened.
                 notes.push(format!(
                     "the page could not be written to the scratchpad ({e}); the full body is \
                      inline instead"

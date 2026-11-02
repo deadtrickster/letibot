@@ -1,49 +1,6 @@
-//! MCP passthrough — a **seam and a mounting rule**, not a stubbed tool.
-//!
-//! # Why there is no `mcp` tool here
-//!
-//! The other three in this module are tools whose schemas we chose. An MCP tool's
-//! schema is the server's: dsh passes *"the server's own description and
-//! `inputSchema` through verbatim"* (`docs/tool-survey.md` §1.5), and
-//! [`Registry::register_foreign`](crate::runtime::Registry::register_foreign)
-//! already exists in this crate for exactly that — it runs the description lint and
-//! **records** the findings instead of refusing, *"because refusing somebody else's
-//! server over its prose would be a harness making a policy nobody asked for"*.
-//!
-//! So with no server connected there is nothing to stub. A generic
-//! `mcp(server, tool, args)` tool would be a schema whose arguments cannot be
-//! validated against anything, describing tools that may not exist, and it is a
-//! different architecture besides — grok-build's `search_tool` + `use_tool` over a
-//! BM25 index of tool descriptions (§1.4). What is honest with nothing connected is
-//! **zero tools mounted**, plus a startup line saying so, which is
-//! [`super::ExternalWiring::startup_disclosures`].
-//!
-//! `TODO.md` T16.6 is why that is the state: checked rather than recalled, **no MCP
-//! server is running anywhere on this fleet**. The detail that makes it worth
-//! re-reading is that a TCP connect to the published port *succeeds while nothing is
-//! behind it*, so the naive check reports a connection and not an absence — the same
-//! shape as the embed wedge.
-//!
-//! # What is built: the mount, and §8.4's refusal
-//!
-//! > MCP servers are attached **per role**, not globally, and an MCP server that
-//! > advertises more tools than the role's remaining budget is refused with its tool
-//! > list, not silently truncated.
-//!
-//! That is §8.4, and [`mount`] implements it literally. A server that does not fit
-//! is refused **whole**, its tools are named in the report so an operator can see
-//! what was on offer, and the budget is untouched — a half-mounted server is a role
-//! whose behaviour depends on the order the servers answered in.
-//!
-//! # What a mounted tool returns is still not ours
-//!
-//! Mounting a server is the operator's decision and this module does not second
-//! guess it. But *"the operator trusts this server"* and *"everything this server
-//! returns was written by somebody the operator trusts"* are different claims: a
-//! retrieval server returns other people's documents, an issue tracker returns other
-//! people's issues. So a result is quarantined like any other foreign text
-//! ([`super::quarantine`]), and the operator's decision is about the *server*, which
-//! is where it belongs.
+//! MCP passthrough: a seam and a mounting rule, not a stubbed tool.
+//! With no server connected there is nothing to stub, so zero tools are mounted and a startup line
+//! says so; a server that does not fit the role's budget is refused whole, with its tool list.
 
 use serde_json::Value;
 
@@ -95,11 +52,8 @@ pub enum McpError {
 }
 
 /// The seam an MCP client attaches through.
-///
-/// Deliberately not an MCP *client*: this crate has no async runtime and no HTTP,
-/// and `crate::builtins::retrieval`'s module docs give the other half of the reason
-/// — a transport written blind, against a server nobody can reach, is the kind of
-/// component that reports success while delivering nothing.
+/// Deliberately not an MCP client: this crate has no async runtime and no HTTP, and a transport
+/// written blind against an unreachable server reports success while delivering nothing.
 pub trait McpCatalog: Send + Sync {
     /// What is connected, right now. An empty list is a complete answer.
     fn servers(&self) -> Vec<McpServer>;
@@ -253,15 +207,8 @@ impl MountReport {
 }
 
 /// Mount every connected server's tools into `registry`, up to `budget`.
-///
-/// `budget` is the role's **remaining** seats — §8.4's ceiling minus what the role
-/// already names. A server whose tool count exceeds what is left is refused whole,
-/// with its tool list, and the next server is still considered: refusing the big
-/// one is not a reason to drop the small one behind it.
-///
-/// A name that is already taken is also a refusal and not a rename. Renaming would
-/// mean the model calls a tool by a name its own server has never heard of, and the
-/// first person to debug that would have no thread to pull.
+/// `budget` is the role's remaining seats: a server that does not fit is refused whole with its
+/// tool list and the next one is still considered. A taken name is a refusal, not a rename.
 pub fn mount(
     registry: &mut Registry,
     catalog: std::sync::Arc<dyn McpCatalog>,

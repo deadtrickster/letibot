@@ -378,11 +378,9 @@ fn a_revert_naming_another_setting_is_reported_and_not_applied() {
 // the file
 // ---------------------------------------------------------------------------
 
-/// **Two writers appending at once: every line survives, and the order is the file's.**
-///
-/// The number is a position, so the test can assert the two facts an append-only file is for:
-/// nothing was lost, and nothing was written over. Ten records each, from two threads that start
-/// on a barrier, because a single pair can miss the interleaving by luck.
+/// Two writers appending at once: every line survives, and the order is the file's.
+/// The number is a position, so the test asserts the two facts an append-only file is for:
+/// nothing was lost and nothing was written over.
 #[test]
 fn two_writers_appending_at_once_keep_both_lines() {
     const EACH: usize = 10;

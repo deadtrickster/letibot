@@ -1,34 +1,6 @@
-//! `scenario` — **work on several hosts together**: roles that must come up, a run that uses them,
-//! and a teardown that always happens (RH8).
-//!
-//! `docs/remote-hosts.md`: *"Roles, each `{host, command, ready, after}`: `ready` is a readiness
-//! check (a port that accepts, a log line, a command that exits 0) with its own deadline; `after`
-//! orders the starts; a role's command may name another's facts (`${server.host}`,
-//! `${server.port}`). Started in order, each waited ready; the run's own command (the client, the
-//! test) runs when all are ready; on its end, on any role failing, or on an interrupt, **everything
-//! is torn down on every host** and the result is per role. docker-compose across machines, without
-//! containers."*
-//!
-//! # The three things that make a service fixture different from a fanout
-//!
-//! 1. **A start is not a service.** So every role may carry a readiness check, polled **on the host
-//!    that runs it** — a port that accepts there, a line in its own log, a client program that
-//!    exits 0 — with a deadline of its own. Three spellings because those are the three a fixture
-//!    has: `pg_isready`, `Started` in a log, a port.
-//! 2. **Order is a dependency, not a sequence.** `after: ["db"]` means *this role starts when `db`
-//!    is READY*, which is the only order that means anything across machines — a client that
-//!    connected to a started-but-not-listening server is the flake this removes. A cycle is refused
-//!    before anything starts.
-//! 3. **The teardown is not the caller's job.** On the run's end, on a role that never becomes
-//!    ready, on a role that dies, and on any early return, every started process is ended on its own
-//!    host — and each one is a `process` record, so a session close or a daemon restart has the same
-//!    list (RH7's teardown-follows-ownership rule).
-//!
-//! # What the row says
-//!
-//! Per role: did it start, **how long until it was ready**, how it ended, and the tail of its
-//! output. A role that never became ready and one that was torn down after a good run are different
-//! rows, and the difference is the sentence, not a missing line.
+//! `scenario`: work on several hosts together - roles that must come up, a run that uses them, and a
+//! teardown that always happens. A start is not a service, so each role may carry a readiness check
+//! with its own deadline; `after` is a dependency, and the teardown is not the caller's job.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -260,10 +232,9 @@ impl Scenario {
             Ok(p) => p,
             Err((reason, body)) => return Invocation::failed(reason, body),
         };
-        // **The lease, before anything is substituted or started** (RH9). A role that asked for
-        // `ready: {"port": "lease"}` gets its port here, one block per host, so every `${role.port}`
-        // in the call resolves to a number that is this session's own — and a host that has no
-        // block left is a refusal that names it rather than a service on a port somebody else holds.
+        // The lease, before anything is substituted or started: a role asking for a lease port gets
+        // it here, one block per host, so every `${role.port}` is this session's own; a host with
+        // no block left is a refusal that names it.
         let mut held: Vec<letibot_tokencore::store::Lease> = Vec::new();
         if let Some(blocks) = &self.blocks {
             // `assign` puts back whatever it had already taken when it cannot take the rest, so a
@@ -285,10 +256,9 @@ impl Scenario {
                  Give the port yourself: `ready: {\"port\": 5432}`.",
             );
         }
-        // **A `${…}` that names a role this call does not have, or a fact that role does not have,
-        // is refused NOW** — a substitution that failed at start time would be a service starting
-        // with a literal `$` in its command. It happens after the lease because a lease port is a
-        // fact `${role.port}` resolves to.
+        // A `${...}` naming a role this call does not have, or a fact that role does not have, is
+        // refused NOW: a substitution that failed at start time would be a service starting with a
+        // literal `$` in its command. It runs after the lease, because a lease port is a fact.
         let facts = facts_of(&plan);
         for role in plan.roles.iter().chain(plan.run.iter()) {
             if let Err(e) = substitute(&role.command, &facts) {
@@ -353,10 +323,9 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
     }
 
     let mut named: BTreeMap<String, Role> = BTreeMap::new();
-    // **The order the caller wrote them in**, which is the only tie-break for roles that do not wait
-    // on each other. A `BTreeMap`'s own order is alphabetical, and a scenario whose rows came back
-    // sorted rather than started would be a plan the model did not write. `serde_json` keeps a
-    // call's key order (`preserve_order`), so this is the call's order and not this build's.
+    // The order the caller wrote them in, the only tie-break for roles that do not wait on each
+    // other: a scenario whose rows came back alphabetical rather than started would be a plan the
+    // model did not write. `serde_json` keeps a call's key order, so this is the call's order.
     let mut declared: Vec<String> = Vec::with_capacity(roles.len());
     for (name, spec) in roles {
         let name = name.trim().to_string();
@@ -505,11 +474,9 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
         }
     }
 
-    // **The order, and the cycle.** Kahn's algorithm, one role at a time: the FIRST role (in the
-    // caller's order) whose `after` set is already placed is started next, and the check is made
-    // again from the top — so a role that waited for the one just placed goes before the roles
-    // that waited for nothing. Whatever is left when no role qualifies is a cycle, and the refusal
-    // names the roles in it: a scenario that would hang is refused before its first process exists.
+    // The order, and the cycle: Kahn's algorithm, one role at a time - the first role in the
+    // caller's order whose `after` set is already placed starts next, and the check runs again from
+    // the top. Whatever is left when none qualifies is a cycle, named before its first process.
     let mut order: Vec<Role> = Vec::with_capacity(named.len());
     let mut left: BTreeMap<String, Role> = named.clone();
     while !left.is_empty() {
@@ -608,10 +575,9 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
         ));
     }
 
-    // **The `${…}` check is not here, and it cannot be.** A role's port may come from the
-    // session's lease (RH9), and the lease is taken after the plan is read — so the facts a
-    // command is resolved against do not exist yet. [`Scenario::answer`] does that check, before a
-    // single process is started, which is the promise that matters: a refusal, not a teardown.
+    // The `${...}` check is not here, and it cannot be: a role's port may come from the session's
+    // lease, taken after the plan is read, so the facts a command resolves against do not exist
+    // yet. [`Scenario::answer`] checks before a single process starts - a refusal, not a teardown.
     Ok(Planned {
         roles: order,
         run,
@@ -619,11 +585,9 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
     })
 }
 
-/// **The facts a plan resolves against**: role name → (host, port).
-///
-/// One function, because two readers need the same map — the substitution that fills a command in
-/// and the lease assignment that rewrites a `Ready::Lease` into a port — and two spellings of it
-/// is how a `${role.port}` ends up resolving to one number in one place and another next door.
+/// The facts a plan resolves against: role name -> (host, port).
+/// One function, because two readers need the same map - the substitution that fills a command in
+/// and the lease assignment - and two spellings is how one `${role.port}` resolves two ways.
 fn facts_of(plan: &Planned) -> BTreeMap<String, (String, Option<u16>)> {
     let mut facts: BTreeMap<String, (String, Option<u16>)> = BTreeMap::new();
     for role in plan.roles.iter().chain(plan.run.iter()) {
@@ -638,15 +602,9 @@ fn facts_of(plan: &Planned) -> BTreeMap<String, (String, Option<u16>)> {
     facts
 }
 
-/// **Take a port for every role that asked the lease for one**, one block per host (RH9).
-///
-/// One round of allocation per host and not one per role: a block of four is one row and one lock,
-/// and four blocks of one would be four chances for another session to slip between them. The
-/// ports are handed out in the caller's own role order, so the same call twice asks for the same
-/// shape.
-///
-/// Every role it rewrites is a `Ready::Lease` → `Ready::Port`, which is also what makes
-/// `${role.port}` resolvable — see [`facts_of`], read after this.
+/// Take a port for every role that asked the lease for one, one block per host.
+/// One round of allocation per host, so another session cannot slip between roles; ports go out in
+/// the caller's role order, and each rewrite is what makes `${role.port}` resolvable.
 fn assign(
     blocks: &Blocks,
     plan: &mut Planned,
@@ -723,12 +681,9 @@ fn seconds(v: Option<&Value>) -> Result<Option<u64>, String> {
     }
 }
 
-/// **`${role.host}` and `${role.port}`**, and the refusal that names what could have been meant.
-///
-/// Two facts and no more: they are the two a client needs to be pointed at a service, and every
-/// other field of a role is a thing this build would have to guess at. A `${…}` this cannot resolve
-/// is an error rather than left alone — a shell would expand the empty string and the service would
-/// start against `:`, which is a failure thirty seconds later with no breadcrumb.
+/// `${role.host}` and `${role.port}`, and the refusal that names what could have been meant.
+/// Two facts and no more: they are what a client needs to reach a service. A `${...}` this cannot
+/// resolve is an error, because a shell would expand the empty string and start against `:`.
 fn substitute(
     text: &str,
     facts: &BTreeMap<String, (String, Option<u16>)>,
@@ -844,10 +799,9 @@ fn run(
                 Some(d) => (Instant::now() + d).min(plan.until),
                 None => plan.until,
             }),
-            // **The block's own facts, in the environment** (RH9). A role that asked the lease for
-            // its port has them substituted into its command as well; the environment is how a
-            // service's *children* — a `docker compose` it starts, a shell it forks — see the same
-            // prefix, which is what a teardown looks for.
+            // The block's own facts, in the environment: a service's children - a `docker compose`
+            // it starts, a shell it forks - see the same prefix, which is what a teardown looks
+            // for.
             env: env_for(held, &role.host),
         };
         let run = match fleet.start(&leg) {
@@ -867,11 +821,9 @@ fn run(
                 match fleet.await_ready(&run, check, until) {
                     Ok(took) => Some(took),
                     Err(why) => {
-                        // **The row says what it was waiting for and never got.** It is a
-                        // `stopped` row and not a `never ran` one, and the difference is the
-                        // fact: the role *did* start, something *did* end it (the teardown
-                        // below), and what went wrong was its readiness. `never ran` is kept for
-                        // a leg that was never started at all.
+                        // The row says what it was waiting for and never got: a `stopped` row and
+                        // not a `never ran` one, because the role did start and something did end
+                        // it. `never ran` is kept for a leg that was never started at all.
                         done.push(Cell {
                             label: leg.label.clone(),
                             host: leg.host.clone(),
@@ -971,17 +923,9 @@ fn run(
         // one that was still up was stopped by this call — and the two are not the same sentence.
         let before = fleet.settled(&running);
         fleet.stop(&running, &by);
-        // **A role can end by itself in the moment between the question and the kill**, and then
-        // `before` is a snapshot of a still-running process and the row says *stopped* about a leg
-        // the teardown did not stop. The status file is the role's own account — the launcher
-        // writes it before it exits, and a signal this call sent can only leave it absent — so an
-        // `exited` state found *after* the kill is a leg that finished on its own.
-        //
-        // Measured 2026-10-27 on the Mac at `bb66c6b1`, `cargo test -p letibot-tools --test
-        // scenario`, one run in six with the binary's siblings beside it: the `client` role of
-        // `after_orders_the_starts_and_a_roles_facts_resolve` wrote its 19 bytes and its `0` — the
-        // trace shows the poll before the teardown answering *alive*, the `ps` in the kill
-        // answering *not there* — and the row still read `stopped · the scenario ended · 0.4s`.
+        // A role can end by itself between the question and the kill, and then `before` is a
+        // snapshot of a running process while the row says stopped about a leg the teardown did not
+        // stop. The status file is the role's own account, so `exited` after the kill is its own end.
         let fate = match before {
             Some((state, took)) => Fate::Ended { state, took },
             None => match fleet.settled(&running) {

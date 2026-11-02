@@ -1,26 +1,6 @@
-//! `fanout` — **the same work on many hosts, separately** (map), with the answer as the reduce
-//! (RH8).
-//!
-//! `docs/remote-hosts.md`: *"`{hosts: [..] | {host: command}, command, deadline}`: one supervised
-//! job per host in parallel; the result is one row per host — exit status, duration, output tail,
-//! or why it never ran (an unreachable host is a row, not a failure of the whole)."*
-//!
-//! # What this replaces, in the operator's own session
-//!
-//! The Stroppy session's `fleet.sh` — 641 lines, `for h in …` ×137, `fleet.sh` ×235 — and its own
-//! audit, which found cells of the plan that never ran and were never mentioned. Two rules follow
-//! and both are in the answer rather than in a comment: **every planned cell is a row**
-//! ([`crate::fleet::cells`]), and **an unreachable host is a row, not a failure of the whole**
-//! ([`crate::fleet::Fate::Never`]).
-//!
-//! # Not a shell loop, and what that buys
-//!
-//! Each branch is a job of the *host's own* job table — the launch, the pid file, the exit file,
-//! the `setsid` process group and the group kill are RH1's code — and each is written into the
-//! supervisor's `process` table, so the daemon finds it after a restart and a session's close kills
-//! it on the host it runs on. The alternative (`ssh … 'nohup … &'`, a `ps` poll, a log tail) is the
-//! thing this package exists to delete: 1,038 Bash calls in one session's main transcript, ~20,500
-//! across its children.
+//! `fanout`: the same work on many hosts, separately, with the answer as the reduce.
+//! Every planned cell is a row, and an unreachable host is a row rather than a failure of the whole;
+//! each branch is a job of the host's own table, so a restart finds it and a close kills it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -182,11 +162,9 @@ impl Tool for Fanout {
 }
 
 impl Fanout {
-    /// **The whole tool, without a call context** — the daemon's path is [`Tool::invoke`], and this
-    /// is the same thing with the two facts a `ctx` would have supplied: this session's own backend
-    /// (for a `local` leg) and the work directory name. It is what a test drives, exactly as
-    /// [`crate::builtins::hosts::HostsTool::answer`] is, so a test measures the tool and not a
-    /// harness grown around it.
+    /// The whole tool, without a call context: the two facts a `ctx` would have supplied are this
+    /// session's own backend and the work directory name.
+    /// What a test drives, so it measures the tool and not a harness grown around it.
     pub fn answer(
         &self,
         args: &Value,
@@ -430,11 +408,9 @@ impl Fanout {
                     )),
                     None => {
                         waiting = true;
-                        // **The deadline, enforced here as well as on the record.** The supervisor
-                        // owns the record's deadline, and this loop must not answer *still
-                        // running* while it waits for a tick it does not control: the row is this
-                        // call's answer, and it is the call's deadline that decides when a branch
-                        // that never answered is done being waited for.
+                        // The deadline, enforced here as well as on the record: this loop must not
+                        // answer still running while it waits for a tick it does not control. The
+                        // row is this call's answer, so this call's deadline decides.
                         if run.leg.deadline.is_some_and(|at| Instant::now() >= at) {
                             fleet.stop(run, fleet::EXPIRED);
                             fates.push((
@@ -492,11 +468,8 @@ impl Fanout {
 }
 
 /// The answer: a header with the count that matters, then one line per planned cell.
-///
-/// Two facts about the call rather than about its rows — the work directory it used on every host,
-/// and what `hosts.toml` declares — travel in because the table is built in **two** places now:
-/// the call's own answer, and the settlement that reaches the model later, which has no [`Fleet`]
-/// to read them off ([`super::fanout_bg`]).
+/// Two facts about the call rather than its rows travel in, because the table is built in two
+/// places: this answer, and the settlement that reaches the model later with no [`Fleet`].
 pub(super) fn table(
     work: &str,
     declared: &[String],
@@ -546,10 +519,8 @@ pub(super) fn table(
     s
 }
 
-/// **How many ports each branch asked for** — `None` when the call did not ask for a block.
-///
-/// `lease: true` is one port (the common case: one server per branch), and a number is that many,
-/// capped so a typo cannot ask for the whole upper half of the host's range.
+/// How many ports each branch asked for, or `None` when the call did not ask for a block.
+/// `lease: true` is one port, and a number is capped so a typo cannot ask for half the host's range.
 fn lease_ports(args: &Value) -> Result<Option<u16>, Refusal> {
     match args.get("lease") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
