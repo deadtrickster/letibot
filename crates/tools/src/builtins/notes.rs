@@ -368,9 +368,9 @@ fn prose_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A list marker off the front of a line - `- `, `* `, `+ `, `1. `, `2) ` or a bare `1.`
-/// - so a bulleted note's abstract is its own words and a numbered list's `1.` is never
-/// a first sentence. The space is required: `2.7 s` is a number, not item two.
+/// A list marker off the front of a line: `- `, `* `, `+ `, `1. `, `2) ` or a bare `1.`, so a
+/// bulleted note's abstract is its own words and a numbered list's `1.` is never a first
+/// sentence. The space is required: `2.7 s` is a number, not item two.
 fn strip_list_marker(line: &str) -> String {
     if let Some(rest) = line
         .strip_prefix("- ")

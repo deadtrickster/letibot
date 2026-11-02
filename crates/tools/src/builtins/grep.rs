@@ -18,9 +18,9 @@ struct Hit {
     path: String,
     line_no: usize,
     line: String,
-    /// `(line_no, text)` for the lines around the match, empty when `context` is
-    /// 0. Captured during the scan because that is the only place the file's
-    /// text is in hand; rendering re-reads nothing.
+    /// `(line_no, text)` for the lines around the match, empty when `context` is zero.
+    /// Captured during the scan because that is the only place the file's text is in hand;
+    /// rendering re-reads nothing.
     region: Vec<(usize, String)>,
 }
 
