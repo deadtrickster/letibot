@@ -2,18 +2,9 @@
 
 use super::*;
 
-/// **The negative assertion: a prompt is not retired by a row that merely
-/// CONTAINS it.**
-///
-/// This is the failure that matters, and it is the one the whole-line rule
-/// exists against. leticl's wording: a prompt `second thing` must not be retired
-/// by a row reading `first thing\nsecond thing-guess`, or the head swallows a
-/// prompt the daemon has not answered — the operator's sentence, gone from the
-/// screen with nothing else holding it.
-///
-/// Three ways to be *contained but not a line*, because they fail differently: a
-/// row that continues the echo's text, a row that precedes it, and a row that
-/// holds the echo's words inside one longer line.
+/// The negative assertion: a prompt is not retired by a row that merely contains it. A prompt `second thing` must
+/// not be retired by a row reading `first thing\nsecond thing-guess`, or the head swallows a prompt the daemon has
+/// not answered, which is the failure the whole-line rule exists against.
 #[test]
 fn a_row_that_only_contains_the_prompt_does_not_retire_it() {
     let mut a = app();
@@ -129,21 +120,9 @@ fn blank_lines_claim_nothing() {
     assert_eq!(a.pending_prompts, vec!["a real prompt".to_string()]);
 }
 
-/// **R17: a head knows whether it has every row the daemon says it has.**
-///
-/// `seq` is the log's position, dense and assigned by the daemon alone — and this
-/// head assigned it unconditionally (`self.seq = env.seq`), which is exactly what
-/// makes a delivered row and a dropped one look the same. Measured 2026-09-22: a
-/// prompt that was **in the ledger and acted on** never reached this head's screen,
-/// and nothing in this head could have said so.
-///
-/// Three obligations, and the third is why the second is not enough: **say** it (a
-/// note in the conversation, not a transient line — this is a fact about the
-/// session), **repair** it (`/resync` exists for precisely this), and **count** it.
-/// A gap repaired silently is indistinguishable from a session that never had one,
-/// so the operator learns nothing about a daemon, a socket or a compaction that is
-/// losing rows — which is the same argument `/status`'s `unreadable` bucket makes,
-/// and this is the sixth of that family.
+/// A head knows whether it has every row the daemon says it has: `seq` is dense and assigned by the daemon alone,
+/// and this head assigned it unconditionally, which is exactly what makes a delivered row and a dropped one look
+/// the same.
 #[test]
 fn a_gap_in_the_log_is_said_repaired_and_counted() {
     let mut a = app();
@@ -204,21 +183,9 @@ fn a_gap_in_the_log_is_said_repaired_and_counted() {
     assert!(status.contains("gaps"), "no gap row on /status: {status}");
 }
 
-/// **R17's other two numbers: a body with no row, and a daemon that is ahead.**
-///
-/// `gaps` is the wire losing events. These are the two that look identical to it
-/// from inside and are not it:
-///
-/// * **`orphan_bodies`** — the row was announced, a snapshot replaced the rows
-///   without it, and its words arrive with nowhere to go. `record_item` used to
-///   `return` in silence, which is why the trailer of a lost row was that there
-///   was no trailer. The row is not in `items`, so there is not even a
-///   placeholder to notice; this count is the whole of what is left of it.
-/// * **`behind`** — nothing is lost and nothing is orphaned, and the head is not
-///   current: the events are in a queue, on a socket, or in this head's own
-///   channel. This is the state the operator measured from outside on 2026-09-22
-///   and could not name, and it is the reason a screen cannot be trusted to say
-///   whether the session has gone quiet or the head has stopped being told.
+/// R17's other two numbers: a body with no row, and a daemon that is ahead. `gaps` is the wire losing events, and
+/// these two look identical to it from inside: `orphan_bodies` is a row announced and then replaced away, so its
+/// words have nowhere to go.
 #[test]
 fn a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted() {
     let mut a = app();
@@ -254,10 +221,8 @@ fn a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted() {
         "a body with no row was drawn anyway: {screen}"
     );
 
-    // **A daemon that answers from further along than this head has read.** The
-    // head is at seq 1 and the command's effect is visible at 9, so eight events
-    // are in flight and none are lost — the head is behind, which is a different
-    // fact and is why it is a different number.
+    // A daemon that answers from further along than this head has read: the command's effect is visible at 9 while
+    // the head is at 1, so eight events are in flight and none are lost. Being behind is a different fact.
     a.apply(ServerFrame::Accepted {
         client_request_id: "r1".into(),
         seq: 9,
@@ -282,13 +247,8 @@ fn a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted() {
     assert_eq!(a.behind, 0);
 }
 
-/// **A refusal the harness made is one dim line, not a wall in red.**
-///
-/// The operator's report, about a `bash` one-liner the normaliser could not
-/// read: *"i get what it tries to do, but it just throws up on my chat"*. Every
-/// word of that explanation is addressed to the model, it was already on the
-/// screen as the tool's own result one row above, and nothing in it is
-/// answerable — no adjudicator was consulted and no grant lifts it.
+/// A refusal the harness made is one dim line and not a wall in red: every word of the explanation is addressed to
+/// the model, and it was already on the screen as the tool's own result one row above.
 #[test]
 fn a_refusal_nobody_made_is_quiet_and_one_line() {
     let mut a = app();
@@ -376,26 +336,16 @@ fn a_refusal_nobody_made_is_quiet_and_one_line() {
     assert!(!l.contains('!'), "still shouting: {l}");
 }
 
-/// **A program that dies at once leaves its sentence and its status, and they stay.**
-///
-/// The operator's defect, in their words: *"i typed `!term mc`, it flashed and was gone"*.
-/// The pane was taken, one sentence was posted as a **notice** — which lives for
-/// `NOTICE_MS` of wall time — and what the program had printed went with the rectangle. A
-/// person who looked a minute later, or who came back to the session, saw nothing at all.
-///
-/// So the assertion is on the **frame**, not on a notice: the row is still there when the
-/// notice is cleared, it names the line that ran, the daemon's own sentence with the exit
-/// status in it, and the last thing the program printed.
+/// A program that dies at once leaves its sentence and its status, and they stay: the pane was taken and one
+/// sentence posted as a notice, which lives for `NOTICE_MS`, so what the program printed went with the rectangle.
 #[test]
 fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
     let mut a = app();
     a.session_id = "s".into();
     a.head_id = "h1".into();
     a.clock(1_000);
-    // **One frame before the key**, because a pane's rectangle is the *last frame's* —
-    // `App::submit` says so, and it is what a head that has drawn anything always has. A
-    // test that opened a pane before drawing would be asking a 1×1 screen what the program
-    // left on it.
+    // One frame before the key, because a pane's rectangle is the last frame's: a test that opened a pane before
+    // drawing would be asking a 1x1 screen what the program left on it.
     let _ = a.screen(80, 24);
     pane(&mut a, b"mc: not found\r\n");
     a.apply(ServerFrame::TermEnded {
@@ -450,34 +400,8 @@ fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
     );
 }
 
-/// **R10: a note the operator has read can be retired, and it stays retired.**
-///
-/// Four things, and they are one behaviour. A note is a **disclosure, not a
-/// permanent record**: the session log holds the durable fact and the note is how a
-/// head shows it once, so a reader must be able to retire one they have read. A
-/// retired note must **stay** retired across a resync, a reattach and a **restart** —
-/// a snapshot replanting what somebody just dismissed is the same defect as never
-/// letting them dismiss it. And it must not **drop** the fact: hidden, counted and
-/// findable, which is the rule `/status`'s own `filtered` counter already keeps.
-///
-/// **R19 moved the two halves of this test, and made the second of them harder.** The
-/// note is filed **live** here, because a note that arrives with a snapshot is no
-/// longer planted at all — so what has to be proved about the *resync* is now that a
-/// retired note is not drawn, and what has to be proved about the *restart* is that a
-/// retirement loaded from `head.toml` beats a **live** delivery, which is the one case
-/// where nothing else would stop it. (The operator's own wall had none of this
-/// retired: fault 1 is why it was up.)
-/// **R22: clearing your own screen costs one key, and it keeps every rule R10 bought.**
-///
-/// The operator, on being told how to hide a note: *"typing `/notes dismiss all` is not
-/// humane."* So the reflex is a chord — `ctrl-n` — and this test is the whole of what it
-/// must not break: **retired is not deleted.** The notes stay, `/notes` prints them,
-/// `/status` counts them, `/notes restore` brings them back, and the reflex survives a
-/// restart (R19 part 3) so it does not have to be repeated.
-///
-/// The agreement with the other head is in `head-parity-2026-09-21.md` §R22 and is
-/// asserted here as behaviour rather than restated: **all of them, not the newest**, and
-/// the empty press says so.
+/// A note the person has read can be retired and stays retired: a note is a disclosure and not a permanent record,
+/// since the log holds the durable fact, and a retired note must stay retired across a resync and a restart.
 #[test]
 fn ctrl_n_retires_every_note_and_keeps_every_note() {
     let hub = Hub::new("s");
@@ -525,13 +449,8 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
             "`{code}` survived the press:\n{after}"
         );
     }
-    // **And it says what it did, in the VERB's own words** — because it calls the verb
-    // rather than composing a second sentence. That is the property worth asserting here:
-    // a chord with its own wording is a chord that can come to disagree with `/notes
-    // dismiss all` about what just happened. `(not saved: ...)` is in this frame because
-    // this test's head has no `head.toml`; that suffix is the same writer's too.
-    // In the status row, after the turn's clock, cut to the room it has there — and whole in the
-    // notice a click opens.
+    // And it says what it did in the verb's own words, because it calls the verb rather than composing a second
+    // sentence: a chord with its own wording can come to disagree with `/notes dismiss all` about what happened.
     assert!(after.contains("retired 4 note(s)"), "{after}");
     let notice = a.notice.clone().unwrap_or_default();
     assert!(notice.contains("still counted on /status"), "{notice}");
@@ -620,16 +539,9 @@ fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **`ctrl-n` is a watermark, not a hide** — R22's second face, in the operator's words:
-/// *"i do ctrl-n to hide but the very next time model_endpoint_retry happens im presented with
-/// the wall of all endpoint_retry notices ever happened since the head or harnessd start"*.
-///
-/// The wall he cleared comes back because a key set is a statement about COPIES: it hides the
-/// ones whose identity it holds, and the source it hides them from — the head's `notes` and the
-/// daemon's retained warnings behind them — is never trimmed. So this asserts the three things
-/// a mark has that a set does not: the next notice arrives ALONE, a re-render in between does
-/// not resurrect the three, and the mark is a value compared at every draw rather than a list
-/// that a rebuild can lose.
+/// `ctrl-n` is a watermark and not a hide: a key set is a statement about copies, so a re-said retry or a
+/// re-scrubbed replay is a different key and the wall comes back. The mark says *I have read everything up to
+/// here*, per kind.
 #[test]
 fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
     let hub = Hub::new("s");
@@ -731,13 +643,8 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
     );
 }
 
-/// **A kind the watermark never covered is not swallowed by it** — the hazard of a mark, and
-/// the reason the mark is per kind rather than one line across the whole list.
-///
-/// A single *read up to here* over every notice would hide the first of a kind this reader has
-/// never seen, because it happened before the mark. A mark per code has no row for a code it
-/// has never read, so nothing of that kind can be older than it — and this is the assertion
-/// that keeps it true.
+/// A kind the watermark never covered is not swallowed by it, which is why the mark is per kind: one read-up-to
+/// across the whole list would hide the first of a kind this reader has never seen.
 #[test]
 fn a_notice_of_a_kind_the_watermark_never_covered_is_drawn() {
     let hub = Hub::new("s");
@@ -788,14 +695,8 @@ fn a_notice_of_a_kind_the_watermark_never_covered_is_drawn() {
     );
 }
 
-/// **The same incident, said again in other words, is not news** — the half a key set cannot
-/// do, and the half that makes the wall come back.
-///
-/// `note_key` is `(code, ts, hash(detail))`, so a copy whose words differ is a different key:
-/// a re-scrubbed replay, a `[fallback]` re-worded on the way past, a snapshot's re-plant of a
-/// notice whose text was rewritten. Each is drawn again by a hide, and by the thousand is
-/// exactly the wall the operator described. A mark answers *I have read this kind up to here*
-/// instead, so the words stop mattering.
+/// The same incident said again in other words is not news, which is the half a key set cannot do: `note_key` is
+/// `(code, ts, hash(detail))`, so a copy whose words differ is a different key and the wall comes back.
 #[test]
 fn a_notice_of_a_kind_the_reader_has_read_past_is_not_news_in_other_words() {
     let hub = Hub::new("s");
@@ -861,13 +762,8 @@ fn a_notice_of_a_kind_the_reader_has_read_past_is_not_news_in_other_words() {
     );
 }
 
-/// **The mark outlives the key set being reloaded from the file** — the one moment the two
-/// records can disagree, because `head.toml` cannot hold a mark.
-///
-/// `refresh_retired` replaces `dismissed` with the file's list, and a key this head added from
-/// the MARK rather than from a press is not in that file. Without the re-application the wall
-/// would come back on the next draw, and the reader would be told by `/notes` that everything
-/// was retired while the screen said otherwise.
+/// The mark outlives the key set being reloaded from the file, the one moment the two records can disagree:
+/// `refresh_retired` replaces `dismissed` with the file's list, and a key the mark added is not in that file.
 #[test]
 fn the_watermark_survives_the_key_set_being_reloaded_from_the_file() {
     let hub = Hub::new("s");
@@ -913,13 +809,8 @@ fn the_watermark_survives_the_key_set_being_reloaded_from_the_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A kind with no clock is never watermarked** — the guard against a mark becoming a mute by
-/// accident.
-///
-/// `unreadable_frame` and `log_gap` happen on the socket rather than on the session's log, so
-/// their `ts` is `0` and two of them cannot be ordered. A mark of `0` would hide the second one
-/// for ever, so a note with no clock is left to the key set — which is the right instrument for
-/// a copy that has an identity and no time.
+/// A kind with no clock is never watermarked: `unreadable_frame` and `log_gap` happen on the socket, so `ts` is 0
+/// and two of them cannot be ordered, and a mark of 0 would hide the second for ever.
 #[test]
 fn a_note_with_no_clock_is_never_hidden_by_a_watermark() {
     let hub = Hub::new("s");
@@ -967,10 +858,8 @@ fn a_note_with_no_clock_is_never_hidden_by_a_watermark() {
 fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     let hub = Hub::new("s");
     hub.publish(testing::turn_started("t1"));
-    // **The snapshot from before the incident**, which is what the restarted head gets:
-    // a head that attached and *then* watched it happen. Taken here rather than inside
-    // the restart block below, because by then the hub carries the warning and a head
-    // whose snapshot already holds it would not be the live case at all.
+    // The snapshot from before the incident, which is what the restarted head gets. Taken here rather than inside
+    // the restart block, since by then the hub carries the warning and the snapshot would hold it already.
     let clean = hub.snapshot();
 
     let mut a = app();
@@ -1000,10 +889,8 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     );
     assert!(!hidden.contains("nobody answered"), "{hidden}");
 
-    // **Hidden is not deleted.** The note is still this head's, `/status` counts it,
-    // and `/notes` lists it with its text under a marker — the rule `/status`'s own
-    // `filtered` counter keeps, which is what makes "I chose not to show this" a
-    // different statement from "nothing happened".
+    // Hidden is not deleted: the note is still this head's, `/status` counts it, and `/notes` lists it with its text
+    // under a marker, which makes *I chose not to show this* a different statement from *nothing happened*.
     assert_eq!(a.notes.len(), 1, "the note was dropped, not retired");
     assert_eq!(a.retired_notes(), 1);
     a.command("status");
@@ -1017,12 +904,9 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     assert!(listed.contains("[retired]"), "{listed}");
     a.key(Key::Esc);
 
-    // **The two things that used to replant it.** A resync replaces the head's whole
-    // note list from a snapshot — *everything in a snapshot is history and none of it
-    // is anchored* — so before R10 the wall came back at position 0, above the whole
-    // conversation, on an operation the operator did not ask for. The identity is
-    // built from the log (code, ts, detail) and not from the screen, so the snapshot's
-    // copy is the same key and stays retired.
+    // The two things that used to replant it: a resync replaces the head's whole note list from a snapshot, so
+    // before R10 the wall came back at position 0 above the whole conversation. The identity is built from the
+    // note, so a copy does not come back.
     let key = note_key(&a.notes[0].1);
     a.apply(ServerFrame::Resync {
         reason: "queue overflow".into(),
@@ -1043,13 +927,8 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
         "a reattach replanted it"
     );
 
-    // **The restart, and the half R19 made harder.** The dismissals live in
-    // `head.toml` and not in the process, and a head that has just started has shown
-    // nothing — so the incident is delivered to `b` **live**, at a seam, which is the
-    // one delivery nothing else would suppress: a snapshot's copy is not drawn for being
-    // prior, and a redelivery is not filed twice. What stops it here is the retirement
-    // this head read off the file, against the same `clean` snapshot (no warning in it)
-    // that `a` attached to.
+    // The restart, and the half R19 made harder: the dismissals live in `head.toml` and not in the process, and a
+    // head that has just started has shown nothing, so the incident is delivered live, at a seam.
     let dir = std::env::temp_dir().join(format!("letibot-notes-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("head.toml");
@@ -1084,10 +963,8 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     b.key(Key::Enter);
     let back = b.screen(100, 30).join("\n");
     assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
-    // **And the FILE, which this test used to skip.** Restoring on the screen while the
-    // file kept the key is the defect leticl reported: the two disagreed and the next
-    // save by any head put the dismissal back, so `restore` lasted until somebody else
-    // saved. Asserted here because the screen alone could not tell the two apart.
+    // And the file, which this test used to skip: restoring on the screen while the file kept the key is the
+    // defect, since the next save by any head put the dismissal back, so restore lasted until somebody else saved.
     let (p, _) = crate::prefs::load(&path);
     assert!(
         !p.retired.iter().any(|k| k == &key),
@@ -1097,14 +974,8 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A dismissal unions; a restore replaces** — leticl's report, as a test.
-///
-/// leticl found this rather than fixing it, and the shape of the fault is worth keeping:
-/// a union can only ever ADD a key, so under a union a restore's save wrote the file's own
-/// keys straight back, the head's `dismissed` went to `[]` while the file kept the key, and
-/// the two disagreed — which is the SAME class of fault `merge_retired` was written to end,
-/// arriving from the other direction. A restore is an assertion of removal, and only a
-/// replacement can say it.
+/// A dismissal unions and a restore replaces: a union can only add a key, so under a union a restore's save wrote
+/// the file's own keys straight back and the head's `dismissed` went to empty while the file kept the key.
 #[test]
 fn a_restore_replaces_the_files_set_and_a_dismissal_unions_with_it() {
     let dir = std::env::temp_dir().join(format!("letibot-restore-{}", std::process::id()));
@@ -1153,17 +1024,8 @@ fn a_restore_replaces_the_files_set_and_a_dismissal_unions_with_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The operator's own state, reproduced from the measurement rather than guessed.**
-///
-/// 2026-09-22, on his screen: `/notes` said `7 note(s), 1 retired` and only one entry
-/// carried `[retired]`, while `head.toml` held keys for the notes that were listed.
-/// `cargo run --example dump_notes` put the two lists side by side against the live log
-/// and found six of the seven keys **identical — code, clock and detail hash** — so the
-/// file and the log agreed, and the odd one out was the head's own `dismissed`.
-///
-/// The six facts below are the real ones: the real clock and the real sentence, each
-/// asserted against the key `head.toml` actually held. A transcription slip fails here
-/// rather than passing quietly as a different incident.
+/// The person's own state, reproduced from the measurement rather than guessed: `/notes` said `7 note(s), 1
+/// retired` while only one entry carried `[retired]` and `head.toml` held keys for the notes that were listed.
 #[test]
 fn the_head_retires_every_note_the_file_it_wrote_says_it_retired() {
     let facts: [(&str, u64, &str); 6] = [
@@ -1267,17 +1129,8 @@ fn the_head_retires_every_note_the_file_it_wrote_says_it_retired() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A dismissal a SECOND head made is honoured by this one, without a restart.**
-///
-/// The operator's report of 2026-09-22 — *"i dismissed letibot notes but they stay"*
-/// — and the half of it that a shared file makes possible. `~/.config/letibot/head.toml`
-/// is one file for every head on the box, and `load_prefs` runs **once, at startup**:
-/// two heads were running (measured: pids 2076943 and 2350959), so what one of them
-/// retired after the other had loaded was invisible to it for the rest of its life.
-///
-/// The path here is the operator's exactly: `a` loads the file, *then* the file gains a
-/// key, and `a` is asked for the listing. Before `refresh_retired` the note was still on
-/// the screen; the assertion is that it is not.
+/// A dismissal a second head made is honoured by this one without a restart: `head.toml` is one file for every
+/// head on the box and `load_prefs` runs once at startup, so a head up for hours saw only its own presses.
 #[test]
 fn a_dismissal_recorded_after_this_head_loaded_is_honoured_anyway() {
     let dir = std::env::temp_dir().join(format!("letibot-shared-{}", std::process::id()));
@@ -1342,20 +1195,8 @@ fn a_dismissal_recorded_after_this_head_loaded_is_honoured_anyway() {
     );
 }
 
-/// **R19's first fault: history arrives as news.**
-///
-/// The operator restarted a head and was met by twelve red lines — four notes,
-/// `daemon_stopping`, `compacted` and two `auto_compact`, folded correctly to three
-/// lines each, at the top of a session that had just started: *"i dont want to see
-/// that on restart."* **None of them had been dismissed**, which is why persisting a
-/// retired set would not have helped. A head that has just attached has shown nothing,
-/// so it was replaying hours of announcements as though they had just happened, above
-/// a conversation they did not precede: *a warning is how a head shows a fact ONCE.*
-///
-/// Four assertions and a control: the screen has none of them; the head still holds
-/// them; `/status` counts them; `/notes` lists them with their text; and a warning
-/// that arrives **while the head is watching** is still drawn, because that is what a
-/// note is for.
+/// R19's first fault: history arrives as news. A restarted head was met by twelve red lines at the top of a
+/// session that had just started, and none of them had been dismissed because none had been shown.
 #[test]
 fn a_fresh_attach_shows_the_conversation_and_not_what_came_before_it() {
     let hub = Hub::new("s");
@@ -1435,17 +1276,8 @@ fn a_fresh_attach_shows_the_conversation_and_not_what_came_before_it() {
     assert_eq!(a.notes_before(), 3, "only the snapshot's three are prior");
 }
 
-/// **R19's second fault: routine is painted as failure.**
-///
-/// `compacted` and `auto_compact` are the session doing exactly what it should, and
-/// they arrived in the same red as a denial or a gate timeout — *the colour asserted a
-/// severity the fact did not have*, which is why four notes read as a wall. **A
-/// housekeeping notice and a refused call must not look alike.**
-///
-/// Asserted on the bytes rather than the look, and on both registers in one frame: a
-/// routine code loses the `!` and the red, a failure keeps both. The split itself is
-/// `letibot_sessionlog::warning`'s (the codes are the log's vocabulary and both heads
-/// render them), so what this test pins is what *this* head does with it.
+/// R19's second fault: routine is painted as failure. `compacted` and `auto_compact` are the session doing what
+/// it should, and they arrived in the same red as a denial, so four notes read as a wall.
 #[test]
 fn a_routine_notice_is_not_drawn_in_the_failure_register() {
     const RED: &str = "\u{1b}[31m";
@@ -1500,11 +1332,8 @@ fn a_routine_notice_is_not_drawn_in_the_failure_register() {
     );
 }
 
-/// The border is not silent about a counter that has **moved**.
-///
-/// The half of §13.2b that does belong on a resident row: a head that dropped
-/// events is a head whose transcript has a hole in it, and that must not wait
-/// for somebody to type a command.
+/// The border is not silent about a counter that has moved: a head that dropped events has a hole in its
+/// transcript, and that must not wait for somebody to type a command.
 #[test]
 fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
     let hub = Hub::new("s");
@@ -1537,26 +1366,16 @@ fn a_counter_that_has_moved_reaches_the_border_and_a_zero_one_does_not() {
     );
     // …where they keep their names and their counts.
     a.command("status");
-    // **A taller window, because the panel is taller now.** MEASURED while landing this
-    // (2026-10-05): the `filtered` row's gloss names the profile the head is on, so several
-    // rows gained a line of wrap and the counters below `dropped` sit past a 40-row screen —
-    // the `resync` row is still on the panel (it is the tenth row of `status_lines`), it was
-    // simply under the fold. The subject of this assertion is the row, so it is given room
-    // to be drawn rather than asked for off-screen.
+    // A taller window, because the panel is taller now: a gloss names the profile the head is on, so several rows
+    // gained a line of wrap and the counters below `dropped` sit past a 40-row screen.
     let stats = a.screen(120, 60).join("\n");
     let dropped_row = stats
         .lines()
         .find(|l| l.contains("dropped"))
         .expect("the dropped row is on the /status screen");
     assert!(dropped_row.contains("12"), "{dropped_row}");
-    // **The panel's own row, not the notice line** — MEASURED while landing this
-    // (2026-10-05). At HEAD the resync notice is live but NOT on this screen: the composer's
-    // height ladder deletes the most expendable row first, and at 24 rows the notice is the
-    // one that goes. This rewrite's row budget is one row larger, so the notice now fits on
-    // the screen (`  · resync: queue overflow`) and `find(|l| l.contains("resync"))` — which
-    // this test used to do — hit THAT line instead of the counter row it means to assert.
-    // The assertion's subject is the counter, so it looks for the row's own shape: the panel
-    // indents its rows, and the number follows the label.
+    // The panel's own row and not the notice line: the composer's height ladder deletes the most expendable row
+    // first, and at 24 rows the notice is the one that goes.
     let resync_row = stats
         .lines()
         .find(|l| {
@@ -1635,14 +1454,9 @@ fn acknowledging_a_counter_silences_it_only_up_to_the_value_that_was_seen() {
     );
 }
 
-/// **A frame this head cannot read is said, counted, and not fatal.**
-///
-/// Requirement R3, and the two failures it sits between: a head that exits on an
-/// unparseable frame takes the session down and says nothing, and a head that steps
-/// over one in silence is the same failure more quietly — *"this daemon is sending
-/// me something I do not understand"* becomes indistinguishable from quiet. So:
-/// the sentence is in the transcript, the counter moves, `/status` has the bucket
-/// at zero **and** after, and nothing about it touches the read mark.
+/// A frame this head cannot read is said, counted and not fatal: a head that exits takes the session down and
+/// says nothing, and one that steps over it in silence leaves *this daemon is sending me something I do not
+/// understand* indistinguishable from quiet.
 #[test]
 fn an_unreadable_frame_is_said_counted_and_survived() {
     let mut a = app();
@@ -1655,10 +1469,8 @@ fn an_unreadable_frame_is_said_counted_and_survived() {
     // and a zero field must not look the same, and a head that does not count
     // these at all is what every head was until now.
     a.command("status");
-    // **Taller than 40 rows on purpose.** `/status` is a scrolling pane, and R10
-    // added a row to it (the notes the reader has retired) — so a test that asserts
-    // a row is *on the screen* has to give the pane room for all of them rather than
-    // depend on where the list happens to end.
+    // Taller than 40 rows on purpose: `/status` is a scrolling pane and it gained a row, so a test asserting a row
+    // is on the screen has to give the pane room for all of them.
     let zero = a.screen(120, 120).join("\n");
     let row = zero
         .lines()
@@ -1712,10 +1524,8 @@ fn an_unreadable_frame_is_said_counted_and_survived() {
     assert!(border.contains("unreadable 2"), "{border}");
     assert!(border.contains("/status"), "{border}");
     a.command("status");
-    // **Taller than a screen, for the reason stated above.** `/status` is a scrolling pane
-    // and it has gained a row since this test was written (R10's retired notes, then the
-    // unfilled-rows row); a test asserting a row is on the screen has to give the pane room
-    // for all of them rather than depend on where the list happens to end.
+    // Taller than a screen for the same reason: `/status` is a scrolling pane and it has gained rows since this
+    // test was written, so the pane needs room for all of them.
     let stats = a.screen(120, 140).join("\n");
     let unreadable_rows: Vec<&str> = stats.lines().filter(|l| l.contains("unreadable")).collect();
     assert!(
@@ -1724,18 +1534,9 @@ fn an_unreadable_frame_is_said_counted_and_survived() {
     );
 }
 
-/// **A head that outlives its daemon notices, says so, and re-asks.**
-///
-/// The operator's box: three `letibot-tui` processes alive (ages 15d, 1d18h, 21h) while the
-/// daemon was replaced this afternoon. A head outlives the daemon that gave it its facts, and
-/// the registry is in memory — so a daemon that comes back is not the one whose answers are
-/// still on the screen. The head went on drawing them without ever saying the party it was
-/// talking to had changed.
-///
-/// **The identity is `SO_PEERCRED` and the protocol**, which is what the head has: the pid is
-/// the kernel's answer for *this socket*, re-read by the caller on every connection, and the
-/// version rides the `Hello`. Both halves are asserted, because either alone can be wrong —
-/// a pid is reused, and a rebuild that keeps its number is still a different daemon.
+/// A head that outlives its daemon notices, says so and re-asks: three heads were alive with ages in days while
+/// the daemon had been replaced hours before, and the registry is in memory, so a daemon that comes back is not the
+/// one whose answers are on the screen.
 #[test]
 fn a_replaced_daemon_is_noticed_said_and_re_asked() {
     let hub = Hub::new("s");
@@ -1862,13 +1663,9 @@ fn a_replacement_between_two_unnamed_peers_says_so_rather_than_inventing_a_pid()
     assert!(!said.contains("pid 0"), "a zero is not a pid: {said}");
 }
 
-/// **R6: a named fill's line is the daemon's count, not a count of unfilled rows.**
-///
-/// The whole of the ruling: an indicator must be the fact, not a rendering of the
-/// fact. Counting the rows still lacking a body would (a) name the wrong operation —
-/// an ordinary reply is not an import (see `MIN_FILLING`) — and (b) draw *"never
-/// filled in"* three seconds into a healthy generation. So the daemon names the
-/// operation and counts it, and the head draws exactly that.
+/// A named fill's line is the daemon's count and not a count of unfilled rows: counting the rows still lacking a
+/// body names the wrong operation, since an ordinary reply is not an import, and draws a number that is a
+/// rendering of the fact rather than the fact.
 #[test]
 fn an_import_draws_the_importers_own_counter_and_clears_when_it_is_done() {
     let mut a = app();
@@ -1907,10 +1704,8 @@ fn an_import_draws_the_importers_own_counter_and_clears_when_it_is_done() {
     );
 }
 
-/// **The file is edited while the pane is open**, which is the one case an
-/// open-time read cannot see. The operator: *"since the file can be updated,
-/// dont cache it i guess or do a watcher with a nice syscall"*. One `stat`
-/// per draw, not a watcher thread.
+/// The file is edited while the pane is open, which is the one case an open-time read cannot see: one `stat` per
+/// draw and not a watcher thread, which would need a descriptor and a way into a head built around one loop.
 #[test]
 fn the_pane_notices_the_file_changing_under_it() {
     let dir = std::env::temp_dir().join(format!(
@@ -1977,11 +1772,9 @@ fn a_notice_does_not_outlive_its_welcome_or_hide_the_input() {
         note: "stale expected_seq: queued anyway as a follow-up user item".into(),
     });
     assert!(a.screen(80, 12).join("\n").contains("queued anyway"));
-    // **Frames do not age it** (§11.3). Two hundred repaints at the same millisecond
-    // leave the sentence exactly where it was — which is the whole point of moving the
-    // clock off the frame and onto the wall: a notice's lifetime was 60 loop passes,
-    // which is 6 s on a busy head, instant under `--replay`, and for ever on one whose
-    // counter had already reached zero.
+    // Frames do not age it: two hundred repaints at the same millisecond leave the sentence where it was, which is
+    // the point of moving the clock onto the wall. As a count of loop passes it was 6 s on a busy head and forever
+    // on one that went quiet.
     for _ in 0..200 {
         a.screen(80, 12);
     }
@@ -2047,18 +1840,8 @@ fn a_notice_expires_in_time_and_not_in_frames() {
     );
 }
 
-/// **A fleeting notice goes when its time is up, and a failure's does not.**
-///
-/// The operator's report, in their words: *"also merge_queued notification sticks and jumps
-/// slightly up when you actively reply and then bottom - hide it to near triangle with the
-/// current queue stats … do it after time, say 30 seconds"*. So the row is drawn for
-/// [`FLEETING_MS`] of wall time and then taken down — while `merge_not_queued`, its failure
-/// twin (the same door's other verdict: a branch nothing will land), is not on a timer at all.
-///
-/// **The clock is the head's own and the unit is the wall**, which is `NOTICE_MS`'s test one
-/// register over: 200 repaints at one millisecond age nothing, a millisecond before the
-/// deadline the row is still there, and the millisecond it is due it is gone. A timer counted
-/// in frames is a timer that stops when the frames stop.
+/// A fleeting notice goes when its time is up and a failure's does not: the row is drawn for a duration, so a
+/// queue's standings do not stick and jump as replies arrive, and a failure stays until it is retired.
 #[test]
 fn a_fleeting_notice_goes_after_its_time_and_a_failure_does_not() {
     let mut a = app();
@@ -2132,21 +1915,9 @@ fn a_fleeting_notice_goes_after_its_time_and_a_failure_does_not() {
     );
 }
 
-/// **One announcement is noted once, wherever it arrives from.**
-///
-/// A `Warning` can reach a head twice: `adopt` plants everything the snapshot
-/// carries at anchor 0, and the live arm anchors at the CURRENT end of the
-/// transcript. Two copies in two places — and the second sits under the
-/// conversation, so new rows arrive beneath it and it reads as stuck to the
-/// bottom. The operator, on three of them: *"sometimes new messages come
-/// under those three but then those three again pinned to the bottom,
-/// sometimes they just stay pinned"*.
-///
-/// The `ts` is taken from the snapshot rather than invented, and that is the
-/// premise, not a detail. The view stamps `env.ts` and so does the live arm,
-/// so the same announcement carries the same one by either route — a test
-/// that made one up would be feeding the head a DIFFERENT warning and would
-/// pass against a head that deduplicates nothing.
+/// One announcement is noted once, wherever it arrives from: `adopt` plants what the snapshot carries at anchor 0
+/// and the live arm anchors at the current end, so the same `Warning` reached a head twice and the second copy
+/// read as pinned under the conversation.
 #[test]
 fn one_warning_delivered_twice_is_noted_once() {
     let hub = letibot_sessionlog::hub::Hub::new("s");
@@ -2209,11 +1980,8 @@ fn one_warning_delivered_twice_is_noted_once() {
         "one announcement, one note: {:?}",
         a.notes
     );
-    // **One announcement, one note, and it stays where it arrived** (R19). It
-    // arrived in the snapshot, so it is not a seam of this conversation — the head was
-    // not there — and the redelivery of the same envelope does not move it to a seam
-    // at the end of the transcript, which would be the same fact drawn twice and in
-    // the wrong place.
+    // One announcement, one note, and it stays where it arrived: it came in the snapshot, so it is not a seam of
+    // this conversation, and a redelivery does not move it to a seam at the end of the transcript.
     let (place, _) = a
         .notes
         .iter()
@@ -2271,21 +2039,9 @@ fn a_failed_turn_stops_the_spinner_instead_of_being_a_warning_and_a_hang() {
     );
 }
 
-/// **The ruling itself, driven end to end: the diagnostic moves to the edge and does not
-/// stop existing.**
-///
-/// The operator, on `model_slow_first_byte`: *"it is important diagnostics - we have a
-/// yellow triangle for that. both heads should not emit it inside conversation."* Both
-/// halves have to hold at once, and either alone is a defect this tree has already paid
-/// for: **kept and drawn as a row** is the wall they are reading, and **kept and drawn
-/// nowhere** is a disclosure that has been deleted rather than moved.
-///
-/// So this drives the event and asserts the four things that have to be true together —
-/// the arm's `Filtered` rather than `Rendered`, the sentence absent from the screen, the
-/// counter moved, the triangle up, and the number named on `/status` — plus the control
-/// that keeps them from being satisfied by a head that swallows every warning it is sent.
-/// The arm's docstring is the argument; this is the assertion, because a docstring over
-/// an arm nothing tests is exactly the shape R53 §1.2 found in this file.
+/// The diagnostic moves to the edge and does not stop existing: `model_slow_first_byte` is worth a yellow
+/// triangle and not a row in the conversation, and both halves have to hold at once, since either alone is a
+/// defect.
 #[test]
 fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
     let mut a = App::new(plain_cfg(80));
@@ -2302,10 +2058,8 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
                 compaction: None,
             },
         ))),
-        // **`Filtered`, not `Control` and not `Rendered`.** It is an event in the record —
-        // it is read, and it is counted in the number that says what this head chose not to
-        // show — and it is not a row. The arm's own comment argues it; `Control` would be
-        // the third thing, and a frame this head is given is not a frame it is not given.
+        // `Filtered` and not `Control` or `Rendered`: it is an event in the record, read and counted in the number
+        // that says what this head chose not to show, and it is not a row.
         Disposition::Filtered,
         "an edge-bound note is read and not drawn, and it is counted as filtered"
     );
@@ -2399,17 +2153,8 @@ fn ctrl_o_tells_a_generating_model_apart_from_an_idle_session() {
     assert!(said.contains("no command running"), "{said}");
 }
 
-/// **The no-progress guard's warning leaves a RESIDENT state, not a note.**
-///
-/// The guard's finding is true until the session is replaced or the window is
-/// raised, and the warning that announced it scrolls away with the
-/// conversation — which is exactly where the 2026-10-09 wedge left it: one
-/// warning line, scrolled past, and thirty provider refusals behind a session
-/// that would not tidy itself and could not say why. The line above the
-/// composer is what a person looks at on the way to typing; `/status` is the
-/// whole-set read; and the sentence keeps the two doors apart, because the
-/// daemon's recovery now does: pre-emptive tidying is off, a refused turn is
-/// still compacted.
+/// The no-progress guard's warning leaves a resident state and not a note: the finding is true until the session
+/// is replaced or the window raised, and the warning that announced it scrolls away with the conversation.
 #[test]
 fn the_no_progress_warning_leaves_a_resident_line_and_a_status_row() {
     let hub = Hub::new("s");
@@ -2449,13 +2194,8 @@ fn the_no_progress_warning_leaves_a_resident_line_and_a_status_row() {
     );
 }
 
-/// **The sentence a fold writes into `compacted`** — the daemon's own words, from
-/// `sessions::compaction_said`, on the path where nobody watched the summary turn being
-/// written: the whole record is pasted into the detail.
-///
-/// This is the text the operator was looking at. It is not a transcription slip: the format
-/// strings are `compaction_said`'s, and the record under them is what the model reads in place
-/// of everything before it.
+/// The sentence a fold writes into `compacted`: the daemon's own words from `sessions::compaction_said`, on the
+/// path where nobody watched the summary turn being written, with the whole record pasted into the detail.
 fn a_compacted_said() -> String {
     format!(
         "compacted: 958397 → 100005 tokens, on transcript s#t25. Nothing of the summary turn \
@@ -2465,18 +2205,8 @@ fn a_compacted_said() -> String {
     )
 }
 
-/// **A compaction is ONE line in the rungs that show the conversation alone.**
-///
-/// The operator: *"compaction leads to too much noise in the conversation for me. in
-/// conversation and show edits i want a one line - compacted blablabla"*. The two rungs he
-/// named are `conversation` and `read-edits` — `Conversation`'s set with and without the
-/// `Edits` flag — and the wall in both of them is the `compacted` warning, whose detail carries
-/// the model's whole record on the fold path.
-///
-/// **The row the daemon appends for the fork is not what he is seeing**, and that is the thing
-/// this test pins rather than assumes: the fork's `System` item is `Conversation`'s own
-/// counter-example — *nothing the head did to produce them* — so the rung hides it, and what
-/// reaches the glass is the warning. Both halves are asserted below.
+/// A compaction is one line in the rungs that show the conversation alone: `conversation` and `read-edits` drew a
+/// wall of noise for it, and the operator asked for one line that says what happened.
 #[test]
 fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
     for profile in [Profile::CONVERSATION, Profile::READ_EDITS] {
@@ -2540,14 +2270,8 @@ fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
     }
 }
 
-/// **The fold is a property of the note and not of a rung**, and the fork's own row does not
-/// vanish above them.
-///
-/// Two absences must not look like one. A rung-gated fold would make the ladder a revision —
-/// `Verbosity::Loud`'s docstring: *"a rung that hid one would retroactively erase a warning
-/// already read"* — so the compaction is one line at `loud` too; and the `System` row the fork
-/// appends is drawn there as it always was, whole, because `loud` is the rung that draws what
-/// the head was given.
+/// The fold is a property of the note and not of a rung, and the fork's own row does not vanish above them: a
+/// rung-gated fold would retroactively erase a warning already read, so the compaction is one line at every rung.
 #[test]
 fn a_compaction_is_one_line_at_every_rung_and_the_forks_row_still_draws() {
     let mut a = app();
@@ -2604,12 +2328,8 @@ fn a_compaction_is_one_line_at_every_rung_and_the_forks_row_still_draws() {
     );
 }
 
-/// **A warning in the same window still draws, whole.**
-///
-/// The fold's whole risk is the one `warning.rs` names: a head that folds a warning too
-/// eagerly is a head whose failures nobody reads. A compaction is folded; a chain mismatch
-/// beside it is not, and the two are asserted on one screen because that is the comparison a
-/// reader makes.
+/// A warning in the same window still draws, whole: a head that folds a warning too eagerly is a head whose
+/// failures nobody reads, so a compaction is folded and a chain mismatch beside it is not, on one screen.
 #[test]
 fn a_warning_beside_a_compaction_still_draws_whole() {
     let mut a = app();
@@ -2661,25 +2381,8 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
     );
 }
 
-/// **The stale-prefix notice lands where the operator already looks.**
-///
-/// The daemon's half is `Harness::open`'s (and `harnessd`'s `prefix_fingerprint.rs`
-/// asserts it); this is the half that decides whether anybody ever reads it. The
-/// sentence goes out as an ordinary `SessionEvent::Warning` — the daemon publishes it on
-/// the session's own log from `Harness::open`, which is the channel a head is handed live
-/// or in its snapshot — so the whole of this head's obligation is that the code is
-/// classified and drawn as a note row like every other warning.
-///
-/// **The MARK is the register's, and the register is `Routine`.** The operator asked for
-/// this notice *"where they already look — the `!` warning lines"*, and the note rows are
-/// where they look; `!` is what those rows carry in the FAILURE register. A stale prefix is
-/// not a session in trouble — the conversation is intact, every tool the prompt declares
-/// still works, and the remedy is a verb the operator has — so it is filed with
-/// `resume_note` and `open_note`, which are the same family of fact: what opening or
-/// resuming did. Painting it `!` would put it in the register with `turn_failed` and
-/// `context_wall`, which is R19's second fault exactly, in the operator's own words about
-/// a routine compaction arriving in a denial's colour. Asserted rather than assumed, so
-/// that moving it is a deliberate edit to two lines and not a drift.
+/// The stale-prefix notice lands where the person already looks: the daemon's half is `Harness::open`'s, and this
+/// is the half that decides whether anybody reads it, as an ordinary warning on the session's own log.
 #[test]
 fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
     let detail = "session s-1789462738453908838 was seated 10-08 21:14 with a prompt this \
@@ -2695,10 +2398,8 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
     let mut a = app();
     a.clock(1_000);
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
-    // **LIVE, not in the snapshot.** R19 stopped planting a note that arrives with a
-    // snapshot, so the delivery that matters here is the one a head attached to a running
-    // session gets — which is exactly how this notice reaches the operator whose session
-    // was resumed a moment before they attached.
+    // It is live and not in the snapshot: R19 stopped planting a note that comes with a snapshot, so the delivery
+    // that matters is the one a head attached to a running session gets.
     let e = hub.publish(SessionEvent::Warning {
         code: "prefix_stale".into(),
         detail: detail.into(),
@@ -2830,19 +2531,8 @@ fn where_at(screen: &[String], needle: &str) -> (u16, u16) {
     panic!("{needle:?} is not on the frame:\n{}", screen.join("\n"));
 }
 
-/// **A notice whose row is not in the window is not drawn** — the wall the operator watched come
-/// back, at the door that drew it.
-///
-/// A tail walk renders the last N rows of a long conversation and skips the rest. `hist_upto` then
-/// stands at the END of the transcript, so every note's seam is *at or before* it — and the walk
-/// drew them all, at the top of the window, in list order, on every rebuild of the tail. That is
-/// the operator's *"when i click on tool calls counter tools expand and all hidden with Ctrl-n
-/// notification are showed up again, then they hide on the next tool call"*: the click, the queued
-/// row and the first thinking count are all rebuilds, and each put the whole list back.
-///
-/// A note whose row is above the window has no seam here, which is the rule R19 already keeps for
-/// `Placed::Before`. It is held, listed by `/notes` and counted on `/status` — hidden is not
-/// deleted.
+/// A notice whose row is not in the window is not drawn, which is the wall coming back at the door that drew it: a
+/// tail walk renders the last N rows and `hist_upto` then stands at the end, so every seam is at or before it.
 #[test]
 fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
     let mut a = app();
@@ -2919,14 +2609,9 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
     );
 }
 
-/// **`ctrl-n`, then the counter's expansion — the notices stay hidden, and they stay hidden the
-/// second time too.**
-///
-/// The click on `[2 tool calls]` is `App::open_marker` → `set_lift`, which throws the rendered
-/// history away and rebuilds it — the strongest re-render the head has. It used to draw the wall
-/// for the reason [`a_notice_whose_row_is_above_the_window_is_not_drawn`] carries. Collapsing and
-/// opening again is a second rebuild of the same kind, and the mark is what has to survive both:
-/// it is a value compared at every draw, not a list a rebuild can lose.
+/// `ctrl-n`, then the counter's expansion: the notices stay hidden and stay hidden the second time. The click
+/// throws the rendered history away and rebuilds it, the strongest re-render the head has, and that used to draw
+/// the wall.
 #[test]
 fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
     let mut a = a_run_with_notices();
@@ -2976,12 +2661,8 @@ fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
     assert_eq!(a.notes.len(), 3, "the notes were dropped, not retired");
 }
 
-/// **`ctrl-n`, then a row is queued** — the operator's *"new thinking also hides the notifications
-/// and just queued thing brought them back"*.
-///
-/// A prompt typed while a turn runs is an echo under the live pane and nothing else: no row is
-/// appended, so nothing about the transcript changed. The notices must not come back, and the mark
-/// must be the same value afterwards.
+/// `ctrl-n`, then a row is queued: a prompt typed while a turn runs is an echo under the live pane and nothing
+/// else, so nothing about the transcript changed and the notices must not come back.
 #[test]
 fn ctrl_n_then_a_queued_row_draws_no_notice() {
     let mut a = a_run_with_notices();
