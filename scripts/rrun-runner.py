@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -46,6 +47,7 @@ def stopped(signum, _frame):
         if st.get("state") in ("running", "waiting"):
             st["state"] = "stopped"
     save()
+    shutil.rmtree(os.path.join(run_dir, "tree"), ignore_errors=True)
     sys.exit(128 + signum)
 
 
@@ -106,3 +108,6 @@ for i, cmd in enumerate(steps):
 status["state"] = "failed" if failed else "passed"
 status["ended"] = int(time.time())
 save()
+# The shared target records build-script triggers as absolute paths into this tree, and a
+# later run in another tree would see them unchanged and skip the rebuild. Gone, they rerun.
+shutil.rmtree(os.path.join(run_dir, "tree"), ignore_errors=True)
