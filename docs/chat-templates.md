@@ -31,8 +31,8 @@ wc -c glm.jinja      # 10648
 | GLM-5.3-Flash | `a4fddbbf0b432101` | 10,648 | `crates/dialect-glm/template/glm-5.3-flash.jinja` |
 
 The two Qwen models ship a **byte-identical** template, so they are one dialect: three target
-models, two templates. `DialectSpec::template_sha` is hashed from the embedded file, so a model
-update that changes the template invalidates the dialect.
+models, two templates. `DialectSpec::template_sha` is hashed from the embedded file, so a
+template change invalidates the dialect.
 
 ## 2. One program, two interpreters
 
@@ -61,21 +61,20 @@ CPython Jinja2 :  <|assistant|><think></think>second answer
 minja          :  <|assistant|><think>LEAK-CANARY…</think>second answer
 ```
 
-The template's author settles which is right: the same file uses `namespace()` seven times, and
-the only reason it exists in Jinja is to make a value survive an iteration. minja is wrong, and
-the consequence for anything talking to llama.cpp with `messages` is that the model is
-conditioned on reasoning it never produced - on every assistant turn that did not itself reason.
+The template's author settles which is right: the same file uses `namespace()` seven times, which
+exists in Jinja to make a value survive an iteration. minja is wrong, and the consequence for
+anything talking to llama.cpp with `messages` is that the model is conditioned on reasoning it
+never produced - on every assistant turn that did not itself reason.
 
-So our authority is `oracle_hf.py` (CPython Jinja2 as `transformers` configures it),
-`/apply-template` is a reporting interop diff, and the gate needs no GPU, no model and no server.
+Our authority is `oracle_hf.py` (CPython Jinja2 as `transformers` configures it), and
+`/apply-template` is a reporting interop diff.
 
 ## 3. Why this connects to the prompt cache
 
 llama.cpp reuses a cached prompt only when the new prompt is a **strict prefix extension** of
 it, so anything that makes turn N's replay differ from what was cached kills the cache from that
 point. The leak above is one such thing and cannot arise here, because we never hand llama.cpp a
-`messages` array. Replaying reasoning as its own message is refuted for opencode, which fuses
-every part of an assistant turn into one `reasoning_content` field on that message
+`messages` array. Replaying reasoning as its own message is refuted for opencode
 (`docs/evidence/opencode-reasoning-2026-09-11.md`).
 
 The gate checks the prefix property at **every prefix boundary**: a renderer that is right about
@@ -83,11 +82,11 @@ a whole conversation and wrong about its third prefix has a cache that never hit
 
 ## 4. The injection problem, and why it decides the shape of the code
 
-After rendering you have one flat string, and the tokenizer has a flag, `parse_special`: **on**
-makes `<|assistant|>` in the text the assistant control token, **off** makes it ordinary
-characters. Neither is right for a whole string - with it on, a user who types `<|assistant|>`
-forges a turn boundary the harness never wrote; with it off, the template's own control tokens
-arrive as literal text and the model sees no turn structure.
+The tokenizer has a flag, `parse_special`: **on** makes `<|assistant|>` in the text the assistant
+control token, **off** makes it ordinary characters. Neither is right for a whole string - with
+it on, a user who types `<|assistant|>` forges a turn boundary the harness never wrote; with it
+off, the template's own control tokens arrive as literal text and the model sees no turn
+structure.
 
 So `RenderSpan` in `crates/dialect` is `Text | Control` rather than a string: `Text` is
 tokenized with `parse_special` **off**, `Control` resolves to an exact id, and neither path can
@@ -95,13 +94,13 @@ produce the other's output.
 
 **Byte equality cannot check it.** In the `adversarial-control-literals` fixture the bytes
 `<|assistant|>` appear four times - twice from the user, twice from the template - so a renderer
-that promoted the user's copy would produce an identical prompt and pass a byte comparison.
+that promoted the user's copy would produce an identical prompt.
 Provenance notices: the gate classifies every output byte as LITERAL (template source) or DATA
 (substituted payload) and fails if any `Control` span covers a DATA byte - 2,033 control spans
-across the corpus today, none from data. The map comes from wrapping the **data**, not the
-template: sentinel characters, stripped back and compared byte for byte, so a template that
-slices or measures the payload voids it and the oracle raises. `tests/fidelity/README.md` §4 has
-the mechanics.
+across the corpus, none from data. The map comes from wrapping the **data**, not the template:
+sentinel characters, stripped back and compared byte for byte, so a template that slices or
+measures the payload voids it and the oracle raises. `tests/fidelity/README.md` §4 has the
+mechanics.
 
 ## 5. Reproducing the training runtime is not free
 
@@ -109,17 +108,14 @@ the mechanics.
 |---|---|
 | `jinja2.ext.loopcontrols` | `unknown tag 'break'` - GLM's template uses `{% break %}` |
 | `trim_blocks=True`, `lstrip_blocks=True` | whitespace differs throughout |
-| a custom `tojson` accepting `ensure_ascii` | `TypeError` - stock Jinja2's `tojson` has no such kwarg; transformers replaces the filter |
+| a custom `tojson` accepting `ensure_ascii` | `TypeError` - stock Jinja2's `tojson` has no such kwarg |
 | `ImmutableSandboxedEnvironment` | works, but is not what transformers runs |
 | `raise_exception`, `strftime_now` globals | templates that call them fail |
 
-"Just use the training runtime" is the right instinct, and still a configuration exercise where a
-wrong guess produces a wrong oracle.
-
 ## 6. Where letibot stands
 
-- The harness renders the prompt itself and submits **token ids** to `/completion`, so minja is
-  not in our runtime path at all.
+- The harness renders and submits **token ids** to `/completion`, so minja is not in our runtime
+  path at all.
 - Two dialects are wired in `crates/harnessd/src/dialect.rs`, each a hand-written renderer: GLM
   (`GlmRenderer`, gated at **139/139** cases against the training runtime) and Qwen3.8
   (`QwenRenderer`, **56/56** on its own corpus with one declared divergence,
