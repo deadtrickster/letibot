@@ -831,3 +831,38 @@ fn a_replayed_decision_does_not_reopen_the_card_it_answered() {
     assert!(a.open.is_empty(), "the answered card did not come back");
     assert_eq!(a.key(Key::Enter), None, "and a second Enter sends nothing");
 }
+
+// ────────── R90.27: a notification names what needs the person, a stale prompt too ──────────
+
+/// The kinds are named for what they are - a permission, a model's question, a todo row's question -
+/// and the reseat card notifies too: it is this head's own, and nothing else says it is waiting.
+#[test]
+fn a_notification_names_what_needs_the_person_including_a_stale_prompt() {
+    let mut a = app();
+    a.set_features(rano::term::Features::ALL);
+    a.take_notification();
+    a.key(Key::FocusOut);
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    let n = a.take_notification().expect("notified");
+    assert!(n.contains("permission needed"), "{n}");
+
+    let mut b = app();
+    b.set_features(rano::term::Features::ALL);
+    b.take_notification();
+    b.key(Key::FocusOut);
+    waiting_board(&mut b);
+    b.key(Key::AltA);
+    let n = b.take_notification().expect("notified");
+    assert!(n.contains("a todo row asks you"), "{n}");
+
+    let mut c = app();
+    c.set_features(rano::term::Features::ALL);
+    c.take_notification();
+    c.key(Key::FocusOut);
+    c.prefix_stale("the prompt of this session was built by another build".into());
+    let n = c.take_notification().expect("the stale prompt notified");
+    assert!(n.contains("the prompt is stale"), "{n}");
+    assert!(n.contains("alt-r reseats"), "{n}");
+    c.prefix_stale("the prompt of this session was built by another build".into());
+    assert_eq!(c.take_notification(), None, "a fact said twice is one ask");
+}

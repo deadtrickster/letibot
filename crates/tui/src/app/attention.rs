@@ -59,6 +59,8 @@ impl App {
                 .filter(|s| matches!(s.state.as_str(), "done" | "failed"))
                 .map(|s| s.session_id.clone())
                 .collect(),
+            // A reseat this head already sent is not waiting on the person any more.
+            stale: self.reseat.as_ref().is_some_and(|c| !c.asked),
         }
     }
 
@@ -100,6 +102,11 @@ impl App {
             .find(|id| !before.answered.contains(*id))
         {
             return Some(format!("{who}: subagent {} finished", self.child_label(id)));
+        }
+        // **A stale prompt is a question only this head can put** - alt-r reseats, alt-p shows the
+        // card - so it says so once, when the fact arrives.
+        if now.stale && !before.stale {
+            return Some(format!("{who}: the prompt is stale — alt-r reseats"));
         }
         if before.busy && !now.busy && now.asks.is_empty() && now.secret.is_none() {
             let how = match self.turn.as_ref().and_then(|t| t.state.as_ref()) {
@@ -305,4 +312,7 @@ pub(crate) struct Attention {
     pub(crate) asks: Vec<String>,
     pub(crate) secret: Option<String>,
     pub(crate) answered: Vec<String>,
+    /// A stale prompt is a level, and the edge is it coming true: the card is this head's own and
+    /// nothing else tells the person it is waiting.
+    pub(crate) stale: bool,
 }
