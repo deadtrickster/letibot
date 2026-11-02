@@ -3,20 +3,14 @@
 //! around it, and the restart restore that starts a turn nobody typed for.
 use super::*;
 
-/// A `LogSink` that also hands back the item ids it saw.
-///
-/// See point 1 in the module header. It forwards everything unchanged: a sink that
-/// filtered would make the head's view depend on which daemon published it.
+/// A `LogSink` that also hands back the item ids it saw, so a row's body can be paired with the
+/// id the event named. It forwards everything unchanged: a sink that filtered would make the head's
+/// view depend on which daemon published it.
 pub(crate) struct CapturingSink {
     inner: LogSink,
     ids: Vec<String>,
-    /// The last `turn_id` this sink saw start.
-    ///
-    /// Read for §4.5: when a turn fails, the daemon has to publish a terminal event
-    /// *for that turn*, and `HarnessError` does not carry an id — the failure is
-    /// raised in several places, one of them before a turn id exists at all. Taken
-    /// off the event on its way past, for the same reason the item ids are: the
-    /// minting rule lives in the engine and a second copy of it goes stale.
+    /// The last `turn_id` this sink saw start, taken off the event on its way past: a failure has
+    /// to publish a terminal event for its turn, and `HarnessError` does not carry an id.
     turn_id: Option<String>,
 }
 
@@ -45,14 +39,9 @@ impl EventSink for CapturingSink {
     }
 }
 
-/// **Pair every id a sink captured with its row's body** — the free half of
-/// `Harness::reconcile`, so the summary-turn helper (which cannot borrow `&self`,
-/// see [`Harness::run_summary_turn`]) pairs rows by the same rule and cannot drift
-/// from it.
-///
-/// The ids come off the events rather than being recomputed; see point 1 in the
-/// module header. A count mismatch is a bug in the pairing, not something to paper
-/// over, so it is announced as a warning on the same log the head reads.
+/// Pair every id a sink captured with its row's body: the free half of `Harness::reconcile`, so the
+/// summary-turn helper pairs rows by the same rule. A count mismatch is a bug in the pairing, and it
+/// is announced rather than papered over.
 pub(crate) fn reconcile_rows(
     hub: &Arc<Hub>,
     sink: &mut CapturingSink,
@@ -83,23 +72,16 @@ pub(crate) fn reconcile_rows(
 // ---------------------------------------------------------------------------
 
 impl Harness {
-    /// **The loop.** One user message in, one answer out, however many tool rounds
-    /// that takes.
-    ///
-    /// This is the one door the **operator's own words** come through, and it is the
-    /// only place that records them as such: see [`TrailMirror`] for why the speaker
-    /// cannot be recovered from the transcript afterwards.
+    /// The loop: one user message in, one answer out, however many tool rounds that takes. This is
+    /// the one door the operator's own words come through, and the only place that records them as
+    /// the operator's: the speaker cannot be recovered from the transcript afterwards.
     pub fn submit(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken(Speaker::Operator, text)
     }
 
-    /// **The operator's words with the chips they put beside them** — `PROTOCOL_VERSION` 50.
-    ///
-    /// The files are read HERE, by the daemon, because the daemon is the half that writes the
-    /// transcript: the row is the durable artifact, and what it carries is the `data:` URI and
-    /// the inlined text rather than a path that may be gone by the time the next round renders
-    /// the conversation (`letibot_transcript::media`'s own argument for putting `Media` on a
-    /// row). See [`crate::attachments`] for what each kind becomes.
+    /// The operator's words with the chips they put beside them. The files are read HERE, because
+    /// the daemon is the half that writes the transcript, and the row carries the `data:` URI and
+    /// the inlined text rather than a path that may be gone by the next round.
     ///
     /// A file that could not be read is said in the row and warned on the log — the words still
     /// send, because they are the operator's and the attachment is not — and an EMPTY list is
@@ -119,16 +101,9 @@ impl Harness {
         self.submit_spoken_parts(Speaker::Operator, text, extra)
     }
 
-    /// **One turn, with the speaker given** — the operator's own words through
-    /// [`Harness::submit`], a parent's correction through
-    /// [`Harness::submit_a_parents_message`].
-    ///
-    /// The speaker is not decoration. [`AuthorisationTrail`] is where a turn's authority is
-    /// decided and [`Speaker::Agent`] never authorises on its own, so a row that says the wrong
-    /// speaker is a row that grants the wrong thing — which is why the parent's message has a
-    /// door of its own rather than a flag on this one. The two speaker vocabularies are matched
-    /// inline here for the same reason `TrailMirror::seed` matches them inline: the one place
-    /// they meet is the one place a reader has to look for the mapping.
+    /// One turn, with the speaker given. The speaker is not decoration: [`Speaker::Agent`] never
+    /// authorises on its own, so a row saying the wrong speaker grants the wrong thing, which is why
+    /// a parent's message has a door of its own rather than a flag on this one.
     pub(crate) fn submit_spoken(
         &mut self,
         speaker: Speaker,
