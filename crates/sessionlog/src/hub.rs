@@ -732,6 +732,11 @@ impl Hub {
         self.lock().view.row_body_at(row)
     }
 
+    /// One whole row by the same ordinal, for a head scrolling above its window.
+    pub fn row_at(&self, row: usize) -> Option<crate::view::SnapshotItem> {
+        self.lock().view.row_at(row)
+    }
+
     pub fn head_seq(&self) -> u64 {
         self.lock().log.head_seq()
     }

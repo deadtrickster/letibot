@@ -16,7 +16,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 55;
+pub const PROTOCOL_VERSION: u32 = 56;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -749,6 +749,18 @@ pub enum ClientFrame {
         /// must not be able to return a megabyte because a head asked for one.
         len: usize,
     },
+    /// A page of the session's rows by ordinal. A head holds a window of the conversation and a
+    /// reader can scroll above it, so what it needs is the rows behind its own copy rather than a
+    /// window inside one row's body: the whole row, block and all.
+    FetchRows {
+        session_id: String,
+        /// The first ordinal wanted, oldest first: the same numbering [`ClientFrame::FetchRow`]
+        /// takes, so a head names a position and never a tier of the daemon's cache.
+        from: usize,
+        /// How many rows. Capped by the daemon for `len`'s reason: one request must not be able
+        /// to pull a whole conversation.
+        count: usize,
+    },
     /// A call the OPERATOR ran themselves: the daemon checks `name` against [`HEAD_RUN_TOOLS`] and
     /// records the admission as the operator's, so the row says a person ran it.
     OperatorCall {
@@ -1018,6 +1030,15 @@ pub enum ServerFrame {
         answer: String,
         said: String,
     },
+    /// The answer to [`ClientFrame::FetchRows`], in ordinal order starting at `from`. Fewer rows
+    /// than were asked for means the walk stopped - the session begins above `from`, or nothing
+    /// could answer the next row - and a head must not read that as a shorter conversation.
+    RowsFetched {
+        session_id: String,
+        /// The ordinal `rows[0]` occupies, echoed so a head places the page without counting.
+        from: usize,
+        rows: Vec<crate::view::SnapshotItem>,
+    },
     /// The answer to [`ClientFrame::FetchRow`]: a window of one row's body. `total` is the whole
     /// body's length, so a head knows what it has not been sent.
     RowFetched {
@@ -1141,6 +1162,7 @@ mod tests {
                 | ClientFrame::Feedback { .. }
                 | ClientFrame::FetchDiagnostic { .. }
                 | ClientFrame::FetchRow { .. }
+                | ClientFrame::FetchRows { .. }
                 | ClientFrame::Interrupt { .. }
                 | ClientFrame::ListJobs
                 | ClientFrame::ListMergeQueue
@@ -1252,6 +1274,7 @@ mod tests {
                 | ServerFrame::ModeConfirm { .. }
                 | ServerFrame::ModeSettled { .. }
                 | ServerFrame::RowFetched { .. }
+                | ServerFrame::RowsFetched { .. }
                 | ServerFrame::Diagnostic { .. }
                 | ServerFrame::ShellSuggestions { .. }
                 | ServerFrame::TermAttached { .. }
@@ -1268,8 +1291,12 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 55,
-            "the match above was last reconciled with the frame list at 55 — 55 added the \
+            PROTOCOL_VERSION, 56,
+            "the match above was last reconciled with the frame list at 56. 56 added \
+             `ClientFrame::FetchRows` and `ServerFrame::RowsFetched`: the head holds a window of \
+             the conversation and a reader scrolls above it, so it asks for whole rows by ordinal \
+             and the daemon answers them from its view or its store. Two new variants, so a \
+             version-55 peer fails to parse whichever arrives first. 55 added the \
              three frames of the skills pane: `ClientFrame::ListSkills` (the rows), \
              `ClientFrame::LoadSkill` (the operator hands one body to the session, and the \
              DAEMON writes the message, because a row is the daemon's to write and a fabric \

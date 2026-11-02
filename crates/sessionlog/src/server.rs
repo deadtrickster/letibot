@@ -278,6 +278,10 @@ pub fn serve(hub: Arc<Hub>, path: impl AsRef<Path>) -> io::Result<ServerHandle> 
 /// daemon's, because the memory is the daemon's.
 pub const MAX_FETCH_ROW: usize = 64 * 1024;
 
+/// The most rows one `FetchRows` may answer, whatever the head asked for: a page is a screen or
+/// two of scrollback, and the cap is the daemon's because the rows are read in the daemon.
+pub const MAX_FETCH_ROWS: usize = 256;
+
 /// The nearest character boundary at or below `at`, for slicing a body: a byte window can land
 /// inside a multi-byte character.
 fn clamp_char(s: &str, at: usize) -> usize {
@@ -1258,6 +1262,41 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     at,
                     body,
                     total,
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
+            Ok(ClientFrame::FetchRows {
+                session_id,
+                from,
+                count,
+            }) => {
+                let Some(hub) = registry.resolve(&session_id) else {
+                    let f = ServerFrame::Rejected {
+                        client_request_id: format!("fetchrows:{session_id}/{from}"),
+                        reason: format!("{REJECT_UNKNOWN_SESSION} {session_id:?}"),
+                        expected_seq: 0,
+                        actual_seq: seat.hub.head_seq(),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                    continue;
+                };
+                let want = count.min(MAX_FETCH_ROWS);
+                let mut rows: Vec<crate::view::SnapshotItem> = Vec::new();
+                let mut row = from;
+                while rows.len() < want {
+                    let Some(item) = hub.row_at(row) else {
+                        // The first ordinal the view cannot answer, so the rest of the page is
+                        // the store's: one read for the page rather than one per row.
+                        rows.extend(registry.rows_from_store(&session_id, row, want - rows.len()));
+                        break;
+                    };
+                    rows.push(item);
+                    row += 1;
+                }
+                let f = ServerFrame::RowsFetched {
+                    session_id: hub.session_id(),
+                    from,
+                    rows,
                 };
                 writer.lock().unwrap().write(&f)?;
             }

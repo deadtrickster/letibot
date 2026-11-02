@@ -481,6 +481,18 @@ pub trait RowSource: Send + Sync {
     /// The body of `row` (a session ordinal) for `session_id`, or `None` when nothing holds it.
     /// Not an empty string for a row that exists and is empty - the two must not look alike.
     fn row_body(&self, session_id: &str, row: usize) -> Option<String>;
+
+    /// Whole rows from `from`, at most `count`, in ordinal order, stopping at the first ordinal
+    /// this source cannot answer. A default of none, so a registry with no store answers an empty
+    /// page rather than pretending the conversation began there.
+    fn row_items(
+        &self,
+        _session_id: &str,
+        _from: usize,
+        _count: usize,
+    ) -> Vec<crate::view::SnapshotItem> {
+        Vec::new()
+    }
 }
 
 /// Where the oracle's exchange for one decision can be read. A second trait and not a method on
@@ -1076,6 +1088,21 @@ impl Registry {
             .unwrap_or_else(|e| e.into_inner())
             .clone()?;
         source.row_body(session_id, row)
+    }
+
+    /// A page of whole rows from the store, in ordinal order: what a head asks for when it has
+    /// scrolled above its own window. Empty when nothing can answer.
+    pub fn rows_from_store(
+        &self,
+        session_id: &str,
+        from: usize,
+        count: usize,
+    ) -> Vec<crate::view::SnapshotItem> {
+        // Cloned out for `row_body_from_store`'s reason: no lock is held across a SQLite read.
+        let source = self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        source
+            .map(|s| s.row_items(session_id, from, count))
+            .unwrap_or_default()
     }
 
     fn source(&self) -> Option<Arc<dyn SessionSource>> {

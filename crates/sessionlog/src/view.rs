@@ -806,6 +806,13 @@ impl SessionView {
         Some(body_of(item))
     }
 
+    /// One whole row by the same ordinal: a head scrolling above its window needs the block and
+    /// its kind, not only the text, or it could draw the words as the wrong thing.
+    pub fn row_at(&self, row: usize) -> Option<SnapshotItem> {
+        let idx = row.checked_sub(self.items_dropped as usize)?;
+        self.items.get(idx).cloned()
+    }
+
     /// Attach content to an already-appended transcript row: `TranscriptAppended` has no body, so
     /// this is how a row becomes readable.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {

@@ -201,6 +201,39 @@ fn an_ordinal_follows_the_fork_to_the_new_base() {
     assert_eq!(s.row_json_at("tr-2", 0).unwrap(), None);
 }
 
+/// A page of rows costs one query and comes back in ordinal order with the id and kind a head
+/// needs to draw them: the read a head scrolling above its window makes.
+#[test]
+fn a_page_of_rows_is_read_in_order_with_its_ids_and_kinds() {
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    for seq in 0..4u32 {
+        let item = TranscriptItem::Assistant {
+            text: format!("row {seq}"),
+            tool_calls: vec![],
+            truncated: false,
+        };
+        let toks = vec![10 + seq];
+        let row = ledger.append(&format!("it-{seq}"), &toks).unwrap().clone();
+        s.append_item(&tr, seq, &item, &row, &toks).unwrap();
+    }
+
+    let page = s.rows_json_from(&tr, 1, 2).unwrap();
+    let ids: Vec<&str> = page.iter().map(|(_, id, _, _)| id.as_str()).collect();
+    assert_eq!(ids, ["it-1", "it-2"], "the page is the ordinals asked for");
+    assert!(
+        page.iter().all(|(_, _, kind, _)| kind == "assistant"),
+        "the kind rides with the row: a head draws it, it does not read the JSON to find out"
+    );
+    let back: TranscriptItem = serde_json::from_str(&page[0].3).unwrap();
+    assert!(matches!(back, TranscriptItem::Assistant { ref text, .. } if text == "row 1"));
+
+    // A page that starts past the end is empty, and a short one is short rather than padded.
+    assert!(s.rows_json_from(&tr, 9, 4).unwrap().is_empty());
+    assert_eq!(s.rows_json_from(&tr, 3, 4).unwrap().len(), 1);
+}
+
 #[test]
 fn a_stable_prefix_is_addressed_by_its_content_and_its_dialect() {
     let s = store();

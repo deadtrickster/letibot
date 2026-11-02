@@ -4659,6 +4659,45 @@ impl letibot_sessionlog::registry::RowSource for StoreSessions {
         let item: letibot_transcript::TranscriptItem = serde_json::from_str(&json).ok()?;
         Some(letibot_sessionlog::body_of(&item))
     }
+
+    fn row_items(
+        &self,
+        session_id: &str,
+        from: usize,
+        count: usize,
+    ) -> Vec<letibot_sessionlog::view::SnapshotItem> {
+        let (Ok(from), Ok(count)) = (u32::try_from(from), u32::try_from(count)) else {
+            return Vec::new();
+        };
+        let Ok(store) = self.store.lock() else {
+            return Vec::new();
+        };
+        // The current transcript, for `row_body`'s reason: an ordinal names a row of the base
+        // the conversation is on now, not of the one a fork replaced.
+        let Some(transcript_id) = store.current_transcript_id(session_id).ok().flatten() else {
+            return Vec::new();
+        };
+        let rows = store
+            .rows_json_from(&transcript_id, from, count)
+            .unwrap_or_default();
+        rows.into_iter()
+            .filter_map(|(_, item_id, kind, json)| {
+                // A row whose JSON this build cannot read is left out rather than answered as
+                // empty: the page is short, which a head reads as *nothing further above*.
+                let item: letibot_transcript::TranscriptItem = serde_json::from_str(&json).ok()?;
+                Some(letibot_sessionlog::view::SnapshotItem {
+                    item_id,
+                    kind,
+                    // A paging head draws these rows and asks nothing about their ledger or
+                    // their clock, and the store keeps neither per row here.
+                    ledger_head: String::new(),
+                    ts: 0,
+                    item: Some(item),
+                    citations: Vec::new(),
+                })
+            })
+            .collect()
+    }
 }
 
 /// Ledger tokens as the operator's screen counts them. One function for the two callers

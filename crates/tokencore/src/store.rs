@@ -2457,6 +2457,34 @@ impl Store {
             .optional()?)
     }
 
+    /// A page of rows by ordinal, in order: `(seq, item_id, kind, item_json)`. The read behind a
+    /// head scrolling above its own window, and one query because a page asked for a row at a time
+    /// is a page of round trips.
+    pub fn rows_json_from(
+        &self,
+        transcript_id: &str,
+        from: u32,
+        count: u32,
+    ) -> Result<Vec<(u32, String, String, String)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT seq, item_id, kind, item_json FROM transcript_item\n              WHERE transcript_id = ?1 AND seq >= ?2 ORDER BY seq ASC LIMIT ?3",
+        )?;
+        let rows = st.query_map(params![transcript_id, from as i64, count as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u32,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// The session's current transcript id, which is what a row ordinal is relative to: the NEWEST,
     /// because a fork replaces the conversation, so ordinal 3 after a compaction is a row of the
     /// new base.
