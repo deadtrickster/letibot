@@ -5464,20 +5464,6 @@ Since 2026-09-25 there were 738 commits. 56 of the 299 that touched the TUI, mer
 
 
 
-## T5 — Operator decisions still open
-
-Carried from `DECISIONS.md`; see there for the full statement of each.
-
-- **D3** — firecode's two asks (parent cgroup, persistent shell). A written "no" is a
-  complete answer and unblocks the work; it selects which of two tool runtimes gets
-  built.
-- **D5** — Falsifier B scoring rubric.
-- **D6** — `max_inline_bytes` (deliberately has no default).
-- **D7** — the 27B preset.
-- **D8** — the harness licence. The workspace currently declares Apache-2.0 and there
-  is no GitHub remote yet; the repo is intended to be public, so this should not stay
-  open.
-
 ---
 
 ---
@@ -5506,6 +5492,9 @@ name. Every transcript is on disk and `--continue` now genuinely returns the new
 > every wire-touching branch edits and taking 6 for the thing that was ready is the same
 > "coordinate rather than race" D10 settled.
 
+— settled: the four landed and the wire is at 55 (`crates/sessionlog/src/protocol.rs:19`), so
+nothing waits on this one.
+
 **D12 — A mounted board makes `todo` gated.** The flowy backing declares
 `Access::Network`, so mounting a board without an adjudicator attached makes `todo` refuse
 *entirely* — the unmounted local list works, the mounted one does not. Correct by the
@@ -5522,9 +5511,15 @@ rules and possibly intolerable in practice.
 > *reaching an arbitrary host*. `Surroundings::seen_hosts` says first contact and second
 > contact differ; nothing yet says a **declared** attachment differs from a discovered one.
 
+— settled by `Access::Session`: `todo_write` declares it (`crates/tools/src/builtins/todo.rs:2064`)
+and `say` too (`crates/tools/src/builtins/room.rs:138`), and that class is unattended
+(`crates/tools/src/schema.rs:129`) — so neither a mounted board nor a planner's `say` needs an
+adjudicator to open.
+
 **D13 — `Access::Session`, a new access class.** Declaring the intent tools `Read` would
 have reproduced the gap the survey names in grok-build (§1.4). The wire carries access as
-a String so nothing breaks, but no head has rendered one.
+a String so nothing breaks, but no head has rendered one. — ✓ fixed in 449f7de0, test
+the_description_is_clean_and_fits_the_prompt
 
 **D14 — `loop_closes` needs an exclusive model server.** It drives live inference on
 `:8080`; it passes alone in 11–32 s and times out under `cargo test --workspace` whenever
@@ -5539,13 +5534,23 @@ so `--workspace` means what it says.
 > the box was quiet — but they do say the instrument is not broken in some second way,
 > which is what a fifth agent would otherwise spend a re-run finding out.
 
+— OPEN: the test is still live whenever `127.0.0.1:8080` answers — `skip_live_test` gates
+absence only (`crates/turn/src/serving.rs:70`), there is no `#[ignore]` and no opt-out, and
+`agents.md:297` still tells a person which targets to avoid.
+
 **D15 — 13 stale worktrees and one 30-hour orphan tmux** (`nano_test`). Safe to prune the
 finished ones; two belong to live agents, so not a blanket sweep. T24 is the mechanism,
 this is the backlog it would have prevented.
 
+— OPEN, and not code: nothing in the tree prunes a stray worktree or a stray tmux session, and
+the backlog itself is a fact about a box this audit cannot read.
+
 **D16 — `~/bin/letibot` is not version-controlled**, and two real bugs were found in it
 tonight (a `--continue` that showed an empty screen, and an `up()` that would have
 orphaned a version-skewed daemon holding every session). It belongs in the repo.
+
+— ✓ fixed in f0627c39, test tests/launcher.sh (a shell test: the launcher's own cases, run
+against stub daemons).
 
 **D17 — Group 2, subagents and admission.** Held all evening because it lands in
 `crates/harnessd/src/sessions.rs`, which session-resume was rewriting. **Now unblocked.**
@@ -5553,24 +5558,43 @@ Its hard requirement is already written: `Fits{ceiling, cost_per_id, pool_free}`
 436.7 MiB per sequence id charged at allocation makes N subagents an OOM path — and two of
 the five surveyed harnesses ship subagents with no ceiling at all.
 
+— OPEN: `Fits{ceiling, cost_per_id, pool_free}` appears nowhere in the tree but this line; what
+exists is a depth cap on children (`crates/harnessd/src/harness/children.rs:1847`), and no
+memory-cost admission.
+
 **D18 — LSP.** The one gap in the survey's ten that no group covers. Four of five
 harnesses have it, the most complete is 14 actions, and it needs a language server per
 language. Its own decision, not a group.
 
+— fixed in b5ee36d5 in code, untested beyond the config: `crates/tools/src/builtins/lsp.rs`
+spawns a server and pulls its diagnostics, and the only test names the default language list
+(`default_config_names_its_languages`).
+
 **D20 — `never_hit` now sees network arguments.** A `web_search` or `github` string that
 merely *mentions* `.config/gh` or `.password-store` is denied by the never-write list.
 Fail-closed, and a real false positive.
+
+— OPEN: `query` and the other content arguments are exempt now (`CONTENT_ARGUMENTS`,
+`crates/tools/src/adjudicate.rs:3321`) with a test
+(`the_never_write_list_is_about_paths_and_not_prose`, `crates/tools/src/adjudicate/tests/gate.rs:521`),
+but `github`'s `title`/`body` (`crates/tools/src/builtins/external/github.rs:236-240`) are not,
+so a body naming `.config/gh` is still refused.
 
 **D21 — Enforcement binds the model, or the seat?** From `docs/closed-loop.md` §9. They
 differ when a human is driving, and the operator should not be locked out of their own
 restart because the model cannot be trusted with it. Tonight's blocked
 `systemctl --user restart` is the worked example.
 
+— OPEN: `docs/closed-loop.md:110` still lists it under §9 Open, and nothing in the tree binds
+enforcement to the model or to the seat.
+
 **D22 — The tolerance band: one, or per-operation?** Also §9. How large a deviation is
 corrected silently versus faulted to a human is the whole design decision, and both ends
 have measured costs. **One data point now exists**: T21.3's nudge is capped at one per
 user turn, chosen at its narrowest for want of a measurement rather than because one is
 right.
+
+— OPEN: `docs/closed-loop.md:109` still lists it under §9 Open.
 
 **D25 — The console adjudicator reads the daemon's own stdin, and a head cannot answer
 it.** New, and the direct consequence of making roles reachable. `--role coder` gets
@@ -5587,12 +5611,20 @@ out and they are not equivalent: wire the adjudicator to the head (D10, correct,
 protocol bump and head work), or attach the model adjudicator (D13, which needs an
 oracle and a reviewed always-ask list, and is what the survey's 83% is about).
 
+— ✓ fixed in a97d7da4, test a_subagent_in_a_tree_with_no_head_adjudicator_refuses_by_name:
+`ClientFrame::Answer` (`crates/sessionlog/src/protocol.rs:629`) and `HeadAdjudicator`
+(`crates/harnessd/src/answers.rs:908`) are the head answering, so a write or exec seat is no
+longer a foreground-only thing.
+
 **D26 — A wake spends a generation, and nothing bounds a chatty monitor.** T24's wake
 turns a firing into a user item and runs a turn. A monitor watching a path that changes
 every second would spend the box's slots on itself until its TTL expires. The TTL is the
 only bound and it is up to an hour. A firing that should be *noted* rather than *acted
 on* has no spelling — and inventing one is a decision about what a monitor is for, not a
 fix.
+
+— OPEN: a firing still runs a full turn — `crates/harnessd/src/turn_tail.rs:313-355` rings the
+bell and the wake is a turn — and the monitor's own TTL is the only bound.
 
 **D27 — Six adjudication items from the assembly agent, none filed until now.**
 Carried out of a subagent's report and into scrollback, which is exactly the failure
@@ -5614,6 +5646,24 @@ wins), not the daemon's `--mode` default. A new named point `allow-all` (opencod
 names. Still open: the `/mode` head command to *move* a project at runtime, the
 `todo_write` rename completion, and the remaining four D27 items.
 
+— item 1, *`allow_session` does not stick*: ✓ fixed in 3ddf5f4f, test
+at_always_ask_an_allow_session_answer_stands_for_the_session.
+— item 2, *`host_other` misclassification*: ✓ fixed in 545d9d79, test
+a_path_decided_baseline_does_not_report_a_region_it_did_not_decide.
+— item 3, *`/mode` and `--mode` are unwired*: ✓ fixed — `ClientFrame::Mode`
+(`crates/sessionlog/src/protocol.rs:558`), `/mode` in the head
+(`crates/tui/src/app/commands.rs:1250`) and `apply_queued_mode`, test
+a_mode_set_mid_turn_survives_a_restart.
+— item 4, *mode does not persist per project*: ✓ fixed as the paragraph above records —
+`ModeStore` (`crates/harnessd/src/modes.rs`), test a_mode_set_mid_turn_survives_a_restart reads
+the row back the way a restart does.
+— item 5, *a resumed session does not disclose a tool-list mismatch*: OPEN — no warning code
+carries it (`crates/sessionlog/src/warning.rs` has none), and `reseat_unchecked` is about the
+carry against the window, not the tools the prompt was built with.
+— item 6, *the write prompt has no one-keypress answer*: ✓ fixed — the prompt is a card whose
+option ids answer by prefix (`crates/tui/src/app/tests/decisions.rs:183`) or by digit-and-Enter
+(`crates/tui/src/app/keys/cards.rs:351`, and `a_digit_inside_a_half_typed_line_is_not_an_answer`).
+
 **D28 — Text selection in the TUI, still undiagnosed and needing one answer from
 the operator.** The repaint hypothesis is REFUTED by measurement: before/after
 frames byte-identical over 1,256,038 bytes, and 30 s idle wrote **zero bytes**.
@@ -5623,14 +5673,22 @@ the selection, not gratuitous repaint. No -> it is not this code at all, it is t
 TUI holding SGR mouse mode so the terminal hands drags to the application instead
 of doing native selection, and the fix is a mode toggle.
 
+— ✓ fixed in 2b49304e, test a_drag_holds_the_view_and_esc_lets_it_follow: `ctrl-p` holds the
+view so the head writes nothing while a selection stands (`crates/tui/src/app/keys/mod.rs:886`),
+and an idle head already writes nothing.
+
 ### Not ours, tracked because we caused or found them
 
 **D23 — The 702 long chunks.** 702 of 43,967,653 exceed ~2048 tokens and already hold
 ollama vectors of *truncated* text. Routing them to TEI makes new ≠ old for exactly those
 documents. Small enough to re-embed rather than manage; lubuntu3's corpus, our capacity.
 
+— OPEN, not this tree: a corpus on lubuntu3, and nothing here can re-embed it.
+
 **D24 — The chunker length assertion.** lubuntu1's close, unowned: while chunks stay under
 ~2048 every backend agrees and none of the truncation split matters. Nobody enforces it.
+
+— OPEN, not this tree: lubuntu1's chunker, unowned, and nothing here enforces the length.
 
 
 
@@ -5767,12 +5825,19 @@ C6/C7/C8 could not run: C6 needs a tool-call-only assistant turn, which did not 
 C7/C8 need a `length` finish, which requires either the `n_predict` cap §5.7 removed or
 a 262k context on a production box.
 
+— C6 and C8 are measured on HEAD now (`crates/harnessd/src/m1.rs:34,36`); C7 stays NOT RUN by
+design (`:40-43`). The run above is unchanged.
+
 **C3's shortfalls have an exact signature** — every one equalled `previous generation +
 3`: the server reused to the end of the last committed item and discarded the 4-token
 generation prompt *and* the whole generation. It is intermittent (14/55 on an earlier
 run of the same script), so it is a server-side cache event, not structural. Settling it
 needs `-lv 4` and `glm-why-no-cache` — a server-log question the harness cannot answer
 from its own metrics.
+
+— OPEN: the criterion is unrewritten — `docs/implementation-plan.md:360` still reads `f_keep`
+p10 >= 0.99 — and no re-measurement under D11's metric exists in the tree (the metric landed in
+cca619f8; the 30-turn run was never repeated).
 
 ---
 
@@ -5816,6 +5881,14 @@ fork (§5.5), backtracking and eviction all actually need, and today it falls of
 cliff at 516 tokens. Storing recurrent state at more positions makes rewind cheap. That
 is a parameter and a representation choice, not a redesign.
 
+— rows 1 and 2 are measured now, not argued: `experiments/kv-stitching/RESULTS.md` answers
+UNVERIFIED-16 negative (T14), so composition across a divergence and a split save format are
+both settled against a rewrite.
+— OPEN: row 3 is unbuilt — `docs/implementation-plan.md:71` still lists §3.4.1 checkpoint
+placement among the six unlocks "none landed", and nothing in `crates/turn` places a checkpoint
+or re-enters a rewind (`grep checkpoint` finds only `crates/turn/src/prefix.rs`'s shortfall
+reason), so the `d > 516` cliff still stands.
+
 ---
 
 
@@ -5854,6 +5927,10 @@ so, and is listed as such). Reaping is `cgroup.kill`, and a subagent's cgroup is
 of its parent's, so a parent that ends reaps its children by construction rather than by
 remembering to.
 
+— ✓ fixed in 25000d33, test the_three_scopes_round_trip_and_there_is_no_fourth (and
+`a_reaping_of_an_empty_scope_is_not_the_same_record_as_a_reaping_of_three` for the reaper
+that records what it killed).
+
 ### The part that pays for itself immediately
 
 **Cgroups retire pattern matching for both reaping and liveness**, which is T21.1 and
@@ -5882,14 +5959,20 @@ a session, so no stop event ever fires and the silence looks exactly like a quie
 A monitor is also, structurally, a long-lived process. **Adding monitors before the
 lifetime work multiplies the leak this entry exists to stop**, so they land together:
 
-1. **Scoped at creation.** No monitor without an owner; the default is the session.
+1. **Scoped at creation.** No monitor without an owner; the default is the session. — ✓ fixed
+   in 104e3b73, test a_monitor_dies_with_the_scope_that_owns_it
 2. **Listable and attributable.** The head can show what is watching and for whom, the
-   way it now shows sessions. An invisible watcher is an unreapable one.
-3. **Reports why it fired**, not just that it did.
+   way it now shows sessions. An invisible watcher is an unreapable one. — ✓ fixed in
+   32fb7267, test
+   a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_name
+3. **Reports why it fired**, not just that it did. — ✓ fixed in 104e3b73, test
+   a_monitor_says_what_changed_and_not_merely_that_something_did
 4. **One waiter per name**, enforced. The fleet already learned this: two processes under
-   one reader means the roster shows a seat attached while the real one hears nothing.
+   one reader means the roster shows a seat attached while the real one hears nothing. — ✓
+   fixed in 104e3b73, test a_second_monitor_under_one_name_is_refused_with_what_holds_it
 5. **Bounded.** A TTL or an explicit renewal, so a monitor whose reason has passed dies
-   without anybody remembering it.
+   without anybody remembering it. — ✓ fixed in 104e3b73, test
+   a_ttl_past_the_cap_is_refused_rather_than_clamped
 
 ### What the fleet answered, 2026-09-09 — and what it ruled out
 
@@ -6007,6 +6090,11 @@ no jobs, and therefore no job to promote. The constant is also the one line ever
 wire-touching branch edits, and 5 was taken deliberately *"to coordinate rather than race"*
 (D10). So: one variant and one integer, whenever a head is ready to send it.
 
+— ✓ fixed in 4a188380, test ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal:
+the frame landed as `ClientFrame::Promote { client_request_id, expected_seq }`
+(`crates/sessionlog/src/protocol.rs:531`) rather than the doc's `PromoteJob` shape, because the
+head names no job, and `ctrl-o` / `/promote` send it (`crates/tui/src/app/events/mod.rs:694`).
+
 ### ~~Still open — nothing calls the monitor wake seam~~ — **CLOSED 2026-09-10**
 
 `Monitors::wait_for_any` now has a caller, and the interesting part is what had to be
@@ -6036,10 +6124,18 @@ that condvar can do about `Bell::close`, which notifies a different one. Named h
 because "no timer, no poll loop" (§18.1-I12) is a property this daemon states about
 itself, and a re-check that went undescribed would read as a violation of it.
 
+— ✓ the seam has a caller and a test:
+`a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_that_is`
+(`crates/harnessd/src/jobwatch/tests.rs:434`), and the waiter is `spawn_monitor_wake`
+(`crates/harnessd/src/turn_tail.rs:313`).
+
 What is **not** closed: the wake runs a full turn with the firing as a user item. A
 session with a chatty monitor therefore spends generations on it, and nothing bounds that
 except the monitor's own TTL. A firing that should be noted and not acted on has no
 spelling yet.
+
+— OPEN: still true on HEAD — a firing is a user item and a turn
+(`crates/harnessd/src/turn_tail.rs:313-355`), and the monitor's TTL is the only bound.
 
 ### Still open — the disclosure can say `POLL ONLY` and the operator cannot tell why
 
@@ -6048,6 +6144,11 @@ directly by a test or by `letibot-m1` honestly reports `false`. What it does not
 distinguish is *"no daemon armed one"* from *"the thread failed to start"* — the second
 publishes a `Warning`, the first is silent, and both render the same line. Small, and the
 kind of thing that costs an hour once.
+
+— OPEN: the disclosure line is still keyed on `wiring.monitor_wake` alone
+(`crates/harnessd/src/config.rs:2460`), so both cases draw `POLL ONLY`; a thread that failed to
+start does now publish `monitor_wake_not_armed` (`crates/harnessd/src/sessions.rs:3294`), so the
+two are told apart by a note rather than by the line itself.
 
 ---
 

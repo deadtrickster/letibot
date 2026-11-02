@@ -4401,3 +4401,107 @@ letibot's is the plan above, with that last clause deliberately not in this chan
 staying in the transcript, and in the model's context, is what makes that honest rather than a loss.**
 
 ---
+
+## T5 — Operator decisions still open — **SETTLED 2026-11-02, audited: every item settled by decision — D3, D5, D6, D7 and D8 are each answered in `DECISIONS.md`**
+
+Carried from `DECISIONS.md`; see there for the full statement of each.
+
+- **D3** — firecode's two asks (parent cgroup, persistent shell). A written "no" is a
+  complete answer and unblocks the work; it selects which of two tool runtimes gets
+  built. — settled: `DECISIONS.md` §D3 (ANSWERED 2026-09-09 — byobu replaces the
+  persistent shell, and cgroup membership is use-dependent)
+- **D5** — Falsifier B scoring rubric. — settled: `DECISIONS.md` §D5 (SETTLED 2026-09-09, and the experiment is run)
+- **D6** — `max_inline_bytes` (deliberately has no default). — settled: `DECISIONS.md` §D6 (ANSWERED 2026-09-09: a decider, not a number, and the default stays unset)
+- **D7** — the 27B preset. — settled: `DECISIONS.md` §D7 (ANSWERED 2026-09-09: derive it by measurement)
+- **D8** — the harness licence. The workspace currently declares Apache-2.0 and there
+  is no GitHub remote yet; the repo is intended to be public, so this should not stay
+  open. — settled: `DECISIONS.md` §D8 (SETTLED 2026-09-09: Apache-2.0, which the
+  workspace already declared)
+
+---
+
+## T22 — `f_keep` names two different quantities, and C4 applies one's threshold to the other — **SETTLED 2026-11-02, audited: every item ✓ fixed and tested**
+
+Found while answering "how is `f_keep` computed". The answer is: **two ways, and the
+plan uses both under one name.**
+
+### The two
+
+`server-task.cpp:2603,2614` — a cache **selection** heuristic, with a hard floor
+refusing any entry under `f_keep < 0.25`:
+
+```
+f_keep = lcp / cached_entry.size()      denominator = the CACHED entry
+f_sim  = lcp / new_prompt.size()        denominator = the NEW prompt
+```
+
+`lcp` is the longest common prefix — how many leading tokens of the new prompt match
+the cached entry, token for token, via `server_tokens::get_common_prefix`.
+
+§18.2's **C4** defines it as `usage.prompt_tokens_details.cached_tokens /
+prompt_tokens`. **That is `f_sim`, under `f_keep`'s name.**
+
+### Why it matters — one turn of the M1 run
+
+```
+cached entry (turn N)     9,000 tokens
+new prompt  (turn N+1)   10,093 tokens   ← appended a 1,093-token tool result
+lcp                       9,000 tokens   ← the whole entry is a prefix; nothing rewritten
+```
+
+That is a **perfect** turn — full reuse, nothing recomputed.
+
+| | formula | value |
+|---|---|---|
+| llama's `f_keep` | lcp / cached | **1.000** |
+| llama's `f_sim` | lcp / new prompt | 0.892 |
+| **C4's `f_keep`** | cached_tokens / prompt_tokens | **0.892** |
+
+The gap is not a cache miss. **It is the tool result that was just appended.** C4's
+number falls purely as a function of how much the conversation grew.
+
+### The defect
+
+C4 says it is *"directly comparable to the 0.000 → 0.999 measurement"*. **It is not.**
+That 0.999 was read off the server's trace lines, so it was llama's `f_keep` —
+denominator the cached entry, and therefore **indifferent to growth**. The plan even
+notes at line 64 that the two are "a hit-ratio pair", then migrates a threshold from
+one to the other.
+
+So a bar measured on metric A is applied to metric B. On A, 0.99 is reachable and was
+reached. On B it is arithmetically impossible for any session that returns tool
+output.
+
+### SETTLED 2026-09-09 — option 1, see D11
+
+`f_keep = lcp / cached_entry`, computed as
+`cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))` — **no server change
+needed**, since the denominator is what we left in the cache and the numerator is what
+the server already returns. It is the ratio form of C3's inequality, over C3's own
+quantities.
+
+**M1 must be re-measured.** 0.8771 was a correct measurement of the wrong metric.
+
+### The choice as it stood — operator's
+
+1. **Restate C4 as `lcp / cached_entry`** — directly comparable to the 0.999 that
+   motivated it, indifferent to growth, and what the append-only invariant actually
+   claims. Needs the server's `lcp`, which is S1 or `-lv 4`. — ✓ fixed in cca619f8, test
+   f_keep_is_indifferent_to_growth_and_f_sim_is_not: C4 is `lcp / cached_entry` in the plan
+   (`docs/implementation-plan.md:296`) and `f_keep` is `cached / what the previous turn left`
+   (`crates/turn/src/metrics.rs:66`), with no server change and no `lcp` needed.
+2. **Keep `cached_tokens / prompt_tokens`** and set a bar reachable for tool-using
+   sessions. The harness-only version of this is T17's C4b, which measured p10 1.0000.
+   — not taken: the decision was option 1 (D11), and `f_sim` is now printed beside `f_keep`
+   rather than carrying its threshold (`crates/turn/src/metrics.rs:98`).
+
+Until it is decided, **M1 remains formally unexited** and the run stands as recorded.
+
+— decided: `DECISIONS.md` §D11 (SETTLED 2026-09-09). The re-measurement this asks for is T17's
+and has not been done there either.
+
+This is the seventh instance in one day of a number whose meaning was not checked
+before use, and unlike the others it is **ours** — it is in the plan, not in something
+we inherited.
+
+---
