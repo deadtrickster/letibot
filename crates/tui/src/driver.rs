@@ -933,12 +933,9 @@ impl Link {
         self.watch_stop(app);
     }
 
-    /// Has the daemon this head asked to stop actually gone? Called once a tick and a watcher rather than a
-    /// wait, so the loop keeps drawing while it runs and the head says what it is waiting for. A
-    /// `recv_timeout` loop here would be the freeze.
-    ///
-    /// Four observations, kept apart because each is a different answer: the ack, the close, the process and
-    /// the deadline.
+    /// Has the daemon this head asked to stop actually gone? Asked once a tick and a watcher rather
+    /// than a wait, so the loop keeps drawing while it runs; a `recv_timeout` loop here would be the
+    /// freeze. The ack, the close, the process and the deadline are four different answers.
     pub fn watch_stop(&mut self, app: &mut App) {
         let now = now_ms();
         // Read the state out before touching it: `App::stopping` borrows the app and every write below is also

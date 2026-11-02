@@ -1,49 +1,17 @@
-//! **What the workspace's own repository says**, for the row the operator crosses.
-//!
-//! The ask is theirs, 2026-10-04: *"git status in the status line — look how leticl did it."*
-//! leticl's half is `src/chrome.lisp:644` and this is the same field in the same place: **beside
-//! the workspace path**, because that is the thing it is a fact about.
-//!
-//! **Ported fully, 2026-10-05** — the operator's row: *"port leticl git status line fully —
-//! template, colors, config."* What was here first was the plain cousin (a branch, a `*`, the
-//! ahead/behind counts); leticl's field is gitstatus's own segment vocabulary, a configurable
-//! template, and a colour per segment, and that is what this is now, piece by piece:
-//!
-//! * **the facts, not the text** (`GitState`) — because the format decides the text and a
-//!   preference may change the format, so a cache of strings would be a cache of somebody's old
-//!   choice;
-//! * **gitstatus's segments and glyphs** — `⇣` behind, `⇡` ahead, `*` stashes, `~` conflicts,
-//!   `+` staged, `!` unstaged, `?` untracked, the branch or `@oid` when detached — so a reader
-//!   who knows that prompt knows this row;
-//! * **a template** (`%b%d%a%s%m%~%+%!%?` by default), `git_format` in `head.toml` to override,
-//!   and `/config`'s row to cycle three stops — the row the operator looked for it on;
-//! * **one colour per segment, chosen to say what the segment says** — green branch when the
-//!   tree is clean, yellow when it is not, red and bold conflicts because nothing else on that
-//!   row is a demand, dim untracked because it is usually noise.
-//!
-//! **A repository this cannot read is ABSENT, not empty.** The state is `None` and the row draws
-//! its blank slot — leticl's words, and they are the rule this file keeps: *"a header that said
-//! `main` over a directory that is not a repository would be a lie in the one row nobody
-//! checks."*
-//!
-//! **Read from the LOOP, never from a paint.** This spawns a process, and the rule is the dash
-//! collectors': a measurement never runs where the frame is drawn. `App::refresh_git` is called
-//! by `driver::tick`, and [`GIT_REFRESH_MS`] is leticl's own interval — chosen to hold the process
-//! rate down rather than because a frame could not afford it. It runs under a deadline
-//! ([`run_with_deadline`]), because a `wait` with no deadline is what turns a slow mount into a
-//! frozen head.
-//!
-//! **And the loop does not run it, it starts it.** The reading is taken on a thread of its own
-//! and collected on a later tick: a `wait` *with* a deadline still holds every key for as long
-//! as the process runs, and on a repository with submodules under a build that was 1.9 s a
-//! reading — every page key in that head took two seconds or more. See `App::refresh_git`.
+//! What the workspace's own repository says, for the row the operator crosses: gitstatus's
+//! segments and glyphs in a configurable template, one colour per segment.
+//! The facts and not the text (`GitState`), because the format decides the text and a preference
+//! may change it. A repository this cannot read is ABSENT and not empty: the row draws its blank
+//! slot, since `main` over a directory that is not a repository is a lie in the one row nobody
+//! checks.
+//! Read from the LOOP, never from a paint, and STARTED there rather than waited on, because a
+//! wait holds every key for as long as the process runs.
 
 use std::process::Command;
 
-/// How many columns a segment's text takes — the same ANSI-aware measure the header
-/// centres with (`rano::width::text`), because a piece's width is what fitting spends
-/// and the pieces are plain text anyway; kept as a local so the module has no renderer
-/// import for one `usize`.
+/// How many columns a segment's text takes - the same ANSI-aware measure the header centres with.
+/// A piece's width is what fitting spends and the pieces are plain text anyway, so this stays
+/// local rather than pulling a renderer import in for one `usize`.
 fn visible_width(s: &str) -> usize {
     rano::width::text::width(s)
 }
@@ -54,22 +22,14 @@ pub const GIT_REFRESH_MS: u64 = 2_000;
 /// How long one reading may take before it is killed and treated as absent.
 pub const GIT_TIMEOUT_SECS: u64 = 5;
 
-/// **The default format: gitstatus's segments, in gitstatus's order, concatenated.**
-///
-/// The placeholders ARE the glyphs' meaning, which is the whole mnemonic: `%b` branch (or `@oid`
-/// when detached), `%d` behind, `%a` ahead, `%s` stashes, `%m` the action in progress, `%~`
-/// conflicts, `%+` staged, `%!` unstaged, `%?` untracked. `%%` is a literal per cent and anything
-/// else is literal text. `git_format` in the head's preferences overrides it — one line, and the
-/// segments it does not mention are simply not drawn.
+/// The default format: gitstatus's segments, in gitstatus's order. The placeholders ARE the
+/// glyphs' meaning - `%b` branch, `%d` behind, `%a` ahead, `%s` stashes, `%m` the action in
+/// progress, `%~` conflicts, `%+` staged, `%!` unstaged, `%?` untracked; `git_format` overrides it.
 pub const GIT_FORMAT_DEFAULT: &str = "%b%d%a%s%m%~%+%!%?";
 
-/// **One reading of the repository, as FACTS and not as text** — leticl's `%git-parts`.
-///
-/// The counts are `Some` only when there is something to say (leticl keeps zero out on purpose:
-/// a segment at zero is a segment the format does not draw, and `?0` on every clean tree would be
-/// noise), and `branch` already carries the detached spelling — `@` plus the first eight of the
-/// oid, the width gitstatus itself prints — because two consumers would otherwise spell it two
-/// ways.
+/// One reading of the repository, as FACTS and not as text. The counts are `Some` only when there
+/// is something to say - a segment at zero is one the format does not draw - and `branch` already
+/// carries the detached spelling, because two consumers would otherwise spell it two ways.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitState {
     /// The branch name, or `@oid` (eight) when detached, or `@` alone when detached with no oid.
@@ -87,13 +47,9 @@ pub struct GitState {
     pub untracked: Option<usize>,
 }
 
-/// **The style a segment is painted with** — one role per segment, and the roles are leticl's
-/// `+git-styles+` exactly: chosen to say what the segment SAYS rather than to be pretty.
-///
-/// A branch is green when the tree is clean and yellow when it is not — the one fact a person
-/// reads at a glance — staged work is green, unstaged is yellow, conflicts are red and bold
-/// because nothing else on that row is a demand, and untracked files are dim because they are
-/// usually noise.
+/// The style a segment is painted with: one role per segment, chosen to say what the segment SAYS
+/// rather than to be pretty. A branch is green when the tree is clean and yellow when it is not,
+/// and conflicts are red because nothing else on that row is a demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitRole {
     BranchClean,
@@ -165,10 +121,9 @@ pub fn git_parts(porcelain: &str, action: Option<&'static str>) -> Option<GitSta
         } else if let Some(rest) = line.strip_prefix("# stash ") {
             stash = rest.trim().parse::<usize>().ok();
         } else if let Some("1" | "2") = line.get(0..1) {
-            // **X is index-vs-HEAD, Y is workdir-vs-index** — a `.` means that side is clean.
-            // The guard is the PREFIX'S OWN LENGTH: `line.get(3..4)` on a shorter line is
-            // `None`, not `false`, which is the bounds error leticl measured on a three
-            // character `? h` line.
+            // X is index-vs-HEAD, Y is workdir-vs-index, and a `.` means that side is clean. The
+            // guard is the prefix's own length: `line.get(3..4)` on a shorter line is `None`, not
+            // `false`.
             if line.get(2..3).is_some_and(|x| x != ".") {
                 staged += 1;
             }
@@ -268,15 +223,9 @@ impl GitSlot {
     }
 }
 
-/// **STATE as the pieces the FORMAT asks for** — leticl's `%git-pieces`.
-///
-/// Literals are attached to the piece they PRECEDE — a space before a mark travels with the mark
-/// — so that fitting drops whole pieces and never half of one. A literal that precedes a segment
-/// with nothing to say is dropped with it: a separator whose mark is absent is a dangling space.
-/// `%%` is a literal per cent; a `%` that names no slot is a literal per cent too, and a trailing
-/// `%` is literal rather than an error. A trailing literal after the last piece attaches to that
-/// piece's text (and is dropped when there is no piece to attach to) — the same rule, read from
-/// the other end.
+/// STATE as the pieces the FORMAT asks for. Literals attach to the piece they PRECEDE, so fitting
+/// drops whole pieces and never half of one; a literal before a segment with nothing to say is
+/// dropped with it, since a separator whose mark is absent is a dangling space.
 pub fn git_pieces(state: &GitState, format: &str) -> Vec<(String, GitRole)> {
     let chars: Vec<char> = format.chars().collect();
     let mut out: Vec<(String, GitRole)> = Vec::new();
@@ -312,11 +261,9 @@ pub fn git_pieces(state: &GitState, format: &str) -> Vec<(String, GitRole)> {
     out
 }
 
-/// **The longest PREFIX of the pieces that fits in ROOM columns** — leticl's `%git-fit`.
-///
-/// The field degrades by DELETION, like every other thing on this row: the branch is the floor
-/// and the marks fall off its right in gitstatus's own order, so a narrow screen loses `?4` and
-/// not the branch. A field dropped whole is the behaviour this replaces.
+/// The longest PREFIX of the pieces that fits in ROOM columns. The field degrades by DELETION: the
+/// branch is the floor and the marks fall off its right in gitstatus's order, so a narrow screen
+/// loses `?4` and not the branch.
 pub fn git_fit(pieces: &[(String, GitRole)], room: usize) -> Vec<&(String, GitRole)> {
     let mut out = Vec::new();
     let mut used = 3usize; // the " (" and ")" the row wraps the field in
@@ -331,12 +278,9 @@ pub fn git_fit(pieces: &[(String, GitRole)], room: usize) -> Vec<&(String, GitRo
     out
 }
 
-/// **An action in progress, from the marker files git itself leaves.**
-///
-/// `git status --porcelain` does not report one at all — the long format says *rebase in progress*
-/// and the porcelain says nothing — so the markers are the only source, which is what leticl's
-/// `%git-action` found too. A `.git` that is a FILE is a linked worktree: its markers live beside
-/// the real repository, and this returns `None` for it. An absence rather than a guess.
+/// An action in progress, from the marker files git itself leaves: porcelain reports none at all,
+/// so the markers are the only source. A `.git` that is a FILE is a linked worktree whose markers
+/// live beside the real repository, and this answers `None` for it - an absence, not a guess.
 pub fn git_action(workspace: &str) -> Option<&'static str> {
     let git = std::path::Path::new(workspace).join(".git");
     if !git.is_dir() {
@@ -358,41 +302,9 @@ pub fn git_action(workspace: &str) -> Option<&'static str> {
     }
 }
 
-/// **One directory down, when the repository is not the workspace itself** — the nested layout.
-///
-/// The operator's own box is the case: the session lives in `Projects/letibot` and the repository
-/// in `Projects/letibot/letibot` — **the same name one level down** — so neither the git field nor
-/// the todos pane found anything at the workspace, and both drew nothing (their honest absence,
-/// working exactly as designed on a layout nobody had told them about).
-///
-/// The rule, in order, and it is a RESOLUTION rather than a guess at every step:
-///
-/// 1. **the workspace itself**, when it is a repository (`.git` present — a directory, or a file
-///    for a linked worktree) — the ordinary layout, unchanged;
-/// 2. **the same-named child** (`<workspace>/<basename>`), when that is a repository — the nested
-///    naming above, and the reason this function exists;
-/// 3. **the one repository child**, when exactly one child is one — a parent holding two
-///    repositories is a parent nobody chose between, and picking one would be the absent-field
-///    rule broken by the very code that exists to keep it;
-/// 4. otherwise **the workspace unchanged**, so whatever reads it fails as it always did and the
-///    field stays absent rather than wrong.
-///
-/// A workspace that is merely *inside* a repository needs none of this: `git` walks up on its
-/// own, and step 1 not matching simply leaves it to git.
-///
-/// **A `TODO.md` is not evidence that the workspace is the project** — it used to be step 1's
-/// first clause, and that clause cost the header its repository on this very box. The operator
-/// moved their list to `~/Projects/letibot/TODO.md` on 2026-10-31 (*"keep todos in TODO.md so
-/// claude and other harnesses can pickup"*), and `~/Projects/letibot` is a FOLDER of repositories
-/// whose repository is `~/Projects/letibot/letibot`: the file answered *this directory is the
-/// project*, `read_state` then ran `git -C ~/Projects/letibot status`, git said *not a
-/// repository*, and the header drew no branch and recorded no click for one. The operator's own
-/// words: *"it used to be showing clickable repo and option to track the work. and it is gone
-/// since yesterday."* Which `TODO.md` a reader should open is [`todos_path`]'s question now, and
-/// it is a different question from which directory holds the branch.
-///
-/// Shared by the git field and [`todos_path`] so the two cannot disagree about which directory is
-/// the project — a branch from one tree and a `TODO.md` from another would each be true alone.
+/// One directory down, when the repository is not the workspace: the workspace when it is a
+/// repository, else the same-named child, else the single repository child, else the workspace
+/// unchanged. A `TODO.md` is not evidence that it is the project; [`todos_path`] asks that.
 pub fn project_dir(ws: &str) -> std::path::PathBuf {
     let dir = std::path::Path::new(ws);
     let is_repo = |d: &std::path::Path| d.join(".git").exists();
@@ -422,21 +334,9 @@ pub fn project_dir(ws: &str) -> std::path::PathBuf {
     }
 }
 
-/// **Which `TODO.md` the operator's queue is** — the workspace's own when it has one, else the
-/// project's.
-///
-/// A separate question from [`project_dir`], and the split is the fix for a real disappearance:
-/// the operator keeps their list at `~/Projects/letibot/TODO.md`, one level ABOVE the repository
-/// (`~/Projects/letibot/letibot`), because that is the folder they open and the place the
-/// harnesses are told to look. A directory carrying a `TODO.md` therefore says *here is the
-/// list*, and it says nothing at all about where the branch is — which is why the two
-/// resolutions are now two functions and the todos pane asks this one.
-///
-/// The workspace first, and that is not a preference: a session in a worktree has the worktree's
-/// own list, a session in a folder of repositories has the folder's, and the repository's is the
-/// fallback for the layout where the list lives beside the code (every layout before
-/// 2026-10-31). The two agree whenever the workspace IS the project, so nothing that worked
-/// before this split reads a different file.
+/// Which `TODO.md` the operator's queue is: the workspace's own when it has one, else the
+/// project's. A separate question from [`project_dir`], because a directory carrying a list says
+/// nothing about where the branch is, and a session in a worktree has the worktree's own list.
 pub fn todos_path(ws: &str) -> std::path::PathBuf {
     let own = std::path::Path::new(ws).join("TODO.md");
     if own.is_file() {
@@ -445,24 +345,9 @@ pub fn todos_path(ws: &str) -> std::path::PathBuf {
     project_dir(ws).join("TODO.md")
 }
 
-/// **The repository the project is** — [`project_dir`]'s answer when that is one (or sits inside
-/// one: git walks up), else the one repository child of a project folder that is not a repository
-/// itself.
-///
-/// # Why this is not [`project_dir`]
-///
-/// The two questions were one function, and on this box's own layout they have different answers:
-/// the session lives in `~/Projects/letibot`, which carries the project's `TODO.md` **and** holds
-/// the repository in `letibot/`. `project_dir` answers the folder — right for the todos pane,
-/// which reads that file — and the git field then ran `git status` in a directory that is not a
-/// repository, drew nothing, and with it took the repo card (whose first row is *follow the work*)
-/// and every click that opened it. Measured 2026-11-01, when a `TODO.md` appeared at the project's
-/// root: the header read `letibot  ~/Projects/letibot` and nothing else.
-///
-/// So the two are derived from ONE resolver and cannot disagree about which tree is the project:
-/// the repository is the project directory when git can read it there, and otherwise the single
-/// repository inside it. A project folder holding several repositories still answers itself —
-/// nobody chose between them, and `repos_in` is what the field says in that case.
+/// The repository the project is: [`project_dir`]'s answer when that is one or sits inside one
+/// (git walks up), else the one repository child of a project folder that is not itself a
+/// repository. Separate from [`project_dir`] because a folder may carry the list and not the code.
 pub fn repo_dir(ws: &str) -> std::path::PathBuf {
     let project = project_dir(ws);
     let is_repo = |d: &std::path::Path| d.join(".git").exists();
@@ -486,19 +371,9 @@ pub fn repo_dir(ws: &str) -> std::path::PathBuf {
     }
 }
 
-/// **One reading of the workspace, or `None`** — leticl's `%git-refresh`, without its cache: the
-/// caller is the loop, which has its own interval and its own cache (`App::git_read`).
-///
-/// **The argv is leticl's `%git-command` verbatim** — `41d8935`, "the reader's argv is back, in
-/// v2": `--no-optional-locks` is the one flag that is not about WHAT is read — a plain
-/// `git status` may take the index lock and write the refreshed index back, a READER writing to
-/// the repository it is reporting on, which is exactly what an indicator must not do — and
-/// `--show-stash` is where gitstatus's `%s` segment comes from. The process call is kept apart
-/// from the parse so the parse is testable without a repository.
-///
-/// **The action's markers are read from the PROJECT directory**, not the workspace: a nested
-/// layout keeps them one level down with the repository, and the old call here passed the
-/// workspace — an action nobody could ever see on this box's own layout.
+/// One reading of the workspace, or `None`. The argv carries `--no-optional-locks` because a plain
+/// `git status` may write the index back - a reader writing to the repository it reports on - and
+/// `--show-stash` because that is where gitstatus's `%s` comes from.
 pub fn read_state(workspace: &str) -> Option<GitState> {
     if workspace.is_empty() {
         return None;
@@ -509,11 +384,9 @@ pub fn read_state(workspace: &str) -> Option<GitState> {
     read_state_at(&repo_dir(workspace))
 }
 
-/// **The repositories a workspace holds** — the operator, of `~/Projects/stroppy-io`: *"there are
-/// many repos in that stroppy-io … without any main"*. One entry when the workspace is a
-/// repository itself or sits inside one (git walks up); otherwise every child that is one, the
-/// same-named child first (the nested layout's main checkout) and the rest by name. Empty for a
-/// folder that holds none.
+/// The repositories a workspace holds: one entry when the workspace is a repository or sits inside
+/// one (git walks up), otherwise every child that is one, the same-named child first and the rest
+/// by name. Empty for a folder that holds none.
 pub fn repos_in(ws: &str) -> Vec<std::path::PathBuf> {
     let dir = std::path::Path::new(ws);
     if ws.is_empty() {
@@ -565,13 +438,9 @@ pub fn read_state_at(dir: &std::path::Path) -> Option<GitState> {
     git_parts(&text, action)
 }
 
-/// **A command's stdout if it succeeds within `limit`, else `None`** — and a command past its
-/// limit is killed, not waited for.
-///
-/// This was coreutils' `timeout git …`, and macOS has no `timeout`: every reading failed to
-/// spawn, so a Mac's header never showed a branch, and CI's macOS job failed the two `repos`
-/// tests that look for `(main` (run 39131941988). The output is drained on a thread so a reading
-/// larger than the pipe cannot stall the child while the deadline is watched.
+/// A command's stdout if it succeeds within `limit`, else `None` - and a command past its limit is
+/// killed, not waited for. The output is drained on a thread so a reading larger than the pipe
+/// cannot stall the child while the deadline is watched.
 pub fn run_with_deadline(mut cmd: Command, limit: std::time::Duration) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut child = cmd
@@ -731,10 +600,9 @@ mod tests {
         assert_eq!(state.ahead, None);
     }
 
-    /// **Three facts, three marks, and the marks are the vocabulary** — the operator asked for the
-    /// field, and a field that showed `main` for a tree with nine changed files would be the row
-    /// lying politely. The first cut of this field said `main*` for all of it; the port says
-    /// which KIND of dirty, gitstatus's own separation: X is staged, Y is unstaged.
+    /// Three facts, three marks: a field that showed `main` for a tree with nine changed files
+    /// would be the row lying politely, so the port keeps gitstatus's own separation - X is staged,
+    /// Y is unstaged.
     #[test]
     fn a_dirty_branch_separates_staged_from_unstaged() {
         let dirty = "# branch.oid abc1234\n# branch.head main\n# branch.upstream origin/main\n\
@@ -798,10 +666,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["master"]
         );
-        // A literal before an absent segment is dropped with it — and a literal AFTER one
-        // travels with the next segment, which is the same rule read from the other side:
-        // literals attach to the piece they precede, so the " (" before the absent stash
-        // goes, and the ") " that follows attaches to the conflict mark.
+        // A literal before an absent segment is dropped with it, and one AFTER it travels with the
+        // next segment: literals attach to the piece they precede, so the " (" before an absent
+        // stash goes and the ") " that follows attaches to the conflict mark.
         let no_stash = GitState {
             stash: None,
             ..everything()

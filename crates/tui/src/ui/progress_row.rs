@@ -1,16 +1,9 @@
-//! **The long waits, as one line of the status row**: a fill the daemon named, a fold, and a
-//! snapshot's announced rows still arriving.
+//! The long waits, as one line of the status row: a fill the daemon named, a fold,
+//! and a snapshot's announced rows still arriving.
 //!
-//! The operator, 2026-10-14, after the transients moved into the status row (516c5a4): *"yes,
-//! move the compacting progress blocks too"*. Each of these was a block of two or three rows at the
-//! foot of the conversation — a blank, a bar with the cat, a sentence — that appeared when the
-//! operation started, changed height when a fold went from reading to writing, and went away when
-//! it ended: three jumps of the whole conversation per operation, on the operations that last
-//! longest. Here each is ONE line — label · bar · numbers — drawn in the row the fit ladder
-//! reserves whether or not anything is in it, so nothing above the composer moves for them.
-//!
-//! What the blocks said and the line has no room for is kept: the row is a click target while it
-//! leaves anything out, and the click opens the whole of it ([`Progress::detail`]).
+//! Each is ONE line (label, bar, numbers) drawn in the row the fit ladder reserves,
+//! so nothing above the composer moves for them; the row stays a click target while
+//! it leaves anything out, and the click opens the whole of it (`Progress::detail`).
 
 use crate::app::*;
 use crate::ui::loading::{BODY_PATIENCE, MIN_FILLING};
@@ -67,10 +60,9 @@ fn of(done: u64, total: u64) -> String {
 }
 
 impl Progress {
-    /// **The row forms, fullest first**: everything; without the advice; without the clock;
-    /// without the counts; the bar (with its percentage) alone; the label alone. A form identical
-    /// to the one before it (no bar to drop) is skipped. `more` is the `+N` of other progresses
-    /// live at the same time, carried with the label so it is never dropped either.
+    /// The row forms, fullest first: everything; without the advice; without the clock;
+    /// without the counts; the bar alone; the label alone. A form identical to the one
+    /// before it is skipped, and `more` rides with the label so it is never dropped.
     pub(crate) fn forms(&self, more: usize, now_ms: u64) -> Vec<Line> {
         let mut label = vec![Span::role(self.label.clone(), self.role)];
         if more > 0 {
@@ -121,16 +113,9 @@ impl Progress {
 }
 
 impl App {
-    /// **Every progress live now, oldest first.** The status row shows the last of them — the one
-    /// that started last, which is the one the reader just caused or just saw begin — and counts
-    /// the rest as `+N` ([`App::status_row`]).
-    ///
-    /// * **A fill the daemon named** (`SessionEvent::Filling`): a reseat's render and write, a
-    ///   compaction's carry, a restore, an import. Gated by [`MIN_FILLING`] as the block was — a
-    ///   few rows are not worth a line that comes and goes in the status row either.
-    /// * **A fold** (`SessionEvent::CompactionProgress`): reading its half, then writing.
-    /// * **A snapshot's announced rows** ([`Bulk`]) while no fill is named — arriving, and past
-    ///   [`BODY_PATIENCE`] the finding that they never did, with the ids.
+    /// Every progress live now, oldest first. The status row shows the last one - the one the
+    /// reader just caused - and counts the rest as `+N`. A fill is gated by [`MIN_FILLING`],
+    /// a fold reads then writes, and a snapshot's rows are a finding past [`BODY_PATIENCE`].
     pub(crate) fn progresses(&self) -> Vec<Progress> {
         let now_ms = self.now_ms;
         let mut out: Vec<Progress> = Vec::new();
@@ -265,10 +250,9 @@ impl App {
     }
 }
 
-/// `line`, followed by `form` — joined by ` · ` after the turn's words, or, alone on an idle
-/// row, behind a spinner of its own — and cut to `w` if the label itself does not fit. `None`
-/// when not even [`super::turn_status::TRANSIENT_MIN`] columns of it would; the flag says it was
-/// cut.
+/// `line` followed by `form`, joined after the turn's words or behind a spinner on an idle
+/// row, and cut to `w` when the label alone fits. `None` when not even
+/// [`super::turn_status::TRANSIENT_MIN`] columns would; the flag says the label was cut.
 pub(crate) fn with_progress(
     line: &Line,
     form: &Line,

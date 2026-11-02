@@ -218,15 +218,9 @@ fn warning_card(detail: &str) -> Option<Card> {
     warning_review(detail).map(|r| r.card())
 }
 
-/// **A message between sessions, unwrapped** — the two openings `harnessd`'s
-/// `message_from_a_session` writes, `message from your parent session `X`: ` and
-/// `message from session `X`: ` — the door a refusal and a veto reach the branch's session
-/// through.
-///
-/// **Two openings because the sentence says which way the edge runs** (2026-10-29): the first is a
-/// parent speaking to its child, the second is any other session — a child answering, a peer, the
-/// session hosting a review, which is the one a refusal comes from. A card that knew only the first
-/// would draw every refusal with its envelope on.
+/// A message between sessions, unwrapped: the two openings `message_from_a_session` writes,
+/// which say which way the edge runs. Knowing only the parent one would draw every refusal
+/// with its envelope on.
 fn unwrap_message(text: &str) -> &str {
     [
         "message from your parent session `",
@@ -518,11 +512,9 @@ fn busy_words(busy: &str) -> String {
         .replace("every VM slot is busy", "every slot busy")
 }
 
-/// **The decisive reason's first clause** — the operator's example: *"for "could not decide"
-/// the sentence starting with BUT is the decisive one if present; otherwise the first
-/// sentence"*. The reviewer's reasons arrive joined with `; `, so a sentence ends at `. `, `; `
-/// or a line break; the clause ends at the first `, and` / `, so` / `, which` / `: ` / ` — ` far
-/// enough in to be a clause, and a cut clause says so with `…`.
+/// The decisive reason's first clause: a sentence starting with BUT wins, else the first
+/// sentence, and the clause ends at the first `, and` / `, so` / `, which` / `: ` / ` - ` far
+/// enough in to count. A cut clause ends in an ellipsis rather than being left to guess.
 pub(crate) fn decisive(reasons: &str) -> Option<String> {
     let text = flat(reasons);
     let sentences = sentences(&text);

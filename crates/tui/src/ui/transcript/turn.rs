@@ -5,16 +5,8 @@ use letibot_sessionlog::view::TurnState;
 use rano::agent::blocks::TurnEnd;
 
 /// How a turn ended, said in words rather than in the wire's vocabulary.
-///
-/// The footer carries **only the ending that is news**. Its stats line —
-/// prompt, cache, rate, wall time, output — moved to the session header, where
-/// the rest of the turn's numbers live; an ordinary ending (`eos`, `word`) now
-/// leaves the body with no footer line at all, because `── 1.2k out` hovering
-/// above the composer was a settled fact occupying the row a live fact used to
-/// have to earn. What stays is the case §5.7's rule is about: `length` is not a
-/// normal ending, it means the answer was cut off mid-sentence, and truncation
-/// is never folded into success — a display that lets it read like `eos` folds
-/// it at the last possible moment.
+/// Only an ending that is news is drawn: `length` means the answer was cut off,
+/// so it must never read like a clean `eos`.
 pub(crate) fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
     use letibot_sessionlog::event::FinishReason as F;
     let end = match state {
