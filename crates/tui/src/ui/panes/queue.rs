@@ -85,12 +85,29 @@ impl App {
     /// showing a running gate is one whose point is that the numbers move. The detail asks for
     /// itself: it is a surface of its own, so `queue_lines` never runs while a row is open.
     fn ask_for_queues(&mut self) {
-        if self.now_ms.saturating_sub(self.queues_asked_ms) >= REFRESH_MS {
+        if self.now_ms.saturating_sub(self.queues_last_ms()) >= REFRESH_MS {
             self.queues_asked_ms = self.now_ms;
             if !self.queued.contains(&Action::ListMergeQueue) {
                 self.queued.push(Action::ListMergeQueue);
             }
         }
+    }
+
+    /// **The edge's snapshot ages even when nothing moves** - a gate's step, a target turning red,
+    /// a landing falling out of the day's column - and the daemon only answers. Asked on the head's
+    /// own clock, open pane or not, so a standing nobody opened anything to see is not the one from
+    /// an hour ago.
+    pub(crate) fn refresh_queues_on_the_clock(&mut self) {
+        if self.queues_got_ms == 0 || self.skew_locked() {
+            return;
+        }
+        self.ask_for_queues();
+    }
+
+    /// When the snapshot question was last asked or answered, whichever is later - an answer
+    /// arrived is as good as an ask sent.
+    fn queues_last_ms(&self) -> u64 {
+        self.queues_asked_ms.max(self.queues_got_ms)
     }
 
     /// The pane: the `queue` layer's answer, hosted. A snapshot that has not arrived is nobody's to

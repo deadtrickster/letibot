@@ -1356,6 +1356,9 @@ impl App {
             self.notice_until = Some(now_ms.saturating_add(NOTICE_MS));
         }
         self.now_ms = now_ms;
+        // The composer's edge draws the queues whether or not the pane was ever opened, and a
+        // snapshot only ages: see `refresh_queues_on_the_clock`.
+        self.refresh_queues_on_the_clock();
         // An open window over a running job follows what it writes. See `poll_job_out`.
         self.poll_job_out();
     }

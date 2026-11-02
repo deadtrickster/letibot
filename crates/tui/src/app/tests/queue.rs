@@ -404,6 +404,34 @@ fn an_attach_asks_for_the_queues_so_the_edge_has_a_standing() {
     );
 }
 
+/// **The edge's snapshot is asked for again on the head's own clock** - a gate's step moves while
+/// no row does, and the daemon only answers, so a standing nobody opened anything to see was the
+/// one from the first answer for ever.
+#[test]
+fn the_edge_asks_for_a_fresh_snapshot_without_the_pane() {
+    let mut a = app();
+    a.apply(hello("s", Vec::new(), Hub::new("s").snapshot()));
+    let _ = a.take_actions();
+    a.now_ms = 100_000;
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    assert!(!a.is_open(Surface::Queue), "the pane was never opened");
+
+    // Inside the window: the answer just arrived, so nothing is asked.
+    a.clock(100_000 + crate::ui::panes::queue::REFRESH_MS - 1);
+    assert!(
+        a.take_actions().is_empty(),
+        "a snapshot a moment old is not asked for again"
+    );
+    // A window later, and the edge asks for the standing it would otherwise keep drawing.
+    a.clock(100_000 + crate::ui::panes::queue::REFRESH_MS);
+    assert_eq!(a.take_actions(), vec![Action::ListMergeQueue]);
+    // And once, not once a tick: the ask is on the same clock the pane's own refresh is.
+    a.clock(100_000 + crate::ui::panes::queue::REFRESH_MS + 1);
+    assert!(a.take_actions().is_empty(), "asked twice in one window");
+}
+
 const LETIBOT: &str = "/home/dead/Projects/letibot/letibot";
 const OTHER: &str = "/home/dead/Projects/pg-noop";
 
