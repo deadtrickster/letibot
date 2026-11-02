@@ -21,10 +21,8 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-/// The cached, unchanging head of a prompt: bootstrap system prompt and tool schemas.
-///
-/// Separated from the items because it is what the server's prefix cache is keyed on.
-/// A change here invalidates every downstream token; a change in `items` does not.
+/// The cached, unchanging head of a prompt: bootstrap system prompt and tool schemas. It is what
+/// the server's prefix cache is keyed on, so a change here invalidates every downstream token.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StablePrefix {
     pub system: String,
@@ -33,10 +31,8 @@ pub struct StablePrefix {
     pub tools_json: Vec<String>,
 }
 
-/// One piece of a rendered prompt, before tokenization.
-///
-/// A template-driven renderer splits the template's output on control-token literals
-/// to build these, so no backend needs to know a model's boundary spelling.
+/// One piece of a rendered prompt, before tokenization: a template-driven renderer splits the
+/// template's output on control-token literals to build these.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderSpan {
     /// Literal text, tokenized with special-token parsing disabled, so nothing inside
@@ -46,15 +42,9 @@ pub enum RenderSpan {
     Control(ControlToken),
 }
 
-/// A control token, identified symbolically and literally.
-///
-/// The `literal` is what the shipped jinja emits and what the fidelity gate checks
-/// against; the `role` is what [`Parser`] and the invariant tests reason about, so two
-/// dialects that spell a boundary differently stay comparable.
-///
-/// `literal` is a [`Cow`] because a dialect loaded at runtime cannot produce a
-/// `&'static str`; a compile-time table uses [`ControlToken::borrowed`] and allocates
-/// nothing.
+/// A control token, identified symbolically and literally: the literal is what the shipped jinja
+/// emits, the role is what [`Parser`] reasons about. `literal` is a [`Cow`] because a dialect loaded
+/// at runtime cannot produce a `&'static str`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ControlToken {
     pub role: ControlRole,
@@ -81,14 +71,9 @@ impl ControlToken {
     }
 }
 
-/// The structural boundaries a parser can recognise.
-///
-/// Each variant is a boundary some model spells as a single vocab entry, so each has to
-/// be emitted as [`RenderSpan::Control`]: spelling `<arg_key>` as text tokenizes it as
-/// six ordinary tokens and diverges from training.
-///
-/// `Ord` is derived so a diagnostic listing several roles can sort instead of depending
-/// on a table's declaration order. The order carries no meaning beyond determinism.
+/// The structural boundaries a parser can recognise: each is one vocab entry some model spells, so
+/// each must be a [`RenderSpan::Control`]. `Ord` is derived so a diagnostic can sort the roles it
+/// lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlRole {
     BeginOfText,
@@ -116,21 +101,14 @@ pub enum ControlRole {
     Image,
     ImageClose,
     EndOfTurn,
-    /// A single-entry token with no structural role this contract models.
-    ///
-    /// Named rather than carried under an unrelated variant, so
-    /// [`ControlTokens::all_with_role`] lists exactly the tokens nobody has modelled.
+    /// A single-entry token with no structural role this contract models. Named rather than carried
+    /// under an unrelated variant, so `all_with_role` lists the tokens nobody has modelled.
     Other,
 }
 
-/// Every control token a dialect uses, so the token core resolves them once at startup
-/// and fails loudly if the vocab does not hold one.
-///
-/// A slice rather than named fields: models disagree about which boundaries exist, and
-/// an `Option` per role invites a renderer to skip one it should have emitted. [`Cow`]
-/// for the same reason [`ControlToken::literal`] is.
-///
-/// One role may own several literals - see [`ControlTokens::all_with_role`].
+/// Every control token a dialect uses, so the token core resolves them once at startup and fails
+/// loudly if the vocab does not hold one. A slice, because an `Option` per role invites a renderer
+/// to skip one it should have emitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlTokens(pub Cow<'static, [ControlToken]>);
 
@@ -160,29 +138,22 @@ impl ControlTokens {
         self.0.is_empty()
     }
 
-    /// The primary lookup: a literal is what the template emits and what the vocab
-    /// resolves to one id, so this direction is always unambiguous.
-    ///
-    /// Two entries may share a literal under different roles, which is legal: they
-    /// resolve to the same id and only the label differs, so this returns the first.
+    /// The primary lookup: a literal is what the template emits and what the vocab resolves to one
+    /// id. Two entries may share a literal under different roles, which is legal, so this returns
+    /// the first.
     pub fn by_literal(&self, literal: &str) -> Option<&ControlToken> {
         self.0.iter().find(|t| t.literal == literal)
     }
 
-    /// Every token carrying a role.
-    ///
-    /// An iterator rather than the first match, so "this role has three literals" is a
-    /// thing the caller must look at instead of one it silently gets a single of.
+    /// Every token carrying a role: an iterator rather than the first match, so "this role has three
+    /// literals" is a thing the caller must look at.
     pub fn all_with_role(&self, role: ControlRole) -> impl Iterator<Item = &ControlToken> {
         self.0.iter().filter(move |t| t.role == role)
     }
 }
 
-/// A literal that ends generation, with the role it plays.
-///
-/// A stop token that fails to resolve - absent from the vocabulary, or silently a
-/// multi-token sequence rather than one entry - never fires, and the turn runs to
-/// `n_ctx` saying nothing. The role lets the startup failure name what was lost.
+/// A literal that ends generation, with the role it plays: a stop token that is not one vocab entry
+/// never fires, so the role lets the startup failure name what was lost.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StopToken {
     pub literal: Cow<'static, str>,
@@ -205,15 +176,9 @@ impl StopToken {
     }
 }
 
-/// What `parse` recovers from a decoded token stream.
-///
-/// `parse` after `render` must be the identity on the round-trippable parts, which
-/// catches a control-token mistake before a model does.
-///
-/// Each span carries the `Range<usize>` of ids it came from, indices into the slice
-/// handed to [`Parser::parse`]. The ledger needs to know which tokens belong to an
-/// item, and only the parser walks the ids, so without the offsets every consumer would
-/// carry a second parser that re-segments on control roles.
+/// What `parse` recovers from a decoded token stream: `parse` after `render` must be the identity on
+/// the round-trippable parts. Each span carries the ids it came from, since only the parser walks
+/// them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedSpan {
     Reasoning {
@@ -236,24 +201,16 @@ pub enum ParsedSpan {
     },
 }
 
-/// The vocabulary, as much of it as a parser is allowed to know.
-///
-/// A parser is handed ids and must return text, which is not implementable in a crate
-/// with no vocab; this is the smallest interface that closes that hole.
-///
-/// `decode` takes a slice, not one id: detokenization is not per-token concatenation on
-/// a BPE vocabulary, so decoding a run and joining its pieces are different operations.
+/// The vocabulary, as much as a parser may know: `decode` takes a slice, because detokenizing a run
+/// and joining per-token pieces differ on a BPE vocabulary.
 pub trait TokenDecoder {
     /// Text for a run of ids. Infallible on purpose: dropping bytes is the failure this
     /// design exists to abolish, so an implementation that cannot decode something must
     /// render a visible marker instead.
     fn decode(&self, tokens: &[u32]) -> String;
 
-    /// The role of a single id, if it is one of this dialect's control tokens.
-    ///
-    /// By id, not by matching decoded text: text that merely spells `</think>` is
-    /// several ids, so it can never be mistaken for the boundary. That is the guarantee
-    /// [`RenderSpan`] gives on the way out, restated on the way back in.
+    /// The role of a single id, if it is one of this dialect's control tokens: by id, because text
+    /// that merely spells `</think>` is several ids and can never be the boundary.
     fn control_role(&self, token: u32) -> Option<ControlRole>;
 }
 
@@ -269,10 +226,8 @@ pub enum SystemUpdateMode {
     Envelope,
 }
 
-/// A declared, model-specific mitigation.
-///
-/// Declarative on purpose: the dialect says what to watch for and the turn engine owns
-/// what to do, so a dialect stays data and guards stay testable without a model.
+/// A declared, model-specific mitigation. Declarative because the dialect says what to watch for and
+/// the engine owns what to do, so guards stay testable without a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Guard {
     /// Stop when the same token repeats `run` times consecutively.
@@ -284,12 +239,8 @@ pub enum Guard {
     ReasoningStall { tokens: u32 },
 }
 
-/// Which wire field a model replays its own reasoning into.
-///
-/// A per-model fact, so [`DialectSpec`] carries it and the engine reads it from there
-/// rather than from configuration. `letibot-transcript` mirrors this enum for the
-/// provenance it stamps on reasoning rows, and `crates/turn` maps between them. Keep
-/// the variants in step.
+/// Which wire field a model replays its own reasoning into. A per-model fact, so [`DialectSpec`]
+/// carries it; `letibot-transcript` mirrors the enum and `crates/turn` maps between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningField {
     /// GLM: replayed as `reasoning_content`.
@@ -298,12 +249,8 @@ pub enum ReasoningField {
     Inline,
 }
 
-/// Everything about a model that rendering needs, as a value.
-///
-/// There are no methods because there is nothing left to implement: one template engine
-/// serves every model, and what distinguishes GLM from Qwen is the `template` string
-/// plus the tables beside it. A new model therefore needs no code - extract the template
-/// and token table from its GGUF and construct one of these.
+/// Everything about a model that rendering needs, as a value. There are no methods because one
+/// template engine serves every model, so a new model needs no code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DialectSpec {
     pub name: Cow<'static, str>,
@@ -320,18 +267,14 @@ pub struct DialectSpec {
     pub guards: Vec<Guard>,
 }
 
-/// Token ids in, spans out.
-///
-/// Parsing is not data because it is not a template: the shipped jinja says how a turn
-/// is written, never how to read one back.
+/// Token ids in, spans out. Parsing is not data because it is not a template: the shipped jinja says
+/// how a turn is written, never how to read one back.
 pub trait Parser: Send + Sync {
-    /// Takes `u32` rather than a `llama_token` alias so this crate stays free of the
-    /// FFI, and takes the `decoder` because it must: see [`TokenDecoder`].
+    /// Takes `u32` to keep this crate free of the FFI, and the decoder because it must.
     ///
-    /// `reasoning_open` is the channel the model is speaking on before the first token
-    /// of the slice. A generation prompt commonly leaves the reasoning block open, and
-    /// parsing from a stateless content start would promote a cut-off deliberation to
-    /// visible content. The caller owns the lead, so the caller owns that fact.
+    /// `reasoning_open` is the channel the model speaks on before the first token: a generation
+    /// prompt commonly leaves the reasoning block open, and a stateless parse would promote a
+    /// cut-off deliberation to visible content.
     fn parse(
         &self,
         tokens: &[u32],
@@ -340,10 +283,8 @@ pub trait Parser: Send + Sync {
     ) -> Vec<ParsedSpan>;
 }
 
-/// Concatenate the text of a span sequence.
-///
-/// The detokenized form of a render must equal the shipped template's output exactly,
-/// and this is the "ours" half of that comparison.
+/// Concatenate the text of a span sequence. The detokenized form of a render must equal the shipped
+/// template's output exactly, and this is the "ours" half of that comparison.
 pub fn spans_to_string(spans: &[RenderSpan]) -> String {
     let mut s = String::new();
     for span in spans {
@@ -357,20 +298,9 @@ pub fn spans_to_string(spans: &[RenderSpan]) -> String {
 
 /// The same spans as the string a server tokenizes itself, for a prompt carrying media.
 ///
-/// llama.cpp takes images only when `prompt` is an object carrying a `prompt_string`:
-/// the server tokenizes that string and substitutes the image's embeddings at the media
-/// marker, a per-process random value published on `/props`. There is no
-/// token-array-plus-images path, so a prompt with an image in it travels as text.
-///
-/// That is safe for the cache because control tokens are atomic and BPE has no boundary
-/// to merge across, so a framed prompt tokenizes the same as one string and item by
-/// item. The property is this file's to keep: bare text where a boundary belongs would
-/// make the string path cost a cold prefill.
-///
-/// One image is one marker. A dialect emits `ImageOpen`, `Image` and `ImageClose`; the
-/// server wants the marker once, so the opening role places it and the other two are
-/// swallowed. A dialect that emitted only `Image` places no marker, which is a bug in
-/// that dialect rather than a case to handle here.
+/// Images travel only as a `prompt_string`, which the server tokenizes and marks per process. That
+/// is safe for the cache while control tokens stay atomic, which is this file's job to keep. One
+/// image is one marker: the opening role places it and the other two are swallowed.
 pub fn spans_to_string_with_media(spans: &[RenderSpan], marker: &str) -> String {
     let mut s = String::new();
     for span in spans {
@@ -386,11 +316,8 @@ pub fn spans_to_string_with_media(spans: &[RenderSpan], marker: &str) -> String 
     s
 }
 
-/// How many images a span sequence places, one per `ImageOpen`.
-///
-/// The engine pairs this with `letibot_transcript::media::media_in_order` when it builds a
-/// multimodal request: the server substitutes the pictures in the order the markers
-/// appear, so the two lists must be the same length and in the same order.
+/// How many images a span sequence places, one per `ImageOpen`: the engine pairs this with the media
+/// it sends, because the server substitutes pictures in the order the markers appear.
 pub fn media_spans(spans: &[RenderSpan]) -> usize {
     spans
         .iter()
