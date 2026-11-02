@@ -563,11 +563,9 @@ fn nag_verb_to(hub: &Hub, line: &str) {
     );
 }
 
-/// **A command a child does not run is said back to its head, naming the child and what it was**
-/// (R67 item 15 / R74 item 31). Until this test the sentence was asserted only as a pure function of
-/// its two arguments; here it arrives on a REAL child's hub, from the door that refuses the command -
-/// and the queue it was refused from is the child's own, which is the half a pure function cannot
-/// show.
+/// **A command a child does not run is said back to its head, naming the child and what it was.**
+/// The sentence was asserted only as a pure function; here it arrives on a real child's hub, from
+/// the door that refuses the command.
 #[test]
 fn a_command_a_child_does_not_own_is_said_back_to_its_head_by_name() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

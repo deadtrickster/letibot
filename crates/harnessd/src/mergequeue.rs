@@ -154,10 +154,8 @@ pub(crate) fn sleep_unless_stopped(wait: std::time::Duration, stop: &AtomicBool)
 pub const RECENT_MOVES: usize = 60;
 
 /// **How many of a live row's OWN moves the snapshot guarantees**, whatever other rows have done
-/// since. The pane's history for one row is filtered out of `recent`, which holds the last
-/// [`RECENT_MOVES`] moves across the whole queue - on a busy queue a row that had been waiting all
-/// day had every move of its own pushed out of the window, and the pane drew a row with no history
-/// at all (TODO.md R74 item 6).
+/// since: the pane reads one row's history out of a window the whole queue shares, so a busy queue
+/// would otherwise push a waiting row's own moves out of it.
 pub const RECENT_MOVES_PER_ROW: usize = 4;
 
 /// Both queues as the wire carries them: every row, the leases, the targets' health and the last

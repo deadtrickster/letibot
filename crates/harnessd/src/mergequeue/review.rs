@@ -864,9 +864,8 @@ fn open_fix_branch(
 }
 
 /// The word a refusal nobody heard is written down under, in the store's `queue_told` table: the row
-/// whose complaints are OWED to the first session that opens later. The head it judged is in the
-/// key, because a re-review of a new head is a new debt - the verdict that was never delivered is
-/// about the head the reviewer actually read.
+/// whose complaints are owed to the first session that opens later. The head it judged is in the key,
+/// so a re-review of a new head is a new debt.
 pub const REFUSAL_OWED: &str = "refusal:";
 
 /// How long a refusal nobody heard is owed. A branch rejected a week ago and never touched again is
@@ -877,10 +876,9 @@ fn owed_key(r: &ReviewRow) -> String {
     format!("{REFUSAL_OWED}{}:{}", r.head_sha, r.id)
 }
 
-/// The refusal goes back to the child that wrote the branch, or its root when the child is
-/// gone; then to a live session of the branch's workspace when the whole tree is dead; and when
-/// nobody can be told, it is WRITTEN DOWN - the operator is told once, and
-/// [`redeliver_refusals`] hands it to whoever opens next (it stays on the row either way).
+/// The refusal goes back to the child that wrote the branch, or its root when the child is gone, then
+/// to a live session of the branch's workspace; when nobody can be told it is written down, and
+/// [`redeliver_refusals`] hands it to whoever opens next.
 fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     let Err(tried) = hand_refusal(p, r, reasons) else {
         return;
@@ -935,11 +933,9 @@ fn hand_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) -> Result<String, V
     Err(tried)
 }
 
-/// **A refusal nobody heard is owed to whoever opens next.** `deliver_refusal` wrote the debt down
-/// when the verdict landed and there was no session to take it; this is the other end - a pass that
-/// hands it to a session that has opened since, once - and the two ends that close a debt nobody
-/// wants: a row that is no longer the verdict it was rejected with (a person restarted it, or a new
-/// head was judged), and a day gone by with nobody to tell.
+/// **A refusal nobody heard is owed to whoever opens next**: `deliver_refusal` wrote the debt down at
+/// the verdict, and this is the other end, a pass that hands it to a session opened since. A row that
+/// is no longer the verdict it was rejected with is owed nothing, and neither is a day-old one.
 pub fn redeliver_refusals(p: &Pool) -> Result<usize, StoreError> {
     let mut handed = 0;
     let now = now_ms();

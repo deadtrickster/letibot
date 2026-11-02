@@ -179,9 +179,8 @@ fn a_row_that_is_not_gating_carries_no_running_step() {
 }
 
 /// **A live row's own moves survive a window full of other rows' work.** The pane's history for one
-/// row is filtered out of `recent`, which carries the last [`super::RECENT_MOVES`] moves ACROSS the
-/// queue - so a row that had been waiting all day had every move of its own pushed out by other
-/// rows' work and was drawn with no history at all (TODO.md R74 item 6).
+/// row is filtered out of `recent`, which holds the last [`super::RECENT_MOVES`] moves across the
+/// queue, so on a busy queue a waiting row was drawn with no history at all.
 #[test]
 fn a_live_rows_own_moves_are_in_the_snapshot_whatever_else_the_queue_has_done() {
     let (store, dir, repo) = gating_row("per-row");

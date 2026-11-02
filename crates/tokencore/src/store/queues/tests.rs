@@ -61,9 +61,9 @@ fn claim(owner: &str) -> LeaseClaim {
     }
 }
 
-/// **A wake reads the rows it still has business with, not the whole table.** Nothing in this tree
-/// deletes a review row, so a reading that selects every row ever and filters in Rust grows with the
-/// box's history - which is what `queue_notices` and `handover_notices` did (TODO.md R74 item 3).
+/// **A wake reads the rows it still has business with, not the whole table.** Nothing deletes a
+/// review row, so a reading that selects every row ever and filters in Rust grows with the box's
+/// history.
 #[test]
 fn only_the_states_asked_for_are_read_and_an_old_row_never_comes_back() {
     let d = TempDir::new("live");

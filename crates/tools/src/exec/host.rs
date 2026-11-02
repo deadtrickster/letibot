@@ -710,11 +710,9 @@ pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 /// ([`super::jobs::Capture::release`]) and the row and its counts stay. A running job keeps its.
 pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
 
-/// **How many records of what a host did one host keeps** - every reaping, every promotion and every
-/// deadline it fired. They are a small record a caller reads back (*the deadline ended this run*, *the
-/// model's command was promoted*), not a history, and nothing pruned them before this: a daemon that
-/// had been up for a month carried every kill it ever made, each with the pids it observed and the
-/// ones that survived (TODO.md R74 item 19).
+/// **How many records of what a host did one host keeps**: every reaping, every promotion and every
+/// deadline it fired are a small record a caller reads back, not a history, and a daemon that has
+/// been up for a month must not carry every kill it ever made.
 pub const RECORD_LIMIT: usize = 512;
 
 /// Keep `records` to `limit`, dropping the OLDEST first: the newest is the one a caller asking *what
@@ -2448,10 +2446,9 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
     }
 
-    /// **The record of what a host did is bounded, and the oldest go first** (TODO.md R74 item 19).
-    /// `reaps`, `promotions` and every deadline fired are a small record a caller reads back, not a
-    /// history: nothing pruned them, so a daemon that had been up for a month carried every kill it
-    /// ever made - each holding the pids it observed and the ones that survived.
+    /// **The record of what a host did is bounded, and the oldest go first**: a reaping, a promotion
+    /// and a deadline fired are read back by a caller, so they cannot keep the pids of every kill the
+    /// daemon ever made.
     #[test]
     fn the_records_of_what_a_host_did_are_bounded_and_the_oldest_go_first() {
         // The rule, on its own: past the limit the FRONT goes, because the newest record is the one a

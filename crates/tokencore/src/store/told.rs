@@ -61,9 +61,8 @@ impl Store {
             .optional()?)
     }
 
-    /// **Every key written under `prefix`**, oldest first, with what was said about it — the reading
-    /// for a queue of owed things: what was written down and has not been forgotten yet
-    /// (`review::redeliver_refusals`).
+    /// **Every key written under `prefix`**, oldest first, with what was said about it: the reading a
+    /// queue of owed things needs, of what was written down and has not been forgotten yet.
     pub fn told_with_prefix(&self, prefix: &str) -> Result<Vec<(String, Told)>> {
         let conn = self.conn();
         let mut st = conn.prepare(

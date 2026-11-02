@@ -35,9 +35,8 @@ const BOUNDARY: &str =
     "a usable confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2 subtree)";
 
 /// The one test in this file that sets a PROCESS-WIDE variable, and libtest runs this file's tests
-/// on threads of one process: without a guard a sibling could spawn while the token is set, which
-/// is the exact shape `std::env::set_var` is `unsafe` for (TODO.md R74 item 35). The pattern is
-/// `harnessd/tests/gate_host.rs`'s.
+/// on threads of one process: without a guard a sibling could spawn while the token is set, which is
+/// the shape `std::env::set_var` is `unsafe` for.
 static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A skip the require-switch can refuse: through `apparatus::absent` the skip is loud
