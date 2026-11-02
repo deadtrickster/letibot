@@ -2904,10 +2904,9 @@ impl Harness {
             .then(|| crate::mergequeue::notices::stuck_census(&census, now))
     }
 
-    /// The census as a TURN: the sentence `stuck_census_text` composed, said by the harness and
-    /// answered by the model. It was a notice for hours and reached nobody, because a mailbox is read at
-    /// the model's next turn and a quiet session has none, so it costs one model call per interval.
-    /// The held batch rides in with it, as R79 gives it to every turn a break ends.
+    /// The census as a TURN: the sentence `stuck_census_text` composed, said by the harness and answered
+    /// by the model. As a notice it reached nobody for hours, because a mailbox is read at the model's next
+    /// turn and a quiet session has none. The held batch rides in with it, as R79 gives it to any break.
     pub fn census_turn(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken(Speaker::Agent, text)
     }
@@ -2957,9 +2956,8 @@ impl Harness {
     }
 
     /// A target emergency, told to the model of the project that has to act: the queue's warnings are
-    /// drawn by heads and read by no model, so a ROOT session (never the review queue's own) is told
-    /// once per daemon, with the failing step and the end of its output first. The worker rings it.
-    /// A branch handed over under `merge_via_session` is `handover_notices`'s instead.
+    /// drawn by heads and read by no model, so a ROOT session is told once per daemon, with the failing
+    /// step and its output first. A branch handed over under `merge_via_session` is `handover_notices`'s.
     pub fn queue_emergency_notices(&mut self) -> Vec<String> {
         if !self.queue_news_is_mine() {
             return Vec::new();
@@ -3542,10 +3540,9 @@ fn fate_of(live: Option<letibot_tools::exec::JobState>, record: Option<&JobRecor
     }
 }
 
-/// Which of a board's rows the world now meets: the filter and the pairing, apart from the harness.
-/// Four skips, and each is a fact rather than a precaution: no condition, a running job, a row the
-/// check may not speak about, and one already done. `jobs` is handed in so this stays a function.
-/// The skips live here so the decision and the sentence `fate_line` writes cannot be tested apart.
+/// Which of a board's rows the world now meets: the filter and the pairing, apart from the harness. Four
+/// skips, each a fact: no condition, a running job, a row the check may not speak about, and one already
+/// done. `jobs` is handed in so this stays a function of its arguments.
 fn due_rows(
     rows: &[TodoItem],
     children: &letibot_tools::builtins::todo::ChildSessions,
