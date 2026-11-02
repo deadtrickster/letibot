@@ -1,13 +1,9 @@
 //! Acceptance tests for the two ways into the background, the kill deadline, and
 //! monitors.
 //!
-//! # Why these assert on both branches
-//!
-//! Same reason `exec.rs` does: the substrate needs a delegated cgroup v2 subtree,
-//! and a host without one is a real thing. A `#[ignore]` there would be a green
-//! suite that measured nothing — the reaper-whose-zero-is-unfalsifiable defect,
-//! one layer up. So a box with no cgroups exercises the refusal path and asserts
-//! that the refusal names what was missing.
+//! Every test here asserts on both branches: the substrate needs a delegated cgroup v2
+//! subtree, and a box without one checks that the refusal names what was missing
+//! instead of going green having measured nothing.
 
 use letibot_tools::exec::{Fired, JobId, ProcessHost, ScopeKind};
 use letibot_tools::testing::runner_harness;
@@ -27,8 +23,8 @@ macro_rules! runner {
                     msg.contains("nothing would reap it") || msg.contains("cgroup"),
                     "a refusal must name what was missing: {msg}"
                 );
-                // Announced through `apparatus` so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the
-                // skip; an `eprintln!` and a `return` it could not see (R67 item 18).
+                // Announced through `apparatus`, so a run that requires the apparatus refuses
+                // rather than silently skipping what this box cannot measure.
                 return letibot_tokencore::apparatus::absent(
                     "a cgroup v2 subtree this user may write",
                 );
@@ -37,8 +33,7 @@ macro_rules! runner {
     };
 }
 
-/// The job id out of a result body, for the paths that do not carry one in the
-/// outcome.
+/// The job id out of a result body, for the results whose outcome carries none.
 fn job_id_anywhere(text: &str) -> Option<String> {
     let at = text.find("`j")?;
     let rest = &text[at + 1..];
@@ -46,15 +41,14 @@ fn job_id_anywhere(text: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-// --------------------------------------------------- the deadline, opencode parity
+// ------------------------------------------------------------------- the deadline
 
-/// **The load-bearing one.** A foreground command that outlives its deadline must
-/// be *killed*, not described as killed. opencode's `timeout` semantics: the model
-/// did not ask to run it longer, so it must not run forever.
+/// A foreground command that outlives its deadline must be killed, not described as
+/// killed: the model did not ask to run it longer, so it must not run forever.
 #[test]
 fn a_command_that_outlives_its_deadline_is_killed() {
     let mut h = runner!("kill_on_deadline");
-    // Foreground — no `background` — with a deadline short enough to fire here.
+    // Foreground: no `background`, and a deadline short enough to fire inside the test.
     let r = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 30", "timeout_ms": 300}).to_string(),
@@ -72,9 +66,9 @@ fn a_command_that_outlives_its_deadline_is_killed() {
     );
 }
 
-/// The deadline is its own outcome, not a failure and not a backgrounding, and it
-/// names ONE way to run the command longer (R93.F15): `background: true` — a larger
-/// `timeout_ms` is the longer wait the slow-run note warns against.
+/// The deadline is its own outcome, not a failure and not a backgrounding, and it names
+/// one way to run the command longer: `background: true`. A larger `timeout_ms` only buys
+/// the wait the model should not be making.
 #[test]
 fn a_deadline_is_its_own_outcome_and_says_how_to_run_longer() {
     let mut h = runner!("timeout_outcome");
@@ -93,14 +87,13 @@ fn a_deadline_is_its_own_outcome_and_says_how_to_run_longer() {
 
 // --------------------------------------- two ways in, and a deadline that is not one
 
-/// Two ways into the background — the model asks, or a person moves it — and the
-/// deadline is the third path, which is *not* a backgrounding. Each is a distinct
-/// result, which is the requirement itself.
+/// Two ways into the background (the model asks, a person moves it) and the deadline as a
+/// third path that is not a backgrounding: three facts the model must be able to tell
+/// apart.
 #[test]
 fn the_ways_into_the_background_and_the_deadline_are_distinguishable() {
     let mut h = runner!("ways");
 
-    // 1. The model asks.
     let asked = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 30", "background": true}).to_string(),
@@ -114,8 +107,8 @@ fn the_ways_into_the_background_and_the_deadline_are_distinguishable() {
     };
     assert!(asked.render().contains("you asked"), "{}", asked.render());
 
-    // 2. A person moves one mid-flight. This is the daemon-side verb for the
-    //    head's Ctrl+B; the frame that drives it is written in `ProcessHost::promote`.
+    // A person moves one mid-flight: the daemon-side verb behind the head's Ctrl+B, which
+    // is why this drives `promote` rather than a `bash` argument.
     let host = h.processes.clone().unwrap();
     let third = h.call(
         "bash",
@@ -137,14 +130,14 @@ fn the_ways_into_the_background_and_the_deadline_are_distinguishable() {
     assert!(p.summary().contains("deadtrickster"), "{}", p.summary());
     assert_eq!(host.job(&jid).unwrap().owner.kind, ScopeKind::Session);
 
-    // 3. The deadline kills — a distinct outcome from either backgrounding.
+    // The deadline is the third path, and it must not read as either backgrounding.
     let killed = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 30", "timeout_ms": 300}).to_string(),
     );
     assert_eq!(killed.outcome, ToolOutcome::Timeout, "{}", killed.render());
 
-    // Two distinct phrasings for the two backgroundings, and a third for the kill.
+    // Each way in reads differently, or the model cannot tell which one happened.
     assert_ne!(Backgrounding::Asked.phrasing(), p.how.phrasing());
 
     for id in [asked_id, third_id] {
@@ -152,13 +145,11 @@ fn the_ways_into_the_background_and_the_deadline_are_distinguishable() {
     }
 }
 
-/// The promotion record is a measurement and not a boolean — the same falsifier
-/// the reap log is. A promotion that moved nothing and one that moved three must
-/// not look alike.
+/// The promotion record is a measurement, not a boolean: a move that took nothing and one
+/// that took three must not read alike.
 #[test]
 fn the_promotion_record_carries_what_moved_and_reaches_the_model_through_job_list() {
     let mut h = runner!("promotion_record");
-    // Start a job in the turn scope, then promote it as the operator would.
     let r = h.call(
         "bash",
         &serde_json::json!({"command": "sleep 30", "background": true, "scope": "turn"})
@@ -198,8 +189,8 @@ fn the_promotion_record_carries_what_moved_and_reaches_the_model_through_job_lis
         listing.payload
     );
 
-    // Promoting the same job twice moves nothing, and says so rather than
-    // producing a record that reads as a second move.
+    // A second promotion of the same job moves nothing and must say so, rather than
+    // produce a record that reads as another move.
     let again = host
         .promote(
             &jid,
@@ -219,13 +210,12 @@ fn the_promotion_record_carries_what_moved_and_reaches_the_model_through_job_lis
     let _ = host.kill_job(&jid);
 }
 
-/// The head's Ctrl+B: the promote channel the daemon wires from the hub, read by
-/// the `bash` wait loop. Setting the channel is the head's half; the `bash` result
-/// carrying `Operator` is the daemon's.
+/// The head's Ctrl+B, which arrives as a promote request on the channel the daemon wires
+/// from the hub while `bash` is blocked in its wait loop.
 #[test]
 fn a_promote_request_from_the_head_moves_the_running_command() {
     let mut h = runner!("promote_from_head");
-    // The head asks, before the command would finish on its own.
+    // The request is in place before the call, so the wait loop finds it.
     h.promote
         .as_ref()
         .expect("a promote channel")
@@ -262,28 +252,17 @@ fn a_promote_request_from_the_head_moves_the_running_command() {
     );
 }
 
-/// **A run moved to the background mid-flight keeps what it wrote on both sides of the move** —
-/// the operator's report, sentence for sentence: *"when I background a lengthy bash run with
-/// Ctrl-o its output goes to /dev/null, causes agony, should go to a tmp file in a scratch
-/// dir"*.
+/// A run moved to the background mid-flight keeps what it wrote on both sides of the
+/// move: the promotion seeds the file from the window and the drains keep filling it, so
+/// the bytes the foreground result carried are not the only copy.
 ///
-/// Two halves, and the second is the one the file exists for. Everything already printed is
-/// still readable — the window kept it, and the promotion seeds the file from the window — and
-/// everything printed **after** the move is readable, in the same place the model was told about
-/// when the promotion produced its result. The file is the copy that is not bounded, which is
-/// what makes it worth naming: the window is 8 MiB of the tail, and a `bash` foreground result
-/// is the only reader that ever saw those bytes before this.
-///
-/// The command prints on a clock rather than in a `sleep` and a burst, so *before* and *after*
-/// are facts about time and not about a race: the promote lands about a third of the way in, and
-/// the assertion needs both sides of that instant.
+/// The command prints on a clock, so before and after the move are facts about time and
+/// not about a race.
 #[test]
 fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
     let mut h = runner!("promote_keeps_output");
-    // **The Ctrl+O, on the other thread** — `crate::testing`'s runner has no head, so the request
-    // is set on the channel the daemon wires from the hub, while the call below is blocked in
-    // `bash`'s wait loop. That channel is exactly what `HeadClient::promote` ends at
-    // (`harnessd`'s `promote_midflight` drives the frame itself).
+    // The Ctrl+O on another thread: the runner fixture has no head, so the request is set
+    // on the channel the daemon wires from the hub while `bash` blocks in its wait loop.
     let channel = h.promote.clone().expect("a promote channel");
     let promoted_at = std::time::Instant::now();
     std::thread::spawn(move || {
@@ -312,9 +291,8 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
     let host = h.processes.clone().unwrap();
     let jid = JobId(handle.clone());
 
-    // **The file the promotion made, and it is named to the model** — the handle and the path
-    // are the two facts the result has to carry, because the call it lands in is the last moment
-    // anything tells this caller where its run went.
+    // The file the promotion made, and the path the result must name: the call that lands
+    // is the last moment anything tells this caller where its run went.
     let file = host
         .job(&jid)
         .and_then(|v| v.output_file)
@@ -338,8 +316,8 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
         "the result must name the file its output is going into: {rendered}"
     );
 
-    // **Wait for the command itself to finish** — `job_wait` returns at once for a job this
-    // session started, so the wait is a poll on the state, not a clock the harness invents.
+    // `job_wait` returns at once for a job this session started, so the wait is a poll on
+    // the state, not a clock the harness invents.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while host
         .job(&jid)
@@ -358,9 +336,9 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
         "the promote has to have landed mid-flight for this to be about anything"
     );
 
-    // **1. `job_output` returns both sides of the move.** The pre-move lines are the ones the
-    // foreground result already carried; the post-move ones only exist because the window kept
-    // filling after the promotion, and that is the half nobody could see before.
+    // `job_output` must return both sides of the move: the pre-move lines are the ones the
+    // foreground result carried, and the post-move ones only exist because the window kept
+    // filling after the promotion.
     let read = h.call(
         "job_output",
         &serde_json::json!({"job": handle}).to_string(),
@@ -377,8 +355,8 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
         "`job_output` must name the file that keeps the whole of it: {body}"
     );
 
-    // **2. The file on disk holds them**, read from the disk and not through the harness: a test
-    // that asked the tool whether it wrote is a test of the tool's opinion of itself.
+    // Read from the disk, not through the harness: the file must hold every line, and
+    // asking the tool whether it wrote is asking its opinion of itself.
     let on_disk = std::fs::read_to_string(&file.path).expect("the scratch file exists");
     for n in 1..=8 {
         assert!(
@@ -399,16 +377,12 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
     );
 }
 
-/// **A run the harness itself recommends — `background: true` — has a file holding all of it.**
+/// A run that began in the background has a file holding all of it: the harness sends
+/// exactly these long runs to `background: true`, so a window-only copy loses the output
+/// of the run its own advice produced.
 ///
-/// The promotion's fix reached only runs a person moved: `spill_to` had one caller, so a job that
-/// BEGAN in the background kept its output in the 8 MiB window and nowhere else — and the harness
-/// says *"Killed at its 120s deadline. Re-run it with `background: true`"* to exactly the long
-/// run whose output does not fit. This is that run: it prints more than the window holds, the
-/// window drops its front (and says so), and the file has every byte from 0.
-///
-/// Three readers must name the file, because the value of it is a reader knowing where the whole
-/// of it is: the `bash` result that hands back the handle, `job_output`, and `job_list`.
+/// Three readers must name the file, because a reader knowing where the whole of it is is
+/// the value: the `bash` result, `job_output` and `job_list`.
 #[test]
 fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
     let mut h = runner!("background_spill");
@@ -416,9 +390,9 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
         .scratch_dir()
         .expect("the runner fixture has a scratch")
         .to_path_buf();
-    // Six bytes, nine million, five: past the window's 8 MiB, so the ring must drop a front the
-    // file must not. The markers at each end are what make *from byte 0* checkable rather than a
-    // length somebody could have got right by accident.
+    // Past the window's 8 MiB, so the ring must drop a front the file must not. The
+    // markers at each end make "from byte 0" checkable rather than a length somebody could
+    // have got right by accident.
     let r = h.call(
         "bash",
         &serde_json::json!({
@@ -437,9 +411,8 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
     let host = h.processes.clone().unwrap();
     let jid = JobId(handle.clone());
 
-    // **The file is in the view at the moment the handle is handed back** — the spawn opens it
-    // before a byte is drained, so the result the model reads is the earliest possible moment to
-    // be told, and it is not too early.
+    // The file is opened before a byte is drained, so the result that hands the handle back
+    // is already able to name it.
     let file = host
         .job(&jid)
         .and_then(|v| v.output_file)
@@ -468,8 +441,7 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
         "the result must name the file that keeps the whole of it: {rendered}"
     );
 
-    // **Wait for the run itself** — `job_wait` returns at once for a job this session started,
-    // so the wait is a poll on the state and not a clock the test invents.
+    // `job_wait` returns at once here too, so the wait is a poll on the state.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while host
         .job(&jid)
@@ -484,8 +456,7 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
         "the command never finished"
     );
 
-    // **The window dropped its front** — otherwise this test is about a short run and proves
-    // nothing about the one the harness recommends the background to.
+    // The window must have dropped its front, or this is a test about a short run.
     let view = host.job(&jid).expect("the row stays");
     let produced = view.produced;
     assert!(
@@ -498,9 +469,8 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
         "the window kept everything, so nothing was measured: {produced} produced"
     );
 
-    // **The file has every byte, from the job's first** — read from the disk, not through the
-    // harness: a test that asked the tool whether it wrote is a test of the tool's opinion of
-    // itself.
+    // Read from the disk, not through the harness: the file must hold every byte from the
+    // job's first, and asking the tool would be asking its opinion of itself.
     let on_disk = std::fs::read(&file.path).expect("the scratch file exists");
     assert_eq!(
         on_disk.len() as u64,
@@ -519,8 +489,8 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
         String::from_utf8_lossy(&on_disk[on_disk.len().saturating_sub(40)..])
     );
 
-    // **`job_output` returns the window and names the file** — the two facts a reader of a window
-    // whose edges matter needs, and the note is where the dropped front stops being *gone*.
+    // `job_output` returns the window and names the file, which is where a dropped front
+    // stops being gone.
     let read = h.call(
         "job_output",
         &serde_json::json!({"job": handle, "limit": 64}).to_string(),
@@ -535,9 +505,8 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
         "a window that dropped its front must say where those bytes are: {body}"
     );
 
-    // **And `job_list`, which is where a model goes to find the handle** — a row that showed only
-    // the window's byte count would be the one place in the tree that did not say where the rest
-    // is.
+    // `job_list` too: a row showing only the window's byte count would be the one place that
+    // did not say where the rest is.
     let listing = h.call("job_list", &serde_json::json!({"all": true}).to_string());
     assert!(
         listing.render().contains(&file.path),
@@ -546,9 +515,10 @@ fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
     );
 }
 
-// ------------------------------------------------------- monitors, T24
+// ------------------------------------------------------------------------- monitors
 
-/// T24 requirements 1, 2, 3 and 4, through the tool the model actually calls.
+/// A monitor is owned, listed, says why it fired, and refuses a second under one name, all
+/// through the tool the model actually calls.
 #[test]
 fn a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_name() {
     let mut h = runner!("monitor_tool");
@@ -557,11 +527,11 @@ fn a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_na
         &serde_json::json!({"name": "built", "path": "marker-a"}).to_string(),
     );
     assert_eq!(declared.outcome, ToolOutcome::Ok, "{}", declared.render());
-    // 1: an owner, and the default is the session.
     assert!(declared.payload.contains("owner:"), "{}", declared.payload);
     assert!(declared.payload.contains("session"), "{}", declared.payload);
 
-    // 2: listable and attributable, in the listing people already open.
+    // Listed where people already look for jobs, and attributable there: an invisible
+    // watcher is an unreapable one.
     let listing = h.call("job_list", "{}");
     assert!(listing.payload.contains("built"), "{}", listing.payload);
     assert!(
@@ -570,7 +540,7 @@ fn a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_na
         listing.payload
     );
 
-    // 4: one waiter per name, enforced, and the refusal hands over what holds it.
+    // One waiter per name, and the refusal hands over what holds it.
     let second = h.call(
         "monitor",
         &serde_json::json!({"name": "built", "path": "marker-b"}).to_string(),
@@ -591,7 +561,7 @@ fn a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_na
         second.payload
     );
 
-    // 3: why it fired, not that it did.
+    // Why it fired, not that it did.
     let host = h.processes.clone().unwrap();
     let monitors = host.monitors().expect("a host with monitors").clone();
     let root = host.workspace().expect("a workspace").to_path_buf();
@@ -609,13 +579,12 @@ fn a_monitor_is_owned_listed_says_why_it_fired_and_refuses_a_second_under_one_na
     assert!(after.payload.contains("now exists"), "{}", after.payload);
 }
 
-/// T24 requirement 1 from the other end, and the reason monitors could not land
-/// before the lifetime work: an owner is only an owner if its end takes what it
-/// owns, and the record has to say which scope took it.
+/// An owner is only an owner if its end takes what it owns, so ending a scope must reap
+/// the monitor and the record must say which scope took it.
 #[test]
 fn a_monitor_dies_with_the_scope_that_owns_it() {
     let mut h = runner!("monitor_reaped");
-    // Something has to be in the turn scope for it to exist to be named.
+    // The turn scope has to exist before a monitor can be named into it.
     h.call("bash", &serde_json::json!({"command": "true"}).to_string());
     let declared = h.call(
         "monitor",
@@ -640,20 +609,13 @@ fn a_monitor_dies_with_the_scope_that_owns_it() {
     );
 }
 
-/// **The rule the whole design is shaped around**, asserted where a model would
-/// hit it: nothing a monitor is asked to watch can be the process asking.
-///
-/// It used to read "there is nowhere to ask for a process by name", and the
-/// `process` argument (2026-09-14) changes the mechanism, not the rule: the
-/// string is consumed ONCE by the in-process finder, which removes this daemon,
-/// its ancestors and its protected pids before matching, and the monitor holds
-/// (pid, start time) handles from then on. So the assertion is now the stronger
-/// one — ask for the test's own name, and it must not find itself.
+/// Nothing a monitor is asked to watch may be the process asking, asserted where a model
+/// would hit it: the test's own name and its ancestors must not be found.
 #[test]
 fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
     let mut h = runner!("monitor_no_pattern");
-    // Nothing to watch: the refusal names the conditions and says the process
-    // one is never this daemon.
+    // Nothing to watch: the refusal must name the conditions it accepts, and rule out the
+    // process one being this daemon.
     let none = h.call("monitor", &serde_json::json!({"name": "x"}).to_string());
     assert!(
         matches!(none.outcome, ToolOutcome::Failed { .. }),
@@ -689,8 +651,7 @@ fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
         assert!(own.payload.contains("never matched"), "{}", own.payload);
     }
 
-    // Two conditions is one monitor answering two questions, which answers
-    // neither.
+    // Two conditions is one monitor answering two questions, which answers neither.
     let two = h.call(
         "monitor",
         &serde_json::json!({"name": "x", "path": "a", "port": 9}).to_string(),
@@ -701,9 +662,8 @@ fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
         two.render()
     );
 
-    // And the seated schema has nowhere to put a pattern. This is the assertion
-    // that matters: a process check self-matched its own shell seven times in one
-    // session on this box, and the seventh killed a running command mid-flight.
+    // The seated schema must have nowhere to put a pattern: a self-matched process check
+    // is a monitor that kills the command it was watching.
     let names: Vec<String> =
         h.rt.registry
             .schemas()
@@ -717,8 +677,8 @@ fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
             })
             .collect();
     assert!(!names.is_empty(), "the monitor tool is seated");
-    // `command` is a condition (run one, fire on its exit) and `process` is a
-    // string the finder consumes once; neither is a pattern the poller matches.
+    // `command` is a condition (run one, fire on its exit) and `process` is a string the
+    // finder consumes once; neither is a pattern the poller matches.
     for banned in ["pattern", "match", "cmdline", "regex", "host"] {
         assert!(
             !names.iter().any(|n| n.contains(banned)),
@@ -727,10 +687,8 @@ fn a_monitor_cannot_be_asked_to_watch_a_process_by_name() {
     }
 }
 
-/// `pkill` through the seated runtime: the listing, a refusal for a pid the
-/// listing did not show, and a kill by pid. (The PROTECTED marking is asserted
-/// in the tool's own unit test against a declared list; the daemon declares
-/// the model server in harness.rs.)
+/// `pkill` through the seated runtime: the listing, a refusal for a pid the listing did
+/// not show, and a kill by pid. PROTECTED pids are the tool's own unit test's subject.
 #[test]
 fn pkill_lists_and_kills_by_pid_only() {
     use std::process::{Command, Stdio};
@@ -777,27 +735,14 @@ fn pkill_lists_and_kills_by_pid_only() {
     let _ = go.wait();
 }
 
-// ------------------------------------------------------------ R23: the wait declines
+// ------------------------------------------------------------------- the wait declines
 
-/// **R23: a `job_wait` on a job the harness is already delivering returns at once.**
+/// A `job_wait` on a job the harness is already delivering returns at once, because the
+/// daemon submits that job's settlement as a turn of its own: the promise is in the
+/// mechanism, not in a sentence advising the model not to wait.
 ///
-/// The operator's complaint, filed as R23, recurring *after* R7 landed: *"letibot
-/// again did `job_wait` right after i backgrounded."* R7 gave the daemon a promise —
-/// a background job's settlement is submitted to the model as a turn of its own,
-/// unprompted — and four rewrites of the `Backgrounded` result telling the model
-/// *do not wait for it* did not stop this. Advice is not a guarantee, which is this
-/// tree's own rule about checks applied to a prompt.
-///
-/// So the promise moves into the mechanism: `job_wait` asks whether the harness has
-/// already promised this job's answer, and if it has, returns instead of blocking.
-///
-/// # The measurement, and why it is a clock rather than a string
-///
-/// Same as R7's: **force the case and time it.** The deadline is 30 s, the job is a
-/// `sleep 300` that cannot end during the call, and the assertion is on elapsed time.
-/// Text alone would pass for a wait that blocked 30 s and then said the right thing —
-/// which is precisely the behaviour the operator is reporting, and the behaviour this
-/// test exists to make impossible.
+/// Elapsed time is the measurement, since text alone passes for a wait that blocked its
+/// whole deadline and then said the right thing.
 #[test]
 fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
     let mut h = runner!("r23_at_once");
@@ -812,9 +757,8 @@ fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
         other => panic!("{other:?}: {}", started.render()),
     };
 
-    // **The daemon's own answer, forced.** In a real session this closure reads the
-    // per-session job watchers: the sink arms one the moment a `Backgrounded` result
-    // passes it, so by the time the model's next call runs the job is watched.
+    // The daemon's own answer, forced: in a real session this closure reads the per-session
+    // job watchers, armed when the `Backgrounded` result passed the sink.
     let watched = id.clone();
     h.with_completion_delivered(std::sync::Arc::new(move |j: &str| j == watched));
 
@@ -830,8 +774,8 @@ fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
         "a wait on a job the harness is already delivering must return at once, \
          not after its deadline; it took {took:?}"
     );
-    // Not a deadline and not a failure: the call was reasonable and the answer is
-    // already on its way.
+    // Not a deadline and not a failure: the call was reasonable and the answer is already
+    // on its way.
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
     let body = r.render();
     assert!(
@@ -847,7 +791,7 @@ fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
         "and it must still say what the job was: {body}"
     );
 
-    // The job is untouched — this declined to wait, it did not stop anything.
+    // The job is untouched: the call declined to wait, it did not stop anything.
     let host = h.processes.clone().unwrap();
     let view = host
         .job(&JobId(id.clone()))
@@ -856,14 +800,9 @@ fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
 
-/// **The contrast: a `job_wait` on a job nobody is delivering still blocks, exactly
-/// as before.**
-///
-/// R23 removes one case and must remove only that one. A scope, a job from another
-/// session, a deliberate block before a dependent step — all of those keep the verb
-/// they always had, and this is the assertion that says so rather than the comment
-/// saying so. The deadline is short so the test is; what is measured is that the
-/// deadline *is* reached, which is the whole of "blocks".
+/// The contrast: a `job_wait` on a job nobody is delivering still blocks for its whole
+/// deadline, because only the delivered case may return early. The deadline is short so the
+/// test is, and reaching it is the whole of "blocks".
 #[test]
 fn a_wait_on_a_job_nobody_is_delivering_still_blocks_for_its_deadline() {
     let mut h = runner!("r23_still_blocks");
@@ -877,8 +816,8 @@ fn a_wait_on_a_job_nobody_is_delivering_still_blocks_for_its_deadline() {
         other => panic!("{other:?}: {}", started.render()),
     };
 
-    // The same closure, saying the harness is watching something else entirely —
-    // the honest shape of "this job is not one the daemon will hand you".
+    // The same closure, watching something else entirely: the honest shape of "this job is
+    // not one the daemon will hand you".
     h.with_completion_delivered(std::sync::Arc::new(|_j: &str| false));
 
     let t0 = std::time::Instant::now();
@@ -908,21 +847,11 @@ fn a_wait_on_a_job_nobody_is_delivering_still_blocks_for_its_deadline() {
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
 
-// ------------------------------------------------- R41: the redirected job
+// --------------------------------------------------------------- the redirected job
 
-/// **A job whose output is redirected says so WHEN IT IS BACKGROUNDED** — R41, requirement
-/// one, and the operator's own case.
-///
-/// *"letibot just started a background build and then `sleep 200`. and then - i tried to see
-/// the job output and it was like 'waiting for the output'"* — the command was
-/// `cargo build --release … > /tmp/release-build.log 2>&1`, whose captured output is empty by
-/// construction. **The redirect is in the text**, so this costs nothing to detect and the
-/// moment to say it is the moment the job starts — not when somebody opens the pane and finds
-/// nothing there.
-///
-/// The second half is the requirement's own reasoning: a silent cost sends the model looking
-/// for a different spelling of the same effect, and the spelling it found was R7's poll loop
-/// with a hand-set clock. So the note must carry the RULE too.
+/// A job whose output is redirected says so when it is backgrounded: the redirect is in the
+/// text and its captured output is empty by construction. The note carries the rule too,
+/// because a silent cost sends the model looking for another spelling of the same effect.
 #[test]
 fn a_backgrounded_job_with_a_redirect_says_its_output_is_not_captured() {
     let mut h = runner!("redirected_background");
@@ -947,16 +876,14 @@ fn a_backgrounded_job_with_a_redirect_says_its_output_is_not_captured() {
         body.contains("EMPTY"),
         "the redirect's cost must be stated, not left to be discovered: {body}"
     );
-    // **And the payload must not go on promising the window.** The first cut of this added a
-    // note explaining the window would be empty while the payload beneath it still said
-    // `job_output` "reads what it has written so far" — a note that argues with the line under
-    // it is worse than no note, because the model believes the line it has read before.
+    // The payload must not go on promising the window: a note that argues with the line under
+    // it is worse than no note, because the model believes the line it read first.
     assert!(
         !body.contains("reads what it has written so far"),
         "the payload still sends the model to a window that will stay empty: {body}"
     );
-    // **The rule, and not a list of verbs.** Naming `sleep` alone would close one spelling of
-    // the behaviour, which is exactly how R7 was defeated.
+    // The rule, not a list of verbs: naming `sleep` alone closes one spelling of the
+    // behaviour and leaves the rest.
     assert!(
         body.contains("do not build your own clock"),
         "the note must state the rule rather than one spelling of it: {body}"
@@ -970,9 +897,8 @@ fn a_backgrounded_job_with_a_redirect_says_its_output_is_not_captured() {
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
 
-/// **And a job that is NOT redirected must not be told any of it.** The note is a fact about
-/// the command, and a tool that announced it over every background job would be telling the
-/// model its capture is broken when it is not.
+/// A job that is not redirected is told none of it: the note is a fact about the command,
+/// and announcing it over every background job would report a capture that is not broken.
 #[test]
 fn a_backgrounded_job_without_a_redirect_says_nothing_about_one() {
     let mut h = runner!("plain_background");
@@ -989,9 +915,8 @@ fn a_backgrounded_job_without_a_redirect_says_nothing_about_one() {
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
 
-/// **`job_output` on a redirected job is an ANSWER, not an empty window.** R41's second
-/// requirement belongs to leticl for the pane; this is the tool, which is letibot's — and
-/// *"wrote nothing at all"* would be false about a build writing a log as fast as it can.
+/// `job_output` on a redirected job is an answer, not an empty window: "wrote nothing at
+/// all" would be false about a build writing a log as fast as it can.
 #[test]
 fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
     let mut h = runner!("redirected_output");
@@ -1009,11 +934,9 @@ fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
         &serde_json::json!({"job": id.clone()}).to_string(),
     );
     let body = o.render();
-    // **`out.log` is not enough, and that is the whole trap in this assertion.** The
-    // fall-through's own body prints `command: …`, which contains the path too — so a test
-    // asking for the string passed with the new arm disabled, measured. What it must say is
-    // where the output GOES and that the window is empty *because of that*, and it must NOT
-    // say the job has written nothing.
+    // `out.log` is not enough: the fall-through prints `command: ...`, which carries the path
+    // too. What it must say is where the output goes and that the window is empty because of
+    // that, and it must not say the job has written nothing.
     assert!(
         body.contains("redirected to") || body.contains("output goes to"),
         "the answer must say the output goes to the file, not merely print the command: {body}"
@@ -1028,9 +951,8 @@ fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
             "a redirected job answered as `{wrong}`: {body}"
         );
     }
-    // **An abstention, not an `ok` carrying an empty window** — the same envelope the
-    // never-ran and produced-nothing cases use, because *you asked for something that is not
-    // there* is the same shape of fact.
+    // An abstention, not an `ok` carrying an empty window: "you asked for something that is
+    // not there" is the same shape of fact the never-ran case has.
     assert!(
         matches!(o.outcome, ToolOutcome::Abstained { .. }),
         "a zero-byte window must abstain rather than answer ok: {body}"
@@ -1040,20 +962,9 @@ fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
 
 // ------------------------------------------------- the name, from end to end
 
-/// **A named job is called by its name everywhere a sentence calls it, and the id still
-/// works everywhere a call needs a handle.**
-///
-/// The operator's correction, verbatim: *"yes, change rano, and i was look at the transcript
-/// actually, not jobs pane"* — the complaint (*"j57 doesnt ringe the bell for me"*) was about
-/// the line they read in the conversation. Two of those lines are here: the `bash` result that
-/// introduces the job and the `job_output` header that reads it back. The settlement notice is
-/// `harnessd`'s (`completion_notice`) and is asserted there; what this pins is that the tool
-/// half of the same rule agrees with it, which is the whole reason the rule is one function.
-///
-/// **And the resolvable half is not lost.** The label is what a reader SEES; the id is what a
-/// call passes, and the result still spells it out in the `name:` line and in every
-/// `job_output` argument it suggests — a label that only half resolves must not be handed to a
-/// caller as though it were a handle.
+/// A named job is called by its name everywhere a sentence calls it, and the id still works
+/// everywhere a call needs a handle: the label is what a reader sees, the id is what a call
+/// passes, and a label that only half resolves must not be handed over as a handle.
 #[test]
 fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
     let mut h = runner!("named_job_label");
@@ -1077,7 +988,7 @@ fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
         body.contains(&format!("started `{label}` in the background")),
         "the bash result is where the operator first meets the job: {body}"
     );
-    // **And the handle it hands over is the one that resolves** — the name, and the id beside it.
+    // The handle it hands over must resolve: the name, and the id beside it.
     assert!(
         body.contains(&format!(
             "`job_output`, `job_kill` and `job_wait` take this or `{id}`"
@@ -1085,7 +996,7 @@ fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
         "the resolvable handles must be spelled out, because the label is not one: {body}"
     );
 
-    // Read back by the NAME the agent stated...
+    // Read back by the name the model stated.
     let by_name = h.call(
         "job_output",
         &serde_json::json!({"job": "release-build"}).to_string(),
@@ -1095,14 +1006,14 @@ fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
         named.contains(&format!("`{label}` has produced no output")),
         "a result names the job by its label, whoever asked by whatever handle: {named}"
     );
-    // **And no argument it suggests is the label**, which does not resolve. (R93: the running,
-    // empty case no longer suggests a `job_wait` at all — its completion is delivered.)
+    // No argument it suggests may be the label, which does not resolve: a running job's
+    // completion is delivered, so no `job_wait` is suggested at all.
     assert!(
         !named.contains(&format!("job=\"{label}\"")),
         "a suggested argument must be a resolvable one: {named}"
     );
 
-    // ...and by the id, with the same label in the answer.
+    // And by the id, with the same label in the answer.
     let by_id = h.call(
         "job_output",
         &serde_json::json!({"job": id.clone()}).to_string(),

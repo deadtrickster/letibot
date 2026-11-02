@@ -1,20 +1,9 @@
-//! Acceptance tests for layer 1's namespace half: the boundary that was
-//! **measured**, the refusals when there is none, and the two properties the
-//! design says the mount view exists for.
+//! Acceptance tests for layer 1's namespace half: the boundary that was measured, the
+//! refusals when there is none, and the two properties the mount view exists for.
 //!
-//! # Why there is no `#[ignore]` in this file
-//!
-//! Same discipline as `tests/exec.rs`. A host that cannot make a user namespace is
-//! a real host and the Ubuntu default since 24.04 —
-//! `kernel.apparmor_restrict_unprivileged_userns=1` transitions a freshly created
-//! userns into a profile that denies `CAP_SYS_ADMIN`, so the `uid_map` write fails
-//! and the namespace is inert. On such a box the interesting half of this file is
-//! the refusal, and a skip would be a green suite that measured nothing about the
-//! boundary it is named after.
-//!
-//! So every test that needs a real boundary asserts on **both** branches: either
-//! the property, or that the refusal names what was missing and that nothing ran
-//! unconfined.
+//! Every test that needs a real boundary asserts on both branches: either the property, or
+//! that the refusal names what was missing and that nothing ran unconfined. A skip would be
+//! a green suite that measured nothing about the boundary it is named after.
 
 use std::path::{Path, PathBuf};
 
@@ -26,8 +15,8 @@ use letibot_tools::exec::{Bwrap, ExecError, HostProcesses, ProcessHost, ScopeKin
 use letibot_tools::testing::{confined_harness, confined_harness_with};
 use letibot_transcript::ToolOutcome;
 
-/// The branch a test took, printed so a green run says which half of the world it
-/// was measured against.
+/// The harness, or the refusal branch: a box with no boundary still asserts on the
+/// refusal instead of skipping.
 macro_rules! confined {
     ($name:literal) => {
         match confined_harness() {
@@ -45,26 +34,15 @@ const CGROUP: &str = "a cgroup v2 subtree this user may write (the process-lifet
 const BOUNDARY: &str =
     "a usable confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2 subtree)";
 
-/// **A skip the require-switch can refuse.** These early returns used to be an `eprintln!` and
-/// a `return`, which `LETIBOT_REQUIRE_APPARATUS=1` could not see — so a gate run on a box that
-/// had lost its cgroup v2 delegation or its user namespaces reported this whole file green
-/// having measured none of it (R67 item 18). Through `apparatus::absent` the skip is loud
-/// without the switch and a failure with it.
+/// A skip the require-switch can refuse: through `apparatus::absent` the skip is loud
+/// without `LETIBOT_REQUIRE_APPARATUS` and a failure with it.
 fn absent(what: &str) {
     letibot_tokencore::apparatus::absent(what)
 }
 
-/// **The boundary is a PLATFORM question before it is a box question.**
-///
-/// On Linux a boundary that is not there is apparatus this box was not given — `bwrap`, an
-/// unprivileged user namespace, a delegated cgroup v2 subtree — so [`absent`] is right: a
-/// provisioned box has one, and a run that demands its apparatus refuses the skip.
-///
-/// macOS can never have one. There are no namespaces for a helper to enter and no bubblewrap
-/// to install, so no amount of provisioning produces a boundary, and demanding one made the
-/// merge gate's test step red on the operator's Mac for a reason that was in no diff (the
-/// queue's daemon runs on that Mac). The refusal asserted just above this call is the whole
-/// of what a boundary test can measure there; `applies` says so without a failure.
+/// The boundary is a platform question before it is a box question: on Linux a missing one
+/// is apparatus this box was not given, while macOS can never have one at all, so the
+/// refusal asserted just above is the whole of what a boundary test can measure there.
 fn boundary_absent() {
     let Some(_) = letibot_tokencore::apparatus::applies(BOUNDARY, cfg!(target_os = "linux")) else {
         return;
@@ -72,15 +50,9 @@ fn boundary_absent() {
     absent(BOUNDARY);
 }
 
-/// The assertion for the branch where this box cannot confine. It is not "nothing
-/// to see here": the refusal has to name what was missing and has to say that
-/// nothing was run, because the whole entry is that a boundary which silently is
-/// not there is worse than none.
-///
-/// The refusal is asserted FIRST and then the absence is announced through
-/// [`boundary_absent`], so a box without a boundary still checks the refusal, and a LINUX run
-/// that demands the boundary (`LETIBOT_REQUIRE_APPARATUS=1`) fails rather than passing on the
-/// refusal half alone. On macOS, where a boundary cannot exist, that half is the measurement.
+/// The branch where this box cannot confine: the refusal must name what was missing and say
+/// nothing ran, because a boundary that is silently not there is worse than none. It is
+/// asserted before the absence is announced, so a run that demands the apparatus fails.
 fn no_boundary(e: &ExecError, test: &str) {
     eprintln!("{test}: no usable boundary on this host, asserting on the refusal instead: {e}");
     let m = format!("{e}");
@@ -102,9 +74,9 @@ fn no_boundary(e: &ExecError, test: &str) {
 
 #[test]
 fn a_session_that_asks_for_a_boundary_and_has_none_refuses_and_never_runs_unconfined() {
-    // **The rule that outranks the rest, tested for real rather than on this
-    // kernel's happy path.** The helper is pointed at a path that is not there,
-    // which is what a host without bubblewrap looks like from inside the code.
+    // The rule that outranks the rest, tested for real rather than on this kernel's happy
+    // path: the helper is pointed at a path that is not there, which is what a host without
+    // bubblewrap looks like from inside the code.
     let e = Bwrap::probe(ViewSpec::project_only("/"), Egress::Denied);
     // Guard the fact, not the proxy: point the lookup at nothing and re-probe.
     // SAFETY: this test does not spawn threads before restoring the variable.
@@ -175,10 +147,8 @@ fn a_host_with_no_confinement_refuses_every_spawn_and_starts_nothing() {
     assert!(m.contains("no boundary on this host"), "{m}");
     assert!(m.contains("was NOT run"), "{m}");
     assert!(host.jobs().is_empty(), "nothing may be recorded as running");
-    // The scope opened for the refused JOB is gone. The session and turn scopes
-    // legitimately remain — they are opened on the way and are not the job's —
-    // which is why this counts job scopes rather than scopes, the difference the
-    // first spelling of this assertion got wrong.
+    // Only the refused job's scope must go: the session and turn scopes are opened on the
+    // way and are not the job's, which is why this counts job scopes rather than scopes.
     let _ = before;
     let job_scopes: Vec<_> = host
         .scopes()
@@ -247,8 +217,8 @@ fn describe_reports_the_boundary_that_was_measured_and_not_the_one_requested() {
     }
     assert!(b.complete(), "{}", b.describe());
 
-    // And the inode is not the harness's own — which is the comparison that makes
-    // the readback a measurement rather than a formality.
+    // And the inode is not the harness's own, which is the comparison that makes the
+    // readback a measurement rather than a formality.
     for n in Namespace::REQUIRED {
         let mine = std::fs::read_link(format!("/proc/self/ns/{}", n.proc_name()))
             .map(|p| p.display().to_string())
@@ -270,13 +240,9 @@ fn describe_reports_the_boundary_that_was_measured_and_not_the_one_requested() {
 
 #[test]
 fn a_partial_boundary_describes_itself_as_partial_through_the_whole_stack() {
-    // **The test the brief asks for by name**, driven from the top rather than from
-    // a fixture struct: what a caller reads has to become partial when the state is.
-    //
-    // The mechanism: a `Confinement` that reports a boundary with one non-required
-    // namespace missing. Everything above it — `HostProcesses::describe`,
-    // `HostBackend::describe` — must carry that through, because none of them holds
-    // a constant about confinement any more.
+    // Driven from the top rather than from a fixture struct: what a caller reads has to
+    // become partial when the state is. The `Confinement` below reports a boundary with one
+    // non-required namespace missing, and nothing above it may hold a constant.
     struct PartiallyConfined(Boundary);
     impl Confinement for PartiallyConfined {
         fn describe(&self) -> String {
@@ -290,8 +256,8 @@ fn a_partial_boundary_describes_itself_as_partial_through_the_whole_stack() {
         }
     }
 
-    // Build it from a real measurement where we can, so the partial case is a real
-    // boundary minus one namespace rather than an invention.
+    // Built from a real measurement where possible, so the partial case is a real boundary
+    // minus one namespace rather than an invention.
     let mut b = match Bwrap::project(std::env::temp_dir()) {
         Ok(real) => real.boundary().expect("measured").clone(),
         Err(e) => {
@@ -314,18 +280,15 @@ fn a_partial_boundary_describes_itself_as_partial_through_the_whole_stack() {
     assert!(d.contains("PARTIALLY"), "the host must say partial: {d}");
     assert!(d.contains("NOT ENTERED"), "and which one: {d}");
     assert!(d.contains("ipc"), "{d}");
-    // The required ones are still there, so it does still confine — the disclosure
-    // has to be able to say both things at once rather than collapsing to a
-    // boolean.
+    // The required ones are still there, so it does still confine: the disclosure has to say
+    // both things at once rather than collapse to a boolean.
     assert!(!d.contains("NOT CONFINED"), "{d}");
 }
 
 #[test]
 fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
-    // `HostBackend::describe` shipped saying `read-only` for the writable backend
-    // and `UNSANDBOXED EXEC` for every exec backend. Both were constants asserting
-    // a session property. This asserts the second one is now read, by checking that
-    // two different confinements produce two different disclosures.
+    // Two different confinements must produce two different disclosures: a constant
+    // asserting a session property passes a one-armed test.
     use letibot_tools::backend::{ExecBackend, HostBackend};
     let dir = std::env::temp_dir().join(format!("letibot-describe-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
@@ -345,8 +308,8 @@ fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
         }
     }
 
-    // The confined one: the **same function**, and a different sentence, because
-    // the sentence is read off the state rather than written into the match arm.
+    // The confined one: the same function and a different sentence, because the sentence is
+    // read off the state rather than written into the match arm.
     match HostBackend::confined(&dir) {
         Ok(b) => {
             let d = b.describe();
@@ -356,11 +319,9 @@ fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
                 "a confined backend must not describe itself as unconfined: {d}"
             );
             assert!(d.contains("confined"), "{d}");
-            // **The mechanism, named — and which mechanism is a platform fact.** Linux enters
-            // namespaces through `bwrap`; macOS applies a Seatbelt profile through
-            // `sandbox-exec` (`crate::exec::seatbelt`, `docs/boundary-and-adjudication.md` §4k).
-            // What this asserts is that the disclosure names the thing that did it rather than
-            // a constant, so it takes either, and neither is a hole in the sentence.
+            // Which mechanism is a platform fact: Linux enters namespaces through `bwrap`,
+            // macOS applies a Seatbelt profile through `sandbox-exec`. The disclosure must
+            // name the thing that did it, so either answer passes and neither is a hole.
             assert!(
                 d.contains("bubblewrap") || d.contains("sandbox-exec"),
                 "the mechanism, named: {d}"
@@ -381,8 +342,8 @@ fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
 
 #[test]
 fn unconfined_is_a_declared_state_and_not_an_absent_one() {
-    // The third of the three states. It must be distinguishable from "asked for and
-    // missing", and the difference has to reach a reader.
+    // The third of the three states, and it must be distinguishable from "asked for and
+    // missing": the difference has to reach a reader.
     let Ok(host) = HostProcesses::new(std::env::temp_dir()) else {
         return absent(CGROUP);
     };
@@ -415,22 +376,9 @@ fn unconfined_is_a_declared_state_and_not_an_absent_one() {
 
 #[test]
 fn a_secret_outside_the_project_is_absent_rather_than_denied() {
-    // **The point of the entry.** Not "the read was refused" — there is nothing to
-    // refuse, because there is nothing there.
-    //
-    // # The secret is a fixture, and that is a finding rather than a convenience
-    //
-    // The first spelling of this test read the operator's own `~/.ssh/id_rsa`, and
-    // it never reached the boundary: `NEVER_WRITE` **denied the whole `bash` call**
-    // because the string `.ssh` occurred in the command text. That is
-    // `docs/boundary-and-adjudication.md` §3's first defect, live — *"it is a
-    // string check, so it is wrong in both directions"* — and it fires here on a
-    // read, in a session where the file is not in the mount namespace at all and
-    // therefore could not have been read by any spelling.
-    //
-    // So the fixture is a secret this test creates, outside the project, with no
-    // `.ssh` in its name. What it measures is the boundary; the string check is
-    // somebody else's file and is reported rather than edited.
+    // The point of the entry: not "the read was refused", because there is nothing there
+    // to refuse. The secret is a fixture, because naming the operator's own ssh directory in
+    // a command is refused before the boundary is reached and the boundary would go unmeasured.
     let mut h = confined!("a_secret_outside_the_project_is_absent");
     let outside = std::env::temp_dir().join(format!("letibot-secret-{}", std::process::id()));
     std::fs::create_dir_all(&outside).expect("outside dir");
@@ -440,18 +388,9 @@ fn a_secret_outside_the_project_is_absent_rather_than_denied() {
     )
     .expect("fixture secret");
 
-    // TWO calls, because there are two mechanisms and one would hide the other.
-    //
-    // Layer A's flow rule (`letibot_tools::intent`) landed after this test was
-    // written, and it classifies a `.pem` read whose stdout surfaces as a disclosure
-    // — so a single call naming `credential.pem` is now refused BEFORE the boundary
-    // is reached, and this test's own comment predicted exactly that: *"the string
-    // check denies the call before the boundary is reached, so the boundary's
-    // behaviour would go unmeasured."*
-    //
-    // So the boundary is measured on a file that is not credential-shaped, and layer
-    // A is measured separately below. Both hold, and neither is standing in for the
-    // other.
+    // Two calls, because there are two mechanisms and one would hide the other: the flow
+    // rule refuses a credential-shaped read before the boundary is reached, so the boundary is
+    // measured on a plain file and the flow rule separately below.
     std::fs::write(outside.join("notes.txt"), "outside contents\n").expect("fixture note");
     let r = h.call(
         "bash",
@@ -465,9 +404,9 @@ fn a_secret_outside_the_project_is_absent_rather_than_denied() {
     );
     let text = payload(&r);
 
-    // The second mechanism, in front of the first: naming the credential at all is
-    // refused by the flow rule, and nothing runs. Belt and braces — the boundary
-    // above already made the bytes unreachable.
+    // The second mechanism, in front of the first: naming the credential is refused by the
+    // flow rule and nothing runs, though the boundary above already made the bytes
+    // unreachable.
     let refused = h.call(
         "bash",
         &serde_json::json!({
@@ -487,8 +426,8 @@ fn a_secret_outside_the_project_is_absent_rather_than_denied() {
 
     let _ = std::fs::remove_dir_all(&outside);
 
-    // No key bytes, by any spelling. The assertion is on the marker rather than on
-    // the filename, because the filename is the thing a path list gets wrong.
+    // No key bytes by any spelling: the assertion is on the marker, not on the filename,
+    // because the filename is the thing a path list gets wrong.
     assert!(
         !text.contains("PRIVATE KEY"),
         "a private key reached the transcript: {text}"
@@ -503,9 +442,8 @@ fn a_secret_outside_the_project_is_absent_rather_than_denied() {
 
 #[test]
 fn the_project_itself_is_readable_and_writable_at_its_own_path() {
-    // The half that makes the boundary usable rather than merely safe — and the
-    // path has to be the SAME inside and out, or every compiler diagnostic names a
-    // file the read tools cannot open.
+    // The half that makes the boundary usable rather than merely safe: the path is the same
+    // inside and out, or every compiler diagnostic names a file the read tools cannot open.
     let mut h = confined!("the_project_is_readable_and_writable");
     let root = h.root().canonicalize().expect("fixture root");
     let r = h.call(
@@ -518,16 +456,15 @@ fn the_project_itself_is_readable_and_writable_at_its_own_path() {
     let text = payload(&r);
     assert!(text.contains(&root.display().to_string()), "{text}");
     assert!(text.contains("confined-write"), "{text}");
-    // And it landed on the operator's real disk, read without going through the
-    // backend: a test that asked the tool whether it wrote is a test of the tool's
-    // opinion of itself.
+    // Read from the real disk, not through the backend: a test that asked the tool whether
+    // it wrote is a test of the tool's opinion of itself.
     assert_eq!(h.read_file("written.txt").trim(), "confined-write");
 }
 
 #[test]
 fn a_sibling_project_is_not_in_the_view() {
-    // The property the *project*-scoped part of "project-scoped" buys: one project,
-    // not "the operator's code".
+    // The property the project-scoped part buys: one project, not the operator's whole
+    // code tree.
     let mut h = confined!("a_sibling_project_is_not_in_the_view");
     let root = h.root().canonicalize().expect("root");
     let sibling = root
@@ -561,11 +498,9 @@ fn the_command_cannot_see_or_signal_the_harness_or_the_servers_it_manages() {
     let r = h.call(
         "bash",
         &serde_json::json!({
-            // Respelled without `$(…)` and `$?`: layer 2 reports both as
-            // unresolvable — a value that does not exist until the shell runs — and
-            // an unresolvable command is `not_run` before it reaches the boundary.
-            // The measurement is unchanged; `sed` does the labelling the command
-            // substitution was doing, and `||` the labelling `$?` was.
+            // No `$(...)` and no `$?`: both are unresolvable until the shell runs, and an
+            // unresolvable command is `not_run` before it reaches the boundary. `sed` and
+            // `||` do the labelling they did.
             "command": format!(
                 "ls /proc | grep -c '^[0-9]' | sed 's/^/pids=/'; kill -0 {me} 2>&1 || echo rc=1"
             ),
@@ -619,10 +554,9 @@ fn egress_is_denied_by_default_and_the_disclosure_says_so() {
 
 #[test]
 fn a_declared_egress_is_a_decision_in_the_record_and_not_a_broken_boundary() {
-    // The case that must not be reported as a defect. `Egress::Host` shares the
-    // host's network namespace deliberately, and the record has to say *decision*
-    // rather than *not entered* — otherwise an authorised `git push` looks like a
-    // boundary failure and a real boundary failure looks like somebody's choice.
+    // The case that must not be reported as a defect: `Egress::Host` shares the host's network
+    // namespace on purpose, so the record says decision rather than not entered, or an
+    // authorised `git push` reads as a boundary failure.
     let view = ViewSpec::project_only(std::env::temp_dir());
     let b = match Bwrap::probe(
         view,
@@ -656,11 +590,9 @@ fn a_declared_egress_is_a_decision_in_the_record_and_not_a_broken_boundary() {
 
 #[test]
 fn a_child_cannot_unshare_its_way_back_out_of_the_boundary() {
-    // **The hole the sandboxing survey caught, run rather than reasoned about.**
-    // `unshare(CLONE_NEWUSER)` is available to an unprivileged process; the caller
-    // gets full capabilities in the namespace it just made, and that is enough to
-    // `unshare(CLONE_NEWNS)` past the mount view its parent built. So mount, PID
-    // and network namespaces are decoration unless this is closed.
+    // `unshare(CLONE_NEWUSER)` is available to an unprivileged process and gives it full
+    // capabilities in the namespace it just made, which is enough to unshare the mount view
+    // its parent built. Mount, PID and network namespaces are decoration unless this is closed.
     let mut h = confined!("a_child_cannot_unshare_its_way_out");
     let host = h.processes.as_ref().expect("host").clone();
     let b = host.boundary().expect("measured");
@@ -699,10 +631,9 @@ fn a_child_cannot_unshare_its_way_back_out_of_the_boundary() {
 
 #[test]
 fn no_new_privs_is_read_from_the_kernel_rather_than_assumed_from_the_flag() {
-    // The reference launcher sets `PR_SET_NO_NEW_PRIVS` before restricting because
-    // an unprivileged restrict is rejected without it — an ordering fact, not a
-    // style. bubblewrap does the equivalent; this asserts the RESULT, because a
-    // helper's documented behaviour is the helper's word.
+    // An unprivileged restrict is rejected without `PR_SET_NO_NEW_PRIVS` set first, which is
+    // an ordering fact and not a style. This asserts the result read from the kernel, because
+    // a helper's documented behaviour is only the helper's word.
     let h = confined!("no_new_privs_is_read");
     let host = h.processes.as_ref().expect("host").clone();
     let b = host.boundary().expect("measured");
@@ -717,14 +648,9 @@ fn no_new_privs_is_read_from_the_kernel_rather_than_assumed_from_the_flag() {
 
 #[test]
 fn a_path_outside_the_view_produces_a_boundary_note_and_not_a_bare_enoent() {
-    // **The empty-haystack case.** `cat: /elsewhere/thing: No such file or
-    // directory` is read by a model as an answer about the world. It is not.
-    //
-    // The path is a fixture rather than `~/.ssh/id_rsa` for the reason recorded in
-    // `a_secret_outside_the_project_is_absent`: a check that denies the call before
-    // the boundary is reached leaves the boundary's behaviour unmeasured. That now
-    // includes layer A's flow rule, which reads `.pem` as credential-shaped — hence
-    // `thing.txt` here.
+    // The empty-haystack case: `No such file or directory` is read by a model as an answer
+    // about the world, and here it is an answer about the view. The path is a plain fixture
+    // because a credential-shaped one is refused before the boundary is reached.
     let mut h = confined!("a_path_outside_the_view_produces_a_note");
     let outside = PathBuf::from(format!("/opt/letibot-note-{}", std::process::id()));
     let r = h.call(
@@ -766,15 +692,9 @@ fn a_genuinely_missing_project_file_is_not_blamed_on_the_boundary() {
 
 #[test]
 fn there_is_no_grant_that_puts_a_private_key_in_the_view() {
-    // §3's subtle case, as an executable statement of the decision. `ssh`
-    // legitimately reads `~/.ssh/id_rsa`, and the resolution is that the key is
-    // never made readable: an agent socket is forwarded instead, so the bytes are
-    // *usable* without being *readable-into-context*.
-    //
-    // The assertion is about the API surface rather than about a run, because the
-    // decision is a property of what can be spelled: there is no `Grant` variant
-    // that binds a key file, and `agent_from_env` refuses anything that is not a
-    // socket.
+    // `ssh` legitimately reads a private key, so the key is never made readable: an agent
+    // socket is forwarded instead, usable without being readable into context. Asserted on
+    // the API surface, because the decision is a property of what can be spelled.
     let dir = std::env::temp_dir().join(format!("letibot-cred-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
     let key = dir.join("id_rsa");
@@ -792,9 +712,9 @@ fn there_is_no_grant_that_puts_a_private_key_in_the_view() {
     );
     assert!(m.contains("Nothing was bound"), "{m}");
 
-    // And a `ReadOnly` grant of the same key, which IS spellable, must announce the
-    // consequence rather than hiding it — this is the one path by which somebody
-    // could make a key readable, and it cannot be taken quietly.
+    // A `ReadOnly` grant of the same key is spellable, so it must announce the consequence:
+    // this is the one path by which somebody could make a key readable, and it cannot be
+    // taken quietly.
     let v = ViewSpec::project_only("/proj").granting(Grant::ReadOnly {
         path: key.clone(),
         why: "somebody insisted".into(),
@@ -928,9 +848,8 @@ fn a_cwd_outside_the_view_refuses_before_anything_is_started() {
             env: &[],
         })
         .err();
-    // `/etc/ssl` IS a system root, so this one is in the view — which is itself
-    // worth asserting, because a view check that refused everything would look
-    // like it worked.
+    // `/etc/ssl` is a system root, so this one is in the view, which is worth asserting: a
+    // view check that refused everything would look like it worked.
     assert!(e.is_none(), "a system root is in the view: {e:?}");
 
     let e = b
@@ -999,25 +918,21 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
         "the token must not cross: {text}"
     );
     assert!(!text.contains("s3cr3t-value"), "{text}");
-    // The keep-list survived, so a command is still a command...
+    // The keep-list survived, so a command is still a command.
     assert!(text.contains("path=set"), "{text}");
-    // ...and a variable the caller declared on purpose crosses, because otherwise
-    // `--clearenv` would silently drop what a tool asked for.
+    // A variable the caller declared on purpose crosses, or `--clearenv` would silently drop
+    // what a tool asked for.
     assert!(text.contains("declared=on-purpose"), "{text}");
 }
 
 #[test]
 fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
-    // **The two-call scratch idiom, measured on the kernel.** A command's `/tmp` was a fresh
-    // tmpfs, so a heredoc patch written by one call was gone by the next, and the failure —
-    // `cat: /tmp/x: No such file or directory` — reads as a broken shell rather than as the
-    // boundary (MEASURED 2026-10-27). `TmpView::Session` binds one directory of the session's
-    // own there instead.
+    // The two-call scratch idiom: with a fresh tmpfs per command a file written by one call is
+    // gone by the next, and `No such file or directory` then reads as a broken shell rather than
+    // as the boundary. `TmpView::Session` binds one directory of the session's own there.
     //
-    // The runs go through [`Confinement::wrap`] and a plain `/bin/sh` rather than through
-    // `HostProcesses`: a cgroup v2 subtree is different apparatus, and a test that needed one
-    // to measure a mount view would skip on boxes that can bind perfectly well. This is the
-    // same invocation `Bwrap::probe` itself makes.
+    // Run through `wrap` and a plain `/bin/sh`, not `HostProcesses`: a cgroup subtree is
+    // different apparatus, and needing one here would skip on boxes that bind fine.
     let dir = std::env::temp_dir().join(format!("letibot-tmp-{}", std::process::id()));
     let project = dir.join("project");
     let session_tmp = dir.join("session-tmp");
@@ -1063,8 +978,8 @@ fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
     let (read, code) = run(&bound, &project, "cat /tmp/probe.txt");
     assert_eq!(code, 0, "the next call must find it: {read}");
     assert!(read.contains("kept"), "{read}");
-    // **And it is a real file on this box**, in the directory the view bound — not something the
-    // helper kept in a memory filesystem that happened to survive.
+    // A real file on this box, in the directory the view bound, not something the helper kept
+    // in a memory filesystem that happened to survive.
     assert!(
         session_tmp.join("probe.txt").is_file(),
         "the write landed in the session's own directory: {}",
@@ -1081,8 +996,8 @@ fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
         "the host's /tmp must not be in the view: {absent}"
     );
 
-    // **The contrast that makes this a measurement**: the default view is unchanged, and a
-    // command there really does start with an empty `/tmp`.
+    // The contrast that makes this a measurement: the default view is unchanged, and a command
+    // there still starts with an empty `/tmp`.
     let plain = Bwrap::probe(ViewSpec::project_only(&project), Egress::Denied)
         .expect("the same boundary, without a session /tmp");
     let (gone, _) = run(&plain, &project, "cat /tmp/probe.txt");
@@ -1097,13 +1012,11 @@ fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
 
 #[test]
 fn a_sessions_tmp_is_created_at_open_and_removed_at_close() {
-    // **The wiring, and the two facts that matter about the directory**: it exists before any
-    // command runs (a `--bind` of a path that is not there is a helper failure at every spawn and
-    // says nothing about why), and it is gone when the session closes, so a daemon does not keep
-    // one directory per session id for the rest of its life.
+    // Two facts about the directory: it exists before any command runs, because a `--bind` of a
+    // path that is not there fails at every spawn and says nothing about why, and it goes at
+    // close so a daemon does not keep one directory per session id for its whole life.
     //
-    // No cgroup and no spawn: `HostProcesses::with_tree` + `NoScopes` is enough, because the
-    // question is about a view and a directory rather than about a process.
+    // No cgroup and no spawn: the question is a view and a directory, not a process.
     use letibot_tools::backend::{ExecBackend, HostBackend};
     use letibot_tools::exec::NoScopes;
 
@@ -1204,8 +1117,8 @@ fn payload(r: &letibot_tools::ToolResult) -> String {
 }
 
 /// The pids in a scope's cgroup and every cgroup under it, read through the same
-/// `cgroup.procs` file the reaper reads — so the membership check and the kill are
-/// looking at one fact and not two.
+/// `cgroup.procs` file the reaper reads, so the membership check and the kill look at one
+/// fact and not two.
 fn cgroup_members(scope: &letibot_tools::exec::ScopeId) -> Vec<u32> {
     // The tree's own reading: on macOS `cgroup.procs` holds group ids, not members.
     letibot_tools::exec::live_members(scope)
