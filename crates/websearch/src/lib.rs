@@ -1,16 +1,10 @@
-//! **Brave Search behind `web_search`.**
+//! Brave Search behind `web_search`.
 //!
-//! `letibot-tools` ships `web_search` as a tool that refuses: the schema is fixed
-//! (it is prompt bytes in the stable prefix, so the argument names had to be right
-//! before anything cached against them) and [`SearchProvider`] is the seam an
-//! implementation attaches through. This crate is one implementation.
-//!
-//! It lives in its own crate rather than in `letibot-tools` because that crate is
-//! deliberately *a function of a call and a filesystem* — no sockets, no TLS. The
-//! trait is the seam that keeps it that way; putting rustls behind the seam rather
-//! than in front of it is the whole point of the seam existing.
-//!
-//! # What the operator has to do
+//! `letibot-tools` ships `web_search` as a tool that refuses, with [`SearchProvider`] as
+//! the seam an implementation attaches through; this crate is one implementation. It sits
+//! in its own crate because `letibot-tools` is deliberately a function of a call and a
+//! filesystem - no sockets, no TLS - and putting rustls behind the seam rather than in
+//! front of it is why the seam exists.
 //!
 //! ```text
 //! harnessd --web-search brave            # and a key, resolved in this order:
@@ -19,17 +13,13 @@
 //!   [brave] key = "…" in providers.toml  #   3. ~/.config/letibot/providers.toml
 //! ```
 //!
-//! A missing key **refuses at attach**, naming all three, rather than three
-//! seconds into the first search as a 401 that names none of them — the same rule
-//! `letibot-provider` follows for a model key, and for the same reason.
+//! A missing key refuses at attach, naming all three places, rather than three seconds
+//! into the first search as a 401 that names none of them.
 //!
-//! # What this does not do
-//!
-//! It does not fetch pages: `web_fetch` is a different seam with a different
-//! backend, and a search provider that quietly also fetched would be a second
-//! egress path nobody declared. It does not cache: a cached search result that
-//! looks live is §8.2's failure wearing a timestamp. And it never invents a hit —
-//! Brave's `web.results` is the only thing read, so a query that matched nothing
+//! It does not fetch pages: `web_fetch` is a different seam with a different backend, and
+//! a search provider that also fetched would be a second egress path nobody declared. It
+//! does not cache, because a cached result that looks live is a lie with a timestamp. It
+//! never invents a hit: only Brave's `web.results` is read, so a query that matched nothing
 //! comes back as nothing rather than as the "did you mean" Brave also returns.
 
 use std::time::Duration;
@@ -41,8 +31,8 @@ use letibot_tools::builtins::external::web::{
 /// Brave's web-search endpoint.
 pub const ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 
-/// How long one search may take before it is a transport failure. A search the
-/// model is waiting on is a turn nobody can interrupt, so this is short.
+/// How long one search may take before it is a transport failure. A search the model is
+/// waiting on is a turn nobody can interrupt, so this is short.
 pub const TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Where a key was found, for the disclosure. Never the key itself.
@@ -63,7 +53,7 @@ impl std::fmt::Display for KeySource {
     }
 }
 
-/// `~/.config/letibot/providers.toml` — the file the model keys already live in.
+/// `~/.config/letibot/providers.toml`, the file the model keys already live in.
 fn providers_file() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
@@ -87,9 +77,9 @@ fn key_from_file(path: &std::path::Path) -> Option<String> {
         if !in_section {
             continue;
         }
-        // A commented-out key is not a key. The section ships with
-        // `# key = "BSA-..."` as a placeholder, and reading that would attach a
-        // garbage credential and turn a clean "no key" refusal into a 401.
+        // A commented-out key is not a key. The section ships with a commented
+        // placeholder, and reading it would attach a garbage credential and turn a clean
+        // "no key" refusal into a 401.
         if line.starts_with('#') {
             continue;
         }
@@ -101,9 +91,9 @@ fn key_from_file(path: &std::path::Path) -> Option<String> {
     None
 }
 
-/// A key the operator gave on the command line, held here rather than in
-/// `Config` — which derives `Debug`, and a secret in a struct that can be
-/// `{:?}`-printed is a secret one `eprintln!` away from a log.
+/// A key the operator gave on the command line, held here rather than in `Config` - which
+/// derives `Debug`, and a secret in a struct that can be `{:?}`-printed is one
+/// `eprintln!` away from a log.
 static FLAG_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Record `--brave-key`. Called once, during flag parsing.
@@ -117,10 +107,10 @@ pub fn resolve_key(flag: Option<&str>) -> Result<(String, KeySource), String> {
 }
 
 /// [`resolve_key`] with the environment and the providers file handed in rather than read.
-/// **So its test sets no variable**: it used to unset `BRAVE_API_KEY` and set
-/// `XDG_CONFIG_HOME` for the rest of the binary's life, under every other test running at that
-/// moment — and a `setenv` beside a C-side `getenv` that std's environment lock does not cover
-/// (glibc's own, in DNS lookups or time zones) is undefined behaviour (R67 item 17).
+///
+/// So its test sets no variable: a test that unset `BRAVE_API_KEY` and set
+/// `XDG_CONFIG_HOME` for the rest of the binary's life races every other test, and a
+/// `setenv` beside a C-side `getenv` std's lock does not cover is undefined behaviour.
 fn resolve_key_from(
     flag: Option<&str>,
     env: impl Fn(&str) -> Option<String>,
@@ -171,7 +161,7 @@ impl Brave {
         Ok(Brave::with_key(key, from, ENDPOINT))
     }
 
-    /// The pieces given outright — for a test against a local stand-in.
+    /// The pieces given outright, for a test against a local stand-in.
     pub fn with_key(key: String, from: KeySource, endpoint: &str) -> Brave {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))
@@ -208,9 +198,9 @@ impl SearchProvider for Brave {
 
         let mut resp = match resp {
             Ok(r) => r,
-            // A status Brave chose is a refusal and carries its own sentence; a
-            // connection that never happened is transport. Kept apart because the
-            // first is a fact about the request and the second is not.
+            // A status Brave chose is a refusal and carries its own sentence; a connection
+            // that never happened is transport. Kept apart because the first is a fact
+            // about the request and the second is not.
             Err(ureq::Error::StatusCode(code)) => {
                 return Err(SearchError::Refused(match code {
                     401 | 403 => format!(
@@ -232,9 +222,9 @@ impl SearchProvider for Brave {
             .read_json()
             .map_err(|e| SearchError::Transport(format!("Brave's answer did not parse: {e}")))?;
 
-        // **Only `web.results`.** Brave also returns `query.altered`, discussions,
-        // FAQ and infobox blocks; folding those in would report as a search hit a
-        // thing that was never a search hit.
+        // Only `web.results`. Brave also returns `query.altered`, discussions, FAQ and
+        // infobox blocks; folding those in would report as a search hit a thing that was
+        // never a search hit.
         let results = body
             .get("web")
             .and_then(|w| w.get("results"))
@@ -246,7 +236,7 @@ impl SearchProvider for Brave {
             .iter()
             .filter_map(|r| {
                 let url = r.get("url").and_then(|v| v.as_str())?.to_string();
-                // A hit with no URL is not reportable — `SearchHit::url` is not
+                // A hit with no URL is not reportable: `SearchHit::url` is not
                 // optional, and `web.rs` says why.
                 if url.is_empty() {
                     return None;
@@ -260,8 +250,8 @@ impl SearchProvider for Brave {
             .take(query.max_results)
             .collect();
 
-        // Brave says when it searched for something else. The tool renders it; the
-        // point is that a silently rewritten query is a rewritten query.
+        // Brave says when it searched for something else. The tool renders it; the point
+        // is that a silently rewritten query is a rewritten query.
         let rewritten = body
             .get("query")
             .and_then(|q| q.get("altered"))
@@ -282,8 +272,8 @@ impl SearchProvider for Brave {
     }
 }
 
-/// Brave's snippets carry `<strong>` around the matched terms. They are prompt
-/// bytes in a tool result, not markup anybody renders, so they come out.
+/// Brave's snippets carry `<strong>` around the matched terms. They are prompt bytes in a
+/// tool result, not markup anybody renders, so they come out.
 fn text_of(v: Option<&serde_json::Value>) -> String {
     let raw = v.and_then(|v| v.as_str()).unwrap_or("");
     let mut out = String::with_capacity(raw.len());
@@ -305,8 +295,8 @@ mod tests {
 
     #[test]
     fn the_key_is_refused_by_naming_all_three_places() {
-        // No variable set and a providers file that is not there — handed in, not arranged in
-        // the process environment (see `resolve_key_from`).
+        // No variable set and a providers file that is not there - handed in, not arranged
+        // in the process environment (see `resolve_key_from`).
         let nowhere = std::env::temp_dir()
             .join("letibot-no-brave")
             .join("letibot")
@@ -341,9 +331,9 @@ mod tests {
         // No `[brave]` section at all is a miss, not the first key in the file.
         std::fs::write(&f, "[deepseek]\nkey = \"nope\"\n").unwrap();
         assert_eq!(key_from_file(&f), None);
-        // The section as it ships: a header and a commented placeholder. Reading
-        // that would attach a garbage credential, so the answer is still None and
-        // the operator still gets the refusal that names all three places.
+        // The section as it ships: a header and a commented placeholder. Reading that
+        // would attach a garbage credential, so the answer is still None and the operator
+        // still gets the refusal that names all three places.
         std::fs::write(&f, "[brave]\n# key = \"BSA-...\"\n").unwrap();
         assert_eq!(key_from_file(&f), None);
         let _ = std::fs::remove_dir_all(&dir);

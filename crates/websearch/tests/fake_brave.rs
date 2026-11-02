@@ -1,9 +1,8 @@
-//! The whole chain against a stand-in Brave: what goes out on the wire, what
-//! comes back as `SearchResults`, and what each failure says.
+//! The whole chain against a stand-in Brave: what goes out on the wire, what comes back as
+//! `SearchResults`, and what each failure says.
 //!
-//! A fake rather than the real API for the reason every other seam in this tree
-//! has one: a test that needs a paid key and a network is a test nobody runs, and
-//! the thing under test here is our request and our parsing, not Brave's uptime.
+//! A fake rather than the real API because a test that needs a paid key and a network is a
+//! test nobody runs, and the subject here is our request and our parsing, not Brave.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -107,9 +106,9 @@ fn the_request_carries_the_key_and_the_answer_is_parsed_without_markup() {
     );
     assert!(line.contains("count="), "{line}");
 
-    // The answer: markup stripped, the URL-less hit dropped, the cap applied, and
-    // the denominator kept — `considered` counts what Brave returned, which is
-    // what makes "showing 2" different from "there were only 2".
+    // The answer: markup stripped, the URL-less hit dropped, the cap applied, and the
+    // denominator kept. `considered` counts what Brave returned, which is what makes
+    // "showing 2" different from "there were only 2".
     assert_eq!(out.hits.len(), 2);
     assert_eq!(out.hits[0].title, "Understanding Ownership");
     assert_eq!(
@@ -151,8 +150,8 @@ fn a_site_restriction_goes_out_as_braves_own_operator() {
 
 #[test]
 fn each_failure_says_which_one_it_is() {
-    // A bad key is a refusal that names where the key came from, so the operator
-    // knows which of the three places to fix.
+    // A bad key is a refusal that names where the key came from, so the operator knows
+    // which of the three places to fix.
     let f = fake(r#"{"error":"bad key"}"#, 401);
     let e = brave(&f)
         .search(&SearchQuery {
