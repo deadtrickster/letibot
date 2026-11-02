@@ -14,7 +14,7 @@ def strip(src):
     """Tokens of Rust source without comments, plus the code lines of doc-comment fences."""
     out, docs = [], []
     i, n = 0, len(src)
-    fence = False
+    fence = 0
     while i < n:
         c = src[i]
         if src.startswith("//", i):
@@ -23,8 +23,10 @@ def strip(src):
             line = src[i:j]
             if line.startswith(("///", "//!")):
                 body = line[3:].strip()
-                if body.startswith("```"):
-                    fence = not fence
+                ticks = len(body) - len(body.lstrip("`"))
+                # A fence closes only on a run at least as long as the one that opened it.
+                if ticks >= 3 and (not fence or (ticks >= fence and not body.strip("`"))):
+                    fence = 0 if fence else ticks
                     docs.append(body)
                 elif fence:
                     docs.append(body)
