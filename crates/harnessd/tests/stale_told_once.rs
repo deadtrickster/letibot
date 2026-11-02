@@ -98,6 +98,8 @@ fn the_model_is_told_the_prompt_is_stale_once_and_not_on_every_check() {
             cached_tokens: 0,
             reusable: 0,
             generated_tokens: 0,
+            budget: None,
+            fidelity: None,
         };
         h.fork_to_summary(&outcome, None, None, ForkTail::NONE)
             .expect("the seed fork lands");

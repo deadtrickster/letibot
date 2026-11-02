@@ -174,6 +174,8 @@ fn a_long_reseat_is_watched_by_a_boot_window_head_and_its_queued_prompt_is_taken
             cached_tokens: 0,
             reusable: 0,
             generated_tokens: 0,
+            budget: None,
+            fidelity: None,
         };
         h.fork_to_summary(
             &outcome,

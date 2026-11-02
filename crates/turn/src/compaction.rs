@@ -39,6 +39,7 @@ use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 
 use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
 use crate::events::{EventSink, NullSink, TurnEvent};
+use crate::fidelity::{Facts, Fidelity};
 use crate::length::EmptyReason;
 
 /// The compaction turn's instruction, on both the local and the remote path, because it is the
@@ -91,6 +92,430 @@ pub const SUMMARY_SECTIONS: [&str; 8] = [
 pub const UNFINISHED_REASONING_NOTICE: &str = "\
 Your reply ended inside reasoning with no output. Write the summary now.";
 
+/// **How much of the room a record may claim**, in per-mille of `window - prefix - headroom`.
+///
+/// R22's measured failure: a 1,353,917-token conversation became a 2,250-token record, 600:1, on a
+/// session whose window left ~1.34M to share. Nothing truncated it - the instruction named no
+/// budget at all - so the record is sized by a stated fraction now rather than by the model's
+/// guess. At 150 the record takes 15% of the room and the session keeps 85% of its window before
+/// it compacts again.
+pub const SUMMARY_FIDELITY_PER_MILLE: u64 = 150;
+
+/// The least a budget may be, so a small window still buys a record that can enumerate something.
+/// Never above what the summary turn can actually write - see [`summary_budget`].
+pub const MIN_SUMMARY_TOKENS: u64 = 2_000;
+
+/// What the ASK itself costs in the summary turn's own room: the instruction is appended after the
+/// conversation and its tokens compete with the record's for the window. An allowance rather than a
+/// measurement, because the ask is not tokenized until it is appended and 2k against an ask of
+/// about 700 errs on the side of a record that fits.
+pub const ASK_ROOM: u64 = 2_000;
+
+/// Characters per token, for the one line that tells a model its room in characters: a model
+/// cannot count tokens and can count lines.
+pub const CHARS_PER_TOKEN: u64 = 4;
+
+/// The room a summary gets, in LEDGER tokens, and which bound chose it. A struct rather than one
+/// number because the sentence the operator reads has to be able to say WHY the record was as big
+/// as it was, and "the ratio said so" and "the turn had no more room" are different answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SummaryBudget {
+    /// `window - prefix - headroom`: what the conversation leaves to share between the record and
+    /// the span the session continues on.
+    pub room: u64,
+    /// `room × SUMMARY_FIDELITY_PER_MILLE`: what the ratio alone would allow.
+    pub share: u64,
+    /// `window - resident`: what the summary turn can actually write, since its prompt is the
+    /// whole conversation and the generation has to fit beside it.
+    pub writable: u64,
+    /// What the record may fill: the smaller of the two, floored at [`MIN_SUMMARY_TOKENS`].
+    pub tokens: u64,
+    /// Which bound chose `tokens`: `room` when the ratio bound it, `turn` when the turn's own free
+    /// room did.
+    pub by: &'static str,
+}
+
+impl SummaryBudget {
+    /// The room in characters, for the instruction's own sentence.
+    pub fn chars(&self) -> u64 {
+        self.tokens * CHARS_PER_TOKEN
+    }
+
+    /// The room in lines of about 120 characters, which is the unit a model can act on.
+    pub fn lines(&self) -> u64 {
+        self.chars() / 120
+    }
+
+    /// How much of the budget a record of `chars` characters used, in per cent. Zero when there is
+    /// no budget to speak of.
+    pub fn used_per_cent(&self, chars: usize) -> u64 {
+        let budget = self.chars();
+        if budget == 0 {
+            return 0;
+        }
+        ((chars as u64) * 100 / budget).min(100)
+    }
+
+    /// The clause a report carries: what the record was allowed, and what bound that.
+    pub fn said(&self) -> String {
+        match self.by {
+            "turn" => format!(
+                "the record was allowed {} of {} ledger tokens - every token the summary turn \
+                 had left after its own ask",
+                self.tokens, self.room
+            ),
+            _ => format!(
+                "the record was allowed {} of {} ledger tokens, {} per mille of the room the \
+                 conversation leaves",
+                self.tokens, self.room, SUMMARY_FIDELITY_PER_MILLE
+            ),
+        }
+    }
+}
+
+/// The budget for one compaction of a session at `resident` ledger tokens.
+///
+/// `window`, `prefix_tokens`, `headroom` and `resident` are all in the same unit - the ledger's -
+/// because that is the unit every caller measures in (`Config::planning_window`).
+///
+/// **The turn's own free room is a bound as well as the ratio, and it is the bound that usually
+/// wins.** A compaction fires AT the wall, so `window - resident` is about one headroom, and a
+/// record asked to fill 15% of a 1.34M room would be a generation of 200k tokens into 90k of free
+/// context. Asking for that is asking for a cut record on every compaction; the honest budget is
+/// the smaller of the two, and the report says which.
+pub fn summary_budget(
+    window: u64,
+    prefix_tokens: u64,
+    headroom: u64,
+    resident: u64,
+) -> SummaryBudget {
+    let room = window
+        .saturating_sub(prefix_tokens)
+        .saturating_sub(headroom);
+    let share =
+        ((room as u128 * SUMMARY_FIDELITY_PER_MILLE as u128) / 1_000).min(u64::MAX as u128) as u64;
+    let writable = window.saturating_sub(resident);
+    let for_the_record = writable.saturating_sub(ASK_ROOM);
+    let tokens = share
+        .min(for_the_record)
+        .max(MIN_SUMMARY_TOKENS.min(for_the_record));
+    SummaryBudget {
+        room,
+        share,
+        writable,
+        tokens,
+        by: if tokens == share { "room" } else { "turn" },
+    }
+}
+
+/// **The words a verbatim tail will carry**, for the fidelity gate: what a reader of the new base
+/// can still read. A tool call is included by its argument text, because that is where the path or
+/// the command lives - a tail whose call was counted as a fact it does not carry would be re-asked
+/// for something already in the base.
+pub fn carried_text(items: &[TranscriptItem]) -> String {
+    let mut out = String::new();
+    for item in items {
+        match item {
+            TranscriptItem::User { parts, .. } => {
+                for part in parts {
+                    if let UserPart::Text { text } = part {
+                        out.push_str(text);
+                        out.push('\n');
+                    }
+                }
+            }
+            TranscriptItem::Assistant {
+                text, tool_calls, ..
+            } => {
+                out.push_str(text);
+                out.push('\n');
+                for call in tool_calls {
+                    out.push_str(&call.arguments);
+                    out.push('\n');
+                }
+            }
+            TranscriptItem::ToolResult { payload, .. } => {
+                out.push_str(payload);
+                out.push('\n');
+            }
+            TranscriptItem::Reasoning { text, .. } => {
+                out.push_str(text);
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// **The instruction for a record that has a size**, which is the compaction that runs almost
+/// always. [`SUMMARY_INSTRUCTION`] stays exactly as it was for the overrun halves, whose fold R22
+/// deliberately left alone: there the failure is that the conversation does not fit in front of
+/// the window, and the budget is `WRITE_ROOM` rather than a share of anything.
+///
+/// Two texts rather than one, because a budget belongs to the path that has one - and one test
+/// holds the two together on the sections, which is the part a reader depends on
+/// (`the_two_instructions_ask_for_the_same_sections`).
+pub fn summary_instruction(budget: &SummaryBudget) -> String {
+    format!(
+        "\
+The conversation above is what this record stands in for: it is what a reader will have \
+instead of it, and anything you do not carry into it is lost.
+\
+You have room for about {tokens} tokens - roughly {chars} characters, or {lines} lines at 120 \
+characters. USE IT. A record much shorter than that has dropped work that was in the \
+conversation, and it will be sent back to be written again.
+\
+Write the record in exactly these sections, in this order, and keep every one of them even when \
+it is empty:
+\
+## Objective
+\
+- one or two sentences: what the operator is trying to accomplish
+\
+## Important Details
+\
+- one line per thing that constrains the work: a preference, a decision and why it was taken, a \
+command and what it did, a number still needed, an assumption
+\
+## Work State
+\
+### Completed
+\
+- one line per finished piece of work, verified fact or change made
+\
+### Active
+\
+- one line per thing in progress or being investigated
+\
+### Blocked
+\
+- one line per blocker, failing command or unknown
+\
+## Next Move
+\
+- one numbered line per next action, most immediate first
+\
+## Relevant Files
+\
+- one line per file the conversation created, changed, read for what it said, or was sent: its \
+exact path, then why it matters
+\
+Rules, and the second one is what a record this size gets wrong:
+\
+- One line per thing. A file, a command, a decision, an open question: each gets its own line.
+\
+- Never write \"various\", \"and others\" or \"etc.\"; never fold a group of items into one \
+entry; never drop an item for being small. A reader who has your record and nothing else cannot \
+recover what you did not write.
+\
+- Exact strings for exact things: file paths, symbols, commands, error strings, URLs and \
+identifiers, spelled as they appeared.
+\
+- Drop tool output bodies and reasoning. Carry what was concluded, what was run, what failed and \
+what is left.
+\
+- If you read or were sent an IMAGE, say so and say what was in it: the picture does not survive \
+this record.
+\
+- Do not call tools. Do not write about this record or about the conversation being shortened.
+\
+Answer with the record and nothing else.",
+        tokens = budget.tokens,
+        chars = budget.chars(),
+        lines = budget.lines(),
+    )
+}
+
+#[cfg(test)]
+mod the_record_has_a_size {
+    use super::*;
+
+    /// R22's own session, in the units the decision was made in: a 1,440,006-token window, a
+    /// 9,103-token prompt, a headroom of a sixteenth of it, and 1,352,917 tokens resident when the
+    /// compaction fired. The record it produced was 2,250 tokens.
+    fn the_measured_session() -> SummaryBudget {
+        summary_budget(1_440_006, 9_103, 90_000, 1_352_917)
+    }
+
+    /// The size is a stated fraction of the room and not the model's guess: the same three numbers
+    /// any reader can recompute from the report.
+    #[test]
+    fn the_budget_is_a_stated_fraction_of_the_room() {
+        let b = the_measured_session();
+        assert_eq!(b.room, 1_340_903, "window - prefix - headroom");
+        assert_eq!(b.share, 1_340_903 * 150 / 1_000);
+        assert_eq!(
+            (b.share * 1_000 / b.room).abs_diff(SUMMARY_FIDELITY_PER_MILLE),
+            1,
+            "the ratio is the ratio, to the last per mille an integer division can keep: {}",
+            b.share
+        );
+    }
+
+    /// The measured record was a fraction of what it was allowed, and at the wall the bound is the
+    /// turn's own free room rather than the ratio - a 200k generation does not fit in 87k.
+    #[test]
+    fn the_record_that_was_produced_is_a_fraction_of_what_it_was_allowed() {
+        let b = the_measured_session();
+        assert_eq!(b.writable, 1_440_006 - 1_352_917);
+        assert_eq!(b.tokens, b.writable - ASK_ROOM, "less the ask's own room");
+        assert_eq!(b.by, "turn");
+        assert!(
+            b.tokens > 2_250 * 20,
+            "{} against the 2,250 it wrote",
+            b.tokens
+        );
+    }
+
+    /// And the point of the ratio: the new base is a small part of the window, so the session has
+    /// most of its span before it has to compact again.
+    #[test]
+    fn the_session_keeps_most_of_its_window_for_working() {
+        let b = the_measured_session();
+        let base = 9_103 + b.tokens;
+        assert!(
+            base * 100 / 1_440_006 < 10,
+            "a new base of {base} of 1,440,006"
+        );
+    }
+
+    /// Two bounds, and both are real: the ratio on a session that compacts with room to spare, the
+    /// turn's own free room on one that compacts at the wall.
+    #[test]
+    fn which_bound_chose_the_budget() {
+        let early = summary_budget(1_000_000, 10_000, 62_500, 100_000);
+        assert_eq!(early.room, 927_500);
+        assert_eq!(early.tokens, 927_500 * 150 / 1_000);
+        assert_eq!(early.by, "room");
+        assert!(early.said().contains("150 per mille"), "{}", early.said());
+
+        let wall = summary_budget(262_144, 6_880, 16_384, 250_000);
+        assert_eq!(wall.tokens, 262_144 - 250_000 - ASK_ROOM);
+        assert_eq!(wall.by, "turn");
+        assert!(
+            wall.said().contains("had left after its own ask"),
+            "{}",
+            wall.said()
+        );
+    }
+
+    /// A small window still buys a record: the floor sits under the ratio, and never above what the
+    /// turn has left once its own ask is paid for.
+    #[test]
+    fn the_floor_buys_a_record_on_a_small_window() {
+        let b = summary_budget(12_000, 1_000, 2_048, 9_000);
+        assert_eq!(b.share, 1_342, "under the floor");
+        assert_eq!(b.tokens, 1_000, "what the window has left, less the ask");
+        assert!(b.tokens <= b.writable, "{} of {}", b.tokens, b.writable);
+
+        // And with room to spare, the floor is the least it ever gets.
+        let roomy = summary_budget(12_000, 1_000, 2_048, 5_000);
+        assert_eq!(roomy.tokens, MIN_SUMMARY_TOKENS);
+    }
+
+    /// Whatever the inputs, a budget never asks for a token the window has not got: a prompt larger
+    /// than the window, a resident past it, and nothing at all are all arithmetic, not panics.
+    #[test]
+    fn a_budget_never_exceeds_what_the_turn_can_write() {
+        for (window, prefix, headroom, resident) in [
+            (262_144, 6_880, 16_384, 250_000),
+            (8_192, 8_000, 2_048, 8_192),
+            (0, 0, 0, 0),
+            (1_000, 10_000, 500, 2_000),
+            (1_440_006, 9_103, 90_000, 1_352_917),
+        ] {
+            let b = summary_budget(window, prefix, headroom, resident);
+            assert!(
+                b.tokens <= b.writable,
+                "{window}/{prefix}/{headroom}/{resident}: {} > {}",
+                b.tokens,
+                b.writable
+            );
+            assert!(b.tokens <= window, "{window}: {} tokens", b.tokens);
+            assert!(
+                b.tokens <= b.writable.saturating_sub(ASK_ROOM),
+                "{window}: a record that does not fit beside its own ask"
+            );
+        }
+    }
+
+    /// The instruction carries the number, and it does not carry the word that did the damage:
+    /// *"write a **compact** factual record"* is what produced 2,250 tokens for 3,590 rows.
+    #[test]
+    fn the_instruction_states_the_budget_and_asks_for_every_line() {
+        let b = the_measured_session();
+        let text = summary_instruction(&b);
+        assert!(
+            text.contains(&b.tokens.to_string()),
+            "the number the model is measured against: {}",
+            b.tokens
+        );
+        assert!(
+            text.contains(&b.lines().to_string()),
+            "and the unit it can act on"
+        );
+        assert!(
+            !text.to_lowercase().contains("compact"),
+            "R22: the word was doing damage no number beside it undoes"
+        );
+        assert!(text.contains("One line per thing"));
+        assert!(text.contains("Never write \"various\""));
+        // The ask is a string literal with line continuations, which is exactly where a newline goes
+        // missing: every heading starts a LINE, and no continuation backslash survives into it.
+        assert!(
+            text.contains("\n## Relevant Files\n"),
+            "a heading has to start its own line: {text}"
+        );
+        assert!(!text.contains('\\'), "a continuation in the text: {text}");
+    }
+
+    /// A section is a question, and an absent section is a question nobody was asked
+    /// (`docs/compaction.md` §6) - so the budgeted instruction asks every one of them.
+    #[test]
+    fn the_budgeted_instruction_keeps_every_section() {
+        let text = summary_instruction(&the_measured_session());
+        for section in SUMMARY_SECTIONS {
+            assert!(text.contains(section), "the instruction lost {section}");
+        }
+    }
+
+    /// Two texts - the overrun halves keep the one R22 left alone - and the sections are the part a
+    /// reader depends on, so one test holds the pair together.
+    #[test]
+    fn the_two_instructions_ask_for_the_same_sections() {
+        let budgeted = summary_instruction(&the_measured_session());
+        for section in SUMMARY_SECTIONS {
+            assert!(
+                SUMMARY_INSTRUCTION.contains(section),
+                "the overrun instruction lost {section}"
+            );
+            assert!(
+                budgeted.contains(section),
+                "the budgeted one lost {section}"
+            );
+        }
+        for text in [SUMMARY_INSTRUCTION, budgeted.as_str()] {
+            assert!(text.contains("Do not call tools"));
+            assert!(text.contains("IMAGE"));
+        }
+    }
+
+    /// How much of its room a record used, which is the other half of "sized to what it holds": a
+    /// record at 11% of a 348k-character allowance is not the 600:1 record this entry is about.
+    #[test]
+    fn how_much_of_the_budget_a_record_used() {
+        let b = the_measured_session();
+        assert_eq!(b.chars(), b.tokens * 4);
+        assert_eq!(b.used_per_cent(2_250 * 4), 2);
+        assert_eq!(
+            b.used_per_cent(b.chars() as usize * 2),
+            100,
+            "capped, never 200"
+        );
+    }
+}
+
 /// What is appended when the summary turn spends its whole output on reasoning and
 /// nothing was kept: the answer this turn owes is the summary.
 fn empty_length_notice(_reason: EmptyReason) -> String {
@@ -121,6 +546,23 @@ pub struct CompactionOutcome {
     /// Tokens the summary turn generated — reasoning included. The summary's own
     /// size in the new base is at most the visible part of this.
     pub generated_tokens: u64,
+    /// The room this record was given, when the compaction had a size at all: `None` on the
+    /// overrun halves, which R22 left as they were.
+    pub budget: Option<SummaryBudget>,
+    /// What the record kept of what the conversation held, measured against the structure of the
+    /// transcript. `None` when nothing was measured - the overrun halves, and any compaction that
+    /// never got as far as a record.
+    pub fidelity: Option<Fidelity>,
+}
+
+/// **What a record is asked for, when it has a size**: the budget it may fill, and the text of
+/// whatever the compaction carries verbatim beside it - the tail's items are in the new base, so a
+/// fact they hold is not a fact the record dropped, and the gate must not re-ask for it.
+pub struct SummaryAsk<'a> {
+    pub budget: SummaryBudget,
+    /// The verbatim tail, as the words it will be carried as. Empty for a local model, which
+    /// carries no tail at all.
+    pub carried: &'a str,
 }
 
 /// Who answers a summary turn.
@@ -200,15 +642,26 @@ impl Answerer<'_> {
 
 /// Run the compaction turn: append the instruction as a system update and take the turn that
 /// answers it. One turn, not a special shape.
+///
+/// `ask` is what makes the record SIZED (R22): the budget it may fill, and the tail measured with
+/// it. `None` is the overrun path and the tests, which keep the instruction and the shape they had.
+#[allow(clippy::too_many_arguments)] // the ask is the caller's fact and does not belong to the engine
 pub fn run_compaction(
     engine: &mut TurnEngine,
     session: &mut Session,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
     ladder: &mut letibot_http::retry::Ladder,
+    ask: Option<&SummaryAsk<'_>>,
 ) -> Result<CompactionOutcome, TurnFailure> {
+    // The facts are read BEFORE the instruction lands: the instruction is not part of what the
+    // conversation held, and a record measured against its own ask would always name the ask.
+    let facts = ask.map(|_| Facts::of(&session.items));
     let instruction = TranscriptItem::System {
-        text: SUMMARY_INSTRUCTION.to_string(),
+        text: match ask {
+            Some(a) => summary_instruction(&a.budget),
+            None => SUMMARY_INSTRUCTION.to_string(),
+        },
         origin: SystemOrigin::Update,
     };
     session
@@ -217,38 +670,65 @@ pub fn run_compaction(
 
     // A user item, not a system update: this is the harness talking to the model
     // mid-compaction, and a system message at the end of a request is the shape a provider
-    let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
-        loop {
-            match answerer.run(engine, session, sink) {
-                Ok(ok) => break Ok(ok),
-                Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                    append_salvage_notice(session, engine, sink, UNFINISHED_REASONING_NOTICE)?;
+    let mut reasked = false;
+    let (ok, record, fidelity) = engine.without_reasoning(
+        |engine| -> Result<(TurnOk, Harvest, Option<Fidelity>), TurnFailure> {
+            loop {
+                match answerer.run(engine, session, sink) {
+                    Ok(ok) => {
+                        let record = harvest(&ok.items);
+                        let fidelity = match (ask, facts.as_ref()) {
+                            (Some(a), Some(f)) => {
+                                Some(f.measure(&format!("{}\n{}", record.summary, a.carried)))
+                            }
+                            _ => None,
+                        };
+                        // **Asked once.** A record that dropped most of what the conversation
+                        // held is sent back with the gap named - and if the second answer is
+                        // thin too, that is the answer: a loop here would spend the session's
+                        // whole budget arguing with a model that cannot see through it. A
+                        // record CUT by the window is not re-asked either: it stopped for a
+                        // mechanical reason the second attempt would meet again.
+                        if !record.truncated
+                            && !reasked
+                            && let Some(f) = &fidelity
+                            && let Some(gap) = f.ask_again()
+                        {
+                            reasked = true;
+                            append_salvage_notice(session, engine, sink, &gap)?;
+                            continue;
+                        }
+                        break Ok((ok, record, fidelity));
+                    }
+                    Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                        append_salvage_notice(session, engine, sink, UNFINISHED_REASONING_NOTICE)?;
+                    }
+                    Err(TurnFailure::EmptyLength { reason, .. }) => {
+                        let notice = empty_length_notice(reason);
+                        append_salvage_notice(session, engine, sink, &notice)?;
+                    }
+                    // An endpoint that failed is the retry policy's, not the salvage's: safe here for the
+                    // same reason the summary path is.
+                    Err(TurnFailure::Http(e)) => match ladder.failed(&e) {
+                        // The wait is the policy's own, bounded by its longest step; the
+                        // alternative is a summary turn nobody tried twice.
+                        Some(wait) => std::thread::sleep(wait),
+                        None => return Err(TurnFailure::Http(e)),
+                    },
+                    // SalvageExhausted lands here, and so does everything that is not a
+                    // say-nothing turn: a guard trip, a spent budget. Propagating is honest -
+                    // a compaction that did not run must say so.
+                    Err(e) => return Err(e),
                 }
-                Err(TurnFailure::EmptyLength { reason, .. }) => {
-                    let notice = empty_length_notice(reason);
-                    append_salvage_notice(session, engine, sink, &notice)?;
-                }
-                // An endpoint that failed is the retry policy's, not the salvage's: safe here for the
-                // same reason the summary path is.
-                Err(TurnFailure::Http(e)) => match ladder.failed(&e) {
-                    // The wait is the policy's own, bounded by its longest step; the
-                    // alternative is a summary turn nobody tried twice.
-                    Some(wait) => std::thread::sleep(wait),
-                    None => return Err(TurnFailure::Http(e)),
-                },
-                // SalvageExhausted lands here, and so does everything that is not a
-                // say-nothing turn: a guard trip, a spent budget. Propagating is honest -
-                // a compaction that did not run must say so.
-                Err(e) => return Err(e),
             }
-        }
-    })?;
+        },
+    )?;
 
     let Harvest {
         summary,
         tool_calls,
         truncated,
-    } = harvest(&ok.items);
+    } = record;
     let reusable = match &ok.metrics.prefix_check {
         crate::prefix::PrefixCheck::Held {
             expected_cached_min,
@@ -267,6 +747,8 @@ pub fn run_compaction(
         cached_tokens: ok.metrics.cached_tokens,
         reusable,
         generated_tokens: ok.metrics.predicted_tokens,
+        budget: ask.map(|a| a.budget),
+        fidelity,
     })
 }
 

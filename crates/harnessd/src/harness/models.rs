@@ -305,6 +305,8 @@ impl Harness {
             cached_tokens: 0,
             reusable: 0,
             generated_tokens: 0,
+            budget: None,
+            fidelity: None,
         };
         self.compacting = true;
         let forked = self.fork_to_summary(
@@ -814,6 +816,8 @@ impl Harness {
             cached_tokens: 0,
             reusable: 0,
             generated_tokens: 0,
+            budget: None,
+            fidelity: None,
         };
         self.compacting = true;
         let forked = self.fork_to_summary(

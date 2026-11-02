@@ -4757,6 +4757,23 @@ pub(crate) fn compaction_said(
     {
         said.push_str(&format!(" {line}"));
     }
+    // **What the record kept of what the conversation held** (R22), and what it was allowed: a
+    // summary is sized by a stated fraction of the room now, so the line says the fraction rather
+    // than leaving a reader to take the model's word for it. Both numbers come off the outcome the
+    // daemon measured, so a head drawing this sentence and a head drawing the wire report agree.
+    if let Some(f) = &r.summary_turn.fidelity {
+        let mut line = format!(" The record it wrote carries {}", f.line());
+        if let Some(b) = r.summary_turn.budget {
+            line.push_str(&format!(
+                "; it is {} characters, and {}.",
+                r.summary_turn.summary.len(),
+                b.said()
+            ));
+        } else {
+            line.push('.');
+        }
+        said.push_str(&line);
+    }
     if !r.summary_was_streamed {
         said.push_str(&format!(
             " Nothing of the summary turn reached this screen — it ran over a scratch \
@@ -4808,6 +4825,32 @@ pub(crate) fn compaction_wire(
             because: r.fork.tail_because.clone(),
             dropped: r.fork.tail_dropped.unwrap_or(0) as u64,
         },
+        // What the record kept, and the room it was given, when this compaction had a size: the
+        // same numbers the sentence above was written from, in the shape a head can draw.
+        fidelity: r.summary_turn.fidelity.as_ref().map(|f| {
+            letibot_sessionlog::event::CompactionFidelity {
+                levels: f
+                    .levels
+                    .iter()
+                    .map(|l| letibot_sessionlog::event::CompactionLevel {
+                        name: l.name.to_string(),
+                        total: l.total as u64,
+                        kept: l.kept as u64,
+                        dropped: l.missing.clone(),
+                    })
+                    .collect(),
+            }
+        }),
+        budget: r
+            .summary_turn
+            .budget
+            .map(|b| letibot_sessionlog::event::CompactionBudget {
+                room: b.room,
+                share: b.share,
+                writable: b.writable,
+                tokens: b.tokens,
+                by: b.by.to_string(),
+            }),
     }
 }
 
@@ -5113,6 +5156,8 @@ mod the_wire_report {
             cached_tokens,
             reusable,
             generated_tokens: 0,
+            budget: None,
+            fidelity: None,
         };
         let metered = summary_turn_reuse(&o(19_584, 0));
         assert!(!metered.contains("of 0"), "{metered}");
@@ -5128,6 +5173,81 @@ mod the_wire_report {
             summary_turn_reuse(&o(0, 0)),
             "summary turn reused nothing the server reported"
         );
+    }
+
+    /// **What the record kept, and what it was allowed** (R22): the levels a reader needs to judge a
+    /// summary rather than take it on trust, in the sentence AND in the wire report - one set of
+    /// numbers, two shapes, so a head drawing one cannot contradict the other.
+    #[test]
+    fn the_compacted_line_says_what_the_record_kept_and_what_it_was_allowed() {
+        let mut sized = report("a summary", Vec::new(), 0, "local_model");
+        sized.summary_turn.fidelity = Some(letibot_turn::Fidelity {
+            levels: vec![
+                letibot_turn::Level {
+                    name: "files",
+                    total: 47,
+                    kept: 44,
+                    missing: vec!["a.rs".into(), "b.rs".into()],
+                },
+                letibot_turn::Level {
+                    name: "commands",
+                    total: 21,
+                    kept: 19,
+                    missing: Vec::new(),
+                },
+                letibot_turn::Level {
+                    name: "decisions",
+                    total: 6,
+                    kept: 6,
+                    missing: Vec::new(),
+                },
+            ],
+        });
+        sized.summary_turn.budget = Some(letibot_turn::summary_budget(
+            262_144, 6_880, 16_384, 250_000,
+        ));
+
+        let said = compaction_said(&sized, None);
+        assert!(
+            said.contains("carries files 44 of 47, commands 19 of 21, decisions 6 of 6"),
+            "{said}"
+        );
+        // At the wall the turn's own free room is what bound the record, and the line says so: a
+        // reader who saw only "15% of the room" would think the model had been short-changed.
+        assert!(
+            said.contains("allowed 10144 of 238880 ledger tokens") && said.contains("had left"),
+            "{said}"
+        );
+        assert!(
+            said.contains("it is 9 characters"),
+            "the record's own size: {said}"
+        );
+
+        let wire = compaction_wire(&sized, "compacted", None, 250_000, 262_144, 16_384);
+        let fidelity = wire.fidelity.expect("the levels are on the wire");
+        assert_eq!(
+            fidelity.line(),
+            "files 44 of 47, commands 19 of 21, decisions 6 of 6"
+        );
+        assert_eq!(
+            fidelity.levels[0].dropped,
+            vec!["a.rs".to_string(), "b.rs".to_string()]
+        );
+        let budget = wire.budget.expect("the budget is on the wire");
+        assert_eq!(
+            (budget.tokens, budget.room, budget.by.as_str()),
+            (10_144, 238_880, "turn")
+        );
+
+        // A compaction that was asked for nothing has neither, and says neither: the overrun path,
+        // which R22 left alone.
+        let plain = report("a summary", Vec::new(), 0, "local_model");
+        let said = compaction_said(&plain, None);
+        assert!(!said.contains("carries files"), "{said}");
+        assert!(!said.to_lowercase().contains("ledger tokens"), "{said}");
+        let wire = compaction_wire(&plain, "overrun", None, 0, 0, 0);
+        assert!(wire.fidelity.is_none());
+        assert!(wire.budget.is_none());
     }
 
     /// Zero has three causes, and the sentence says which - 's shape one document over, and the
@@ -5218,6 +5338,8 @@ mod the_wire_report {
                 cached_tokens: 0,
                 reusable: 0,
                 generated_tokens: 0,
+                budget: None,
+                fidelity: None,
             },
             gained: Vec::new(),
             lost: Vec::new(),

@@ -951,6 +951,8 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
         cached_tokens: 0,
         reusable: 0,
         generated_tokens: 0,
+        budget: None,
+        fidelity: None,
     };
     let fork = h
         .fork_to_summary(&outcome, None, None, ForkTail::NONE)

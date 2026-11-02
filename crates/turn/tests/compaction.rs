@@ -169,6 +169,7 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
         &mut no_retries(),
+        None,
     )
     .unwrap();
 
@@ -259,6 +260,7 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
         &mut no_retries(),
+        None,
     )
     .unwrap();
     assert_eq!(outcome.tool_calls, 1, "{outcome:?}");
@@ -307,6 +309,7 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
         &mut no_retries(),
+        None,
     )
     .unwrap_err();
     match err {
@@ -410,6 +413,7 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
         &mut no_retries(),
+        None,
     )
     .expect("the salvage takes the turn again, and the retry answers");
 
@@ -585,6 +589,7 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         &mut sink,
         &answerer,
         &mut no_retries(),
+        None,
     )
     .unwrap();
 
@@ -648,6 +653,7 @@ fn a_summary_turn_is_taken_again_when_the_endpoint_says_try_again() {
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
         &mut ladder,
+        None,
     )
     .expect("the second call answered");
     assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
@@ -665,4 +671,179 @@ fn a_summary_turn_is_taken_again_when_the_endpoint_says_try_again() {
         instructions, 1,
         "a retried summary turn appended its instruction twice"
     );
+}
+
+/// A conversation long enough that the facts in it are a count rather than a handful: eighty
+/// operator turns and forty files read. Appended rather than run - what a record is measured
+/// against is the CALLS, and no turn has to have happened for them to be in the transcript.
+fn a_long_fake_conversation() -> Vec<TranscriptItem> {
+    let mut items: Vec<TranscriptItem> = Vec::new();
+    for i in 0..80 {
+        items.push(user(&format!("step {i}: carry on")));
+        items.push(TranscriptItem::Assistant {
+            text: "working on it".into(),
+            tool_calls: vec![],
+            truncated: false,
+        });
+    }
+    for i in 0..40 {
+        items.push(TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: format!("r{i}"),
+                name: "read".into(),
+                arguments: format!(r#"{{"path":"crates/turn/src/file_{i}.rs"}}"#),
+            }],
+            truncated: false,
+        });
+        items.push(TranscriptItem::ToolResult {
+            call_id: format!("r{i}"),
+            name: "read".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "the file's body, which does not survive the record".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        });
+    }
+    items
+}
+
+/// **R22's loop, end to end.** The conversation holds forty files; the first record names one of
+/// them and says nothing else; the daemon measures it, tells the model exactly which paths it
+/// dropped, and takes the record it gets back. Two requests and no third: the ask happens once.
+#[test]
+fn a_record_that_drops_most_of_the_conversation_is_asked_for_again_with_the_gap_named() {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        return;
+    };
+    let _lock = serial();
+
+    let thin = "## Objective\n- carry the work across\n## Relevant Files\n\
+                 - crates/turn/src/file_0.rs: read\n";
+    let mut whole = String::from("## Objective\n- carry the work across\n## Relevant Files\n");
+    for i in 0..40 {
+        whole.push_str(&format!(
+            "- crates/turn/src/file_{i}.rs: read for the budget\n"
+        ));
+    }
+
+    // Two requests, and the server stops: a third answer would have to come from nowhere.
+    let canned = Canned::serve_each(
+        vec![
+            a_summary_turn(&ids_of("gather the record"), &ids_of(thin), 400, 380),
+            a_summary_turn(
+                &ids_of("gather the record again"),
+                &ids_of(&whole),
+                420,
+                400,
+            ),
+        ],
+        2,
+    );
+    let mut engine = engine(canned.endpoint.clone());
+    let mut session = session(&engine, "compact-fidelity");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &a_long_fake_conversation(), &mut sink)
+        .unwrap();
+
+    let budget = letibot_turn::summary_budget(262_144, 6_880, 16_384, 200_000);
+    let ask = letibot_turn::SummaryAsk {
+        budget,
+        carried: "",
+    };
+    let outcome = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+        &mut no_retries(),
+        Some(&ask),
+    )
+    .expect("the second answer is the record");
+
+    // The record that stands in for the conversation is the second answer.
+    assert_eq!(outcome.summary, whole, "{:?}", outcome.summary);
+    let fidelity = outcome.fidelity.expect("the record was measured");
+    assert!(fidelity.passed(), "{}", fidelity.line());
+    assert_eq!(fidelity.level("files").map(|l| l.total), Some(40));
+    assert_eq!(fidelity.level("files").map(|l| l.kept), Some(40));
+    assert_eq!(
+        outcome.budget,
+        Some(budget),
+        "the budget is disclosed, not implied"
+    );
+
+    // The ask that got it there: a user row, not the operator's words, naming what went missing.
+    let gap = session
+        .items
+        .iter()
+        .find_map(|i| match i {
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts,
+            } => match &parts[..] {
+                [UserPart::Text { text }] if text.contains("file_1.rs") => Some(text.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("the gap was said to the model");
+    assert!(gap.contains("files 1 of 40"), "{gap}");
+    assert!(gap.contains("file_2.rs"), "{gap}");
+
+    // And the instruction the session was given is the SIZED one: the number, and the demand for a
+    // line per thing rather than the word that produced 2,250 tokens for 3,590 rows.
+    let instruction = session
+        .items
+        .iter()
+        .find_map(|i| match i {
+            TranscriptItem::System {
+                text,
+                origin: SystemOrigin::Update,
+            } if text.contains("One line per thing") => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the sized instruction is in the ledger as a system update");
+    assert!(
+        instruction.contains(&budget.tokens.to_string()),
+        "{instruction}"
+    );
+    assert!(!instruction.to_lowercase().contains("compact"));
+}
+
+/// The other half of the rule: a compaction asked for by nothing - the overrun halves, and every
+/// test above - is not measured and not re-asked. R22 decision 1.
+#[test]
+fn a_record_nobody_asked_for_a_size_is_not_measured_and_not_re_asked() {
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        return;
+    };
+    let _lock = serial();
+
+    let thin = "## Objective\n- carried across\n";
+    let canned = Canned::serve(
+        a_summary_turn(&ids_of("gather the record"), &ids_of(thin), 40, 39),
+        1,
+    );
+    let mut engine = engine(canned.endpoint.clone());
+    let mut session = session(&engine, "compact-unsized");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &a_long_fake_conversation(), &mut sink)
+        .unwrap();
+
+    let outcome = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+        &mut no_retries(),
+        None,
+    )
+    .expect("one request, one answer");
+    assert_eq!(outcome.summary, thin);
+    assert!(outcome.fidelity.is_none());
+    assert!(outcome.budget.is_none());
 }

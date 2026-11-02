@@ -558,6 +558,8 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
         cached_tokens: 0,
         reusable: 0,
         generated_tokens: 0,
+        budget: None,
+        fidelity: None,
     };
     h.fork_to_summary(
         &outcome,

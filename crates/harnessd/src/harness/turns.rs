@@ -2630,13 +2630,14 @@ impl Harness {
         sink: &mut CapturingSink,
         answerer: &letibot_turn::compaction::Answerer<'_>,
         ladder: &mut letibot_http::retry::Ladder,
+        ask: Option<&letibot_turn::SummaryAsk<'_>>,
     ) -> Result<CompactionOutcome, HarnessError> {
         let mark = session.items.len();
         // The summary turn is a provider call, so it walks the same ladder and its failure is said with the count
         // in it: a compaction that failed on a blip used to end the session's only chance to fold, with no way to
         // tell one attempt from six.
         let outcome =
-            run_compaction(engine, session, sink, answerer, ladder).map_err(|e| match e {
+            run_compaction(engine, session, sink, answerer, ladder, ask).map_err(|e| match e {
                 TurnFailure::Http(e) => HarnessError::Endpoint {
                     said: ladder.ending(&e),
                     cause: e,

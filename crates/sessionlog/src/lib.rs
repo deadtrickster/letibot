@@ -79,10 +79,11 @@ pub mod lift_tools;
 pub use activity::{Activity, Waiting};
 pub use cursor::{Batch, ReadMark};
 pub use event::{
-    COMPACTION_SECTIONS_KEY, COMPACTION_TEMPLATE, Citation, CompactionReport, CompactionSection,
-    CompactionTail, CompactionTurn, Decider, DecisionOption, DecisionOutcome, DeltaTarget,
-    Envelope, FinishReason, OnTimeout, OptionKind, PromptProgress, PromptReading, RESTORING_ROWS,
-    SessionEvent, TARGET_MAX_BYTES, Timings, Usage, display_target,
+    COMPACTION_SECTIONS_KEY, COMPACTION_TEMPLATE, Citation, CompactionBudget, CompactionFidelity,
+    CompactionLevel, CompactionReport, CompactionSection, CompactionTail, CompactionTurn, Decider,
+    DecisionOption, DecisionOutcome, DeltaTarget, Envelope, FinishReason, OnTimeout, OptionKind,
+    PromptProgress, PromptReading, RESTORING_ROWS, SessionEvent, TARGET_MAX_BYTES, Timings, Usage,
+    display_target,
 };
 pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, SessionStatus};
 pub use log::{LogBounds, SessionLog};

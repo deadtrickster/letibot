@@ -105,6 +105,8 @@ fn a_stale_session(parts: &Parts, seated: &Config, rows: usize) {
         cached_tokens: 0,
         reusable: 0,
         generated_tokens: 0,
+        budget: None,
+        fidelity: None,
     };
     let history = a_conversation(rows);
     h.fork_to_summary(

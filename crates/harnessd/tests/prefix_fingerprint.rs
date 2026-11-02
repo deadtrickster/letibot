@@ -95,6 +95,8 @@ fn seed(h: &mut Harness) {
         cached_tokens: 0,
         reusable: 0,
         generated_tokens: 0,
+        budget: None,
+        fidelity: None,
     };
     h.fork_to_summary(&outcome, None, None, ForkTail::NONE)
         .expect("the seed fork must land");
@@ -179,6 +181,8 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
         cached_tokens: 0,
         reusable: 0,
         generated_tokens: 0,
+        budget: None,
+        fidelity: None,
     };
     let (next, next_id) = h
         .reseat_target()

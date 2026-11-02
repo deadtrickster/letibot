@@ -802,11 +802,70 @@ pub struct CompactionReport {
     /// heading it did not find is absent - see [`CompactionSection`].
     pub sections: Vec<CompactionSection>,
     pub tail: CompactionTail,
+    /// **What the record kept, level by level** (R22), when the daemon measured it: absent on an
+    /// overrun compaction and on any record written before the gate existed. `#[serde(default)]`
+    /// so a row stored by an older daemon still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fidelity: Option<CompactionFidelity>,
+    /// The room the record was given, and which bound chose it. Absent for the same reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<CompactionBudget>,
+}
+
+/// One class of fact a record was measured against, and how much of it the record names: the level
+/// a head draws beside the record, so "what did it keep" is a number rather than a claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionLevel {
+    /// `files`, `commands` or `decisions`: the three classes a conversation's structure yields.
+    pub name: String,
+    /// How many the conversation held.
+    pub total: u64,
+    /// How many the record names.
+    pub kept: u64,
+    /// The ones it does not, bounded by the daemon's `SHOWN` before they reach the wire.
+    #[serde(default)]
+    pub dropped: Vec<String>,
+}
+
+/// A record's levels, in the order the daemon reports them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionFidelity {
+    pub levels: Vec<CompactionLevel>,
+}
+
+impl CompactionFidelity {
+    /// `files 44 of 47, commands 19 of 21, decisions 5 of 6` - the same line the daemon's sentence
+    /// carries, built from the same numbers.
+    pub fn line(&self) -> String {
+        self.levels
+            .iter()
+            .map(|l| format!("{} {} of {}", l.name, l.kept, l.total))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The room a record was given, in the ledger's own tokens, and which bound chose it: `room` when
+/// the stated fraction bound it, `turn` when the summary turn's own free room did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionBudget {
+    /// `window - prefix - headroom`: what the conversation leaves to share.
+    pub room: u64,
+    /// The stated fraction of it, before any other bound.
+    pub share: u64,
+    /// `window - resident`: what the summary turn could actually write.
+    pub writable: u64,
+    /// What the record was allowed: the smaller of the two, floored.
+    pub tokens: u64,
+    /// `room` or `turn`.
+    pub by: String,
 }
 
 /// The template tag a compaction report carries: a date, bumped by hand when the summary
-/// instruction changes, so a report can be read against the template that produced it.
-pub const COMPACTION_TEMPLATE: &str = "compaction/2026-09-23";
+/// instruction changes, so a report can be read against the template that produced it. Bumped
+/// 2026-11-02 for R22's sized record: the same eight sections, but the instruction now names the
+/// room and asks for a line per thing rather than for a *compact* record.
+pub const COMPACTION_TEMPLATE: &str = "compaction/2026-11-02";
 
 /// The sections a compaction's record has, from the daemon that asks for them: a settings row
 /// on the existing key, so a head can draw what it did not witness.

@@ -45,6 +45,8 @@ fn outcome(summary: &str) -> CompactionOutcome {
         cached_tokens: 0,
         reusable: 0,
         generated_tokens: 0,
+        budget: None,
+        fidelity: None,
     }
 }
 

@@ -152,6 +152,49 @@ is a question, and an absent section is a question nobody was asked.** `SUMMARY_
 and the wire carries seven of the eight leaves (`WIRE_SECTIONS`); the eighth is the record itself. The
 instruction also says what is about to be lost - *"anything you do not carry into it is lost"*.
 
+### A record that has a size, and a gate on what it kept
+
+MEASURED 2026-09-20, the operator's own session: 1,353,917 tokens and 3,590 rows compacted to a
+base whose summary was **about 2,250 tokens** - 600:1. Nothing truncated it (`report.fork.truncated`
+was false and both paths pass `None` for `max_tokens`), so the model chose to stop after being
+asked for a *compact factual record* and given no sense of scale. The instruction is the lever, and
+there are three parts to it.
+
+**A budget that is a stated fraction of the room.** `summary_budget(window, prefix, headroom,
+resident)` is `room = window - prefix - headroom`, the record takes
+`room × SUMMARY_FIDELITY_PER_MILLE` (150, so 15%) and the session keeps the rest of its span. There
+is a second bound and it usually wins: a compaction fires AT the wall, so `window - resident` is
+about one headroom, and 15% of a 1.34M room is a 200k generation into 87k of free context. The
+budget is the smaller of the two, floored at 2,000, and `SummaryBudget::by` says which bound chose
+it - *"the ratio said so"* and *"the turn had no room"* are different accounts of one number.
+
+**An instruction that enumerates rather than compresses.** `summary_instruction(&budget)` names the
+room in tokens, characters and lines, and asks for **one line per thing** - per file, per command,
+per decision, per open question - with *"never write various, and others or etc."*. It carries the
+same eight sections as `SUMMARY_INSTRUCTION`; a test holds the two together on them. Two texts
+rather than one because the budget belongs to the path that has a budget: the **overrun halves keep
+`SUMMARY_INSTRUCTION` unchanged**, since their failure is that the conversation does not fit in
+front of the window and their budget is `WRITE_ROOM` rather than a share of anything.
+
+**A gate on what it kept, which needs no model.** `crates/turn/src/fidelity.rs` counts what the
+conversation held, from its STRUCTURE: paths from tool-call arguments, commands from `bash`
+calls (first line, counted once), and the plan rows from `todo_write`. A record is measured against
+it, and the same measure runs over the text the verbatim tail carries, because a fact in the tail
+is in the new base. Floors are 80% of the files, 80% of the commands and 50% of the plan rows -
+a plan row is prose, so it is compared by its words. Below a floor the record is **sent back once**,
+with the missing names and the level's counts in the sentence; a second thin answer is the answer.
+A record that was CUT by the window is not re-asked either, because the second attempt meets the
+same wall.
+
+The numbers a reader gets are the levels and the budget, in the `compacted` sentence and as
+`CompactionReport::{fidelity, budget}` on the wire, built from one measurement so the sentence and
+the structure cannot disagree. `COMPACTION_TEMPLATE` is bumped with the instruction.
+
+**Not here:** per-topic budgets. Segmenting on the operator's own turns (82 of that transcript's
+3,590 rows) is free, deterministic and auditable, and the todo list is a second declared
+decomposition - but R22's own order is flat budgeting first, per-topic second, once it is visible
+whether flat budgeting was already enough.
+
 ### A verbatim tail of recent turns, split by where the model runs
 
 | | summary template | verbatim recent turns |

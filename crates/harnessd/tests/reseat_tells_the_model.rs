@@ -113,6 +113,8 @@ fn a_reseat_tells_the_model_and_starts_its_turn() {
             cached_tokens: 0,
             reusable: 0,
             generated_tokens: 0,
+            budget: None,
+            fidelity: None,
         };
         h.fork_to_summary(&outcome, None, None, ForkTail::NONE)
             .expect("the seed fork lands");

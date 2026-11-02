@@ -26,6 +26,7 @@ pub mod compaction;
 pub mod completion;
 pub mod engine;
 pub mod events;
+pub mod fidelity;
 pub mod guards;
 pub mod http;
 pub mod items;
@@ -40,15 +41,17 @@ pub mod stream;
 
 pub use capture::{CaptureSession, FrameCapture};
 pub use compaction::{
-    CompactionOutcome, Harvest, OverrunPlan, SUMMARY_INSTRUCTION, SUMMARY_SECTIONS, TAIL_BECAUSE,
-    TailPlan, TailSplit, UNFINISHED_REASONING_NOTICE, WIRE_SECTIONS, WRITE_ROOM,
-    parse_summary_sections, plan_compaction_tail, plan_cut, plan_fold, plan_overrun, plan_tail,
-    run_compaction, summarise_first_half, summarise_overrun, tail_because, tail_budget,
-    tail_split_of,
+    CompactionOutcome, Harvest, OverrunPlan, SUMMARY_FIDELITY_PER_MILLE, SUMMARY_INSTRUCTION,
+    SUMMARY_SECTIONS, SummaryAsk, SummaryBudget, TAIL_BECAUSE, TailPlan, TailSplit,
+    UNFINISHED_REASONING_NOTICE, WIRE_SECTIONS, WRITE_ROOM, carried_text, parse_summary_sections,
+    plan_compaction_tail, plan_cut, plan_fold, plan_overrun, plan_tail, run_compaction,
+    summarise_first_half, summarise_overrun, summary_budget, summary_instruction, tail_because,
+    tail_budget, tail_split_of,
 };
 pub use completion::{Chunk, CompletionRequest, FinalChunk, FinishReason, PromptProgress, Timings};
 pub use engine::{EngineError, Session, TurnEngine, TurnFailure, TurnOk};
 pub use events::{DeltaTarget, EventSink, NullSink, RecordingSink, TurnEvent};
+pub use fidelity::{Facts, Fidelity, Level};
 pub use guards::{GuardSet, Trip};
 pub use http::{Endpoint, HttpError};
 pub use items::{Produced, ProducedItem};

@@ -2602,7 +2602,7 @@ to fit a screen.
 
 ---
 
-## R22 — a 1.35M-token conversation compacted to a 2,250-token summary — **OPEN, designed with the operator 2026-09-20**
+## R22 — a 1.35M-token conversation compacted to a 2,250-token summary — **DONE 2026-11-02 (the flat budget, the enumeration and the gate; per-topic budgets stay open by the entry's own order)**
 
 Measured on the operator's own session, 2026-09-20, `s-1789462738453908838`:
 
@@ -2692,13 +2692,54 @@ coarse, it earns its own experiment then.
 budgets on structural boundaries second, once it is visible whether flat budgeting was
 already enough.
 
-**Still open?** `grep -n 'compact factual record' crates/turn/src/compaction.rs` — if
-`SUMMARY_INSTRUCTION` still names no budget, this is open.
+**Still open?** `grep -n 'summary_instruction' crates/turn/src/compaction.rs` — if the ordinary
+default path appends `SUMMARY_INSTRUCTION` rather than `summary_instruction(&budget)`, this is open
+again. The old check (`grep 'compact factual record'`) is no longer the question: that wording is
+what the OVERRUN halves still send on purpose, and they are decision 1.
 
 **Done when.** A compaction of a conversation near the window produces a summary whose size
 is a stated fraction of the room rather than the model's guess; a summary that omits most
 of the files the conversation touched is detected and re-asked once, with the gap named;
 and the overrun path is untouched.
+
+### What landed (`r22-sized-record`)
+
+**The budget.** `summary_budget(window, prefix, headroom, resident)`
+(`crates/turn/src/compaction.rs`) takes `room = window − prefix − headroom`, the record's share is
+`room × SUMMARY_FIDELITY_PER_MILLE` (150), and **a second bound is what usually decides it**:
+a compaction fires AT the wall, so `window − resident` is about one headroom — 87,089 of this
+session's 1,340,903 room — and asking for 201,135 would be a generation that does not fit. The
+budget is the smaller of the two, floored at 2,000, and `SummaryBudget::by` names the bound
+(`room` / `turn`) so the report can say which. For the measured session: 87,089 tokens against
+the 2,250 the model chose.
+
+**The instruction.** `summary_instruction(&budget)` — used by the ordinary path only — states the
+room in tokens, characters and lines and asks for **one line per thing** (per file, per command,
+per decision, per open question), forbidding *"various"*, *"and others"*, *"etc."* and any folded
+group. It keeps all eight sections, and one test holds it and `SUMMARY_INSTRUCTION` together on
+them. `SUMMARY_INSTRUCTION` itself is **unchanged and still what the overrun halves send**: their
+fold is decision 1, and it is untouched. `COMPACTION_TEMPLATE` bumped to `compaction/2026-11-02`.
+A re-seat's summary (`/reseat summarise`) is sized the same way, since it is the same loss.
+
+**The gate.** `crates/turn/src/fidelity.rs` counts what the conversation held from its STRUCTURE —
+file paths out of tool-call arguments and `FileRef` parts, commands out of `bash` calls (first line,
+each once), decisions out of the plan rows `todo_write` wrote — and measures a record against it,
+**over the record AND the verbatim tail**, because a fact in the tail is in the new base. Floors:
+80% of files, 80% of commands, 50% of plan rows (a row is prose, compared by its words). Below a
+floor the record is **re-asked once**, with the missing names and the counts in the sentence
+(`Fidelity::ask_again`); a second thin answer is the answer, and a record CUT by the window is not
+re-asked at all. `run_compaction`'s `Option<&SummaryAsk>` is the seam: `None` is the overrun path
+and every older caller, which keeps today's behaviour and appends no gate.
+
+**What a reader sees.** The `compacted` sentence gained *"The record it wrote carries files 44 of
+47, commands 19 of 21, decisions 6 of 6; it is N characters, and the record was allowed 87,089 of
+1,340,903 ledger tokens — all the summary turn had left to write in."* And `CompactionReport`
+carries `fidelity` and `budget` (`#[serde(default)]`, so old rows still read) for a head that draws
+the levels instead of the prose — R73's half can read them.
+
+**Not done, and by the entry's own order:** per-topic budgets on structural boundaries (the
+operator's turns, the todo list), and the SOM, which stays a research question. `docs/compaction.md`
+§6 has the long form.
 
 ---
 

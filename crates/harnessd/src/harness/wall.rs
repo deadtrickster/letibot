@@ -856,6 +856,8 @@ impl Harness {
             cached_tokens: 0,
             reusable: 0,
             generated_tokens: 0,
+            budget: None,
+            fidelity: None,
         };
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
@@ -946,6 +948,21 @@ impl Harness {
             let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
                 self.cfg.http_retries,
             ));
+            // The same ask a compaction gets, because this is the same loss: `/reseat summarise`
+            // replaces the conversation with a record, and a record sized by the model's guess is the
+            // failure R22 is about. No tail is carried, so nothing is measured as already carried.
+            let ask = self
+                .cfg
+                .planning_window()
+                .map(|window| letibot_turn::SummaryAsk {
+                    budget: letibot_turn::summary_budget(
+                        window,
+                        self.session.ledger.prefix_len() as u64,
+                        self.cfg.headroom(),
+                        self.session.ledger.len() as u64,
+                    ),
+                    carried: "",
+                });
             let outcome = Self::run_summary_turn(
                 &self.hub,
                 &mut self.engine,
@@ -953,6 +970,7 @@ impl Harness {
                 &mut sink,
                 &answerer,
                 &mut ladder,
+                ask.as_ref(),
             )?;
             if outcome.tool_calls > 0 {
                 return Err(HarnessError::Setup(format!(
@@ -1083,6 +1101,8 @@ impl Harness {
                         cached_tokens: 0,
                         reusable: 0,
                         generated_tokens: 0,
+                        budget: None,
+                        fidelity: None,
                     };
                     let because = if tail.is_empty() { "" } else { "fold" };
                     let fork = self.fork_to_summary(
@@ -1109,6 +1129,34 @@ impl Harness {
                 let mut ladder = letibot_http::retry::Ladder::new(
                     letibot_http::retry::Policy::new(self.cfg.http_retries),
                 );
+                // Summary plus verbatim recent turns, on the remote path only: a local model gets the template and
+                // nothing else, because a tail here would be resident tokens competing with the KV pressure that called
+                // this compaction.
+                let remote = self.provider.is_some();
+                // The smaller-tail fold halves the budget; the rest of the plan is the same.
+                let tail_plan = if smaller && remote {
+                    plan_tail(&items, &per_item, tail_budget(window) / 2)
+                } else {
+                    plan_compaction_tail(&items, &per_item, window, remote)
+                };
+                let tail: Vec<TranscriptItem> = match tail_plan.from() {
+                    Some(from) => items[from..].to_vec(),
+                    None => Vec::new(),
+                };
+                // **What this record is asked for** (R22): a size, and the facts the tail already carries, so a
+                // record is not sent back for something the new base holds verbatim. `resident` is the same
+                // `prefix + items` the overrun arithmetic compared against the window a few lines up.
+                let budget = letibot_turn::summary_budget(
+                    window,
+                    prefix_tokens,
+                    self.cfg.headroom(),
+                    prefix_tokens + per_item.iter().sum::<u64>(),
+                );
+                let carried = letibot_turn::carried_text(&tail);
+                let ask = letibot_turn::SummaryAsk {
+                    budget,
+                    carried: &carried,
+                };
                 let ran = Self::run_summary_turn(
                     &self.hub,
                     &mut self.engine,
@@ -1116,6 +1164,7 @@ impl Harness {
                     &mut sink,
                     &answerer,
                     &mut ladder,
+                    Some(&ask),
                 );
                 // The summary turn appends through the engine, not through `reconcile`, so nothing
                 // walked the rows it left: a refused attempt keeps its instruction, and a census
@@ -1131,20 +1180,8 @@ impl Harness {
                         outcome.tool_calls
                     )));
                 }
-                // Summary plus verbatim recent turns, on the remote path only: a local model gets the template and
-                // nothing else, because a tail here would be resident tokens competing with the KV pressure that called
-                // this compaction.
-                let remote = self.provider.is_some();
-                // The smaller-tail fold halves the budget; the rest of the plan is the same.
-                let tail_plan = if smaller && remote {
-                    plan_tail(&items, &per_item, tail_budget(window) / 2)
-                } else {
-                    plan_compaction_tail(&items, &per_item, window, remote)
-                };
-                let tail: Vec<TranscriptItem> = match tail_plan.from() {
-                    Some(from) => items[from..].to_vec(),
-                    None => Vec::new(),
-                };
+                // The fork's tail: the same plan the record was measured against, so what the fork carries and
+                // what the fidelity gate counted as carried cannot differ.
                 let fork = self.fork_to_summary(
                     &outcome,
                     reseat.as_ref().map(|(p, _)| p),
@@ -1271,6 +1308,8 @@ impl Harness {
                     cached_tokens: 0,
                     reusable: 0,
                     generated_tokens: 0,
+                    budget: None,
+                    fidelity: None,
                 };
                 // The overrun fold's own reason, not `plan_tail`'s: this tail was placed by arithmetic on the window,
                 // halfway BY TOKENS. Empty when there is no tail at all, since a local overrun summarises both halves.
