@@ -1381,17 +1381,20 @@ for a compaction in leticl"*:
    (`crates/sessionlog/src/warning.rs:148`) to stop it reading as a fault, which kept it a row.
    It should be progress that updates one line in place — *"compacting: half 1 of 2 · 41%"* — and
    one closing line: *"compacted: 937k → 75k tokens (deepseek's count), summary 13.5k chars"*.
+   — ✓ fixed in a33655d7, test a_half_is_progress_from_its_first_event_to_its_last_and_never_a_warning
 2. **The token numbers mislead.** Each half says ~977k "to read", and a reader adds them to 1.95M
    for a session the head showed at 740k. Two reasons: they are LEDGER tokens
    (`scratch.ledger.len()`, `:1742`, reasoning included — the unit R72 is about), and the halves
    OVERLAP by design (`summarise_overrun`, `:~1560`: the tail runs from `tail_from`, the old part
    up to `cut`, and `cut > tail_from`), each filled to what fits. Say the unit; say the overlap or
    print the halves' share of one total.
+   — ✓ fixed in a33655d7, test the_compacted_line_is_one_unit_said_once
 3. **leticl adds a remedy line under every one** (`leticl/src/cards/note-card.lisp:182`,
    `"compact_half" . "nothing to fix — …"`; `src/session/warnings.lisp:289`). That is leticl's to
    fix — a remedy line belongs to a fault, and a routine event has none — and moot once (1) sends
    progress instead of warnings. Filed here so it is not lost; leticl's own TODO is the place for
    its half.
+   — OPEN: leticl's repo, not this one — the remedy line under a routine code (`leticl/src/cards/note-card.lisp:182`, `src/session/warnings.lisp:289`) is not in this tree, so nothing here can change or check it.
 
 **Done when:** one compaction draws one updating line and one closing line in both heads, the
 closing line's numbers are in the provider's unit (R72) and add up, and no `compact_half` row
@@ -1567,87 +1570,128 @@ nothing to design.
 **R61 — the queues**
 1. A rejection whose root session is not open in any daemon is only raised (`refusal_undelivered`)
    — no model hears it later. Not a regression (the old door did the same).
+   — OPEN: still only raised — `refusal_undelivered` is published and no model is told later (`crates/harnessd/src/mergequeue/review.rs:897`).
 2. Every daemon start gates its repositories' target tips — ~7 minutes of gate even with nothing
    queued.
+   — ✓ fixed in 362113e4, test a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue
 3. Each wake reads the whole `review_queue` table (`queue_notices`, `handover_notices` in
    `Harness::wake`) — should read only open rows.
+   — OPEN: `store.review_rows(None)` still reads every row (`crates/harnessd/src/harness.rs:2924`, `:3074`), and the query has no state filter (`crates/tokencore/src/store/queues.rs:797`).
 4. No `/queue regate`: a timed-out or blocked target holds all landings until its tip changes or a
    daemon restarts.
+   — ✓ fixed in 362113e4, test a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue
 5. One `s-gatekeeper` review session per box.
+   — ✓ fixed in 0eb8958a, test two_workspaces_get_two_review_sessions_and_one_workspace_keeps_its_own
 6. The pane's per-row history covers only the last 60 moves overall.
+   — OPEN: still 60 — `RECENT_MOVES` (`crates/harnessd/src/mergequeue.rs:154`), read at `:283`.
 7. The tools-crate `Reviewer` trait and `wake` are unused and can go.
+   — OPEN: both are still there — `crates/tools/src/gatekeeper.rs:261` (`wake`) and `:290` (`Reviewer`), with no implementor outside that crate's own tests.
 8. The "worker ~0% when idle" done-when was not measured with `perf`.
+   — OPEN: not code — no `perf` run of an idle worker is recorded anywhere in the tree.
 9. Per-project config is `[queue]` in `leticode.toml` (`target`, `merge_via_session`,
    `red_target`) — three rulings deferred by the operator: withdraw vs delete for `/queue rm` and
    `clean`; `red_target` default `fix`; `git branch -D` after landing.
+   — OPEN: the three rulings are still the operator's to make; the keys are read at `crates/harnessd/src/mergequeue/settings.rs`.
 
 **R72 — compaction counting**
 10. A single tool result larger than the whole window is still appended in full; the next round
     refuses to send it, but compaction then folds a history already over the window. Capping tool
     results is a larger design.
+    — OPEN: `append_items_reporting` (`crates/turn/src/engine.rs:445`) still appends every item whole, and nothing caps a tool result's size.
 11. Excluding reasoning rows from the provider-sized count is an assumption: a provider that counts
     the current tool chain's reasoning makes the count one round short until the next measurement.
+    — OPEN: still an assumption — `sent_since` (`crates/harnessd/src/harness/wall.rs:1937`) sizes the prompt with the reasoning rows left out.
 12. A restart after a compaction but before any round falls back to the unscaled ledger count
     (measured harmless at 22,496 against a 37,500 wall).
+    — OPEN: `recovered_scale` (`crates/harnessd/src/harness/wall.rs:1735`) still answers the stored pair only when the stored ledger is not longer, so a restart after a fork comes back unscaled.
 13. The follow-up (`e834316`) was not re-checked live in tmux; the real leticl session was never
     replayed against the fix.
+    — OPEN: not code — the follow-up has never been replayed against a real leticl session.
 
 **R71 — the context-excuse check**
 14. 16 of 79 calibration excuses score under the floor (a clause deep in a long sentence, or no
     word saying whose context) — a second, embeddings tier.
+    — OPEN: no embeddings tier — `crates/harnessd/src/context_claim.rs:48` still records the 16 of 79 it misses.
 15. The floor (0.25) is in-sample; re-tune it from `.letibot/context-claims.jsonl`.
+    — OPEN: `FLOOR` is still 0.25 (`crates/harnessd/src/context_claim.rs:64`), not re-tuned from `.letibot/context-claims.jsonl`.
 16. No harness-level test of the tool-calling branch (the step-boundary queue).
+    — OPEN: the harness tests all play a round with no tool call (`crates/harnessd/tests/context_claim.rs:3`), so the tool-calling branch is still untested at harness level.
 
 **R68 — daemon lifecycle**
 17. The agent's decisions to confirm: idle children PARK after 10 minutes (`child_park_after`) and
     reopen from the store on a message or a head; a message to a held session now earns the
     plan-check back; children's failures are `TurnFailed` instead of `wake_failed` /
     `todo_check_failed`.
+    — OPEN: still the agent's to confirm — `child_park_after` is 600 s at `crates/harnessd/src/config.rs:1458`.
 18. Root sessions are never closed automatically — a resumed root keeps its harness and its
     monitor-wake thread until the daemon stops.
+    — OPEN: roots are still never closed — `park_idle_children` (`crates/harnessd/src/sessions.rs:2994`) parks children only.
 19. `reaps`, `promotions` and `Deadlines.fired` still only grow (small records).
+    — OPEN: still only grow — `Deadlines.fired` is a `Vec` pushed and never drained (`crates/tools/src/exec/host.rs:463`), and `promotions` likewise (`:1116`).
 20. The single `report(session, code, detail)` sink is not built.
+    — OPEN: no such sink — there is no `report(session, code, detail)` anywhere under `crates/harnessd/src`.
 21. R68.7 (the gatekeeper retry storm) is probably moot after R61; not checked.
+    — OPEN: still not checked.
 
 **R69 — the head's input**
 22. **DONE on `r60-term`**: `letibot_vt::Screen::mouse` records the program's mouse request and
     the pane forwards a report, translated to the pane, only when it asked — see R60.
+    — ✓ fixed in 4ef25b13, test the_programs_mouse_request_is_recorded_not_dropped
 23. Six modal cards (allow-all confirmation, new-todo, password, `!term close`, prompt, key ask)
     are not on the surface stack and have no key tables.
+    — OPEN: the cards are still first in `App::key` (`crates/tui/src/app/keys/mod.rs:200`) and not on the surface stack; `key_key_ask` is `crates/tui/src/app/keys/cards.rs:262`.
 24. `editor::the_editor_pane_wears_the_heads_frame_not_nanos` failed once at a fixture `unwrap`
     and passed on every rerun — a flake to find.
+    — OPEN: not code — the flake was never reproduced.
 
 **R65 — memory caps**
 25. The operator card for an ask above the ceiling has never been answered by a person in a head.
+    — OPEN: not code — the card is `crates/tools/src/adjudicate.rs:2401`, and no person has answered one in a head.
 26. Two sessions can each be granted 50% — the box-wide ledger proposal is open.
+    — OPEN: no box-wide ledger — the rule is per ask (`crates/tools/src/exec/memory.rs:245`), so two sessions can each be granted 50%.
 27. Each fleet runner needs `~/.actrc` pinning the `ubuntu-latest` image, or `act` asks
     interactively.
+    — OPEN: nothing in the tree pins it — `.github/workflows/ci.yml` is the only runner definition, and `actrc` appears nowhere but this entry.
 
 **R67 — the contained fixes**
 28. Item 14: the abandoned-call sweep is linear but still reads the whole transcript each pass (a
     late answer must count).
+    — OPEN: `abandoned_calls` (`crates/harnessd/src/harness/turns.rs:3345`) still walks the whole item list every pass.
 29. Item 24: slow test polls left on purpose.
+    — OPEN: not code — the polls were left slow on purpose.
 30. **DONE on `r60-term`**: the start of a report a read ends inside is held for the next read
     (`TermPane::held`) — see R60.
+    — ✓ fixed in 26913ddd, test a_mouse_report_split_across_two_reads_is_put_back_together
 31. Item 15: the subagent "command dropped" warning is tested only as a pure function.
+    — OPEN: still only absence assertions — the warning is published at `crates/harnessd/src/harness/children.rs:960`, and the tests check it is absent (`crates/harnessd/tests/child_nag.rs:602`, `crates/harnessd/tests/clear_context.rs:474`).
 32. Item 21: half of it was not a defect. The status marks cite pre-rebase commit hashes.
+    — OPEN: not code — the marks still cite pre-rebase hashes.
 
 **Tests and the gate**
 33. Under `LETIBOT_REQUIRE_APPARATUS=1` a box without a working sandbox (bwrap, user namespaces)
     now FAILS the gate where it silently passed.
+    — ✓ fixed in 18f57e00, test present_skips_when_absent_and_fails_when_the_run_demands_the_apparatus
 34. TUI timing tests flake under heavy parallel load (two failures once while five agents
     compiled; clean on reruns) — likely `reconnect`/`stop_daemon`.
+    — OPEN: not code — no cause found.
 35. `tools/tests/confine.rs` sets `LETIBOT_TEST_FAKE_TOKEN` with no lock (nothing else reads it).
+    — OPEN: still unlocked — `crates/tools/tests/confine.rs:889`.
 36. `cargo test -p letibot-harnessd` / `-p letibot-sessionlog` also run the `*_live` files, which
     AGENTS.md says not to run broadly (they skipped — nothing listened on 8080).
+    — OPEN: the `*_live` files are still in the package's test directory (`crates/harnessd/tests/compact_live.rs:1`), so a `-p` run still reaches them.
 37. The workspace-wide `cargo clippy --all-targets` gate step has not been run on the result.
+    — OPEN: not code — the workspace-wide clippy step has still not been run.
 
 **Open work, in order**
 38. R63 — a thread per root session (unblocked by R68).
+    — ✓ fixed in f68c90b0, test a_held_turn_in_one_session_does_not_delay_another
 39. R62 — the gate on lubuntu1/2; R61's `GateRunner` is the seam.
+    — ✓ fixed in 5d3b2f05, test the_tree_and_the_repository_arrive_and_the_steps_run_there
 40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
     landed).
+    — OPEN: only part done — `crates/harnessd/src/plugins.rs:2226` still carries a 2,469-line inline test block (`TODO-settled.md:1500`).
 41. R60 — the three things `!term` did not do: **built on `r60-term`**, see R60.
+    — ✓ fixed in 26913ddd, test a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number
 
 ---
 
@@ -1679,6 +1723,7 @@ verbs, queue verbs. No tokens, no new files; the fact is the one the reaper alre
 Alternatives to weigh: a per-head credential the launcher hands the TUI and never puts on a
 command's environment; or not handing `LETIBOT_SOCKET` to commands at all and giving askpass its
 own narrow socket.
+— OPEN: the rule is not in the tree — nothing on the daemon side reads the peer's pid (`crates/sessionlog/src/server.rs` has no `SO_PEERCRED`), and every command still carries `LETIBOT_SOCKET`/`LETIBOT_SESSION` (`crates/harnessd/src/harness/open.rs:885`).
 
 **Related, from the same answer (pane ownership):** a pane is owned by the daemon's `Terminals`
 registry, keyed by session and pane number, each in its own `session.term-<session>-<N>` cgroup
@@ -1687,6 +1732,7 @@ Not on the session's close or park (R68's `Sessions::close` does not touch `Term
 daemon killed hard leaves its panes running unowned in its scope. Panes are uncapped (the
 operator's own run). Options: close a session's panes with it; clean up a crashed predecessor's
 `term-*` cgroups at daemon start.
+— OPEN: panes still outlive their session (`crates/harnessd/src/sessions.rs` names no `Terminals`; the cgroup is `term-<session>-<pane>` at `crates/harnessd/src/term.rs:227`) and nothing sweeps a dead predecessor's `term-*` cgroups at start.
 
 **Done when:** a test connects to the socket from a process placed in the tool tree and is
 refused `!term` input and `!` lines while askpass's ask still works; a head connection is
@@ -1724,9 +1770,12 @@ What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut o
    is inside the workspace: the sandbox sees it read-only but `write`/`edit` can still write there
    (their check knows only the workspace root). Closing it needs a per-session read-only path in the
    backend.
+   — OPEN: still parked — `e7f4e55` is not an object in this checkout, there is no `crates/harnessd/src/layout.rs` and no `[layout]` key, and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`).
 2. Child daemons, whose workspace becomes `wt/agent-*` outside the checkout, no longer take the
    repository's merge-queue lease; only the project's own daemon serves its queue.
+   — OPEN: still parked — `e7f4e55` is not an object in this checkout, there is no `crates/harnessd/src/layout.rs` and no `[layout]` key, and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`).
 3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
+   — OPEN: still parked — `e7f4e55` is not an object in this checkout, there is no `crates/harnessd/src/layout.rs` and no `[layout]` key, and the landing tree is still `<data dir>/landing` (`crates/harnessd/src/mergequeue/git.rs:435`).
 
 ## The `reasoning_content` refusal is a TRAILING SYSTEM MESSAGE plus `tools` — **OPEN, isolated by the relay 2026-10-04**
 
