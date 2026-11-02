@@ -2,21 +2,8 @@
 
 use super::*;
 
-/// **The todos pane's bar names the keys THAT pane answers.**
-///
-/// The footer used to be rano's pinned `HintMode::Todos` sentence — *"↑↓ moves · enter or tab
-/// unfolds · pgup/pgdn and the wheel scroll · esc closes"* — and `enter or tab unfolds` was false on
-/// two of the three stops this pane's cursor could be on: `key_todos_pane` opens the card on the add
-/// control, and on one of the operator's rows the same two keys mark it done (and unmark it again).
-/// Only a repo item unfolds.
-///
-/// The head composes the whole bar now, so the act it names follows the cursor — and the way out is
-/// still named, from `Reading`'s tail, which is true of this pane.
-///
-/// **And the two keys have come apart, so the bar names both.** Enter reads the row whole (the
-/// operator's report: *"in todo list i cant expand your todo items"*) and Tab performs the act the
-/// two of them used to share, so a bar that went on saying `enter or tab toggles it done` would name
-/// a key that now opens an overlay instead.
+/// The todos pane's bar names the keys that pane answers: the footer was rano's pinned sentence, and *enter or tab
+/// unfolds* was false on two of the three stops the cursor could be on.
 #[test]
 fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -129,11 +116,8 @@ fn ctrl_t_opens_the_todos_pane_and_esc_closes_it() {
         screen.contains("who wrote each line"),
         "the pane does not name the list's authorship: {screen}"
     );
-    // **The fact, not the word.** This asserted `read-only`, which was the old repo heading's
-    // wording; the heading now says what that section IS (`what the project intends; not the
-    // model's plan`, after the operator's two-lists ruling) and the sentence that carries the
-    // read-only fact is the one under the list. Pinning the WORD is what made a wording change
-    // look like a behaviour change.
+    // The fact, not the word: this asserted `read-only`, which was the old heading's wording, so a wording change
+    // broke a test about a fact that had not changed.
     assert!(
         screen.contains("this pane never writes it"),
         "the pane does not say it leaves the file alone: {screen}"
@@ -146,21 +130,8 @@ fn ctrl_t_opens_the_todos_pane_and_esc_closes_it() {
     assert_eq!(a.key(Key::CtrlT), None);
 }
 
-/// **A CLICK ON THE PANE MOVES THE CURSOR TO THE ROW IT IS ON.**
-///
-/// The operator's second report about this pane, in leticl's `todos-stops` docstring: *"mouse
-/// doesnt click"*. letibot had no click arm for this pane at all — the picker and the mode card
-/// had one and the todos pane had none — and leticl's own first cut had one that computed the
-/// add row as a negative index and threw the click away.
-///
-/// What makes it work is the row the pane RECORDED as it drew, not arithmetic at the click's
-/// end: a click has a screen row and nothing else, and a second computation of where a row went
-/// is the defect both reports came from.
-/// **The todos pane reads a nested layout's `TODO.md`** — the operator's own box: the session
-/// lives in `Projects/letibot`, the repository in `Projects/letibot/letibot`, and neither the
-/// pane nor the git field found anything at the workspace itself. The pane resolves through
-/// the same `project_dir` the header's branch does, so one layout feeds both and neither can
-/// read a different tree.
+/// A click on the pane moves the cursor to the row it is on: letibot had no click arm for this pane at all, since
+/// the picker and the mode card had one and this pane did not.
 #[test]
 fn the_todos_pane_reads_a_nested_layouts_todo_md() {
     let base = std::env::temp_dir().join(format!(
@@ -190,22 +161,8 @@ fn the_todos_pane_reads_a_nested_layouts_todo_md() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// **The pane says which of its two lists the model is told about** — the operator's ruling,
-/// 2026-09-29: *"host specific todo is actionable but shared todo.md items are promotable."*
-///
-/// Two sections that look alike and differ in whether the model ever hears about them is the
-/// conflation this pins. It is a **sentence**, which is why it needs a test at all: prose that
-/// nothing checks is prose that drifts, and this tree's recurring defect is exactly a true
-/// sentence that stopped being true (see `messages.rs`'s *"not sent to this provider"*).
-///
-/// Three assertions, and the second is the one that is easy to lose:
-///
-///   * the repo section says the model is never told about it;
-///   * the session section says the model IS reminded of it, so the negative above is scoped
-///     rather than a blanket claim about the whole pane;
-///   * and the repo heading does **not** call the file a *queue* — `queued` is this head's word
-///     for a prompt the daemon owes a row for (`pub const QUEUED`), so that word in this spot
-///     says the opposite of what is true.
+/// The pane says which of its two lists the model is told about: two sections that look alike and differ in whether
+/// the model ever hears about them is the conflation this pins, and prose that says so needs a test.
 #[test]
 fn the_pane_says_which_of_its_two_lists_the_model_is_told_about() {
     let dir = std::env::temp_dir().join(format!(
@@ -410,16 +367,9 @@ fn the_todos_pane_shows_both_sources_and_says_which_is_which() {
     );
 }
 
-/// **The new-todo card: title, Tab for the detail, Enter adds it as yours, Esc cancels** —
-/// leticl's `todo-card-lines`, and the shape its `%todo-draft-*` keys keep.
-///
-/// **The composer is the field.** Tab stores what was typed into the field being left and puts
-/// the other one in the composer, so the field under the cursor is never a keystroke behind —
-/// and everything else is the editor's, so the title and the detail are typed, pasted and
-/// undone with the keys the operator already has.
-///
-/// **A title is required and the card stays up without one**, which is the only field rule: a
-/// row of nothing is not what the reader meant, and saying so beats storing it.
+/// The new-todo card: title, Tab for the detail, Enter adds it as yours, Esc cancels. The composer is the field, so
+/// Tab stores what was typed into the field being left and puts the other one in the composer, and the field under
+/// the cursor is never a keystroke behind.
 #[test]
 fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
     use letibot_sessionlog::event::TodoBy;
@@ -458,10 +408,8 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
         a.notice
     );
 
-    // **Tab cycles the three fields and comes back to the title, keeping every one.** The
-    // composer carries the focused field; the draft carries the other two. Three hops now, and
-    // the one in the middle is `when` — the field this card grew, which a two-field cycle would
-    // have had no way to name.
+    // Tab cycles the three fields and comes back to the title, keeping every one: the composer carries the focused
+    // field and the draft the other two. The middle one is `when`, which a two-field cycle could not have named.
     typed(&mut a, "and the cache too");
     a.key(Key::Tab);
     assert_eq!(
@@ -483,11 +431,8 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
         "Tab came back to the title, with what was typed into it"
     );
 
-    // **Enter adds both, tagged as the operator's.** The list carries TWO rows now — the
-    // one added at the top of this test and this one — because the head echoes its own send
-    // (`echo_operator_todos`): the pane shows a row from the moment it is sent, so a second
-    // add sees the first. Before the echo the daemon's answer never arrived in a test and
-    // the count stayed behind.
+    // Enter adds both, tagged as the person's. The list carries two rows now, since the head echoes its own send
+    // (`echo_operator_todos`) and a second add sees the first.
     let act = a.key(Key::Enter);
     match act {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -517,14 +462,8 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
     );
 }
 
-/// **The operator can add a row of their own, and it goes to the daemon as their half.**
-///
-/// The gap this closes, measured before writing it: **`TodoBy::Operator` was constructible
-/// only in tests.** The daemon stores and serves the operator's rows, the pane splits them out,
-/// and nothing in the tree could CREATE one — `ClientFrame::SetOperatorTodos` had no sender at
-/// all, though the protocol's own doc describes a head sending one. So the operator's half of
-/// the board was unreachable, and *"you dont support persistent todos and leticl does"* was
-/// exactly right.
+/// The person can add a row of their own and it goes to the daemon as their half: `TodoBy::Operator` was
+/// constructible only in tests, and nothing in the tree could create one, since `SetOperatorTodos` had no sender.
 #[test]
 fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -606,10 +545,8 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
         "the refusal does not name the row: {:?}",
         a.notice
     );
-    // **`rm 1` STRIKES IT OFF, and the row STAYS** — the operator's ruling: *"only i should be
-    // able to delete todo items. as a rule everything that ever created stays in history"* and
-    // *"so done items or canceled items should be kept"*. So the list goes out one row long, with
-    // the row marked `cancelled`, and the daemon keeps it.
+    // `rm 1` strikes it off and the row stays: the row is marked `cancelled` and the daemon keeps it, because
+    // everything that was ever created stays in history.
     match a.command("todo rm 1") {
         Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 1, "the row is still there: {items:?}");
@@ -640,14 +577,8 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
     );
 }
 
-/// **THE HEADER COUNTS THE ROWS THE PANE DRAWS** — the operator's *"with some counter visible
-/// to me"*, and the half of it that is a rule rather than a preference: one list, counted once.
-///
-/// The defect this asserts against is a pane that disagrees with itself — a total maintained
-/// beside the rows it counts, or derived from the wire while the rows come from the head's own
-/// copy — so the numbers are checked against **the marks the pane actually painted**, not
-/// against a second computation of the same sum. Three open and one set aside, over five rows
-/// of which one is finished: the two numbers a reader can count to on the screen.
+/// The header counts the rows the pane draws: one list, counted once. The defect is a pane that disagrees with
+/// itself, a total maintained beside the rows it counts or derived from the wire while the rows come from the head.
 #[test]
 fn the_todo_header_counts_the_rows_the_pane_draws() {
     use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
@@ -731,16 +662,8 @@ fn the_todo_header_counts_the_rows_the_pane_draws() {
     );
 }
 
-/// **A ROW IS SET ASIDE AND LIFTED BY NUMBER, AND IT IS THE OPERATOR'S ACT.**
-///
-/// The other half of the operator's ask — *"can we handle postponed todo item properly"* — and
-/// the recommendation they made when the state was proposed: the row keeps its handle, does not
-/// fire while it is set aside, and lifting it puts the same question back in front of the check.
-/// Nothing here touches the condition, which is the assertion that makes the state reversible
-/// rather than a quiet way to drop a firing.
-///
-/// Numbered over the operator's half exactly as `done N` and `rm N` are, and refused by name
-/// when the number is not one of theirs — so a typo cannot set aside a row nobody named.
+/// A row is set aside and lifted by number, and it is the person's act: the row keeps its handle, does not fire
+/// while set aside, and lifting it puts the same question back in front of the check.
 #[test]
 fn a_row_is_set_aside_and_lifted_by_number() {
     use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
@@ -816,18 +739,8 @@ fn a_row_is_set_aside_and_lifted_by_number() {
     );
 }
 
-/// **A ROW THE MODEL WROTE CAN BE SET ASIDE BY THE OPERATOR — the verb's reach.**
-///
-/// The hole this closes, MEASURED: `/todo postpone|resume` numbered the operator's OWN rows and
-/// the pane numbers only those, while `todo_write` refuses `postponed` (a model that could
-/// silence its own plan could abandon it). So a row the MODEL wrote — accurate, and waiting on a
-/// person's hand — had no door at all: the model spent **fourteen turns** restating one true
-/// sentence, because nothing could silence a row that was correct.
-///
-/// Four claims, and the second is what makes it one act rather than two: the row's WORDS name it
-/// (the numbers still mean the operator's own half), the move goes out BESIDE the half — the
-/// model's rows are not the head's to write whole — `resume` lifts it again, and a name that
-/// resolves to nothing or to a parent's row is REFUSED rather than guessed at.
+/// A row the model wrote can be set aside by the person: the verb numbered only the person's own rows and
+/// `todo_write` refuses `postponed`, so an accurate row waiting on a person had no name any verb could use.
 #[test]
 fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoState, TodoStatus};
@@ -943,14 +856,8 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
     );
 }
 
-/// **A CANCELLED ROW STAYS ON THE BOARD, MARKED, AND IS NOT OPEN WORK.**
-///
-/// The operator's ruling, in their own words: *"only i should be able to delete todo items. as a
-/// rule everything that ever created stays in history"*, and *"so done items or canceled items
-/// should be kept"*. So what a reader can see is the whole of what has to hold: the row is DRAWN,
-/// with its own words and its author, and the header's `open` count — which is the set the idle
-/// check may ask about — does not count it. `resume` puts it back, which is what makes `rm` a
-/// decision rather than an accident.
+/// A cancelled row stays on the board, marked, and is not open work: the row is drawn and kept, since everything
+/// created stays in history, and the counts do not see it.
 #[test]
 fn a_cancelled_row_stays_on_the_board_and_is_not_open_work() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -1114,10 +1021,8 @@ fn a_todo_row_is_drawn_once_under_the_author_that_wrote_it() {
             "`{content}` is drawn more than once: {screen}"
         );
     }
-    // **And each row wears its OWN author as a tag** — R51 item 18: *"the author tag on every
-    // row is the requirement (R44)."* A heading was the earlier reading; a tag is the fact,
-    // and a pane that re-derives authorship from which section a row landed in is the drift
-    // the `by` field exists to prevent.
+    // Each row wears its own author as a tag: a heading was the earlier reading, and a pane that re-derives
+    // authorship from which section a row landed in is the drift the `by` field exists to prevent.
     let tool = screen
         .lines()
         .find(|l| l.contains("seat the tool"))
@@ -1136,12 +1041,8 @@ fn a_todo_row_is_drawn_once_under_the_author_that_wrote_it() {
     );
 }
 
-/// **An empty half says which half is empty** — the two sentences are not the same statement.
-///
-/// A session whose plan the operator has taken over has no model rows and several of their own;
-/// one where the model has written a plan has none of theirs. `none written yet` over a list the
-/// MODEL is supposed to be keeping and over a list the OPERATOR owns are different facts about
-/// different halves, and this is the split that makes saying so possible.
+/// An empty half says which half is empty: a plan the person took over has no model rows, and one the model wrote
+/// has none of theirs, so `none written yet` over either is a different fact.
 #[test]
 fn each_half_of_the_board_says_when_it_is_the_empty_one() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -1177,10 +1078,8 @@ fn each_half_of_the_board_says_when_it_is_the_empty_one() {
     );
 }
 
-/// **The items are the queue, and they were never drawn.** The pane rendered
-/// one line per heading with counts beside it and stopped. The operator,
-/// looking at `leticl`'s: *"our todo pane doesnt render them — only section
-/// titles and sub todos count"*.
+/// The items are the queue and they were never drawn: the pane rendered one line per heading with counts beside it
+/// and stopped.
 #[test]
 fn a_heading_rolls_up_its_items_the_way_org_does() {
     let all = todo_plain(
@@ -1219,10 +1118,8 @@ fn a_heading_rolls_up_its_items_the_way_org_does() {
     assert!(s1 < s2, "file order is kept");
 }
 
-/// A heading with no checkboxes under it is not done — it is a section
-/// nobody has filled in, and org does not mark those either. This is also
-/// every prose heading in a real TODO.md, which must not be claimed as
-/// finished work.
+/// A heading with no checkboxes under it is not done: it is a section nobody has filled in, and claiming it as
+/// finished work is claiming prose as done.
 #[test]
 fn an_empty_heading_carries_no_box_and_no_cookie() {
     let all =
@@ -1239,10 +1136,8 @@ fn an_empty_heading_carries_no_box_and_no_cookie() {
     assert!(all.contains("[x] Phase 0  [1/1]"), "{all}");
 }
 
-/// **Both halves of the pane speak one vocabulary.** The operator, on seeing
-/// the items drawn: *"colors?"*. They were not painted at all — neither the
-/// model's list nor the repo's — while the jobs pane two keys away had been
-/// painting the same three states green and yellow all along.
+/// Both halves of the pane speak one vocabulary: the items were not painted at all while the jobs pane two keys
+/// away had been painting the same three states all along.
 #[test]
 fn a_todo_is_painted_by_its_state_in_both_halves() {
     let dir = std::env::temp_dir().join(format!(
@@ -1329,14 +1224,8 @@ fn a_subsection_owns_its_own_items() {
     assert!(all.contains("[ ] Strand B  [0/1]"), "{all}");
 }
 
-/// A block of calls with a slow one in the middle: the fast ones go green
-/// as they finish, not when the block does.
-///
-/// Measured 2026-09-17 in the operator's session: `todo_write`, then a
-/// `task` that ran a subagent for fifteen minutes, then three searches. The
-/// pane retired the moment the assistant row's body landed — which is
-/// before the calls run — and the transcript row, which draws a call from
-/// its result row, showed all five as `no result` until the batch landed.
+/// A block of calls with a slow one in the middle: the fast ones go green as they finish, not when the block does.
+/// The pane used to retire when the assistant row's body landed, which is before the calls run.
 #[test]
 fn a_finished_call_is_finished_while_the_call_beside_it_still_runs() {
     let mut a = app();
@@ -1425,19 +1314,8 @@ fn a_finished_call_is_finished_while_the_call_beside_it_still_runs() {
     );
 }
 
-/// **An operator's todo is on the pane from the MOMENT IT IS SENT** — not from the step
-/// boundary.
-///
-/// The operator: *"when i send todos they appear in the todo pane some time later — it feels
-/// like their appearance depend on the turn state. but to me - im not sure if i lost them or
-/// not."* The write was never lost (`set_operator_todos` publishes at once, with a retry);
-/// what was late was the DRAWING — the pane showed only what the daemon had published, and
-/// `TodosUpdated` is injected behind a running turn. The head now applies its own send, the
-/// same trust `pending_prompts` places in the words it shows until their row lands.
-///
-/// Two claims asserted: the row is on screen BEFORE any `TodosUpdated` arrives (add, and the
-/// toggle under the cursor — both doors into one act), and the daemon's answer still WINS —
-/// the echo is a drawing, not a second board, and a `TodosUpdated` replaces it wholesale.
+/// A person's todo is on the pane from the moment it is sent and not from the step boundary: the write was never
+/// lost, but the command reaches the worker behind a running turn, so the pane drew nothing for the whole of it.
 #[test]
 fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
     let mut a = app();
@@ -1502,16 +1380,8 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
     );
 }
 
-/// **A CONDITION IS ATTACHED TO A ROW BY A VERB, BY NUMBER** — the piece that makes a
-/// conditioned row something a person can actually file. The operator's own words: *"More like
-/// Option<TodoCondition> and then we can have many conditions, and we can instantiate them
-/// programmatically or via a form, when I file a todo"*.
-///
-/// Three claims, and the third is what keeps the feature usable: the row carries the handle it
-/// waits on, the write goes out as the operator's half (which is the only place a condition can
-/// live — the model's half is replaced wholesale by every `todo_write`), and **`-` takes it
-/// off**, because a condition nobody can clear is a row waiting for ever on a job that already
-/// ended.
+/// A condition is attached to a row by a verb, by number, which is what makes a conditioned row something a person
+/// can file. The third claim is what keeps a form a form: the row keeps the handle the reader typed.
 #[test]
 fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
     use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
@@ -1566,15 +1436,8 @@ fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
     );
 }
 
-/// **A ROW FILED FROM THE CARD CAN CARRY A CONDITION** — the operator's *"or via a form, when I
-/// file a todo"*, and the reason the third field exists at all.
-///
-/// Two claims, and the second is what keeps a form a form: the handle the reader typed is on
-/// the row the card files, and **the fields are not read as a command line**. The card used to
-/// hand its words to `todo_command`, so a title that happened to read `done 2` or `when 1 j7`
-/// was taken for the verb, and would move or condition a row the reader never named — a hazard
-/// the two-field card carried all along, and one the `when` field would have made reachable in
-/// a new way.
+/// A row filed from the card can carry a condition, which is why the third field exists: the handle the reader
+/// typed is on the row the card files, and the fields are not read as a command line.
 #[test]
 fn a_row_filed_from_the_card_can_carry_a_condition() {
     use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
@@ -1808,18 +1671,8 @@ fn a_seed_runs_once_per_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A starter-todo seed writes the retired set back, it does not write it away.**
-///
-/// `head.toml` is one file for every head on the box and it is where a dismissal is remembered
-/// (`App::dismissed`). Every write goes through `save_prefs`, which unions — except this one: the
-/// seed calls `prefs::save` with a whole `HeadPrefs`, and `prefs()` carries THIS head's list. A
-/// head that has dismissed nothing yet therefore wrote an empty list over another head's, and the
-/// notices that head had collapsed came back — on its next read of the file, and in full in any
-/// head that started afterwards. The operator: *"after certain evens all collapsed notifications
-/// reappear"*.
-///
-/// The seed already unions its own record (`merge_todo_seed`, one line up, for exactly this
-/// reason); this asserts the second half.
+/// A starter-todo seed writes the retired set back and does not write it away: `head.toml` is one file for every
+/// head and it is where a dismissal is remembered, so a save carrying only this head's list would drop the rest.
 #[test]
 fn a_seed_does_not_write_another_heads_dismissals_away() {
     let dir = std::env::temp_dir().join(format!("letibot-seed-retired-{}", std::process::id()));
@@ -1968,10 +1821,8 @@ fn the_starter_todos_switch_is_off_by_default() {
         sessions: Vec::new(),
     });
     assert!(!a.todo_seed_pending, "off is off");
-    // **The board read is the attach's own, not the seed's** — every attach asks for the board
-    // now (`App::refetch_session_facts`, so the resident line can never quote a row that stopped
-    // waiting). What the switch governs is whether the template's rows are FILED, so that is
-    // what this asserts: nothing was sent to the operator's half.
+    // The board read is the attach's own and not the seed's: every attach asks for the board now, so what the
+    // switch governs is whether the template's rows are filed, and nothing was sent to the person's half.
     assert!(
         !a.queued
             .iter()
@@ -1981,14 +1832,8 @@ fn the_starter_todos_switch_is_off_by_default() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The title cap, at the operator's own doors** — `/todo TEXT` and the card, which are the two
-/// ways the operator writes one of their rows.
-///
-/// The rule is the model's rule (`todo_write` holds it too, and the number is
-/// `TODO_TITLE_MAX`'s): a title longer than the pane's own row is cut at the pane's right edge and
-/// read by nobody, so it is REFUSED by name instead — with the card still up and the typed door
-/// sending nothing. What is capped is the title, and the card's Detail field is where the rest of
-/// it goes, so the refusal names that too.
+/// The title cap, at the person's own doors: `/todo TEXT` and the card, which are the two ways they write a row. A
+/// title longer than the pane's row is cut at the edge and read by nobody, so it is refused by name instead.
 #[test]
 fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
     use letibot_sessionlog::event::TODO_TITLE_MAX;
@@ -2049,13 +1894,8 @@ fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
     );
 }
 
-/// **A row the operator wrote BEFORE the cap is still theirs to move.**
-///
-/// `SetOperatorTodos` replaces the operator's half wholesale, so every row written before this
-/// change comes back through that door — and a cap checked there would refuse `/todo done 2`
-/// because some old row is long, leaving a row older than the cap impossible to close. The check
-/// is at CREATION (`title_refusal`'s doc), and this is the measurement of that: a long row that
-/// arrived from the daemon moves like any other.
+/// A row written before the cap is still theirs to move: `SetOperatorTodos` replaces the half wholesale, so a cap
+/// checked there would refuse `/todo done 2` because some old row is long. The check is at creation.
 #[test]
 fn an_operator_row_written_before_the_cap_is_still_movable() {
     use letibot_sessionlog::event::TODO_TITLE_MAX;
@@ -2089,13 +1929,8 @@ fn an_operator_row_written_before_the_cap_is_still_movable() {
     }
 }
 
-/// **A board row is ONE line, newline and all.**
-///
-/// The pane flattens a newline (`rano`'s `clean_line`), so a writer that put a second line in
-/// `content` has not made a detail — it has made words the operator reads run together on the row.
-/// That is why `todo_title` does not split there, why the cap measures the whole of them, and why
-/// a DETAIL has a separator of its own (` — `, `TODO_DETAIL_SEP`). Measured on the pane's own
-/// lines rather than argued: one row, both halves of it, no second row.
+/// A board row is one line, newline and all: the pane flattens a newline, so a writer that put a second line in
+/// `content` has not made a detail, it has made words that run together. A detail has a separator of its own.
 #[test]
 fn a_board_row_with_a_newline_is_drawn_on_one_line() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -2130,10 +1965,8 @@ fn a_board_row_with_a_newline_is_drawn_on_one_line() {
     );
 }
 
-/// **A template item whose title is over the cap is not seeded, and it is SAID** — the seed's own
-/// rule (*"refusals are notes, not silences"*), because from the operator's side a row that
-/// silently did not arrive is indistinguishable from a file that was never read. The rest of the
-/// template still lands: one long row is not a reason to seed nothing.
+/// A template item whose title is over the cap is not seeded, and it is said: from the person's side a row that
+/// silently did not arrive is indistinguishable from a file never read. The rest of the template still lands.
 #[test]
 fn a_template_item_over_the_cap_is_not_seeded_and_is_said() {
     use letibot_sessionlog::event::TODO_TITLE_MAX;
@@ -2205,16 +2038,8 @@ fn todos_head(rows: &[(letibot_sessionlog::event::TodoBy, &str)]) -> App {
     a
 }
 
-/// **Enter reads the row under the cursor, and Esc goes back to the list with the cursor on it.**
-///
-/// The operator's report, and the whole of what this overlay is for: *"in todo list i cant expand
-/// your todo items - only truncated titles available"*. The pane draws every row to the pane's own
-/// width, so a row longer than the pane is cut off with nothing behind it — and the rows are written
-/// by a model, which writes long ones.
-///
-/// **The model's rows are the ones the report is about**, and they were not stops at all before
-/// this: no key acted on one, and a cursor stops only where a key acts. Enter reading a row is what
-/// makes them stops, which is the rule kept rather than bent (`App::todos_stops`).
+/// Enter reads the row under the cursor, and Esc goes back to the list with the cursor on it: the pane draws every
+/// row to its own width, so a row longer than the pane is cut off with nothing behind it.
 #[test]
 fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
     use letibot_sessionlog::event::TodoBy;
@@ -2265,20 +2090,14 @@ fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
     assert!(!a.is_open(Surface::Todos), "the second esc closes the pane");
 }
 
-/// **Enter reads one of the operator's OWN rows and TAB toggles it.**
-///
-/// The two keys came apart when Enter took the read, and the act that used to be on Enter is the one
-/// that must not have been lost with it: the toggle is what the typed door (`/todo done N`) sends,
-/// and a read that had taken the toggle's key without leaving the toggle somewhere would have made
-/// this pane's own act unreachable.
+/// Enter reads one of the person's own rows and Tab toggles it: the toggle is what the typed door sends, and a read
+/// that took Enter without leaving the toggle somewhere would have made this pane's own act unreachable.
 #[test]
 fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = todos_head(&[(TodoBy::Operator, "the operator's own row")]);
-    // **The board is read UNFOLDED**, because the second Tab has to find the row the first one
-    // moved: under the folded default the row it marks leaves the drawn list, the cursor falls
-    // back to the add control, and the toggle is then one-way — which is the thing this test says
-    // it is not.
+    // The board is read unfolded, since the second Tab has to find the row the first one moved: under the folded
+    // default the row leaves the drawn list, the cursor falls back to the add control, and the toggle is one-way.
     a.todos_fold_done = false;
     // The pane's own open (`ListTodos`) is drained first, so what is left is what the keys sent.
     let _ = a.take_actions();
@@ -2311,14 +2130,9 @@ fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
     );
 }
 
-/// **The cursor walks every row of the board — the model's and the operator's — and the mark is on
-/// the row the keys are about.**
-///
-/// This is the half of "the model's rows are stops" that the pane's own record cannot carry: rano
-/// records a stop row only for the rows IT treats as stops, so the head completes the record
-/// (`ui::panes::todos::session_stop_rows`), and a wrong completion shows up here as a `▸` on the
-/// neighbour of the row the cursor is on — the two-enumerations defect, arriving from the library
-/// side.
+/// The cursor walks every row of the board, the model's and the person's, and the mark is on the row the keys are
+/// about: rano records a stop only for the rows it treats as stops, so the head completes the record, and a wrong
+/// completion shifts every stop after it.
 #[test]
 fn the_cursor_walks_every_row_and_the_mark_follows_it() {
     use letibot_sessionlog::event::TodoBy;
@@ -2371,10 +2185,9 @@ fn the_cursor_walks_every_row_and_the_mark_follows_it() {
         screen.join("\n")
     );
 
-    // **A click is the other reader of that record, and the one a wrong completion breaks**: a
-    // click on a row's own screen row must land the cursor on THAT row, and the stop it lands on is
-    // the position of the row in the one enumeration. Clicking the operator's row — stop 2, the
-    // third — is the case a record missing the model's rows gets wrong by one.
+    // A click is the record's other reader and the one a wrong completion breaks: a click on a row's own screen row
+    // must land the cursor on that row, and clicking the person's row is the case a record missing the model's rows
+    // gets wrong by one.
     let screen = a.screen(110, 40);
     let y = screen
         .iter()
@@ -2433,12 +2246,8 @@ fn a_row_that_carries_newlines_is_shown_whole() {
     );
 }
 
-/// **A row longer than the screen PAGES rather than being cut to the window.**
-///
-/// This is the half of the operator's report that a bigger box alone would not answer: the row can
-/// be longer than any terminal, and the overlay's window is the whole of what makes the rest of it
-/// reachable. The page keys move the OVERLAY — the transcript underneath stays where it was, which
-/// is the defect the two overlays before this one have (`key_todo_open` says so in its own words).
+/// A row longer than the screen pages rather than being cut to the window: the row can be longer than any
+/// terminal, so a bigger box alone would not answer it. The page keys move the overlay and the transcript stays put.
 #[test]
 fn a_row_longer_than_the_screen_pages_rather_than_truncating() {
     use letibot_sessionlog::event::TodoBy;
@@ -2469,13 +2278,9 @@ fn a_row_longer_than_the_screen_pages_rather_than_truncating() {
     );
 }
 
-/// **The overlay draws the board as it stands NOW, and a row that is gone says so.**
-///
-/// The row is looked up by identity at draw time and never carried in the overlay
-/// (`todos_open_lines`), and the board's identity IS the words — there are no ids — so the two
-/// halves of this are the two things a `TodosUpdated` can do to an open row: move its state, which
-/// draws the new state, and rename it, which is a different row and is said rather than drawn as
-/// text that is no longer on the board.
+/// The overlay draws the board as it stands now, and a row that is gone says so: the row is looked up by identity
+/// at draw time and never carried, and the board's identity is its words. A `TodosUpdated` can move a state, which
+/// draws the new one, or take the row away.
 #[test]
 fn a_row_that_moves_under_the_overlay_is_drawn_as_it_stands_now() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -2590,13 +2395,8 @@ fn the_overlay_shows_what_the_row_needs() {
     );
 }
 
-/// **Keys typed in the overlay do not reach the composer.**
-///
-/// The overlay is a READING surface: nothing on it is a field, so a key it does not name has no
-/// meaning there, and a draft growing in the composer under a row somebody is reading is a message
-/// they did not write. The sharpest half is the recall — with a line queued, Up in the overlay used
-/// to be the composer's (it takes the queued prompts back out of the daemon), which is the arm this
-/// overlay sits above.
+/// Keys typed in the overlay do not reach the composer: nothing on it is a field, so a key it does not name has no
+/// meaning there, and a draft growing under a row somebody is reading is a message they did not write.
 #[test]
 fn keys_typed_in_the_overlay_do_not_reach_the_composer() {
     use letibot_sessionlog::event::TodoBy;
@@ -2628,11 +2428,8 @@ fn keys_typed_in_the_overlay_do_not_reach_the_composer() {
     assert_eq!(a.editor.text(), "");
 }
 
-/// **A wait `wait_on` armed shows on the row in the list**, not only in its card.
-///
-/// The operator: *"will todo pane show me that waits are armed?"* — a `wait_on` edge is a `needs`
-/// on a job or a child, and the list's `waits on` slot read only `when`, so a row the model had
-/// parked on `j55` looked exactly like a row nobody had touched.
+/// A wait `wait_on` armed shows on the row in the list and not only in its card: the list's slot read only `when`,
+/// so a row the model had parked on a job looked exactly like a row nobody had touched.
 #[test]
 fn an_armed_wait_shows_on_the_row() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
@@ -2723,10 +2520,8 @@ fn waiting_board(a: &mut App) {
     });
 }
 
-/// **The resident line says the operator is waited on, and goes when nobody is** — *"the heads
-/// show loud notification that im waited"*. Drawn from the board, quoting the question and the row
-/// and naming alt-a; and from the `asks` settings row for a head that has not read the board yet
-/// (which also queues the read).
+/// The resident line says the person is waited on and goes when nobody is: drawn from the board, quoting the
+/// question and the row and naming alt-a, and from the `asks` settings row for a head that has not read the board.
 #[test]
 fn a_board_waiting_on_the_operator_draws_a_resident_line() {
     let mut a = app();
@@ -2770,10 +2565,8 @@ fn a_board_waiting_on_the_operator_draws_a_resident_line() {
     );
 }
 
-/// **The todo pane's row says `waits on you`, and Enter on it opens the question card** — the
-/// card `ask_user_question` draws, with the row's options as its choices. Answering it goes to the
-/// ROW (`Action::AnswerTodo`) and takes the card down: an option by Enter, an option with a note,
-/// typed words, and an abstention — *"that choice list with an optioin to enter my freetext"*.
+/// The todo pane's row says `waits on you`, and Enter on it opens the question card, the one `ask_user_question`
+/// draws, with the row's choices. Answering it goes to the row and takes the card down.
 #[test]
 fn the_pane_marks_the_row_and_enter_opens_its_question_card() {
     use letibot_sessionlog::question::QuestionAnswer;
@@ -2857,11 +2650,8 @@ fn the_picker_marks_a_session_waiting_on_the_operator() {
     assert!(!lines.contains("the quiet one · WAITING"), "{lines}");
 }
 
-/// **The model taking its wait on the operator back takes the card down** — the operator: *"we
-/// need a way for models to retract user selects or todo selects … retracting wait_on user and
-/// that the card goes"*. `wait_on`'s `detach` takes the question off the row; the board that comes
-/// back no longer asks it, and the card that was open for it — and the resident line — go with
-/// it, whether the card was on the screen or put away.
+/// The model taking its wait on the person back takes the card down: a `detach` removes the question from the row,
+/// and the board that comes back no longer asks it, so the card and the resident line go with it.
 #[test]
 fn a_question_the_model_takes_back_takes_its_card_and_its_line_down() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -2955,10 +2745,8 @@ fn status_head(
     a
 }
 
-/// **The screen row a piece of a row's words was drawn on**, in the frame the caller just drew.
-///
-/// By WORDS and never by arithmetic: the pane's own layout is what is under test, so a test that
-/// computed where a row must be would be asserting its own arithmetic back at itself.
+/// The screen row a piece of a row's words was drawn on, in the frame the caller just drew: by words and never by
+/// arithmetic, since a test that computed where a row must be would assert its own arithmetic back at itself.
 fn at(screen: &[String], needle: &str) -> usize {
     screen
         .iter()
@@ -2966,14 +2754,9 @@ fn at(screen: &[String], needle: &str) -> usize {
         .unwrap_or_else(|| panic!("`{needle}` is not on the screen:\n{}", screen.join("\n")))
 }
 
-/// **The done rows are gathered under a line of their own, below the rows still owed** — the
-/// operator: *"done todos still not in their own group"*.
-///
-/// The order is the board's, not the statuses': the rows still owed keep their relative order, and
-/// so do the done ones — which is all *newest last* can be here, because the wire carries no
-/// completion time (`board_drawn` says so). **A row set aside is not done and stays in the first
-/// half**: setting one aside is the operator saying *not yet*, and a group that swept it in with
-/// the finished rows would bury the state they put there by hand.
+/// The done rows are gathered under a line of their own, below the rows still owed: the order is the board's, so
+/// both halves keep their relative order, which is all *newest last* can be here since the wire carries no
+/// completion time.
 #[test]
 fn the_done_rows_are_gathered_under_a_line_of_their_own_below_the_rows_owed() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3025,13 +2808,8 @@ fn the_done_rows_are_gathered_under_a_line_of_their_own_below_the_rows_owed() {
     assert_eq!(line, "done (3)", "the group line reads: {line:?}");
 }
 
-/// **A row's number is its place on the WHOLE board, so a row moving into the done group keeps
-/// it** — `/todo done N`, `/todo rm N` and `/todo postpone N` take that number, and a counter that
-/// walked the drawn order would renumber every row the moment a done one moved down.
-///
-/// Both halves are measured: what the pane DRAWS beside the rows, and what the verb does with the
-/// number afterwards. A test that only checked the drawing would be satisfied by a number that is
-/// no longer the one the verb takes.
+/// A row's number is its place on the whole board, so a row moving into the done group keeps it: the verbs take
+/// that number, and a counter that walked the drawn order would renumber every row the moment a done one moved.
 #[test]
 fn the_numbers_are_the_boards_and_a_row_moving_into_the_group_keeps_its_own() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3082,13 +2860,9 @@ fn the_numbers_are_the_boards_and_a_row_moving_into_the_group_keeps_its_own() {
     );
 }
 
-/// **Tab on one of the operator's rows keeps the cursor on that row when the toggle moves it into
-/// the done group.**
-///
-/// Marking a row done is a change of the row's STATE, and the grouping draws a done row somewhere
-/// else — so the index the cursor had is a place rather than a row from that frame on. The key
-/// carries it by identity, the same way `d` does, or the reader who marked a row watches the mark
-/// hop to its neighbour and has no way to tell whether the row was marked at all.
+/// Tab on one of the person's rows keeps the cursor on that row when the toggle moves it into the done group:
+/// marking it done changes its state and the grouping draws it elsewhere, so the index is a place and not a row
+/// from that frame on. The key carries it by identity.
 #[test]
 fn toggling_a_row_into_the_group_takes_the_cursor_with_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3128,13 +2902,8 @@ fn toggling_a_row_into_the_group_takes_the_cursor_with_it() {
     );
 }
 
-/// **`d` opens the folded group, and `d` again folds it to the one line that names it** — the
-/// operator: *"done todos still not in their own group"*, and the fold is `d`'s own switch, which
-/// a head nobody has asked starts in the folded half (`HeadPrefs::default`).
-///
-/// The folded line says how many rows it holds and which key shows them; the open one says the
-/// count alone. **The number is the same either way**, so opening the group cannot read as a
-/// different set of rows.
+/// `d` opens the folded group and `d` again folds it to the one line that names it, which is where a head nobody
+/// has asked starts. The folded line says how many rows it holds and which key shows them.
 #[test]
 fn d_opens_the_folded_group_and_d_again_folds_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3253,10 +3022,9 @@ fn d_opens_the_folded_group_and_d_again_folds_it() {
     );
 }
 
-/// **The cursor keeps its ROW, not its index, when the group folds under it.**
-///
-/// `todos_sel` is an index into the one enumeration, and folding takes entries out of it — an index
-/// kept across the switch lands on whichever row slid into the hole.
+/// The cursor keeps its row and not its index when the group folds under it: `todos_sel` indexes the one
+/// enumeration, and folding takes entries out, so an index kept across the switch lands on whichever row slid into
+/// the hole.
 #[test]
 fn the_cursor_keeps_the_row_it_was_on_when_the_group_folds() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3335,12 +3103,9 @@ fn the_cursor_keeps_the_row_it_was_on_when_the_group_folds() {
     );
 }
 
-/// **The done group's line is not a row and not a stop** — nothing is drawn where a cursor can rest
-/// that has no act: `d` is the pane's key and the bar names it, so a stop on the line would be a
-/// second door to a key nobody is told about.
-///
-/// The other half of the same rule: **the stops follow the DRAWN order**, so an arrow that walks
-/// past the last owed row walks INTO the group rather than off the end of the list.
+/// The done group's line is not a row and not a stop: nothing is drawn where a cursor can rest that has no act, and
+/// `d` is the pane's key, so a stop there would be a second door to a key nobody is told about. The stops follow
+/// the DRAWN order.
 #[test]
 fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3447,10 +3212,8 @@ fn a_board_with_nothing_done_draws_no_group_line() {
     );
 }
 
-/// **A board whose rows are ALL done** — the group is the whole list, and rano's `none yet` must
-/// not stand over it: that sentence is true of the argument it was handed (an empty list) and
-/// false of the board. **The first look is the folded one**, which is the case the sentence would
-/// be most tempting on: the line stands where every row of the board is.
+/// A board whose rows are all done: the group is the whole list, and rano's `none yet` must not stand over it,
+/// since that sentence is true of the empty argument and false of the board. The first look is the folded one.
 #[test]
 fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3554,13 +3317,9 @@ fn the_files_done_items_are_gathered_under_a_line_in_their_own_section() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **Folding the group under the cursor scrolls the window to where the cursor landed.**
-///
-/// The panes scroll by the rows the last draw recorded, and the draw that folded them is the first
-/// one that knew the new numbers: `todos_follow` is what makes THAT draw scroll rather than the
-/// keypress scroll against the record of the draw before it. Without it the cursor is on a row
-/// nobody is looking at — which is the same defect as a cursor that moved to a row it is not on,
-/// one reading further out.
+/// Folding the group under the cursor scrolls the window to where the cursor landed: the draw that folded them is
+/// the first that knew the new numbers, so `todos_follow` makes THAT draw scroll rather than the keypress scroll
+/// against the record of the draw before it.
 #[test]
 fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3649,11 +3408,8 @@ fn the_bar_says_d_shows_the_group_and_then_that_it_folds_it() {
     );
 }
 
-/// **`d` is the composer's while a line is typed** — the letters are the operator's to type first,
-/// and the empty-composer guard is what keeps the new key from eating one in the middle of a word.
-/// **The first letter of a word over a pane IS a key** (that is what a pane letter is, and the
-/// bindings table holds every plain letter to this guard for it), so the case pinned here is a
-/// word already under way.
+/// `d` is the composer's while a line is typed: the letters are the person's to type first, and the empty-composer
+/// guard is what keeps the key from eating one in the middle of a word.
 #[test]
 fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3680,13 +3436,9 @@ fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
     );
 }
 
-/// **The fold outlives the head** — `todos_hide_done` in `head.toml`, which is where every other
-/// switch this head keeps lives. A switch that forgets is a switch the reader keeps re-making.
-///
-/// **The KEY is the old spelling and that is deliberate**: every `head.toml` on the box already
-/// carries it from the days when the switch hid the rows in place, and the fold is what it was
-/// always reaching for — so the code says `fold` and the file keeps its word, and nobody's setting
-/// is silently reset by a rename.
+/// The fold outlives the head: `todos_hide_done` in `head.toml`, where every other switch lives, since a switch
+/// that forgets is one the reader keeps re-making. The key is the old spelling because every file on the box
+/// carries it.
 #[test]
 fn the_fold_is_remembered_by_the_next_head() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
