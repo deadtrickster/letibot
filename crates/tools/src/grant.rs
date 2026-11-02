@@ -16,12 +16,9 @@ use std::collections::BTreeSet;
 use crate::adjudicate::{ActionClass, Tier};
 use crate::intent::Intent;
 
-/// What a grant was granted for, in the terms the gate checks.
-///
-/// Not a string, and not the arguments: a grant keyed by the arguments would be a
-/// grant for one call, which is `allow_once`. A class is the coarsest thing that is
-/// still specific enough to mean something, precisely because the escape hatches
-/// change it.
+/// What a grant was granted for, in the terms the gate checks. Not a string and not the arguments,
+/// since a grant keyed by the arguments is a grant for one call: a class is the coarsest thing still
+/// specific enough to mean something, because the escape hatches change it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Coverage {
     /// The program as the shell will resolve it, from the normalisation. `"<tool>"`
@@ -57,12 +54,9 @@ impl Coverage {
     }
 }
 
-/// How a grant was written: enumerated by somebody who listed the cases, or globbed.
-///
-/// The distinction is kept for the disclosure, not for the check - both are checked
-/// identically, per call, against the normalisation. A session's banner that could not
-/// tell an enumerated grant from a star would hide the one fact somebody auditing it
-/// would want first.
+/// How a grant was written: enumerated by somebody who listed the cases, or globbed. Kept for the
+/// disclosure and not for the check, which treats both the same, because a banner that could not tell
+/// a star from a list hides the one fact an auditor wants first.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Written {
     /// `git status`, `git log`, `git diff` - the model's proposal, or a person's list.
@@ -80,10 +74,8 @@ impl Written {
     }
 }
 
-/// One standing permission.
-///
-/// Deliberately not `Copy`, and [`Grant::covers`] is its only reader, so every way
-/// this can answer `true` runs through that one function.
+/// One standing permission. Deliberately not `Copy`, and [`Grant::covers`] is its only reader, so
+/// every way this can answer `true` runs through that one function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {
     /// How the operator wrote it, for the disclosure.
@@ -95,11 +87,8 @@ pub struct Grant {
     pub why: String,
 }
 
-/// Why a grant did not cover a call.
-///
-/// A vocabulary rather than a bool, because "this grant does not extend that far" and
-/// "nothing may extend that far" are different sentences, and an operator reading a
-/// prompt needs to know which one they are looking at.
+/// Why a grant did not cover a call: a vocabulary rather than a bool, because "this grant does not
+/// extend that far" and "nothing may extend that far" are different sentences to the operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotCovered {
     /// The action resolved to a class this grant does not name. The ordinary case, and
@@ -155,16 +144,9 @@ impl NotCovered {
         }
     }
 
-    /// The same four, in the one line a card has room for.
-    ///
-    /// [`NotCovered::why`] is a refusal a model reads and it argues; this is drawn under
-    /// the ladder of a card, next to the rung it explains, and a person skimming a card
-    /// reads one line or none. It belongs here rather than in a sentence the gate
-    /// composes, because a card that says *"not offered for the session"* must name the
-    /// same one of the four the matcher would answer.
-    ///
-    /// Every one of them is a *because*, so a caller prefixes the noun it is explaining
-    /// (`not offered for the session: ...`) rather than this repeating it.
+    /// The same four, in the one line a card has room for: drawn under the ladder next to the rung it
+    /// explains. It belongs here rather than in a sentence the gate composes, because a card must name
+    /// the same one of the four the matcher would answer.
     pub fn short(&self) -> &'static str {
         match self {
             NotCovered::ClassNotGranted => "this grant's class does not cover the call",
@@ -179,12 +161,9 @@ impl NotCovered {
 }
 
 impl Grant {
-    /// The only way a grant can admit anything.
-    ///
-    /// The tier and the resolved flag are taken by value rather than read off something
-    /// a caller assembled, so no arrangement of arguments lets a blocked or unresolved
-    /// action through. The three refusals are checked before the coverage lookup: an
-    /// action nobody could read is not one anybody can have pre-approved.
+    /// The only way a grant can admit anything. The tier and the resolved flag are taken by value, so
+    /// no arrangement of arguments lets a blocked or unresolved action through, and the three refusals
+    /// are checked before the coverage lookup.
     pub fn covers(
         &self,
         tier: &Tier,
@@ -216,13 +195,9 @@ impl Grant {
         }
     }
 
-    /// What this grant includes, said out loud, before anybody accepts it.
-    ///
-    /// `vehicles` is what the execution-vehicle table says about the programs this grant
-    /// names - passed in rather than looked up here, because this module holds no table
-    /// and the one that does lives in [`crate::intent`]. A caller with no table passes an
-    /// empty slice, and the sentence then says how many it could not classify rather
-    /// than implying there were none: absence is not permission.
+    /// What this grant includes, said out loud before anybody accepts it. `vehicles` is passed in
+    /// because this module holds no table; a caller with none passes an empty slice and the sentence
+    /// says how many it could not classify, since absence is not permission.
     pub fn disclose(&self, vehicles: &[VehicleNote]) -> String {
         let mut s = String::new();
         match &self.written {
@@ -283,12 +258,9 @@ impl Grant {
     }
 }
 
-/// What the execution-vehicle table says about one program, flattened so this module
-/// needs no dependency on the table's own types.
-///
-/// `unknown` is a field rather than an absence, and that is the whole point: a program
-/// missing from a list must not read as a program with nothing to say about it, which
-/// is how a catch-all arm auto-approves something it never classified.
+/// What the execution-vehicle table says about one program, flattened so this module needs no
+/// dependency on the table's own types. `unknown` is a field rather than an absence, because a program
+/// missing from a list must not read as one with nothing to say about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VehicleNote {
     pub program: String,

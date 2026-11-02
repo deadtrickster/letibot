@@ -1,9 +1,6 @@
-//! Finding the text an edit names, and saying what is actually there when it is not
-//! found.
-//!
-//! A relaxed match is a DIAGNOSIS, never an application: the model gets back the exact
-//! bytes that are there, so its retry is a copy rather than a guess. The one relaxation
-//! that is applied is line endings, which are a property of the file and not of the edit.
+//! Finding the text an edit names, and saying what is actually there when it is not found. A relaxed
+//! match is a DIAGNOSIS and never an application, so the model's retry is a copy rather than a guess;
+//! the one relaxation applied is line endings, which are the file's property and not the edit's.
 
 /// A file's text, with its line endings remembered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,11 +45,9 @@ impl FileText {
     }
 }
 
-/// Every exact occurrence of `needle`, as byte offsets into `hay`.
-///
-/// Non-overlapping and left to right, which is what a replacement needs: two overlapping
-/// occurrences cannot both be replaced, and counting them as two would make the
-/// ambiguity report a lie.
+/// Every exact occurrence of `needle`, as byte offsets into `hay`. Non-overlapping and left to right,
+/// which is what a replacement needs: two overlapping occurrences cannot both be replaced, and counting
+/// them as two would make the ambiguity report a lie.
 pub fn occurrences(hay: &str, needle: &str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
@@ -163,10 +158,8 @@ impl Candidate {
     }
 }
 
-/// The relaxation ladder, run for diagnosis only.
-///
-/// Ordered strongest first and stopping at the first rung that finds anything, because a
-/// report naming five ways the string nearly matched is one nobody acts on.
+/// The relaxation ladder, run for diagnosis only, ordered strongest first and stopping at the first rung
+/// that finds anything: a report naming five ways the string nearly matched is one nobody acts on.
 pub fn probe(file: &FileText, needle: &str) -> Vec<Candidate> {
     let hay = &file.lf;
     let want: Vec<&str> = needle.split('\n').collect();
@@ -334,13 +327,9 @@ pub struct FileEdit {
     pub changed: ChangedSpan,
 }
 
-/// The region of a file that differs, found by trimming the common prefix and suffix
-/// rather than by an edit script.
-///
-/// That is an exact fact and it needs no differ: the lines before `first` are identical
-/// in both, and so are the lines after `last_before` and `last_after`. It is deliberately
-/// weaker than a minimal diff, because this crate does not own a differ and a second one
-/// here would be a second answer to one question.
+/// The region of a file that differs, found by trimming the common prefix and suffix rather than by an
+/// edit script, which is an exact fact and needs no differ: a weaker answer than a minimal diff, because
+/// this crate does not own one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangedSpan {
     /// 1-based first differing line. Equal to `before_lines + 1` when the change
@@ -372,11 +361,9 @@ impl ChangedSpan {
     }
 }
 
-/// The changed span of two texts, from the outside in.
-///
-/// Counted in `str::lines()` lines, deliberately: that is what `read` numbers a file by,
-/// and a `write` that reported eleven lines for the file `read` had just called ten would
-/// teach the model that one of the two is lying.
+/// The changed span of two texts, from the outside in, counted in `str::lines()` lines deliberately:
+/// that is what `read` numbers a file by, and a `write` that reported eleven lines for a file `read` had
+/// just called ten would teach the model that one of the two is lying.
 pub fn changed_span(before: &str, after: &str) -> ChangedSpan {
     let b: Vec<&str> = before.lines().collect();
     let a: Vec<&str> = after.lines().collect();
@@ -400,28 +387,20 @@ pub fn changed_span(before: &str, after: &str) -> ChangedSpan {
     }
 }
 
-/// A file's lines as they are numbered everywhere the model sees them.
-///
-/// One function, so `read`, `edit` and `write` cannot drift on whether a trailing newline
-/// makes a last, empty line.
+/// A file's lines as they are numbered everywhere the model sees them: one function, so `read`, `edit`
+/// and `write` cannot drift on whether a trailing newline makes a last, empty line.
 pub fn display_lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
 
-/// The before/after of a file-editing call, bounded to what differs, as it rides the tool
-/// event to a head.
-///
-/// Defined once in `letibot-transcript`, the one crate this crate and the log can both
-/// see, so the row and the event cannot drift into two copies of one shape.
+/// The before/after of a file-editing call, bounded to what differs, as it rides the tool event to a
+/// head. Defined once in `letibot-transcript`, so the row and the event cannot drift into two copies.
 pub use letibot_transcript::ToolEditExcerpt;
 
 impl FileEdit {
-    /// The bounded before/after a head draws a two-panel diff from: the changed span plus
-    /// `context` lines either side, capped at `cap` per side.
-    ///
-    /// The cap is not stinginess: the excerpt fans out to every attached head, and a
-    /// whole-file `write` would otherwise put tens of thousands of lines on the wire for a
-    /// display that shows sixty rows. `truncated` says when the cap cut it.
+    /// The bounded before/after a head draws a two-panel diff from: the changed span plus `context` lines
+    /// either side, capped per side. The cap is not stinginess, since the excerpt fans out to every head,
+    /// and `truncated` says when it cut.
     pub fn excerpt(&self, context: usize, cap: usize) -> ToolEditExcerpt {
         let before: Vec<&str> = self.before.lines().collect();
         let after: Vec<&str> = self.after.lines().collect();
