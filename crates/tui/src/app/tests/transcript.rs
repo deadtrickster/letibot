@@ -186,16 +186,9 @@ fn the_engine_join_of_several_prompts_retires_every_echo_it_answered() {
     assert!(!screen.contains("queued"), "{screen}");
 }
 
-/// **R33: an echo is ONE elided headline, and the usual key opens it.**
-///
-/// The operator, looking at letibot with three of their own messages queued:
-/// *"three giant messages queued"* — a 63-row pane filled with the reader's own words,
-/// the conversation pushed off the screen. *"It is a thing waiting, not content to
-/// read — the reader wrote it and does not need it read back."*
-///
-/// The unit of the count is **screen rows**, not source lines, because that is what
-/// the reader is paying: the model writes one enormous paragraph, and `+0 lines`
-/// beside a row that fills the pane answers the wrong question.
+/// An echo is one elided headline and the usual key opens it: three of the person's own messages
+/// filled a 63-row pane and pushed the conversation off. The unit is screen rows, since that is what
+/// the reader pays, so a row that fills the pane does not read `+0 lines`.
 #[test]
 fn an_echo_is_one_elided_headline_until_it_is_unfolded() {
     let mut a = app();
@@ -306,15 +299,9 @@ fn an_echo_queued_after_the_snapshot_still_says_queued() {
     assert!(screen.contains("queued · after the snapshot"), "{screen}");
 }
 
-/// **An unconfirmed echo whose row lands INSIDE A MERGED ITEM leaves the set.**
-///
-/// This is the leak leticl measured on its own head, and the structural reason is the
-/// same here: the set is keyed by the echo's text and the landing row's text is the
-/// engine's JOIN, so `unconfirmed` could never be cleared by comparing texts. It wants
-/// an **intersection** — keep the marks whose echo is still in the queue — which is
-/// what `retire_pending` now does, and the first version of this fix got the
-/// intersection's TIMING wrong (before the loop rather than after), which is the same
-/// leak with the opposite sign. Both are pinned here.
+/// An unconfirmed echo whose row lands inside a merged item leaves the set: the set is keyed by the
+/// echo's text and the row's text is the engine's join, so it must be an intersection with what is
+/// still queued, taken after the loop rather than before it.
 #[test]
 fn an_unconfirmed_echo_retires_when_its_row_lands_inside_a_merged_item() {
     let mut a = app();
@@ -582,17 +569,9 @@ fn a_queued_echo_waits_below_the_working_until_the_daemon_takes_it() {
     );
 }
 
-/// **The prompt is on the screen before the reply to it — requirement R2.**
-///
-/// Two channels with different latencies. Assistant text arrives as `Delta`,
-/// carrying its text, and renders as it streams; a user row arrives as
-/// `TranscriptAppended` — an id and a kind, **no text** — and only later as
-/// `TranscriptContent`. So the reply is always faster to display than the prompt
-/// that caused it: the operator watched their own sentence sit under the answer
-/// to it, tagged `queued`, and then jump above it when the body finally landed.
-///
-/// The row is drawn from the echo the head already holds, in the row's own place,
-/// from the announcement.
+/// The prompt is on the screen before the reply to it. Assistant text arrives as `Delta` and
+/// streams; a user row arrives as an id and a kind with no text. So the row is drawn from the echo
+/// the head holds, in the row's own place, the moment it is announced.
 #[test]
 fn a_queued_prompt_is_drawn_in_the_transcript_the_moment_its_row_is_announced() {
     let mut a = app();
@@ -664,15 +643,9 @@ fn a_queued_prompt_is_drawn_in_the_transcript_the_moment_its_row_is_announced() 
     );
 }
 
-/// **Not every announced `User` row is this head's prompt — the hazard.**
-///
-/// A harness steering notice and a §5.7 salvage notice are the same item shape as
-/// a prompt (`harnessd::harness` says so in as many words), and so is another
-/// attached head's prompt. The announcement carries nothing that tells them apart,
-/// so the binding is a guess and **the retire waits for content matched by text**:
-/// a head that retired on the announcement would lose the echo of a prompt still
-/// sitting in the hub's queue, and the operator would watch their own sentence
-/// vanish off the screen.
+/// Not every announced `User` row is this head's prompt: a steering notice, a salvage notice and
+/// another head's prompt are the same shape, and the announcement says nothing that tells them
+/// apart. So the binding is a guess and the retire waits for content matched by text.
 #[test]
 fn a_notice_announced_while_a_prompt_is_queued_does_not_retire_its_echo() {
     let mut a = app();
@@ -821,14 +794,9 @@ fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
         screen.contains("still queued"),
         "the echo is suppressed by a binding nothing can see: {screen}"
     );
-    // **And it says `unconfirmed`, not `queued`** — R16's third mark.
-    //
-    // This test WAS the case the mark is for, and it asserted the wrong word until
-    // the mark existed: a snapshot arrived, it did not carry this echo's row, and the
-    // head went on saying *queued* — a claim about the daemon's queue that it can no
-    // longer support, because it cannot tell *still coming* from *replaced by a fork*.
-    // The operator, from leticl's screen and true here: an echo the head cannot resolve
-    // must stop saying `queued`, *"which is a claim the head can actually support"*.
+    // And it says `unconfirmed`, not `queued`: after a snapshot that does not carry the echo's row
+    // the head cannot tell *still coming* from *replaced by a fork*, so it stops claiming the
+    // daemon owes it.
     assert!(
         screen.contains("queued · still queued"),
         "a snapshot that does not carry the row must stop claiming the daemon owes it: \
@@ -856,16 +824,9 @@ fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
     );
 }
 
-/// **R37: `Conversation` is the conversation and nothing the head did to produce it.**
-///
-/// The operator: *"and i want a special mode that hides tool calls and thinking
-/// completely."* Measured before it was built: the ladder's bottom rung was `Terse`,
-/// *"assistant text and tool outcomes only"* — so **terse still drew every tool row**, and
-/// there was no rung that gave the conversation alone.
-///
-/// Asserted as a difference against `Terse` rather than as a list, because the list is
-/// what a later edit forgets: the same fixture is drawn twice, once per rung, and what is
-/// gone is exactly the working.
+/// `Conversation` is the conversation and nothing the head did to produce it.
+/// Asserted as a difference against `Terse` rather than as a list, because a list is what a later
+/// edit forgets: the same fixture is drawn twice and what is gone is exactly the working.
 #[test]
 fn the_conversation_rung_shows_the_conversation_and_nothing_else() {
     let mut a = app();
@@ -1430,19 +1391,10 @@ fn the_notes_chord_is_advertised_where_it_can_be_seen_and_reaches_nothing_else()
     );
 }
 
-/// **The operator's own sentence, as the head draws it.**
-///
-/// The other half of `sudo_ask_live.rs`'s assertion, and it is here because this is where
-/// the head is. That file measures the daemon — that `operator_run_unreadable` is
-/// **published** on the session log for a run it may not look at — and cannot measure what
-/// a screen does with it: `letibot-harnessd` has no head in it. So the one thing the
-/// operator's report turns on is pinned on this side: the warning is not one of the codes
-/// that is counted on the edge and never drawn, and it is not filtered as a duplicate of
-/// something the turn already says.
-///
-/// The text is the real sentence, at its real length, because length is half of what could
-/// go wrong: a note longer than the screen folds to its head, and a fold that lost the code
-/// would leave the person with a paragraph and no name for it.
+/// The person's own sentence, as the head draws it: the warning is not one of the codes counted on
+/// the edge and never drawn, and not filtered as a duplicate of something the turn says.
+/// The text is the real sentence at its real length, since a long note folds to its head and a fold
+/// that lost the code would leave a paragraph with no name for it.
 #[test]
 fn the_sentence_for_a_run_the_daemon_may_not_look_at_is_drawn() {
     let sentence = "`sudo apt install mc` has been quiet for a beat and this daemon cannot \
@@ -1702,14 +1654,9 @@ fn a_recorded_session_renders_without_a_daemon() {
     assert!(joined.contains("cached"), "the status of the turn is shown");
 }
 
-/// **The answer to the re-ask is APPLIED.** A `Sessions` frame replaces `self.sessions`, and
-/// `self.sessions` is what the subagent rows and the composer's count are folded from — so a
-/// list that lands without a fold moves the picker and leaves the pane and the count standing
-/// on the list that was just thrown away.
-///
-/// That is the defect the arm had, and it is what made a re-ask useless: the answer to *what
-/// are my children now* arrived and was not read. A re-ask whose reply is dropped is worse
-/// than no re-ask, because it looks like one.
+/// The answer to the re-ask is applied: a `Sessions` frame replaces the list the subagent rows and
+/// the composer's count are folded from, so a list that lands unfoleded moves the picker and leaves
+/// the pane standing on what was thrown away. A reply dropped is worse than no re-ask.
 #[test]
 fn a_sessions_reply_re_folds_the_rows_and_the_count() {
     let mut a = app();
@@ -1793,15 +1740,9 @@ fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
     );
 }
 
-/// **Tab unfolds — and enter does not.** The operator, after using the pane: *"i also
-/// feel like I want Tab to expand the todo row"*. It completes a `/command`
-/// while one is being typed, and the composer is empty here — the same
-/// condition enter already carried.
-///
-/// **`like enter` is no longer true of it**: Enter reads the row whole in an overlay
-/// (`key_todos_pane`), which is the operator's later report — *"in todo list i cant expand your
-/// todo items - only truncated titles available"* — and the unfold stayed on Tab, which already
-/// carried it.
+/// Tab unfolds and enter does not: it completes a `/command` while one is typed and, with the
+/// composer empty, unfolds the row under the cursor. Enter reads the row whole in an overlay, which
+/// is where the read went.
 #[test]
 fn tab_unfolds_an_item_and_still_completes_a_command() {
     let dir = std::env::temp_dir().join(format!(
@@ -1855,17 +1796,9 @@ fn tab_unfolds_an_item_and_still_completes_a_command() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **An item's detail is under it in the file and was thrown away.**
-///
-/// `- [x] **T2** vendor yason …, pinned in` continues on the next line with
-/// the commits it pins; the pane showed the first line and stopped, so the
-/// item trailed off mid-sentence. The operator: *"if a todo has some
-/// associated text? should i be able to expand it somehow?"*
-///
-/// **Tab unfolds it, and Enter reads it whole** — the two keys came apart when Enter took the
-/// read (`key_todos_pane`), and this test follows the unfold through Tab because that is where the
-/// unfold lives now. The overlay that Enter opens shows the same body lines, whole, and is tested
-/// in `tests/todos.rs`.
+/// An item's detail is under it in the file and was thrown away: the pane showed the first line and
+/// the item trailed off mid-sentence. Tab unfolds it and Enter reads it whole, the same body lines
+/// in an overlay.
 #[test]
 fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
     // Written with explicit newlines rather than `\`-continuations: that
@@ -2005,15 +1938,9 @@ fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A `!` line is the operator's own shell command, and nothing else stops being
-/// what it was.**
-///
-/// The operator's ask: *"when prompt starts with ! it is going to be a shell command
-/// from me"*. Pinned with the contrast cases beside it, because a recogniser is only
-/// honest next to what it must NOT take: an ordinary line is still a prompt, and a
-/// line with whitespace before the bang is prose too — the same rule `/`-verbs
-/// follow, so the two sigils behave the same way and `  ! ls .` cannot become a
-/// command by an indentation nobody can see.
+/// A `!` line is the person's own shell command and nothing else stops being what it was. Pinned
+/// with the contrast cases, because a recogniser is only honest next to what it must not take: an
+/// ordinary line is a prompt, and whitespace before the bang keeps the line prose.
 #[test]
 fn a_bang_line_is_a_shell_command_and_an_ordinary_line_is_still_a_prompt() {
     let mut a = app();
@@ -2121,15 +2048,9 @@ fn a_bang_rows_output_is_collapsed_with_an_honest_count_and_opens_one_row() {
     assert!(a.tools.is_open(), "/t no longer unfolds tool output");
 }
 
-/// **§3.1, on this path: a control byte in the command's output never reaches the
-/// frame as a control byte.**
-///
-/// The operator's own `ls` is still a program's bytes — `grep --color` emits SGR,
-/// and a payload carrying `ESC[?1002h` turns the operator's mouse reporting off,
-/// which is the exact report this sanitisation exists for. Sanitised at render, in
-/// the store's own words *the record is what the tool wrote and must stay that* —
-/// so the assertion is on the FRAME's bytes, colourless, where the head emits no
-/// escapes of its own and any `ESC` is somebody else's.
+/// A control byte in the command's output never reaches the frame: a payload carrying an escape can
+/// turn the person's mouse reporting off, and the record is what the tool wrote. Sanitised at
+/// render, so the assertion is on the frame's own bytes.
 #[test]
 fn no_control_byte_from_a_bang_rows_output_reaches_the_frame() {
     let mut a = app();
