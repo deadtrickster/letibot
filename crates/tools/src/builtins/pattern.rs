@@ -1,18 +1,9 @@
-//! The two pattern languages the search tools use, and the relaxation clause 1
-//! demands.
+//! The two pattern languages the search tools use, and the relaxation a miss needs.
 //!
-//! # Why this stopped being hand-written
-//!
-//! It used to be, and the argument for that was written down here: what is needed
-//! is a matcher over single lines with a **known, statable** subset, because
-//! clause 1's third acceptance case — *a too-strict anchor is auto-relaxed to the
-//! bare identifier and the relaxation is reported* — is a property of the
-//! pattern's syntax tree, not of matching. A full engine would give more syntax
-//! and no more of the thing that matters.
-//!
-//! **The reasoning was right and the conclusion was wrong, and a measurement is
-//! what separated them.** Searching `crates/` (137 files, 1.9 MB, 48,667 lines)
-//! with `cargo run --release -p letibot-tools --example greptime`:
+//! A matcher over single lines with a known, statable subset is what the relaxation clause
+//! wants: a too-strict anchor is relaxed to the bare identifier and the relaxation is reported,
+//! which is a property of the pattern's syntax tree rather than of matching. The engine behind
+//! it is `regex-syntax` for exactly that reason:
 //!
 //! ```text
 //! walk     0.4 ms
@@ -20,24 +11,14 @@
 //! match   23.7 ms   <- 95% of the total
 //! ```
 //!
-//! ripgrep answers the same question in 9-10 ms. So the hand-rolled matcher was
-//! not paying for the syntax tree it gave us — `regex_syntax` gives the *same*
-//! syntax tree, and a better one, as a by-product of parsing. What the hand-rolled
-//! engine was actually costing was a backtracking `Vec<char>` scan per line, which
-//! is where 95% of a search went.
+//! A construct this engine cannot compile is REPORTED, never silently approximated: the old
+//! engine treated an unsupported construct as a literal and put a note beside the result, which
+//! is still a search for something other than what was asked. [`Pattern::compile`] returns the
+//! engine's own error with the position, and `grep` hands that to the model instead of a result.
 //!
-//! The part of the old argument that survives is the part that mattered: **a
-//! construct this engine cannot compile is REPORTED, never silently
-//! approximated.** What changed is the remedy. The old engine treated an
-//! unsupported construct as a literal and put a note beside the result — which is
-//! still a search for something other than what was asked, merely an annotated
-//! one. [`Pattern::compile`] now returns the engine's own error, with the position
-//! in the pattern, and `grep` hands that to the model instead of a result.
-//!
-//! Two limits are deliberate and stated rather than left at the crate's defaults:
-//! [`SIZE_LIMIT`] and [`DFA_SIZE_LIMIT`]. A pattern arrives from a model, and a
-//! model can write `(a|b|c|…){20}` without meaning to; the refusal is reported the
-//! same way a syntax error is.
+//! Two limits are deliberate and stated rather than left at the crate's defaults: [`SIZE_LIMIT`]
+//! and [`DFA_SIZE_LIMIT`]. A pattern arrives from a model, and a model can write `(a|b|c|...){20}`
+//! without meaning to; the refusal is reported the same way a syntax error is.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -51,14 +32,14 @@ use regex::{Regex, RegexBuilder};
 /// the trade is the other way round from a general-purpose library's.
 pub const SIZE_LIMIT: usize = 1 << 20;
 
-/// The lazy-DFA cache ceiling. Exceeding it is not an error at compile time — the
-/// engine falls back to a slower strategy — so this bounds memory, not syntax.
+/// The lazy-DFA cache ceiling. Exceeding it is not a compile error, only a fall back to a
+/// slower strategy, so this bounds memory rather than syntax.
 pub const DFA_SIZE_LIMIT: usize = 1 << 21;
 
 /// A compiled search pattern.
 ///
-/// Matching is **per line**, which is what `grep` reports, and the two entry
-/// points differ only in how much text they are handed at once:
+/// Matching is per line, which is what `grep` reports, and the two entry points differ only in
+/// how much text they are handed at once:
 ///
 /// - [`Pattern::is_match`] takes one line.
 /// - [`Pattern::line_hits`] takes a whole file and returns the 1-based numbers of
@@ -131,21 +112,14 @@ impl PatternError {
 /// search over a small tree, so it is worth not repeating; the cache is process-
 /// wide because a `Pattern` is immutable and `Regex` is `Send + Sync`.
 ///
-/// Bounded, and bounded by clearing rather than by an LRU: the entries are small,
-/// the working set of a turn is a handful, and a wrong eviction costs a
-/// recompile, not a wrong answer.
-/// The key is everything that changes the compiled program: the source and the
-/// case flag. Nothing else does — `multi_line` is set the same way for every
-/// entry, and the two limits are constants.
+/// Bounded, and bounded by clearing rather than by an LRU: the entries are small, the working
+/// set of a turn is a handful, and a wrong eviction costs a recompile, not a wrong answer. The
+/// key is everything that changes the compiled program, which is the source and the case flag.
 ///
-/// **Shared by every test in the binary, and safe for it** (R67 item 23 asked). An entry is
-/// a pure function of its key, so a test that hits an entry another test compiled gets the
-/// program it would have compiled itself: no test can observe another's entries through what
-/// a `Pattern` matches. The one observable is identity — `Arc::ptr_eq`, which only
-/// `compiling_the_same_pattern_twice_reuses_the_program` reads — and the one thing that can
-/// break it is a [`CACHE_CAP`] clear landing between that test's two compiles, which needs
-/// 256 distinct keys in one process. MEASURED 2026-10-11: the whole `letibot-tools` lib test
-/// binary (937 tests) peaks at 44; integration test files are processes of their own.
+/// Shared by every test in the binary, and safe for it: an entry is a pure function of its key,
+/// so a test that hits an entry another test compiled gets the program it would have compiled
+/// itself. The one observable is identity ([`CACHE_CAP`] clears aside), which needs 256 distinct
+/// keys in one process.
 type CacheKey = (String, bool);
 
 static CACHE: LazyLock<Mutex<HashMap<CacheKey, Arc<CompiledPair>>>> =
@@ -162,10 +136,10 @@ struct CompiledPair {
 impl Pattern {
     /// Compile `source`, or say why it could not be.
     ///
-    /// A pattern that does not compile is an **error the model is shown**, not a
-    /// pattern quietly replaced by a literal one. Searching for something other
-    /// than what was asked is the class of bug this crate exists to remove, and an
-    /// approximation with a note attached is still that bug with a note attached.
+    /// A pattern that does not compile is an error the model is shown, not a pattern quietly
+    /// replaced by a literal one. Searching for something other than what was asked is the class
+    /// of bug this crate exists to remove, and an approximation with a note attached is still
+    /// that bug with a note attached.
     pub fn compile(source: &str, case_insensitive: bool) -> Result<Pattern, PatternError> {
         let key: CacheKey = (source.to_string(), case_insensitive);
         if let Some(hit) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
@@ -315,34 +289,23 @@ fn classify(source: &str, message: &str) -> PatternError {
     }
 }
 
-/// Clause 1's third case: **the bare identifier inside a too-strict pattern.**
+/// The bare identifier inside a too-strict pattern.
 ///
-/// `^\s*fn parse_args\(` relaxes to `parse_args`; `\bTokenLedger\b` to
-/// `TokenLedger`. The rule is the longest run of identifier characters, because
-/// that is what the model was actually looking for and everything else it wrote
-/// was a guess about the surrounding syntax — which is precisely the guess that
-/// produced the empty result.
+/// `^\s*fn parse_args\(` relaxes to `parse_args`; `\bTokenLedger\b` to `TokenLedger`. The rule
+/// is the longest run of identifier characters, because that is what the model was looking for
+/// and everything else it wrote was a guess about the surrounding syntax, which is the guess
+/// that produced the empty result.
 ///
-/// # Why this reads the AST and not the characters
+/// It reads the AST rather than the characters, because every character-level rule is a
+/// question about the pattern's syntax tree being answered by looking at its bytes: `\bfoo`
+/// would yield `bfoo`, `\d` would look like the identifier `d`, and `a{2,3}` would yield `a23`.
 ///
-/// It used to scan the source string, and that made it a second, worse parser:
-/// `\bfoo` had to be special-cased so it did not yield `bfoo`, `\d` looked like
-/// the identifier `d`, and `a{2,3}` yielded `a23`. Every one of those is a
-/// question about the pattern's SYNTAX TREE being answered by looking at its
-/// bytes. `regex_syntax::ast` already has the tree, so the rule can be stated
-/// once and correctly: the longest run of adjacent literal identifier characters
-/// in a concatenation, over the whole tree.
+/// Two things are deliberately not descended into: an alternation's branches, where a literal
+/// is one possibility out of several, and a character class, which is the same thing spelled
+/// compactly. Promoting either would search for a term the model never committed to.
 ///
-/// Two things are deliberately not descended into:
-///
-/// - **Alternations.** A literal inside one branch is one possibility out of
-///   several; promoting it to "what the model was looking for" would search for a
-///   term the model never committed to.
-/// - **Character classes.** `[abc]` is three alternatives spelled compactly, for
-///   the same reason.
-///
-/// `None` when the pattern is already bare, or does not parse, so the caller
-/// cannot report a relaxation that did not happen.
+/// `None` when the pattern is already bare, or does not parse, so the caller cannot report a
+/// relaxation that did not happen.
 pub fn bare_identifier(source: &str) -> Option<String> {
     let ast = regex_syntax::ast::parse::Parser::new().parse(source).ok()?;
     let mut best = String::new();

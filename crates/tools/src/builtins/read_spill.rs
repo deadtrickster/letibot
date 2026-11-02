@@ -1,11 +1,10 @@
-//! `read_spill` — the tool that makes clause 5's notice actionable.
+//! `read_spill`: the tool that makes a spilled result's notice actionable.
 //!
-//! §8.3: *"the locator is a content hash into the `tool_spill` table, and there is
-//! a `read_spill(hash, range)` tool. So the 'hint' is actionable rather than
-//! advisory, which is clause 1 applied to spilling itself."*
+//! The locator is a content hash into the spill table, so the hint is actionable rather than
+//! advisory: a model that was told its output spilled can read any range of it back.
 //!
-//! Its own miss follows the same rule as every other: an unknown hash comes back
-//! with the hashes this session actually has, and their sizes.
+//! Its own miss follows the same rule as every other: an unknown hash comes back with the hashes
+//! this session actually has, and their sizes.
 
 use serde_json::Value;
 
@@ -135,10 +134,9 @@ mod tests {
         assert_eq!(part.payload.len(), 200);
         assert!(part.payload.contains("filler line 0"), "{}", part.payload);
 
-        // Asking for all of it under the same budget spills again — and to the
-        // *same* locator, because the locator is a content hash. That is not a
-        // loop: the notice tells the model to take a range, and the hash it
-        // already has stays valid.
+        // Asking for all of it under the same budget spills again, to the same locator, because
+        // the locator is a content hash. That is not a loop: the notice says to take a range, and
+        // the hash already in hand stays valid.
         let whole = h.call("read_spill", &format!(r#"{{"hash":"{}"}}"#, spill.hash));
         let again = whole.spill.expect("the full output exceeds the cap again");
         assert_eq!(again.hash, spill.hash);

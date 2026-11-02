@@ -1,20 +1,13 @@
-//! `write` — put a file's whole contents there, atomically.
+//! `write`: put a file's whole contents there, atomically.
 //!
-//! The narrower of the two write tools, and the more dangerous, because its miss
-//! is not "I could not find the text" but "I replaced everything". So the two
-//! rules it keeps are about the cases where that is not what was meant:
+//! The narrower of the two write tools, and the more dangerous, because its miss is not "I
+//! could not find the text" but "I replaced everything". Creating a file needs no prior read,
+//! because there is nothing to have read; overwriting one applies the same staleness check
+//! `edit` keeps ([`crate::files`]), because a write over somebody else's change would discard
+//! it unseen.
 //!
-//! - **creating** a file needs no prior read, because there is nothing to have
-//!   read;
-//! - **overwriting** one does, and it is the same read-before-write and staleness
-//!   check `edit` keeps ([`crate::files`]). grok-build's `search_replace` will
-//!   overwrite a whole file from an empty `old_string` by default; that is the
-//!   effect this tool exists to make explicit rather than reachable by accident.
-//!
-//! What it does not do, and both prior harnesses do: run a formatter over the
-//! result and report the formatted text as what was written. That turns one tool
-//! call into two writes and makes the returned content something the model did
-//! not author. If a formatter should run, it is a tool call.
+//! It does not run a formatter over the result: that turns one tool call into two writes and
+//! makes the returned content something the model did not author.
 
 use serde_json::Value;
 
@@ -72,12 +65,9 @@ impl Tool for Write {
             );
         };
 
-        // **The one directory this door must not open.** `.letibot/notes/` belongs to
-        // the `notes` tool, which is the only place a note is scored against the
-        // corpus before it lands; a note written here would be injected exactly as
-        // though it had been. See `notes::refuse_a_path_into_the_notes_dir`, which
-        // carries the argument for the rule being here rather than on §11.4's
-        // never-write list.
+        // The one directory this door must not open: `.letibot/notes/` belongs to the `notes`
+        // tool, which scores a note against the corpus before it lands, and a note written
+        // here would be injected as though it had been.
         if let Some(refusal) = notes::refuse_a_path_into_the_notes_dir(ctx.backend, path) {
             return refusal;
         }
@@ -123,8 +113,8 @@ fn create(ctx: &mut InvokeCtx<'_>, path: &str, content: &str) -> Invocation {
         return write_failed(ctx, path, e);
     }
     ctx.files.mark_whole(path, content.as_bytes());
-    // **Who wrote these bytes, at the write** — D17's third arm. A `plugin.toml` or a module this
-    // call lands is provenance about a layer, and the daemon's sink is what records it.
+    // Who wrote these bytes, at the write: a `plugin.toml` or a module this call lands is
+    // provenance about a layer, and the daemon's sink is what records it.
     ctx.wrote(path, content.as_bytes());
 
     let lines = if content.is_empty() {
@@ -179,24 +169,9 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
         );
     }
 
-    // **The read-before-overwrite refusal is gone (R14), and the arm below is not it.**
-    //
-    // It refused to overwrite a file this session had not read, on the premise that
-    // *"a write lands on content the model is remembering rather than reading, and
-    // everything it does not remember is silently deleted"*. The premise does not hold
-    // for a path this session never saw: there is nothing to silently delete that
-    // anybody believed was there. Measured — the refusal fired on
-    // `/tmp/letibot-scratch-NNNN/msg-r10.txt`, **a file another session had created
-    // seconds earlier in a shared scratch directory**, which is exactly the shape the
-    // fleet is acquiring more of. "Has this session read it" is the wrong question
-    // there, and the operator ruled the guard abandoned.
-    //
-    // **What stays is a different question**, and it was ruled separately rather than
-    // deleted in the same diff: *did the file move between my read and my write?* That
-    // one is not about what the model remembers — it is a fact about the file, and a
-    // shared directory makes it **more** relevant rather than less, because a second
-    // writer is the thing that changes a file under a read. A write over somebody
-    // else's change would discard it with neither of them seeing it.
+    // A file this session never read has nothing to silently delete, so the refusal is about the
+    // FILE moving, not about what the model remembers: a second writer is what changes a file
+    // under a read, and a shared directory makes that more likely, not less.
     let seen = ctx.files.whole_of(path);
     let now = crate::spill::content_hash(bytes);
     let refusal = match &seen {
@@ -224,8 +199,8 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
     }
 
     if file.lf == content.replace("\r\n", "\n") {
-        // Not an error and not a write. Touching the file would move its mtime and
-        // wake every watcher on the box for a change that is not one.
+        // Not an error and not a write: touching the file would move its mtime and wake every
+        // watcher on the box for a change that is not one.
         return Invocation::ok(format!(
             "`{path}` already has exactly that content; the file was not touched.\n"
         ))
@@ -296,9 +271,8 @@ mod tests {
         assert_eq!(h.read_file("new.txt"), "hello\n");
         let e = r.edit.as_ref().unwrap();
         assert!(e.created && e.before.is_empty());
-        // The temp file is created 0600 so nothing can read a half-written file;
-        // what lands must not keep that, or every file the agent creates is
-        // unreadable to everything but the agent.
+        // The temp file is created 0600 so nothing can read a half-written file; what lands
+        // must not keep that, or every file the agent creates is unreadable to everything else.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -326,11 +300,7 @@ mod tests {
         );
     }
 
-    /// **A write reports the bytes it landed, where they landed** — D17's third arm.
-    ///
-    /// The tool's half of provenance is exactly this: *this call wrote these bytes to this
-    /// path*, once the backend accepted it. Whether the path is about a layer, and where the
-    /// record goes, is the sink's (`harnessd::plugins::Provenance` → `letibot_plugins::Trust`).
+    /// A write reports the bytes it landed, where they landed.
     ///
     /// The path is ABSOLUTE, resolved against the session's workspace: a record keyed by a
     /// relative path would be a different key in every process that read it.
@@ -386,15 +356,11 @@ mod tests {
         );
     }
 
-    /// **R14: an unread file is written, and the write is disclosed.**
+    /// An unread file is written, and the write is disclosed.
     ///
-    /// The refusal this replaces asked *has this session read it*, which is a question
-    /// about the session and not about the file — and it is the wrong question for a
-    /// shared surface. Measured: it fired on a file another session had created seconds
-    /// earlier in a scratch directory this one had never opened.
-    ///
-    /// What the row and the card must still show is that content was replaced, and that
-    /// is asserted with the diff: the guard goes, the disclosure stays.
+    /// Has this session read it is a question about the session, not about the file, and a
+    /// shared surface makes it the wrong one. The row must still show that content was
+    /// replaced: the guard goes, the disclosure stays.
     #[test]
     fn overwriting_a_file_this_session_has_not_read_lands_and_the_change_is_disclosed() {
         let mut h = writable_harness();
@@ -405,9 +371,8 @@ mod tests {
             r.render()
         );
         assert_eq!(h.read_file("README.md"), "mine now\n");
-        // **The disclosure survives the guard.** The operator still sees what was
-        // replaced — the diff pair, with the old contents on the before side — which is
-        // the half of this that was never about refusing anything.
+        // The disclosure survives the guard: the operator still sees what was replaced, with
+        // the old contents on the before side.
         let e = r
             .edit
             .as_ref()
