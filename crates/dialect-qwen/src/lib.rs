@@ -1,51 +1,11 @@
 //! Qwen3.8 (Flash-Next and 27B): the spec, a renderer, and a parser.
 //!
-//! The renderer is hand-written, which the template-driven design says we should not do.
-//! It exists because that renderer is not here yet, and this model's template writes a tool call as
-//! `<function=name>` / `<parameter=name>` text under `<tool_call>` rather than as JSON:
-//!
-//! ```text
-//! <tool_call>
-//! <function=read>
-//! <parameter=path>
-//! src/main.rs
-//! </parameter>
-//! </function>
-//! </tool_call>
-//! ```
-//!
-//! so the ChatML fixture cannot drive it: the model would never parse back what it emits. Keep the
-//! [`QwenParser`] when the template-driven renderer lands; a template says how a turn is written and
-//! nothing about how to read one back.
-//!
-//! One dialect covers two models: Qwen3.8-Flash-Next and Qwen3.8-27B ship a byte-identical
-//! `tokenizer.chat_template`, checked by extracting from both GGUFs, and [`template_sha`] is what
-//! proves it.
-//!
-//! Four things about this template that are easy to get wrong:
-//!
-//! 1. A mid-history system message is a hard error: the template merges only the leading run of
-//!    system messages and raises on any later one. So [`SystemUpdateMode::Envelope`] is the only
-//!    thing that renders, and [`system_update_item`] builds that item so the daemon need not know.
-//! 2. Reasoning is replayed by default: `preserve_thinking` is undefined unless a caller sets it,
-//!    so every assistant turn re-emits its own `<think>` block and nothing has to be reconstructed.
-//! 3. The reasoning-effort instruction is prompt bytes near the head, so switching effort
-//!    mid-session rewrites the head and re-prefills. [`ReasoningEffort`] sits on the renderer
-//!    because it is part of the stable prefix, not a sampling knob.
-//! 4. The template merges consecutive tool results into one user turn and we emit one turn each.
-//!    That divergence is declared rather than hidden; see [`QwenRenderer`].
-//!
-//! `<function=` and `<parameter=` are ordinary text and several tokens each, so declaring them as
-//! control tokens would fail to resolve at startup. That failure is what the control table is for:
-//!
-//! ```text
-//! 248044 '<|endoftext|>'     CONTROL        248058 '<tool_call>'      USER_DEFINED
-//! 248045 '<|im_start|>'      CONTROL        248059 '</tool_call>'     USER_DEFINED
-//! 248046 '<|im_end|>'        CONTROL        248066 '<tool_response>'  USER_DEFINED
-//! 248053 '<|vision_start|>'  CONTROL        248067 '</tool_response>' USER_DEFINED
-//! 248054 '<|vision_end|>'    CONTROL        248068 '<think>'          USER_DEFINED
-//! 248056 '<|image_pad|>'     CONTROL        248069 '</think>'         USER_DEFINED
-//! ```
+//! The two models ship a byte-identical `tokenizer.chat_template`, so they are one dialect and
+//! [`template_sha`] proves it. The renderer is hand-written because the template-driven one is not
+//! wired for this model yet; the parser outlives it, since a template says how a turn is written
+//! and nothing about reading one back. A mid-history system message is a hard error here, so
+//! `SystemUpdateMode::Envelope` is the only thing that renders, reasoning is replayed by default,
+//! and a tool call is XML rather than JSON, which no ChatML fixture can drive.
 
 pub mod cli;
 use std::sync::OnceLock;
@@ -68,14 +28,26 @@ pub use render::{
 };
 
 /// The shipped jinja this dialect renders, verbatim, extracted with
-/// `python3 tests/fidelity/extract_template.py <model-00001-of-00006.gguf>`.
+/// `python3 tests/fidelity/extract_template.py <model-00001-of-00006.gguf>`. It writes a tool call
+/// as this and not as JSON:
+/// ```text
+/// <tool_call>
+/// <function=read>
+/// <parameter=path>
+/// src/main.rs
+/// </parameter>
+/// </function>
+/// </tool_call>
+/// ```
 pub const TEMPLATE: &str = include_str!("../template/qwen3.8-flash-next.jinja");
 
-/// The dialect's name in the gate and in the store, not a model name: two Qwen models share it.
+/// The name this dialect is known by, in the gate and in the store. It is the dialect name,
+/// not a model name: `qwen-3.8-flash-next` and `qwen3.8-27b` are two models that share it.
 pub const NAME: &str = "qwen3.8";
 
-/// The literal spelling of every Qwen token this dialect emits, each a single vocab entry, which is
-/// why they are `RenderSpan::Control` and never text.
+/// The literal spelling of every Qwen token this dialect emits. Each is a single vocab entry,
+/// which is why it is a `RenderSpan::Control` and never text. `<function=` and `<parameter=`
+/// are ordinary text here, several tokens each, so declaring one would fail to resolve at startup.
 pub mod tokens {
     use letibot_dialect::{ControlRole, ControlToken};
 
@@ -83,8 +55,9 @@ pub mod tokens {
         ControlToken::borrowed(role, literal)
     }
 
-    /// Qwen writes the role as text after this token, so there is no per-role turn-start token to
-    /// declare. `Other` says that honestly rather than picking one `TurnStart` role and being wrong.
+    /// Qwen writes the role as text after this token (`<|im_start|>user\n`), so there is no
+    /// per-role turn-start token to declare; `Other` says that honestly instead of picking one
+    /// of the `TurnStart*` roles and being wrong for the other three.
     pub const IM_START: ControlToken = t(ControlRole::Other, "<|im_start|>");
     pub const IM_END: ControlToken = t(ControlRole::TurnEnd, "<|im_end|>");
     pub const ENDOFTEXT: ControlToken = t(ControlRole::EndOfTurn, "<|endoftext|>");
@@ -100,7 +73,16 @@ pub mod tokens {
     pub const VISION_END: ControlToken = t(ControlRole::ImageClose, "<|vision_end|>");
 }
 
-/// The control table, in the order the resolver reports failures in.
+/// The control table, in the order the resolver reports failures in. Read out of the GGUF
+/// with `tests/fidelity/extract_template.py --tokens <gguf>`, not guessed:
+/// ```text
+/// 248044 '<|endoftext|>'     CONTROL        248058 '<tool_call>'      USER_DEFINED
+/// 248045 '<|im_start|>'      CONTROL        248059 '</tool_call>'     USER_DEFINED
+/// 248046 '<|im_end|>'        CONTROL        248066 '<tool_response>'  USER_DEFINED
+/// 248053 '<|vision_start|>'  CONTROL        248067 '</tool_response>' USER_DEFINED
+/// 248054 '<|vision_end|>'    CONTROL        248068 '<think>'          USER_DEFINED
+/// 248056 '<|image_pad|>'     CONTROL        248069 '</think>'         USER_DEFINED
+/// ```
 pub const QWEN_TOKENS: &[ControlToken] = &[
     tokens::IM_START,
     tokens::IM_END,
@@ -116,15 +98,16 @@ pub const QWEN_TOKENS: &[ControlToken] = &[
     tokens::VISION_END,
 ];
 
-/// What ends a turn: `<|im_end|>` is what the model emits and `<|endoftext|>` the vocab's EOG. Both
-/// are EOG, so the engine enforces neither itself and keeps the terminal frame's cache numbers.
+/// What ends a turn: `<|im_end|>` is the one the model emits, `<|endoftext|>` the vocab's EOG,
+/// declared so the engine knows the server halts on it. Both are EOG here, so the engine
+/// enforces neither itself - a client-side EOG stop loses the terminal frame and its cache numbers.
 pub const QWEN_STOP_TOKENS: &[StopToken] = &[
     StopToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
     StopToken::borrowed(ControlRole::EndOfTurn, "<|endoftext|>"),
 ];
 
-/// The declared mitigations, deliberately loose: a guard that fires on ordinary prose measures the
-/// guard, and long thinking is fine. Silent non-termination is not.
+/// The guards for this model, deliberately loose: a guard that fires on ordinary prose
+/// measures the guard, and long thinking is fine - silent non-termination is not.
 pub const QWEN_GUARDS: &[Guard] = &[
     Guard::RepetitionRun { run: 96 },
     Guard::RepetitionNgram {
@@ -133,7 +116,7 @@ pub const QWEN_GUARDS: &[Guard] = &[
     },
 ];
 
-/// SHA-256 of [`TEMPLATE`]. Computed once, and it is the dialect's identity in the store.
+/// SHA-256 of [`TEMPLATE`], computed once: it is the dialect's identity in the store.
 pub fn template_sha() -> [u8; 32] {
     static SHA: OnceLock<[u8; 32]> = OnceLock::new();
     *SHA.get_or_init(|| {
@@ -164,15 +147,15 @@ pub fn qwen_spec() -> DialectSpec {
     }
 }
 
-/// How much the template tells the model to think. Prompt bytes near the head, so this belongs to
-/// the session; `high` is folded into `xhigh` and not offered, since two spellings of one value
-/// invite a switch that pays a re-prefill.
+/// How much the template tells the model to think: prompt bytes near the head of the prefix, so a
+/// property of the session, not of a request. `high` is an alias the template folds into `xhigh`
+/// and is not offered, since two spellings of one value invite a re-prefill for nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningEffort {
     /// The template's own default when `reasoning_effort` is unset.
     #[default]
     Xhigh,
-    /// The one value that emits no instruction sentence at all.
+    /// The one value that emits **no** instruction sentence at all.
     Medium,
     Low,
 }
@@ -215,9 +198,9 @@ impl ReasoningEffort {
     }
 }
 
-/// The system update in the only form this template can render: a user item carrying a fixed
-/// envelope, since a `System { origin: Update }` item raises. Still an append and still
-/// prefix-stable, at the cost of the model reading it as user text.
+/// The system update, in the only form this template can render: a `System { origin: Update }`
+/// item raises on Qwen, so a mid-session change appends a user item carrying this envelope - still
+/// prefix-stable - and the sequence number tells a second update from a repeat of the first.
 pub fn system_update_item(seq: u64, text: &str) -> TranscriptItem {
     TranscriptItem::User {
         speaker: Default::default(),
@@ -227,7 +210,8 @@ pub fn system_update_item(seq: u64, text: &str) -> TranscriptItem {
     }
 }
 
-/// Whether an item is a system update in the above form: a system change must be visible as such.
+/// Whether an item is a system update in the above form. The daemon uses it to keep a system
+/// change visible as such rather than indistinguishable from something a user typed.
 pub fn is_system_update(item: &TranscriptItem) -> bool {
     match item {
         TranscriptItem::System { origin, .. } => *origin == SystemOrigin::Update,
@@ -245,7 +229,8 @@ mod tests {
 
     #[test]
     fn the_template_is_the_one_both_qwen_targets_ship() {
-        // If a model update changes the template this fails here rather than in a prompt.
+        // Measured by extracting from both GGUFs. If a model update changes the
+        // template this fails here rather than in a prompt.
         assert_eq!(
             sha_hex(&template_sha()),
             "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
@@ -255,8 +240,8 @@ mod tests {
 
     #[test]
     fn a_mid_history_system_change_is_not_a_system_message_here() {
-        // The template raises on one. Flipping this to InHistory makes the renders stop matching
-        // the training runtime, silently, at turn N.
+        // The template raises on one. If somebody ever flips this to InHistory the
+        // renders stop matching the training runtime, silently, at turn N.
         assert_eq!(qwen_spec().system_update_mode, SystemUpdateMode::Envelope);
         assert!(is_system_update(&system_update_item(2, "now in Russian")));
     }
@@ -275,7 +260,7 @@ mod tests {
     #[test]
     fn function_and_parameter_are_not_control_tokens() {
         // They are text in the template and several tokens in the vocabulary.
-        // Declaring one would fail to resolve at startup, loudly, which is right —
+        // Declaring one would fail to resolve at startup, loudly, which is right -
         // but it is cheaper to not declare it.
         let ct = ControlTokens::borrowed(QWEN_TOKENS);
         assert!(ct.by_literal("<function=").is_none());

@@ -1,13 +1,11 @@
 //! JSON text that is byte-identical to what the shipped template produces.
 //!
 //! Deliberately not shared with `dialect-glm`'s `json.rs`: the two templates call `tojson` on
-//! different things. GLM unwraps `{"type":"function","function":{…}}` and re-emits three fixed
-//! keys, Qwen writes the tool object whole with its `type` wrapper, and a shared helper would need a
-//! flag, which is where the next mistake goes.
-//!
+//! different things - GLM unwraps `{"type":"function","function":{…}}` and re-emits three fixed
+//! keys, while Qwen writes `{{- tool | tojson }}` on the object whole, `type` wrapper included.
 //! What is shared is the formatter: Hugging Face's `tojson` is
-//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)`, and `serde_json`'s compact
-//! writer uses `,` and `:` with no spaces, so a naive `to_string` diverges on every tool schema.
+//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)` while `serde_json`'s compact
+//! writer uses `,`/`:` with no spaces, so a naive `to_string` diverges on every tool schema.
 
 use serde_json::Value;
 use serde_json::ser::Formatter;
@@ -44,14 +42,15 @@ pub fn hf_tojson(value: &Value) -> String {
     String::from_utf8(buf).expect("serde_json emits UTF-8")
 }
 
-/// One line of Qwen's `<tools>` block: the object as given, keys in their given order, because it is
-/// prompt bytes and reordering `name` and `description` re-prefills the conversation.
+/// One line of Qwen's `<tools>` block, from an OpenAI-shaped tool schema: the object as
+/// given, nothing unwrapped and nothing normalised. Key order is prompt bytes - reordering
+/// `name` and `description` re-prefills the whole conversation - so `preserve_order` holds it.
 pub fn qwen_tool_json(tool: &Value) -> String {
     hf_tojson(tool)
 }
 
-/// One `<parameter=…>` body: a string argument is emitted raw and everything else as JSON, so
-/// `{"path": "a.txt"}` renders `a.txt` and `{"limit": 40}` renders `40`.
+/// One `<parameter=…>` body: a string argument is emitted raw and everything else as JSON,
+/// so `{"path": "a.txt"}` renders `a.txt` and `{"limit": 40}` renders `40`.
 pub fn parameter_value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),

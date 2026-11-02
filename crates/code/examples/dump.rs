@@ -1,21 +1,11 @@
 //! Print the named-node skeleton of a sample file per language, with field names.
 //!
-//! This is how every node kind and field name in `classify` was chosen. Written
-//! down from the grammar rather than from memory, because a kind string that is
-//! subtly wrong -- `type_declaration` where the grammar says `type_spec` -- does
-//! not fail, it silently drops that definition from every outline, which is the
-//! empty-corpus bug with a smaller blast radius.
+//! This is how every node kind and field name in `classify` was chosen, and it is worth re-running
+//! after a grammar bump: a kind string that is subtly wrong does not fail, it silently drops that
+//! definition from every outline. It walks rano's `Node`, the same plain data `classify` sees, so
+//! what it prints is exactly what the outline reads.
 //!
 //!     cargo run -p letibot-code --example dump
-//!
-//! Run it again after a grammar bump. A grammar is somebody else's tree and it
-//! changes under you; the kinds `classify` matches on are a contract nobody
-//! signed.
-//!
-//! It reads rano's `Node` — the same plain data `classify` walks — rather than
-//! tree-sitter's, so what it prints is exactly what the outline sees. The field
-//! names come from `Node::field`, which is the same source `classify` reads them
-//! from.
 
 use rano::syntax::{Lang, Node, Stream};
 

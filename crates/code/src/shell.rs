@@ -70,8 +70,9 @@ use rano::syntax::{Lang, Node, Stream};
 // Positions
 // ---------------------------------------------------------------------------
 
-/// Where something is in the command text: byte offsets for slicing, line and
-/// column for a refusal. A refusal that cannot say where is one nobody can act on.
+/// Where something is in the command text: byte offsets *and* line/column, because the offsets are
+/// what a caller slices with and the line/column is what a refusal prints. A refusal that says
+/// "unresolvable construct" without saying where is a refusal nobody can act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
@@ -111,13 +112,13 @@ impl fmt::Display for Span {
 /// grammar resolves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Word {
-    /// The bytes are known: quotes removed and escapes applied, because that is what
-    /// `execve` receives. A leading `~` is left as written, since `$HOME` is not in
-    /// the text and the caller that knows it expands it.
+    /// The bytes are known: quotes are removed and backslash escapes applied, because that is what
+    /// the shell passes to `execve` - deciding on `"a b"` when the program receives `a b` is the
+    /// GuardFall mistake in miniature. A leading `~` stays as written: `$HOME` is not in the text.
     Literal(String),
-    /// A pathname pattern: the pattern is known and the file set is not. Named
-    /// rather than left a literal because a caller deciding about `rm -rf *` must see
-    /// that its target is a set nobody enumerated.
+    /// A pathname pattern: the pattern is known and the file set is not, and those are different
+    /// facts. Not [`Unresolved`] - a glob does not change which program runs - but it changes
+    /// breadth, which is why it is its own variant: `rm -rf *` must show a set nobody enumerated.
     Glob(String),
     /// A bash array literal: `args=( a b c )`. Every element is resolved on its own
     /// terms, so an array holding one expansion is not wholly unknown.
@@ -173,12 +174,13 @@ impl Word {
 /// The construct the grammar could not resolve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Construct {
-    /// `$X`, `${X}`, `${X:-default}`. The value is not in the text, and the default
-    /// makes it one of two, which the grammar cannot say either.
+    /// `$X`, `${X}`, `${X:-default}`: the value is not in the text. The default form is included on
+    /// purpose - it is used only when `X` is unset, so the resolved value is one of two and the
+    /// grammar cannot say which.
     ParameterExpansion { name: String },
-    /// `$(…)` or a backquote. The command inside IS resolved and listed as its own
-    /// stage; what is unresolvable is the value it produces, which is what the word
-    /// becomes.
+    /// `$( ... )` or a backquote: the command inside is resolved and appears in
+    /// [`Normalised::stages`] with [`Context::CommandSubstitution`], and what is unresolvable is the
+    /// value it produces, which is what the enclosing word becomes.
     CommandSubstitutionValue,
     /// `<(…)` or `>(…)`. The inner command is resolved and listed; the *path* the
     /// shell invents for it (`/dev/fd/63`) is invented at runtime.
@@ -192,17 +194,17 @@ pub enum Construct {
     /// reporting an undecoded `\n` as the literal would be a wrong claim about what
     /// the program receives.
     AnsiCEscapes,
-    /// `{a,b}.txt`, `{1..5}`: one word in the text, several arguments after the shell.
-    /// Decidable in principle; named because the grammar hands it over as a literal that
-    /// reads as a harmless filename nobody has.
+    /// `{a,b}.txt`, `{1..5}`: one word in the text and several arguments after the shell is done.
+    /// Decidable from the text alone, but named rather than guessed because the grammar hands it
+    /// over as concatenated words, so the merged literal reads as a harmless filename.
     BraceExpansion,
-    /// A whole command where a word was expected: `time ( … )`, `! ( … )`. Its
-    /// commands run and are walked; how a compound's value relates to this stage's argv
-    /// cannot be said.
+    /// A whole command where a WORD was expected: `time ( ... )`, `! ( ... )`. The grammar hangs the
+    /// compound off the `command` node in the argument position and its commands RUN, but how a
+    /// compound's value relates to this stage's argv cannot be said.
     CompoundArgument,
-    /// The parse holds an `ERROR` or `MISSING` node, so the grammar could not read the
-    /// text and every claim about the recovered region is a guess: `cat >&2 <<< 'here
-    /// string'` recovers as a read of a file named `here string`.
+    /// The parse contains an `ERROR` or `MISSING` node: the grammar could not read this text. The
+    /// least obvious one - tree-sitter recovers, handing back a plausible tree, so every claim
+    /// about the recovered region is a guess, and the whole command is unresolvable.
     ParseError,
 }
 
@@ -222,8 +224,9 @@ impl Construct {
     }
 }
 
-/// Which decision the unresolvable construct denies: `Program` means nobody knows what
-/// will run, the other two mean the program is known and its target is not.
+/// Which decision the unresolvable construct denies, graded because the three are not equally bad:
+/// `Program` means nobody knows what will run, while `Argument` and `RedirectTarget` mean the
+/// program is known and its target is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decides {
     /// The command name itself: `$CMD --now`, `"$(which x)" -y`. Nobody knows what
@@ -259,8 +262,9 @@ pub struct Unresolved {
     pub span: Span,
     /// The text as written, clipped.
     pub text: String,
-    /// The part of the word that IS known when the construct is concatenated with
-    /// literal text: `/etc/$NAME` knows `/etc/`.
+    /// The part of the word that IS known, when the unresolvable construct is concatenated with
+    /// literal text: `/etc/$NAME` knows `/etc/`. Decision-relevant rather than cosmetic, since
+    /// `~/.ssh/$KEY`'s known prefix already places it in the secret store.
     pub known_prefix: Option<String>,
     /// Which stage it belongs to, when it belongs to one.
     pub stage: Option<usize>,
@@ -332,8 +336,9 @@ pub enum RedirectTarget {
         literal: bool,
         body: String,
     },
-    /// A here-string's word: it is stdin, not a file. Reporting it as a file would
-    /// invent a read, which is exactly what this grammar's recovery does with `<<<`.
+    /// A here-string's word: it is stdin, not a file. Reporting it as `RedirectTarget::File` would
+    /// invent a read of a file named after the text, which is what this grammar's error recovery
+    /// does with `<<<` when another redirection is present.
     HereString(Word),
 }
 
@@ -350,8 +355,9 @@ pub struct Redirect {
 // Stages
 // ---------------------------------------------------------------------------
 
-/// Where a stage sits in the command's structure, as a list because the contexts
-/// nest: an `rm -rf /` inside a function body is not the same fact as one at the top.
+/// Where a stage sits in the command's structure: a list, because the contexts nest and the nesting
+/// is what a caller needs. A `rm -rf /` inside a function body inside a subshell is not the same
+/// fact as one at the top level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Context {
     /// A stage of a `|` pipeline.
@@ -403,9 +409,9 @@ impl Context {
     }
 }
 
-/// Whether the stage runs when the command runs. "Contains `rm -rf /`" and "runs
-/// `rm -rf /`" are different claims, and a refusal that conflates them is one that
-/// will be argued with, correctly.
+/// Whether the stage runs when the command runs. "This command contains `rm -rf /`" and "this
+/// command runs `rm -rf /`" are different claims, and a refusal that makes the second when only
+/// the first is true will be argued with - correctly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Certainty {
     /// Reached unconditionally.
@@ -457,16 +463,16 @@ pub struct Stage {
 }
 
 impl Stage {
-    /// The program's name with any directory stripped: `/usr/bin/cat` becomes `cat`.
-    /// `None` when the program is unresolved, which the caller must handle.
+    /// The program's name with any directory stripped: `/usr/bin/cat` becomes `cat`. `None` when the
+    /// program is unresolved, which the caller must handle rather than default - that is the whole limit.
     pub fn program_name(&self) -> Option<&str> {
         let p = self.program.literal()?;
         Some(p.rsplit('/').next().unwrap_or(p))
     }
 
-    /// Whether a bare program name can be **shadowed** by the shell that runs it, via
-    /// aliases, functions and `PATH`, none of which are in the text. A name given with a
-    /// `/` cannot be; `None` when the program is unresolved, which is already worse.
+    /// Whether this program name can be shadowed by the shell that runs it: a bare name is resolved
+    /// through aliases, functions and `PATH`, none of which are in the text, so a parser can be
+    /// right about the text and wrong about its meaning. `false` for a name holding a `/`.
     pub fn program_is_shadowable(&self) -> Option<bool> {
         self.program.literal().map(|p| !p.contains('/'))
     }
@@ -496,8 +502,9 @@ impl Stage {
             .collect()
     }
 
-    /// Whether this stage's stdout reaches the caller and becomes a tool result: false
-    /// for a `> file`, false mid-pipeline, true for the last stage of a pipeline.
+    /// Whether this stage's stdout reaches the caller, and therefore becomes a tool result and a
+    /// row: a stage piped onward or redirected to a file does not surface it here. False for a
+    /// `> file`, false mid-pipeline, true for the last stage of a pipeline with no redirection.
     pub fn stdout_surfaces(&self) -> bool {
         if self.pipe_out {
             return false;
@@ -527,22 +534,24 @@ pub struct Normalised {
     /// **Read this before reading anything else.** Empty means the grammar resolved
     /// the whole command.
     pub unresolved: Vec<Unresolved>,
-    /// The parse contained an `ERROR` or `MISSING` node, and is also recorded as an
-    /// [`Unresolved`], so a caller looking at one of the two still fails closed.
+    /// The parse contained an `ERROR` or `MISSING` node. Also recorded as an [`Unresolved`] with
+    /// [`Construct::ParseError`], so a caller reading only one of the two still fails closed: one
+    /// mechanism for a safety property ships broken the first time somebody refactors it.
     pub partial: bool,
     /// Bytes examined. The denominator (`docs/tool-design-brief.md` §2.2): "0
     /// stages" over 0 bytes and "0 stages" over 4 KiB are different facts, and an
     /// empty command must not read as a clean one.
     pub bytes: usize,
-    /// The loop variables an unrolled `for` has bound on this pass, pushed and popped
-    /// around one iteration. A state of the walk, not a fact about the command.
+    /// The loop variables an unrolled `for` has bound, so the body reads `$f` as the value the
+    /// shell gives it on that pass - see [`unrolled_for`]. A state of the WALK rather than a fact
+    /// about the command, which is why it is private and empty when [`normalise`] returns.
     binds: Vec<(String, String)>,
 }
 
 impl Normalised {
-    /// The predicate a gate reads: true only when nothing needs a runtime value and the
-    /// grammar read all of it. Conjunctive on purpose -- `cat $FILE` is not resolved,
-    /// because the target is what the decision is about.
+    /// The predicate a gate reads: true only when nothing in the command needs a runtime value and
+    /// the grammar read all of it. `cat $FILE` is not resolved - the program is known and the target
+    /// is not, and the target is what the decision is about.
     pub fn is_resolved(&self) -> bool {
         self.unresolved.is_empty() && !self.partial
     }
@@ -581,16 +590,16 @@ impl Normalised {
             .collect()
     }
 
-    /// The unresolvable constructs, for a refusal body: one explanation per distinct
-    /// reason, with the places it applies listed under it, because a command using one
-    /// variable five times once printed the same sentence five times.
+    /// The unresolvable constructs, for a refusal body: one explanation per distinct reason, with
+    /// the places it applies listed under it, because the refusal has to carry the fix and the fix
+    /// is always the same shape - resolve it in the caller and pass the literal.
     pub fn unresolved_report(&self) -> String {
         if self.unresolved.is_empty() {
             return String::new();
         }
-        // Grouped by the sentence rather than by `construct`, because the text is what a
-        // reader is being spared and two kinds can share one reason. First appearance
-        // first, which is the order somebody reads their own command in.
+        // Grouped by the sentence itself rather than by `construct`, because two kinds can share a
+        // reason and one kind can give different ones: the text is what a reader is spared, so the
+        // text is the key. First appearance first, which is how somebody reads their own command.
         let mut order: Vec<&str> = Vec::new();
         let mut by_why: std::collections::HashMap<&str, Vec<&Unresolved>> = Default::default();
         for u in &self.unresolved {
@@ -633,13 +642,14 @@ impl Normalised {
 // Normalisation
 // ---------------------------------------------------------------------------
 
-/// How many positions one reason lists before it counts the rest: enough to show this
-/// is not a one-off, few enough that thirty uses do not print thirty lines.
+/// How many positions one reason lists before it counts the rest: four is enough to show this is
+/// not a one-off and few enough that a variable used thirty times does not print thirty lines. The
+/// count is the disclosure - a refusal may summarise, but never silently.
 const MAX_PLACES_SHOWN: usize = 4;
 
-/// Parse `source` as bash and normalise it. Never fails on input: an unparseable
-/// command comes back with `partial` set and a parse-error entry, which is a result
-/// saying nobody could read it.
+/// Parse `source` as bash and normalise it. Never fails and never panics on input: an unparseable
+/// command comes back with `partial` set and a [`Construct::ParseError`], a result saying nobody
+/// could read it rather than an error saying the normaliser broke.
 pub fn normalise(source: &str) -> Normalised {
     let mut out = Normalised {
         source: source.to_string(),
@@ -728,8 +738,9 @@ fn src<'a>(node: &Node, source: &'a str) -> &'a str {
     source.get(node.start..node.end).unwrap_or("")
 }
 
-/// The child in field `name`, by field rather than by kind or position: the grammar
-/// says which child a field names, and matching kinds in order is guessing.
+/// The child in field `name`: by field rather than by kind or position, because the grammar states
+/// which child a field names, and matching kinds in the order they appear guesses at a fact the
+/// grammar already has.
 fn child_field<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
     node.children
         .iter()
@@ -787,9 +798,9 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
         "subshell" => push_walk(node, source, ctx, out, Context::Subshell),
         "compound_statement" => push_walk(node, source, ctx, out, Context::Group),
         "list" => {
-            // `a && b` / `a || b`: the left side runs unconditionally and the right one is
-            // guarded. The asymmetry is the difference between "runs rm" and "runs rm if the
-            // first part failed".
+            // `a && b` / `a || b`: the left side runs unconditionally and the right side is guarded.
+            // Recording that asymmetry is the difference between "this command runs rm" and "this
+            // command runs rm if the first part failed".
             let op = kids(node)
                 .into_iter()
                 .find(|c| c.kind.as_str() == "&&" || c.kind.as_str() == "||")
@@ -864,9 +875,9 @@ fn push_walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normal
     ctx.pop();
 }
 
-/// A `for` whose list is in the text is that many commands, not one unreadable one: the
-/// body is walked once per value with the variable bound. A glob list, an expansion, a
-/// splittable value and more than `MOST_ITERATIONS` values stay unresolved.
+/// A `for` whose list is in the text is that many commands, not one unreadable one: `$f` on a pass
+/// is the next word of a list written above, so the body is walked once per value. A glob, an
+/// expansion, a value that would split, or more than `MOST_ITERATIONS` values stays unresolved.
 fn unrolled_for(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised) -> bool {
     const MOST_ITERATIONS: usize = 32;
     let Some(var) = child_field(node, "variable").map(|n| src(n, source).to_string()) else {
@@ -899,8 +910,9 @@ fn unrolled_for(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Nor
     true
 }
 
-/// Whether a bound loop value can stand for one word in the body: whitespace would be
-/// field splitting and a glob would be a file set, neither of which one literal says.
+/// Whether a bound loop value can stand for ONE word in the body: whitespace would be field
+/// splitting and a glob character pathname expansion, both of which a single [`Word::Literal`]
+/// cannot say, so such a loop is left unresolved rather than read as something narrower.
 fn one_word(v: &str) -> bool {
     !v.is_empty()
         && !v
@@ -927,9 +939,9 @@ fn pipe_member(
     }
 }
 
-/// A command with redirections attached, which belong to the command rather than to the
-/// statement: the grammar hoists a trailing one above the list, so it goes to the LAST
-/// command, and whatever follows a here-document operator on the line is a command too.
+/// A command with redirections attached: they belong to the command, not the statement, so no
+/// generic walk finds them. The grammar hoists a trailing redirection above the whole list and the
+/// shell gives it to the LAST command; a compound body has none, and every stage gets the fact.
 fn redirected(
     node: &Node,
     source: &str,
@@ -1008,8 +1020,8 @@ fn redirected(
     match owner {
         Some(i) => out.stages[i].redirects.extend(reds),
         None => {
-            // A redirected compound statement: there is no single stage to own the
-            // redirection, so it is recorded against every stage of the body, which is what
+            // A redirected compound statement (`{ ...; } > f`): there is no single stage to own the
+            // redirection, so the fact is recorded against every stage of the body, which is what
             // the shell does to their shared stdout.
             for i in &own {
                 out.stages[*i].redirects.extend(reds.iter().cloned());
@@ -1262,7 +1274,9 @@ fn heredoc_redirect(node: &Node, source: &str, out: &mut Normalised) -> Redirect
     }
 }
 
-/// Every child, anonymous tokens included.
+/// Every child, anonymous tokens included. An operator token is exactly the kind of child
+/// tree-sitter leaves anonymous, so a caller filtering on `named` silently loses the `&&`, `|` and
+/// `;` this module decides by - see the `&&` asymmetry at `list`, which is a permission decision.
 fn kids(node: &Node) -> Vec<&Node> {
     node.children.iter().collect()
 }
@@ -1330,9 +1344,9 @@ fn stage(
                 }
             }
             _ if !child.named && child.kind != "$" => {}
-            // A whole command where a WORD was expected: `time ( … )` and `! ( … )` hang a
-            // `subshell` off the `command` node with no field. Its commands RUN, so they are
-            // walked and listed; the argument position stays unread.
+            // A whole command where a WORD was expected: `time ( ... )` hangs a `subshell` off the
+            // `command` node with no field, and its commands RUN, so they are walked and listed
+            // here. The argument position stays unread: a compound's value is not this stage's argv.
             "subshell" | "compound_statement" | "list" | "pipeline" => {
                 walk(child, source, ctx, out);
                 nested.push(child.id);
@@ -1354,9 +1368,9 @@ fn stage(
         }
     }
 
-    // A brace expansion the grammar split at a space: `echo {a b,c}` arrives as `{a` and
-    // `b,c}`, and each read alone is a plausible literal. Only the PAIR is evidence, which
-    // is why this check is here and not in `resolve`.
+    // A brace expansion the grammar split at a space: `echo {a b,c}` arrives as `{a` and `b,c}`,
+    // and reading each as a literal claims two arguments where bash delivers three. Only the PAIR
+    // is recognisable, because a lone `M-}` and a half-typed `ls {corpus` are literals to bash.
     let texts: Vec<Option<String>> = argv.iter().map(|w| w.text().map(str::to_string)).collect();
     if texts
         .iter()
@@ -1391,17 +1405,18 @@ fn stage(
     s.argv = argv;
     s.assignments = assignments;
 
-    // The commands inside `$(…)` and `<(…)` RUN: their value is unresolvable and already
-    // recorded as such, but the commands are ordinary stages and are listed here. That is
-    // why a grammar was worth the trouble -- `kill $(pgrep -f x)` has two programs in it.
+    // The commands inside `$( ... )` and `<$( ... )` RUN: their value is unresolvable and already
+    // recorded as such, but the commands themselves are ordinary stages and are listed here. It is
+    // why a grammar was worth the trouble - `kill $(pgrep -f x)` has two programs in it.
     scan_substitutions(node, source, ctx, out, &nested);
     for t in tails {
         heredoc_tail(t, source, ctx, out, Some(index));
     }
 }
 
-/// Walk the substitutions hanging under `node`, without re-entering `node` itself and
-/// without descending into `skip`, which is a compound [`stage`] has already walked.
+/// Walk the substitutions hanging under `node`, without re-entering `node` and without descending
+/// into `skip`, which is a compound [`stage`] has already walked: `time ( ... )` hangs a subshell
+/// in the argument position, and the generic recursion would reach its substitutions twice.
 fn scan_substitutions(
     node: &Node,
     source: &str,
@@ -1446,9 +1461,9 @@ fn assignment(node: &Node, source: &str, out: &mut Normalised, stage: Option<usi
     }
 }
 
-/// One argument -- or the several a brace expansion makes of it, because a [`Stage`]'s
-/// argv is the list the program is handed. `decides` is fixed to `Argument`: one stage has
-/// one program, and `{a,b}/x` runs two.
+/// One argument, or the several a brace expansion makes of it: a [`Stage`]'s `argv` is the list the
+/// program is handed, so a word the shell turns into four arguments arrives as four. A brace in the
+/// command-name position stays unread, because one `Stage` has one program and `{a,b}/x` runs two.
 fn argument(node: &Node, source: &str, out: &mut Normalised, stage: usize) -> Vec<Word> {
     match brace_words(node, source) {
         Some(words) => words,
@@ -1465,9 +1480,9 @@ fn word_of(
     decides: Decides,
     stage: Option<usize>,
 ) -> Word {
-    // `VAR=( a b "$c" )`. Each element is resolved on its own terms: an array holding one
-    // expansion is not wholly unknown, and flattening it would lose the elements that are
-    // known.
+    // `VAR=( a b "$c" )`: the grammar gives an `array` node whose children are ordinary words, so
+    // each element resolves on its own terms. Flattening it into one opaque blob would lose the
+    // elements that ARE known.
     if node.kind.as_str() == "array" {
         let parts: Vec<Word> = kids(node)
             .into_iter()
@@ -1589,13 +1604,13 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
             )
         }
         "number" | "test_operator" | "regex" => Resolved::Literal(src(node, source).to_string()),
-        // A name, not a value: `export SKIP_SLT` puts a bare `variable_name` in the argument
-        // position, which had no arm and fell through to "unrecognised node kind". A name
-        // cannot be a path or an expansion, so a literal is what it is.
+        // A name, not a value: `export SKIP_SLT` and `declare -x FOO` put a bare `variable_name` in
+        // the ARGUMENT position. A name cannot be a path or an expansion, so a literal is exactly
+        // what it is - and without an arm here it reads as an unrecognised node kind.
         "variable_name" => Resolved::Literal(src(node, source).to_string()),
-        // A `$` that ENDS a word arrives as the bare token: this grammar wraps `$?` and `$#`
-        // in a `simple_expansion` only when something follows. The tree is whole, so this is
-        // bash's own pid or a literal dollar, not a parse error.
+        // A `$` that ENDS a word is an anonymous token here: the grammar wraps `$?`, `$#` and `$$`
+        // in a `simple_expansion` when something follows, but a `$` in the last position of a word
+        // (`echo x$$`) comes back as the token itself - bash's own pid, not a parse error.
         "$" => match src(node, source) {
             // A lone `$` is a literal dollar to the shell: `echo x$` prints `x$`.
             "$" => Resolved::Literal("$".to_string()),
@@ -1616,8 +1631,9 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
                 at: node,
             },
         },
-        // `$'…'`: the escapes are the shell's, so the word the program receives is the
-        // DECODED bytes. Reporting it undecoded would claim `$'a\tb'` holds a backslash.
+        // `$'...'`: the escapes are the shell's, so the word the program receives is the DECODED
+        // bytes, not the text between the quotes. Reporting it undecoded would be a claim about a
+        // command nobody wrote - `$'a\tb'` is one argument holding a tab.
         "ansi_c_string" => match decode_ansi_c(src(node, source)) {
             Some(s) => Resolved::Literal(s),
             // The bytes are not a string this can carry (a lone `\xff`, a NUL, a code point
@@ -1722,9 +1738,9 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
                 }
                 lit.push_str(&part);
             }
-            // The braces of `{a,b}.txt` arrive as three `word` children, so this is the only
-            // place the pattern is visible. The pattern WITHOUT its quoted parts decides: a
-            // GraphQL query in quotes is not an expansion.
+            // The braces of `{a,b}.txt` arrive as three separate `word` children, so this is the
+            // only place the pattern is visible - and it is the pattern WITHOUT the quoted parts
+            // that decides, or a `gh api graphql query='{repository(...)}'` reads as an expansion.
             if has_brace_expansion(&bare) {
                 return Resolved::Blocked {
                     construct: Construct::BraceExpansion,
@@ -1757,8 +1773,8 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
 }
 
 /// The value a bound loop variable gives this expansion, when the expansion is exactly that
-/// variable and nothing done to it. Read from the TEXT, because the grammar's
-/// `variable_name` cannot tell `${f}` from `${#f}` or `${!f}`.
+/// variable and nothing is done to it. The name is read from the TEXT because the grammar's
+/// `variable_name` cannot tell `${f}` from `${#f}`: a transform then simply does not match.
 fn bound(node: &Node, source: &str, binds: &[(String, String)]) -> Option<String> {
     if binds.is_empty() {
         return None;
@@ -1786,8 +1802,9 @@ fn construct_of(kind: &str) -> Option<Construct> {
         "command_substitution" => Construct::CommandSubstitutionValue,
         "process_substitution" => Construct::ProcessSubstitutionPath,
         "arithmetic_expansion" => Construct::ArithmeticExpansion,
-        // `{1..3}` is its own node kind and fell through to the arm reporting `parse_error`,
-        // i.e. "the grammar could not read this" about a tree with no error in it.
+        // `{1..3}` arrives as its OWN node kind: without an arm it falls through to `parse_error`,
+        // which says the grammar could not read a tree with no error in it, and names the wrong
+        // construct for a word left unread because it has too many values.
         "brace_expression" => Construct::BraceExpansion,
         "string_expansion" => Construct::AnsiCEscapes,
         "ERROR" => Construct::ParseError,
@@ -1813,9 +1830,9 @@ fn named(construct: Construct, node: &Node, source: &str) -> Construct {
     }
 }
 
-/// Whether this text opens a brace it never closes: one side of an expansion the grammar
-/// split at a space. Neither half is suspicious alone -- `M-}` is a tmux key and `ls
-/// {corpus` is half a line -- so the check needs the pair; see [`stage`].
+/// Whether this text opens a brace it never closes: one side of a brace expansion the grammar split
+/// at a space. Neither half is suspicious on its own - `M-}` is a tmux key name and `ls {corpus` is
+/// a half-typed line, and bash hands both on as literals - so the check needs the PAIR; see [`stage`].
 fn opens_unclosed(s: &str) -> bool {
     s.matches('{').count() > s.matches('}').count()
 }
@@ -1825,8 +1842,9 @@ fn closes_unopened(s: &str) -> bool {
     s.matches('}').count() > s.matches('{').count()
 }
 
-/// Does this text contain a brace expansion the shell will turn into several words? Bash
-/// needs a comma or a `..` inside, which separates `{a,b}.txt` from `find … -exec rm {} \;`.
+/// Does this text contain a brace expansion the shell turns into several words? Bash needs a comma
+/// or a `..` range inside the braces, which separates `{a,b}.txt` from `find ... -exec rm {} \;`:
+/// permissive would refuse every `find -exec`, the other way would call two deletions one.
 fn has_brace_expansion(s: &str) -> bool {
     let b = s.as_bytes();
     let mut i = 0;
@@ -1855,13 +1873,14 @@ fn has_brace_expansion(s: &str) -> bool {
     false
 }
 
-/// How many words one word may become: the same 32 as [`unrolled_for`]'s passes, because a
-/// thousand arguments is a script. Above it the word stays unread, which costs a question.
+/// How many words one word may become: the same 32 as [`unrolled_for`]'s passes, because a thousand
+/// arguments is a script and this is the reading of one command. Above it the word stays unread,
+/// which costs a question rather than an answer.
 const MOST_WORDS: usize = 32;
 
-/// A brace expansion expanded into the words bash produces, or `None` when the text does not
-/// decide it: a quoted brace, an alternative holding an expansion or whitespace, too many
-/// words, and an expansion that makes no word are all refused.
+/// A brace expansion, expanded into the words bash produces, or `None` when the text does not
+/// decide it - unlike `$( ... )`, a brace list is not a runtime fact. Refused: a quoted brace, an
+/// alternative holding an expansion or whitespace, too many words, one that makes no word at all.
 fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
     if !matches!(
         node.kind.as_str(),
@@ -1900,9 +1919,9 @@ fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// What one brace pair is, as far as the text decides. `{a}` and `{1..a}` are not
-/// expansions, so a word of one is a literal; `{1..100}` is, and calling it a literal would
-/// claim the program receives the braces.
+/// What one brace pair is, as far as the text decides. The difference between the last two arms is
+/// the safety property: `{a}` and `{1..a}` are not expansions and a word made of one is a literal,
+/// while `{1..100}` IS one, and calling it literal would claim the program receives the braces.
 enum Brace {
     /// Not an expansion at all: `{a}`, `{}`, `{1..a}`, `{1..3..x}`.
     Literal,
@@ -1912,9 +1931,9 @@ enum Brace {
     TooMany,
 }
 
-/// The words bash makes of one word: find the first expandable brace pair, replace it with
-/// each alternative in turn (leftmost outermost, rightmost varies fastest) and expand each
-/// result again. `None` means the text did not decide it.
+/// The words bash makes of one word: find the first brace pair a comma or range can expand, replace
+/// it with each alternative in turn - leftmost outermost, rightmost varying fastest - and expand
+/// each result again, because an alternative may hold another pair. `None` means the text did not decide.
 fn expand_braces(text: &str) -> Option<Vec<String>> {
     const MOST_DEPTH: usize = 8;
     fn at(text: &str, depth: usize) -> Option<Vec<String>> {
@@ -2005,9 +2024,9 @@ fn alternatives(inner: &str) -> Brace {
     brace_range(inner)
 }
 
-/// `{1..3}`, `{-2..2..2}`, `{01..10}`, `{a..e..2}`: bash's own arithmetic, where an endpoint
-/// with a leading zero pads every word to the wider one, and a mixed pair or a step that is
-/// not a number is no range at all.
+/// `{1..3}`, `{-2..2..2}`, `{01..10}`, `{a..e..2}`: bash's own arithmetic, including its zero
+/// padding, where an endpoint written with a leading zero pads every word to the wider endpoint.
+/// Neither a mixed pair (`{1..a}`) nor a step that is not a number is a range at all.
 fn brace_range(inner: &str) -> Brace {
     let mut parts = inner.split("..");
     let (Some(lo), Some(hi)) = (parts.next(), parts.next()) else {
@@ -2109,9 +2128,9 @@ fn char_range(lo: &str, hi: &str, step: u64) -> Brace {
     }
 }
 
-/// The bytes `$'…'` delivers, with bash's own escape decoding, or `None` when they are not a
-/// string this can carry: a lone `\xff`, a NUL, a surrogate and a code point past
-/// `U+10FFFF` are real escapes with no [`Word`] to be.
+/// The bytes `$'...'` delivers, with bash's own escape decoding, or `None` when they are not a
+/// string this can carry: a lone `\xff`, a NUL, a code point past `U+10FFFF` and a surrogate have
+/// no `Word` to be, and the undecoded text or a replacement character would be a worse claim.
 fn decode_ansi_c(text: &str) -> Option<String> {
     let inner = text.strip_prefix("$'")?.strip_suffix('\'')?;
     let mut out: Vec<u8> = Vec::with_capacity(inner.len());
@@ -2214,8 +2233,9 @@ fn decode_ansi_c(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// Remove backslash escapes and report whether an unescaped glob metacharacter survived.
-/// Both halves matter: `e\ f.txt` is one argument, and `\*` is a literal asterisk.
+/// Remove backslash escapes and report whether an unescaped glob metacharacter survived. Both
+/// halves matter: `e\ f.txt` is one argument whose bytes are `e f.txt`, and `\*` is a literal
+/// asterisk, so calling every escaped star a glob would read `rm \*` as a wildcard delete.
 fn unescape(s: &str) -> (String, bool) {
     let mut out = String::with_capacity(s.len());
     let mut glob = false;
@@ -2249,8 +2269,8 @@ mod tests {
         normalise(s)
     }
 
-    /// A `for` over a list the command spells is that many passes, not one hole: the shape
-    /// from the corpus, with the literals written here.
+    /// A `for` over a list the command spells is that many passes, not one hole: the shape from the
+    /// corpus is `for f in <literal> <literal>; do grep ... $f; done`, with the literals written here.
     #[test]
     fn a_for_over_a_literal_list_is_unrolled_into_its_passes() {
         let x = n("for f in /w/a.rs /w/b.rs; do grep -n x $f; done");
@@ -2410,8 +2430,8 @@ mod tests {
 
     #[test]
     fn a_here_string_does_not_parse_and_the_recovered_tree_is_not_trusted() {
-        // The reason `partial` is fatal: this grammar's recovery reads `<<<` as `< 'here
-        // string'`, a read of a file named `here string`, and a normaliser reporting that
+        // Why `partial` is fatal: tree-sitter-bash 0.25 cannot parse `<<<`, and its RECOVERY reads it
+        // as `< 'here string'` - a read of a file named `here string`. A normaliser reporting that
         // data flow would be confidently wrong.
         let x = n("cat >&2 <<< 'here string'");
         assert!(x.partial);
@@ -2606,9 +2626,9 @@ mod tests {
         assert!(x.binaries().contains(&"readlink"));
     }
 
-    /// A run of operands is one hole, and flags are kept -- `shape`'s own contract: the
-    /// arity of an operand list is not part of what kind of command this is, while a flag is
-    /// (`sed -n` prints, `sed -i` rewrites). An unreadable word stays its own token.
+    /// A run of operands is one hole and flags are kept, because the arity of an operand list is
+    /// not part of what kind of command this is. A flag IS: `sed -n` prints and `sed -i` rewrites,
+    /// so flags and their order stay in the key, and an unreadable word stays its own token.
     #[test]
     fn a_run_of_operands_is_one_hole_and_flags_are_kept() {
         let one = shape(&n("cargo test --offline -p letibot-tools"));
@@ -2653,9 +2673,9 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// A brace expansion is the words bash makes of it, in bash's order: measured against
-    /// the shell, so the empty alternative makes no word and a nested pair is the one that
-    /// expands.
+    /// A brace expansion is the words bash makes of it, in bash's order, and every expectation below
+    /// is what `printf '<%s>' <the word>` printed rather than what the manual says: an empty
+    /// alternative makes no word, a nested pair is the one that expands, and zero padding counts the sign.
     #[test]
     fn a_brace_expansion_is_the_words_the_shell_makes() {
         assert_eq!(argv("echo {a,b}"), ["a", "b"]);
@@ -2717,8 +2737,9 @@ mod tests {
         assert!(n("find . -name x -exec rm -f {} ;").is_resolved());
         // `${a,b}` is a parameter expansion and not a brace expansion: the `$` decides it.
         assert!(!n("echo ${a,b}").is_resolved());
-        // Neither half of a split brace is suspicious alone: `M-}` is a tmux key and `ls
-        // {corpus` is half a line, and bash hands both on as literals.
+        // Neither half of a split brace is suspicious on its own: `M-}` is a tmux key name and
+        // `ls {corpus` is a half-typed line, and bash hands both on as literals. Refusing either
+        // alone leaves commands readable and then unreadable.
         assert_eq!(
             argv("tmux send-keys -t nav M-}"),
             ["send-keys", "-t", "nav", "M-}"]
@@ -2727,8 +2748,9 @@ mod tests {
         // Both halves in ONE command is the wreckage of `{a b,c}`: bash delivers three
         // words and the grammar delivers two, so neither may be called a literal.
         assert!(!n("echo {a b,c}").is_resolved());
-        // A brace inside quotes is not an expansion, and the merge must not forget it: read
-        // on the merged text, a GraphQL query's own braces looked like one and were refused.
+        // A brace inside quotes is not an expansion, and the merge must not forget it: a
+        // `gh api graphql query='{repository(...)}'` is one concatenation of `query=` and a quoted
+        // string, and read on the MERGED text its braces look like an expansion.
         assert_eq!(
             argv("gh api graphql query='{repository(owner:\"x\", name:\"y\")}' -f a=b"),
             [
@@ -2747,9 +2769,9 @@ mod tests {
         assert!(!n("echo {a,'b'}").is_resolved());
     }
 
-    /// A whole command in the argument position is walked, not swallowed: `time ( … )` hangs
-    /// a `subshell` off the `command` node with no field, and reading it as one opaque
-    /// argument meant `cargo` inside it produced no stage.
+    /// A whole command in the argument position is walked, not swallowed: `time ( ... )` hangs a
+    /// `subshell` off the `command` node with no field, and reading it as one opaque argument meant
+    /// `time (cargo test ...)` produced no stage for `cargo`.
     #[test]
     fn a_compound_in_the_argument_position_is_walked_and_named() {
         let x = n("time (timeout 900 cargo test -p x 2>&1 | tail -3); echo done");
@@ -2804,8 +2826,9 @@ mod tests {
         );
     }
 
-    /// `$'…'` decoded into the bytes the program receives, one escape per row against the
-    /// shell: `\x` with no digits keeps its backslash, `\x4` is `0x04`, `\1011` is `A1`.
+    /// `$'...'` is decoded into the bytes the program receives, one escape per row against bash 5.2
+    /// and `od -tx1` of what the shell delivered: `\x` with no digits keeps its backslash, `\x4` is
+    /// `0x04`, `\1011` is `A1`, and `\c?` is DEL rather than arithmetic.
     #[test]
     fn an_ansi_c_string_is_decoded_into_the_bytes_the_program_gets() {
         assert_eq!(argv("echo $'a\\tb'"), ["a\tb"]);
@@ -2843,8 +2866,9 @@ mod tests {
         assert!(n("echo $'a\\tb'").is_resolved());
     }
 
-    /// An escape whose bytes are not a string this can carry stays unread: each is a real
-    /// `$'…'` a shell accepts, and no replacement character would be true.
+    /// An escape whose bytes are not a string this can carry stays unread. Each one is a real
+    /// `$'...'` a shell accepts and none has a [`Word`] to be, and a replacement character or the
+    /// undecoded text would both be wrong claims.
     #[test]
     fn an_ansi_c_string_that_is_not_a_string_stays_unread() {
         for cmd in [
@@ -2864,9 +2888,9 @@ mod tests {
         }
     }
 
-    /// A `$` at the end of a word is not a parse error: with nothing after it the grammar
-    /// hands back the bare token, and the resolver falling through to "unrecognised node
-    /// kind" reported a whole tree as broken.
+    /// A `$` at the end of a word is not a parse error. This grammar wraps `$?`, `$#` and even `$$`
+    /// in a `simple_expansion` when something follows them, but a `$` in the LAST position of a
+    /// word comes back as the bare token, and the tree is whole - bash's own pid, not a parse error.
     #[test]
     fn a_dollar_that_ends_a_word_is_the_pid_or_a_literal_and_not_a_parse_error() {
         for cmd in ["echo x$$", "echo a$$b", "echo $$", "echo x$ y$$"] {
@@ -2890,13 +2914,13 @@ mod tests {
     }
 }
 
-/// The stable shape of a command, with its literals replaced by holes: the program and its
-/// flags are kept, because a flag is where a command changes kind, and a run of operands is
-/// one hole, since arity is not part of the kind.
 fn is_count_flag(t: &str) -> bool {
     t.len() > 1 && t.starts_with('-') && t[1..].chars().all(|c| c.is_ascii_digit())
 }
 
+/// The stable shape of a command, with its literals replaced by holes: the program and its FLAGS
+/// are kept, because a flag is where a command changes kind (`sed -n` prints, `sed -i` rewrites),
+/// and a shape folding those together would approve a write because a read was approved once.
 pub fn shape(n: &Normalised) -> String {
     let mut out = String::new();
     for (i, st) in n.stages.iter().enumerate() {
@@ -2907,8 +2931,8 @@ pub fn shape(n: &Normalised) -> String {
         // Whether the previous word was an operand, so a RUN of them becomes one hole.
         let mut in_a_run = false;
         for w in &st.argv {
-            // A COUNT is not a flag: `head -26` and `tail -5` would otherwise each be a shape
-            // of their own, which is most of what recurs.
+            // A COUNT is not a flag: `head -26`, `tail -5` - the dash is punctuation and the number
+            // is an operand wearing it. Keeping them apart would make every `head -N` its own shape.
             let flag = match w.text() {
                 Some(t) if is_count_flag(t) => Some("-<n>".to_string()),
                 // A flag is part of the shape, because a flag is where a command
@@ -2962,8 +2986,9 @@ pub fn shape(n: &Normalised) -> String {
 
 #[cfg(test)]
 mod redirect_ownership {
-    //! Which stage a hoisted redirection belongs to, and that the commands the grammar
-    //! nests after a here-document operator are not lost.
+    //! Which stage a hoisted redirection belongs to, and that the commands the grammar nests after a
+    //! here-document operator are not lost: 5,675 here-documents read as `cd`'s stdin, and
+    //! `cat <<'EOF' | bash` normalised to a `cat`.
     use super::*;
 
     fn heredoc_of(s: &Stage) -> Option<&str> {

@@ -1,19 +1,11 @@
-//! Reading a Claude Code conversation into this head's rows.
-//!
-//! `letibot --session cc-<uuid>` imports in the background while the UI is already up. This crate is
-//! the reading half: it walks one transcript and turns each JSONL line into a [`TranscriptItem`], it
-//! renders nothing and knows nothing about the daemon.
-//!
-//! Four rules make it an import and not a forgery: the session's header says where the rows came from
-//! ([`SessionMeta`]); the spend is Claude Code's own last `cost-state` line and not this session's
-//! budget; every row's time is taken off its line and nothing here calls `now`; and the transcript is
-//! opened read-only, with no writer anywhere in the crate.
-//!
-//! A `tool_use` and its `tool_result` are two rows on purpose, paired by `tool_use_id`, because the
-//! assistant row is the only place a card's arguments survive. A subagent's branch is skipped and
-//! said so: its `Task` call and final report are already in the parent, and replaying its turns would
-//! put another agent's words in the parent's mouth. An unknown line type becomes a [`Scrap`] once for
-//! the type and is counted, never dropped: a skip a reader can see is not a silent drop.
+//! Reading a Claude Code conversation into this head's rows: one JSONL line at a time, with
+//! `letibot --session cc-<uuid>`, rendering nothing and publishing nothing. It reads the
+//! transcript and nothing else - no credentials, no subagent directories, no writes - so these
+//! rules are testable in isolation. An imported row says whose it was through [`SessionMeta`],
+//! because no [`TranscriptItem`] carries an origin. Claude Code's spend is reported from its
+//! LAST `cost-state` line, never summed and never folded into this session's budget. Time is
+//! taken off each line and never invented. An unknown type or an `isSidechain` branch is one
+//! [`Scrap`] per kind plus a count, never a silent drop.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -229,9 +221,9 @@ pub struct Scrap {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Event {
-    /// The importer's own counter: bytes of the file consumed against its size. Not derived from
-    /// what has not arrived, because an indicator must be the fact and not a rendering of it. The
-    /// denominator is the file's length, known before the first row.
+    /// The importer's own counter: bytes of the file consumed against its size, which is known
+    /// before the first row. A line count would cost a second pass over the whole file, and an
+    /// indicator must be the fact rather than a rendering of it.
     Progress {
         bytes: u64,
         total: u64,
@@ -375,9 +367,9 @@ impl Source {
         &self.dir
     }
 
-    /// Every transcript, newest first, one row per `<project>/<uuid>.jsonl`, with the first operator
-    /// line, the model and the `cwd` read from the file's head. `subagents/` is not listed: a
-    /// subagent's conversation is a branch of its parent, not a session of its own.
+    /// Every transcript, newest first: one row per `<project>/<uuid>.jsonl`, with the first
+    /// operator line, the model and the `cwd` read from the file's head. `subagents/` is not
+    /// listed - a subagent's conversation is a branch of its parent, not a session of its own.
     pub fn sessions(&self) -> Result<Vec<SessionMeta>> {
         let mut out = Vec::new();
         let projects = std::fs::read_dir(&self.dir).map_err(|e| ImportError::NoDirectory {
@@ -427,8 +419,8 @@ impl Source {
     }
 
     /// Just the session's `cwd`, so the imported session's tools are confined to the tree the
-    /// conversation was had in. Empty when the transcript recorded none, and the caller keeps its own
-    /// root then.
+    /// conversation was had in. Empty when the transcript recorded none, and the caller keeps its
+    /// own root then, which is the same rule the stored workspace follows.
     pub fn directory(&self, id: &str) -> Result<String> {
         Ok(self.tree(id)?.root.cwd.unwrap_or_default())
     }
@@ -568,9 +560,9 @@ struct Head {
     title: Option<String>,
 }
 
-/// How much of a transcript the listing reads: the first operator line is never past the first page,
-/// and the cap means a transcript beginning with ten thousand attachment lines still answers in
-/// milliseconds.
+/// How much of a transcript the listing reads. The first operator line is never past the first
+/// page of a real session, and the cap exists so that a transcript beginning with ten thousand
+/// `attachment` lines still answers in milliseconds.
 const HEAD_LINES: u64 = 400;
 
 fn head_scan(path: &Path) -> Head {
@@ -645,9 +637,9 @@ fn head_scan(path: &Path) -> Head {
                         break;
                     }
                 }
-                // Only a line that HAD the operator's words ends the search: the first `user` line of
-                // a resumed session is often machinery, and setting this before the check left a
-                // listing row reading (no operator line).
+                // Only a line that HAD the operator's words ends the search: the first `user`
+                // line of a resumed session is often machinery, and setting this before the check
+                // leaves the listing saying *(no operator line)* about a conversation that has one.
                 have_first = !head.first.is_empty();
             }
             _ => {}
@@ -670,9 +662,9 @@ fn first_line_of(text: &str) -> String {
     format!("{cut}…")
 }
 
-/// Who a `user` line's words belong to, read off Claude Code's own fields rather than guessed from
-/// the text: `origin.kind` and `promptSource` declare it, and absent is the older spelling of *the
-/// operator*, which is what a head drew for those rows anyway. `isMeta` wins over both.
+/// Who a `user` line's words belong to, as the source itself declares it: `origin.kind` and
+/// `promptSource`, read rather than guessed from the text. Absent is the older spelling of the
+/// operator. `isMeta` wins over both - a meta line is Claude Code's own text shown to the model.
 fn declared_speaker(v: &Value) -> Speaker {
     if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
         return Speaker::Agent;
@@ -726,8 +718,9 @@ fn frame(text: &str) -> Option<Frame<'_>> {
     }
 }
 
-/// A frame at the START of the text, whether or not anything follows: Claude Code puts
-/// `<local-command-caveat>` and `<command-name>` in front of the person's own words.
+/// A frame at the START of the text, whether or not anything follows it. This is the one the
+/// stripper needs: Claude Code puts `<local-command-caveat>` and `<command-name>` in front of the
+/// person's own words, and what is behind them is what they said.
 fn leading_frame(text: &str) -> Option<Frame<'_>> {
     let t = text.trim();
     let rest = t.strip_prefix('<')?;
@@ -749,8 +742,8 @@ fn leading_frame(text: &str) -> Option<Frame<'_>> {
     Some(Frame {
         tag,
         body: &tail[..at],
-        // Plus one for the `<` that was stripped, so `end` is an index into the text this was handed:
-        // an off-by-one here silently kept the whole frame as the operator's words.
+        // Plus one for the `<` that was stripped, so `end` indexes the text this was handed and
+        // not the slice after it. An off-by-one here keeps the whole frame as the operator's words.
         end: 1 + open_end + at + close.len() + gt + 1,
     })
 }
@@ -787,9 +780,9 @@ const OTHER_AGENT: &[&str] = &[
     "cross-session-message",
 ];
 
-/// What a `user` line's text becomes: a frame carrying the person's act is spelled as this head spells
-/// it, a frame naming another author is theirs, plumbing is said rather than drawn, and a frame this
-/// build does not know is counted rather than invented as a row.
+/// What a `user` line's text becomes: a frame carrying the person's act is spelled in this head's
+/// own form (`! cmd`), a frame naming another author is theirs, Claude Code's plumbing is said and
+/// not drawn, and a frame this build does not know is said in the report rather than invented.
 fn classify(text: &str, declared: Speaker) -> Said {
     let t = text.trim();
     if t.is_empty() {
@@ -1010,8 +1003,9 @@ fn interpret(
                     .to_string(),
             );
         }
-        // Bookkeeping this build reads and does not draw: counted in `by_type` and, where it matters,
-        // read for the listing or the spend. Not conversation, so no scrap and no notice.
+        // Bookkeeping this build reads and does not draw: counted in `by_type` and, where it
+        // matters, read for the listing or the spend. No scrap - one sentence per kind would be a
+        // page of notices about a file's own index.
         "ai-title"
         | "agent-name"
         | "last-prompt"
@@ -1552,9 +1546,9 @@ fn str_field(v: &Value, key: &str) -> String {
         .to_string()
 }
 
-/// An ISO-8601 timestamp to ms since the epoch: the fraction is optional and an offset accepted, and
-/// anything else is `None`, so a time this crate cannot read is a row with no time rather than a
-/// guessed one.
+/// An ISO-8601 timestamp to ms since the epoch: rule 3's only clock. The fraction is optional and
+/// an offset is accepted because the field is ISO-8601, but anything else is `None` - a time this
+/// crate cannot read is a row with no time, never a guessed one.
 pub fn parse_ts(s: &str) -> Option<u64> {
     let s = s.trim();
     let b = s.as_bytes();
@@ -1649,9 +1643,9 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// The idempotency rule, as a function of the two facts it reads: only a `cc-` session that is not
-/// already a resume imports, since importing twice would append a second copy of the conversation to
-/// a session that holds it.
+/// The idempotency rule, in the one place it can be tested without a daemon. A `cc-` session names
+/// a conversation to read in, and only when the session is NOT already a resume: importing again
+/// would append a second copy of the conversation to a session that already holds it.
 pub fn import_target(resumed: bool, session_id: &str) -> Option<&str> {
     if resumed {
         return None;
@@ -1659,8 +1653,9 @@ pub fn import_target(resumed: bool, session_id: &str) -> Option<&str> {
     session_id.strip_prefix("cc-").filter(|id| !id.is_empty())
 }
 
-/// Where Claude Code's transcripts are, if anywhere: `$CLAUDE_PROJECTS_DIR` wins, otherwise
-/// `~/.claude/projects`. Absence is reported by [`Source::open`] with this path in the sentence.
+/// Where Claude Code's transcripts are, if they are anywhere: `$CLAUDE_PROJECTS_DIR` wins (a test,
+/// or another install), otherwise `~/.claude/projects`. Absence is reported by [`Source::open`] as
+/// `NoDirectory`, with this path in the sentence.
 pub fn default_projects_dir() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("CLAUDE_PROJECTS_DIR") {
         return Some(PathBuf::from(p));

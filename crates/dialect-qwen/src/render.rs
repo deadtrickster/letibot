@@ -1,32 +1,15 @@
-//! Transcript items to `RenderSpan`s, following Qwen3.8's shipped jinja.
+//! Transcript items → `RenderSpan`s, following Qwen3.8's shipped jinja.
 //!
-//! Every string this renderer emits is either literal, bytes the template wrote, or data, bytes that
-//! came out of the conversation. The distinction decides whether a control literal in the output may
-//! become a `Control` span.
-//!
-//! [`lit`] emits template bytes and splits out control literals, because the training runtime
-//! tokenizes them as the single vocab entry. [`data`] emits conversation bytes and never splits: a
-//! user who types `<tool_call>` gets six ordinary tokens, and no adversarial content can produce a
-//! turn boundary. That is why the two helpers exist rather than one.
-//!
-//! The one divergence from the shipped template is declared rather than hidden: it merges
-//! consecutive tool results into a single user turn and we emit one user turn each.
-//!
+//! Every string this renderer emits is either LITERAL (template bytes, which [`lit`] splits
+//! out control literals from, because the training runtime tokenized each as one vocab entry)
+//! or DATA (conversation bytes, which [`data`] never splits, so a user who types `<tool_call>`
+//! gets ordinary tokens and cannot produce a turn boundary). Consecutive tool results are the
+//! one declared divergence - the template merges them into one user turn and we emit one turn
+//! each, because the ledger is append-only and takes one row per item:
 //! ```text
 //! template : <|im_start|>user\n<tool_response>\nA\n</tool_response>\n<tool_response>\nB\n</tool_response><|im_end|>\n
 //! ours     : <|im_start|>user\n<tool_response>\nA\n</tool_response><|im_end|>\n<|im_start|>user\n<tool_response>\nB\n</tool_response><|im_end|>\n
 //! ```
-//!
-//! The reason is structural. A session renders one item at a time against the history before it and
-//! writes one ledger row per item, so merging would need the first result's closing token withheld
-//! until something that is not a tool result arrives, and what usually arrives next is the generation
-//! prompt, produced with no access to the history. Either the renderer retracts bytes already in the
-//! ledger, which an append-only ledger cannot, or the trait grows a method.
-//!
-//! So this keeps incremental rendering equal to a full render and pays with template fidelity on a
-//! shape the model still reads correctly. The fidelity gate reports the divergence as a failure
-//! rather than being taught to ignore it, which is the right way round: it should keep showing up
-//! until the trait grows the hook.
 
 use letibot_dialect::{RenderSpan, StablePrefix};
 use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
@@ -86,7 +69,7 @@ fn lit(out: &mut Vec<RenderSpan>, s: &str) {
     }
 }
 
-/// Conversation bytes. Never split; see the module header.
+/// Conversation bytes. Never split - see the module header.
 fn data(out: &mut Vec<RenderSpan>, s: &str) {
     if !s.is_empty() {
         out.push(RenderSpan::Text(s.to_string()));
@@ -102,8 +85,8 @@ fn trim(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_ascii_whitespace())
 }
 
-/// Qwen3.8's renderer. Stateless and cheap, and its only configuration is [`ReasoningEffort`], which
-/// is part of the stable prefix rather than of a request.
+/// Qwen3.8's renderer: stateless and cheap. The only configuration is [`ReasoningEffort`],
+/// which is part of the stable prefix rather than of a request.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QwenRenderer {
     effort: ReasoningEffort,
@@ -132,9 +115,9 @@ impl QwenRenderer {
         out
     }
 
-    /// The spans to append for `new_items`, given `history` already rendered: the history is replayed
-    /// into a throwaway buffer to recover the boundary state, because an offset cannot say whether an
-    /// assistant turn is open.
+    /// The spans to append for `new_items`, given `history` already rendered. Replays `history`
+    /// into a throwaway buffer to recover the boundary state, because a `usize` offset cannot carry
+    /// "is an assistant turn open".
     pub fn render_incremental(
         &self,
         history: &[TranscriptItem],
@@ -151,8 +134,8 @@ impl QwenRenderer {
     }
 
     /// The system turn: reasoning instruction, tools, then the operator's text. The tool block comes
-    /// before the system text, which is the opposite of every other template here and invisible until
-    /// a prompt stops caching.
+    /// before the system text, which is the opposite of every other template here - the kind of thing
+    /// that is invisible until a prompt does not cache.
     fn render_prefix(&self, prefix: &StablePrefix, out: &mut Vec<RenderSpan>) {
         let instruction = self.effort.instruction();
         let system = trim(&prefix.system);
@@ -168,8 +151,8 @@ impl QwenRenderer {
             lit(out, TOOLS_HEAD);
             for tool in &prefix.tools_json {
                 lit(out, "\n");
-                // A tool schema is JSON the harness produced, but still not template text: a
-                // description containing `</tool_call>` must not become a boundary.
+                // A tool schema is normalised, harness-produced JSON, but it is still not template text: a
+                // description containing `</tool_call>` must not become a boundary, so it goes through `data`.
                 data(out, tool);
             }
             lit(out, "\n</tools>");
@@ -224,8 +207,9 @@ fn close_assistant(st: &mut State, out: &mut Vec<RenderSpan>) {
     }
 }
 
-/// Open an assistant message and emit its possibly empty thinking block: the template emits this
-/// unconditionally, so a turn with no reasoning still carries its boundary tokens.
+/// Open an assistant message and emit its (possibly empty) thinking block. The template emits
+/// `<think>\n{reasoning}\n</think>\n\n` unconditionally, so an assistant turn with no reasoning of
+/// its own still carries `<think>\n\n</think>\n\n`.
 fn open_assistant(st: &mut State, out: &mut Vec<RenderSpan>, reasoning: &str) {
     debug_assert!(
         !st.assistant_open,
@@ -249,9 +233,9 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
             // Renders to nothing, by contract.
             TranscriptItem::SegmentMark { .. } => {}
 
-            // Unrenderable past position 0 on this template, which raises. The daemon is expected to
-            // use `system_update_item`; rendering it as a user turn means an older transcript still
-            // renders, visibly marked.
+            // Unrenderable on this template past position 0: it raises. The daemon is expected to use
+            // `system_update_item` instead; rendering it as a marked user turn rather than panicking means a
+            // transcript loaded from an older store still renders.
             TranscriptItem::System { text, .. } => {
                 close_assistant(st, out);
                 ctl(out, &tk::IM_START);
@@ -272,15 +256,16 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 lit(out, "\n");
             }
 
-            // A message carries one `reasoning_content`, so a second reasoning item opens a second
-            // message. An assistant item does not: it is the visible half of the message the reasoning
-            // opened, and closing here would split one turn into two.
+            // A message carries exactly one `reasoning_content`, so a second `Reasoning` item is a second
+            // message and closes the one before it. An `Assistant` item is not: it is the visible half of the
+            // message the reasoning already opened, and closing here would split one turn into two.
             TranscriptItem::Reasoning {
                 text, truncated, ..
             } => {
                 close_assistant(st, out);
-                // An abandoned draft is not replayed: the store keeps it, but the prompt gets a
-                // sentence instead, because a model that reads its own killed loop starts it again.
+                // An abandoned draft is not replayed: the store keeps it, and the prompt gets a sentence instead
+                // of the thought. Reasoning is the one kind that can be elided this way - a killed draft is
+                // referred to by nothing, unlike an assistant turn or a tool result.
                 open_assistant(
                     st,
                     out,
@@ -324,8 +309,9 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 // when the harness produced it. See `outcome_envelope`.
                 let _ = outcome;
                 data(out, trim(payload));
-                // And the picture, where the reading happened: the payload says what was read and
-                // the image is the thing itself, in the order `read` produces them.
+                // The picture goes where the reading happened, after the payload that says what was read - the
+                // same order the operator's own `read` output has. Without it the model is told an image is
+                // attached and given none.
                 if media.is_some() {
                     ctl(out, &tk::VISION_START);
                     ctl(out, &tk::IMAGE_PAD);
@@ -340,8 +326,9 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
     }
 }
 
-/// One `<tool_call>` block, in the XML-ish form this model was trained on. Not JSON, which is the
-/// most consequential difference from Qwen3 and from the ChatML fixture.
+/// One `<tool_call>` block, in the XML-ish form this model was trained on. Not JSON: that is the
+/// single most consequential difference from Qwen3 and from the ChatML fixture, and it is why this
+/// crate exists.
 fn render_tool_call(call: &ToolCall, st: &mut State, out: &mut Vec<RenderSpan>) {
     if !st.called && st.has_text {
         lit(out, "\n\n");
@@ -366,7 +353,8 @@ fn render_tool_call(call: &ToolCall, st: &mut State, out: &mut Vec<RenderSpan>) 
 }
 
 /// A tool call's arguments as ordered key/value pairs, in the order the model wrote them, because
-/// those bytes are replayed. Arguments that do not parse render as no parameters rather than a guess.
+/// those bytes are replayed into the next prompt. Arguments that do not parse as a JSON object
+/// render as no parameters at all, so a truncated argument stays distinguishable from an empty one.
 fn arguments_of(arguments: &str) -> Vec<(String, Value)> {
     match serde_json::from_str::<Value>(arguments) {
         Ok(Value::Object(map)) => map.into_iter().collect(),
@@ -405,8 +393,9 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
         data(out, &trimmed);
         return;
     }
-    // With one, the template emits the three vision tokens where the part sat, so the markers go at
-    // the front of the trimmed run. The gate cannot check this against the server, so it stays minimal.
+    // With media, the template emits `<|vision_start|><|image_pad|><|vision_end|>` where the part sat.
+    // Text on either side is one trimmed run, so the markers go at the front, which is where a harness
+    // that resolved a file into an image puts it anyway.
     for _ in &media {
         ctl(out, &tk::VISION_START);
         ctl(out, &tk::IMAGE_PAD);
@@ -415,9 +404,9 @@ fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
     data(out, &trimmed);
 }
 
-/// What the model is handed to start speaking: `<|im_start|>assistant\n<think>\n`. The trailing
-/// newline is the template's and load-bearing, since the model was trained to begin its reasoning on
-/// the next line.
+/// [`generation_prompt`] with the reasoning block opened and immediately closed, so the model
+/// starts on assistant text instead of reasoning - used for the summary turn, which cannot spend a
+/// nearly full window thinking. `lead_opens_reasoning` reads the lead, so nothing downstream asks.
 pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
     let mut v = generation_prompt();
     v.push(RenderSpan::Control(tk::THINK_CLOSE.clone()));
@@ -427,6 +416,9 @@ pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
 /// What stands in for a reasoning block the operator stopped.
 pub const ABANDONED_REASONING: &str = "[The operator stopped this reasoning before it finished. Its text is kept in the transcript but is not replayed: it was an abandoned draft, not a conclusion. Do not resume it.]";
 
+/// `<|im_start|>assistant\n<think>\n`: what the model is handed to start speaking. The trailing
+/// newline is the template's and is load-bearing - the model was trained to begin its reasoning on
+/// the line after `<think>`, and dropping it costs a cold prefill on every turn.
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
         RenderSpan::Control(tk::IM_START.clone()),
@@ -445,8 +437,9 @@ pub fn ends_mid_turn(items: &[TranscriptItem]) -> bool {
     st.assistant_open
 }
 
-/// Superseded by `letibot_tools::ToolResult::render` and no longer on the render path: the fixture
-/// corpora still build a payload with it, and its wording is the reference for the envelope.
+/// Superseded by `letibot_tools::ToolResult::render` and off the render path; kept because the
+/// fixture corpora build a payload with it. Running both wraps one result in two envelopes, which
+/// is why the renderer emits `payload` verbatim.
 pub fn outcome_envelope(outcome: &ToolOutcome, payload: &str) -> String {
     let head = match outcome {
         ToolOutcome::Ok => return payload.to_string(),
@@ -457,8 +450,9 @@ pub fn outcome_envelope(outcome: &ToolOutcome, payload: &str) -> String {
         ToolOutcome::Denied { req_id } => format!("NO_RESULT\noutcome: denied\nrequest: {req_id}"),
         ToolOutcome::Timeout => "NO_RESULT\noutcome: timeout".to_string(),
         ToolOutcome::NotRun { why } => format!("NO_RESULT\noutcome: not_run\nreason: {why}"),
-        // Not `NO_RESULT`: the other non-`Ok` classes say there is nothing to build on, and this one
-        // says the work is still happening and the handle reaches it.
+        // Not `NO_RESULT`: the other five non-`Ok` classes say there is nothing here to build on, and this
+        // one says the opposite - the work is still happening and the handle reaches it. Sharing the
+        // envelope would put "still running" in "abandoned"'s class.
         ToolOutcome::Backgrounded {
             handle,
             ran_for_ms,
@@ -503,9 +497,9 @@ mod tests {
         }
     }
 
-    /// Every image the transcript holds is placed exactly once: the markers a renderer places and
-    /// the payloads the request carries must line up, since the server substitutes at the markers
-    /// in order.
+    /// Every image the transcript holds is placed exactly once. The server substitutes pictures at the
+    /// markers in order, so a marker that does not line up puts a picture where it does not belong -
+    /// worse than sending none. `media_spans` and `media_in_order` are the two walks the engine compares.
     #[test]
     fn every_image_the_transcript_holds_is_placed_exactly_once() {
         use letibot_dialect::media_spans;
@@ -519,7 +513,7 @@ mod tests {
             data_ref: "data:image/png;base64,AAAA".into(),
             delivered: false,
         };
-        // A tool result that read a picture — the `read` path.
+        // A tool result that read a picture - the `read` path.
         let read_one = TranscriptItem::ToolResult {
             call_id: "c1".into(),
             name: "read".into(),
@@ -539,7 +533,7 @@ mod tests {
             origin: None,
             media: None,
         };
-        // **A user row carrying two images** — the head-attached path, and the case a single-image
+        // A user row carrying two images - the head-attached path, and the case a single-image
         // fixture cannot catch: the second marker is the one a `once` bug would drop.
         let attached = TranscriptItem::User {
             speaker: Default::default(),
@@ -574,9 +568,9 @@ mod tests {
         }
     }
 
-    /// And the string form collapses the three tokens into one marker, since the server wants its
-    /// marker once per image. Pinned because the failure is silent: three markers would ask for three
-    /// pictures and be given the one it has.
+    /// The string form collapses the three vision tokens into one marker: the server wants its marker
+    /// once per image and emits the model's three tokens itself. Pinned because three markers would ask
+    /// for three pictures and be given the one it has.
     #[test]
     fn the_string_form_places_one_marker_per_image_not_three() {
         use letibot_dialect::{media_spans, spans_to_string_with_media};
@@ -842,8 +836,9 @@ mod tests {
 mod summary_turn_does_not_think {
     use super::*;
 
-    /// The lead a summary turn is handed has its reasoning block closed: the ordinary lead ends on
-    /// `<think>`, and a summary runs only when the window is nearly full and has no room to think.
+    /// The lead a summary turn is handed has its reasoning block closed. The ordinary lead ends on
+    /// `<think>`, which is right for work; a summary turn runs when the window is nearly full, and those
+    /// are the tokens it does not have.
     #[test]
     fn the_ordinary_lead_opens_reasoning_and_the_summary_lead_closes_it() {
         let open = generation_prompt();
@@ -864,7 +859,7 @@ mod summary_turn_does_not_think {
         };
         use letibot_dialect::ControlRole::{ThinkClose, ThinkOpen};
 
-        // The ordinary lead opens the block and leaves it open — the model reasons
+        // The ordinary lead opens the block and leaves it open - the model reasons
         // from its first token.
         let o = roles(&open);
         assert!(o.contains(&ThinkOpen), "{o:?}");
@@ -884,9 +879,9 @@ mod summary_turn_does_not_think {
 
 #[cfg(test)]
 mod an_abandoned_draft_is_not_replayed {
-    //! The measured case: a model counting parentheses by hand produced 25464 tokens of `+ 0 + 0`
-    //! before the operator stopped it, and replayed on every later turn it made the model start again.
-    //! Reasoning is the one kind that can be elided this way: a killed draft is referred to by nothing.
+    //! A model counted parentheses by hand, produced 25464 tokens of `+ 0 + 0 + 0` before the operator
+    //! stopped it, and every later turn replayed that block - so a truncated reasoning item renders as
+    //! a sentence instead. A killed draft is referred to by nothing.
 
     use super::*;
     use letibot_transcript::ReasoningField;

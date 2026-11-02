@@ -1,17 +1,11 @@
 //! Token ids in, spans out.
 //!
-//! The decoder is an argument rather than a builder's stored field: a crate with no vocab cannot
-//! produce text from ids, and a builder that stashed one panicked for callers who forgot. Passing
-//! it in means the type says what parsing needs and there is no way to call it wrong.
-//!
-//! Boundaries are decided by token id, never by scanning text. A control token is one vocab entry,
-//! so the decoder answers `control_role` for exactly the ids that are boundaries, and text that
-//! merely spells `</think>` cannot be one. Runs of ordinary tokens are decoded as runs, because on a
-//! BPE vocabulary detokenizing a sequence and concatenating per-token pieces are different
-//! operations and only the first is right.
-//!
-//! The match below is on roles rather than on decoded literals, so it is a `match` the compiler
-//! checks and a dialect that spells `<arg_key>` differently needs no new code path.
+//! Boundaries are decided by token id, never by scanning text: a control token is one vocab
+//! entry, so `control_role` answers for exactly the ids that are boundaries, and text that
+//! merely spells `</think>` is several ids and cannot be one. Runs of ordinary tokens are
+//! decoded as runs, because on a BPE vocabulary detokenizing a sequence and concatenating
+//! per-token pieces are different operations. The decoder is an argument, so the type says
+//! what parsing needs; the match below is on roles, which the compiler checks.
 
 use letibot_dialect::{ControlRole, ControlToken, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};
@@ -50,9 +44,9 @@ impl Parser for GlmParser {
         };
         let mut buf = String::new();
         let mut run: Vec<u32> = Vec::new();
-        // Offsets into `tokens`: where the buffered run began, where the open reasoning block began,
-        // where the open tool call began. Every span's range is expressed in these, so a caller can
-        // commit exactly the tokens a span owns.
+        // Where the buffered run, the open reasoning block and the open tool call began, in
+        // `tokens`. Every span's range is one of these, so a caller commits exactly the tokens a
+        // span owns without re-walking the stream.
         let mut run_start = 0usize;
         let mut block_start = 0usize;
         let mut call_start = 0usize;
@@ -162,8 +156,8 @@ impl Parser for GlmParser {
         if !run.is_empty() {
             buf.push_str(&decoder.decode(&run));
         }
-        // The final flush honours the mode: a turn cut inside its reasoning ends in `Reasoning`, and
-        // flushing that as content would promote the deliberation to visible output.
+        // The final flush honours the mode: a turn cut inside its reasoning would otherwise be
+        // flushed as content, promoting the deliberation to visible output.
         if mode == Mode::Reasoning {
             if !buf.is_empty() {
                 out.push(ParsedSpan::Reasoning {
@@ -178,9 +172,9 @@ impl Parser for GlmParser {
     }
 }
 
-/// Recover an argument value from its `<arg_value>` body: if the text parses as a non-string JSON
-/// value it was one, otherwise it was a string. Lossy in one corner, a string whose text is itself
-/// valid JSON, which is pinned by a test because the format does not carry the type.
+/// The render side emits strings raw and everything else as JSON, so the inverse tries JSON
+/// first. Lossy in one corner - a string whose text is itself valid JSON comes back as a
+/// number - which a test pins, because the shipped format does not carry the type.
 fn reconstruct_arg(text: String) -> Value {
     match serde_json::from_str::<Value>(&text) {
         Ok(Value::String(_)) | Err(_) => Value::String(text),
@@ -188,8 +182,8 @@ fn reconstruct_arg(text: String) -> Value {
     }
 }
 
-/// A decoder over a fixed table, so the round-trip property is checked with no GGUF, no FFI and no
-/// GPU -- which is the whole reason a span is text plus control tokens rather than ids.
+/// A decoder over a fixed table, so the round-trip property can be checked with no GGUF, no
+/// FFI and no GPU. The real one is `letibot_tokencore::VocabDecoder`.
 #[derive(Debug, Clone, Default)]
 pub struct TableDecoder {
     text: std::collections::HashMap<u32, String>,

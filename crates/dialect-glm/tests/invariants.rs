@@ -1,8 +1,8 @@
-//! The two invariants §7.1 names, plus the ones GLM's own shape adds.
+//! The two round-trip invariants, plus the ones GLM's own shape adds.
 //!
-//! Both are property tests over an exhaustively enumerated transcript space rather
-//! than a handful of examples, because the renderer is a pure function and there is
-//! therefore no excuse for sampling it.
+//! Both are property tests over an exhaustively enumerated transcript space rather than a
+//! handful of examples, because the renderer is a pure function and there is therefore no
+//! excuse for sampling it.
 
 use letibot_dialect::{ParsedSpan, Parser, RenderSpan, StablePrefix, spans_to_string};
 use letibot_dialect_glm::{
@@ -126,9 +126,9 @@ fn each_transcript(max_len: usize, mut f: impl FnMut(&[TranscriptItem])) {
     rec(&alpha, &mut items, max_len, &mut f);
 }
 
-/// Rendering `0..k+1` from scratch equals rendering `0..k` and appending item `k+1`, for every transcript
-/// over the 9-symbol alphabet up to length 5. The renderer is a pure function, so this is exhaustive
-/// rather than sampled.
+/// Invariant one: rendering `0..k+1` from scratch equals rendering `0..k` and appending item
+/// `k+1`, for every transcript over the 9-symbol alphabet up to length 5. The renderer is a
+/// pure function, so this is exhaustive rather than sampled.
 #[test]
 fn render_incremental_agrees_with_render() {
     let r = GlmRenderer::new();
@@ -202,8 +202,9 @@ fn merge_text(spans: &[RenderSpan]) -> Vec<RenderSpan> {
     out
 }
 
-/// The generation prompt is the head of the next turn, exactly: the engine can append it before sampling
-/// and then append the turn's own spans without re-sending them.
+/// The generation prompt is the head of the next turn exactly, which is what lets the turn
+/// engine append `generation_prompt()` before sampling and then the turn's own spans without
+/// re-sending `<|assistant|><think>`.
 #[test]
 fn generation_prompt_is_the_head_of_the_next_assistant_turn() {
     let r = GlmRenderer::new();
@@ -223,8 +224,8 @@ fn generation_prompt_is_the_head_of_the_next_assistant_turn() {
     }
 }
 
-/// §7.1, invariant two: `parse ∘ render` is the identity on the round-trippable
-/// parts — an assistant turn with reasoning and two tool calls.
+/// Invariant two: `parse ∘ render` is the identity on the round-trippable parts - an
+/// assistant turn with reasoning and two tool calls.
 #[test]
 fn parse_round_trips_reasoning_and_two_tool_calls() {
     let history = vec![user("compare a and b")];
@@ -312,8 +313,9 @@ fn argument_key_order_is_preserved_through_the_round_trip() {
     assert_eq!(arguments, r#"{"z":1,"a":2,"m":3}"#);
 }
 
-/// The one corner where the round trip is lossy, pinned rather than papered over: `<arg_value>` carries
-/// no type, so a string whose text is valid JSON comes back as the JSON value.
+/// The one corner where the round trip is lossy, pinned rather than papered over: GLM's
+/// `<arg_value>` carries no type, so a string whose text is itself valid JSON comes back as
+/// that JSON value.
 #[test]
 fn a_string_argument_that_looks_like_json_does_not_round_trip() {
     let turn = vec![TranscriptItem::Assistant {

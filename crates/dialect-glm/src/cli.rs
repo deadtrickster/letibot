@@ -1,28 +1,12 @@
-//! `letibot-render` as a function, so more than one binary can be it.
+//! `letibot-render` as a FUNCTION, so more than one binary can be it.
 //!
-//! The fidelity gate execs `letibot-render` by PATH and knows nothing about subcommands, so the
-//! multicall must be reachable from that name and the code that does the work has to be callable
-//! from both the binary this crate builds and the dispatcher.
-//!
-//! Being a function forces two mechanical changes: `std::env::args().skip(1)` becomes an `args`
-//! parameter so a test can pass its own, and `std::process::exit(n)` becomes `return n` so the caller
-//! decides whether the process ends. A library that exits takes that decision away from its caller,
-//! and the dispatcher has its own exit convention to honour.
-//!
-//! The gate must not know what a `TranscriptItem` is: it reads fixtures it cannot interpret, POSTs a
-//! body it did not build, and compares two strings. Everything that requires understanding the
-//! transcript happens here, once, in the language that owns those types.
-//!
+//! The fidelity gate execs it by PATH and knows nothing about subcommands, so this has to
+//! be callable from both the binary and the multicall dispatcher. The gate must not know
+//! what a `TranscriptItem` is, so expanding a fixture, mapping items onto OpenAI messages
+//! and deciding whether a generation prompt belongs all happen here, once:
 //! ```text
 //! letibot-render --dialect glm-5.3-flash --profile faithful FIXTURE.json [FIXTURE.json …]
 //! ```
-//!
-//! `--profile` has one value left, and stays strict so an old command line is told the profile was
-//! removed rather than having it treated as a filename. stdout is a JSON array of cases, one per
-//! (fixture, prefix length, generation prompt on or off).
-//!
-//! It lives in `dialect-glm` because that is the only crate this strand owns; when a second dialect
-//! lands it should move to a crate of its own, and `--dialect` is already the switch.
 
 use crate::{GlmRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, glm_tool_json};
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};
@@ -48,9 +32,9 @@ struct Fixture {
     /// fails the gate just as loudly as an undeclared one.
     #[serde(default)]
     divergences: Vec<Divergence>,
-    /// Places byte equality is not available: the oracle emits something unreproducible and both
-    /// sides are folded onto a canonical form. Two-sided checked, because an unnecessary rewrite is a
-    /// place a real diff could hide.
+    /// Places byte equality is not available, as opposed to not holding - the oracle emits
+    /// something unreproducible (a per-process nonce) and both sides have to be folded onto a
+    /// canonical form first. Two-sided checked: an unnecessary rewrite is a place a diff hides.
     #[serde(default)]
     normalise: Vec<Divergence>,
 }
@@ -76,8 +60,8 @@ fn default_dialect() -> String {
     "glm-5.3-flash".to_string()
 }
 
-/// Run the renderer over `args`, returning the process exit code. `args` is what followed the program
-/// name, so the binary and the dispatcher arrive here identically.
+/// Run the renderer over `args`, returning the process exit code. `args` is what followed
+/// the program name, so `letibot-render …` and `letibot render …` arrive here identically.
 pub fn run(args: &[String]) -> i32 {
     let mut args = args.iter().cloned();
     let mut dialect_name = default_dialect();
@@ -133,8 +117,9 @@ pub fn run(args: &[String]) -> i32 {
     0
 }
 
-/// One fixture becomes every prefix of itself, with and without a generation prompt: a renderer right
-/// about a whole conversation and wrong about its third prefix is one whose cache never hits.
+/// One fixture becomes every prefix of itself, with and without a generation prompt: a
+/// renderer that is right about a whole conversation and wrong about its third prefix is
+/// one whose cache never hits.
 fn expand(fx: &Fixture) -> Vec<Value> {
     let effort = match fx.reasoning_effort.as_deref() {
         Some("low") => ReasoningEffort::Low,
@@ -243,8 +228,9 @@ fn span_json(s: &RenderSpan) -> Value {
     }
 }
 
-/// The same conversation in the shape `/apply-template` expects: deliberately dumb, so a mapping bug
-/// shows up as a mismatch rather than as mutual agreement on the wrong thing.
+/// The same conversation, in the shape `/apply-template` expects. Deliberately dumb - it
+/// re-groups items and copies text, never renders - so a mapping bug shows up as a mismatch
+/// rather than as mutual agreement on the wrong thing.
 fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value {
     let mut msgs: Vec<Value> = Vec::new();
     if !prefix.system.is_empty() {
@@ -310,12 +296,13 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
             } => {
                 flush(&mut turn, &mut msgs);
                 msgs.push(json!({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    // The payload verbatim, which is what the renderer emits: either way both sides
-                    // are given the same string, so the gate tests the render and not our wording.
-                    "content": payload,
-                }));
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                // The payload verbatim, which is what the renderer emits: under the harness these bytes
+                // are already `ToolResult::render`'s envelope, and a fixture supplies them directly, so
+                // both sides get the same string and the gate tests the render, not our wording.
+                                    "content": payload,
+                                }));
             }
         }
     }

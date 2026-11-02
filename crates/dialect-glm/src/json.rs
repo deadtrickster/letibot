@@ -1,12 +1,11 @@
-//! JSON text that is byte-identical to what the shipped template produces.
+//! JSON text that is byte-identical to what the shipped GLM template produces.
 //!
-//! GLM's jinja calls `tojson` on the tool schema block and on a tool call's non-string argument
-//! values, and both land in the prompt verbatim, so the separators are part of the prompt bytes
-//! rather than a formatting preference.
-//!
-//! Hugging Face's `tojson` is `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)` and
-//! llama.cpp's jinja matches it. `serde_json`'s compact writer uses `,` and `:` with no spaces, so a
-//! naive `to_string` diverges on every tool schema. Hence this formatter.
+//! GLM's jinja calls `{{ v | tojson(ensure_ascii=False) }}` for the tool schema block
+//! and for a tool call's non-string argument values, so the separators are prompt
+//! bytes rather than a formatting preference. Hugging Face's `tojson` is
+//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)` and llama.cpp's
+//! jinja matches it, while `serde_json`'s compact writer uses `,`/`:` - hence this
+//! formatter.
 
 use serde_json::Value;
 use serde_json::ser::Formatter;
@@ -43,10 +42,9 @@ pub fn hf_tojson(value: &Value) -> String {
     String::from_utf8(buf).expect("serde_json emits UTF-8")
 }
 
-/// One line of GLM's `<tools>` block: the template unwraps the function and emits `name`,
-/// `description`, `parameters` in that fixed order, with `description` present as `""` when the
-/// caller omitted it. That normalisation is the server's, and skipping it emits a shorter line than
-/// the model was trained on.
+/// One line of GLM's `<tools>` block, from an OpenAI-shaped tool schema. It must carry the
+/// server's own normalisation (unwrapped, `description` defaulted to `""`, `name`/`description`/
+/// `parameters` order) or the line is shorter than the model was trained on.
 pub fn glm_tool_json(tool: &Value) -> String {
     let f = tool.get("function").unwrap_or(tool);
     let mut out = serde_json::Map::new();
@@ -71,8 +69,8 @@ pub fn glm_tool_json(tool: &Value) -> String {
     hf_tojson(&Value::Object(out))
 }
 
-/// One `<arg_value>` body: a string argument is emitted raw and everything else as JSON, so
-/// `{"path":"a.txt"}` renders `a.txt`.
+/// One `<arg_value>` body: a string argument is emitted raw, everything else as JSON,
+/// so `{"path":"a.txt"}` renders `a.txt`. The template asks for exactly that.
 pub fn arg_value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -87,7 +85,7 @@ mod tests {
 
     #[test]
     fn separators_match_the_shipped_template() {
-        // Captured from POST /apply-template, 2026-09-09.
+        // Captured from POST /apply-template.
         assert_eq!(
             hf_tojson(&json!({"a": 1, "b": "two"})),
             r#"{"a": 1, "b": "two"}"#

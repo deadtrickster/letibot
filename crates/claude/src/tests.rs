@@ -1,10 +1,8 @@
 //! The reader's tests, on a fixture transcript written by hand.
 //!
-//! **The fixture is a file, not a mock**, because the two things rule 4 promises — the
-//! bytes and the mtime are the same after a read as before it — can only be measured on a
-//! real file. Every line of it is a shape taken from a real transcript on this box
-//! (`~/.claude/projects/-Users-dead-Projects-letibot/*.jsonl`), including the ones this
-//! build does not read.
+//! The fixture is a file, not a mock, because rule 4's promise - the bytes and the mtime are the
+//! same after a read as before it - can only be measured on a real file. Every line of it is a
+//! shape taken from a real transcript on this box, including the ones this build does not read.
 
 use super::*;
 use letibot_transcript::SegmentEdge;
@@ -26,9 +24,9 @@ fn fixture(tag: &str) -> PathBuf {
 
 const UUID: &str = "11111111-2222-3333-4444-555555555555";
 
-/// The whole mapping in one transcript, in the order a conversation writes it. The timestamps are
-/// distinct and deliberately not monotone, because nothing here may read a clock: the assertion is
-/// that each row carries its own line's time.
+/// The whole mapping in one transcript, in the order a conversation writes it: the operator's
+/// words, a thought, an answer with a call, its result, a recap, a compaction summary, a sidechain
+/// line, and a block this build does not read. The times are distinct, so each row proves its own.
 fn written(tag: &str) -> (PathBuf, PathBuf) {
     let dir = fixture(tag);
     let path = dir.join("proj-a").join(format!("{UUID}.jsonl"));
@@ -651,7 +649,8 @@ fn a_compaction_boundary_is_a_mark_that_renders_nothing() {
 }
 
 /// The idempotency rule: a resumed session does not import a second time, because a second copy of
-/// the conversation is the one way an import can corrupt a transcript.
+/// the conversation appended to a session that already holds it is the one way an import can
+/// corrupt a transcript. Tested where the rule lives, not through a daemon that needs a vocabulary.
 #[test]
 fn a_fresh_cc_session_imports_and_a_resumed_one_does_not() {
     let id = "e90320f4-b550-4aa0-aa11-1c2673df88e8";

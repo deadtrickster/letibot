@@ -1,27 +1,14 @@
-//! `letibot-render-qwen` as a function, so more than one binary can be it.
+//! `letibot-render-qwen` as a FUNCTION, so more than one binary can be it.
 //!
-//! The fidelity gate execs this by PATH, so the multicall must be reachable from the name, and the
-//! code that does the work has to be callable from both the binary this crate builds and the
-//! dispatcher. One implementation, not two: a renderer that drifted by a byte would re-prefill every
-//! conversation.
-//!
-//! Being a function forces two mechanical changes: the arguments arrive as a parameter, and
-//! `std::process::exit(n)` becomes `return n` so the caller decides whether the process ends.
-//!
-//! The contract is `dialect-glm`'s: stdout is a JSON array of cases, one per (fixture, prefix length,
-//! generation prompt on or off), each carrying the render, its span list, and the
-//! `apply_chat_template` request that must produce the same string.
-//!
+//! The fidelity gate execs it by PATH, so this has to be callable from both the binary and the
+//! multicall dispatcher - one implementation, because a renderer that drifted by a byte would
+//! re-prefill every conversation. A second binary rather than a `--dialect` arm on GLM's: the gate
+//! hardcodes GLM's binary, and an arm would make `dialect-glm` depend on `dialect-qwen`. stdout is
+//! a JSON array of cases, one per (fixture, prefix length, generation prompt on/off), each carrying
+//! the render and the `apply_chat_template` request that must produce the same string:
 //! ```text
 //! letibot-render-qwen FIXTURE.json [FIXTURE.json …]   > cases.json
 //! ```
-//!
-//! It is a second binary rather than a `--dialect` arm because the fidelity driver hardcodes GLM's
-//! binary: an arm there would mean a sibling dialect depending on a sibling dialect, so a build of
-//! GLM pulls in a model it has nothing to do with.
-//!
-//! It is not the gate. The gate is GLM's and is untouched; this is the same measurement on a corpus
-//! this crate owns, reported as its own number.
 
 use crate::{QwenRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, qwen_tool_json};
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};
@@ -41,7 +28,8 @@ struct Fixture {
     #[serde(default)]
     items: Vec<TranscriptItem>,
     /// Places this renderer is known to differ from the shipped template. A declared divergence
-    /// that stopped reproducing is reported just as loudly as an undeclared one.
+    /// that stopped reproducing is reported as loudly as an undeclared one, because a divergence that
+    /// quietly went away is one somebody may have "fixed" by changing the wrong thing.
     #[serde(default)]
     divergences: Vec<String>,
 }
@@ -79,7 +67,8 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 /// One fixture becomes every prefix of itself, with and without a generation prompt: a renderer
-/// right about a whole conversation and wrong about its third prefix is one whose cache never hits.
+/// that is right about a whole conversation and wrong about its third prefix is one whose cache
+/// never hits, and every prefix here is one the harness will actually submit.
 fn expand(fx: &Fixture) -> Vec<Value> {
     let effort = fx
         .reasoning_effort
@@ -96,9 +85,9 @@ fn expand(fx: &Fixture) -> Vec<Value> {
     for k in 0..=fx.items.len() {
         let items = &fx.items[..k];
         let spans = renderer.render(&prefix, items);
-        // A prefix that ends inside an assistant turn has no oracle: the template closes every
-        // message it renders, so it emits a turn end we must not emit yet. Reported rather than
-        // dropped, so a case count cannot quietly shrink.
+        // A prefix that ends inside an assistant turn has no oracle: a message list cannot express
+        // "this assistant message is not finished", so `apply_chat_template` closes it with an `<|im_end|>`
+        // we must not emit yet. Counted rather than dropped, so "87 of 87" cannot become "87 of 40".
         let mid_turn = ends_mid_turn(items);
         let reason = if items.is_empty() && fx.prefix.system.is_empty() {
             "empty-messages"
@@ -117,8 +106,9 @@ fn expand(fx: &Fixture) -> Vec<Value> {
     out
 }
 
-/// Eight arguments, and a struct would be worse: every one is a fact this case must carry, and an
-/// `Option` per field invites leaving one out of a corpus that exists to catch exactly that.
+/// Eight arguments, and a struct would be worse: each is a fact about this case that the JSON
+/// must carry, and a builder with an `Option` per field invites leaving one out of a corpus that
+/// exists to catch exactly that.
 #[allow(clippy::too_many_arguments)]
 fn case(
     fx: &Fixture,
@@ -161,9 +151,9 @@ fn span_json(s: &RenderSpan) -> Value {
     }
 }
 
-/// The same conversation in the shape `apply_chat_template` expects: deliberately dumb, since a
-/// mapping bug should show up as a mismatch. `tool_calls[].function.arguments` must be an object
-/// here, and `reasoning_content` is the field even though the thinking is replayed inline.
+/// The same conversation in the shape `apply_chat_template` expects. Deliberately dumb - it
+/// re-groups items and copies text, never renders - so a mapping bug shows up as a mismatch rather
+/// than as agreement on the wrong thing. `arguments` must be an object here; the template raises on a string.
 fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value {
     let mut msgs: Vec<Value> = Vec::new();
     if !prefix.system.is_empty() {

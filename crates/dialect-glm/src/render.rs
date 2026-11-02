@@ -1,14 +1,11 @@
-//! The second renderer: hand-written, demoted, kept as a differential.
+//! The second renderer: hand-written, kept as a differential against the template.
 //!
-//! The shipped template run through minijinja is the production renderer, because it does the same
-//! job for every model rather than for one. This stays because two independent implementations that
-//! agree on the fidelity corpus are stronger evidence than one implementation that passes its own
-//! tests, and that is now its job.
-//!
-//! It renders one thing only: the training format, as CPython Jinja2 produces it. A profile that
-//! reproduced minja's cross-iteration `{% set %}` leak cannot be produced here without deliberately
-//! reintroducing someone else's bug, and the divergence is better evidence when the real template is
-//! run through a correct engine.
+//! The shipped template run through minijinja is the production renderer; this one exists
+//! because two independent implementations that agree are stronger evidence than one that
+//! passes its own tests, and the fidelity corpus is measured through it. It renders one
+//! thing only: the training format as CPython Jinja2 produces it. It does not reproduce
+//! llama.cpp's cross-iteration `{% set %}` leak, because the Jinja2 reading is what the
+//! model was trained against.
 
 use crate::ReasoningEffort;
 use crate::json::arg_value_text;
@@ -17,8 +14,9 @@ use letibot_dialect::{ControlToken, RenderSpan, StablePrefix};
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use serde_json::Value;
 
-/// GLM's hand-written renderer: a pure function of `(effort, prefix, items)`. Appending takes the
-/// history as an argument, which is what it always needed.
+/// GLM's hand-written renderer: a pure function of `(effort, prefix, items)`, kept as a
+/// differential against the template. Appending takes the history, which is what the
+/// boundary state needs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GlmRenderer {
     effort: ReasoningEffort,
@@ -47,10 +45,9 @@ impl GlmRenderer {
         out
     }
 
-    /// The spans to append to a render of `history`, for `new_items`: rendering `history + new` from
-    /// scratch equals rendering `history` and appending this, which is what the append-only design
-    /// rests on. `history` is the transcript already rendered, because GLM's boundary state is not
-    /// derivable from an offset.
+    /// The spans to append to a render of `history`, for `new_items`: must agree with
+    /// [`GlmRenderer::render`], which is what the append-only design rests on. `history` is the
+    /// whole transcript, not a count, because the boundary state is not derivable from one.
     pub fn render_incremental(
         &self,
         history: &[TranscriptItem],
@@ -68,8 +65,9 @@ impl GlmRenderer {
     }
 }
 
-/// Where inside an assistant turn the renderer is. `Open` means `<think>` was emitted with nothing in
-/// it yet, which is the state a generation prompt leaves behind.
+/// Where inside an assistant turn the renderer currently is. `Open` means `<think>` was
+/// emitted with nothing in it yet - the state a generation prompt leaves behind, which is
+/// why append-only survives a turn that starts mid-`<think>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Think {
     #[default]
@@ -97,9 +95,9 @@ fn text(out: &mut Vec<RenderSpan>, s: impl Into<String>) {
     }
 }
 
-/// The head of every GLM prompt: `[gMASK]<sop>`, the reasoning-effort line, the tool block, then the
-/// bootstrap system message. This is what the prefix cache is keyed on, and the order is the
-/// template's.
+/// The head of every GLM prompt: `[gMASK]<sop>`, the effort line, the tool block, then the
+/// bootstrap system message. This is what the server's prefix cache is keyed on, and the
+/// order is the template's: the effort line and tools come before the message loop.
 fn render_prefix(effort: ReasoningEffort, prefix: &StablePrefix, out: &mut Vec<RenderSpan>) {
     ctl(out, &tk::GMASK);
     ctl(out, &tk::SOP);
@@ -149,8 +147,9 @@ fn render_prefix(effort: ReasoningEffort, prefix: &StablePrefix, out: &mut Vec<R
     }
 }
 
-/// `<|assistant|><think>`, what the model is handed to start speaking, deliberately not part of a
-/// render. The closing form hands it `<think></think>` instead, for a turn with no window to think in.
+/// The generation prompt with the reasoning block opened and immediately closed, so the
+/// model starts on assistant text instead of thinking - used for the summary turn, which
+/// cannot spend its window reasoning. Not part of a render: it would break the append-only property.
 pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
     let mut v = generation_prompt();
     v.push(RenderSpan::Control(tk::THINK_CLOSE.clone()));
@@ -160,6 +159,7 @@ pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
 /// What stands in for a reasoning block the operator stopped.
 pub const ABANDONED_REASONING: &str = "[The operator stopped this reasoning before it finished. Its text is kept in the transcript but is not replayed: it was an abandoned draft, not a conclusion. Do not resume it.]";
 
+/// `<|assistant|><think>`: what the model is handed to start speaking.
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
         RenderSpan::Control(tk::ASSISTANT.clone()),
@@ -225,8 +225,9 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
                 close_turn(st);
             }
             ensure_think_open(st, out);
-            // An abandoned draft is not replayed: the store keeps the text and the prompt gets a
-            // sentence saying it was stopped, which is more use than a thought that went nowhere.
+            // An abandoned draft is not replayed: the store keeps the text, the prompt gets a sentence
+            // saying it was stopped, which is more use to the next turn than a thought that was going
+            // nowhere.
             text(
                 out,
                 if *truncated {
@@ -285,8 +286,9 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             // here wraps the model's result twice — see `outcome_envelope`.
             let _ = outcome;
             text(out, payload.clone());
-            // And the picture, where the reading happened: a tool result that read an image carries
-            // it, and without this the bytes reached the transcript and stopped there.
+            // The picture goes where the reading happened: a tool result that read an image carries it,
+            // and without this the bytes reach the transcript and stop there. GLM's own three tokens, so
+            // the marker is one span each rather than text.
             if media.is_some() {
                 ctl(out, &tk::BEGIN_OF_IMAGE);
                 ctl(out, &tk::IMAGE);
@@ -297,9 +299,9 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
     }
 }
 
-/// A tool call's arguments in the order the model emitted them: key order is prompt bytes, so the map
-/// is walked and not sorted. Arguments that are not an object render no pairs at all, since inventing
-/// a key would put bytes in the prompt no model produced.
+/// A tool call's arguments, in the order the model emitted them: key order is prompt bytes,
+/// so the map is walked, not sorted. Anything that is not a JSON object renders no argument
+/// pairs - inventing a key would put bytes in the prompt no model produced.
 fn arguments_of(arguments: &str) -> Vec<(String, Value)> {
     match serde_json::from_str::<Value>(arguments) {
         Ok(Value::Object(map)) => map.into_iter().collect(),
@@ -307,8 +309,9 @@ fn arguments_of(arguments: &str) -> Vec<(String, Value)> {
     }
 }
 
-/// Superseded by `letibot_tools::ToolResult::render` and no longer on the render path: the fixture
-/// corpora still build a payload with it, and its wording is the reference for the envelope.
+/// Superseded by `letibot_tools::ToolResult::render` and off the render path; kept because
+/// the fixture corpora build a payload with it. Running both wraps one result in two
+/// envelopes, which is why the renderer emits `payload` verbatim.
 pub fn outcome_envelope(outcome: &ToolOutcome, payload: &str) -> String {
     let head = match outcome {
         ToolOutcome::Ok => return payload.to_string(),
@@ -321,8 +324,9 @@ pub fn outcome_envelope(outcome: &ToolOutcome, payload: &str) -> String {
         }
         ToolOutcome::Timeout => "NO_RESULT\noutcome: timeout".to_string(),
         ToolOutcome::NotRun { why } => format!("NO_RESULT\noutcome: not_run\nreason: {why}"),
-        // Not `NO_RESULT`: the other non-`Ok` classes say there is nothing to build on, and this one
-        // says the work is still happening and the handle reaches it.
+        // Not `NO_RESULT`: the other five non-`Ok` classes say there is nothing here to build on,
+        // and this one says the opposite - the work is still happening and the handle reaches it.
+        // Sharing the envelope would put "still running" in "abandoned"'s class.
         ToolOutcome::Backgrounded {
             handle,
             ran_for_ms,
@@ -341,8 +345,8 @@ pub fn outcome_envelope(outcome: &ToolOutcome, payload: &str) -> String {
     }
 }
 
-/// User content parts joined the way the server joins them: a newline between text parts and none on
-/// either side of a media marker.
+/// User content parts, joined the way the server joins them before the template runs: a
+/// newline between text parts, and no newline on either side of a media marker.
 fn render_user_parts(parts: &[UserPart], out: &mut Vec<RenderSpan>) {
     let mut pending = String::new();
     let mut any_text_yet = false;
@@ -400,9 +404,9 @@ pub fn ends_mid_turn(items: &[TranscriptItem]) -> bool {
 /// Something about this transcript that GLM's template cannot render faithfully.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anomaly {
-    /// Tool results appear in an order other than the calls they answer. The template sorts them by
-    /// call order and we render them in transcript order, because sorting would mean inserting bytes
-    /// before bytes already in the KV cache; append them in call order and the two agree.
+    /// Tool results appear in an order other than the order of the calls they answer. The
+    /// shipped template sorts them by tool-call order; we render transcript order, because a
+    /// sort would have to insert before bytes already in the KV cache. Append in call order.
     ToolResultsOutOfCallOrder { at: usize },
     /// Two tool calls in one turn share an id. The template's sort gives up on this
     /// too, so it is not a divergence — but it makes a result unattributable.
@@ -411,8 +415,9 @@ pub enum Anomaly {
     ToolCallArgumentsNotAnObject { at: usize, name: String },
 }
 
-/// Report transcript shapes that cannot be rendered faithfully: this says what is wrong and the
-/// caller decides. A free function because every anomaly is a property of GLM's template.
+/// Report transcript shapes that cannot be rendered faithfully: declarative on purpose, so
+/// this says what is wrong and the caller decides. A free function because every anomaly is
+/// a property of GLM's template, so it applies to whoever renders it.
 pub fn check_transcript(items: &[TranscriptItem]) -> Vec<Anomaly> {
     let mut out = Vec::new();
     let mut last_calls: Vec<String> = Vec::new();
