@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use letibot_tokencore::store::TodoItem;
+use letibot_tokencore::store::{TodoBy, TodoItem};
 use letibot_tools::builtins::skill::SkillRegistry;
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 
@@ -221,8 +221,9 @@ pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
         }
     }
     // The plan, as the board holds it: a row the model wrote is the subject it is working on even
-    // when the prompt that started it said something else.
-    for row in plan {
+    // when the prompt that started it said something else. The queue's half is left out - those rows
+    // are the repository's queue, which nobody's skill is about.
+    for row in plan.iter().filter(|r| !matches!(r.by, TodoBy::Queue)) {
         out.push_str(&row.content);
         out.push('\n');
     }

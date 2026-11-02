@@ -167,11 +167,19 @@ fn the_models_reasoning_and_text_are_part_of_the_subject() {
 /// the prompt nor the last answer does.
 #[test]
 fn the_plan_on_the_board_is_part_of_the_subject() {
+    let queue = TodoItem {
+        by: TodoBy::Queue,
+        ..row("review agent/queue-row on the merge queue")
+    };
     let text = subject(
         &prompt("keep going"),
-        &[row("build the beamer slides for the offsite")],
+        &[row("build the beamer slides for the offsite"), queue],
     );
     assert!(text.contains("beamer slides"), "{text}");
+    assert!(
+        !text.contains("merge queue"),
+        "the queue's rows are the repository's, not this session's plan: {text}"
+    );
 }
 
 /// The tail is settled against the round's calls and logged either way: an offer taken is a `skill`
