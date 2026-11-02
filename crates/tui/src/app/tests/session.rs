@@ -2,20 +2,9 @@
 
 use super::*;
 
-/// **A bare `!term` attaches: the rectangle comes up, the daemon says what is running, and
-/// the screen it kept is drawn in it.**
-///
-/// This is the operator's way back, and the whole of it is three facts:
-///
-/// * the head sends the **bare verb** — it does not know what is running, and cannot: the
-///   program is the session's and the line that started it may have been typed by another
-///   head, or by this one before a session switch;
-/// * the daemon answers with [`ServerFrame::TermAttached`], and the head **says** what it
-///   was told — *"saying what is running in it"* is the requirement, and a screen alone
-///   does not say it (`mc`'s panels look like `mc`'s panels);
-/// * and the bytes that follow are the **daemon's replay** of a screen the head never drew,
-///   which is what proves the attach rather than a redraw: the pane the head is holding was
-///   created empty a moment ago, so everything on it came from the daemon.
+/// A bare `!term` attaches: the rectangle comes up, the daemon says what is running, and the screen it kept is
+/// drawn in it. The head sends the bare verb because it cannot know what is running — the program is the
+/// session's, and the line may have been typed by another head or before a switch.
 #[test]
 fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
     let mut a = app();
@@ -62,10 +51,8 @@ fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
         a.screen(80, 24)
     );
 
-    // **And the line the daemon named is what an ending names**, not the bare verb the head
-    // typed: the row a person reads has to say which pane ended. (The reason is the daemon's
-    // own sentence; this fixture uses the one a deliberate close gets, which is the daemon's
-    // wording since protocol 34 — see `harnessd`'s `Terminals::CLOSED`.)
+    // And the line the daemon named is what an ending names, not the bare verb the head typed: the row a
+    // person reads has to say which pane ended.
     a.apply(ServerFrame::TermEnded {
         pane: Some(1),
         reason: "you closed the terminal".into(),
@@ -79,11 +66,9 @@ fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
     );
 }
 
-/// **A session with no pane says so, and the sentence is a row.**
-///
-/// The other half of the attach: `!term` with nothing running is not silence and not a
-/// rectangle left standing empty — the daemon answers with the same `TermEnded` every pane
-/// that could not start uses, and the head files it like any other ending.
+/// A session with no pane says so, and the sentence is a row: `!term` with nothing running is not silence and
+/// not a rectangle left standing empty, since the daemon answers with the same `TermEnded` every pane that
+/// could not start uses, and the head files it like any other ending.
 #[test]
 fn attaching_to_a_session_with_no_pane_says_so() {
     let mut a = app();
@@ -110,15 +95,9 @@ fn attaching_to_a_session_with_no_pane_says_so() {
     );
 }
 
-/// **A program that exits while the operator is away still leaves its row.**
-///
-/// The second half of *a detach must not hide anything*: the head keeps the pane while it
-/// is detached (so it keeps feeding the screen from the frames that are still arriving),
-/// and the ending therefore arrives with the last rows the program left — the row they
-/// would have seen had they been looking.
-///
-/// **The register is the difference and it is asserted too**: this ending was not the
-/// operator's act, so it is the notice register — the `×` a `!term close` does not get.
+/// A program that exits while the person is away still leaves its row: the head keeps the pane while detached
+/// and keeps feeding it, so the ending arrives with the last rows the program left. The register is the
+/// difference and is asserted too.
 #[test]
 fn a_program_that_exits_while_detached_still_leaves_its_ending_row() {
     let mut a = app();
@@ -170,12 +149,9 @@ fn a_program_that_exits_while_detached_still_leaves_its_ending_row() {
     );
 }
 
-/// **A bare `!term` after a detach attaches back to the SAME run.**
-///
-/// The operator's way back, and the whole of it is that the pane was never ended: the head
-/// sends the bare verb, the daemon answers with what is running in the pane it kept and
-/// replays the screen, and the head draws that screen again. A head that had *ended* the
-/// pane on `ctrl-\` would be opening a new one here — or being refused.
+/// A bare `!term` after a detach attaches back to the same run: the pane was never ended, so the daemon answers
+/// with what is running in the pane it kept and replays the screen. A head that had ended it would be opening a
+/// new one, or being refused.
 #[test]
 fn a_bare_term_line_after_a_detach_attaches_back_to_the_same_run() {
     let mut a = app();
@@ -219,25 +195,9 @@ fn a_bare_term_line_after_a_detach_attaches_back_to_the_same_run() {
     );
 }
 
-/// **A sub-session is listed, reachable and switchable — folded under the session that spawned
-/// it.**
-///
-/// *"yes subagents are not even scratch session they are session, just sub sessions"*, and
-/// *"why readonly? subagent session is more like you driving others via tmux"*. Two sites used to
-/// drop every row with a parent — `Hello` and `Sessions` — so a session a head can post to, and
-/// get an answer from, was thrown away on the way in. What that filter was protecting against was
-/// noise, and the answer to noise is a fold on the parent's row (the operator, later: *"otherwise
-/// im lost in subagents"*).
-///
-/// Four properties, and the third is the one a two-enumerations regression would break:
-///
-/// * **Kept**: both rows are in `sessions` after a `Hello`.
-/// * **One line by default**: the project's line and the conversation, and the child folded away —
-///   a daemon with thirty children costs one row here.
-/// * **The listing and the keys agree**: opening the parent with `→` puts the child on the screen
-///   *and* under the cursor's enumeration, so `enter` switches to the row that was drawn — both
-///   read from [`App::session_rows`].
-/// * **`←` on the child folds it back into its parent.**
+/// A sub-session is listed, reachable and switchable, folded under the session that spawned it. Two sites used
+/// to drop every row with a parent, so a session a head can post to and get an answer from was thrown away on
+/// the way in.
 #[test]
 fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     let mut child = brief("s-child", "the child", false);
@@ -322,27 +282,15 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     );
 }
 
-/// **The version the daemon is TOLD to be is checked at the handshake, and a skew is
-/// said rather than fatal.**
-///
-/// leticl does this on `Hello` and this head did not, which left the skew announcing
-/// itself on the first frame that failed to parse — the expensive moment, one frame
-/// late, and phrased as a decoder's complaint. The `Hello` is the cheap moment: nothing
-/// has been read yet and the direction is known.
-///
-/// Three things are asserted together, because they are one behaviour: a matching
-/// version says **nothing at all** (a line here would be furniture), a differing one
-/// says which way round it is in the transcript, and **the head stays attached** — a
-/// skew is usually survivable, which is R3's whole argument, so exiting here would be
-/// the failure framing the fix.
+/// The version the daemon is told to be is checked at the handshake, and a skew is said rather than fatal: the
+/// `Hello` is the cheap moment, since nothing has been read yet and the direction is known, where the first
+/// frame that failed to parse was one frame late and phrased as a decoder's complaint.
 #[test]
 fn a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached() {
     let hub = Hub::new("s");
 
-    // The normal case: both halves the same build, and nothing is said. §13.2b cuts
-    // both ways — a field that is always zero is no more readable than one that is
-    // absent, and a head that announces "versions match" on every attach teaches the
-    // operator that this line can be skipped.
+    // The normal case: both halves the same build and nothing is said, since a field always zero is no more
+    // readable than one absent, and a line saying versions match on every attach teaches that it can be skipped.
     let mut a = app();
     a.apply(hello_at(
         "s",
@@ -360,11 +308,8 @@ fn a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached() {
         a.notes
     );
     a.command("status");
-    // **Taller than it was, again.** `/status` is a scrolling pane, and the row this test
-    // reads is near its end: R17 added three rows (gaps, behind, orphan) and this change
-    // added a fourth (`first byte`, the counter `model_slow_first_byte` now lands in) plus
-    // its gloss. A frame that used to reach the bottom of the list does not, and the
-    // failure is a missing row rather than a wrong one.
+    // Taller than it was: `/status` is a scrolling pane and this row is near its end, so a frame that used to
+    // reach the bottom no longer does, and the failure is a missing row rather than a wrong one.
     let status = a.screen(120, 96).join("\n");
     let row = status
         .lines()
@@ -423,10 +368,8 @@ fn a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached() {
     assert!(!a.should_quit());
     // `/status` names the direction too, and has it after the note has scrolled away.
     a.command("status");
-    // **Taller than it was**: `/status` gained three rows in R17 (gaps, behind,
-    // orphan), and a fixed-height frame that used to reach the bottom of the list
-    // no longer does.
-    // **And the same height for the same reason.**
+    // Taller than it was: `/status` gained three rows in R17, so a fixed-height frame that used to reach the
+    // bottom no longer does.
     let status = a.screen(120, 96).join("\n");
     let row = status
         .lines()
@@ -436,11 +379,8 @@ fn a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached() {
     assert!(row.contains(&older.to_string()), "{row}");
 }
 
-/// **A `Switch` re-reads the same `Hello`, so the sentence is filed once.** The
-/// daemon answers a switch with a second `Hello` on the same connection — that is the
-/// whole of this head's switch path — and a skew announced twice would read as two
-/// skews. `note` dedupes on `(code, detail, ts)`, which is what makes that true, and
-/// this pins it rather than trusting it.
+/// A `Switch` re-reads the same `Hello`, so the sentence is filed once: a skew announced twice would read as
+/// two skews, and `note` dedupes on `(code, detail, ts)`. This pins that rather than trusting it.
 #[test]
 fn a_version_skew_is_said_once_however_many_hellos_arrive() {
     let hub = Hub::new("s");
@@ -456,19 +396,9 @@ fn a_version_skew_is_said_once_however_many_hellos_arrive() {
     }
     assert_eq!(a.notes.len(), 1, "said three times: {:?}", a.notes);
 }
-/// **An OLDER daemon seats this head read-only: nothing is sent, and the refusal says the
-/// whole informed sentence.**
-///
-/// The operator's own case is the setup — a daemon speaking 22 against this head's 36 — and
-/// three facts are asserted together because they are one behaviour:
-///
-/// * **the head stays attached and keeps reading** — the conversation is there, which is the
-///   *look around* half of the ruling;
-/// * **nothing leaves, including the asks the seating itself would have made** — `TermStatus`
-///   arrived at protocol 34 and `ListJobs` at 21, so an unlocked head would have killed the
-///   operator's daemon a tick after the `Hello` without anyone typing anything;
-/// * **the composer refuses with `protocol_skew`'s sentence and the chord**, and holds the
-///   line — the *decide* half, armed rather than presumed.
+/// An older daemon seats this head read-only: nothing is sent, and the refusal says the whole informed
+/// sentence. Three facts are one behaviour: the head stays attached and keeps reading, nothing leaves, and the
+/// person is told why.
 #[test]
 fn an_older_daemon_seats_this_head_read_only_and_the_refusal_says_the_sentence() {
     let hub = Hub::new("s");
@@ -482,10 +412,8 @@ fn an_older_daemon_seats_this_head_read_only_and_the_refusal_says_the_sentence()
         older,
     ));
     assert!(a.skew_locked(), "the OLDER direction is the locked one");
-    // **The seating's own asks did not go out.** This is the assertion the feature stands
-    // on: `TermStatus` (34) and `ListJobs` (21) against a daemon at 22 are frames it has
-    // never heard of, and a head that sent them on arrival would have spent the session
-    // before the operator pressed a key.
+    // The seating's own asks did not go out, which is the assertion the feature stands on: `TermStatus` and
+    // `ListJobs` against a daemon that has never heard of them would spend the session before a key is pressed.
     assert!(
         a.take_actions().is_empty(),
         "a locked head queues nothing at the seating"
@@ -618,14 +546,9 @@ fn a_newer_daemon_attaches_with_nothing_disabled() {
     assert!(!a.screen(120, 40).join("\n").contains("read-only"));
 }
 
-/// **A head whose daemon goes away says so, keeps its screen, and does not exit.**
-///
-/// The defect this is against: `client.ack(...)?` propagated out of the driver's
-/// loop, through `main`, and the process was gone — the operator's view of a
-/// conversation that was still on disk, taken with a socket that had merely been
-/// closed. The half a test can hold on this side is the head's: the *state* is on
-/// the head, the conversation is not cleared, the line says what happened, and a
-/// prompt typed at it is refused rather than shown as sent.
+/// A head whose daemon goes away says so, keeps its screen, and does not exit. The defect was `ack(...)?`
+/// propagating out of the driver's loop, through `main`, so the process was gone over a socket that had merely
+/// been closed. The state is on the head and the conversation is not cleared.
 #[test]
 fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
     let hub = Hub::new("s");
@@ -645,10 +568,8 @@ fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
         "a dropped socket is not a reason to leave"
     );
 
-    // **The screen it had is still the screen it has.** The transcript is not
-    // cleared, the turn is not forgotten, and nothing is redrawn as if the session
-    // had ended — plus one line saying what is wrong, above the composer where the
-    // eye crosses on the way to typing.
+    // The screen it had is still the screen it has: the transcript is not cleared, the turn is not forgotten,
+    // plus one line saying what is wrong, above the composer where the eye crosses.
     let after = a.screen(100, 24).join("\n");
     assert!(
         after.contains("the answer I already have"),
@@ -662,10 +583,8 @@ fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
     // And the keys still work: this is a head, not a corpse.
     assert!(!after.contains("esc closes this"), "{after}");
 
-    // **A line typed here must not look sent.** The trap is the echo: `submit`
-    // pushes it into `pending_prompts`, the screen draws `queued · <their words>`,
-    // and there is no queue anywhere — so when the daemon comes back the sentence is
-    // gone and it was on the screen as held the whole time.
+    // A line typed here must not look sent: the echo is pushed into `pending_prompts` and drawn `queued`, and
+    // there is no queue anywhere, so the sentence is gone when the daemon comes back.
     typed(&mut a, "did that go anywhere?");
     assert_eq!(a.key(Key::Enter), None, "nothing may leave a dead link");
     assert!(
@@ -678,10 +597,8 @@ fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
     // The words are still theirs, in the field they typed them into.
     assert_eq!(a.input(), "did that go anywhere?");
 
-    // **The daemon comes back, and the recovery is the protocol's own.** The `Hello`
-    // is what says the link is up — it is the frame that seats the connection — and
-    // it says so into the conversation, with the seq it asked from, because the gap
-    // is about to be filled with events and unexplained events are noise.
+    // The daemon comes back and the recovery is the protocol's own: the `Hello` seats the connection and says
+    // so into the conversation with the seq it asked from, since the gap is about to be filled with events.
     a.clock(1_000 + 4_400);
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     assert!(!a.detached());
@@ -699,12 +616,9 @@ fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
     );
 }
 
-/// **`reconnecting…` is a state with a clock, not a word.**
-///
-/// Under the impatient threshold the line says what happened; past it the operator is
-/// told how long, how many attempts, and what they can do — because a head that has
-/// been saying one word for a minute has told them nothing they could not see, and is
-/// indistinguishable from a head that is about to come back.
+/// `reconnecting…` is a state with a clock and not a word: past the impatient threshold the person is told how
+/// long, how many attempts and what they can do, because one word for a minute is indistinguishable from a head
+/// about to come back.
 #[test]
 fn a_link_that_stays_down_stops_saying_reconnecting_and_starts_saying_how_long() {
     let mut a = app();
@@ -776,20 +690,9 @@ fn the_head_asks_for_a_reconnect_only_after_the_backoff() {
     assert!(drawn.contains("connection refused"), "{drawn}");
 }
 
-/// **A `Bye` does not answer a stop this head asked for, and it does not silence the
-/// farewell.**
-///
-/// The operator's second report, in one test: *"it reports the server exited within a
-/// second — while `harnessd` is in fact hung and has to be killed with `--force`."*
-///
-/// The `Bye` on this path is published by the daemon's **connection thread** the moment
-/// the `Stop` is taken (`registry.close()`), and the **worker** running the operator's
-/// command is a different thread that has not ended. MEASURED on a live daemon,
-/// 2026-10-06: `Bye` at 519 µs after the stop, the daemon's process still in `/proc`.
-///
-/// So both halves are asserted here, and both were wrong before the change: the head
-/// used to leave on the `Bye` (`should_quit` true), and it used to say **nothing at
-/// all** on the way out (`stop_farewell` `None`), which a person reads as *it stopped*.
+/// A `Bye` does not answer a stop this head asked for, and it does not silence the farewell: the `Bye` on this
+/// path is published by the connection thread the moment the `Stop` is taken, while the worker is still running
+/// the person's command.
 #[test]
 fn a_bye_does_not_report_a_stop_that_has_not_happened() {
     let mut a = app();
@@ -866,16 +769,9 @@ fn a_stop_whose_process_is_gone_says_nothing_even_after_a_bye() {
     );
 }
 
-/// **A `Bye` is final and a dropped socket is not.** The daemon saying goodbye is the
-/// end of the conversation — a refusal, a skew, a shutdown — and the head leaves with
-/// the reason on it. Turning that into a retry is leticl's measured defect: a refusal
-/// the daemon meant as final became a two-second loop under a head that never
-/// attached and never exited.
-///
-/// **And it is still final for a head that did not ask for the stop**, which is the
-/// half the correction above must not break: a skew, a refusal and another head's stop
-/// all arrive this way, with no `stopping` in flight, and none of them is a question
-/// this head is waiting on.
+/// A `Bye` is final and a dropped socket is not: the daemon saying goodbye is the end of the conversation, and
+/// turning that into a retry is a refusal meant as final becoming a two-second loop under a head that never
+/// attached. It is still final for a head that did not ask for the stop.
 #[test]
 fn a_bye_leaves_and_never_looks_like_a_link_to_reconnect() {
     let mut a = app();
@@ -961,18 +857,9 @@ fn a_compact_is_asked_of_the_session_this_head_is_in() {
     assert_eq!(a.key(Key::Enter), Some(Action::Compact));
 }
 
-/// **A head that switches away and back RE-ASKS — the frames it sends are the assertion.**
-///
-/// The operator's report is a drawn state that came back *on its own*: *"so the counter is
-/// gone"*, then, minutes later, *"yep and now it is back. wtf"*, over a subagent that ran
-/// throughout. A state restored by a frame nobody asked for is a state whose restore depends
-/// on when an unrelated round-trip lands, and this is the half that removes the dependence:
-/// the head puts the question at the one moment it knows it needs the answer.
-///
-/// **Asserted on the actions, not on a helper.** `refetch_session_facts` is private and
-/// calling it directly would prove that a function the head never calls does what it says —
-/// which is the shape of test this file keeps deleting. The actions here are what the driver
-/// turns into frames on the wire, so this is *the head asked*.
+/// A head that switches away and back re-asks, and the frames it sends are the assertion: a state restored by a
+/// frame nobody asked for depends on when an unrelated round-trip lands, which is the counter coming back on
+/// its own.
 #[test]
 fn a_switch_away_and_back_re_asks_for_the_rows_the_jobs_and_the_settings() {
     let mut a = app();
@@ -1007,23 +894,8 @@ fn a_switch_away_and_back_re_asks_for_the_rows_the_jobs_and_the_settings() {
     }
 }
 
-/// **THE REGRESSION: the counter does not go away on a switch and come back later.**
-///
-/// This is the operator's report, reproduced. A child is watched alive; the head switches
-/// into it and back; and at the instant it comes back the daemon's session list says
-/// `running: false` — because the child is parked on its own background job, which is
-/// `SessionStatus::running`'s own definition of *no turn is generating in it right now*.
-///
-/// **Before the fix the count was gone here**, and stayed gone until some later list reply
-/// happened to catch the child generating: a switch sends `since_seq = 0`, so nothing is
-/// replayed, the rows were cleared, and the list's one bit was the only evidence left — and
-/// the fold read that bit as *finished*. The parent's view now carries its children on every
-/// snapshot, which is the events' own conclusion, so the row survives the round trip.
-///
-/// **The control is the second half, and it is what makes the first mean something.** A
-/// snapshot with no children in it is a head with no evidence, and there the list's `false`
-/// is read as finished — the honest answer for a child nobody watched, and the reason the
-/// fix is *the snapshot carries them* rather than *the count never drops*.
+/// The regression: the counter does not go away on a switch and come back later. A child is watched alive, the
+/// head switches in and back, and the daemon's list says `running: false` because the child is parked on a job.
 #[test]
 fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
     // The parent's log, with one child watched come alive. **Through a real `Hub`**, so the
@@ -1079,10 +951,8 @@ fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
     );
     assert_eq!(a.subagents[0].task, "find the bug in the reader");
 
-    // **THE CONTROL.** The same round trip with a snapshot that carries no children — a head
-    // that never watched the spawn. There the list is all there is, and its `false` is read
-    // as finished, because a head that cannot tell *parked* from *ended* must not count a
-    // child it cannot vouch for.
+    // The control: the same round trip with a snapshot carrying no children, where a head that never watched
+    // the spawn has only the list, and its `false` is read as finished.
     let mut blind = app();
     blind.apply(hello("s", parked.clone(), Hub::new("s").snapshot()));
     assert_eq!(
@@ -1096,14 +966,8 @@ fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
     );
 }
 
-/// **The jobs pane is NOT the subagent pane's defect, and this is the measurement.**
-///
-/// `App::load` clears `self.jobs` on a switch for the same reason it clears the subagent
-/// rows — a carried row is a question about a job that was never in this session — but the
-/// jobs have a bootstrap read and the subagents did not: the `Hello` arm queues `ListJobs`
-/// on **every** attachment, which a `Switch` is answered with, and `ServerFrame::Jobs`
-/// refills the table for the session that answered. So a switched head re-asks and the pane
-/// comes back on the daemon's own word, where the subagent pane had nothing to ask with.
+/// The jobs pane is not the subagent pane's defect: `App::load` clears `self.jobs` on a switch, but the `Hello`
+/// arm queues `ListJobs` on every attachment, so the table is refilled and a job already running is not lost.
 #[test]
 fn a_switch_re_asks_for_the_jobs_and_the_daemons_answer_refills_the_pane() {
     let mut a = app();
@@ -1127,17 +991,9 @@ fn a_switch_re_asks_for_the_jobs_and_the_daemons_answer_refills_the_pane() {
     assert_eq!(a.jobs.len(), 1, "the daemon's table did not land");
 }
 
-/// **R58's other half: a peek answered with ROWS draws a session, not a dump.**
-///
-/// The daemon's `Peeked::snapshot` is the child's own transcript — the same rows the
-/// transcript renders — so the pane goes through `item_lines`, and what a reader sees is a
-/// **tool card** (`▸ Ran ls -la /etc · ok · …`), not the plain `· bash — ok` strings the
-/// event-ring fallback is stuck with. The two must not look alike, and the way this pins
-/// that is a word only one of the two renderers produces: the verb the card maps `bash` to,
-/// with the target its own arguments seed.
-///
-/// And it asserts the absence of the degraded sentence, because a render that shows the
-/// card and still claims it could not read the rows is the other half of the same defect.
+/// A peek answered with rows draws a session, not a dump: `Peeked::snapshot` is the child's own transcript, so
+/// the pane goes through `item_lines` and a reader sees a tool card rather than the plain strings the event-ring
+/// fallback is stuck with. The two must not look alike.
 #[test]
 fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degrading() {
     let mut a = app();
@@ -1191,11 +1047,8 @@ fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degra
     );
     assert_eq!(v.session_id, "s-sub-1");
     let text = v.lines.join("\n");
-    // The card, and the target the snapshot's own turn seeded — neither word is in the
-    // plain event-ring fallback, which is the property being pinned. The verb is the one
-    // the card maps `bash` to (`Ran`, not the tool's own name), and the subject is quoted
-    // because the argument has a space in it — both are `item_lines`' doing, not this
-    // pane's, which is exactly the point: one renderer, not two.
+    // The card and the target the snapshot's own turn seeded, neither of which is in the plain event-ring
+    // fallback: the verb is the card's, the subject is quoted, and both are one renderer's doing rather than two.
     assert!(text.contains(r#"▸ Ran "ls -la /etc" · ok"#), "{text}");
     let screen = a.screen(100, 24).join("\n");
     assert!(screen.contains(r#"Ran "ls -la /etc""#), "{screen}");
@@ -1252,10 +1105,8 @@ fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remember
     a.refresh_git();
     assert!(a.git_job.is_none(), "re-read inside the interval");
     assert_eq!(a.git_read.1, 1_000, "re-read inside the interval");
-    // **A repository of the test's own**, not a path on this box: since e207349 a directory
-    // holding several repositories reads as "N repos" and starts no reading at all, and the
-    // operator's own Projects/letibot is exactly that — the test passed or failed by what was
-    // checked out beside it.
+    // A repository of the test's own and not a path on this box: a directory holding several repositories reads
+    // as "N repos" and starts no reading at all, and the operator's own folder is exactly that.
     let repo = dir.with_extension("repo");
     std::fs::create_dir_all(&repo).expect("scratch repo");
     let init = std::process::Command::new("git")
@@ -1280,17 +1131,8 @@ fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remember
     let _ = std::fs::remove_dir_all(&repo);
 }
 
-/// **The loop never waits for `git status`** — the serenedb head, 2026-10-13: *"laggy as hell
-/// … try to scroll"*. Every PageUp took 2.0–3.5 s to move the body while the head spent under
-/// 20 ms of CPU on it, because `refresh_git` ran `git status` inline on the loop and that
-/// repository (49 submodules, a build running) took 1.9 s to read — so every key read during
-/// the reading waited for it, and the reading came due again 0.1 s after it ended.
-///
-/// Pinned by COUNTING, not timing: the reader here cannot answer until the test lets it, so
-/// a `refresh_git` that waited for it could only return after the reader had finished — and
-/// the `finished` count says whether it had. Then: one reading at a time however many ticks
-/// pass while it runs, the answer drawn when it is collected, and the interval counted from
-/// that collection rather than from when the slow reading began.
+/// The loop never waits for `git status`: it ran inline on the loop and one repository took 1.9 s, so every key
+/// read during it waited and the head showed under 20 ms of CPU for a body that took seconds to move.
 #[test]
 fn a_slow_git_reading_does_not_hold_the_loop_and_is_never_doubled() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1375,11 +1217,8 @@ fn a_slow_git_reading_does_not_hold_the_loop_and_is_never_doubled() {
     assert_eq!(started.load(Ordering::SeqCst), 2);
 }
 
-/// **The head asks for the settings on attach.** The daemon answers
-/// `ClientFrame::Settings` and never pushes the rows, so a head that had not
-/// opened `/mode` or `/config` had none — and the header, which reads the
-/// live `model` row, fell back to the model `Hello` named. The operator, on a
-/// session answered by deepseek: *"restarted the letibot - still qwen"*.
+/// The head asks for the settings on attach: the daemon answers `Settings` and never pushes the rows, so a head
+/// that had opened neither `/mode` nor `/config` had none, and the header fell back to the model `Hello` named.
 
 #[test]
 fn attaching_asks_for_the_settings_so_the_header_is_not_stale() {
@@ -1428,19 +1267,9 @@ fn the_card_names_the_other_heads_that_would_lose_the_daemon() {
     assert!(screen.contains("other head"), "{screen}");
 }
 
-/// **The two events a head answers without drawing are COUNTED, not `Control`** — R53 §1.2.
-///
-/// Both are `SessionEvent`s, so both are session content: read, deliberately not drawn as a
-/// row of their own, and counted. `Control` is documented as *"Not an event: a Hello, a
-/// Resync, a command reply"*, which is what a head sends *about the connection* rather than
-/// what the session did.
-///
-/// **Why this test exists rather than only the fix.** R53's own words: *"nothing asserts the
-/// count for these two events, and the comment reads as the specification, so a reader
-/// checking the file finds an argument for the correct behaviour sitting on top of the
-/// incorrect one."* That is the failure mode this file already has one instance of — a
-/// docstring describing three colours over a function that returns a plain string — and the
-/// protection is not a better comment, it is an assertion that fails when the word changes.
+/// The two events a head answers without drawing are counted and not `Control`: both are `SessionEvent`s, so
+/// both are session content, read and deliberately not drawn as a row. `Control` is what a head sends about the
+/// connection rather than what the session did.
 #[test]
 fn the_two_events_a_head_answers_without_drawing_are_counted_not_control() {
     let mut a = app();
@@ -1473,20 +1302,8 @@ fn the_two_events_a_head_answers_without_drawing_are_counted_not_control() {
     assert_eq!(a.screen_requests, vec!["r1".to_string()]);
 }
 
-/// The same rule one layer up: **rendering** the history does not grow with
-/// the session either.
-///
-/// `the_body_a_frame_builds_…` asserts the frame is the window. It says
-/// nothing about how many rows were rendered to build it, and that was the
-/// hole: every row whose body arrived threw the whole rendered transcript
-/// away, so a session of `n` rows cost `n²/2` renders. At 400 rows that is
-/// 80,000 against 400 — and the count, not a stopwatch, is the thing a test
-/// can hold.
-///
-/// The bound is deliberately loose (`4n`): a row is legitimately re-rendered
-/// when its own round changes under it, and pinning this to the exact number
-/// would make it a test of the current round shape rather than of the rule.
-/// The waiting frame, as the operator sees it. Ignored; `--ignored --nocapture`.
+/// Rendering the history does not grow with the session either: the frame is the window, but every row whose
+/// body arrived threw the rendered transcript away, so a session of `n` rows cost `n²/2` renders.
 #[test]
 #[ignore]
 fn show_the_attach_frame() {
@@ -1503,14 +1320,9 @@ fn show_the_attach_frame() {
     }
 }
 
-/// **The frame drawn before the daemon has answered claims nothing.**
-///
-/// A head takes the screen and draws before `HeadClient::attach` returns, because
-/// that round trip carries the whole snapshot and can be a fifth of a second on a
-/// busy daemon. What it draws must not be the empty-transcript banner: "this
-/// session has said nothing yet" is false when the truth is "nobody has told this
-/// head yet", and a head that asserts it on attach to a full session is lying on
-/// its first frame.
+/// The frame drawn before the daemon has answered claims nothing: the `Hello` carries the whole snapshot and can
+/// be a fifth of a second, and *this session has said nothing yet* is false when the truth is that nobody has
+/// told this head yet.
 #[test]
 fn the_frame_before_the_attach_claims_nothing_about_the_session() {
     let mut a = app();
@@ -1525,11 +1337,8 @@ fn the_frame_before_the_attach_claims_nothing_about_the_session() {
         !flat.contains("letibot\n"),
         "the pre-attach frame draws the empty-session banner anyway"
     );
-    // The chrome is there, which is the whole point of drawing early: the
-    // composer's own hint bar is the row that says the program is alive. It is
-    // asserted on the *tail* — `ctrl-s sessions` — rather than on the keys that
-    // used to open it (`ctrl+c exit`), because those are deliberately gone now:
-    // see `Editor::hint`.
+    // The chrome is there, which is the point of drawing early: the composer's hint bar says the program is
+    // alive. Asserted on its tail, since the keys that used to open it are deliberately gone.
     assert!(
         flat.contains("ctrl-s sessions"),
         "no chrome at all: {flat:?}"
@@ -1564,15 +1373,9 @@ fn the_frame_before_the_attach_claims_nothing_about_the_session() {
     );
 }
 
-/// **A snapshot full of body-less rows draws nothing, and renders as bodies land.**
-///
-/// The old shape drew a bar here by *counting* the rows with no body — which, being
-/// a count of a symptom, also fired on every ordinary turn. The bar is the daemon's
-/// now, so a snapshot that carries {n} body-less rows draws no bar at all (nothing
-/// has named an operation), and each row renders the moment its body arrives.
-///
-/// The premise is asserted first and it is the whole test: the snapshot must really
-/// arrive with body-less rows in it.
+/// A snapshot full of body-less rows draws nothing and renders as bodies land. The old shape drew a bar by
+/// counting rows with no body, which being a count of a symptom fired on every ordinary turn; the bar is the
+/// daemon's now, and nothing has named an operation here.
 #[test]
 fn a_snapshot_full_of_bodiless_rows_draws_no_bar_and_renders_as_bodies_land() {
     let hub = letibot_sessionlog::hub::Hub::new("s");
@@ -1632,17 +1435,9 @@ fn a_snapshot_full_of_bodiless_rows_draws_no_bar_and_renders_as_bodies_land() {
     );
 }
 
-/// **A fill's bar goes when the view that was measuring it is replaced.**
-///
-/// Measured on the operator's own head, 2026-10-04: it stood at `897 of 2000 rows —
-/// restoring the stored conversation` and did not move.
-///
-/// A `Filling` tick's only exit is a tick whose `done` has reached `total`, and a republish
-/// of 2000 rows **overruns the head's 1024-event queue**. The hub does not block — it
-/// demotes the head (`Inner::append_and_fan`) and stops writing to it altogether, so every
-/// later tick is skipped, the completing one included. The head is handed a snapshot
-/// instead. Without this, the head sat waiting for a tick it had already been told would
-/// not come, and the bar outlived the operation by the rest of the session.
+/// A fill's bar goes when the view that measured it is replaced: a `Filling` tick's only exit is a tick whose
+/// `done` reached `total`, and a republish that overruns a head's queue demotes the head, so the final tick is
+/// never written.
 #[test]
 fn a_snapshot_ends_a_fill_whose_ticks_were_thrown_away() {
     let mut a = app();
@@ -1703,14 +1498,9 @@ fn a_snapshot_ends_a_fill_whose_ticks_were_thrown_away() {
 
 #[test]
 fn the_header_can_name_what_the_session_is_talking_to_before_any_turn() {
-    // §4.4. It read `no turn yet` for a freshly attached head, because
-    // `TurnStarted { model }` was the only one of the three facts that reached a
-    // head and it only arrives when a turn starts — so nothing could say what
-    // the session was about to talk to at the one moment somebody was about
-    // to. The daemon has known the model since it parsed its own command
-    // line; it says so on `Hello`, and the header — not the composer's
-    // border, which the eye crosses on every return to the field — is where
-    // it renders. The dialect and the endpoint do not ride along.
+    // It read `no turn yet` for a freshly attached head, since `TurnStarted { model }` was the only fact that
+    // reached a head and only when a turn starts. The daemon has known the model since it parsed its command
+    // line, and now says so on `Hello`.
     let mut a = app();
     let empty = Hub::new("s").snapshot();
     a.apply(hello("s", vec![brief("s", "", false)], empty));
@@ -1728,10 +1518,8 @@ fn the_header_can_name_what_the_session_is_talking_to_before_any_turn() {
 
 #[test]
 fn a_turn_joined_from_a_snapshot_shows_no_elapsed_rather_than_an_epoch() {
-    // Found by switching into a session that was mid-turn — the case the whole
-    // switch feature exists for. A snapshot has no timestamps, `started_ms` is
-    // 0, and `last_ms - 0` is a Unix epoch in milliseconds: the line read
-    // `Responding · 496940h16m`.
+    // Found by switching into a session mid-turn: a snapshot has no timestamps, so `started_ms` is 0 and
+    // `last_ms - 0` is a Unix epoch in milliseconds, and the line read 496940 hours.
     let hub = Hub::new("s");
     hub.publish(testing::turn_started("t1"));
     hub.publish(testing::delta("t1", "half an answer"));
@@ -1762,11 +1550,9 @@ fn a_turn_joined_from_a_snapshot_shows_no_elapsed_rather_than_an_epoch() {
 
 #[test]
 fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row() {
-    // The daemon restarted: the view was rebuilt from the transcript and
-    // `TurnFinished` is ephemeral, so the snapshot has no turn state to read
-    // the context from. The number the last turn left behind is on the
-    // session's own row, and the brief carries it — the header must show it
-    // on the first frame, not wait for the next turn.
+    // The daemon restarted: the view was rebuilt from the transcript and `TurnFinished` is ephemeral, so the
+    // snapshot has no turn state. The number the last turn left is on the session's own row and the header shows
+    // it on the first frame.
     let hub = Hub::new("s");
     let mut a = app();
     let mut b = brief("s", "the cache question", false);
@@ -1816,10 +1602,8 @@ fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row()
         }),
         "the snapshot's turn state is newer than the row"
     );
-    // A backfilled row carries the size but not the fraction: the migration
-    // sums the prefix and the items for a store being upgraded, and the cache
-    // of a prompt that was never sent is not a measurement. The header shows
-    // the size and says nothing about the cache, rather than a `0%` nobody took.
+    // A backfilled row carries the size but not the fraction: the cache of a prompt that was never sent is not a
+    // measurement, so the header shows the size and says nothing about the cache rather than a `0%` nobody took.
     let hub = Hub::new("s");
     let mut a = app();
     let mut b = brief("s", "the cache question", false);
@@ -1851,11 +1635,9 @@ fn a_head_that_attaches_after_a_restart_shows_the_context_from_the_session_row()
 
 #[test]
 fn a_head_that_joins_mid_turn_draws_the_turn_it_missed() {
-    // The live frames carry the increments; the snapshot carries what a late head never saw.
-    // **What it owes that head now is the ROW**, not a count: the counter was removed from the
-    // display on 2026-09-27, and the fact a joiner still needs is that a turn is running and
-    // how long it has been (which the snapshot cannot measure, so it says so rather than
-    // inventing one).
+    // The live frames carry the increments and the snapshot carries what a late head never saw. What it owes
+    // that head is the row, not a count: the fact is that a turn is running and how long, which the snapshot
+    // cannot measure.
     let hub = Hub::new("s");
     hub.publish(testing::turn_started("t1"));
     hub.publish(testing::tokens_generated("t1", 42));
@@ -1940,11 +1722,9 @@ fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
 }
 
-/// **A click picks the session DRAWN under the pointer** (R67 item 2). This test used to encode
-/// the bug: it clicked y=5 and expected index 2 ("three"), because the handler counted one screen
-/// row per session while rano draws two — the row and its id line. y=5 is "two"'s row. The rows
-/// are found on the frame rather than counted here, so the test cannot drift from the drawing
-/// the way the arithmetic did.
+/// A click picks the session DRAWN under the pointer. This test used to encode the bug: it clicked a row and
+/// expected an index counted one screen row per session, while rano draws two. The rows are found on the frame
+/// now, so the test cannot drift from the drawing.
 #[test]
 fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
     let mut a = app();
@@ -1965,10 +1745,8 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
             .position(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} is drawn: {frame:#?}")) as u16
     };
-    // The session header takes row 0, the picker's title and blank two more, then the project's
-    // line and its legend: "one" is y=5, its id line y=6, "two" y=7. Two rows per session, which
-    // is the arithmetic the handler used to get wrong. The header names this session too, so the
-    // first row is found by its number rather than by its title.
+    // The header takes row 0, the title and blank two more, then the project's line and legend, so two rows per
+    // session: that is the arithmetic the handler used to get wrong. The first row is found by its number.
     assert_eq!(at("two"), at("1  one") + 2, "{frame:#?}");
     a.key(Key::Click {
         x: 10,
@@ -2043,18 +1821,8 @@ fn the_picker_scrolls_its_cursor_into_view_and_clicks_follow() {
     assert_eq!(a.picker_sel, 14);
 }
 
-/// **A provider switch reaches a head that was already attached.**
-///
-/// This is the operator's report, reproduced: attach while the daemon is local,
-/// switch to a provider, and the top row went on saying `qwen-3.8-27b`.
-///
-/// The cause is in the protocol rather than in either end's logic.
-/// `ServerFrame::Settings` has exactly **one** send site and it answers a request —
-/// `set_settings` fills the registry's mailbox and nothing pushes. So the attached
-/// head's `model` row is what it read at attach, for the life of the connection,
-/// however many switches happen. `TurnStarted` *does* arrive unprompted and names
-/// what is answering, so the header now takes whichever it was told more recently,
-/// by `seq`.
+/// A provider switch reaches a head that was already attached: `Settings` has one send site and it answers a
+/// request, so a head attached before the switch went on naming the model `Hello` carried.
 #[test]
 fn a_provider_switch_reaches_an_already_attached_head() {
     let mut a = app();
@@ -2101,10 +1869,8 @@ fn a_provider_switch_reaches_an_already_attached_head() {
     assert!(!h.contains("deepseek"), "{h}");
 }
 
-/// **The top row names what answers NOW.** `wiring.model` is the daemon's
-/// word from `Hello`, sent once at attach, so a session switched to a provider
-/// mid-conversation kept its old label: the operator switched leticl to
-/// deepseek and *"top row still says qwen"*.
+/// The top row names what answers now. `wiring.model` is the daemon's word from `Hello`, sent once at attach, so
+/// a session switched to a provider mid-conversation kept its old label.
 #[test]
 fn the_header_follows_a_mid_session_model_switch() {
     let mut a = app();
@@ -2139,20 +1905,9 @@ fn the_header_follows_a_mid_session_model_switch() {
     );
 }
 
-/// **Taking a keyless row from the picker ASKS for the key** — the operator's row, second
-/// sentence: *"if i choose a model without key picker should ask for the key."*
-///
-/// The ask is a card and a masked buffer of their own — never the composer, so the key
-/// cannot land in a prompt, and never the sudo path, whose `req_id` belongs to the daemon.
-/// Enter does both things in one verb, `models CHOICE --key K`, which is the round trip the
-/// typed spelling already is: store (mode 600) and switch. Esc cancels with nothing stored
-/// and the row not taken; an EMPTY enter is a cancelled ask rather than a stored empty key.
-///
-/// Two honesty rules, both the same rules the greening keeps:
-/// * **No ask when the daemon did not name the keyless row** (`models.keys` absent is *no
-///   greening*, never *no keys*), so an older daemon never has its switches blocked behind
-///   a prompt for a key the box may hold.
-/// * **`local` never asks** — it needs no credential, and `choice_ready` says so.
+/// Taking a keyless row from the picker asks for the key: the ask is a card with a masked buffer of its own,
+/// never the composer, so the key cannot land in a prompt, and never the sudo path, whose `req_id` is the
+/// daemon's. Enter does both in one verb.
 #[test]
 fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
     use letibot_sessionlog::protocol::{MODEL_KEYS_KEY, SettingRow};
@@ -2332,11 +2087,9 @@ fn slash_models_opens_a_picker_seeded_on_what_answers_now() {
             "grok/grok-4.3",
         ],
     ));
-    // Bare `/models` opens the list AND asks the daemon, so a session whose
-    // model moved in another head does not draw a stale `← now`.
-    // It refreshes the SETTINGS, not the `models` verb: that verb answers
-    // with the whole provider listing, which would land on the log under the
-    // card and is the wall of text this picker replaces.
+    // Bare `/models` opens the list and asks the daemon, so a session whose model moved in another head does
+    // not draw a stale `← now`. It refreshes the settings and not the verb, whose whole listing would land on
+    // the log under the card.
     assert_eq!(a.command("models"), Some(Action::Settings));
     assert!(a.pick == Some(Pick::Model));
     assert_eq!(a.mode_sel, 2, "seeded on the row that answers now");
@@ -2386,10 +2139,9 @@ fn the_two_pickers_do_not_open_together() {
     assert!(a.pick.is_none(), "esc closes it");
 }
 
-/// **`/sessions` and `ctrl-s` open the picker the same way** (R67 item 8): both close a setting
-/// card that is up and seed the cursor on the session this head is in. `/sessions` used to set
-/// `picker` and nothing else — `/mode` then `/sessions` left both lists on the screen, with the
-/// cursor wherever an earlier list had left it.
+/// `/sessions` and `ctrl-s` open the picker the same way: both close a setting card that is up and seed the
+/// cursor on the session this head is in. `/sessions` used to set the picker and nothing else, leaving two lists
+/// on the screen.
 #[test]
 fn slash_sessions_opens_the_picker_the_way_ctrl_s_does() {
     let sessions = || {
@@ -2421,20 +2173,8 @@ fn slash_sessions_opens_the_picker_the_way_ctrl_s_does() {
     }
 }
 
-/// **A picker that opened before its own list arrived seeds when the list does** — the second
-/// cause of the operator's report, and the one leticl had already fixed on its side.
-///
-/// `/mode` and `/models` draw the card AND send the ask in the same breath, so a head whose
-/// rows have not landed seeds from an empty list: `position` answers nothing, the fallback is
-/// `0`, and the cursor sits on the first row while `← now` marks the real current one further
-/// down. leticl's `head.lisp` records the operator hitting exactly this — *"mode selectors has
-/// selection on the first not on the current again"* — and its word *again* is the tell: it
-/// works on the SECOND open, settings being known by then, so a test that sets the rows up
-/// first never sees it. This one does not set them up first.
-///
-/// **And the reader's own cursor is not snapped back.** leticl reconciles the two with a
-/// one-way flag, and this asserts both halves: an untouched cursor follows the answer, a moved
-/// one does not.
+/// A picker that opened before its own list arrived seeds when the list does: `/mode` and `/models` draw the card
+/// and send the ask in the same breath, so the seed reads an empty list and the cursor sits on the first row.
 #[test]
 fn a_picker_that_opened_before_its_rows_landed_seeds_when_they_do() {
     const CHOICES: &str =
@@ -2465,12 +2205,8 @@ fn a_picker_that_opened_before_its_rows_landed_seeds_when_they_do() {
         "the rows landed and the cursor did not go to the mode the session is under"
     );
 
-    // **The cursor the reader moved is left alone.** Two Downs is a choice they made, and an
-    // answer landing a moment later must not undo it.
-    //
-    // The rows have to be present for there to be anything to move THROUGH — with no choices
-    // the card has no rows and the arrows are refused, which is the first half's premise and
-    // not this one's.
+    // The cursor the reader moved is left alone: two Downs is a choice they made, and an answer landing later
+    // must not undo it. The rows have to be present for there to be anything to move through.
     let mut b = app();
     b.apply(hello(
         "s",
@@ -2489,11 +2225,9 @@ fn a_picker_that_opened_before_its_rows_landed_seeds_when_they_do() {
         "the answer snapped the reader's cursor back to where it would have been"
     );
 
-    // **And the rows can be another SESSION's, not merely absent.** `self.settings` is only
-    // ever assigned by a settings frame — a switch does not clear it — so a picker opened
-    // between a switch and that session's answer seeds from the session the reader just left.
-    // The symptom is the same one and so is the fix: the re-seed runs on the frame, so the
-    // card corrects itself the moment the right rows land.
+    // And the rows can be another session's, not merely absent: `self.settings` is only assigned by a settings
+    // frame, so a picker opened between a switch and that session's answer seeds from the session just left. The
+    // re-seed runs on the frame, so the card corrects itself.
     let mut c = app();
     c.apply(hello(
         "s1",
@@ -2603,14 +2337,9 @@ fn switching_replaces_the_previous_sessions_facts_and_does_not_carry_them_over()
     assert!(a.turn.is_none(), "the old session's turn came along");
 }
 
-/// **A head asked for a stored session keeps the cat until it is IN that session.**
-///
-/// `letibot --continue` and the picker's resume are two steps: the daemon seats the head
-/// somewhere first — the fresh session a new head gets — and only then answers the resume.
-/// On a long session that second step is seconds, and the first `Hello` used to end the
-/// wait: the screen said "this session has said nothing yet" about the placeholder, and the
-/// operator, who asked for a conversation with two thousand rows in it, started typing into
-/// the empty one. The wait is over when the head is where it was asked to go.
+/// A head asked for a stored session keeps the cat until it is in that session: the daemon seats the head
+/// somewhere first and answers the resume after, which on a long session is seconds, and the first `Hello` used
+/// to end the wait.
 #[test]
 fn a_resume_keeps_the_cat_until_the_asked_for_session_arrives() {
     fn empty(id: &str) -> Snapshot {
@@ -2685,10 +2414,8 @@ fn a_resume_keeps_the_cat_until_the_asked_for_session_arrives() {
     );
 }
 
-/// **A force path in flight holds the head, and the farewell says what it did** — whether or
-/// not it worked. The operator asked for the head to take the force path itself *"with a line
-/// saying why"*: *"yes"*. So a forced stop that ended the daemon is still said, and one that
-/// did not end it keeps the verb.
+/// A force path in flight holds the head, and the farewell says what it did whether or not it worked: a forced
+/// stop that ended the daemon is still said, and one that did not keeps the verb.
 #[test]
 fn a_forced_stop_holds_the_head_and_is_said_either_way() {
     let escalated = || {
@@ -2796,13 +2523,9 @@ fn an_older_daemon_is_said_as_one() {
 
 // ──────────────── `/sessions`, Enter, and where the head thinks it is ────────────────
 
-/// **Enter on the parent of the session you are in goes there.**
-///
-/// The operator, verbatim: *"/sessions showed me you but enter didnt work"*. The picker's Enter is
-/// `switch_to` and `switch_to` refuses a row whose id is the one the head is already on (`already
-/// here`), so the question is whether the row resolved to the session he was in. This pins the
-/// path itself: standing in a child, the family list is drawn, the parent's row carries a `switch`,
-/// and Enter on it asks the daemon for the parent — not for the child, and not for nothing.
+/// Enter on the parent of the session you are in goes there: the picker's Enter is `switch_to`, which refuses the
+/// session the head is already on, so this pins the path — standing in a child, the family list is not `already
+/// here`.
 #[test]
 fn a_picker_enter_on_the_parent_of_the_session_you_are_in_goes_there() {
     let mut a = app();
@@ -2845,15 +2568,8 @@ fn a_picker_enter_on_the_parent_of_the_session_you_are_in_goes_there() {
     );
 }
 
-/// **A LIST DOES NOT SEAT A HEAD** — a `Sessions` frame naming another session asks for the rows,
-/// it does not re-label the screen.
-///
-/// `Sessions { current }` is the daemon saying where this connection is. The arm used to write
-/// that over `self.session_id` and nothing else, so a head could end up claiming a session whose
-/// transcript it did not hold — and `switch_to`'s `if id == self.session_id` then answered
-/// `already here` for the row the operator was looking at, which is the one state in which *"/sessions
-/// showed me you but enter didnt work"* is literally true. The rows are what is wrong when the two
-/// disagree, and the frame that re-reads them is a resync.
+/// A list does not seat a head: a `Sessions` frame naming another session asks for the rows, and the arm used to
+/// write `current` over `self.session_id`, so a head could claim a session whose transcript it did not hold.
 #[test]
 fn a_session_list_does_not_move_the_head_without_seating_it() {
     let mut a = app();
