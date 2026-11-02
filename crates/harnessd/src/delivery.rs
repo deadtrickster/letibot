@@ -32,7 +32,7 @@ pub const HELD_RESULTS_CAP: Duration = Duration::from_secs(10 * 60);
 
 /// The delivery record's file, inside the session's logs directory (`Config::daemon_logs`).
 ///
-/// Never the workspace: a `.letibot/` there made every child's worktree look dirty.
+/// Never the workspace: a `.letibot/` there would make every child's worktree look dirty.
 pub const LOG: &str = "delivery-log.jsonl";
 
 /// What finished.

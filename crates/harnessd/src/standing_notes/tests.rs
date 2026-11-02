@@ -1,40 +1,25 @@
-//! **The census: this module's rules, asserted.**
+//! The census: this module's rules, asserted.
 //!
-//! In its own file, the shape `harness/queue_e2e.rs` has and for the same
-//! reason: these tests read the module's *private* rules — `gather`'s order,
-//! `body`'s per-file budget, `index_entry`'s shape, the sentence rule behind an
-//! abstract — and a module whose rules are private can only be tested from
-//! inside it. The declaration is `mod tests;` at the bottom of
-//! `standing_notes.rs`; the integration half — the re-read at a base rebuild,
-//! against a real harness — is `crates/harnessd/tests/standing_notes.rs`.
+//! Its own file because the rules under test are private (`gather`'s order, `body`'s per-file
+//! budget, `index_entry`'s shape, the sentence rule behind an abstract) and a module with private
+//! rules can only be tested from inside it. The declaration is `mod tests;` at the bottom of
+//! `standing_notes.rs`; the integration half against a real harness is
+//! `crates/harnessd/tests/standing_notes.rs`.
 //!
-//! What is asserted here, in one line each: the files whole under the budget and
-//! each one indexed on its own when it does not fit; a small note whole beside a
-//! large one, in either order; a headingless note indexed by its paragraphs
-//! rather than collapsed to a line; the abstract a proper sentence, never cut
-//! inside `2.7` or a path, and the author's own line when the file carries one;
-//! the order `gather` states; the budget's edge exact; `replace` and `carried`
-//! byte-for-byte around the section; and the envelope's authorship split and
-//! historical caveat.
-//!
-//! **And the seat's instruction files**, which this module does not name: the
-//! workspace's file first of all, the canonical name when a project wrote that
-//! one, the box's after the workspace's, the walk-up that finds a file above the
-//! session — and the one that keeps the runtime a runtime, a walk over the three
-//! crates that must hold no copy of either name.
+//! Also asserted: the seat's instruction files, which this module does not name. They reach the
+//! section through the config layer, ahead of the notes, because a rule that arrives as an index is
+//! a rule the model has to fetch before it can follow it.
 
 use super::*;
 
-/// The byte vocabulary: one token per byte, no GGUF, no FFI — the same counter a
-/// provider session counts with, so the budget arithmetic in these tests is exact
+/// The byte vocabulary: one token per byte, no GGUF, no FFI, so the budget arithmetic here is exact
 /// rather than proportional.
 fn vocab() -> Vocab {
     Vocab::bytes([], [])
 }
 
-/// **A scratch dir of this test's own** — one per CALL, not per name: twenty tests ask for
-/// `dir("none")`, and `line!()` here is this line, the same for every caller, so they shared one
-/// path and raced each other's `remove_dir_all` and `create_dir_all` ("temp dir: File exists").
+/// A scratch dir of this test's own, one per CALL rather than per name: twenty tests ask for
+/// `dir("none")` and would otherwise share one path and race each other's `remove_dir_all`.
 fn dir(name: &str) -> PathBuf {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let d = letibot_sessionlog::testing::scratch_root().join(format!(
@@ -54,11 +39,8 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).expect("fixture");
 }
 
-/// **A box with no instruction file of its own.** Every fixture here points the
-/// box scope at scratch dirs that hold nothing, so the box the suite RUNS on
-/// cannot answer for it — the operator's own instruction file exists on the
-/// machine this was written on, and a suite whose result depended on that would
-/// be a suite about one person's home directory.
+/// A box with no instruction file of its own: every fixture points the box scope at scratch dirs
+/// that hold nothing, so the box the suite RUNS on cannot answer for it.
 fn no_box() -> crate::leticode_config::BoxDirs {
     crate::leticode_config::BoxDirs {
         config: dir("box-config"),
@@ -66,9 +48,8 @@ fn no_box() -> crate::leticode_config::BoxDirs {
     }
 }
 
-/// A file's mtime, **stated rather than waited for**. "Newest first" is a rule
-/// this module asserts, and a sleep between two writes would make the assertion
-/// depend on the clock's resolution instead of on the rule.
+/// A file's mtime, stated rather than waited for: a sleep between two writes would make the
+/// assertion depend on the clock's resolution instead of on the rule.
 fn set_mtime(path: &Path, secs: i64) {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no NUL in a path");
@@ -86,13 +67,13 @@ fn set_mtime(path: &Path, secs: i64) {
     assert_eq!(rc, 0, "utimensat on {}", path.display());
 }
 
-/// A note whose body alone is over the budget, for the tests that need one file
-/// indexed and care about nothing else in it.
+/// A note whose body alone is over the budget, for the tests that need one file indexed and care
+/// about nothing else in it.
 fn over_budget() -> String {
     "filler sentence that exists only to spend the budget. ".repeat(80)
 }
 
-/// **Under the budget the files are whole, each under its path.**
+/// Under the budget the files are whole, each under its path.
 #[test]
 fn under_the_budget_the_files_are_injected_verbatim() {
     let ws = dir("verbatim");
@@ -117,8 +98,8 @@ fn under_the_budget_the_files_are_injected_verbatim() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **Over the budget a file is an index with line references, not its text** —
-/// and it says on its own heading that it is indexed.
+/// Over the budget a file is an index with line references rather than its text, and its heading
+/// says so.
 #[test]
 fn over_the_budget_it_is_an_index_with_line_references() {
     let ws = dir("index");
@@ -133,9 +114,8 @@ fn over_the_budget_it_is_an_index_with_line_references() {
     assert!(s.contains("headings and line ranges only"), "{s}");
     // The deep body is absent — that is the whole point of the rule.
     assert!(!s.contains(&body), "the index carries no filler body");
-    // The references a `read` needs: heading, span, first sentence. The title
-    // spans lines 1-4 (its own line to the line before the next heading) and
-    // Deep spans 5-7 to the end of the file.
+    // The references a `read` needs: heading, span, first sentence. The title spans lines 1-4 and
+    // Deep runs from 5 to the end of the file.
     assert!(s.contains("1-4  # Title"), "{s}");
     assert!(s.contains("First sentence under the title."), "{s}");
     assert!(
@@ -145,13 +125,13 @@ fn over_the_budget_it_is_an_index_with_line_references() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The decision is per file.** A ten-line note does not pay for a
-/// four-hundred-line one — whichever side of the order each sits on.
+/// The decision is per file: a ten-line note does not pay for a four-hundred-line one, whichever
+/// side of the order each sits on.
 #[test]
 fn a_small_note_is_whole_beside_a_large_one() {
     let body = over_budget();
-    // The large file first: it is indexed, and the small note behind it still
-    // arrives whole out of what is left of the budget.
+    // The large file first: it is indexed, and the small note behind it still arrives whole out of
+    // what is left of the budget.
     let ws = dir("mixed");
     write(&ws.join("AGENTS.md"), &format!("# Big\n\n{body}\n"));
     write(
@@ -166,8 +146,8 @@ fn a_small_note_is_whole_beside_a_large_one() {
     );
     assert!(!s.contains(&body), "and the large file's body is not: {s}");
 
-    // The other way round: a small `AGENTS.md` is whole, and the large project
-    // note behind it is the one indexed.
+    // The other way round: a small `AGENTS.md` is whole, and the large project note behind it is
+    // the one indexed.
     let ws2 = dir("mixed2");
     write(
         &ws2.join("AGENTS.md"),
@@ -191,13 +171,11 @@ fn a_small_note_is_whole_beside_a_large_one() {
     let _ = std::fs::remove_dir_all(&ws2);
 }
 
-/// **A headingless note over the budget is indexed by its paragraphs, not
-/// collapsed to one line** — and its abstract is the first *proper* sentence.
+/// A headingless note over the budget is indexed by its paragraphs rather than collapsed to one
+/// line, and its abstract is the first proper sentence.
 ///
-/// The two defects this closes, both measured on the corpus this module reads:
-/// a note with no headings arrived as one truncated line — nothing to recognise
-/// and no range to `read` — and the "first sentence or two" rule counted every
-/// period, so a lead ended inside `exit 101 in 2.` (the period of `2.7 s`).
+/// One truncated line has nothing to recognise and no range to `read`, and a rule that counts every
+/// period ends a lead inside `exit 101 in 2.` (the period of `2.7 s`).
 #[test]
 fn a_headingless_note_is_indexed_by_its_paragraphs() {
     let ws = dir("headingless");
@@ -243,9 +221,8 @@ fn a_headingless_note_is_indexed_by_its_paragraphs() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **A period inside a filename is not a sentence end either** — the other
-/// measured cut (`merge_review.attempts, .`), which is what a rule that counted
-/// every period produced.
+/// A period inside a filename is not a sentence end either: a rule that counted every period ends
+/// the lead at `merge_review.attempts, .`.
 #[test]
 fn the_abstract_never_ends_inside_a_path() {
     let ws = dir("path");
@@ -264,13 +241,12 @@ fn the_abstract_never_ends_inside_a_path() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The author's abstract is the index's first line when the file carries one,
-/// and it is not called derived.**
+/// The author's abstract is the index's first line when the file carries one, and it is not called
+/// derived.
 ///
-/// The `notes` tool writes that marker line; this is the reader's half of the
-/// round trip, and the reason the marker is an HTML comment — the same file is
-/// injected verbatim under the budget, where a marker that rendered would be a
-/// line the author did not write.
+/// The `notes` tool writes that marker line, so this is the reader's half of the round trip. It is
+/// an HTML comment because the same file is injected verbatim under the budget, where a marker that
+/// rendered would be a line the author did not write.
 #[test]
 fn an_authors_abstract_leads_the_index() {
     let ws = dir("written");
@@ -291,14 +267,13 @@ fn an_authors_abstract_leads_the_index() {
         !s.contains("abstract (derived)"),
         "and it is not attributed to the harness: {s}"
     );
-    // The marker is a line of the file like any other: the paragraphs after it
-    // are addressed by their real line numbers.
+    // The marker is a line of the file like any other: the paragraphs after it are addressed by
+    // their real line numbers.
     assert!(s.contains("3-3  para — First prose line here."), "{s}");
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **A source that is absent contributes nothing — never a heading, never
-/// an error.**
+/// A source that is absent contributes nothing: never a heading, never an error.
 #[test]
 fn a_missing_source_contributes_nothing() {
     let empty = dir("empty");
@@ -318,8 +293,8 @@ fn a_missing_source_contributes_nothing() {
     let _ = std::fs::remove_dir_all(&empty);
 }
 
-/// **The order is the rule `gather` states**: `AGENTS.md`, then the box-wide
-/// notes, then the project's — each directory newest first, ties by name.
+/// The order is the one `gather` states: `AGENTS.md`, then the box-wide notes, then the project's,
+/// each directory newest first and ties by name.
 #[test]
 fn the_sources_keep_the_order_the_rule_states() {
     let ws = dir("order");
@@ -358,7 +333,7 @@ fn the_sources_keep_the_order_the_rule_states() {
     let _ = std::fs::remove_dir_all(&global);
 }
 
-/// **The same files assemble to the same section — twice.**
+/// The same files assemble to the same section, twice.
 #[test]
 fn the_same_files_assemble_to_the_same_section() {
     let ws = dir("same");
@@ -369,16 +344,14 @@ fn the_same_files_assemble_to_the_same_section() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The budget's edge: at it verbatim, one token over it an index.**
+/// The budget's edge: at it verbatim, one token over it an index.
 #[test]
 fn the_budget_edge_is_exact() {
     let ws = dir("edge");
     let path = ws.join("AGENTS.md");
-    // One byte = one token under the byte vocabulary, and the budget is decided
-    // on the assembled BODY (the path heading plus the files) — the envelope is
-    // the harness's own fixed sentence, not the operator's material, and
-    // budgeting it would spend the operator's allowance on our wording. Build the
-    // file so the body sits exactly on the budget.
+    // One byte is one token under the byte vocabulary, and the budget is decided on the assembled
+    // BODY: the envelope is the harness's own fixed sentence, and budgeting it would spend the
+    // operator's allowance on our wording.
     let overhead = format!("### {}\n", path.display()).len();
     let file = "a".repeat(NOTES_BUDGET_TOKENS - overhead);
     write(&path, &file);
@@ -394,14 +367,14 @@ fn the_budget_edge_is_exact() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **`replace` swaps the section and leaves the rest byte for byte.**
+/// `replace` swaps the section and leaves the rest byte for byte.
 #[test]
 fn replace_swaps_only_the_section() {
     let ws = dir("replace");
     write(&ws.join("AGENTS.md"), "first\n");
     let one = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
-    // A composed prompt as `with_fabric` leaves it: sections, notes, then a
-    // fabric block appended after.
+    // A composed prompt as `with_fabric` leaves it: sections, notes, then a fabric block appended
+    // after.
     let composed = format!("sections\n\n{one}\n\nfabric block");
     write(&ws.join("AGENTS.md"), "second\n");
     let two = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
@@ -413,8 +386,8 @@ fn replace_swaps_only_the_section() {
         "everything outside the markers is carried through: {swapped}"
     );
     assert_eq!(carried(&swapped), Some(two.as_str()));
-    // Removing: no doubled blank line where the section was, mid-prompt or at
-    // the end — a removal from the end takes its glue with it.
+    // Removing: no doubled blank line where the section was, mid-prompt or at the end. A removal
+    // from the end takes its glue with it.
     let removed = replace(&swapped, None);
     assert_eq!(removed, "sections\n\nfabric block");
     assert_eq!(
@@ -427,7 +400,7 @@ fn replace_swaps_only_the_section() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **`carried` reads the section back off a composed prompt.**
+/// `carried` reads the section back off a composed prompt.
 #[test]
 fn carried_reads_the_section_off_a_composed_prompt() {
     let ws = dir("carried");
@@ -438,21 +411,14 @@ fn carried_reads_the_section_off_a_composed_prompt() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The envelope says whose notes these are, that they are historical, and
-/// what an indexed file is.**
+/// The envelope says whose notes these are, that they are historical, and what an indexed file is.
 ///
-/// The operator's ruling, 2026-10-09: *"The read tool should carry a short note
-/// - 'it is a historical note, might be outdated'"* — and the injected block is
-///   the highest-traffic read of all, delivered at session open and every base
-///   rebuild whether or not the tool is ever called. The envelope also had to
-///   change for a second reason: the project's `.letibot/notes/` is now writable
-///   by sessions through the `notes` tool, so a blanket "the operator maintains
-///   these" stopped being true. The authorship split is by directory — the tell
-///   that keeps a note the model wrote from reading as an instruction the operator
-///   gave — and the caveat says what a note is: a record of what was true when
-///   written, not a fact about now. The last sentence is the third reason: the
-///   block is now verbatim *and* indexed at once, and a reader who does not know
-///   what `indexed` means will read a heading as the file's whole content.
+/// The block is the highest-traffic read of all, delivered at session open and every base rebuild
+/// whether or not a tool is called. Authorship is split by directory, which is what keeps a note the
+/// model wrote from reading as an instruction the operator gave, and the caveat says what a note is:
+/// a record of what was true when written. The last sentence is there because the block is verbatim
+/// and indexed at once, and a reader who does not know what `indexed` means reads a heading as the
+/// file's whole content.
 #[test]
 fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
     let ws = dir("envelope");
@@ -488,14 +454,12 @@ fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The pane's rows: one per note, in the section's order, carrying the index's own fields.**
+/// The pane's rows: one per note, in the section's order, carrying the index's own fields.
 ///
-/// This is the fourth consumer of one shape (path, abstract, size, verbatim-or-indexed,
-/// offered, taken) and the one a PERSON reads, so what it asserts is what the pane would draw
-/// and nothing more: the path the section's heading carries, the abstract the index shows —
-/// with the author's own line marked as theirs — and **the form**, which is the field the
-/// pane exists for. The size, the mtime and *is it still on disk* are deliberately absent:
-/// they are the disk's facts and the head reads them where it draws.
+/// This is the one consumer a PERSON reads, so what it asserts is what the pane would draw and
+/// nothing more: the path, the abstract with the author's own line marked as theirs, and the form.
+/// Size, mtime and whether the note is still on disk are the disk's facts, read by the head where it
+/// draws.
 #[test]
 fn the_panes_rows_are_the_indexes_own_fields() {
     let ws = dir("rows");
@@ -562,9 +526,8 @@ fn the_panes_rows_are_the_indexes_own_fields() {
         "and the row says it is the author's rather than the harness's reading"
     );
 
-    // **And the rows and the section are ONE walk.** The form each file was given above is
-    // the form the prompt carries it in — the pane cannot disagree with what the model was
-    // handed, which is the whole reason `plan` exists.
+    // And the rows and the section are ONE walk: the form each file was given above is the form the
+    // prompt carries it in, which is why `plan` exists.
     let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains("First sentence of the big note."), "{s}");
     assert!(!s.contains(&body), "the big note is indexed, not injected");
@@ -575,7 +538,7 @@ fn the_panes_rows_are_the_indexes_own_fields() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **An empty corpus is no rows, not a row that says nothing.** The pane says so itself
+/// An empty corpus is no rows rather than a row that says nothing. The pane says so itself
 /// (`ui/panes/standing.rs`); what this pins is that the daemon hands it nothing to draw.
 #[test]
 fn no_corpus_is_no_rows() {
@@ -584,13 +547,8 @@ fn no_corpus_is_no_rows() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The seat's instruction file is a source, and it sits with `AGENTS.md` rather
-/// than behind the notes.**
-///
-/// This is the whole of what the runtime does with it: ask the config layer for
-/// paths, read them, and put them where a rule has to be — first, because a rule
-/// that arrives as an index is a rule the model has to fetch before it can follow
-/// it.
+/// The seat's instruction file is a source, and it sits with `AGENTS.md` rather than behind the
+/// notes, because a rule that arrives as an index is a rule the model has to fetch first.
 #[test]
 fn the_seats_instruction_file_is_read_first() {
     let ws = dir("seat-file");
@@ -615,9 +573,8 @@ fn the_seats_instruction_file_is_read_first() {
     let _ = std::fs::remove_dir_all(&global);
 }
 
-/// **The canonical name answers when the seat's own is not there** — a project
-/// written for another tool still reaches this one, which is the whole point of
-/// asking the config layer instead of naming a file here.
+/// The canonical name answers when the seat's own is not there, so a project written for another
+/// tool still reaches this one.
 #[test]
 fn the_canonical_instruction_file_answers_when_the_seat_has_none() {
     let ws = dir("canonical-file");
@@ -629,8 +586,8 @@ fn the_canonical_instruction_file_answers_when_the_seat_has_none() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **A file above the workspace is found** — a session started in a subdirectory
-/// reads the project's instructions, which is the walk-up a `.env` has.
+/// A file above the workspace is found, so a session started in a subdirectory reads the project's
+/// instructions: the walk-up a `.env` has.
 #[test]
 fn an_instruction_file_above_the_workspace_is_found() {
     let root = dir("above");
@@ -645,9 +602,8 @@ fn an_instruction_file_above_the_workspace_is_found() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **The box's file is read too, after the workspace's** — the config dir the
-/// seat already uses. The preference between the two names, and the canonical
-/// fallback under the box's home, are the config layer's own tests.
+/// The box's file is read too, after the workspace's, from the config dir the seat already uses.
+/// The preference between the two names is the config layer's own test.
 #[test]
 fn the_boxs_instruction_file_is_read_after_the_workspaces() {
     let ws = dir("box-file-ws");
@@ -675,8 +631,8 @@ fn the_boxs_instruction_file_is_read_after_the_workspaces() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **A box with neither name adds nothing** — not a heading, not an error, which
-/// is what makes asking on every session open safe.
+/// A box with neither name adds nothing, not a heading and not an error, which is what makes asking
+/// on every session open safe.
 #[test]
 fn a_box_with_no_instruction_file_adds_nothing() {
     let ws = dir("box-none");
@@ -686,14 +642,12 @@ fn a_box_with_no_instruction_file_adds_nothing() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The names are the seat's, and this crate holds no copy of either.**
+/// The names are the seat's, and this crate holds no copy of either.
 ///
-/// The operator's rule — *"leticode can support claude.md. but not letibot"* —
-/// asserted rather than described: no file under `harnessd`, `tokencore` or
-/// `tools` spells either name, so a runtime that grew one back fails here rather
-/// than in a review. The names come from the config layer's own constants, which
-/// is why this cannot pass by agreeing with itself, and this file is skipped
-/// because a test that greps for a string must contain it.
+/// No file under `harnessd`, `tokencore` or `tools` spells either name, so a runtime that grew one
+/// back fails here rather than in a review. The names come from the config layer's constants, which
+/// is why this cannot pass by agreeing with itself, and this file is skipped because a test that
+/// greps for a string must contain it.
 #[test]
 fn the_runtime_names_neither_instruction_file() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -738,8 +692,8 @@ fn the_runtime_names_neither_instruction_file() {
     );
 }
 
-/// **The operator's message when they hand a skill over says whose words those are** — the label
-/// is the fact, and the rest of the line follows it as their own prompt in the same turn.
+/// The message that hands a skill over says whose words those are, and the rest of the line follows
+/// it as the person's own prompt in the same turn.
 #[test]
 fn a_skill_handed_over_is_labelled_and_the_rest_of_the_line_follows_it() {
     let skill = letibot_tools::builtins::skill::Skill::new(
@@ -763,9 +717,11 @@ fn a_skill_handed_over_is_labelled_and_the_rest_of_the_line_follows_it() {
     );
 }
 
-/// **A skill a session was STARTED with arrives whole, and the name it was started with is the
-/// one that is read** — `preloaded` is `task {skills}`'s and `[queue] reviewer_skills`'s landing
-/// place, so a name that resolves to nothing is said rather than dropped.
+/// A skill a session was STARTED with arrives whole, and the name it was started with is the one
+/// that is read.
+///
+/// `preloaded` is `task {skills}`'s and `[queue] reviewer_skills`'s landing place, so a name that
+/// resolves to nothing is said rather than dropped.
 #[test]
 fn a_declared_skill_arrives_whole_and_an_unknown_one_is_said() {
     let r = letibot_tools::builtins::skill::SkillRegistry::new(vec![
@@ -788,8 +744,8 @@ fn a_declared_skill_arrives_whole_and_an_unknown_one_is_said() {
     assert!(preloaded(&r, &[]).is_none());
 }
 
-/// **The skills index rides the same section, and no body comes with it** — the operator's
-/// design: the names and their sources reach the prompt; the text arrives only when asked.
+/// The skills index rides the same section, and no body comes with it: the names and their sources
+/// reach the prompt, and the text arrives only when asked.
 #[test]
 fn the_section_carries_the_skills_index_and_never_a_body() {
     let ws = dir("skills");
@@ -815,8 +771,8 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
     // section at all rather than an empty one.
     let empty = letibot_tools::builtins::skill::SkillRegistry::new(Vec::new());
     assert!(section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&empty), None).is_none());
-    // **A skill this session was STARTED with arrives whole** — `task {skills}`, a declared seat —
-    // while everything else stays an index of names.
+    // A skill this session was STARTED with arrives whole, while everything else stays an index of
+    // names.
     let launched = section_with_skills(
         &ws,
         &g,

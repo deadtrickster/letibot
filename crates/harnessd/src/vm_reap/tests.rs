@@ -28,9 +28,7 @@ fn life(beat_ms: u64, stopped_ms: Option<u64>) -> DaemonLife {
     }
 }
 
-/// **The four tap holders of 2026-10-15, judged.** Three were children of `d-404553`, whose last
-/// beat was 18:21:01 UTC with no stop written: `running`, under a gone daemon — reaped. The fourth
-/// had no row at all (a daemon older than the record) — named, never reaped.
+/// A child of a daemon that is gone is reaped; a VM with no record of its owner is not.
 #[test]
 fn a_vm_whose_owners_daemon_is_gone_is_reaped_and_one_with_no_record_is_not() {
     let gone = daemon_of(
@@ -76,7 +74,7 @@ fn a_vm_whose_owners_daemon_is_gone_is_reaped_and_one_with_no_record_is_not() {
     assert!(!judge(&Owner::Unrecorded { child: None }, NOW).reaps());
 }
 
-/// **Never a VM a live daemon's running child holds — this one's or another's.**
+/// Never a VM a live daemon's running child holds, this one's or another's.
 #[test]
 fn a_running_owner_in_a_live_daemon_keeps_its_vm() {
     let me = "d-1-1-0";
@@ -124,8 +122,8 @@ fn a_running_owner_in_a_live_daemon_keeps_its_vm() {
     }
 }
 
-/// **A finished owner's VM waits out its own `down`** — the copy-out is up to ten minutes, and a
-/// reap inside that would race the delivery of the work.
+/// A finished owner's VM waits out its own `down`: the copy-out takes minutes, and a reap inside
+/// that would race the delivery of the work.
 #[test]
 fn a_finished_owners_vm_is_reaped_after_its_own_down_had_time() {
     let fresh = Owner::Finished {
@@ -142,8 +140,8 @@ fn a_finished_owners_vm_is_reaped_after_its_own_down_had_time() {
     assert!(judge(&old, NOW).reaps());
 }
 
-/// **The owner is the child the copy was named for** — and only a copy under letibot's cache
-/// names one: a reviewer's clone or a merge gate's landing project names nobody.
+/// The owner is the child the copy was named for, and only a copy under letibot's own cache names
+/// one: a reviewer's clone or a merge gate's landing project names nobody.
 #[test]
 fn a_vms_owner_is_the_child_its_copy_is_named_for() {
     let cache = Path::new("/home/dead/.cache/letibot/firecode");
@@ -173,9 +171,8 @@ fn a_vms_owner_is_the_child_its_copy_is_named_for() {
     );
 }
 
-/// **The store's half, end to end**: a gone daemon's running child is judged reapable through
-/// the rows themselves, a finished one waits out its grace, and a child with no row is
-/// unrecorded.
+/// The store's half, end to end: a gone daemon's running child is reapable through the rows
+/// themselves, a finished one waits out its grace, and a child with no row is unrecorded.
 #[test]
 fn an_owner_is_read_off_the_store() {
     let store = Store::open_in_memory().unwrap();
@@ -223,10 +220,8 @@ fn an_owner_is_read_off_the_store() {
     );
 }
 
-/// **A gone daemon's running child under a finished parent is settled `abandoned`** — the case
-/// of 2026-10-14: parents `done`/`failed` at 17:18–17:22, their VM children `running` under
-/// `d-404553` for a day after it died, because only the parent's open reads them. A child whose
-/// parent is itself still running (or `paused`, which `task_resume` brings back) is left to that
+/// A gone daemon's running child under a finished parent is settled `abandoned`, because only the
+/// parent's open reads it. A child whose parent is still running, or paused, is left to that
 /// parent's restart pass.
 #[test]
 fn a_gone_daemons_child_under_a_finished_parent_is_abandoned() {
@@ -273,9 +268,9 @@ fn a_gone_daemons_child_under_a_finished_parent_is_abandoned() {
     assert_eq!(said.len(), 1, "{said:?}");
 }
 
-/// **This daemon's child, stalled under a finished parent, is stopped** — written `killed` with
-/// why — and only when BOTH clocks have run: the parent finished half an hour ago, and the
-/// child has written nothing for as long. A child that is still writing is working.
+/// This daemon's child, stalled under a finished parent, is stopped and written `killed` with why,
+/// and only when both clocks have run: the parent finished half an hour ago and the child has
+/// written nothing for as long. A child that is still writing is working.
 #[test]
 fn a_stalled_child_under_a_finished_parent_is_stopped() {
     let me = "d-1-1-0";
@@ -313,7 +308,7 @@ fn a_stalled_child_under_a_finished_parent_is_stopped() {
     );
 }
 
-/// **A capacity notice's line names the slot, the VM and the owner, and what happens to it.**
+/// A capacity notice's line names the slot, the VM, the owner and what happens to it.
 #[test]
 fn a_holders_line_names_the_tap_the_pid_the_owner_and_the_fate() {
     let h = Holder {
