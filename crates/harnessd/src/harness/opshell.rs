@@ -1,17 +1,11 @@
-//! **The operator's own calls**: the door's admitted run, the `!` line's two halves,
-//! and the rows and notes each of them leaves.
+//! The operator's own calls: the door's admitted run, the `!` line's two halves, and the rows and
+//! notes each of them leaves.
 use super::*;
 
 impl Harness {
-    /// **Record an operator's own call as their act** — R24 part two, decisions 2 and 4.
-    ///
-    /// The row this writes is what makes the difference between three facts a corpus must
-    /// not confuse: *the guard allowed this*, *a rule allowed this*, and **the person ran it
-    /// themselves**. `by` is `human:<who>` — the vocabulary the corpus already carries 121
-    /// `human:dead` and 37 `human:leticl` rows of — `asked` is `true` because a person
-    /// answered it (they are the answer), and `consulted` is `false` because no model spoke.
-    /// That last field is what stops `agreement` reading it as the guard's success: the gate
-    /// only labels a row against the model's verdict when a model gave one.
+    /// Record an operator's own call as their act: `by` is `human:<who>`, `asked` is true because a
+    /// person answered it, and `consulted` is false because no model spoke. That last field is what
+    /// stops `agreement` reading the row as the guard's success.
     pub fn admit_operator_call(
         &mut self,
         call_id: &str,
@@ -20,9 +14,8 @@ impl Harness {
         who: &str,
     ) -> Result<(), String> {
         let Some(sink) = &self.corpus else {
-            // **Not a silent success.** A daemon with no store cannot keep the record, and
-            // a head told "admitted" would run a call whose admission is nowhere — which is
-            // the one thing this arm exists to prevent.
+            // Not a silent success: a daemon that cannot keep the record must not let a head run
+            // a call whose admission is nowhere.
             return Err(
                 "this daemon keeps no corpus, so an operator's own call cannot be recorded \
                  as theirs. Refusing rather than admitting it unrecorded."
@@ -80,12 +73,11 @@ impl Harness {
         Ok(())
     }
 
-    /// **Append what the operator's call produced**, with its `origin` set.
+    /// Append what the operator's call produced, with its `origin` set.
     ///
-    /// Through `append_imported`'s writer and no other, so the row lands in the ledger, the
-    /// store and every head the same way a turn's rows do — and carries
-    /// `origin: Some(Operator { who })`, which is the whole of decision 1: a head draws it as
-    /// the person's act rather than the model's, and no head has to infer it.
+    /// Through `append_imported` and no other writer, so the row lands in the ledger, the store and
+    /// every head as a turn's rows do, carrying `origin: Some(Operator { who })`: no head has to
+    /// infer that the person, and not the model, made this call.
     pub fn finish_operator_call(
         &mut self,
         call_id: &str,
@@ -108,32 +100,14 @@ impl Harness {
         self.append_imported(&[item])
     }
 
-    /// **Run an operator's admitted call, in this session, and put it in the transcript**
-    /// — R31's `execute`.
+    /// Run an operator's admitted call, in this session, and put it in the transcript.
     ///
-    /// # Why the daemon runs it rather than the head
-    ///
-    /// Not convenience: **the payload has to be the one this program would have produced.**
-    /// The corpus row for an operator's call says `human:<who>` ran `web_fetch`; a head that
-    /// ran its own HTTP client would make that row false, and the model's next prompt would
-    /// hold text `web_fetch` never returned. Here the tool is the seated one, so the byte
-    /// caps, the spill policy, the network rules and the scratch directory are the same ones
-    /// a model's call gets.
-    ///
-    /// **The gate is not consulted and must not be.** The operator's call has already been
-    /// admitted against the door's allowlist and written as `human:<who>` — the row's own
-    /// basis says *"there was nobody left to ask"*. Re-gating here would either double-record
-    /// the decision or, at `/mode automode`, let a model refuse the person's own act.
-    /// [`ToolRuntime::invoke_operator`] is that distinction made explicit rather than a flag
-    /// at the call site.
-    ///
-    /// # The size, said before the row lands
-    ///
-    /// R31's fourth consequence: *"a 40k-token page is 40k of context the operator chose to
-    /// buy — show the size before it lands, because the alternative is discovering it at the
-    /// next compaction."* So the measurement is published as a note **between** the run and
-    /// the append, which is the only window in which it is true: after the run the size is
-    /// known, and before the append nothing has been added to what the model reads.
+    /// The daemon runs it because the payload must be the one this program would have produced, so
+    /// the byte caps, the spill policy, the network rules and the scratch directory are a model's
+    /// call's. The gate is not consulted and must not be: the call was already admitted against the
+    /// door's allowlist and written as `human:<who>`, so re-gating would double-record the decision
+    /// or, at `/mode automode`, let a model refuse the person's own act. The size is noted between
+    /// the run and the append, the only window where it is true and the cost still avoidable.
     pub fn run_operator_call(
         &mut self,
         call_id: &str,
@@ -146,24 +120,17 @@ impl Harness {
             name: name.to_string(),
             arguments: arguments.to_string(),
         };
-        // The runtime's own events go to a null sink: the transcript row is the durable
-        // record and every head draws *it*, so a second copy as an event would be §13.2b's
-        // "one fact, two places". What the tool emits here is a `ToolStarted`/`ToolProgress`
-        // pair for a call no head proposed.
-        //
-        // **Null, and WATCHED** — see [`Self::unprompted_sink`]. A call from this door can
-        // return `Backgrounded` (`task` above all, and any tool the door's list grows to hold),
-        // and an unwatched sink leaves that handle in nobody's table: the row promises a
-        // completion and no watcher exists to queue one.
+        // A null sink, and watched: the transcript row is the durable record and every head draws
+        // it, so a second copy as an event would be one fact in two places. It is watched because a
+        // call from this door can return `Backgrounded`, and an unwatched sink would leave that
+        // handle in nobody's table while the row promises a completion.
         let mut quiet = self.unprompted_sink();
         // `turn_id` is empty on purpose: this call belongs to no turn, and a head that saw a
         // turn id here would draw the row inside a turn that did not propose it.
         let result = self.runtime.invoke_operator("", &call, &mut quiet);
-        // **What the model will read**, which is the number the operator is buying: the
-        // payload is *already* what the spill policy left, so this is the post-cap figure and
-        // not the tool's raw output. The full size, when it differs, is on the `SpillRef` the
-        // runtime recorded — reported rather than recomputed, because a second implementation
-        // of the cap is a second answer.
+        // What the model will read, which is what the operator is buying: the payload is already
+        // what the spill policy left, and the full size is reported off its `SpillRef` rather than
+        // recomputed, because a second implementation of the cap is a second answer.
         let payload = result.render();
         let read = payload.len();
         let spilled = match &result.spill {
@@ -174,9 +141,8 @@ impl Harness {
             ),
             None => String::new(),
         };
-        // **Said before it is appended.** Not a refusal and not a gate — the call has already
-        // been admitted — but the disclosure R31 asks for: the price is on the screen while
-        // the operator can still do something about it, rather than at the next compaction.
+        // Said before it is appended: not a refusal and not a gate, but the price on the screen
+        // while the operator can still act on it, rather than at the next compaction.
         self.import_note(
             "operator_call_ran",
             format!(
@@ -192,67 +158,36 @@ impl Harness {
             .map_err(|e| e.to_string())
     }
 
-    /// **Run the operator's own shell line (`!`), and append BOTH halves as rows.**
+    /// Run the operator's own shell line (`!`), and append both halves as rows.
     ///
-    /// The `!` feature's daemon half. The frame's own docs (`ClientFrame::OperatorShell`)
-    /// record why this is a frame of its own rather than the door; this is the run.
+    /// The daemon runs it for [`Harness::run_operator_call`]'s reason, and more so for a shell
+    /// command: a head has no exec host, no confinement, no scratch directory and no standing
+    /// environment, and the standing environment is what carries `LETIBOT_SOCKET` and
+    /// `SUDO_ASKPASS`, without which `sudo` cannot ask anybody for a password.
     ///
-    /// # Why the daemon runs it, in one sentence the door already wrote
+    /// Nothing gates it: `invoke_operator` is the door's own ungated path, so a session that does
+    /// not seat `bash` gets the runtime's honest refusal as the result row.
     ///
-    /// [`Harness::run_operator_call`] runs the door's calls here "because the payload has to be
-    /// the one this program would have produced" — and that is a fortiori true of a shell
-    /// command, whose payload is bytes a program wrote. A head has no exec host, no confinement,
-    /// no scratch directory and **no standing environment** — and the standing environment is
-    /// what carries `LETIBOT_SOCKET`, `LETIBOT_SESSION` and `SUDO_ASKPASS`, without which `sudo`
-    /// cannot ask anybody for a password. Running it anywhere but here is the feature not
-    /// working.
+    /// Two rows, one append: the typed line verbatim as `Speaker::Operator`, because that is who
+    /// typed it, then the result as a `ToolResult` named `bash` with `CallOrigin::Operator`. The
+    /// output is a program's bytes and not speech, so it gets no `Speaker`.
     ///
-    /// # The gate is not consulted, and neither is anything else that asks
-    ///
-    /// `ToolRuntime::invoke_operator` is the door's own ungated path — same schema lookup, same
-    /// argument salvage, same byte caps, same spill policy, same `bash` execution path with its
-    /// confinement and its `sudo` shim — and no `gate.admit`, no view-grant card. A session that
-    /// does not seat `bash` (the default read-only seat) gets the runtime's own honest refusal
-    /// as the result row, naming the tools it does have.
-    ///
-    /// # What lands, and in which order
-    ///
-    /// Two rows, one append: the operator's typed line as a `User` row with
-    /// `speaker: Operator` — their words, verbatim, bang included, because `Speaker::Operator`
-    /// means *the person at the keyboard* and that is exactly who typed it — then the result as a
-    /// `ToolResult` named `bash` with `origin: CallOrigin::Operator`, which is the tree's existing
-    /// vocabulary for *a person ran this call* and the row every head already draws with the
-    /// tool-output treatment. The output is NOT speech: it is a program's bytes, reported, and
-    /// giving it a `Speaker` would be pretending a shell spoke.
-    ///
-    /// # Why this synchronous composition still exists beside the split one
-    ///
-    /// [`Sessions::dispatch`] hands a between-turns `!` line to its own thread (see
-    /// `crate::bangrun`) — a run that held the worker held every other session's work with it.
-    /// Two paths still run the whole thing HERE, on the calling thread, and both are deliberate:
-    /// the round boundary's pickup (`apply_queued_head_run`), whose whole point is that a turn
-    /// already running reads the rows at its next round; and every caller that has no worker to
-    /// hand back to — `letibot-m1`, and the tests that drive a harness directly. The pieces are
-    /// shared with the split path ([`Self::prepare_operator_shell`],
-    /// [`Self::settle_operator_shell`]), so there is one minting of the call id, one note, one
-    /// row shape, whichever thread runs them.
+    /// Two callers still run the whole thing on this thread: the round boundary's pickup, whose
+    /// point is that a running turn reads the rows at its next round, and callers with no worker to
+    /// hand back to. The pieces are shared with the split path, so there is one call id, one note
+    /// and one row shape whichever thread runs them.
     pub fn run_operator_shell(&mut self, line: &str, who: &str) -> Result<(), String> {
         let (call_id, call) = self.prepare_operator_shell(line)?;
-        // The runtime's own events go to a null sink, exactly as the door's do: the
-        // transcript row is the durable record and every head draws *it*. What the
-        // tool emits here is a `ToolStarted`/`ToolProgress` pair for a call no head
-        // proposed — and for a command the operator is watching the composer over.
-        //
-        // **And watched**, for the reason [`Self::unprompted_sink`] gives: a run moved to the
-        // background mid-flight (Ctrl+O) settles as `Backgrounded`, and the row it leaves says
-        // its completion will arrive on its own.
+        // A null sink, as the door's runs have, and watched for the reason
+        // [`Self::unprompted_sink`] gives: a run moved to the background mid-flight settles as
+        // `Backgrounded`, and the row it leaves says its completion will arrive on its own.
         let mut quiet = self.unprompted_sink();
         // `turn_id` empty on purpose, as the door's runs are: this call belongs to no
         // turn, and a head that saw a turn id would draw the row inside a turn that
         // did not propose it.
         let result = self.runtime.invoke_operator("", &call, &mut quiet);
-        // The pieces, not the type: [`Self::settle_operator_shell`] takes what the split
-        // path carries over the hub, and this path hands it the same shape.
+        // The pieces, not the type: [`Self::settle_operator_shell`] takes what the split path
+        // carries over the hub, and this path hands it the same shape.
         let spill = result
             .spill
             .as_ref()
@@ -261,19 +196,15 @@ impl Harness {
         self.settle_operator_shell(line, who, &call_id, outcome, result.render(), spill)
     }
 
-    /// **Mint the operator's own call: the `bang-<n>` id and the `bash` call it names.**
+    /// Mint the operator's own call: the `bang-<n>` id and the `bash` call it names.
     ///
-    /// The half of [`Self::run_operator_shell`] that needs the harness — the sequence counter
-    /// (`bang_seq`) is this session's, so the id is minted HERE, on the worker, before the run
-    /// is handed anywhere. What comes back is everything a thread that is not this one needs to
-    /// run the command: a [`ToolCall`] whose payload is the line minus its bang, already
-    /// validated by [`letibot_sessionlog::operator_shell_command`].
+    /// The sequence counter is this session's, so the id is minted here, on the worker, before the
+    /// run is handed anywhere: what a thread that is not this one needs is a [`ToolCall`] whose
+    /// payload is the line minus its bang.
     pub fn prepare_operator_shell(&mut self, line: &str) -> Result<(String, ToolCall), String> {
-        // **A pasted block is not a command, and the daemon checks this itself.** The composer
-        // refuses it too, and that is not a second opinion: a `!` line reaches here from any
-        // head that speaks the protocol, and the crate both halves share holds the rule. A
-        // five-line notice used to become one `!` command whose newlines the shell split,
-        // running `usage: sudo …`, `it.`, `so` and `/proc` as their own commands.
+        // A pasted block is not a command, and the daemon checks this itself: a `!` line reaches
+        // here from any head that speaks the protocol, and a row of five lines whose newlines the
+        // shell split would run each fragment as its own command.
         if let Some(why) = letibot_sessionlog::operator_line_refusal(line) {
             return Err(why);
         }
@@ -290,20 +221,14 @@ impl Harness {
         Ok((call_id, call))
     }
 
-    /// **Append what the operator's run produced: the note and the two rows, one append.**
+    /// Append what the operator's run produced: the note and the two rows, one append.
     ///
-    /// The half of [`Self::run_operator_shell`] that needs the harness again after the run —
-    /// which is why it runs on the worker even when the run did not: the transcript has one
-    /// writer, and this is it. Everything here is byte-for-byte what the synchronous path
-    /// always did, in the same order: the size note first (so the disclosure is on the log
-    /// before the rows that carry the bytes), then the `User` row with the typed line verbatim,
-    /// then the `bash` `ToolResult` with `origin: CallOrigin::Operator`.
+    /// The half that needs the harness after the run, which is why it runs on the worker even when
+    /// the run did not: the transcript has one writer. Same order as ever, so the size note is on
+    /// the log before the rows that carry the bytes.
     ///
-    /// It takes the run's pieces rather than a [`letibot_tools::ToolResult`] because the
-    /// split path's result crosses a thread as [`CommandKind::OperatorShellResult`] —
-    /// already rendered and already carrying its spill numbers, so the worker never needs
-    /// the type back. The synchronous path renders at its own call site; both arrive here
-    /// identical.
+    /// It takes the run's pieces rather than a [`letibot_tools::ToolResult`] because the split
+    /// path's result crosses a thread already rendered, so the worker never needs the type back.
     pub fn settle_operator_shell(
         &mut self,
         line: &str,
@@ -313,17 +238,14 @@ impl Harness {
         payload: String,
         spill: Option<(usize, String)>,
     ) -> Result<(), String> {
-        // The command as the note names it: the line minus its bang, by the same validator
-        // the frame and [`Self::prepare_operator_shell`] used. The `None` arm is not a
-        // silent default — it is the caller's own claim carried through: a line settled
-        // without a bang was still run as written, and the note says so rather than
-        // inventing a command nobody typed.
+        // The command as the note names it, by the same validator the frame used. The `None` arm
+        // is not a silent default: a line settled without a bang was still run as written, and the
+        // note says so rather than inventing a command nobody typed.
         let command = letibot_sessionlog::operator_shell_command(line)
             .map(str::to_string)
             .unwrap_or_else(|| line.to_string());
-        // **What the model will read** — the same disclosure the door's note makes,
-        // for the same reason: the price is on the screen while the operator can still
-        // do something about it, rather than at the next compaction.
+        // What the model will read: the door's note makes the same disclosure for the same reason,
+        // that the price is on the screen while the operator can still act on it.
         let read = payload.len();
         let spilled = match &spill {
             Some((full_bytes, hash)) => format!(
@@ -364,55 +286,25 @@ impl Harness {
         self.append_imported(&rows).map_err(|e| e.to_string())
     }
 
-    /// **Write down the question the model asked and the answer a person gave it.**
+    /// Write down the question the model asked and the answer a person gave it.
     ///
-    /// Called from the round loop with the result of an [`ASK_USER_QUESTION`] call — *the*
-    /// place a result is appended, and the reason the tool does not write these rows itself:
-    /// the transcript has one writer, and it is the session. What the tool returns is the
-    /// answer the model reads; what a PERSON said is written here, as their own row.
+    /// Called from the round loop with an [`ASK_USER_QUESTION`] result, because the transcript has
+    /// one writer and it is the session: the tool returns what the model reads, and what a person
+    /// said is written here, as a row of theirs.
     ///
-    /// # What lands, and in which order
-    ///
-    /// The question as the session's own row ([`question_row_text`] — never the operator's,
-    /// because the trail may cite a `User` row of theirs and a question is not theirs), then
-    /// the answer as a `User` row with `speaker: Operator` whose text is **exactly** what
-    /// they said ([`operator_answer_text`]).
-    ///
-    /// # Why they land AFTER the call's own result
-    ///
-    /// The brief's shape — the person's row, then the result — is the `!` line's, and it is
-    /// right there because nothing above the result proposed the call. Here something did:
-    /// the model's `Assistant { tool_calls }` row is already on the log, and
-    /// `letibot_provider::messages::pair_tool_calls` **closes the answering window on any
-    /// non-`tool` row**. A `User` row between the proposal and its result therefore makes
-    /// the model read *"no result was recorded for this call"* beside the real one, which is
-    /// a lie about the exchange the rows exist to record. So the result goes first and the
-    /// person's half follows it — the round loop appends both in one batch, all results
-    /// before all of these.
-    ///
-    /// # What makes the result the person's act
-    ///
-    /// The row keeps its payload — the model reads the same bytes it always did — and takes
-    /// `origin: Some(CallOrigin::Operator { who })`, which is what makes every head draw it
-    /// as the person's act at every verbosity (`tui::app::visibility::operator_act`). The
-    /// operator's report this answers is *"by the way i dont see my answer to the selector"*:
-    /// the card is a live overlay and this row is what is left of it afterwards.
-    ///
-    /// # The trail
-    ///
-    /// Both rows are recorded where the composer's own speech is (`TrailMirror::say`), and
-    /// the SPEAKER is the whole point: the answer goes in as `Speaker::Operator`, so a *yes*
-    /// given through a question card can be cited as authorisation exactly as a *yes* typed
-    /// into the composer can. Before this it could not — the answer was a tool payload and
-    /// nothing else, and no `User` row of theirs existed to cite.
+    /// The result goes first and the person's half follows it, because a `User` row between the
+    /// proposal and its result closes the answering window and makes the model read "no result was
+    /// recorded for this call" beside the real one. The result keeps its payload and takes
+    /// `origin: Some(CallOrigin::Operator)`, which is what makes every head draw it as the person's
+    /// act; both rows are recorded where the composer's own speech is, and the answer's speaker is
+    /// `Speaker::Operator` so a yes given through a card can be cited as a yes typed into the
+    /// composer can.
     pub(crate) fn settle_asked(&mut self, result: &mut TranscriptItem) -> Vec<TranscriptItem> {
         let Some(asked) = self.asked.lock().unwrap_or_else(|e| e.into_inner()).take() else {
             return Vec::new();
         };
-        // **Only an answer the tool ACCEPTED.** `ask_user_question` reports an abstention as
-        // `Abstained` — a real answer — and everything it refused (an empty answer, an option
-        // index nobody offered, a note qualifying nothing) as `not_run`. Writing a person's
-        // row for one of those would attribute to them a sentence the harness rejected.
+        // Only an answer the tool ACCEPTED: a refusal is `not_run`, and writing a person's row for
+        // one would attribute to them a sentence the harness rejected.
         let TranscriptItem::ToolResult {
             outcome, origin, ..
         } = result
@@ -438,27 +330,20 @@ impl Harness {
         asked_rows(&asked, &said).to_vec()
     }
 
-    /// **The runtime as a shareable handle**, for the thread that runs the operator's
-    /// command. One exec host per session is a fact — `job_list`, a promotion and the
-    /// run ender at shutdown all name jobs in this one — so the run goes through THIS
-    /// runtime rather than a second one, and the clone is the whole of the handover.
+    /// The runtime as a shareable handle, for the thread that runs the operator's command: one exec
+    /// host per session is a fact, so the run goes through this runtime rather than a second one.
     ///
-    /// **The sink is the caller's, and it decides whether a `Backgrounded` outcome is
-    /// watched.** A runtime does not know what a watcher is, so a handle used with a bare
-    /// `NullToolSink` mints a job or subagent handle in nobody's table: the settlement is
-    /// queued for no session and no bell rings. Whoever invokes through this must pass
-    /// [`JobWatchSink::new`] over [`Harness::job_watchers`] — which is what
-    /// [`Harness::unprompted_sink`] is for the two doors that live here, and what
-    /// `crate::bangrun` carries across its thread.
+    /// The sink is the caller's, and it decides whether a `Backgrounded` outcome is watched: a
+    /// handle used with a bare `NullToolSink` mints a handle in nobody's table, so the settlement is
+    /// queued for no session and no bell rings. Whoever invokes through this passes
+    /// [`JobWatchSink::new`] over [`Harness::job_watchers`].
     pub fn runtime_handle(&self) -> std::sync::Arc<ToolRuntime> {
         self.runtime.clone()
     }
 
-    /// **Attach the worker's serialization state** — the same `Arc` the dispatch arm
-    /// holds, so both places that could start an operator run read one fact. Called by
-    /// `Sessions` at open, once per harness; a second call would replace the state and
-    /// orphan any run in flight, which is why it is a setter rather than an argument:
-    /// the harness can be built before the map that owns the state exists.
+    /// Attach the worker's serialization state: the same `Arc` the dispatch arm holds, so both
+    /// places that could start an operator run read one fact. A setter rather than an argument
+    /// because the harness can be built before the map that owns the state exists.
     pub fn set_bang_state(&mut self, state: std::sync::Arc<crate::bangrun::State>) {
         self.bang = Some(state);
     }
@@ -479,24 +364,15 @@ impl Harness {
         }
     }
 
-    /// **The turn the operator's own `!` line starts** — the sending half.
+    /// The turn the operator's own `!` line starts: the sending half, so the two rows are a message
+    /// and not silent context.
     ///
-    /// [`Harness::run_operator_shell`] appends the two rows; this is what makes them a
-    /// message rather than silent context. The operator asked for both halves in their own
-    /// words — the result *"printed (with meaningfull truncution and scrolled collapse,
-    /// like we do for tool output now) and sent to model as a message"* — and corrected
-    /// the design when the rows landed without the turn: *"my commands should start a turn
-    /// and should be printed to me"*.
+    /// Nothing is appended here on purpose: the line and its output are already rows, so a framing
+    /// item would be a third row saying what the two above it say.
     ///
-    /// **Nothing is appended here, on purpose.** The line and its output are already rows
-    /// and already on the log, so a framing item would be a third row saying what the two
-    /// above it say. This is `submit_item` minus its append: open a turn, run the rounds,
-    /// and the model reads the operator's line and the command's output as the head of
-    /// that turn.
-    ///
-    /// **Called only between turns.** Mid-turn the line is taken at the round boundary
-    /// (`apply_queued_head_run`) and the turn already running reads the rows at its next
-    /// round; starting one there would be a second turn about one command.
+    /// Called only between turns. Mid-turn the line is taken at the round boundary and the running
+    /// turn reads the rows at its next round; starting one there would be a second turn about one
+    /// command.
     pub fn run_after_operator_shell(&mut self) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
         let out = self.run_rounds();
