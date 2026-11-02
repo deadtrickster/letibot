@@ -755,6 +755,37 @@ mod tests {
         assert!(got.contains("Reading it now.\n\n<tool_call>"), "{got}");
     }
 
+    /// A `Reasoning` item and the `Assistant` item that follows it are ONE message: the template
+    /// writes one `<|im_start|>assistant`, one block of thinking, then the visible text. T20.8 -
+    /// the `/apply-template` oracle caught a second message being opened here and no unit test did.
+    #[test]
+    fn a_reasoning_and_the_assistant_after_it_are_one_message() {
+        let items = vec![
+            user("what is 2+2?"),
+            TranscriptItem::Reasoning {
+                text: "Trivial.".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: "4.".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+        ];
+        let got = spans_to_string(&QwenRenderer::new().render(&prefix("s", &[]), &items));
+        assert_eq!(
+            got.matches("<|im_start|>assistant").count(),
+            1,
+            "the assistant half of the message must not open a second one: {got}"
+        );
+        assert_eq!(got.matches("<think>").count(), 1, "{got}");
+        assert!(
+            got.ends_with("<|im_start|>assistant\n<think>\nTrivial.\n</think>\n\n4."),
+            "{got}"
+        );
+    }
+
     #[test]
     fn an_assistant_turn_with_no_reasoning_still_emits_an_empty_think_block() {
         let items = vec![TranscriptItem::Assistant {
