@@ -117,23 +117,13 @@ pub struct CompactReport {
     pub gained: Vec<String>,
     /// Tools the old prompt announced and the new one does not.
     pub lost: Vec<String>,
-    /// **Did the operator watch the summary being written?**
+    /// Did the operator watch the summary being written?
     ///
-    /// The ordinary compaction runs its summary turn through the session's own
-    /// sink, so the text streams to every head as it is generated and the fork
-    /// that follows needs no announcement. The overrun paths cannot: they
-    /// summarise a SCRATCH transcript, and `summarise_one` sends that to a
-    /// `NullSink` on purpose — forwarding its progress once made the head draw
-    /// the scratch prompt's token count as the session's context. Its comment
-    /// ends "progress is the caller's to report, in words, per half", and the
-    /// caller reported the start and nothing else.
-    ///
-    /// Measured 2026-09-20. The operator ran `/compact` on a session 1.5M
-    /// tokens over its window; it folded correctly, 1504081 -> 758940 tokens
-    /// onto a new transcript with a 2167-token summary as its first item — and
-    /// their screen said *"started summarization of the first 1500+ and then
-    /// scrolled some s-tasks and that is it, not summary output, nothing"*. The
-    /// work was right and the account of it went to the daemon's stderr.
+    /// The ordinary compaction runs its summary turn through the session's own sink, so the text
+    /// streams to every head as it is generated and the fork that follows needs no announcement. The
+    /// overrun paths cannot: they summarise a SCRATCH transcript, and `summarise_one` sends that to a
+    /// `NullSink` on purpose, because forwarding its progress made the head draw the scratch prompt's
+    /// token count as the session's context.
     ///
     /// False means the summary has to be published, because nobody saw it.
     pub summary_was_streamed: bool,
@@ -335,17 +325,14 @@ pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
 }
 
 impl Harness {
-    /// **How big this conversation is, in the units its wall is in** — and the pair
-    /// every `Config` conversion reads, brought up to date with it. R72.
+    /// How big this conversation is, in the units its wall is in, and the pair every `Config`
+    /// conversion reads, brought up to date with it.
     ///
-    /// For a session with a measurement: the provider's own count at its last round,
-    /// plus what has been appended since and will be sent (see [`roll_resident`]), and
-    /// `cfg.ledger_scale` becomes `(ledger now, that count)` — so `should_compact`,
-    /// `at_the_wall`, `room_for_next_turn` and `shown_tokens` all judge and print the
-    /// one number, and `shown_tokens(ledger_len())` IS it, exactly. Called before every
-    /// wall decision, because the ledger moves between rounds (a tool result, a notice)
-    /// and a pair from the last round would convert those rows by a ratio they have
-    /// nothing to do with.
+    /// For a session with a measurement: the provider's own count at its last round plus what has
+    /// been appended since, and `cfg.ledger_scale` becomes `(ledger now, that count)`, so every wall
+    /// decision judges and prints the one number. Called before every wall decision, because the
+    /// ledger moves between rounds and a pair from the last round would convert those rows by a ratio
+    /// they have nothing to do with.
     ///
     /// Without a measurement the reading is the ledger's own, and says so
     /// (`measured: None`): unscaled on a metered model that has not run a round —
@@ -358,13 +345,11 @@ impl Harness {
             // A switch cleared the scale (`set_provider`, `set_own_server`): the anchor
             // was a measurement on the model before, and goes with it.
             self.wall_anchor = None;
-            // **The carried ratio still converts.** Nothing here has measured THIS model,
-            // so `measured` is `None` and a line says so; but a pair measured on the model
-            // before the switch is a better count than the ledger's bytes, and using it is
-            // what stops a fresh provider stopping the turn at round 0 with
-            // `2708271 of 1000000 ledger tokens (unscaled …)`. `shown_tokens` falls back to
-            // the ledger's own figure when there is no pair at all, which is the old
-            // behaviour exactly.
+            // The carried ratio still converts. Nothing here has measured THIS model, so `measured` is
+            // `None` and a line says so; but a pair measured on the model before the switch is a
+            // better count than the ledger's bytes, and using it is what stops a fresh provider
+            // stopping the turn at round 0. `shown_tokens` falls back to the ledger's own figure when
+            // there is no pair at all.
             return Resident {
                 tokens: self.cfg.shown_tokens(len),
                 measured: None,
@@ -392,35 +377,15 @@ impl Harness {
         now
     }
 
-    /// **The turn after the wall, without a human typing "continue".**
+    /// The turn after a re-seat: the model is told it happened, and answers. `text` is
+    /// [`reseated_for_the_model`]'s.
     ///
-    /// A wall stop ends the turn with the work half-done, and the compaction that
-    /// follows it (the shared turn tail, `turn_tail::run_turn`) replaces the transcript with a summary —
-    /// after which, until now, nothing ran. The worker went idle, the prompt was
-    /// still open, and the operator typed "continue" by hand to start the turn the
-    /// summary had just recorded the state of. Measured on 2026-09-15 and on every
-    /// compaction since: *"again have to write it after compaction"*.
+    /// The same seam as [`Harness::continue_after_wall`] and the plan-check's nag: a user item in the
+    /// harness's own voice, never readable as the operator's words. The held deliveries ride in,
+    /// because this is a turn the model takes anyway.
     ///
-    /// opencode never had the hole, because its compaction is a step inside the run
-    /// loop and the run never ends. This harness cannot run compaction — it reaches
-    /// the store, the resume chain and the registry, which `Sessions` owns — so the
-    /// seam is a user item in the harness's own voice, the same shape as
-    /// [`Harness::wake`]: `Speaker::Agent`, never an authorisation, and never
-    /// readable as the operator's words. The shared turn tail calls this while
-    /// there is room and a bound of continuations left; a wall the compaction did
-    /// not clear still comes back as [`HarnessError::ContextWall`], which is the
-    /// honest answer.
-    /// **The turn after a re-seat: the model is told it happened, and answers.**
-    ///
-    /// The operator: *"that reseat happened shall reach the model too. and it should start the
-    /// turn"*. `text` is [`reseated_for_the_model`]'s. The same seam as
-    /// [`Harness::continue_after_wall`] and the plan-check's nag — a user item in the
-    /// harness's own voice (`Speaker::Agent`), never readable as the operator's words — and
-    /// the held deliveries ride in, because this is a turn the model takes anyway.
-    ///
-    /// A re-seat is a command on the worker's queue, so it never runs inside a turn: by the
-    /// time this is called the turn that was running (if any) has ended, and this is the next
-    /// step boundary.
+    /// A re-seat is a command on the worker's queue, so it never runs inside a turn: by the time this
+    /// is called the turn that was running has ended, and this is the next step boundary.
     pub fn run_after_reseat(&mut self, text: &str) -> Result<Reply, HarnessError> {
         let mut text = text.to_string();
         if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
@@ -436,13 +401,22 @@ impl Harness {
         })
     }
 
+    /// The turn after the wall, without a human typing "continue".
+    ///
+    /// A wall stop ends the turn with the work half-done, and the compaction that follows it replaces
+    /// the transcript with a summary, after which nothing ran. opencode never had that hole because
+    /// its compaction is a step inside the run loop; this harness cannot run compaction, so the seam
+    /// is a user item in the harness's own voice, the same shape as [`Harness::wake`].
+    ///
+    /// The shared turn tail calls this while there is room and a bound of continuations left. A wall
+    /// the compaction did not clear still comes back as [`HarnessError::ContextWall`].
     pub fn continue_after_wall(&mut self) -> Result<Reply, HarnessError> {
-        // R93.E1: no "context wall" (the context check tells the model not to size by it), and
-        // the compaction note right above already says what the summary is. Sent only after a
-        // real compaction (`turn_tail::run_turn`).
+        // No "context wall" sentence: the context check tells the model not to size by it, and the
+        // compaction note right above already says what the summary is. Sent only after a real
+        // compaction.
         let mut text =
             "Continue from the summary above; don't redo what it records as done.".to_string();
-        // R79: a continuation is a turn the model takes anyway — the held batch rides in.
+        // A continuation is a turn the model takes anyway, so the held batch rides in.
         if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
             text.push_str("\n\n");
             text.push_str(&meanwhile);
@@ -455,47 +429,30 @@ impl Harness {
         })
     }
 
-    /// `Sessions::compact_if_at_the_wall`'s contract, from the side that owns the
-    /// harness: **compact when the next turn would not fit**, announce it in the
-    /// same words the daemon's own sessions get, and apply the no-progress guard
-    /// that stops a too-large summary from looping once per turn.
+    /// `Sessions::compact_if_at_the_wall`'s contract, from the side that owns the harness: compact
+    /// when the next turn would not fit, announce it in the same words the daemon's own sessions get,
+    /// and apply the no-progress guard that stops a too-large summary looping once per turn.
     ///
-    /// Same name as the `Sessions` method on purpose: it is the same seam, and the
-    /// next person asking *why does this resurface* should find both doors in one
-    /// grep. The sibling's doc carries the history (the measured 2026-09-15 wall
-    /// that created it); this one carries the child's half.
+    /// Same name as the `Sessions` method on purpose: it is the same seam, and the next person asking
+    /// why this resurfaces should find both doors in one grep.
     ///
-    /// Returns whether a compaction was actually ATTEMPTED — `false` when the
-    /// session is not at the threshold, or automatic compaction is off, or no
-    /// window is configured. A wall notice that says *"a compaction was
-    /// ATTEMPTED"* needs that to be a fact rather than a hope, and until this
-    /// existed a child's was a promise nothing behind it kept.
+    /// Returns whether a compaction was actually ATTEMPTED, which is false when the session is not at
+    /// the threshold, automatic compaction is off, or no window is configured. A wall notice that says
+    /// a compaction was attempted needs that to be a fact rather than a hope.
     pub(crate) fn compact_if_at_the_wall(&mut self) -> bool {
         self.compact_at_the_wall(WallWhy::Tidy)
     }
 
-    /// **The other question: a turn was just REFUSED for context length — is
-    /// there a way forward?** Same body as [`Self::compact_if_at_the_wall`], and
-    /// the difference is one gate: this one does not read `auto_compact`, because
-    /// the no-progress guard turns that flag off **without freeing anything**, and
-    /// a refusal recovery gated on it would refuse the only lever it has.
+    /// The other question: a turn was just REFUSED for context length, so is there a way forward?
     ///
-    /// MEASURED 2026-10-09, session `s-1789919514688401228`: one automatic
-    /// compaction made no room (1,849,499 ledger tokens in, still over a
-    /// 1,000,000-token plan), the guard switched compaction off, and the next
-    /// thirty provider refusals met a recovery that would not act. `plan_overrun`
-    /// — the two-half fold a `Refused` compaction reaches through `compact()` —
-    /// is the strategy for exactly that state, and it never ran once.
+    /// Same body as [`Self::compact_if_at_the_wall`] and one gate apart: this one does not read
+    /// `auto_compact`, because the no-progress guard turns that flag off WITHOUT freeing anything, so
+    /// a recovery gated on it would refuse the only lever it has.
     ///
-    /// The refusal itself is the evidence, so there is no threshold to re-check:
-    /// the provider measured the prompt against the real window and said no. And
-    /// nothing stands this door down: the latch that used to (`forced_gave_up`, set
-    /// when a forced fold "still left the session at the wall") was set on an
-    /// ESTIMATE of the new base, and on 2026-10-11 it switched the overrun
-    /// protection off for the daemon's life after a fold deepseek then measured at
-    /// half the window. The wall controller (`crate::wall`) picks the fold: the one
-    /// the size calls for when nothing has been tried, the sliced fold from every
-    /// other state, `Stuck` included.
+    /// The refusal itself is the evidence, so there is no threshold to re-check. Nothing stands this
+    /// door down either: a latch set on an ESTIMATE of the new base once switched the overrun
+    /// protection off for the daemon's life after a fold the provider then measured at half the
+    /// window. The wall controller picks the fold.
     pub(crate) fn compact_because_refused(&mut self) -> bool {
         self.compact_at_the_wall(WallWhy::Refused)
     }
@@ -846,73 +803,37 @@ impl Harness {
         out
     }
 
-    /// **Re-seat this conversation onto the tool list that is seated NOW.**
+    /// The prompt this daemon would seat a NEW conversation with, and the store row for it, or `None`
+    /// when that is already the prompt being spoken.
     ///
-    /// The tool schemas live in the stable prefix, and a session's prefix is fixed
-    /// the moment it is created — a resume replays the stored one because the
-    /// stored tokens were produced under it, and a compaction fork keeps it for the
-    /// same reason. So a conversation started by a daemon with no shell can never
-    /// call one, however the daemon that reopened it is seated: the registry has
-    /// the tool, the prompt has never heard of it, and the banner — computed from
-    /// the registry — says `exec` while the model sits there unable to.
+    /// `/reseat` and every compaction fork want the same two values computed the same way, so they
+    /// are computed once here. The probe render is what makes the row honest: a `stable_prefix`
+    /// written with an empty token list verifies as `hash chain broken at row 0` on the way back in.
     ///
-    /// That is the whole of the operator's hour: *"i did letibot --stop and
-    /// leticode --continue but still no exec"*, and then the diagnosis, which was
-    /// theirs: *"i guess it is because we announce tools once at the start of the
-    /// session"*. Exactly so.
-    ///
-    /// What cannot be done is swapping the list under a live transcript: every
-    /// token in it was produced under the old prefix, and appending to them under a
-    /// new one builds a prompt no model was trained on — the same rule the dialect
-    /// check enforces at resume. What CAN be done is what compaction already does
-    /// for a different reason: summarise, then continue in a fresh transcript. The
-    /// only difference here is which prefix the fork opens under, so this is
-    /// `compact` with one argument changed.
-    ///
-    /// The cost is stated because it is real: the conversation continues from a
-    /// summary, not from its own tokens, and the prefix is new so the server's
-    /// cache for it is cold. Both are what changing the announced tools costs, and
-    /// a version that hid either would be hiding the thing the operator is paying.
-    /// **The prompt this daemon would seat a NEW conversation with**, and the
-    /// store row for it — or `None` when that is already the prompt being spoken.
-    ///
-    /// Both `/reseat` and every compaction fork want the same two values, computed
-    /// the same way, so they are computed once here. The probe render is what
-    /// makes the row honest: a `stable_prefix` written with an empty token list
-    /// verified as `hash chain broken at row 0` on the way back in, because the
-    /// tokens are what a resume rebuilds the chain from.
-    /// Public for the same reason [`Harness::fork_to_summary`] is: the summary
-    /// turn needs a model server and this does not, so the re-seat half of a
-    /// compaction is drivable — and therefore testable — offline.
+    /// Public because the summary turn needs a model server and this does not, so the re-seat half
+    /// of a compaction is drivable, and therefore testable, offline.
     pub fn reseat_target(&mut self) -> Result<Option<(StablePrefix, String)>, HarnessError> {
-        // **The standing notes are re-read HERE, on every base rebuild.** This is
-        // the operator's ask — *"make sure AGENTS.md reread after each compaction"* —
-        // and the seam it lands on is this one, because every fork computes its next
-        // prefix through here: `/compact`, the wall, `/reseat`, `/reingest`. The
-        // section is swapped inside the composed prompt by marker, so `prompts.toml`
-        // overrides and a fabric block appended after it are carried through
-        // untouched — the frozen-input rule this field's own history set
-        // (`compose_for_seat`) loses nothing, and only the notes move.
+        // The standing notes are re-read HERE, on every base rebuild, because every fork computes its
+        // next prefix through here: `/compact`, the wall, `/reseat`, `/reingest`. The section is swapped
+        // inside the composed prompt by marker, so `prompts.toml` overrides and a fabric block appended
+        // after it are carried through untouched, and only the notes move.
         //
-        // A compaction is a cold prefill by construction (the fork replaces the
-        // history), so moving the head here costs nothing extra; and when the files
-        // have NOT changed, the swap is a no-op, `next == self.prefix` below, and
-        // the fork keeps the seated prefix without a new row. This and open are
-        // the whole schedule — a reseat or a compaction is a re-open of the
-        // same head — and it is the same for every session.
+        // A compaction is a cold prefill by construction, so moving the head here costs nothing extra;
+        // when the files have NOT changed the swap is a no-op and the fork keeps the seated prefix
+        // without a new row.
         match self.reseat_candidate() {
             None => Ok(None),
             Some(next) => self.seat_target(next).map(Some),
         }
     }
 
-    /// **The prompt a fork would land on, decided and NOT yet recorded** — the first half of
-    /// [`Self::reseat_target`], for a caller that has a check to make before anything is
-    /// written (R91.13: `reingest` refused an over-window carry AFTER `cfg.system` had moved
-    /// and a `stable_prefix` row had been written, so every refused attempt left an orphan row
-    /// and a system prompt the session was not speaking). `None` when the prompt is unchanged
-    /// (the standing notes are still taken up then, as they always were), or when there is no
-    /// store to record a new one in.
+    /// The prompt a fork would land on, decided and NOT yet recorded: the first half of
+    /// [`Self::reseat_target`], for a caller that has a check to make before anything is written.
+    ///
+    /// `reingest` once refused an over-window carry AFTER `cfg.system` had moved and a
+    /// `stable_prefix` row had been written, so every refused attempt left an orphan row and a
+    /// system prompt the session was not speaking. `None` when the prompt is unchanged (the standing
+    /// notes are still taken up then), or when there is no store to record a new one in.
     fn reseat_candidate(&mut self) -> Option<StablePrefix> {
         let declared = crate::standing_notes::preloaded(self.skills.as_ref(), &self.cfg.skills);
         let notes = crate::standing_notes::section_with_skills(
@@ -965,35 +886,19 @@ impl Harness {
         Ok((next, id))
     }
 
-    /// **Re-seat without summarising: carry the whole conversation across.**
+    /// Re-seat without summarising: carry the whole conversation across. This is what `/reseat` does,
+    /// and the lossless carry is the default because a re-seat that quietly ate the conversation is a
+    /// surprise you cannot undo.
     ///
-    /// **This is what `/reseat` does.** The operator asked for it — *"is there a
-    /// way to reseat without summarizing? … like reingest full context"* — and
-    /// then made it the default: *"id say flip it - reset is loseless and reset
-    /// summarize will be not"*. A verb named for message zero should not cost
-    /// you everything under message zero unless you said so.
+    /// A tool's schema lives in the stable prefix, which is message zero, so a running session keeps
+    /// the prompt it opened under and a schema change needs a fork. This forks onto the seated prompt
+    /// with every item carried verbatim, through `fork_to_summary`'s own machinery: `tail` has always
+    /// been items kept as themselves, and this passes all of them with no summary in front.
     ///
-    /// A tool's schema lives in the stable prefix, which is message zero, so a
-    /// running session keeps the prompt it opened under and a schema change
-    /// needs a fork. [`Harness::reseat`] pays for that fork with a summary turn
-    /// — which is right when the point is to shrink, and pure loss when the
-    /// point is only to change message zero.
-    ///
-    /// This forks onto the seated prompt with every item carried verbatim. The
-    /// machinery is `fork_to_summary`'s own: `tail` has always been "items kept
-    /// as themselves", and this passes all of them with no summary in front.
-    ///
-    /// **What it costs.** The prefix changed, so nothing the server has cached
-    /// matches and the next turn pays a cold prefill of the WHOLE history — on a
-    /// metered provider, the whole conversation re-sent and re-billed once. That
-    /// is the trade against `reseat`, and it is the operator's to make: a summary
-    /// is cheaper and lossy, this is dearer and lossless. The default is the
-    /// lossless one, because a re-seat that quietly ate the conversation is a
-    /// surprise you cannot undo, and a bill is one you can see coming.
-    ///
-    /// It refuses where it cannot help: over the window, a verbatim carry would
-    /// fork onto a base that cannot be prefilled at all, and the honest answer
-    /// there is the summary it was trying to avoid.
+    /// It costs a cold prefill of the WHOLE history, because the prefix changed and nothing the
+    /// server cached matches. That is the trade against a summary: cheaper and lossy against dearer
+    /// and lossless. It refuses where a verbatim carry would fork onto a base that cannot be prefilled
+    /// at all, because the honest answer there is the summary it was trying to avoid.
     pub fn reingest(&mut self) -> Result<ReseatReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
@@ -1002,8 +907,8 @@ impl Harness {
                     .into(),
             ));
         }
-        // **Decided, not yet recorded (R91.13)** — the row and `cfg.system` wait for the fit
-        // check below, so a refusal changes nothing.
+        // Decided, not yet recorded: the row and `cfg.system` wait for the fit check below, so a
+        // refusal changes nothing.
         let Some(next) = self.reseat_candidate() else {
             return Err(HarnessError::Setup(
                 "this conversation's prompt already carries exactly the tools that are \
@@ -1348,11 +1253,10 @@ impl Harness {
         // Ledger units: `per_item` and `prefix_tokens` below are the ledger's.
         let window = self.cfg.planning_window().unwrap_or(u64::MAX);
 
-        // **The fold the controller named** (`crate::wall`). The ordinary one is what
-        // a compaction always was: the fold the size calls for. The sliced fold is the
-        // two-half plan asked for by NAME — `plan_overrun` reaches it by size only, and
-        // a history that fits one summary call never did, however little the ordinary
-        // fold freed (pg-noop, 2026-10-11: 941,101 folded to 507,355, half verbatim).
+        // The fold the controller named. The ordinary one is what a compaction always was: the fold
+        // the size calls for. The sliced fold is the two-half plan asked for by NAME, because a
+        // history that fits one summary call never reaches it by size, however little the ordinary
+        // fold freed.
         use crate::wall::Fold;
         let smaller = fold == Fold::SmallerTail;
         let plan = if fold == Fold::Sliced {
@@ -1363,12 +1267,10 @@ impl Harness {
         match plan {
             // The ordinary path, and the one that runs almost always.
             OverrunPlan::NotOverrun => {
-                // **The tail is planned from the history as it stands BEFORE the
-                // summary turn**, and that is not a detail: `run_compaction`
-                // appends its instruction and its answer to this session, and a
-                // tail that could reach those would put the question and its
-                // answer into the record that replaces them. The clone is the
-                // same one the overrun arm takes and for the same reason.
+                // The tail is planned from the history as it stands BEFORE the summary turn, and
+                // that is not a detail: `run_compaction` appends its instruction and its answer to
+                // this session, and a tail that could reach those would put the question and its
+                // answer into the record that replaces them.
                 let items: Vec<TranscriptItem> = self.session.items.clone();
                 // **The first choice when a remote backend can afford it.** `plan_fold`'s
                 // doc: the fold is the cleanest of the three strategies and the one to
@@ -1753,22 +1655,15 @@ impl Harness {
         // `forked_at_seq` means: where in the session's event stream the divergence
         // happened, not where in the transcript.
         let forked_at = self.hub.head_seq();
-        // **Nothing is written to the store yet (R91.2).** The transcript row, the fingerprint
-        // and the stale flag were written here, before a row of the new transcript existed: a
-        // crash during the carry resumed onto a partial conversation, and an error before the
-        // swap left the dead fork the store's newest and the reseat offer cleared on a session
-        // still speaking the stale prompt. Now the row goes in UNSEALED just before the swap
-        // (`Store::put_fork_unsealed` — not what a resume opens), and the seal, the fingerprint
-        // and the stale flag follow the last row (`Harness::seal_fork`, from `persist_reporting`).
+        // Nothing is written to the store yet. The transcript row, the fingerprint and the stale flag
+        // used to be written here, before a row of the new transcript existed, so a crash during the
+        // carry resumed onto a partial conversation. The row now goes in UNSEALED just before the
+        // swap, and the seal, the fingerprint and the stale flag follow the last row.
         //
-        // What the seal does, kept here because this is where a reader looks for it:
-        //
-        // **The fingerprint follows the transcript.** A fork is the other place a session's
-        // prefix is decided — `/reseat`, a compaction that picked up the seated tools, a dialect
-        // or model switch — and a column left at what the session was CREATED with would report
-        // every re-seated session stale on the next attach. A plain compaction writes the same
-        // hash it read, deliberately: the write is unconditional so that there is no second rule
-        // about when it is needed.
+        // The fingerprint follows the transcript: a fork is the other place a session's prefix is
+        // decided, and a column left at what the session was CREATED with would report every
+        // re-seated session stale on the next attach. A plain compaction writes the same hash it
+        // read, deliberately, so there is no second rule about when the write is needed.
         //
         // **And there is nothing left to tell an attaching head.** A fork either moves the
         // session onto the seated prompt or leaves it on one that was never stale (`onto` is
@@ -1854,9 +1749,9 @@ impl Harness {
             Some(item) => item,
             None => TranscriptItem::System {
                 text: if outcome.summary.is_empty() {
-                    // R93.E7: one line, no transcript id — the `[reseat]` notice is the one
-                    // that says what changed, and a carried conversation keeps every
-                    // earlier re-seat's note, so these stacked two and three deep.
+                    // One line, no transcript id: the `[reseat]` notice is the one that says what
+                    // changed, and a carried conversation keeps every earlier re-seat's note, so
+                    // these stacked two and three deep.
                     "System prompt and tools updated; the conversation continues unchanged. \
                      Nothing was summarised."
                         .to_string()
@@ -1871,35 +1766,26 @@ impl Harness {
                 origin: SystemOrigin::Update,
             },
         };
-        // **The recent past is carried over verbatim, not described.**
+        // The recent past is carried over verbatim, not described. Compaction used to keep none of
+        // it, so a session came back unable to see the turn it was in the middle of: that turn was
+        // now a sentence about a turn. The tail is the newest items under their own budget, appended
+        // after the summary so the order is preserved.
         //
-        // Compaction used to keep none of it: the new base was the summary and
-        // nothing else, so a session came back from a compaction unable to see the
-        // turn it was in the middle of -- that turn was now a sentence about a
-        // turn. The tail is the newest items, under their own budget, appended after
-        // the summary so the order of the conversation is preserved: everything
-        // old as prose, then the last stretch as itself.
-        //
-        // **Mapped to the wire's role/text as it is appended**, so the report and the
-        // bytes cannot describe different tails: one pass over one slice.
+        // Mapped to the wire's role and text as it is appended, so the report and the bytes cannot
+        // describe different tails: one pass over one slice.
         let mut body: Vec<TranscriptItem> = Vec::with_capacity(1 + tail_items.len());
         body.push(note);
         body.extend_from_slice(tail_items);
         let tail_turns = wire_turns(tail_items);
 
-        // **A carry the head can watch.** Rendering and writing the new transcript is the long
-        // half of a fork that carries the conversation (`/reseat` carries all of it), and the
-        // worker is inside this command until it ends — so a head with nothing on its screen but
-        // the old conversation and a `queued` prompt was the whole of what the operator saw for
-        // 6.5 minutes on 2026-10-12. Said from the first moment (the render is seconds of its
-        // own on a long conversation), then once per committed chunk below — never per row, so
-        // the head's queue is not flooded (see `FILLING_STRIDE`) — and ended by `total of
-        // total`, which is what clears the line. Only for a carry big enough to be a wait.
+        // A carry the head can watch. Rendering and writing the new transcript is the long half of a
+        // fork, and the worker is inside this command until it ends, so a head with nothing on its
+        // screen but the old conversation and a queued prompt is the whole of what the operator sees.
+        // Said from the first moment, then once per committed chunk, never per row, so the head's
+        // queue is not flooded; and ended by the final total, which clears the line.
         let carrying = body.len() >= FILLING_STRIDE;
-        // **Two phases, each with its own bar**: the render onto the new prompt, which is the
-        // long one and used to tick nothing at all — the bar sat at `0 of N` for all of it, then
-        // jumped and cleared as the write below raced through (the operator: *"progress bars do
-        // not work … always at zero"*) — and the write of the rendered rows to the store.
+        // Two phases, each with its own bar: the render onto the new prompt, which is the long one,
+        // and the write of the rendered rows to the store.
         let (rendering_what, filling_what) = if verbatim {
             (
                 "re-seating: rendering the conversation onto the new prompt",
