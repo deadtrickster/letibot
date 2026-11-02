@@ -1,11 +1,6 @@
 //! A head that speaks HTTP, so a model behind harnessd can be used the way a bare
 //! llama-server is. # Why this exists The gatekeeper on this box is a llama-server: the
-//! oracle posts a brief to `/v1/chat/completions` and reads one verdict back. That works
-//! and it means the guard has no base prompt of its own - every call has to carry
-//! everything it needs, because nothing else is holding any context for it. The operator
-//! 2026-09-20: *"I want to be able to start harnessd against a model with my custom base
-//! prompt. Think of our oracle qwen. right now it is a bare llama endpoint. I want it to be
-//! a harnessd and another simple http head."* So
+//! oracle posts a brief to `/v1/chat/completions` and reads one verdict back.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

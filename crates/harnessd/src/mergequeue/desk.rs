@@ -1,11 +1,6 @@
 //! The `queue` tool's daemon half - what a session's model can do about its project's
 //! queues: read them, re-gate the target, restart or withdraw a row, and PROPOSE the branch
-//! the project lands on. Every verb here is one the operator already had
-//! (`mergequeue::verbs`), moved under the session's own name (`agent:<session>`) so the
-//! history says a model did it. One is not: setting `[queue] target` is the operator's
-//! decision, so `propose_target` raises it on every hub, names the exact `leticode.toml`
-//! line, records the proposal in the target's history, and writes no file. `status` is
-//! scoped and bounded
+//! the project lands on.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

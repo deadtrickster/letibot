@@ -1,7 +1,6 @@
-//! The snapshot's half of *is it stuck?* - a `gating` row carries the step its gate is running and
-//! the end of that step's output, so a person reading the pane does not have to open a file on the
-//! daemon's box to find out whether anything is happening. The gate's own half (the log's path, and
-//! the tail growing as the step writes) is in `gate::tests`; this file is what a head is SENT.
+//! The snapshot's half of *is it stuck?* - a `gating` row carries the step its gate is
+//! running and the end of that step's output, so a person reading the pane does not have to
+//! open a file on the daemon's box to find out whether anything is happening.
 
 use letibot_tokencore::store::{
     Approval, MergePriority, MergeState, Move, NewReview, ReviewKind, ReviewState, Store,

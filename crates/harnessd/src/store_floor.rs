@@ -1,11 +1,6 @@
 //! This daemon's binary against the store it serves: the sentence every head is told when
 //! the store was written by a newer build, and the refusal when it cannot be read at all.
-//! The two facts are one question asked once, at the one moment the answer exists: what a
-//! reader must know (the store's own floor, in `letibot_tokencore`) and which binary is
-//! asking. The second is this process's, and no crate below here may know it. Three
-//! outcomes: `Ok(None)` for a store this build's or older, `Ok(Some(_))` for one that is
-//! ahead but readable, which reaches every head as the `store_newer` warning, and `Err` for
-//! a store this build must not serve.
+//! The two facts are one question asked once, at the one moment the answer exists:
 
 use std::path::Path;
 

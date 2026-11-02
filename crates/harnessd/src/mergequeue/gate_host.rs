@@ -1,10 +1,6 @@
 //! The gate on a declared host - the operator's instruction of 2026-10-29: *"i told you
 //! about other hosts so you actually use that capability for running gates and subagents
-//! fanouts"*. `[queue] gate_host = "<name>"` in `leticode.toml`, or `--gate-host <name>` on
-//! the daemon, moves the merge gate's steps to a machine the operator declared in
-//! `hosts.toml`. Empty - the default - is [`super::gate::run_with_memory`] and nothing
-//! else: this machine, byte for byte. # What crosses the wire The landing tree goes over
-//! and the merge stays here
+//! fanouts"*.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -1,10 +1,6 @@
 //! The daemon's answer to [`letibot_tools::builtins::harness_view::HarnessFacts`] what a
 //! session may know about itself. The trait lives in `letibot-tools` so that crate keeps
-//! depending on nothing above it; the implementation lives here because this layer holds
-//! the hub and the config. Every field is read at CALL time, not at open: a session that
-//! reported the warnings it had when it started would answer a question about the past with
-//! the confidence of the present, and a model asks about warnings because something just
-//! happened.
+//! depending on nothing above it;
 
 use std::sync::Arc;
 

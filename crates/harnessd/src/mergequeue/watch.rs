@@ -1,9 +1,6 @@
-//! Moves another daemon made, heard by this one.
-//!
-//! A row moves in the shared store and the mover announces it on ITS hubs only, so a head attached
-//! to any other daemon never re-read the queues and its edge kept what it last drew, or nothing.
-//! Every daemon therefore reads the history and broadcasts the moves of repositories whose lease it
-//! does NOT hold - its own worker already said those.
+//! Moves another daemon made, heard by this one. A row moves in the shared store and the
+//! mover announces it on ITS hubs only, so a head attached to any other daemon never
+//! re-read the queues and its edge kept what it last drew, or nothing.
 
 use std::path::PathBuf;
 use std::sync::Arc;

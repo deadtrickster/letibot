@@ -1,10 +1,4 @@
-//! The store behind the `transcript` and `digest` tools. `letibot-tools` cannot name
-//! `letibot-tokencore` - it is the lower crate - so the tools declare a
-//! [`TranscriptSource`] trait and this is the daemon's implementation of it, the same seam
-//! `harness` uses for `DaemonFacts`. # The fork chain is the whole job A session does not
-//! have *a* transcript. It has a chain of them, one per compaction: each fork writes a new
-//! `transcript` row whose `parent_transcript_id` points at the one it replaced and whose
-//! `forked_at_seq` says how many rows were carried over.
+//! The store behind the `transcript` and `digest` tools.
 
 use letibot_tokencore::store::Store;
 use letibot_tools::builtins::transcript::{

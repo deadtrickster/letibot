@@ -1,11 +1,6 @@
 //! `sudo` inside a session: the password is asked of the head, never of a tty. A session
 //! has no controlling terminal, so every `sudo` it runs dies on *a terminal is required to
-//! authenticate*. Three pieces make one work 1. Every command of a host session runs with
-//! `SUDO_ASKPASS` pointing at `letibot-askpass` (beside this binary) and a `sudo` shim
-//! ahead of `PATH` that execs the real sudo with `-A`, so sudo uses the helper rather than
-//! looking for a terminal it has not got. `sudo -n` is untouched: a probe still answers no
-//! honestly. 2. The command has already passed the gate: `sudo` is on the always-ask list
-//! so the operator admitted it before any password is asked. 3.
+//! authenticate*. Three pieces make one work 1.
 
 use std::path::{Path, PathBuf};
 

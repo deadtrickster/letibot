@@ -1,11 +1,6 @@
-//! The plugin layers a session has, and the panes they answer: the daemon's half of the plugin
-//! stack - which session holds which `Stack`, when a look runs, and what reaches a head.
-//!
-//! The answer protocol, the precedence and the gate belong to `letibot_plugins`. What this file
-//! keeps: an answer the host cannot use is published as one panel saying why, never silence (an
-//! empty dashboard and a broken plugin look alike on a screen); a look is the host's act, so
-//! slice 1 reads and never execs; only a candidate the gate replayed is applied, and the gate
-//! never runs on the worker; and no look runs for a pane nobody opened.
+//! The plugin layers a session has, and the panes they answer: the daemon's half of the
+//! plugin stack - which session holds which `Stack`, when a look runs, and what reaches a
+//! head. The answer protocol, the precedence and the gate belong to `letibot_plugins`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

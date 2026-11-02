@@ -1,10 +1,6 @@
 //! The daemon's process supervisor - one record per started process, one liveness check per
 //! HOST per tick, deadlines enforced, teardown by ownership, and a restart that finds what
-//! is still running. # Why this is not the job watcher [`crate::jobwatch`] is about one job
-//! and one session: a thread blocked in `wait_job`, woken by a child the daemon itself
-//! spawned. That works only while the daemon is the process that started the job - it
-//! answers nothing for a job on another machine (a pid over there, no `Child`) and nothing
-//! at all after a restart. So the supervisor asks the record instead of a child handle
+//! is still running.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -1,10 +1,6 @@
-//! Where a project sits, and where a session does, remembered. One durable mapping
-//! project root → point name. `~/Projects/letibot` at *writes allowed*; a directory
-//! nobody has said anything about at *always-ask*; `/etc` at *read-only* if the operator
-//! put it there. And beside it the point each SESSION was put at, which is the session's
-//! own fact: a restart or a reseat brings it back there. This is what replaces the grant
-//! table an earlier draft of this design asked for - `(project, tool, intent class)`
-//! durable, listable, revocable. That table is correct and nobody audits one.
+//! Where a project sits, and where a session does, remembered. One durable mapping project
+//! root → point name. `~/Projects/letibot` at *writes allowed*; a directory nobody has said
+//! anything about at *always-ask*; `/etc` at *read-only* if the operator put it there.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

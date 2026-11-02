@@ -1,11 +1,6 @@
 //! The operator's pause of the idle plan-check: `/nag`, `/nag pause [DURATION]` `/nag
 //! resume`. A pause is one session's switch, on that session's row. While it stands the
-//! session's [`crate::sessions::TodoNagClock`] arms nothing but the pause's own end: no
-//! idle check, no repeat, and no sooner check for an added row. The board still takes every
-//! edit, because a pause is about being ASKED, not the plan. The row is what a restart and
-//! a resume read back, and the session's [`crate::config::Config`] is what the settings row
-//! is drawn from. Per session, children included and not inherited: silencing the checks on
-//! work the operator did not look at is the silent board this verb must not produce.
+//! session's [`crate::sessions::TodoNagClock`] arms nothing but the pause's own end:
 
 use std::time::Duration;
 

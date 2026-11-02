@@ -1,11 +1,5 @@
 //! A background job's end, published the moment it is true. The start needs no watcher
-//! `bash --background` finishes as `ToolOutcome::Backgrounded` and every head sees it. The
-//! end does - a session-scoped job outlives its turn, and between turns nobody asks the
-//! runtime about it. Blocked, not polling (§18.1-I12): one thread per watched job, blocked
-//! in [`ProcessHost::wait_job`] and woken by the job's own settlement. No background jobs
-//! and no threads when there is nothing to watch. The handles are `Weak`: a watcher holding
-//! the host alive would keep a closed session's cgroup alive with it, so it re-checks every
-//! [`WATCH_CHUNK`] and dies. The model is told, not only the head.
+//! `bash --background` finishes as `ToolOutcome::Backgrounded` and every head sees it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

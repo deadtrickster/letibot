@@ -1,10 +1,6 @@
 //! `todo_write`'s `target`: the daemon-side half of a PARENT writing a CHILD's board. # Why
 //! a module and not a method on `Harness` The parent's tool and the child's board are in
-//! the SAME daemon but never in the same [`crate::harness::Harness`]: a child spawned by
-//! `task` is run by the thread that spawned it, and the daemon holds no `Harness` for it.
-//! So a session-id → board map, registered by every `Harness` at open, is the one place a
-//! parent's write can find its child - a live `Arc` that rides [`crate::harness::Parts`]
-//! because it belongs to the daemon and not to any one session's config.
+//! the SAME daemon but never in the same [`crate::harness::Harness`]:
 
 use std::collections::HashMap;
 use std::path::PathBuf;

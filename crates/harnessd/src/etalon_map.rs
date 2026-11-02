@@ -1,11 +1,6 @@
-//! The etalon on a map: every command's tree, clustered. Plan
-//! `docs/guard-corpus-plan.md` §7. The operator: *"treesitter as normalization for each
-//! command and clustering over trees, something like SOM or vectors to see the clusters.
-//! draw me them even."* The normalisation is [`letibot_code::shell::shape`]: the
-//! tree-sitter parse of the command with its literals replaced by holes, so `grep -n P -A
-//! 22 a.rs` and `grep -n Q -A 3 b.rs` are one shape. Every bash command in the etalon
-//! becomes its shape; the shapes are aggregated (count, outcomes, what layer A reads them
-//! as today), vectorised, and laid out on a self-organising map (Kohonen, batch form).
+//! The etalon on a map: every command's tree, clustered. Plan `docs/guard-corpus-plan.md`
+//! §7. The operator: *"treesitter as normalization for each command and clustering over
+//! trees, something like SOM or vectors to see the clusters.
 
 use std::collections::HashMap;
 use std::path::Path;

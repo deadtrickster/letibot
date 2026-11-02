@@ -1,11 +1,5 @@
 //! Where the gate's decisions go so they outlive the daemon. > *"we should assemble my
-//! decisions and model decisions into corpus across our > letibot/leticode runs. and if
-//! gatekeeper is unsure it should say so and i still > asked - goes to corpus too."*
-//! `AdjudicatedGate::log` is a `Vec` in one process. It was always the right shape - the
-//! model's verdict and the operator's answer in separate fields, `shown` kept verbatim -
-//! and it was always discarded. Everything this harness ever decided died with the daemon
-//! that decided it. This is the write-through. One row per decision at the moment it is
-//! made
+//! decisions and model decisions into corpus across our > letibot/leticode runs.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};

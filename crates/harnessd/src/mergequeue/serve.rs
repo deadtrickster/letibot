@@ -1,11 +1,6 @@
-//! The queues' own threads - a supervisor per daemon that finds the repositories it may serve
-//! and claims their leases, and one worker per repository it holds: the review queue, the gate on
-//! every change to the target's tip, and landings one at a time.
-//!
-//! Never on a session's worker
-//! , and never ended by a store error. One repository, one
-//! worker, one lease (decision 1), one queue per repository (decision 2) - so a long gate holds
-//! nothing but its own repository, and losing a lease ends exactly one worker.
+//! The queues' own threads - a supervisor per daemon that finds the repositories it may
+//! serve and claims their leases, and one worker per repository it holds: the review queue,
+//! the gate on every change to the target's tip, and landings one at a time.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

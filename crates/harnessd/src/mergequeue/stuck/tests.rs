@@ -1,8 +1,4 @@
 //! The census's numbers, and the one thing they must not become: a second counting rule.
-//!
-//! Every test here is about a store, because the numbers are the store's - a fixture that built
-//! the counts by hand would assert the arithmetic of the test rather than the reading of the
-//! queue. `desk::status` prints the same rows, so the agreement test is a real one.
 
 use super::*;
 use crate::mergequeue::serve::tests::TempDir;

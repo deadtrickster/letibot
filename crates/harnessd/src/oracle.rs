@@ -1,11 +1,4 @@
-//! Layer B over HTTP: the real [`AuthorisationOracle`], for a box with a guard model. It
-//! lives here and not in `letibot-tools` because that crate has no HTTP client and no
-//! backend, and a seam that could only be exercised by standing up inference is a seam
-//! nobody tests. `ScriptedOracle` is the fake it ships for the tests. The budget is the
-//! design constraint: [`AuthorisationOracle::budget`] defaults to 400ms and
-//! `ModelAdjudicator` enforces it, abandoning an oracle that overruns as `Timeout`, which
-//! fails closed. That rules out an oracle that explains itself - so the answer is a
-//! verdict: a word and, when it authorises, the trail indices it relies on.
+//! Layer B over HTTP: the real [`AuthorisationOracle`], for a box with a guard model.
 
 use std::sync::Mutex;
 use std::time::Duration;

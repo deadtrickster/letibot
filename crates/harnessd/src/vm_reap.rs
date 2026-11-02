@@ -1,11 +1,6 @@
-//! A child's VM does not outlive the child - the daemon's half: whose each live
-//! firecode VM is, by this store's records, and the reaper that brings down the ones whose
-//! owner is gone. The operator's report, 2026-10-15: pg-noop's review of
-//! `feat/memory-engine` said *"review · waiting for a VM slot · every slot busy"* and *"VM
-//! slots exhausted · waited 33 min"* for hours. All four taps were held by orphaned
-//! firecracker VMs (parent pid 1), and what the store says about them is the whole story: *
-//! three were booted on 2026-10-14 at 17:18–17:20 UTC for grandchildren of
-//! `s-1791151788256943467`.
+//! A child's VM does not outlive the child - the daemon's half: whose each live firecode VM
+//! is, by this store's records, and the reaper that brings down the ones whose owner is
+//! gone. The operator's report, 2026-10-15:
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

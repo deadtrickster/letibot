@@ -1,11 +1,6 @@
-//! The daemon's metrics instruments - TODO phase 1, `docs/metrics.md` §4 and §6.
-//! Every site in the daemon that records a measurement calls ONE function here, on one
-//! line, so a merge that moves the site moves one line and the arithmetic stays put. Each
-//! function builds a [`letibot_metrics::Event`] and emits it - a `try_send` on a bounded
-//! channel, never SQL and never a wait (the c12d044 rule; the module header of
-//! `letibot_metrics` says why). When metrics are off every function here returns at its
-//! first branch. What a turn is, here: a prompt - every round the harness runs for one
-//! door, through `turn_tail::run_turn` - keyed by the engine id of its FIRST round.
+//! The daemon's metrics instruments - TODO phase 1, `docs/metrics.md` §4 and §6. Every site
+//! in the daemon that records a measurement calls ONE function here, on one line, so a
+//! merge that moves the site moves one line and the arithmetic stays put.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

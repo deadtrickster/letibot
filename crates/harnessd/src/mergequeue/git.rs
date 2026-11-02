@@ -1,7 +1,5 @@
 //! Git, as the queues use it: every command is one `git -C <dir> …` with git's own words on
-//! failure. Landings happen in a dedicated worktree outside the repository
-//! ([`landing_worktree_in`]) and the target moves by a compare-and-swap ([`update_ref_cas`]), so
-//! nothing here touches the operator's checkout except [`follow_checkouts`], which has to.
+//! failure.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

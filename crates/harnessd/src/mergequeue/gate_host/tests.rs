@@ -1,10 +1,5 @@
-//! What a host gate can be wrong about, as values - the invocation it builds, the exit status it
-//! reads, and the row it writes.
-//!
-//! Nothing here reaches a network: an `ssh` is built through [`Ssh::connect`] against a temporary key
-//! and known-hosts file, so the argv and the `rsync -e` string are the ones production would run. The
-//! end-to-end half is `crates/harnessd/tests/gate_host.rs`, a binary of its own because it has to own
-//! `$HOME` and `$LETIBOT_HOSTS`.
+//! What a host gate can be wrong about, as values - the invocation it builds, the exit
+//! status it reads, and the row it writes. Nothing here reaches a network:
 
 use super::*;
 use crate::mergequeue::gate::{GateRunner, gate_host, run_gate};

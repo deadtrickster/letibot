@@ -1,9 +1,6 @@
-//! A reviewer firecode had no free slot for WAITS; a review that stops says why.
-//!
-//! A shortage of VM slots used to be counted as a failed attempt, so three refusals in a row blocked a
-//! branch nobody had judged. Every test drives the real queue thread's claims ([`RepoQueue::pass`]) and
-//! the real reviewers' host ([`serve`]) against a temp repository and a temp store, with a placement
-//! that refuses with firecode's own capacity text.
+//! A reviewer firecode had no free slot for WAITS; a review that stops says why. A shortage
+//! of VM slots used to be counted as a failed attempt, so three refusals in a row blocked a
+//! branch nobody had judged.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};

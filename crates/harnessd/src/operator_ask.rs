@@ -1,11 +1,6 @@
 //! A todo row that waits on the OPERATOR - the daemon's half: the answer, the words the
 //! model is told, and the loud state the heads draw. The operator's ask, verbatim: *"a todo
-//! can be dependent on todo, and todo can be dependend on ME. if model says todo is
-//! dependent on ME the other heads of the todo DAG keep firing, model told to try to figure
-//! it out anyways, and the heads show loud notification that im waited. i guess we will
-//! force models to do choice for todo - so when it says it waits for ME it give me that
-//! choice list with an optioin to enter my freetext. and then when i submit todo becomes
-//! unblocked with reply attached"*.
+//! can be dependent on todo, and todo can be dependend on ME.
 
 use letibot_sessionlog::question::QuestionAnswer;
 use letibot_tokencore::store::{TodoItem, TodoNeed, TodoStatus, operator_asks};

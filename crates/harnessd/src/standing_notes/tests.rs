@@ -1,11 +1,4 @@
-//! The census: this module's rules, asserted. Its own file because the rules under test are
-//! private (`gather`'s order, `body`'s per-file budget, `index_entry`'s shape, the sentence
-//! rule behind an abstract) and a module with private rules can only be tested from inside
-//! it. The declaration is `mod tests;` at the bottom of `standing_notes.rs`; the
-//! integration half against a real harness is `crates/harnessd/tests/standing_notes.rs`.
-//! Also asserted: the seat's instruction files, which this module does not name. They reach
-//! the section through the config layer, ahead of the notes, because a rule that arrives as
-//! an index is a rule the model has to fetch before it can follow it.
+//! The census: this module's rules, asserted.
 
 use super::*;
 

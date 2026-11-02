@@ -1,8 +1,6 @@
 //! The offer, against a fixture corpus and a fixture transcript: no model, no network, no
-//! harness.
-//!
-//! What this module does not do is the subject: it does not put the note in the prompt, it does
-//! not put the offer in the log, and it says nothing unless it is sure.
+//! harness. What this module does not do is the subject: it does not put the note in the
+//! prompt, it does not put the offer in the log, and it says nothing unless it is sure.
 
 use super::*;
 use letibot_transcript::{ToolCall, TranscriptItem, UserPart};

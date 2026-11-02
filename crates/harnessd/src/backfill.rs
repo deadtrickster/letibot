@@ -1,11 +1,4 @@
-//! Recovering shapes for decisions the operator already made. The shape cache landed after
-//! these rows were written, so a store full of the operator's own approvals carries `shape
-//! IS NULL` on every one, and the first session after the cache re-asks every question they
-//! had already answered. What this does NOT do is trust the old row: a stored `tier` and a
-//! stored `baseline` are what the classifier said on the day, and a year-old verdict would
-//! import yesterday's mistakes as today's standing grants. So every candidate is re-derived
-//! from the command text with today's code, and the row's own columns are used for two
-//! things only: who decided (a human) and where they decided it (the session's workspace).
+//! Recovering shapes for decisions the operator already made.
 
 use letibot_tokencore::store::Store;
 use letibot_tools::adjudicate::{ActionClass, Tier};

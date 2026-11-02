@@ -1,10 +1,5 @@
 //! Where a fanout's and a scenario's processes are written down - the daemon's half of
-//! `letibot_tools::fleet::ProcessBook`. A branch of `fanout`, a role of `scenario` and
-//! their readiness checks are jobs of the *host's* table, not of the session's own process
-//! host - the session is placed on one machine and a fanout deliberately reaches the
-//! others. [`crate::jobwatch::JobRecorder`] writes the record for a job of *this* host, and
-//! nothing wrote one for a job of another: a daemon that restarted mid-fanout would find no
-//! process to adopt, and a session's close would kill nothing on the machines it reached.
+//! `letibot_tools::fleet::ProcessBook`.
 
 use std::path::PathBuf;
 use std::sync::Mutex;

@@ -1,11 +1,6 @@
 //! The daemon's slash verbs: `/flowy …` and `/models …`, as the operator typed them in a
 //! head answered on the session's log. Each verb does what it can with what it was given
-//! and, when something is missing, says the exact next command rather than a manual. A step
-//! with a real choice (several seats on the box) lists them; nothing is guessed. `/flowy
-//! login` writes the seat's files where the usual path reads them and attaches every open
-//! root session. `/models X` switches the provider underneath the session; the standing
-//! choice for new sessions is `/default-model`, and a key a provider needs is stored beside
-//! it, mode 0600. Feedback is `SessionEvent::Warning { code: "slash",..
+//! and, when something is missing, says the exact next command rather than a manual.
 
 use std::path::PathBuf;
 

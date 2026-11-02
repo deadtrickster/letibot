@@ -1,8 +1,6 @@
-//! What the landing tree does not have, and the project's way to give it - `[queue] gate_carry`.
-//!
-//! A worktree carries what git tracks, so firecode's tree had no `images/` and no VM booted, and
-//! `main` was RED for a reason not in the code. So [`carry`] copies the gitignored
-//! inputs a project names before every run - never a symlink, so the gate writes into its own copy.
+//! What the landing tree does not have, and the project's way to give it - `[queue]
+//! gate_carry`. A worktree carries what git tracks, so firecode's tree had no `images/` and
+//! no VM booted, and `main` was RED for a reason not in the code.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};

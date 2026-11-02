@@ -1,11 +1,6 @@
 //! How many of a project's merge-queue rows are stuck, and how long the oldest has been.
 //! The queue tells a project's session about a row ENTERING a bad state, once, as it
-//! happens (`notices::merge_failed`, `notices::merge_conflict`). Nothing told it the total
-//! or the age, so eight rows could sit stuck for hours with every one of those transitions
-//! notified. One counting rule: the landing rows `desk::status` counts as parked, minus the
-//! ones still the queue's own business (`is_open`), built by the same `desk::counts_of`
-//! over the same `desk::parked_merge` - a sub-line of `status`'s own line, and a test holds
-//! the two together. The review queue is deliberately NOT counted
+//! happens (`notices::merge_failed`, `notices::merge_conflict`).
 
 use letibot_tokencore::store::{MergeRow, MergeState, Store};
 

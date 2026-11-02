@@ -1,10 +1,5 @@
-//! The operator's verbs on the two queues - `/queue approve|restart|veto|rm|reset|clean|regate`.
-//!
-//! Every verb is a conditional move on the row's CURRENT state (read, then moved only if still
-//! there), recorded in the history under the operator's session. The operator may approve over the
-//! reviewer: an approve binds the head the branch has NOW and hands it to the merge queue in the
-//! same transaction, and nothing here touches git or the gate. Nothing is deleted - `rm` and
-//! `clean` WITHDRAW rows, because the history of a row is the record the queues exist to keep.
+//! The operator's verbs on the two queues - `/queue
+//! approve|restart|veto|rm|reset|clean|regate`.
 
 use std::path::Path;
 

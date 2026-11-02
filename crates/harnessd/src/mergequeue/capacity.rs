@@ -1,10 +1,5 @@
 //! A reviewer that could not be PLACED for want of a free VM slot is not an attempt - and
-//! the words a review that stops for a person says about why. Firecode has no exit code for
-//! capacity, so [`vm_capacity`] reads its words (*"needs tap … creating one needs root"*
-//! *"the slots below this one were taken"*) and the pool sends such a row back to `waiting`
-//! without spending one of 's three attempts on a transient shortage. A missing firecode, a
-//! broken image or a copy over the ceiling says none of this and stays a real placement
-//! failure - counted, and blocked on the third, as before.
+//! the words a review that stops for a person says about why.
 
 use letibot_tokencore::store::QueueTransition;
 use letibot_transcript::text::clip_chars;

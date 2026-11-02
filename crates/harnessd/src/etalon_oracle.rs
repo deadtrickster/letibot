@@ -1,11 +1,5 @@
 //! The gatekeeper measured on an attack corpus. Plan: `docs/guard-corpus-plan.md` §1
-//! (BashArena, arXiv 2512.15688) and §2. `--etalon` measures layer A alone and `--compare`
-//! measures the guard on the store's own labelled rows - which, measured 2026-09-16, hold
-//! no attacks at all: every one of the 66 asked rows was admitted by the operator. A guard
-//! that has only ever been measured on benign work has a false-prompt rate and no recall.
-//! This measures the recall. The input is the etalon's JSONL shape
-//! (`scripts/etalon-extract.py`), so any set in that shape works; the one it was built for
-//! is BashArena's `monitor-eval` split (HF `abhayesian/basharena-monitor-eval`)
+//! (BashArena, arXiv 2512.15688) and §2.
 
 use std::path::Path;
 

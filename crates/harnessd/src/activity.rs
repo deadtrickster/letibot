@@ -1,10 +1,5 @@
-//! What this session is waiting on, computed from the daemon's own state - the other
-//! half of [`letibot_sessionlog::activity`], which carries the vocabulary and the argument.
-//! # Why this crate is the one that can answer The bridge had to guess *will this session
-//! act again by itself* from outside, and every guess was a timer: a ten-second settle
-//! window, a `wake_due` flag set by an edge off the todo board, a `jobs_open` set folded
-//! from `Backgrounded` handles. Each fixed one false wake and left the next - because the
-//! facts that decide it live in processes and tables an outside reader cannot see
+//! What this session is waiting on, computed from the daemon's own state - the other half
+//! of [`letibot_sessionlog::activity`], which carries the vocabulary and the argument.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

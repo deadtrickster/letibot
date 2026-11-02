@@ -1,9 +1,6 @@
-//! The daemon's half of a session's leases: where a block of a shared host's ports is taken, and
-//! the two moments it goes back.
-//!
-//! `crates/tools/src/lease.rs` is the engine and the seam; this implements it over a real store in
-//! the shape `supervise::StoreBook` gives the process book. A block goes back when the session
-//! closes, which is an act, and when the supervisor's tick finds the owner gone.
+//! The daemon's half of a session's leases: where a block of a shared host's ports is
+//! taken, and the two moments it goes back. `crates/tools/src/lease.rs` is the engine and
+//! the seam;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

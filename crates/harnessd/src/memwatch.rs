@@ -1,10 +1,6 @@
-//! The daemon watching its own memory - `TODO.md`. A harnessd serving
-//! qwen-3.8-flash-next reached 108 GB resident over 47 hours and was killed by the kernel
-//! at 2026-10-11 00:47, and its log had not one line about memory in it: nothing said it
-//! was growing, what was growing, or when it started. The operator: *"can we have more logs
-//! and more instrumentation? maybe some asserts? can rust runtime do asserts or log large
-//! memory allocations?"* Three answers, one module: 1. [`Counting`], the global
-//! allocator (installed in `bin/harnessd.rs`).
+//! The daemon watching its own memory - `TODO.md`. A harnessd serving qwen-3.8-flash-next
+//! reached 108 GB resident over 47 hours and was killed by the kernel at 2026-10-11 00:47,
+//! and its log had not one line about memory in it:
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

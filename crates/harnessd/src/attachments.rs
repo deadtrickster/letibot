@@ -1,9 +1,6 @@
-//! What a chip in the composer becomes in the transcript.
-//!
-//! A chip travels as a [`letibot_sessionlog::protocol::Attachment`] and this module turns it into
-//! the [`UserPart`] the same file would have produced through `read`. The head sends a path and
-//! not a payload: one box, one file, so the daemon reads the bytes and the copy the transcript
-//! keeps is made here ([`UserPart::Image`]'s `data_ref`).
+//! What a chip in the composer becomes in the transcript. A chip travels as a
+//! [`letibot_sessionlog::protocol::Attachment`] and this module turns it into the
+//! [`UserPart`] the same file would have produced through `read`.
 
 use letibot_sessionlog::protocol::Attachment;
 use letibot_transcript::UserPart;

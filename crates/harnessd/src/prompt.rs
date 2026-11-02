@@ -1,10 +1,6 @@
-//! The daemon's half of answering the operator's own command: who holds the run's input
-//! and how a line gets into it. [`letibot_sessionlog::PromptDriver`] is the seam and
-//! [`Prompts`] implements it. The mechanism is [`letibot_tools::exec::Stdin`] - a handle on
-//! the run's input, its terminal on the ordinary path - and the detection is
-//! [`letibot_tools::exec::ask`], which reads `/proc` and never the program's words. What
-//! lives here is what the daemon has to hold: the one operator command in flight, the open
-//! `req_id` for it, and the write a head's answer and a `!send` both become.
+//! The daemon's half of answering the operator's own command: who holds the run's input and
+//! how a line gets into it. [`letibot_sessionlog::PromptDriver`] is the seam and
+//! [`Prompts`] implements it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

@@ -1,11 +1,6 @@
 //! The gate: the target's own `## Merge gate`, run with a deadline, in a process group, and
 //! killable - each step `sh -c <step>` in a new process group writing to a file, killed on
-//! the deadline, the daemon's stop, or a lost lease. Each step runs in a cgroup of its own
-//! a sibling of the daemon's leaf under the delegated scope, capped by `[memory] gate`, so
-//! a heavy build cannot throttle the sessions the daemon serves; with no delegated scope it
-//! runs uncapped and the row says so. The step is also told what it may use - `TMPDIR` on
-//! the box's real disk, `CARGO_BUILD_JOBS` from its own cap. [`GateRunner`] has two
-//! implementations
+//! the deadline, the daemon's stop, or a lost lease.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

@@ -1,11 +1,4 @@
-//! A pull request the session opened is watched without being asked. When a `bash` call
-//! that ran `gh pr create` succeeds and its output names the pull request, the harness arms
-//! the watches a person would want on it (its checks, reviews, CodeRabbit's review, new
-//! comments, and its merging or closing) as ordinary monitors owned by the session, through
-//! the same door the operator's own calls use, and says so in that call's result. Each
-//! firing wakes the session; `monitor` with `action: "retire"` ends one. Read off the call
-//! and its RESULT, never guessed from a command alone: a `gh pr create` that failed opened
-//! nothing, and one that succeeded printed the URL.
+//! A pull request the session opened is watched without being asked.
 
 use letibot_transcript::ToolCall;
 

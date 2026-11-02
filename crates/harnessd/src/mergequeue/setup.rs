@@ -1,11 +1,6 @@
 //! A gate that cannot judge is told apart from a target that is broken. A gate can pass
 //! every step it declares and then fail in its own wrapper - a script naming a binary this
-//! branch does not build - and nothing in the code has been judged. So a failed gate is
-//! read once more: it is the GATE's setup when the failure came after the build and the
-//! tests passed, either by step (every step before the failing one passed, one of them
-//! built or tested and the failing one is neither) or by its own words (one wrapper step
-//! whose output shows a build or a test passing, no compile error, failed test, panic or
-//! format diff, and ends naming something missing). Both are deliberately narrow
+//! branch does not build - and nothing in the code has been judged.
 
 use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
 

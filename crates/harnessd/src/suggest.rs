@@ -1,9 +1,6 @@
-//! The daemon's model call for the smart `!`: the local endpoint, bounded.
-//!
-//! The prompt and the defensive parse live in `letibot_sessionlog::suggest`, where they are
-//! testable without standing up inference; this half talks to a model and is the daemon's because
-//! the daemon has an endpoint and an HTTP client. The endpoint is the one already resolved into
-//! `cfg.oracle`, which on this box is the LOCAL model.
+//! The daemon's model call for the smart `!`: the local endpoint, bounded. The prompt and
+//! the defensive parse live in `letibot_sessionlog::suggest`, where they are testable
+//! without standing up inference;
 
 use std::time::Duration;
 

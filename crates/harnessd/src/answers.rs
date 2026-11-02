@@ -1,10 +1,4 @@
-//! The half a head was missing: a way to answer a gate, and a way to answer a question. The
-//! console adjudicator reads the daemon's own stdin, which works for `harnessd --prompt`
-//! and for a daemon in a foreground terminal, and not for the shape people run - a daemon
-//! in the background with a head attached. The head already renders the question; there was
-//! no path back, so `write` and `exec` were a foreground thing. The answer cannot come in
-//! on the command queue: the daemon has one worker, a gated call happens inside its turn
-//! and the thread that would drain the queue is the thread waiting for the answer.
+//! The half a head was missing: a way to answer a gate, and a way to answer a question.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};

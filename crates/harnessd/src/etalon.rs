@@ -1,9 +1,5 @@
-//! The etalon, read against layer A as it is today. Plan: `docs/guard-corpus-plan.md`
-//! §2 and §7. The etalon is every tool call this operator sat through - Claude Code
-//! opencode and letibot, on every box that offered its transcripts - with the operator's
-//! words beside it and what became of it: it ran, it errored, or it was refused. Extracted
-//! by `scripts/etalon-extract.py` into JSONL; commands and utterances only, never tool
-//! output. This module answers one question about a layer-A change before it lands
+//! The etalon, read against layer A as it is today. Plan: `docs/guard-corpus-plan.md` §2
+//! and §7.
 
 use std::collections::BTreeMap;
 use std::path::Path;

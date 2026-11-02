@@ -1,11 +1,6 @@
 //! Subagents survive a daemon restart: recorded when started, brought back when the parent
 //! is opened again - the operator: *"we should record them (session persist anyway) and
-//! restart automatically"*. Before this a child was a thread of the daemon that started it
-//! so a restart to pick up a new build lost every running one. # What is recorded, and
-//! where One `subagent_run` row per child (`letibot_tokencore::store::subagents`, schema
-//! 26), written by `HarnessTaskRunner::start` before the child's thread exists: the child's
-//! id, the parent's, the subtask verbatim, the spawn's own description ([`RecordedSpec`])
-//! and the instance that owns it.
+//! restart automatically"*.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

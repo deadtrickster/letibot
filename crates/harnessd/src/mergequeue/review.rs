@@ -1,11 +1,5 @@
 //! The review queue's reviewers - the half that runs on the queue's own SESSION: a reviewer
-//! is a `task` child of the gatekeeper session. The queue's thread claims a review
-//! (`waiting → reviewing`, owner = this daemon, with a deadline) and rings the session
-//! [`serve`] starts a reviewer for every claimed row this daemon owns, reads the verdict
-//! the reviewer HANDS IN (`review_verdict`, the daemon's desk), and moves the row
-//! conditionally on its state and owner, so a deadline or a person that moved the row first
-//! wins and the reviewer is killed rather than heard. The verdict is bound to the head it
-//! judged
+//! is a `task` child of the gatekeeper session.
 
 use std::path::{Path, PathBuf};
 

@@ -1,11 +1,6 @@
 //! Replaying the corpus against the guard, which is how an oracle's scope stops being a
 //! grant and becomes a measurement - [`letibot_tools::authorise::OracleScope`] has always
 //! said that widening it is *"a configuration change with a measurement attached"*, and
-//! this is it. # What is replayed, and against what The gate has been writing the rows for
-//! this all along: `asked = 1` is a call a person was put in front of and answered - the
-//! ground truth. Each call is rebuilt from the row's INPUT (the tool its arguments, the
-//! mode, the trail) and run back through the live gate, not from `action` or `baseline`
-//! which are layer A's *reading*
 
 use std::collections::BTreeMap;
 use std::path::Path;

@@ -1,10 +1,4 @@
-//! One turn tail for every door - `TODO.md`. A turn reaches a session through eight doors
-//! a head's prompt, a peer's or parent's message, a wake, the idle plan-check, the
-//! operator's `!` line, a subagent's task, the continuation after a wall, and the
-//! continuation after a FALLBACK. Each used to carry its own copy of what happens around a
-//! turn, and the copies had drifted: no waiter armed by a wake, a child's `turn_failed`
-//! with no reason in it, a refused-compaction latch shared with nobody. So the sequence
-//! lives here, once, and both owners call it
+//! One turn tail for every door - `TODO.md`.
 
 use std::sync::Arc;
 

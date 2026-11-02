@@ -1,11 +1,6 @@
 //! Review and merge are two separate queues, each with its own state and its own thread.
-//!
 //! `settings` is a project's `[queue]` table; `lease` this daemon's claim on a repository's
-//! queues; `gate`/`gate_host` run the target's `## Merge gate` here or on a declared host
-//! `git` lands a branch in a dedicated worktree; `serve` runs the queues' workers and `review`
-//! the reviewers; `verbs` and `desk` are the doors a person and a model act through; `setup`
-//! tells a gate that could not judge apart from a target that is red. The store's half - tables
-//! conditional moves, history, leases, target health - is `letibot_tokencore::store::queues`.
+//! queues;
 
 use std::path::Path;
 use std::sync::Arc;

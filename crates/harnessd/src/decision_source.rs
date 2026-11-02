@@ -1,11 +1,5 @@
 //! The adjudication corpus behind the `decisions` tool. The sibling of
-//! [`crate::transcript_source`], and the same seam for the same reason: `letibot-tools`
-//! cannot name `letibot-tokencore`, so the tool declares a [`DecisionSource`] and this
-//! implements it. # Filtering in SQL, and why the predicates are not columns The tool's
-//! arguments are the names a person uses - `by=oracle`, `verdict=deny`, `asked=true` - and
-//! the mapping onto the thirty-column `adjudication` table lives here, in one file, once.
-//! That is the whole bargain the operator asked for: *"the model shouldn't derive the
-//! storage, its format, or what path it"* is at.
+//! [`crate::transcript_source`], and the same seam for the same reason:
 
 use letibot_tokencore::rusqlite;
 use letibot_tokencore::store::{ASKED_SQL, DISAGREEMENT_SQL, MEASURED_SQL, Store};

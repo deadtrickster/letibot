@@ -1,9 +1,6 @@
 //! A queue notice that needs somebody to act, and the chain that reaches them - one
 //! function, so the rule has one spelling in this tree: such a notice is put to a SESSION
-//! and the hub card is what is left when there is no session to put it to. Nothing that
-//! needs action is hub-only. The rungs, in order, the first that takes it winning (so one
-//! notice is never two messages) the session the row names (the branch's own tree), its
-//! root, then the newest live top-level session of the branch's workspace.
+//! and the hub card is what is left when there is no session to put it to.
 
 use std::path::Path;
 

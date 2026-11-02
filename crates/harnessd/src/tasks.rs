@@ -1,11 +1,5 @@
 //! The subagent (task) journal: live state of every subagent this daemon has spawned
-//! written to a JSON file that `leticode-dash` reads. It is a file, not a socket. The
-//! daemon rewrites it on every subagent spawn and finish, so a head polling it reads the
-//! record without owning a socket or speaking the session protocol; a query over the socket
-//! would make the dashboard a second head with a state machine to keep in step. It is
-//! rewritten atomically, to a sibling renamed into place, because a reader that polls must
-//! never see a half-written frame: a torn JSON blob reads as a missing state, which a
-//! dashboard shows as "nothing is running".
+//! written to a JSON file that `leticode-dash` reads. It is a file, not a socket.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

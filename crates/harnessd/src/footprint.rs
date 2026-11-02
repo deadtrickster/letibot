@@ -1,11 +1,6 @@
 //! What one session's harness holds, and the ceiling it is held to. `memwatch` says what a
 //! daemon's HUB holds (the event log, the view, each head's queue) and nothing about the
-//! structures on the harness: the in-memory transcript, the ledger's token region, the
-//! authorisation trail. Those are the biggest per-session terms, so the harness registers a
-//! [`FootprintSource`] on its hub at open and the hub's census carries a [`Footprint`]. The
-//! numbers are restated rather than walked: the census runs on the watchdog's thread, the
-//! transcript belongs to the thread that runs the session, and a lock taken from the census
-//! is the cycle `ActivitySource` documents.
+//! structures on the harness:
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

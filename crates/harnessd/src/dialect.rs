@@ -1,11 +1,6 @@
 //! Which model this daemon speaks, as a table. Two dialects are wired: GLM-5.3-Flash, whose
 //! renderer is 139/139 against the training runtime, and Qwen3.8, whose renderer is 56/56
-//! on its own corpus and covers both Qwen targets. Selecting one is the *only* place in the
-//! daemon that knows a model exists; everything downstream sees `PromptRenderer` and
-//! `Parser`. # The seam that did not fit, and what this file does about it
-//! `letibot_tools::Registry::tools_json` produces `serde_json::to_string(schema)`, which
-//! uses `,`/`:` with no spaces. Both shipped templates render tool schemas through
-//! Hugging Face's `tojson`, which is `json.dumps(separators=(", ", ": "))`.
+//! on its own corpus and covers both Qwen targets.
 
 use std::sync::Arc;
 

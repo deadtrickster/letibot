@@ -1,10 +1,5 @@
 //! A reviewer's refusal reaches a LIVE session - the child that wrote the branch, or the
-//! session that enqueued it. The queue puts a refusal where the work is (the row is
-//! `rejected` with the verdict on it), while the child that did the work may be dead by
-//! then and the session that ran `task_start` only sees a `!` line on the head's screen
-//! which is not something a model can act on. The door is [`deliver_refusal`], reached the
-//! one way a refusal is reached: a reviewer hands `reject` in at the desk and [`serve`]
-//! moves the row.
+//! session that enqueued it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
