@@ -210,8 +210,8 @@ fn the_prefill_line_reads_as_nearly_done_when_the_prompt_was_mostly_cached() {
 ///   ⠼ Responding · 2m34s · 145 chars      header: 15.1s · 2826 out · 188 tok/s
 /// ```
 ///
-/// - the number frozen for two and a half minutes across a window in which the turn produced
-/// 2826 output tokens. Their report: *"still thinking glued to Responding"*.
+/// The number was frozen for two and a half minutes across a window in which the turn
+/// produced 2826 output tokens. Their report: *"still thinking glued to Responding"*.
 ///
 /// **Two answers came out of that, and this test pins the second.** The first was to make the
 /// number count every channel instead of the answer's prose alone - that landed in `2aada71`

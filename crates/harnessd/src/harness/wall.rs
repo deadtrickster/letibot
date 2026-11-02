@@ -1712,7 +1712,7 @@ impl Harness {
 /// compacted: 75408 tokens resident now, was 3454266.
 /// ```
 ///
-/// - a session the provider counted at ~740k, folded to 75k. The comment at the
+/// That is a session the provider counted at ~740k, folded to 75k. The comment at the
 /// call chose that direction on purpose (*"it compacts early, which is the
 /// direction nobody loses a session to"*), and early by 4.6× is losing the
 /// session's working context on every restart.
@@ -1776,11 +1776,11 @@ pub(crate) fn wall_stops_round(
 ///               (unscaled: no round on glm-coding has measured yet)
 /// ```
 ///
-/// - 2,708,271 LEDGER tokens against a 1,000,000-token window, where the ledger of a
-/// metered session is `Vocab::bytes` (one id per byte of the rendered history). It is not a
-/// count of tokens at all, and comparing it with a token window says nothing about whether
-/// the prompt fits. The provider is the only one that can answer that question, and it
-/// answers it with a refusal that the compaction door already handles on evidence
+/// The stop was 2,708,271 LEDGER tokens against a 1,000,000-token window, where the ledger
+/// of a metered session is `Vocab::bytes` (one id per byte of the rendered history). It is
+/// not a count of tokens at all, and comparing it with a token window says nothing about
+/// whether the prompt fits. The provider is the only one that can answer that question, and
+/// it answers it with a refusal that the compaction door already handles on evidence
 /// (`WallWhy::Refused`). So at round 0 an unmeasured count does not stop the turn.
 ///
 /// **Carried is not unmeasured.** A ratio measured on the model before the switch converts
