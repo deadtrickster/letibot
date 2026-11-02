@@ -47,14 +47,9 @@ fn the_window_title_names_the_session_and_follows_a_rename() {
     assert!(written.starts_with("evil]0;pwned"), "{written:?}");
 }
 
-/// **The keymap line is centred** — the operator's ask of 2026-10-04: *"please center the
-/// keymap bottom line."*
-///
-/// The bar arrives already painted, so the centring is measured on the visible width and the
-/// assertion is a BALANCE within one column — an odd remainder has to sit on one side, and
-/// naming a side would be a rule nobody asked for. **An over-long bar centres to itself**
-/// (pad 0) and keeps its head, which is the half naming the first keys: the same degradation
-/// the left-aligned bar had, so a narrow screen loses the same end it always did.
+/// The keymap line is centred, measured on the visible width of an already-painted bar, so the
+/// assertion is a BALANCE within one column - an odd remainder has to sit on one side and naming a
+/// side would be a rule nobody asked for. An over-long bar centres to itself and keeps its head.
 #[test]
 fn the_keymap_line_is_centred() {
     let a = app();
@@ -73,13 +68,9 @@ fn the_keymap_line_is_centred() {
     assert!(narrow.starts_with("ctrl-s"), "the head went: {narrow:?}");
 }
 
-/// **The branch is on the header, beside the workspace it is a fact about** — the operator's
-/// ask of 2026-10-04, and leticl's row (`src/chrome.lisp:644`) matched rather than reinvented.
-///
-/// Both halves, because the second is the one that matters: a field that is set draws, and a
-/// repository this head could not read draws **nothing** rather than a blank that reads like a
-/// clean tree — *"a header that said `main` over a directory that is not a repository would be
-/// a lie in the one row nobody checks"*.
+/// The branch is on the header, beside the workspace it is a fact about. Both halves matter: a
+/// field that is set draws, and a repository this head could not read draws nothing rather than a
+/// blank that reads like a clean tree - a lie in the one row nobody checks.
 #[test]
 fn the_header_carries_the_workspace_branch_and_nothing_when_there_is_none() {
     let mut a = app();
@@ -129,10 +120,9 @@ fn the_header_carries_the_workspace_branch_and_nothing_when_there_is_none() {
     );
 }
 
-/// **The money meter.** `micros_usd` was computed by the daemon and read in
-/// exactly one place — the one-shot `--prompt` printer — so a session driven
-/// from a head never saw it. The operator, on a metered conversation: *"still
-/// no money"*. Correct: the meter existed for a surface they were not using.
+/// The money meter: `micros_usd` was computed by the daemon and read only by the one-shot printer,
+/// so a session driven from a head never saw it. The header is where a session's facts live, so the
+/// meter belongs there rather than on a surface the operator is not using.
 #[test]
 fn a_metered_turn_puts_its_cost_on_the_header_and_the_total_accumulates() {
     let mut a = app();
@@ -223,11 +213,9 @@ fn esc_twice_interrupts_a_running_turn_and_says_so_when_nothing_is_running() {
 
 #[test]
 fn the_composer_is_a_field_with_a_caret_in_it_and_no_prose() {
-    // The complaint, as an assertion: *"the chat prompt is basically not
-    // empty — 'ask something...' and it just stays without any visual cues it
-    // is actually a text input"*. Three things have to be true of an empty
-    // composer: it is inside a container, the caret is in it, and there is no
-    // prose in the field telling you to type.
+    // Three things have to be true of an empty composer: it is inside a container, the caret is in
+    // it, and there is no prose in the field telling you to type - a field that says "ask
+    // something..." is one nothing says is a text input.
     let mut a = app();
     let screen = a.screen(80, 20);
     let (row, col) = a.cursor().expect("a composer always has a caret");
@@ -255,21 +243,9 @@ fn the_composer_is_a_field_with_a_caret_in_it_and_no_prose() {
     assert!(screen[row2].contains("why did the cache miss"));
 }
 
-/// **The caret is on the body row even when a row has been added above the box** — R51
-/// item 11, and the order constraint it exists as.
-///
-/// leticl broke this by adding a status row: the box moved down from row 0 to row 1 and the
-/// body from 1 to 2, and the caret — *the one consumer that computes against the composer's
-/// rows WITHOUT composing them* — stayed where it was. The operator, one keystroke later:
-/// *"hmm cursor now goes above the text i type lol."*
-///
-/// **This head computes it from one notion rather than a `+1` per call site** — the caret's
-/// offset is `chrome.len() + caret_row`, read *after* every row above the box has been pushed —
-/// and this test is what holds that property: it asserts the status row, the box's top edge and
-/// the body row are three consecutive rows, in that order, with the caret on the third.
-///
-/// It exists because cluster 1 of this port DID add a row above the box (the turn's status),
-/// which is exactly the change that broke it on the other head.
+/// The caret is on the body row even when a row has been added above the box. It is the one consumer
+/// that computes against the composer's rows WITHOUT composing them, so its offset is
+/// `chrome.len() + caret_row`, read after every row above the box is pushed - never a `+1` per site.
 #[test]
 fn the_caret_is_on_the_body_row_with_a_status_row_above_the_box() {
     let mut a = app();
@@ -309,12 +285,9 @@ fn the_caret_is_on_the_body_row_with_a_status_row_above_the_box() {
     );
 }
 
-/// The second defect: *"no margins for the main output — things are hard left
-/// with literally zero space."*
-///
-/// Asserted on **every** row rather than on the transcript, because the failure
-/// mode of fixing only the body is a header and a composer inset differently
-/// from the answer, which reads worse than no margin at all.
+/// The frame's rows are inset by one gutter, asserted on EVERY row rather than on the transcript:
+/// fixing only the body leaves a header and a composer inset differently from the answer, which
+/// reads worse than no margin at all.
 #[test]
 fn every_row_of_the_frame_starts_one_gutter_in() {
     let mut a = app();
@@ -373,13 +346,9 @@ fn esc_leaves_the_setting_alone() {
     );
 }
 
-// -- the count labels on the composer's top edge, as click targets ------------------
-//
-// The operator's ask: *"make so that when i click on running subagents or jobs count
-// labels i get to respective panes"*. Every test here draws a frame FIRST and aims the
-// click at the columns that frame recorded, because the whole feature is that the target
-// is where the draw put it — a click measured against coordinates a test worked out for
-// itself would pass while the operator clicked the border.
+// The count labels on the composer's top edge, as click targets. Every test here draws a frame
+// FIRST and aims the click at the columns that frame recorded, because the target is where the
+// draw put it - a click against a test's own arithmetic would pass while the operator hit the border.
 
 /// **A click on the subagents label opens the subagents pane** — `ctrl-g`'s act under the
 /// pointer, aimed at the label the frame drew and not at a column the test computed.
@@ -425,10 +394,9 @@ fn a_click_on_the_subagents_label_opens_the_subagents_pane() {
     assert!(screen.contains("summarize ~/bin/letibot"), "{screen}");
 }
 
-/// **A click on the jobs label opens the jobs pane AND asks for its rows** — exactly the
-/// chord's act, not just the flag: `ctrl-q` returns `ListJobs` because the pane it opens
-/// needs the daemon's table to draw, and a click that only flipped the flag would open an
-/// empty pane.
+/// A click on the jobs label opens the jobs pane AND asks for its rows - exactly the chord's act,
+/// not just the flag: `ctrl-q` returns `ListJobs` because the pane needs the daemon's table to
+/// draw, and a click that only flipped the flag would open an empty pane.
 #[test]
 fn a_click_on_the_jobs_label_opens_the_jobs_pane_and_asks_for_its_table() {
     let mut a = app();
@@ -578,12 +546,9 @@ fn a_head_with_nothing_running_has_no_label_to_click() {
     assert!(!a.is_open(Surface::Subagents) && !a.is_open(Surface::Jobs));
 }
 
-/// **A truncated edge keeps only the labels it actually drew.** The edge truncates from
-/// the right, and the jobs label sits right of the subagents one — so a narrow terminal
-/// loses the jobs target while the subagents one survives, because the record is read off
-/// rano's drawn line and not rebuilt from the counts. This is the case arithmetic over
-/// `subagents_running`/`jobs_running` gets wrong in the dangerous direction: a target for
-/// a label the frame cut is a click nobody can see land.
+/// A truncated edge keeps only the labels it actually drew: the edge truncates from the right, so a
+/// narrow terminal loses the jobs target and keeps the subagents one. The record is read off rano's
+/// drawn line, not rebuilt from the counts - a target for a cut label is a click nobody can land.
 #[test]
 fn a_narrow_edge_keeps_only_the_labels_it_drew() {
     let mut a = app();
@@ -642,11 +607,9 @@ fn a_narrow_edge_keeps_only_the_labels_it_drew() {
     );
 }
 
-/// **A click while the pane is open runs the chord's act there too** — the chord
-/// TOGGLES, and the click is its spelling, not a one-way "open". The arm sits after the
-/// pane handlers in the dispatch, so the panes that do claim clicks keep them; the
-/// subagents pane claims none, and its label answers the pointer exactly as `ctrl-g`
-/// would.
+/// A click while the pane is open runs the chord's act there too: the chord TOGGLES, and the click
+/// is its spelling, not a one-way open. The arm sits after the pane handlers in the dispatch, so the
+/// panes that do claim clicks keep them; the subagents pane claims none.
 #[test]
 fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
     let mut a = app();
@@ -685,10 +648,9 @@ fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
     );
 }
 
-/// **The help names the keys this head has, as they behave** (R67 item 9). It said a click on
-/// an edit row opens rano (it opens the diff popup), that the wheel scrolls the transcript (it
-/// scrolls whatever is in front), and never mentioned ctrl-g, ctrl-q, ctrl-o, `/queue`,
-/// `/jobs`, `/todos` or `/subagents`.
+/// The help names the keys this head has, as they behave: a click on an edit row opens the diff
+/// popup rather than rano, the wheel scrolls whatever is in front rather than the transcript, and
+/// the pane chords are named.
 #[test]
 fn the_help_names_every_pane_chord_and_what_a_click_and_the_wheel_do() {
     let cfg = plain_cfg(200);
@@ -715,10 +677,9 @@ fn the_help_names_every_pane_chord_and_what_a_click_and_the_wheel_do() {
     );
 }
 
-/// **The bar names the keys of the surface in front** (R67 item 9) — the subagent output over
-/// the tree, a slash listing and the ctrl-v window had no mode of their own. With the output
-/// open over the subagents pane the bar said "enter (or o) opens a subagent", while Enter
-/// re-reads the output and `o` falls through to switching session.
+/// The bar names the keys of the surface in front: the subagent output over the tree, a slash
+/// listing and the ctrl-v window each have a mode of their own. With the output open over the
+/// subagents pane, the bar must not say Enter opens a subagent while Enter re-reads the output.
 #[test]
 fn the_bar_names_the_keys_of_the_output_listing_and_window_in_front() {
     let mut a = app();

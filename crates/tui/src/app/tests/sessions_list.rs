@@ -29,10 +29,9 @@ use letibot_sessionlog::{NagPause, SessionOrigin};
 fn the_daemon() -> App {
     let queue = letibot_sessionlog::gatekeeper_session_for_key("0123456789ab");
     let mut a = app();
-    // **The head's home is the FIXTURE's, not the runner's.** Paths are drawn as `~/…` against
-    // the home the head holds (`App::home`, which production reads from the environment once), so
-    // a picture is reproducible on a box whose `HOME` is `/home/dead` and on one whose is not —
-    // which is the difference that made these two tests red in the gate and green here.
+    // The head's home is the FIXTURE's, not the runner's: paths are drawn as `~/…` against the home
+    // the head holds (`App::home`, which production reads from the environment once), so a picture
+    // is reproducible on a box whose `HOME` is `/home/dead` and on one whose is not.
     a.home = HOME.to_string();
     let mut habr = brief("s-habr", "the habr article", true);
     habr.slug = "habr".into();
@@ -107,13 +106,9 @@ fn golden(name: &str, now: String) -> String {
     })
 }
 
-/// **The picker as it opens** — the project's line, its conversations, and the `system` branch as
-/// one closed line.
-///
-/// The operator, on this pane: *"make sessions tree collapsed by default"*. So the golden is the
-/// folded picture, and it is the one a person sees on `ctrl-s` — a project holding the session they
-/// are in (open, because a list that hides where you are cannot answer *where am I*), the rows of
-/// that project, and every other branch as a line.
+/// The picker as it opens: the project's line, its conversations, and the `system` branch as one
+/// closed line. The golden is the folded picture a person sees on `ctrl-s`, with the project holding
+/// the session they are in left open - a list that hides where you are cannot answer where you are.
 #[test]
 fn the_session_list_looks_like_this_as_it_opens() {
     let a = the_daemon();
@@ -180,14 +175,9 @@ fn the_workspace_is_shortened_against_the_heads_own_home() {
     );
 }
 
-/// **The head's own list IS the plugin's list** — one row per row, the same order, the same words,
-/// at the same width.
-///
-/// This is the assertion the port is judged by, and it was written before the port: the built-in
-/// `sessions` layer decides the tree's shape and the words now, and the head's own
-/// [`App::session_list`] is what a head draws when that layer cannot answer. Two paths, one
-/// daemon, one width — the drawings must be identical, so a change to one side alone is a red test
-/// rather than a difference nobody notices until a layer breaks.
+/// The head's own list IS the plugin's list: one row per row, the same order, the same words, at the
+/// same width. The built-in `sessions` layer decides the tree's shape and [`App::session_list`] is
+/// the fallback, so a change to one side alone is a red test rather than a silent difference.
 #[test]
 fn the_heads_list_and_the_plugins_list_draw_the_same_rows() {
     let a = the_daemon();
@@ -228,12 +218,9 @@ fn both_lists(a: &App) -> (Vec<String>, Vec<String>) {
     (own, plugins)
 }
 
-/// **A family is drawn whatever group its members are in** — a review's parent is the gatekeeper
-/// (`system = "gatekeepers"`) and the review itself is a `reviewer`.
-///
-/// The layer walked the family in the PARENT's group, so its list was one row — the gatekeeper —
-/// with the session the head was standing in missing from it. The head's family walk has no
-/// branch at all, and the two lists are one list.
+/// A family is drawn whatever group its members are in: a review's parent is the gatekeeper
+/// (`system = "gatekeepers"`) and the review itself a `reviewer`, so a walk that stays inside the
+/// parent's group loses the session the head is standing in. The head's family walk has no branch.
 #[test]
 fn the_family_of_a_review_is_drawn_by_both_lists() {
     let queue = letibot_sessionlog::gatekeeper_session_for_key("0123456789ab");
@@ -314,14 +301,9 @@ fn a_control_character_in_a_row_is_drawn_as_a_space_by_both_lists() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// **A session a session started has that session as its parent**
-//
-// The tree nests by `SessionBrief::parent_session_id` and by nothing else — not by the id, not by
-// the workspace. The daemon side of the rule is `Registry::parent_for`, applied once in
-// `Harness::open_with_registry`; these tests are the pen, and each one is a spawner whose child
-// must land under its parent (or, for the two a PERSON starts, at the top of its project).
-// ---------------------------------------------------------------------------
+// A session a session started has that session as its parent: the tree nests by
+// `SessionBrief::parent_session_id` and by nothing else - not by the id, not by the workspace.
+// Every test below is a spawner whose child must land under its parent, or at its project's top.
 
 /// The rows `session_rows()` would draw, as `(session, depth)` — a node's line has no session, so
 /// it is not here; see the file's note on the two indices.
@@ -391,12 +373,9 @@ fn a_task_child_and_its_own_child_are_drawn_under_their_parents() {
     assert!(text.contains("and the sizes"), "{text}");
 }
 
-/// **A `task_start` child is placed by the tree it hangs from, not by its own worktree.**
-///
-/// The child's workspace is `…/worktrees/agent-a-thing` and its parent's is the repository, so a
-/// head that placed rows by `wiring.workspace` would invent a second project line and put the
-/// child at the top of it — which is the picture the operator reported as *subagents shown as
-/// top level*.
+/// A `task_start` child is placed by the tree it hangs from, not by its own worktree: the child's
+/// workspace is `…/worktrees/agent-a-thing` and its parent's is the repository, so placing rows by
+/// `wiring.workspace` would invent a second project line and put the child at the top of it.
 #[test]
 fn a_task_start_child_is_placed_by_its_parent_and_not_by_its_worktree() {
     let mut a = app();
@@ -445,14 +424,9 @@ fn a_task_start_child_is_placed_by_its_parent_and_not_by_its_worktree() {
     );
 }
 
-/// **A session a PERSON started is a top row, and nothing invents a parent for it** — the
-/// corollary of the rule, tested because a rule that fills a parent in is one edit away from
-/// inventing one.
-///
-/// The two rows are the two doors: `--session SESSION` (a conversation reopened by id) and
-/// `--continue`'s newest conversation. The second one's id is deliberately shaped like a minted
-/// child's (`…-sub-3`), because the tree must read the field and not the name: `--continue`
-/// resolves only rows whose parent is NULL, so this is a session a person is in.
+/// A session a PERSON started is a top row, and nothing invents a parent for it - the corollary of
+/// the rule, tested because a rule that fills a parent in is one edit away from inventing one. The
+/// `--continue` row's id is shaped like a minted child's, because the tree reads the field, not the name.
 #[test]
 fn a_session_a_person_started_is_a_top_row_whatever_its_id_looks_like() {
     let mut a = app();
@@ -484,12 +458,9 @@ fn a_session_a_person_started_is_a_top_row_whatever_its_id_looks_like() {
     );
 }
 
-/// **A child whose parent has since closed is drawn under the project, not swallowed.**
-///
-/// The parent is not on the feed at all — a session the daemon no longer holds and the store no
-/// longer lists — so `parent_on_list` answers `None` and the row is a root of its project. The
-/// alternative (hiding it, because its parent is not there to be nested under) is the one this
-/// pins against: a finished child's transcript is still a conversation a head can switch into.
+/// A child whose parent has since closed is drawn under the project, not swallowed: the parent is
+/// not on the feed at all, so `parent_on_list` answers `None` and the row is a root of its project.
+/// Hiding it instead would lose a finished child's transcript, which is still a conversation.
 #[test]
 fn a_child_whose_parent_has_closed_is_drawn_under_the_project() {
     let mut a = app();

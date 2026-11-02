@@ -830,13 +830,9 @@ impl App {
         row_words(row)
     }
 
-    /// The row a held viewport was on is not in this transcript: find it again by its own words, or say that
-    /// it is gone and go to the tail, which is the one place true of the whole new transcript. A reader who
-    /// was reading is never moved in silence.
-    ///
-    /// An ordinal is a position in the list that was just replaced, so carrying one across names a different
-    /// place. Not matchable yet is not gone: a carry that has not finished arriving waits, and a live fork's
-    /// carry is placed if its words turn up and never concluded otherwise.
+    /// The row a held viewport was on is not in this transcript: find it again by its own words,
+    /// or say it is gone and go to the tail, the one place true of the whole new transcript. An
+    /// ordinal names a place in the list just replaced, and not matchable yet is not gone.
     pub(crate) fn repair_anchor(&mut self) {
         let Some(held) = self.anchor.clone() else {
             self.carry = None;
@@ -938,26 +934,16 @@ impl App {
         (v.hides_the_working() || v.profile().is_none()).then(|| v.as_str())
     }
 
-    /// **Does this rung draw this row as a row** — R37, and the one place the question is
-    /// asked about a row rather than about an item.
-    ///
-    /// A row with no body yet is not hidden by the rung: it is drawn from this head's own
-    /// echo of what the operator typed, and that is the conversation. A row whose *item* the
-    /// rung does not keep is hidden, which is the same test `item_lines` makes.
-    ///
-    /// **Hidden no longer means absent** (R37 AMENDED): a hidden row's *run* draws one marker
-    /// line, and this predicate is what says which rows are inside one — the anchor repair and
-    /// the run finder both ask it, and neither should be asking the question a second way.
+    /// Does this rung draw this row as a row - the one place the question is asked about a row
+    /// rather than an item. A row with no body yet is drawn from this head's own echo. Hidden no
+    /// longer means absent: a hidden row's run draws one marker line, and both walks ask this.
     pub fn hidden_by_rung(&self, row: usize) -> bool {
         row_hidden(&self.items, self.visibility, row)
     }
 
-    /// **Move a held viewport off a row this rung hides** — R37's consequence for R36.
-    ///
-    /// *"Hiding changes row heights and removes rows. If the anchored row is one that this
-    /// rung hides, the view anchors to the nearest surviving row and says so rather than
-    /// jumping."* Nearest in row order, outward from where the reader was, and the sentence
-    /// is the same shape `repair_anchor` writes for a row a replacement took away.
+    /// Move a held viewport off a row this rung hides, to the nearest surviving row outward from
+    /// where the reader was, and say so rather than jumping. The sentence is the shape
+    /// `repair_anchor` writes for a row a replacement took away.
     pub(crate) fn reanchor_off_hidden(&mut self) {
         let Some(held) = self.anchor.clone() else {
             return;
@@ -997,35 +983,24 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Whether the viewport is following the stream** — R36's state, and the thing the
-    /// screen has to say out loud.
-    ///
-    /// A reader who cannot tell whether they are pinned or following will scroll to find
-    /// out, and that is the affordance failing. See [`App::scroll_state`].
+    /// Whether the viewport is following the stream, and the thing the screen has to say out loud:
+    /// a reader who cannot tell pinned from following scrolls to find out, which is the affordance
+    /// failing. See [`App::scroll_state`].
     pub fn following(&self) -> bool {
         self.anchor.is_none()
     }
 
-    /// **The row of the run the live work belongs to** — what a change in the counts invalidates.
-    ///
-    /// `newest_unseen_run` is the walk's own answer to *which run is this work part of*, and the
-    /// invalidation has to agree with it or the count would be rebuilt on one row while the marker
-    /// was drawn on another.
+    /// The row of the run the live work belongs to - what a change in the counts invalidates. It
+    /// has to agree with `newest_unseen_run`, or the count is rebuilt on one row while the marker
+    /// is drawn on another.
     pub(crate) fn newest_run_row(&self, live: &LiveWork) -> Option<usize> {
         newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, *live)
     }
 }
 
-/// The call ids answered by a result row **in this round**: the rows between the
-/// assistant row at `at` and the next assistant or user row.
-///
-/// Bounded by the round for the same reason everything else here is: `call_0` is
-/// reused every round, so "does a result for `call_0` exist anywhere in this
-/// transcript" is a question with the wrong answer in it.
-///
-/// A row whose body has not arrived yet counts as unanswered — the head cannot
-/// read a call id out of an announcement. The proposal line stays until the body
-/// lands, and `record_item` rebuilds the history when it does.
+/// The call ids answered by a result row in this round: the rows between the assistant row at `at`
+/// and the next assistant row. Bounded by the round because `call_0` is reused every round. A row
+/// whose body has not arrived counts as unanswered; `record_item` rebuilds when it lands.
 pub(crate) fn round_results(
     items: &[SnapshotItem],
     at: usize,
@@ -1036,14 +1011,9 @@ pub(crate) fn round_results(
             Some(TranscriptItem::ToolResult { call_id, .. }) => {
                 out.insert(call_id.clone());
             }
-            // Only the next assistant row ends a round. A USER row does not: a
-            // message sent while the calls run is appended between the calls
-            // and their results — measured in the store 2026-09-17 as
-            // `assistant, user, user, tool_result ×10` — and a user cannot
-            // produce a tool result, so whatever results follow still answer
-            // the calls above. Breaking here left every call of such a round
-            // `→ no result` after the results had landed and the model had
-            // moved on.
+            // Only the next assistant row ends a round. A USER row does not: a message sent while
+            // the calls run is appended between the calls and their results, and a user cannot
+            // produce a tool result, so what follows still answers the calls above.
             Some(TranscriptItem::Assistant { .. }) => break,
             // An announcement with no body yet, or a reasoning row between the
             // calls and their results. Neither ends the round.
@@ -1054,43 +1024,24 @@ pub(crate) fn round_results(
     out
 }
 
-/// How much transcript a head will walk from the beginning before it renders the tail
-/// instead.
-///
-/// A judgement, not a measurement: the walk is ~40 ms for 6000 rows, so 2 MB of
-/// transcript is well under a frame's budget and the incremental marks it buys are
-/// worth having. Above it the operator's own sessions live — 160 MB, thousands of turns
-/// — and there the only affordable thing is the end. See `App::fill_backward`.
+/// How much transcript a head will walk from the beginning before it renders the tail instead. The
+/// walk is ~40 ms for 6000 rows, so 2 MB is well under a frame's budget and the incremental marks
+/// it buys are worth having; above it the only affordable thing is the end.
 pub(crate) const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
 
-/// How many rows above the rendered window to keep, so a frame can be drawn while the
-/// reader is a little way up — the window, plus one screen.
-///
-/// Not a scrollback budget: scrolling further back-fills more (see
-/// `App::fill_backward`). This is only what is kept ready for the frames that need no
-/// new work.
+/// How many rows above the rendered window to keep, so a frame can be drawn while the reader is a
+/// little way up - the window plus one screen. Not a scrollback budget: scrolling further
+/// back-fills more (see `App::fill_backward`).
 pub(crate) const TAIL_SLACK: usize = 40;
 
-/// **How long a wheel notch remembers the one before it** — 2026-10-09's third report.
-///
-/// Notches closer together than this are one flick, and a flick is an intent repeated;
-/// notches further apart are a reader stepping through the conversation, and the step
-/// between them is a walk. The driver waits ~100 ms for a read and hands one tick
-/// whatever the terminal buffered, so an inertial flick lands whole bursts inside this
-/// window — often several ticks' worth, because the flick outlasts one read — while a
-/// notch spent reading arrives alone. 200 ms sits above the one and below the other.
+/// How long a wheel notch remembers the one before it: notches closer together are one flick, and
+/// a flick is an intent repeated; further apart is a reader stepping, and the step between them is
+/// a walk. The driver hands one tick whatever the terminal buffered, so a flick lands in bursts.
 pub(crate) const WHEEL_RUN_MS: u64 = 200;
 
-/// Roughly how many bytes of text the transcript carries.
-///
-/// **A sum of `TranscriptItem::bytes`, which is the one definition** — the daemon bounds
-/// its view by the same function, and two copies of "what counts as size" would drift
-/// into two answers to one question.
-///
-/// Cheap on purpose: it runs every frame, so it is a length test over strings already in
-/// memory. A row with no body yet counts as zero, which errs toward walking the
-/// conversation — the safe direction, since the other one only changes how the frame is
-/// produced and this one still produces it correctly.
+/// Roughly how many bytes of text the transcript carries: a sum of `TranscriptItem::bytes`, the one
+/// definition, because the daemon bounds its view by the same function. Cheap on purpose, since it
+/// runs every frame; a row with no body yet counts as zero, which errs toward walking.
 pub(crate) fn transcript_bytes(items: &[SnapshotItem]) -> usize {
     items
         .iter()
@@ -1098,12 +1049,9 @@ pub(crate) fn transcript_bytes(items: &[SnapshotItem]) -> usize {
         .sum()
 }
 
-/// The tool-call targets in force for row `k`: the calls of the nearest assistant row
-/// above it that has a body.
-///
-/// The forward walk builds this as it goes (replacing, not merging, at every assistant
-/// row); this derives it, which is what lets the **backward** walk render a row without
-/// having rendered everything above it first. Same rule, one implementation.
+/// The tool-call targets in force for row `k`: the calls of the nearest assistant row above it that
+/// has a body. Deriving it is what lets the BACKWARD walk render a row without having rendered
+/// everything above it first; the forward walk builds the same thing as it goes.
 pub(crate) fn targets_before(
     items: &[SnapshotItem],
     k: usize,
@@ -1123,23 +1071,9 @@ pub(crate) fn targets_before(
     out
 }
 
-/// **What the reader is holding their viewport on** — R36.
-///
-/// The row's **id and not a line count**, because a count is what every arrival and every
-/// re-wrap invalidates: content below moves the bottom a count is measured from, and a row
-/// above growing moves every line under it.
-///
-/// **An id is a name inside ONE transcript.** The ids are `{transcript_id}.{n}`, so the
-/// transcript a fork carries across names the same conversation with different ids — and
-/// across that boundary the id is no better than an index. What survives a fork is the
-/// row's own words: see [`Carry`] and [`App::repair_anchor`].
-///
-/// `ordinal` is the index at the moment of capture, and it is used **within one
-/// transcript** and never across one: it is what [`App::reanchor_off_hidden`] searches
-/// outward from when a rung hides the row. A snapshot that replaces the rows is a
-/// boundary, and an index measured on the other side of it names a different place — see
-/// [`App::repair_anchor`], which finds the row by its own words instead and goes to the
-/// tail when it cannot.
+/// What the reader is holding their viewport on: the row's id and not a line count, because a count
+/// is what every arrival and re-wrap invalidates. An id names a row inside ONE transcript, so what
+/// survives a fork is its words ([`Carry`]); `ordinal` is used within one transcript only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Held {
     pub(crate) item_id: String,
@@ -1149,67 +1083,22 @@ pub(crate) struct Held {
     pub(crate) into: usize,
 }
 
-/// **Where the reader was when a snapshot replaced the rows under them** — R36, taken at
-/// the boundary and spent on the other side of it.
-///
-/// A transcript boundary (a fork, a re-seat, a compaction, a resync) replaces `items`
-/// wholesale, and the ids are per-transcript (`{transcript_id}.{n}`, `engine.rs`) — so the
-/// row the viewport was holding is named by nothing in the transcript that arrives. Two
-/// facts still hold, and they are the two a reader can be found by:
-///
-/// * **`words`** — the row's own content ([`row_words`]), which is what a fork carries
-///   across unchanged. [`App::retire_pending`] met the same wall when a fork replaced the
-///   row it was waiting for and answered it the same way: **match on the text**. `None`
-///   when the held row had no body at the boundary — there is then nothing to match, and
-///   the honest outcome is the tail plus a sentence saying so.
-/// * **`line`** — the body line the reader was at, in the buffer that just went. The
-///   window holds it while the carry lands, because the alternative is the count in
-///   [`App::scroll`], and that count is measured from a bottom that has moved.
-///
-/// **This is the view's state and not the daemon's `carry`.** A *carry* on the wire is a
-/// snapshot whose rows have no bodies yet ([`Bulk`]); this is the reader's place taken at
-/// the moment such a snapshot landed, and it is `Some` only until [`App::repair_anchor`]
-/// has placed the row or given up on it.
-///
-/// **Two doors onto a replacement, and a boundary is not one of them.** `App::load` takes a
-/// carry for a snapshot — a `resync`, a `Hello` — and [`App::rows_replaced`] takes one for a
-/// **fork**, whose rows travel as [`SessionEvent::TranscriptAppended`] and never reach `load`
-/// at all. A live `/reseat` is the second door: the operator, scrolled up and reading, typed
-/// it and the rows were replaced under them, so a carry taken only in `load` is a carry a
-/// live fork never takes — and the reader is left to main's ordinal fallback, which is an
-/// offset measured in the transcript that just went. One row off, with a sentence.
+/// Where the reader was when a snapshot replaced the rows under them: `words`, the row's own
+/// content, which a fork carries across unchanged, and `line`, the body line in the buffer that
+/// just went. Both doors take one - `App::load` for a snapshot, `rows_replaced` for a fork.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Carry {
     pub(crate) words: Option<String>,
     pub(crate) line: usize,
-    /// **Whether the rows that replace these are still to come.**
-    ///
-    /// The daemon publishes a fork's rows and THEN states the boundary (`harness.rs`'s
-    /// `republish_after`: `append_items`, then `TranscriptForked`), so the ordinary carry is
-    /// taken with its rows already here and is spent on the next frame. Stated *before* its
-    /// rows — a head that resumed inside the carry, and every fixture that writes the
-    /// statement first — there is nothing to match yet, and there will never be a signal that
-    /// the carry is complete: a snapshot announces its rows ([`Bulk`]) and a live append
-    /// announces nothing at all.
-    ///
-    /// So such a carry is **placed and never concluded**. The row is found the moment its
-    /// body lands, and until then the anchor waits and the window holds the line — the same
-    /// answer a half-arrived snapshot gets from the other side. Saying *the row is gone*
-    /// about a row that has not arrived is the one thing this must not do.
+    /// Whether the rows that replace these are still to come. Stated before its rows there is no
+    /// signal that the carry is complete, so it is placed and never concluded: saying the row is
+    /// gone about a row that has not arrived is the one thing this must not do.
     pub(crate) arriving: bool,
 }
 
-/// **A row's own words** — what [`Carry::words`] is taken from.
-///
-/// The engine's JOIN for a `User` row (the text parts newline-joined, the same reading
-/// [`App::retire_pending`] makes of one), the text for the prose kinds, the payload for a
-/// tool result, the label for a segment mark. `None` for a row with no body yet and for
-/// one that says nothing at all: a row with no words is a row this cannot find, and an
-/// empty string would match the first empty row in the next transcript.
-///
-/// **One rule, two readers.** This builds the string the boundary takes; [`row_says`]
-/// compares a row against it without building anything, because that one runs per row
-/// while a carry lands and one row's text can be hundreds of kilobytes.
+/// A row's own words, what [`Carry::words`] is taken from: the engine's JOIN for a `User` row, the
+/// text for prose, the payload for a result, the label for a mark. `None` for a row that says
+/// nothing, because an empty string would match the first empty row of the next transcript.
 pub(crate) fn row_words(it: &SnapshotItem) -> Option<String> {
     match it.item.as_ref()? {
         TranscriptItem::System { text, .. }
@@ -1230,13 +1119,9 @@ pub(crate) fn row_words(it: &SnapshotItem) -> Option<String> {
     }
 }
 
-/// Whether this row says exactly `words` — [`Carry::words`]' question, asked of every row
-/// in the transcript that replaced the one it was taken from. See [`row_words`].
-///
-/// **An empty `words` is never a match**, and that is [`row_words`]' own rule kept from this
-/// side: a row that says nothing is a row the carry has nothing to find by, so an empty
-/// string must not become the one thing it matches — which is what it would be, since the
-/// first row of a conversation that says nothing says `""`.
+/// Whether this row says exactly `words`, asked of every row in the transcript that replaced the one
+/// it was taken from. An empty `words` is never a match: a row that says nothing gives the carry
+/// nothing to find by, and `""` would match the first such row.
 pub(crate) fn row_says(it: &SnapshotItem, words: &str) -> bool {
     if words.is_empty() {
         return false;
@@ -1282,13 +1167,9 @@ fn text_part(p: &UserPart) -> Option<&str> {
     }
 }
 
-/// Where the history walk stood before one row. See [`App::hist_marks`].
-///
-/// Three fields because the walk carries three cursors, and the fourth —
-/// `call_targets` — is *derivable* from the rows above rather than stored:
-/// it is the calls of the nearest assistant row with a body, which
-/// [`App::retarget_before`] finds by scanning back. Storing a map per row would
-/// be the cache growing with the session, which is the thing being fixed.
+/// Where the history walk stood before one row. See [`App::hist_marks`]. Three fields because the
+/// walk carries three cursors; `call_targets` is derivable from the rows above
+/// ([`App::retarget_before`]), and a map per row would be the cache growing with the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HistMark {
     /// `hist_lines.len()` before the row was drawn.
@@ -1299,15 +1180,9 @@ pub(crate) struct HistMark {
     pub(crate) class: Option<RowClass>,
 }
 
-/// **Where one rendered row's lines are** — R36's anchor map.
-///
-/// `at` is a line index into `hist_lines`, and `row` is the row's index in `items`, so a
-/// span is addressable from either end: *which row is at line 400* and *where did row 91
-/// go* are the two questions the anchor asks, and one list answers both.
-///
-/// A row that rendered to **nothing** has no span. It has no lines to be looking at, so
-/// there is nothing to hold, and inventing a zero-height span would make *the row at this
-/// line* ambiguous between it and its neighbour.
+/// Where one rendered row's lines are: `at` is a line index into `hist_lines` and `row` is the
+/// row's index in `items`, so one list answers both *which row is at line 400* and *where did row
+/// 91 go*. A row that rendered to nothing has no span, which keeps that first question unambiguous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Span {
     pub(crate) row: usize,

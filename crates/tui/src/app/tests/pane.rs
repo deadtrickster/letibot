@@ -2,18 +2,9 @@
 
 use super::*;
 
-/// **`!term <command>` is the pane, and nothing else stops being what it was.**
-///
-/// The verb is a **whole word**: `!terminal x` and `!terms x` are ordinary `!` lines, which
-/// is what they always were, and `! ls .` is untouched. A recogniser is only honest next to
-/// what it must NOT take, which is why the contrast cases are in the same test.
-///
-/// **And this is the refusal no longer firing.** `! mc` is refused by name
-/// (`letibot_tools::exec::terminal`) because a plain `!` run's pty is a *capture* — one
-/// transcript row and `/dev/null` on stdin — so a screen program draws into a row and waits
-/// for a keystroke that cannot arrive. `!term mc` never reaches that path: it is a different
-/// action, on a different frame, to a different daemon half, and the refusal's own remedy
-/// now names the verb.
+/// `!term <command>` is the pane, and nothing else stops being what it was. The verb is a whole
+/// word: `!terminal x` and `!terms x` are ordinary `!` lines. And `!term mc` is the case the `!`
+/// refusal must not take - a plain run's pty is a capture, so a screen program waits forever.
 #[test]
 fn a_term_line_opens_the_pane_and_an_ordinary_bang_line_is_still_a_shell_command() {
     let mut a = app();
@@ -36,10 +27,9 @@ fn a_term_line_opens_the_pane_and_an_ordinary_bang_line_is_still_a_shell_command
         assert!(!b.pane_open(), "`{line}` opened a pane");
     }
 
-    // **The verb with nothing after it ATTACHES**, and it is not a request for `$SHELL`
-    // either: it is the pane this session already has. The head opens the rectangle and sends
-    // the bare line; the daemon answers with what is running and with the screen it kept —
-    // see `a_bare_term_line_attaches_and_the_daemon_says_what_is_running`.
+    // The verb with nothing after it ATTACHES, and it is not a request for `$SHELL` either: it is
+    // the pane this session already has. The head opens the rectangle and sends the bare line; the
+    // daemon answers with what is running and with the screen it kept.
     let mut c = app();
     typed(&mut c, "!term");
     assert_eq!(
@@ -56,18 +46,9 @@ fn a_term_line_opens_the_pane_and_an_ordinary_bang_line_is_still_a_shell_command
     assert_eq!(c.input(), "", "the line left the composer — it was sent");
 }
 
-/// **The pane takes the conversation's rectangle and gives it back, exactly.**
-///
-/// This is the whole of *"the conversation's rectangle given to the program with the
-/// composer keeping its rows"*, and the property `letibot_ui::ansi::pane_rows` keeps:
-/// the pane is resized to the rectangle it is given and returns **exactly** that many rows.
-/// So the header keeps its line, the chrome under the pane keeps its rows, and nothing above
-/// the pane moves when it opens.
-///
-/// Asserted against the frame this head drew **without** a pane, at the same size and the
-/// same state — so the comparison is not against a hand-written expectation of what the
-/// chrome looks like, which would rot, but against the frame the pane is supposed to be
-/// occupying a slice of.
+/// The pane takes the conversation's rectangle and gives it back, exactly: it is resized to the
+/// rectangle it is given and returns that many rows (`letibot_ui::ansi::pane_rows`). Asserted
+/// against the frame this head drew WITHOUT a pane, not a hand-written picture, which would rot.
 #[test]
 fn the_pane_keeps_the_header_the_composer_and_the_status_their_rows() {
     let mut a = app();
@@ -133,25 +114,9 @@ fn the_pane_draws_exactly_the_rows_it_is_given() {
     }
 }
 
-/// **Keys are forwarded as bytes, and the way out is not one of them.**
-///
-/// The pane's keyboard is the program's, and what reaches it is the bytes the operator's
-/// terminal sent — **not this head's reading of them**. `ESC O A` is the application-cursor
-/// spelling of *up*, and a head that decoded it into `Key::Up` and re-encoded it would send
-/// `ESC [ A`, a different string to a program that asked for the first. The assertion is on
-/// the bytes, including a control byte and half a UTF-8 character.
-///
-/// **`ctrl-\` (0x1c) is found in that stream before anything is forwarded**, so the program
-/// never receives it and cannot trap it. It is also a byte `key_of` maps to nothing, so it
-/// could never have arrived as a `Key` at all — see `Terminal::raw_input`.
-///
-/// # And the act is a DETACH — the operator's *"but i dont want it to exit"*
-///
-/// This test used to assert `Action::TermClose { pane: 1 }` here, which is the defect the whole split
-/// exists to remove: leaving a pane ended its cgroup, so leaving `nano` killed it. What is
-/// asserted now is the negative the requirement is made of — **nothing leaves the head** —
-/// and the positive that makes it a detach rather than a disappearance: the pane is still
-/// held, so the program is still running and `!term` has something to come back to.
+/// Keys are forwarded as bytes, and the way out is not one of them: decoding `ESC O A` into
+/// `Key::Up` would send `ESC [ A`, a different string. `ctrl-\` is found in the stream first, so the
+/// program never receives it, and the act is a DETACH - the pane is kept for `!term` to come back to.
 #[test]
 fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
     let mut a = app();
@@ -201,10 +166,9 @@ fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
         "a detach files no row: it ends nothing, so there is no ending to disclose"
     );
 
-    // **A detached pane forwards nothing**, which is the other half of *it is not on the
-    // screen*: the keys belong to the composer again, so this is never even asked — and a
-    // byte written into a pane nobody is drawing would be a keystroke the operator aimed at
-    // the composer.
+    // A detached pane forwards nothing, the other half of it not being on the screen: the keys are
+    // the composer's again, and a byte written into a pane nobody is drawing would be a keystroke
+    // the operator aimed at the composer.
     assert!(
         a.pane_keys(b"more").is_empty(),
         "a detached pane takes no keys"
@@ -218,11 +182,9 @@ fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
     assert!(b.pane_keys(b"\x1c").is_empty());
 }
 
-/// **A pane's program is never sent the operator's mouse** (R67 item 6). The head turns on SGR
-/// mouse reporting for its own clicks and wheel, and `pane_keys` forwarded the raw read
-/// verbatim, so a wheel notch over `!term bash` typed `ESC[<64;30;12M` at the prompt. The
-/// reports are stripped — SGR presses and releases, and the legacy X10 form — and the keys
-/// around them still go down byte for byte.
+/// A pane's program is never sent the operator's mouse: the head turns on SGR mouse reporting for
+/// its own clicks and wheel, so a notch over `!term bash` typed `ESC[<64;30;12M` at the prompt. The
+/// reports are stripped, and the keys around them still go down byte for byte.
 #[test]
 fn the_pane_is_never_sent_the_operators_mouse() {
     let mut a = app();
@@ -240,10 +202,9 @@ fn the_pane_is_never_sent_the_operators_mouse() {
             bytes: b"ls\r".to_vec()
         }]
     );
-    // An ordinary escape sequence is not a report and goes down as it came. An unfinished
-    // `ESC [ <` at the end of a read is HELD now (R74 item 30) — it is the start of a report the
-    // read cut in half far more often than anything else — and goes down as it was the moment
-    // the next read shows it was not one.
+    // An ordinary escape sequence is not a report and goes down as it came. An unfinished `ESC [ <`
+    // at the end of a read is HELD, since that is the start of a report cut in half far more often
+    // than anything else, and goes down as it was the moment the next read shows it was not one.
     assert_eq!(
         a.pane_keys(b"\x1b[A\x1b[<"),
         vec![Action::TermInput {
@@ -262,23 +223,9 @@ fn the_pane_is_never_sent_the_operators_mouse() {
     );
 }
 
-/// **Leaving gives the conversation back, and the ending stays as a row.**
-///
-/// This test used to assert that the frame came back **byte for byte**, with the ending
-/// cleared as a notice — and *that assertion was the defect*. A pane that ended left nothing
-/// behind but a sentence that faded, so a program that died at once was invisible a few
-/// seconds later and there was nothing to scroll back to. What is true now is the half that
-/// matters and the half that changed:
-///
-/// * **the program's own drawing is gone** — the rectangle is the conversation's again, and
-///   the rows the program painted are not in the frame;
-/// * **the transcript is back**, which is the property this test has always been about;
-/// * **and the ending is a row in it**, with the line that was run and the daemon's own
-///   sentence — see [`Note::Pane`].
-///
-/// **The ending here is the deliberate one** (`!term close`, confirmed), which is why the
-/// sentence is *"you closed the terminal"* and the register is the dim `·` — a detach would
-/// have filed no row at all, and a program's own exit would have been the `×`.
+/// Leaving gives the conversation back, and the ending stays as a row: the drawing is gone from
+/// the rectangle, the transcript is back, and the ending is a row carrying the line and the daemon's
+/// own sentence ([`Note::Pane`]). A detach files no row; a program's own exit is the `×`.
 #[test]
 fn ending_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
     let mut a = app();
@@ -330,10 +277,9 @@ fn ending_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
         a.notice
     );
     let after = a.screen(80, 24);
-    // **The program's own drawing is gone from the rectangle, and the only copy of it is
-    // the ending's own quote of its last rows.** Asserted that way rather than as *the text
-    // is nowhere*, because the row deliberately carries what the program printed — that is
-    // the fix — and *the rectangle is the conversation's again* is the property.
+    // The program's own drawing is gone from the rectangle, and the only copy of it is the ending's
+    // own quote of its last rows. Asserted that way rather than as *the text is nowhere*, because
+    // the row deliberately carries what the program printed, and the rectangle is the conversation's.
     let heading = after
         .iter()
         .position(|r| r.contains("!term mc"))
@@ -359,20 +305,9 @@ fn ending_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
     );
 }
 
-/// **`!term close` asks before it ends anything, and only a deliberate yes ends it.**
-///
-/// The operator's rule, in their words: *"yeah it is pretty much a terminal emulator - if a
-/// process runs then `ending` must ask"*. So the verb raises a card and sends **nothing**;
-/// the frame leaves on `y` and on nothing else.
-///
-/// **Enter is deliberately not the yes**, and the two reasons are asserted here rather than
-/// argued: Enter is the prompt card's own key (an empty line is a real answer there, so the
-/// two cards would be answerable by the same keystroke) and it is the composer's, so a stray
-/// one must not be able to kill a program. Esc cancels, and so does every other key — *the
-/// safe default* is the whole shape of a destructive confirmation.
-///
-/// **And a detach never asks**, because it ends nothing: that is the point of it being the
-/// default. Asserted beside the rest so the two acts are read together.
+/// `!term close` asks before it ends anything, and only a deliberate yes ends it: the verb raises a
+/// card and sends nothing. Enter is deliberately not the yes - it is the prompt card's key - so Esc
+/// and every other key cancel, and a detach never asks because it ends nothing.
 #[test]
 fn a_term_close_asks_first_and_only_a_deliberate_yes_ends_anything() {
     let mut a = app();
@@ -449,17 +384,9 @@ fn a_term_close_asks_first_and_only_a_deliberate_yes_ends_anything() {
     );
 }
 
-/// **A close the head cannot answer from what it holds is ASKED FOR, not guessed.**
-///
-/// Two cases, and they are the reason [`PaneFact`] is a three-state: a session with no pane
-/// (a sentence, and **nothing sent** — `TermClose` is quiet about there being nothing to
-/// end, so a head that sent it would look like it had done something) and a pane the daemon
-/// says is running in a head that does not hold it (a card that names `!term <command>`, the
-/// string the daemon was handed).
-///
-/// The third state — *not asked yet* — is the one that would otherwise be read as *no pane*,
-/// and it is asserted as the hold it is: the line goes out, and the answer runs the same
-/// decision.
+/// A close the head cannot answer from what it holds is ASKED FOR, not guessed: a session with no
+/// pane (a sentence, nothing sent) and a pane the daemon says runs in a head that does not hold it
+/// (a card naming what the daemon was handed). *Not asked yet* is a hold, not *no pane*.
 #[test]
 fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
     // No pane at all: the daemon said so.
@@ -522,13 +449,9 @@ fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
     );
 }
 
-/// **The pane's existence is drawn from the status read, and it is not a row.**
-///
-/// The operator's rule: a detach leaves no ending row, and *the pane's existence is a fact
-/// the head draws from `TermStatus`*. So a head that is not drawing a pane the daemon says
-/// is running draws **one line** above the composer, naming the program and both verbs, and
-/// files nothing in the conversation; when the answer becomes `None` the line goes with it,
-/// because it is a fact about now and not a disclosure about a moment.
+/// The pane's existence is drawn from the status read, and it is not a row: a head not drawing a
+/// pane the daemon says is running draws one line above the composer naming the program and both
+/// verbs, and files nothing; when the answer becomes `None` the line goes with it.
 #[test]
 fn the_pane_line_is_drawn_from_the_status_read_and_is_not_a_row() {
     let mut a = app();
@@ -570,8 +493,8 @@ fn the_pane_line_is_drawn_from_the_status_read_and_is_not_a_row() {
     );
 }
 
-/// **A program that ends on its own is the same frame as a refusal to start**, and the
-/// sentence is the whole of the difference.
+/// A program that ends on its own is the same frame as a refusal to start, and the sentence is the
+/// whole of the difference.
 #[test]
 fn a_pane_that_ends_on_its_own_closes_the_same_way_a_refusal_does() {
     let mut a = app();
@@ -609,18 +532,8 @@ fn a_pane_that_ends_on_its_own_closes_the_same_way_a_refusal_does() {
     assert!(!b.pane_open());
 }
 
-/// **The sessions pane's tree, as a picture** — an instrument, not an assertion.
-///
-/// MEASURED on this box 2026-10-05, because the numbers are not what the tests' fixtures
-/// imply: **174 of the store's 280 sessions carry a `parent_session_id`**, this session has
-/// 95 children of its own, the header reads `1/106`, and every one of those 174 is **one
-/// level down** — there is no depth-2 row in the store at all. So the tree is the pane's
-/// majority case rather than a corner, and the two things the fixtures do not exercise are
-/// the ones an instrument is for: the **grandchild** (reached by a child's own `task`, which
-/// no fixture on this box has produced) and the **three-digit row number** (106 roots, where
-/// `{:>2}` gives rows 100+ one column more than rows 1–9).
-///
-/// Print it, do not assert it:
+/// The sessions pane's tree, as a picture - an instrument, not an assertion. The fixtures cannot
+/// reach two things an instrument is for: a GRANDCHILD, and a three-digit row number.
 ///
 /// ```text
 /// cargo test -p letibot-tui --lib -- --ignored --nocapture show_the_sessions_pane_tree
@@ -636,13 +549,9 @@ fn show_the_sessions_pane_tree() {
     child_b.parent_session_id = Some("s-root".into());
     let mut far = brief("s-other-sub", "somebody else's child", false);
     far.parent_session_id = Some("s-other".into());
-    // A hundred roots, so the numbering reaches three digits — the state this box is in.
-    //
-    // **`grand` IS IN THIS LIST, and the first draft of this instrument forgot it** — the
-    // fixture built the grandchild, set its parent, and then never pushed it, so the depth-2
-    // frame drew the whole daemon and the family frame drew 104 roots: two frames that looked
-    // like pane defects and were the fixture lying. Which is the argument for an instrument
-    // that prints rather than asserts — an assertion would have been written to match.
+    // A hundred roots, so the numbering reaches three digits. `grand` is in this list: an instrument
+    // that forgot it drew two frames that looked like pane defects and were the fixture lying -
+    // which is the argument for printing rather than asserting, since an assertion would match.
     let mut family = vec![
         brief("s-root", "this conversation", false),
         child_a,
@@ -695,19 +604,9 @@ fn show_the_sessions_pane_tree() {
     );
 }
 
-/// **The newest agent is on top** — the operator's ask, 2026-10-05: *"fix agents pane - the
-/// ordering is off - most recent agents must be on top"*.
-///
-/// The daemon's list is in creation order, **oldest first** (the store's own `created_ms`),
-/// and the children this head watched spawn were *appended* after it — so the pane drew the
-/// child that had just been started at the BOTTOM of its group, which for an agent pane is the
-/// one row anybody opened it to see.
-///
-/// **Two running children, so the groups do the ordering for nobody.** The pane already draws
-/// running rows above the finished group (`the_running_subagent_is_drawn_above_…`), so a
-/// fixture that mixed the two would pass on the group's own rule and say nothing at all about
-/// recency. Both are `running` in the list — the one thing a brief states about a live child —
-/// and both the list's order and the rows' order on the glass are asserted.
+/// The newest agent is on top: the daemon's list is oldest first and the children this head watched
+/// spawn were appended after it, so the child just started landed at the bottom of its group. Two
+/// running children, because a mixed fixture would pass on the running-above-finished rule alone.
 #[test]
 fn the_newest_agent_is_at_the_top_of_the_pane() {
     let mut a = app();
@@ -770,19 +669,9 @@ fn the_newest_agent_is_at_the_top_of_the_pane() {
     );
 }
 
-/// **A named fill draws the bar, an unnamed bulk announcement is said, and a live
-/// append does neither.**
-///
-/// Three sources, three rules, and the whole of R9:
-///
-/// * the **bar** is the daemon naming an operation it is running (`Filling`), and only
-///   one big enough is worth a cat (`MIN_FILLING`);
-/// * the **sentence** is the head's own, for a *bulk announcement* a snapshot left
-///   outstanding — and it is **not** gated by `MIN_FILLING`, because a three-row batch
-///   that never lands is exactly what it is for;
-/// * a **live** `TranscriptAppended` triggers neither. It is body-less for the R2
-///   window of every ordinary message, so a trigger built on "some row lacks a body"
-///   announced a carry that was not happening — the defect this replaces.
+/// A named fill draws the bar, an unnamed bulk announcement is said, and a live append does
+/// neither: only a fill big enough is worth a cat (`MIN_FILLING`), the sentence is not gated by it
+/// (a small batch that never lands is what it is for), and a live append is body-less by design.
 #[test]
 fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_is_not() {
     // --- the bar, from the daemon.
@@ -884,18 +773,9 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
         "the bulk announcement is complete, so the line goes: {filed}"
     );
 
-    // --- **THE DEFECT: the sentence counts rows the snapshot never announced.**
-    //
-    // The trigger is the SNAPSHOT's body-less ids ([`Bulk`]); the number drawn is
-    // `items.len() - arrived`, which is every body-less row the head holds. Those are
-    // different sets, so a live row with no body inflates a count that the sentence
-    // then attributes to the daemon — and on the operator's own screen it read
-    // `2 row(s) announced and never filled in`, where a fresh snapshot of the same
-    // session has **0** rows with no body. Measured on the live daemon 2026-09-23.
-    //
-    // This asserts the inflation directly: a good snapshot (every id filled) PLUS one
-    // live row whose body never arrives. `bulk` is `None` — the snapshot announced
-    // nothing — and nothing here should ever be called an announcement.
+    // The defect: the sentence counts rows the snapshot never announced. The trigger is the
+    // SNAPSHOT's body-less ids ([`Bulk`]) and the number drawn is every body-less row the head
+    // holds, so a live body-less row inflates a count the sentence blames the daemon for.
     let mut d = app();
     d.clock(1_000);
     d.apply(snapshot_hello("good", 3));
@@ -971,13 +851,9 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     );
 }
 
-/// A call the turn was cut short in the middle of does not leave the screen.
-///
-/// The hazard in "one row per call": while the live pane is drawing a turn,
-/// that turn's assistant rows deliberately draw none of their own unsettled
-/// calls. If the pane then stands down with a call still unanswered, nobody is
-/// drawing it — and the operator is looking at a turn that asked for three
-/// files with no sign it ever did.
+/// A call the turn was cut short in the middle of does not leave the screen. The live pane's
+/// assistant rows draw none of their own unsettled calls, so if the pane stands down with a call
+/// still unanswered nobody draws it, and the operator sees a turn that asked for files and no sign.
 #[test]
 fn a_call_the_turn_was_interrupted_in_the_middle_of_still_says_it_asked() {
     let mut a = app();
@@ -1021,18 +897,9 @@ fn a_call_the_turn_was_interrupted_in_the_middle_of_still_says_it_asked() {
     );
 }
 
-/// **A pane's Enter belongs to the pane, even with words in the composer.**
-///
-/// The operator, 2026-10-03, having gone to the jobs pane and pressed Enter with a
-/// stray character sitting in the composer: *"the pane own keyboard in a way, so enter
-/// is a pane thing."* Every pane arm used to gate its own Enter on
-/// `editor.text().is_empty()`, so **a keystroke aimed at the pane became "send what I
-/// was typing"** — and what was in the composer was a `\`, which is what reached the
-/// model as a prompt.
-///
-/// Both halves are asserted, because both are the point: Enter is not a submit, and the
-/// words are still there to be sent deliberately — held, not eaten. The second is the
-/// property that makes this safe to do to a half-written line at all.
+/// A pane's Enter belongs to the pane, even with words in the composer: a keystroke aimed at the
+/// pane must not become "send what I was typing". The words are held, not eaten, which is what makes
+/// this safe to do to a half-written line.
 #[test]
 fn a_panes_enter_is_the_panes_even_with_words_in_the_composer() {
     let mut a = App::new(plain_cfg(80));
@@ -1054,23 +921,17 @@ fn a_panes_enter_is_the_panes_even_with_words_in_the_composer() {
         "and the line is held where it was — a pane that ate it would lose the words \
              the operator had typed"
     );
-    // **And the pane's own act happened**, which is the half that makes this ownership
-    // rather than mere suppression: Enter is not "swallowed while a pane is up", it is
-    // the pane's. Asserted because a blanket swallow would pass the two checks above
-    // and would be a worse answer — a key that does nothing where the operator asked
-    // for something.
+    // And the pane's own act happened, which is what makes this ownership rather than suppression:
+    // Enter is not swallowed while a pane is up, it is the pane's. A blanket swallow would pass the
+    // checks above and be worse - a key that does nothing where the operator asked for something.
     assert!(
         a.job_out.as_ref().is_some_and(|j| j.job == "j1"),
         "Enter opened the job's output, which is what the pane's Enter means"
     );
 
-    // **The other half: with no pane up, Enter is still the composer's.** A rule that
-    // stopped a bare prompt from sending would be a worse defect than the one it fixed.
-    //
-    // A *fresh* head rather than the one above, because that one now has the
-    // job-output view open — and the view owning Enter is the same rule working, not
-    // an exception to it. Asserting the control on a head with an overlay up would be
-    // asserting that the rule does not apply to overlays.
+    // The other half: with no pane up, Enter is still the composer's, since a rule that stopped a
+    // bare prompt from sending would be worse than the defect it fixed. A fresh head, because the
+    // one above has the job-output view open - and a view owning Enter is the same rule working.
     let mut b = App::new(plain_cfg(80));
     b.session_id = "s1".into();
     b.set_composer("\\");
@@ -1090,12 +951,8 @@ fn pane_text(a: &mut App) -> String {
         .join("\n")
 }
 
-/// **R60 item 1: a program that prints past the pane's rectangle can be read back, by wheel.**
-///
-/// *"No scrollback. A program that scrolls off the pane's rectangle is gone."* Sixty lines into
-/// a pane a dozen rows tall leave the first fifty-odd nowhere — the wheel notch over the pane was
-/// stripped (R67 item 6) and there was no ring to move through. Now the notch moves the view
-/// [`WHEEL_ROWS`](crate::app::term_pane::WHEEL_ROWS) rows back, nothing is sent to the program,
+/// A program that prints past the pane's rectangle can be read back, by wheel: the notch moves the
+/// view [`WHEEL_ROWS`](crate::app::term_pane::WHEEL_ROWS) rows back and sends the program nothing,
 /// and the first key the operator types is the program's and puts the live screen back.
 #[test]
 fn a_wheel_over_a_pane_reads_back_what_scrolled_off_it() {
@@ -1141,10 +998,9 @@ fn a_wheel_over_a_pane_reads_back_what_scrolled_off_it() {
     assert!(again.contains("line 60"), "{again}");
 }
 
-/// **R74 item 22: a program that asked for the mouse is sent it**, at its own coordinates and in
-/// its own encoding — `mc`'s click-to-select, the named cost of R67 item 6's strip. A program on
-/// the alternate screen that asked for nothing gets a wheel notch as cursor keys, which is how
-/// `less` scrolls by wheel.
+/// A program that asked for the mouse is sent it, at its own coordinates and in its own encoding -
+/// `mc`'s click-to-select, the named cost of stripping reports from everything else. A program on
+/// the alternate screen that asked for nothing gets a wheel notch as cursor keys, as `less` scrolls.
 #[test]
 fn a_program_that_asked_for_the_mouse_is_sent_it_translated_to_the_pane() {
     let mut a = app();
@@ -1182,9 +1038,9 @@ fn a_program_that_asked_for_the_mouse_is_sent_it_translated_to_the_pane() {
     );
 }
 
-/// **R74 item 30: a report the read cut in half still never reaches the program as text.** The
-/// first half is held, the second completes it, and only then is it decided — here, dropped,
-/// because `bash` asked for no mouse. It used to go down in halves: `;12M` typed at the prompt.
+/// A mouse report the read cut in half still never reaches the program as text: the first half is
+/// held, the second completes it, and only then is it decided - here, dropped, because `bash` asked
+/// for no mouse.
 #[test]
 fn a_mouse_report_split_across_two_reads_is_put_back_together() {
     let mut a = app();
@@ -1216,13 +1072,9 @@ fn a_mouse_report_split_across_two_reads_is_put_back_together() {
     );
 }
 
-/// **R60 item 2, the head's half: several panes, one drawn, each named by its number.**
-///
-/// The daemon numbers each pane (protocol 44) and fans every pane's frames out to every head;
-/// a head draws one. So: keys typed before the number arrives wait for it and go down under it;
-/// another pane's bytes do not paint this one; another pane's ending files no row here and
-/// takes it off the list; a bare `!term close` means the pane this head holds and the card says
-/// its number; and `!term close 2` asks about pane 2, whose yes ends pane 2 only.
+/// Several panes, one drawn, each named by its number. The daemon numbers each pane and fans every
+/// pane's frames out to every head, and a head draws one: keys typed before the number arrives wait
+/// for it, another pane's bytes do not paint this one, and `!term close 2` asks about pane 2 only.
 #[test]
 fn a_head_draws_one_of_several_panes_and_closes_the_one_it_names() {
     let mut a = app();
