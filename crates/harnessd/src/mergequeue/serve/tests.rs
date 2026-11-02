@@ -3679,8 +3679,7 @@ fn a_gate_nobody_runs_any_more_is_run_again() {
     assert_eq!(history.iter().filter(|t| t.to_state == "landed").count(), 1);
 }
 
-/// A landed branch whose child session is still live keeps its tree, and that is said
-/// - on the repository's hubs, not only in the daemon's log.
+/// A landed branch whose child session is still live keeps its tree, and that is said - on the repository's hubs, not only in the daemon's log.
 #[test]
 fn a_landed_branch_whose_session_is_live_keeps_its_tree_and_says_so() {
     let w = World::new("livechild");
@@ -3880,8 +3879,7 @@ fn a_dirty_tree_is_kept_and_says_why() {
     assert!(notes[0].contains("draft.md"), "{}", notes[0]);
 }
 
-/// A terminal landing whose branch carries work the target does not have keeps both, and says why
-/// - the branch is the only copy of that work, so the tree it was worked in goes with it. This is the
+/// A terminal landing whose branch carries work the target does not have keeps both, and says why - the branch is the only copy of that work, so the tree it was worked in goes with it. This is the
 ///   half of the sweep a merge row answers to.
 #[test]
 fn a_failed_landings_branch_and_tree_are_kept_and_said() {

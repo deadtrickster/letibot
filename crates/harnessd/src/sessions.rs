@@ -677,8 +677,7 @@ pub struct Sessions<'a> {
     /// costs: the roster shows a seat attached while the real one hears nothing.
     armed: std::collections::HashSet<String>,
     /// The flowy seat this daemon holds, when it holds one. Daemon-level, on purpose: a seat is
-    /// a persistent identity with one inbox reader, and a session is a temporary consumer of it
-    /// - see `letibot_flowy`'s crate docs.
+    /// a persistent identity with one inbox reader, and a session is a temporary consumer of it - see `letibot_flowy`'s crate docs.
     seat: Option<letibot_flowy::Seat>,
     /// Each root session's `flowy` tool slot: the door is always seated, and the
     /// slot is filled when a seat is attached - at open, or later.
@@ -698,8 +697,7 @@ pub struct Sessions<'a> {
     nag_window: Duration,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
-    /// When to next look for a subagent this worker holds that has been idle long enough to park
-    /// - 's idle-child policy, for the children served here rather than on their own thread.
+    /// When to next look for a subagent this worker holds that has been idle long enough to park - 's idle-child policy, for the children served here rather than on their own thread.
     park_at: Option<Instant>,
     /// When to next read the store for the merge-queue reviews this daemon's sessions are owed.
     /// Armed at open to *now*, so a daemon that comes up between the ask and the ring serves it on

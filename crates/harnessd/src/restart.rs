@@ -27,10 +27,8 @@
 //!
 //! # Under the threshold (`Config::restore_within`, default one hour)
 //!
-//! * subagents that were mid-task are resumed (`crate::subagent_record`)
-//! * monitors are declared again with the call that declared them - same name, condition
-//!   owner and TTL - and one that cannot be re-established is reported, not dropped
-//! * jobs are NOT re-run (running a command twice can do harm) - the model is reminded of
+//! * subagents that were mid-task are resumed (`crate::subagent_record`) * monitors are declared again with the call that declared them - same name, condition
+//!   owner and TTL - and one that cannot be re-established is reported, not dropped * jobs are NOT re-run (running a command twice can do harm) - the model is reminded of
 //!   each ([`job_line`]).
 //!
 //! # Over it - or not known to be under it
@@ -705,8 +703,7 @@ pub fn job_line(
     line
 }
 
-/// One background job that had ENDED at the stop and whose ending never reached the model
-/// - held under while a turn ran, or queued, when the daemon went down. The row's own
+/// One background job that had ENDED at the stop and whose ending never reached the model - held under while a turn ran, or queued, when the daemon went down. The row's own
 ///   record is all that is left.
 pub fn settled_job_line(job: &JobRecord, slug: Option<&str>) -> String {
     let mut line = format!("- job `{}`", job.handle);

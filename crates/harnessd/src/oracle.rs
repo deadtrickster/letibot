@@ -555,8 +555,7 @@ impl HttpOracle {
     /// UNSURE
     /// ```
     ///
-    /// Pure and separate from `read`, because this is the half worth pinning with a canned reply
-    /// - a live guard model cannot be asked for a multi-line `UNSURE`.
+    /// Pure and separate from `read`, because this is the half worth pinning with a canned reply - a live guard model cannot be asked for a multi-line `UNSURE`.
     fn unsure(&self, raw: &str, scored: &str, out_of_room: bool) -> OracleAnswer {
         let (why, kind) = if verdict_line(raw).eq_ignore_ascii_case("UNSURE") {
             (

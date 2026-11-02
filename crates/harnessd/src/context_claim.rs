@@ -12,11 +12,9 @@
 //! 1. Detect - this module, pure: [`find`] scores each sentence of a round's assistant text
 //!    (fenced code skipped) with `letibot_tools::similarity` against [`EXEMPLARS`] and keeps the
 //!    best sentence at or over [`FLOOR`]. Similarity rather than a phrase list, because the
-//!    operator's own list ends in *"blabla"*.
-//! 2. Check the claim against the measurement - [`Check::judge`], handed the session's
+//!    operator's own list ends in *"blabla"*. 2. Check the claim against the measurement - [`Check::judge`], handed the session's
 //!    [`Fill`]. Below the wall the claim is false and the model is told so ([`notice`]); at the
-//!    wall it is true and nothing is said; an unknown window is not a measurement either.
-//! 3. Once per claim per user turn - a model that repeats the excuse after being told is a
+//!    wall it is true and nothing is said; an unknown window is not a measurement either. 3. Once per claim per user turn - a model that repeats the excuse after being told is a
 //!    finding for the operator ([`REPEATED`]), not a second slap.
 //!
 //! Always on, not behind `--intent-prose`: this one is gated by a measurement, so a false positive
@@ -53,8 +51,7 @@
 //!
 //! * Negatives: max 0.228, then 0.222. The daemon's own *"This session is over its context
 //!   budget…"* scores 0.000: its window has no owner. The TRUE report of 10-07 scores 0.000
-//!   too - its window carries no first-person word, so it is not a claim about the speaker.
-//! * Positives: 0.000 to 1.000; 's four verbatim excuses score 0.497 to 0.782. Not 1.0 even
+//!   too - its window carries no first-person word, so it is not a claim about the speaker. * Positives: 0.000 to 1.000; 's four verbatim excuses score 0.497 to 0.782. Not 1.0 even
 //!   where the sentence IS an exemplar, because the score is a window's and not the sentence's.
 
 use std::path::{Path, PathBuf};

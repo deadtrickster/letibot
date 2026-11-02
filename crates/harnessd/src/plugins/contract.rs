@@ -505,8 +505,7 @@ mod tests {
             .expect("the example passes the host's own check");
     }
 
-    /// Every field the document lists comes from the example, which is built from the host's types
-    /// - so a renamed field is a document that moves with it, not a stale sentence.
+    /// Every field the document lists comes from the example, which is built from the host's types - so a renamed field is a document that moves with it, not a stale sentence.
     #[test]
     fn the_document_names_the_fields_the_hosts_types_have() {
         let doc = pane_doc();

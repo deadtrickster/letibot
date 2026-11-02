@@ -649,8 +649,7 @@ impl JobWatchers {
         (jobs, subagents, failed)
     }
 
-    /// Publish [`SessionEvent::HeldResults`] when the held counts changed since the last one
-    /// - the head's counter beside *Responding*. A set whose hub has gone publishes nothing.
+    /// Publish [`SessionEvent::HeldResults`] when the held counts changed since the last one - the head's counter beside *Responding*. A set whose hub has gone publishes nothing.
     fn say_held(&self) {
         let now = self.held_counts();
         {

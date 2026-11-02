@@ -2,8 +2,7 @@
 //! another session a message, which is what `CommandKind::Message { from, text }` already
 //! is. Nothing "up" is built. What was missing was two things, and only one of them was
 //! behaviour: the sender's sentence described the door as a parent's list of its children
-//! (the lookup was always the daemon's registry, so a peer was never refused for being one
-//! - the wording and the tool's description were child-shaped), and the delivery arm knew
+//! (the lookup was always the daemon's registry, so a peer was never refused for being one - the wording and the tool's description were child-shaped), and the delivery arm knew
 //! only how to hand a message to a session with its OWN reader.
 
 use std::net::TcpListener;

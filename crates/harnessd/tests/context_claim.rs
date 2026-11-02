@@ -1,8 +1,7 @@
 //! A model that stops because "my context is full" when it is not gets told so, through the
 //! harness's own round loop. The canned server plays the model: one round ends the turn
 //! with the model's sentence, verbatim, and no tool call. What is asserted is the whole of
-//! the check's contract with the loop: at a low measured fill the harness appends its line
-//! - its own voice, never the operator's - and the loop continues; at the wall the claim is
+//! the check's contract with the loop: at a low measured fill the harness appends its line - its own voice, never the operator's - and the loop continues; at the wall the claim is
 //! true, nothing is said, and the turn ends where the model ended it; and a model that says
 //! it again after being told is the operator's business, a hub warning. It needs the
 //! vocabulary GGUF and not a model.

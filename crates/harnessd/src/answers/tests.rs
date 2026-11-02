@@ -669,8 +669,7 @@ fn a_subagent_in_a_tree_with_no_head_adjudicator_refuses_by_name() {
 
 // ------------------------------------------------------------- escalation
 
-/// A stand-in adjudicator that answers one of four ways, and counts how many times it was asked
-/// - the counter is what distinguishes *decided* from *consulted on the way past*.
+/// A stand-in adjudicator that answers one of four ways, and counts how many times it was asked - the counter is what distinguishes *decided* from *consulted on the way past*.
 struct Stub {
     kind: StubKind,
     name: &'static str,

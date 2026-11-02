@@ -582,8 +582,7 @@ fn an_unreachable_host_is_a_sentence_about_the_machine() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A call that ran out of this box's clock is asked again; a call that never started is not
-/// - the distinction the whole host gate rests on, as a value.
+/// A call that ran out of this box's clock is asked again; a call that never started is not - the distinction the whole host gate rests on, as a value.
 #[test]
 fn a_call_that_ran_out_of_the_clock_is_slow_and_one_that_never_started_is_gone() {
     let slow = run(

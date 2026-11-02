@@ -51,8 +51,7 @@ impl Loader for RanoLoader {
     }
 
     /// A built-in's module, compiled once for the whole process: compiling one costs seconds of CPU
-    /// and every session open paid it again. What is shared is the module and not a session's state
-    /// - a call runs in a fresh store. Keyed by layer name; a failure is not kept.
+    /// and every session open paid it again. What is shared is the module and not a session's state - a call runs in a fresh store. Keyed by layer name; a failure is not kept.
     fn load_builtin(
         &self,
         name: &str,

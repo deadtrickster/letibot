@@ -97,8 +97,7 @@ pub fn recorded_slugs(runs: &[SubagentRun]) -> Vec<String> {
     out
 }
 
-/// The name a recorded child answers to: the slug its record carries, or - for an older record
-/// - the one its spawn would have been given: the slug its worktree branch `agent/<slug>` was cut
+/// The name a recorded child answers to: the slug its record carries, or - for an older record - the one its spawn would have been given: the slug its worktree branch `agent/<slug>` was cut
 ///   from, else [`slug_from_prompt`]. A record that does not parse is named from its prompt alone.
 pub fn recorded_slug(run: &SubagentRun) -> String {
     use letibot_tools::builtins::task::slug_from_prompt;

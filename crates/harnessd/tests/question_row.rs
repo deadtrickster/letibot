@@ -367,8 +367,7 @@ fn a_typed_answer_lands_as_the_operators_own_words() {
 }
 
 /// An abstention is an ANSWER, and it lands as one. The tool reports it as `Abstained`
-/// rather than as `not_run` - *"I am not answering this one"* is a decision the person made
-/// - so the row exists and the trail can cite it.
+/// rather than as `not_run` - *"I am not answering this one"* is a decision the person made - so the row exists and the trail can cite it.
 #[test]
 fn an_abstention_lands_as_the_operators_own_row() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

@@ -47,8 +47,7 @@ pub enum Seat {
     /// `read_spill`. Read-only backend, no gate traffic. The default.
     #[default]
     Orchestrator,
-    /// D9's plan mode: read, search, the intent list, and the two things that make a plan a plan
-    /// - `write_plan` (scoped to plan documents by taking a *name*, not a path) and `say`. Needs
+    /// D9's plan mode: read, search, the intent list, and the two things that make a plan a plan - `write_plan` (scoped to plan documents by taking a *name*, not a path) and `say`. Needs
     ///   a writable backend and an adjudicator.
     Planner,
     /// §8.4's `researcher` with the web instead of `search_corpus`. Four of its
@@ -1282,8 +1281,7 @@ impl Config {
     }
 
     /// Would a turn starting at `resident` tokens fit, with the headroom reserved? The gate the wall
-    /// continuation reads: *"is there room"*, where [`Config::should_compact`] folds in `auto_compact`
-    /// - a flag the guard turns off without freeing anything. Measured off the LEDGER.
+    /// continuation reads: *"is there room"*, where [`Config::should_compact`] folds in `auto_compact` - a flag the guard turns off without freeing anything. Measured off the LEDGER.
     pub fn room_for_next_turn(&self, resident_tokens: u64) -> bool {
         match self.planning_window() {
             Some(w) => resident_tokens + self.headroom() < w,
