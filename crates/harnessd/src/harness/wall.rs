@@ -10,11 +10,9 @@ pub(crate) struct UnsealedFork {
     fingerprint: String,
 }
 
-/// **What a fork carries verbatim, and why** — R27's ruled tail, as the fork needs it.
-///
-/// Bundled rather than passed as three arguments because the three are one fact: a tail
-/// has contents, it may have started mid-exchange, and it has a reason for being what it
-/// is. Splitting them is how one of the three comes to be updated without the others.
+/// What a fork carries verbatim, and why: bundled rather than passed as three arguments, because a tail has
+/// contents, it may have started mid-exchange, and it has a reason for being what it is. Splitting them is how
+/// one of the three comes to be updated without the others.
 pub struct ForkTail<'a> {
     pub items: &'a [TranscriptItem],
     /// Non-zero when the tail could not start at an exchange boundary.
@@ -34,12 +32,9 @@ impl ForkTail<'_> {
     };
 }
 
-/// What a compaction fork actually did — numbers, not the word "compacted".
-///
-/// The same rule as [`ResumeReport`]: the claim is cheap and the evidence is what
-/// makes it checkable. `was_tokens` against `base_tokens` is the reduction an
-/// operator can see, and `parent_id` with `forked_at` is where the old
-/// conversation went.
+/// What a compaction fork actually did, in numbers rather than the word compacted: the claim is cheap and the
+/// evidence is what makes it checkable. `was_tokens` against `base_tokens` is the reduction an operator can see,
+/// and `parent_id` with `forked_at` is where the old conversation went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkReport {
     pub transcript_id: String,
@@ -50,82 +45,45 @@ pub struct ForkReport {
     pub was_tokens: usize,
     /// The new base: the prefix plus the one summary item.
     pub base_tokens: usize,
-    /// **The summary ran out of room before it finished.** Carried so the
-    /// operator is told on the same line that says compaction worked -- it did
-    /// work, and what it produced is partial, and those are two facts rather
-    /// than one.
+    /// The summary ran out of room before it finished, carried so the operator is told on the same line that
+    /// says compaction worked: it did work, and what it produced is partial, and those are two facts.
     pub truncated: bool,
-    /// How many of the newest items were carried into the new base verbatim
-    /// rather than summarised. Zero is the old behaviour and is still what a
-    /// re-seat does, where the point is to change the prefix and not to shorten.
-    ///
-    /// **Non-zero only for a remote model** (R27, `head-parity-2026-09-21.md`): a
-    /// local model is bounded by the KV cache in VRAM, where a tail competes with
-    /// the pressure the compaction was called to relieve, and a remote model is
-    /// bounded by a bill, where the newest exchanges verbatim are affordable and
-    /// buy back exactly what a summary is worst at.
+    /// How many of the newest items were carried verbatim rather than summarised. Non-zero only for a remote
+    /// model: a local one is bounded by the KV cache in VRAM, where a tail competes with the pressure the
+    /// compaction was called to relieve, while a remote model is bounded by a bill.
     pub tail_items: usize,
-    /// **Items of the newest exchange left out of the verbatim tail**, when the
-    /// tail could not start at an exchange boundary — one big file read is larger
-    /// than the whole tail budget, so the tail begins inside the exchange that is
-    /// still in progress. `None` is the ordinary case: the tail starts where an
-    /// exchange does, or there is no tail.
-    ///
-    /// Disclosed rather than left to be discovered, because a tail that begins
-    /// mid-exchange opens with an answer to something that is no longer present,
-    /// and the model reading the new base is the reader who has to know that.
+    /// Items of the newest exchange left out of the verbatim tail, when it could not start at an exchange
+    /// boundary: one big file read is larger than the whole budget. Disclosed rather than left to be discovered,
+    /// because such a tail opens with an answer to something no longer present.
     pub tail_dropped: Option<usize>,
-    /// **The tail as the wire carries it** — role and text, in order, so a head can draw
-    /// the recent past instead of parsing the note's count.
-    ///
-    /// Role is `operator` or `agent`, the vocabulary `Speaker` already uses. Empty for a
-    /// fork with no tail, which is every local compaction and every re-seat.
+    /// The tail as the wire carries it: role and text, in order, so a head can draw the recent past instead of
+    /// parsing the note's count. Role is `operator` or `agent`, the vocabulary `Speaker` already uses.
     pub tail_turns: Vec<letibot_sessionlog::event::CompactionTurn>,
     /// Why the tail is what it is — [`ForkTail::because`], carried through so the report
     /// can put it on the wire without recomputing a decision that has already been made.
     pub tail_because: String,
-    /// **The tail as the WIRE describes it**, carrying the reason in the shape both readers
-    /// already share.
-    ///
-    /// `tail_because` above is the same fact as a bare string, and this is the object the
-    /// warning carries — `carried` plus `because` plus `dropped` — so the sentence a head
-    /// draws and the row this report becomes cannot say different things about one
-    /// compaction. [`letibot_sessionlog::event::CompactionTail::why_line`] is the one place
-    /// the reason becomes words.
-    ///
-    /// `None` for a fork that is not a compaction — a re-seat, a re-ingest — where a reason
-    /// would be a claim about a decision nobody made.
+    /// The tail as the WIRE describes it, carrying the reason in the shape both readers share: the object the
+    /// warning carries, so the sentence a head draws and the row this report becomes cannot disagree.
+    /// `None` for a fork that is not a compaction, where a reason would be a claim nobody made.
     pub tail_why: Option<letibot_sessionlog::event::CompactionTail>,
 }
 
-/// What a compaction left behind: the fork's numbers and the summary turn's.
-///
-/// Two reports because two different things happened and a caller discloses both:
-/// [`ForkReport`] is what the session's base now is, and `summary_turn` is how the
-/// summary was paid for — `cached_tokens` against `reusable` is the measured cache
-/// hit the whole cached strategy exists for, and the gap between them is the
-/// server's, never ours (the prompts are proven identical over the span).
+/// What a compaction left behind: the fork's numbers and the summary turn's. Two reports because two things
+/// happened and both are disclosed, and `cached_tokens` against `reusable` is the measured cache hit the whole
+/// cached strategy exists for. The gap between them is the server's, never ours.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactReport {
     pub fork: ForkReport,
     pub summary_turn: CompactionOutcome,
-    /// **Tools the fork's prompt announces that the old one did not.** A
-    /// compaction forks onto the prompt this daemon seats now, so a conversation
-    /// started before a tool existed picks it up by compacting — and the operator
-    /// is told, because a capability that appears silently is one nobody uses.
-    /// Empty on the ordinary compaction, where the two prompts are the same.
+    /// Tools the fork's prompt announces that the old one did not: a compaction forks onto the prompt this
+    /// daemon seats now, so a conversation started before a tool existed picks it up by compacting, and the
+    /// operator is told.
     pub gained: Vec<String>,
     /// Tools the old prompt announced and the new one does not.
     pub lost: Vec<String>,
-    /// Did the operator watch the summary being written?
-    ///
-    /// The ordinary compaction runs its summary turn through the session's own sink, so the text
-    /// streams to every head as it is generated and the fork that follows needs no announcement. The
-    /// overrun paths cannot: they summarise a SCRATCH transcript, and `summarise_one` sends that to a
-    /// `NullSink` on purpose, because forwarding its progress made the head draw the scratch prompt's
-    /// token count as the session's context.
-    ///
-    /// False means the summary has to be published, because nobody saw it.
+    /// Did the operator watch the summary being written? The ordinary compaction streams it through the
+    /// session's own sink, while the overrun paths summarise a SCRATCH transcript through a `NullSink`, because
+    /// forwarding that progress made a head draw the scratch prompt's count as the session's. False means publish.
     pub summary_was_streamed: bool,
 }
 
@@ -137,10 +95,9 @@ pub struct ReseatReport {
     pub summary_turn: CompactionOutcome,
     pub gained: Vec<String>,
     pub lost: Vec<String>,
-    /// **Tools on both sides whose schema changed** — the case that started the stale-prompt
-    /// notice (`todo_write`'s grown `target`, then its `operator` need kind), and the one the
-    /// gained/lost pair is silent about. Named here so the re-seat's report, and the model's
-    /// copy of it, can say the schema the model now reads is not the one it was using.
+    /// Tools on both sides whose schema changed: the case that started the stale-prompt notice, and the one
+    /// the gained/lost pair is silent about. Named here so the re-seat's report can say the schema the model now
+    /// reads is not the one it was using.
     pub grew: Vec<String>,
     /// **What changed in each of `grew`, in a phrase** — `monitor (new \`github\`)`,
     /// `todo_write (\`todos[].needs[].kind\` gains \`monitor\`)` — so the model is told what to
@@ -164,12 +121,9 @@ pub(crate) fn grown_with_how(was: &[String], is: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// **What changed between two versions of one tool's schema, in a phrase** — new and removed
-/// parameters at any depth (`todos[].needs[].name`), values an enum gained or lost, and
-/// `wording` when only the text describing it moved. `None` when the two cannot be read.
-///
-/// The operator: *"trying to name a change inside a tool is nice to have"* — a re-seat used to
-/// say only `Changed: monitor`, and the model had to find the `github` argument by itself.
+/// What changed between two versions of one tool's schema, in a phrase: new and removed parameters at any
+/// depth, values an enum gained or lost, and `wording` when only the text moved. `None` when the two cannot be
+/// read. A re-seat used to say only `Changed: monitor`.
 pub fn schema_change(was: &str, is: &str) -> Option<String> {
     let parse = |s: &str| -> Option<serde_json::Value> {
         let v: serde_json::Value = serde_json::from_str(s).ok()?;
@@ -273,16 +227,9 @@ fn grown_schemas(was: &[String], is: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// **What the MODEL is told about a stale prompt — once, as information.**
-///
-/// The operator: *"regarding reseat - since it is important id suggest to show me "select" with
-/// one option - reseat and abstain and then when on abstain keep reseat select open. this way i
-/// keep reseat in mind because it stares at me yet can continue at my risk"*. The person now
-/// owns the decision through a card on their head that stays up until the prompt is current,
-/// so the model's copy no longer ends with *say this to the person and keep saying it until
-/// they act* — which made every plan-check a reminder the model passed on, the nagging the
-/// operator reported. It ends with whose decision it is and that the model is not to press it.
-/// Delivered once per sentence (`Harness::stale_told`), in the plan-check's turn.
+/// What the MODEL is told about a stale prompt, once, as information: the person owns the decision through a
+/// card on their head, so the model's copy no longer asks it to keep saying so, which was the nagging reported.
+/// It ends with whose decision it is, and it is delivered once per sentence, in the plan-check's turn.
 pub fn stale_notice_for_the_model(said: &str) -> String {
     format!(
         "{said} For your information, said once: the person sees this on their screen as a \
@@ -292,11 +239,9 @@ pub fn stale_notice_for_the_model(said: &str) -> String {
     )
 }
 
-/// **What the model is told when a reseat lands** — one line, and the three things it must not
-/// say.
-///
-/// **R93.E8**: no token count, no request to restate the re-seat in a line (a restatement is not
-/// work), and no *"stop asking for `/reseat`"*, which planted the word it forbade.
+/// What the model is told when a reseat lands: one line, and the three things it must not say — no token
+/// count, no request to restate the re-seat (a restatement is not work), and no stop asking for `/reseat`,
+/// which planted the word it forbade.
 pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
     let mut said = String::from("[reseat] Your system prompt and tools were updated");
     if summarise {
@@ -325,31 +270,18 @@ pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
 }
 
 impl Harness {
-    /// How big this conversation is, in the units its wall is in, and the pair every `Config`
-    /// conversion reads, brought up to date with it.
-    ///
-    /// For a session with a measurement: the provider's own count at its last round plus what has
-    /// been appended since, and `cfg.ledger_scale` becomes `(ledger now, that count)`, so every wall
-    /// decision judges and prints the one number. Called before every wall decision, because the
-    /// ledger moves between rounds and a pair from the last round would convert those rows by a ratio
-    /// they have nothing to do with.
-    ///
-    /// Without a measurement the reading is the ledger's own, and says so
-    /// (`measured: None`): unscaled on a metered model that has not run a round —
-    /// `Config::tokens_are_unscaled` — and the truth on a local one before its first.
-    /// A scale this session did not anchor (a subagent's, inherited) is read the way it
-    /// always was, as a ratio, rather than mistaken for a count of this conversation.
+    /// How big this conversation is in the units its wall is in, and the pair every `Config` conversion reads.
+    /// Called before every wall decision, since the ledger moves between rounds and a stale pair would convert
+    /// those rows by a ratio they have nothing to do with. Without a measurement it says so.
     pub fn measure_resident(&mut self) -> Resident {
         let len = self.session.ledger.len() as u64;
         if self.cfg.ledger_scale.is_none() {
             // A switch cleared the scale (`set_provider`, `set_own_server`): the anchor
             // was a measurement on the model before, and goes with it.
             self.wall_anchor = None;
-            // The carried ratio still converts. Nothing here has measured THIS model, so `measured` is
-            // `None` and a line says so; but a pair measured on the model before the switch is a
-            // better count than the ledger's bytes, and using it is what stops a fresh provider
-            // stopping the turn at round 0. `shown_tokens` falls back to the ledger's own figure when
-            // there is no pair at all.
+            // The carried ratio still converts: nothing here has measured THIS model, so `measured` is `None`
+            // and a line says so, but a pair measured on the model before the switch beats the ledger's bytes and
+            // stops a fresh provider ending the turn at round 0.
             return Resident {
                 tokens: self.cfg.shown_tokens(len),
                 measured: None,
@@ -377,15 +309,9 @@ impl Harness {
         now
     }
 
-    /// The turn after a re-seat: the model is told it happened, and answers. `text` is
-    /// [`reseated_for_the_model`]'s.
-    ///
-    /// The same seam as [`Harness::continue_after_wall`] and the plan-check's nag: a user item in the
-    /// harness's own voice, never readable as the operator's words. The held deliveries ride in,
-    /// because this is a turn the model takes anyway.
-    ///
-    /// A re-seat is a command on the worker's queue, so it never runs inside a turn: by the time this
-    /// is called the turn that was running has ended, and this is the next step boundary.
+    /// The turn after a re-seat: the model is told it happened and answers. The same seam as
+    /// `continue_after_wall` and the nag: a user item in the harness's voice, never readable as the operator's.
+    /// A re-seat is a worker command, so it never runs inside a turn, and this is the next boundary.
     pub fn run_after_reseat(&mut self, text: &str) -> Result<Reply, HarnessError> {
         let mut text = text.to_string();
         if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
@@ -401,15 +327,9 @@ impl Harness {
         })
     }
 
-    /// The turn after the wall, without a human typing "continue".
-    ///
-    /// A wall stop ends the turn with the work half-done, and the compaction that follows it replaces
-    /// the transcript with a summary, after which nothing ran. opencode never had that hole because
-    /// its compaction is a step inside the run loop; this harness cannot run compaction, so the seam
-    /// is a user item in the harness's own voice, the same shape as [`Harness::wake`].
-    ///
-    /// The shared turn tail calls this while there is room and a bound of continuations left. A wall
-    /// the compaction did not clear still comes back as [`HarnessError::ContextWall`].
+    /// The turn after the wall, without a human typing continue. A wall stop ends the turn half-done and the
+    /// compaction that follows replaces the transcript, after which nothing ran; so this seam is a user item in
+    /// the harness's voice. The tail calls it while there is room and a bound of continuations left.
     pub fn continue_after_wall(&mut self) -> Result<Reply, HarnessError> {
         // No "context wall" sentence: the context check tells the model not to size by it, and the
         // compaction note right above already says what the summary is. Sent only after a real
@@ -429,30 +349,16 @@ impl Harness {
         })
     }
 
-    /// `Sessions::compact_if_at_the_wall`'s contract, from the side that owns the harness: compact
-    /// when the next turn would not fit, announce it in the same words the daemon's own sessions get,
-    /// and apply the no-progress guard that stops a too-large summary looping once per turn.
-    ///
-    /// Same name as the `Sessions` method on purpose: it is the same seam, and the next person asking
-    /// why this resurfaces should find both doors in one grep.
-    ///
-    /// Returns whether a compaction was actually ATTEMPTED, which is false when the session is not at
-    /// the threshold, automatic compaction is off, or no window is configured. A wall notice that says
-    /// a compaction was attempted needs that to be a fact rather than a hope.
+    /// The same contract from the side that owns the harness: compact when the next turn would not fit,
+    /// announce it in the daemon's own words, and apply the no-progress guard. Returns whether a compaction was
+    /// ATTEMPTED, since a wall notice saying so needs it to be a fact.
     pub(crate) fn compact_if_at_the_wall(&mut self) -> bool {
         self.compact_at_the_wall(WallWhy::Tidy)
     }
 
-    /// The other question: a turn was just REFUSED for context length, so is there a way forward?
-    ///
-    /// Same body as [`Self::compact_if_at_the_wall`] and one gate apart: this one does not read
-    /// `auto_compact`, because the no-progress guard turns that flag off WITHOUT freeing anything, so
-    /// a recovery gated on it would refuse the only lever it has.
-    ///
-    /// The refusal itself is the evidence, so there is no threshold to re-check. Nothing stands this
-    /// door down either: a latch set on an ESTIMATE of the new base once switched the overrun
-    /// protection off for the daemon's life after a fold the provider then measured at half the
-    /// window. The wall controller picks the fold.
+    /// The other question: a turn was just REFUSED for context length, so is there a way forward? One gate
+    /// apart, since this does not read `auto_compact`, which the guard turns off without freeing anything. The
+    /// refusal is the evidence, and nothing stands this door down.
     pub(crate) fn compact_because_refused(&mut self) -> bool {
         self.compact_at_the_wall(WallWhy::Refused)
     }
@@ -461,16 +367,14 @@ impl Harness {
     /// decision — the arithmetic is NOT copied — and `why` is the only thing the
     /// two doors disagree on.
     fn compact_at_the_wall(&mut self, why: WallWhy) -> bool {
-        // **Measured first, so the decision and the line are one count (R72).** The
-        // roll brings `ledger_scale` to `(this ledger, the provider-sized count)`, and
-        // `should_compact` on the ledger figure below is then exactly the provider's
-        // count against the provider's window.
+        // Measured first, so the decision and the line are one count: the roll brings `ledger_scale` to this
+        // ledger and the provider-sized count, and `should_compact` on the ledger figure below is then exactly the
+        // provider's count against the provider's window.
         let now = self.measure_resident();
         let resident = self.session.ledger.len() as u64;
-        // The one gate the two questions differ by: the PRE-EMPTIVE door reads
-        // `auto_compact` and the threshold; the REFUSED door reads neither. Which fold,
-        // and whether the pre-emptive door stands down (an unmeasured base, `Stuck`), is
-        // the wall controller's — one state, changed only by measured counts.
+        // The one gate the two questions differ by: the pre-emptive door reads `auto_compact` and the threshold,
+        // and the refused door reads neither. Which fold, and whether the pre-emptive door stands down, is the wall
+        // controller's: one state, changed only by measured counts.
         let refused = matches!(why, WallWhy::Refused);
         if !refused
             && !self
@@ -482,15 +386,9 @@ impl Harness {
         let Some(fold) = self.cfg.wall.fold_for(refused, &self.session.transcript_id) else {
             return false;
         };
-        // **Shown in the operator's units, decided in the ledger's** — the same rule
-        // the `Sessions` sibling states: `should_compact` above is the decision,
-        // and the line prints the count it was made on, in the window's own units
-        // (`Config::shown_wall`), with the unit named.
-        //
-        // `Config::scale` and not `ledger_scale`: on a session whose switch carried a
-        // ratio, the count the decision was taken on is the CONVERTED one, and a line that
-        // converted with nothing would print the ledger's bytes beside a unit it had just
-        // named as the provider's.
+        // Shown in the operator's units, decided in the ledger's: `should_compact` is the decision and the line
+        // prints the count it was made on, in the window's own units. `Config::scale` and not `ledger_scale`, or a
+        // converted count would print beside a unit it had just named as the provider's.
         let scale = self.cfg.scale();
         let (w, h) = self.cfg.shown_wall();
         let r = now.tokens;
@@ -540,11 +438,9 @@ impl Harness {
                 // (`roll_resident`), so the after-count is the base's, not the old
                 // history's ratio applied to it.
                 let base = self.measure_resident();
-                // **An estimate is said as one** — `≈`, until the next round measures
-                // it. The report used to print the base's estimate in the same breath
-                // as the measured count it was folded from, and the guard below it
-                // JUDGED that estimate: 1,039,055 for a base deepseek counted at
-                // 507,355 (pg-noop, 2026-10-11).
+                // An estimate is said as one, with `≈`, until the next round measures it. The report used to print
+                // the base's estimate in the same breath as the measured count it was folded from, and the guard
+                // below JUDGED that estimate.
                 let estimated = self.cfg.wall.awaiting_on(&self.session.transcript_id)
                     || self.cfg.carried_note().is_some();
                 let scales = crate::sessions::Scales {
@@ -568,12 +464,9 @@ impl Harness {
                         h,
                     ))),
                 });
-                // **Whether it helped is not decided here.** It used to be — `at_the_wall`
-                // on the base's estimate, then `auto_compact = false` and the refused
-                // door's latch, for good. A metered base is judged by the first round
-                // that measures it (`observe_wall`, from `run_rounds`); a local one was
-                // judged inside `compact_with`, because its prompt IS the ledger and
-                // the count is exact. Either way the controller said it, once.
+                // Whether it helped is not decided here: it used to be, on the base's estimate, for good. A
+                // metered base is judged by the first round that measures it, and a local one inside `compact_with`,
+                // where the count is exact. Either way the controller said it, once.
                 let cut = if report.fork.truncated {
                     " The summary was CUT OFF at the model's length limit — it is \
                      incomplete, and the base says so too."
@@ -589,11 +482,9 @@ impl Harness {
                 });
             }
             Err(e) => {
-                // Announced and swallowed, for the same reason as the sibling's: the
-                // room check in `submit_as_a_normal_session` is what decides the
-                // turn's fate, and a compaction that did not run leaves no room —
-                // so the wall error stands, and this line is why the operator can
-                // see it was tried rather than infer it never was.
+                // Announced and swallowed, as the sibling does: the room check in `submit_as_a_normal_session`
+                // decides the turn's fate, so a compaction that did not run leaves no room, and this line is why the
+                // operator can see it was tried rather than infer it never was.
                 eprintln!("  {}: compaction FAILED: {e}", self.cfg.session_id);
                 self.hub.publish(SessionEvent::Warning {
                     code: "auto_compact_failed".into(),
@@ -604,10 +495,8 @@ impl Harness {
                     ),
                     compaction: None,
                 });
-                // **And if this is the first request after a model switch, say how to go
-                // back.** The compaction runs through this harness, not through the turn
-                // tail, and it is the door the measured failure took: the summary turn
-                // carried the same history and was refused the same way.
+                // And if this is the first request after a model switch, say how to go back: the compaction runs
+                // through this harness and not the turn tail, and it is the door the measured failure took.
                 if let Some(said) = self.switch_back_notice(&e) {
                     self.hub.publish(SessionEvent::Warning {
                         code: "model_switch_refused".into(),
@@ -624,16 +513,9 @@ impl Harness {
         true
     }
 
-    /// **A measured count, into the wall controller — the one place its state changes on
-    /// a measurement, and the one place that says so.**
-    ///
-    /// `count` is in the window's units: a round's `prompt_tokens` (called from
-    /// `run_rounds` at every round's end, children included — they run the same loop),
-    /// or a local base's exact size (from [`Self::compact_with`]). The judgement the
-    /// no-progress guard used to make on the estimate right after the fork is made here,
-    /// on the provider's number: the pg-noop case of 2026-10-11 would have read
-    /// *"measured: the ordinary fold left 507355 of 1000000 deepseek tokens"* and stood
-    /// nothing down.
+    /// A measured count, into the wall controller: the one place its state changes on a measurement, and the
+    /// one place that says so. `count` is in the window's units, either a round's `prompt_tokens` or a local
+    /// base's exact size, and the judgement the no-progress guard used to make on an estimate is made here.
     pub(crate) fn observe_wall(&mut self, count: u64) {
         let (window, headroom) = self.cfg.shown_wall();
         if window == 0 {
@@ -775,14 +657,9 @@ impl Harness {
         self.compact_with(crate::wall::Fold::Ordinary)
     }
 
-    /// **A compaction with the fold named** — [`Self::compact`] is the ordinary one, the
-    /// one `/compact` asks for; the wall controller names a harder one when a measured
-    /// count said the last did not make room (`crate::wall`).
-    ///
-    /// Every fold that lands is reported to the controller HERE, whoever asked for it,
-    /// so a `/compact` on a stuck session restarts the ladder rather than leaving a state
-    /// about a transcript that is gone. A metered base waits for its first round to be
-    /// measured; a local one is measured now, because its prompt IS the ledger.
+    /// A compaction with the fold named: `compact` is the ordinary one `/compact` asks for, and the wall
+    /// controller names a harder one when a measured count said the last did not make room. Every fold that lands
+    /// is reported to the controller HERE, whoever asked, so a `/compact` on a stuck session restarts the ladder.
     pub fn compact_with(&mut self, fold: crate::wall::Fold) -> Result<CompactReport, HarnessError> {
         let before = self.measure_resident().tokens;
         self.compacting = true;
@@ -803,37 +680,22 @@ impl Harness {
         out
     }
 
-    /// The prompt this daemon would seat a NEW conversation with, and the store row for it, or `None`
-    /// when that is already the prompt being spoken.
-    ///
-    /// `/reseat` and every compaction fork want the same two values computed the same way, so they
-    /// are computed once here. The probe render is what makes the row honest: a `stable_prefix`
-    /// written with an empty token list verifies as `hash chain broken at row 0` on the way back in.
-    ///
-    /// Public because the summary turn needs a model server and this does not, so the re-seat half
-    /// of a compaction is drivable, and therefore testable, offline.
+    /// The prompt this daemon would seat a NEW conversation with, and the store row for it, or `None` when that
+    /// is already the prompt being spoken. `/reseat` and every compaction fork want the same two values, and the
+    /// probe render is what makes the row honest. Public so the re-seat half is testable offline.
     pub fn reseat_target(&mut self) -> Result<Option<(StablePrefix, String)>, HarnessError> {
-        // The standing notes are re-read HERE, on every base rebuild, because every fork computes its
-        // next prefix through here: `/compact`, the wall, `/reseat`, `/reingest`. The section is swapped
-        // inside the composed prompt by marker, so `prompts.toml` overrides and a fabric block appended
-        // after it are carried through untouched, and only the notes move.
-        //
-        // A compaction is a cold prefill by construction, so moving the head here costs nothing extra;
-        // when the files have NOT changed the swap is a no-op and the fork keeps the seated prefix
-        // without a new row.
+        // The standing notes are re-read HERE, on every base rebuild, because every fork computes its next
+        // prefix through here: `/compact`, the wall, `/reseat`, `/reingest`. The section is swapped by marker, so
+        // overrides and an appended fabric block are carried through. Unchanged files make it a no-op.
         match self.reseat_candidate() {
             None => Ok(None),
             Some(next) => self.seat_target(next).map(Some),
         }
     }
 
-    /// The prompt a fork would land on, decided and NOT yet recorded: the first half of
-    /// [`Self::reseat_target`], for a caller that has a check to make before anything is written.
-    ///
-    /// `reingest` once refused an over-window carry AFTER `cfg.system` had moved and a
-    /// `stable_prefix` row had been written, so every refused attempt left an orphan row and a
-    /// system prompt the session was not speaking. `None` when the prompt is unchanged (the standing
-    /// notes are still taken up then), or when there is no store to record a new one in.
+    /// The prompt a fork would land on, decided and NOT yet recorded: the first half of `reseat_target`, for a
+    /// caller with a check to make first. `reingest` once refused an over-window carry after the prompt had moved
+    /// and a row had been written, so every refused attempt left an orphan. `None` when unchanged or storeless.
     fn reseat_candidate(&mut self) -> Option<StablePrefix> {
         let declared = crate::standing_notes::preloaded(self.skills.as_ref(), &self.cfg.skills);
         let notes = crate::standing_notes::section_with_skills(
@@ -886,19 +748,10 @@ impl Harness {
         Ok((next, id))
     }
 
-    /// Re-seat without summarising: carry the whole conversation across. This is what `/reseat` does,
-    /// and the lossless carry is the default because a re-seat that quietly ate the conversation is a
-    /// surprise you cannot undo.
-    ///
-    /// A tool's schema lives in the stable prefix, which is message zero, so a running session keeps
-    /// the prompt it opened under and a schema change needs a fork. This forks onto the seated prompt
-    /// with every item carried verbatim, through `fork_to_summary`'s own machinery: `tail` has always
-    /// been items kept as themselves, and this passes all of them with no summary in front.
-    ///
-    /// It costs a cold prefill of the WHOLE history, because the prefix changed and nothing the
-    /// server cached matches. That is the trade against a summary: cheaper and lossy against dearer
-    /// and lossless. It refuses where a verbatim carry would fork onto a base that cannot be prefilled
-    /// at all, because the honest answer there is the summary it was trying to avoid.
+    /// Re-seat without summarising: carry the whole conversation across, through `fork_to_summary`'s own
+    /// machinery, since a tool's schema lives in the stable prefix and a schema change needs a fork. It costs a
+    /// cold prefill of the whole history, which is the trade against a summary, and it refuses where the carry
+    /// could not be prefilled at all.
     pub fn reingest(&mut self) -> Result<ReseatReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
@@ -916,29 +769,9 @@ impl Harness {
                     .into(),
             ));
         };
-        // **The carry has to fit, and "fit" has to be measured in ONE unit.**
-        //
-        // `resident` below is counted off the ledger, with this box's own
-        // vocabulary. On a metered provider that is not the number the provider
-        // will refuse at and not the number the operator's header shows: the
-        // ledger holds the reasoning rows that `letibot_provider::messages` drops,
-        // so it over-counts. Measured on the operator's own session, 2026-09-20:
-        // 991,596 in the ledger against 671,280 the provider counted for the same
-        // conversation, 49% apart.
-        //
-        // This compared the ledger figure against `planning_window()`, which is
-        // the window in LEDGER units — correct, but only while `ledger_scale` is
-        // known. Unmeasured, `planning_window` hands back the provider's own
-        // window unchanged, and the comparison silently became ledger-against-
-        // provider. That refused a `/reseat` whose carry had 400k tokens of room,
-        // and printed `991596 of 1000000` under a header reading 671k with no way
-        // to reconcile the two.
-        //
-        // So: convert to the PROVIDER's units and compare there, because that is
-        // the number the operator can check. And when nobody has measured the
-        // ratio yet, **do not refuse** — an unmeasured ratio is not a small one,
-        // the error is all in one direction, and losing a lossless re-seat over a
-        // conversion the daemon admits it cannot do is the worse failure.
+        // The carry has to fit, and fit has to be measured in ONE unit: the ledger over-counts against a
+        // provider, since it holds the reasoning rows the provider drops. Convert to the PROVIDER's units and compare
+        // there, and when nobody has measured the ratio, do NOT refuse, because the error is all one way.
         let per_item: Vec<u64> = (0..self.session.items.len())
             .map(|i| {
                 self.session
@@ -1021,10 +854,8 @@ impl Harness {
         };
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
-            // **The whole conversation, carried as it is** — that is what a re-ingest is,
-            // and an empty `because` says no decision about a tail was taken. It goes
-            // through `ForkTail` rather than a bare slice because the fork needs one
-            // shape for both callers, not because this is a compaction.
+            // The whole conversation, carried as it is, which is what a re-ingest is: an empty `because` says no
+            // decision about a tail was taken. It goes through `ForkTail` so the fork has one shape for both callers.
             let fork = self.fork_to_summary(
                 &outcome,
                 Some(&next),
@@ -1046,27 +877,17 @@ impl Harness {
         })();
         self.compacting = false;
         let mut out = out?;
-        // **And the harness now SPEAKS the prompt the fork landed on** — `reseat` makes the
-        // same swap at the same point, after the fork, for the reason it gives there.
-        //
-        // This line was missing. The fork opened the new transcript under `next`, so a local
-        // turn (which renders from the ledger) spoke the new prompt; but a metered turn is
-        // sent `self.prefix.system` and `self.prefix.tools_json`, so a provider session went
-        // on being handed the OLD tool schemas after a `/reseat` that reported them rebuilt —
-        // until a daemon restart resumed the new transcript under its own stored prefix. And
-        // `reseat_target` compares against `self.prefix`, so a second `/reseat` re-forked a
-        // session that was already on the seated prompt. pg-noop is a deepseek session, and
-        // its `/reseat` at 00:32 on 2026-10-12 was this one.
+        // And the harness now SPEAKS the prompt the fork landed on, as `reseat` does at the same point. Without
+        // this a metered turn was still sent the OLD tool schemas after a `/reseat` that reported them rebuilt, and
+        // `reseat_target` then re-forked a session already on the seated prompt.
         self.prefix = next;
         self.prefix_id = next_id;
         out.gained.sort();
         out.lost.sort();
         self.publish_settings();
-        // **Under the window but short of a turn's room**: the conversation was already this
-        // size on the old prompt, and the reseat changes that by the schema's difference. The
-        // room a turn needs is the compaction's to make before the next turn, as it would have
-        // been without the reseat — so this goes ahead and says so. **Said once the fork has
-        // landed (R91.13)**: it reads "re-seated", and a fork that failed re-seated nothing.
+        // Under the window but short of a turn's room: the conversation was already this size on the old prompt,
+        // and the room a turn needs is the next compaction's to make. So this goes ahead and says so, and it is
+        // said once the fork has landed, since a fork that failed re-seated nothing.
         if fit == VerbatimFit::Tight
             && let (Some(window), Some(carried)) = (self.cfg.context_window, carried)
         {
@@ -1085,12 +906,9 @@ impl Harness {
         Ok(out)
     }
 
-    /// **Re-seat and summarise**, replacing the conversation with the summary.
-    ///
-    /// This is `/reseat summarise`: the lossy kind, and it is the one you ask for
-    /// by name. A bare `/reseat` runs [`Harness::reingest`]. Reach for this when
-    /// the point is to shrink as well as to change message zero, or when the
-    /// conversation no longer fits in front of the window.
+    /// Re-seat and summarise, replacing the conversation with the summary. This is `/reseat summarise`: the lossy
+    /// kind, asked for by name, while a bare `/reseat` runs `reingest`. Reach for it when the point is to shrink as
+    /// well as to change message zero.
     pub fn reseat(&mut self) -> Result<ReseatReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
@@ -1157,42 +975,9 @@ impl Harness {
         out
     }
 
-    /// **Compaction is one summary turn appended to the conversation itself** --
-    /// unless the conversation arrived with no room to hold one.
-    ///
-    /// The ordinary path is the cheap one and is used whenever it can be: the
-    /// server already holds the prompt, so the prefill is one message. The
-    /// operator's rule, after a batched rewrite that used a fallback for
-    /// everything and was reverted for it: *"when no overrun - normal
-    /// compaction"*.
-    ///
-    /// OVERRUN is when it arrives over the budget -- *"either unlucky tool like a
-    /// file read or model change"* -- so the summary turn has nowhere to write.
-    /// Then, and only then, the conversation is summarised somewhere else, and
-    /// WHICH way depends on the backend rather than on the conversation:
-    ///
-    ///   * a cloud provider takes messages rather than tokens, and a prefix-cache
-    ///     miss is priced rather than waited on, so the clean fold is affordable:
-    ///     summarise the first half, continue on `summary ++ second half`, with
-    ///     the recent past kept VERBATIM.
-    ///   * the local server prefills at 200-375 tok/s, where that same fold is ten
-    ///     minutes of silence. So both halves are summarised instead, overlapping
-    ///     at the seam, with the expensive half arranged to be a true prefix of
-    ///     what the server already holds.
-    ///
-    /// See `crates/turn/src/compaction.rs` for the arithmetic and for why the
-    /// cache and the log are two different things.
-    /// **Summarise the first half, keep the rest verbatim** — the fold, carried out.
-    ///
-    /// Two arms go through here so they cannot drift: the overrun arm (the history is
-    /// past the window) and the ordinary arm (a remote session is at the wall, where
-    /// `plan_fold`'s own doc says the fold is the cleanest of the three strategies and
-    /// the one to prefer wherever it can be afforded).
-    ///
-    /// **The summary turn runs against the FIRST HALF only**, in a scratch transcript,
-    /// and that is also why the fold is the *safe* answer at the wall rather than
-    /// merely the better one: the ordinary path asks the model to read the whole
-    /// history and write a summary with less than a reserve of room left to do it in.
+    /// Compaction is one summary turn appended to the conversation itself, unless the conversation arrived with
+    /// no room to hold one. OVERRUN is arriving over the budget: then the history is summarised somewhere else,
+    /// at 200-375 tok/s, which is ten minutes of silence on a local server, and a clean fold a cloud can afford.
     fn compact_by_folding(
         &mut self,
         items: &[TranscriptItem],
@@ -1222,22 +1007,9 @@ impl Harness {
     fn compact_inner(&mut self, fold: crate::wall::Fold) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
 
-        // **A compaction re-seats.** It is already forking onto a fresh transcript
-        // and already paying the cold prefill that a new prefix costs, so carrying
-        // the tool list this daemon seats NOW is free — and not carrying it is
-        // what made `/compact` then `/reseat` two summaries instead of one.
-        //
-        // Measured in the operator's own session (`…#t8`, five rows): row 0 is the
-        // `/compact` summary; row 1 is `/reseat` asking for a summary of a
-        // transcript that is already nothing but a summary; row 2 is the model,
-        // with nothing to summarise, running `git log` instead — which tripped the
-        // "a summary is a record, not an action" guard and refused the re-seat;
-        // rows 3 and 4 are the retry. Three summary turns and two cold prefills to
-        // pick up a tool list. Their reading: *"let compaction automatically
-        // reseat so new tools picked up"*.
-        //
-        // `None` when the seated prompt is the one already being spoken, which is
-        // the common case and costs a comparison.
+        // A compaction re-seats: it is already forking onto a fresh transcript and paying a new prefix's cold
+        // prefill, so carrying the tool list this daemon seats NOW is free — and not carrying it made `/compact`
+        // then `/reseat` two summaries instead of one. `None` when the seated prompt is the one being spoken.
         let reseat = self.reseat_target()?;
 
         let per_item: Vec<u64> = (0..self.session.ledger.rows().len())
@@ -1253,10 +1025,8 @@ impl Harness {
         // Ledger units: `per_item` and `prefix_tokens` below are the ledger's.
         let window = self.cfg.planning_window().unwrap_or(u64::MAX);
 
-        // The fold the controller named. The ordinary one is what a compaction always was: the fold
-        // the size calls for. The sliced fold is the two-half plan asked for by NAME, because a
-        // history that fits one summary call never reaches it by size, however little the ordinary
-        // fold freed.
+        // The fold the controller named. The ordinary one is the fold the size calls for; the sliced fold is the
+        // two-half plan asked for by NAME, since a history that fits one summary call never reaches it by size.
         use crate::wall::Fold;
         let smaller = fold == Fold::SmallerTail;
         let plan = if fold == Fold::Sliced {
@@ -1267,24 +1037,13 @@ impl Harness {
         match plan {
             // The ordinary path, and the one that runs almost always.
             OverrunPlan::NotOverrun => {
-                // The tail is planned from the history as it stands BEFORE the summary turn, and
-                // that is not a detail: `run_compaction` appends its instruction and its answer to
-                // this session, and a tail that could reach those would put the question and its
-                // answer into the record that replaces them.
+                // The tail is planned from the history as it stands BEFORE the summary turn, and that is not a
+                // detail: the turn appends its instruction and its answer to this session, and a tail that could reach
+                // those would put the question and its answer into the record that replaces them.
                 let items: Vec<TranscriptItem> = self.session.items.clone();
-                // **The first choice when a remote backend can afford it.** `plan_fold`'s
-                // doc: the fold is the cleanest of the three strategies and the one to
-                // prefer wherever it can be afforded, and what it costs is the cache —
-                // ten minutes of cold prefill on a local llama.cpp, six cents on a cloud
-                // provider. Local keeps the ordinary path below, deliberately.
-                //
-                // **Asked with the door's own reserve, not the window's.** The door fires
-                // at `resident + headroom >= window` — a headroom BEFORE the window is
-                // full — so a resumed session arrives inside the band where `plan_fold`
-                // used to decline and this arm used to summarise the whole history down to
-                // a 15,000-token tail. Measured 2026-10-10, session
-                // `s-1789462738453908838`: 958,397 in, 100,005 out, and the part of the
-                // conversation that was still live went with it.
+                // The first choice when a remote backend can afford it: the fold is the cleanest of the three
+                // strategies, and what it costs is the cache. Asked with the door's own reserve and not the window's, so
+                // a resumed session does not have the whole history summarised down to a 15,000-token tail.
                 let folded = self
                     .provider
                     .is_some()
@@ -1308,11 +1067,9 @@ impl Harness {
                     });
                     let (harvest, tail, tail_split) =
                         self.compact_by_folding(&items, split, &mut sink)?;
-                    // The fold's summary ran in a scratch transcript, so its outcome is
-                    // built here rather than coming back from `run_summary_turn`: none of
-                    // this session's own prefix was reused and no tokens were served from
-                    // its cache. The overrun arm builds the same record for the same
-                    // reason.
+                    // The fold's summary ran in a scratch transcript, so its outcome is built here rather than coming
+                    // back from `run_summary_turn`: none of this session's own prefix was reused and no tokens were served
+                    // from its cache. The overrun arm builds the same record.
                     let outcome = CompactionOutcome {
                         turn_id: format!("{}#overrun", self.transcript_id),
                         summary: harvest.summary,
@@ -1364,11 +1121,9 @@ impl Harness {
                         outcome.tool_calls
                     )));
                 }
-                // **Summary plus verbatim recent turns, on the remote path only**
-                // — R27's ruled split, and `plan_compaction_tail` carries the
-                // reason. A local model gets the template and nothing else,
-                // because a tail here would be resident tokens competing with the
-                // KV pressure that called this compaction in the first place.
+                // Summary plus verbatim recent turns, on the remote path only: a local model gets the template and
+                // nothing else, because a tail here would be resident tokens competing with the KV pressure that called
+                // this compaction.
                 let remote = self.provider.is_some();
                 // The smaller-tail fold halves the budget; the rest of the plan is the same.
                 let tail_plan = if smaller && remote {
@@ -1418,18 +1173,13 @@ impl Harness {
                 let prefix = self.prefix.clone();
                 let scratch = format!("{}#overrun", self.transcript_id);
 
-                // A cloud provider is the affordable case; see the doc above.
-                //
-                // `tail_split` is carried out of the arms with the tail: the fold
-                // splits halfway BY TOKENS, so it can start mid-exchange without
-                // anybody having decided that, and a tail that opens with an answer
-                // to a question that is no longer present is the one thing the
-                // reader has to be told about (R27).
+                // A cloud provider is the affordable case. `tail_split` is carried out of the arms with the tail: the
+                // fold splits halfway BY TOKENS, so it can start mid-exchange without anybody deciding that, and such a
+                // tail opens with an answer to a question that is no longer present.
                 let (harvest, tail, tail_split) = if self.provider.is_some() {
-                    // **The reserve is the door's, not the window's**: a history that
-                    // fits only by spending `headroom()` is one this arm was asked about.
-                    // The sliced fold skips the verbatim half altogether — that half is
-                    // what the gentler folds were measured leaving at the wall.
+                    // The reserve is the door's, not the window's: a history that fits only by spending `headroom()` is
+                    // one this arm was asked about. The sliced fold skips the verbatim half, which is what the gentler
+                    // folds were measured leaving at the wall.
                     let split = (fold != Fold::Sliced)
                         .then(|| plan_fold(&per_item, prefix_tokens, window, self.cfg.headroom()))
                         .flatten()
@@ -1512,11 +1262,8 @@ impl Harness {
                     reusable: 0,
                     generated_tokens: 0,
                 };
-                // The overrun fold's own reason, not `plan_tail`'s: this tail was placed
-                // by arithmetic on the window, half way BY TOKENS, and the reason the
-                // whole tail is what it is has nothing to do with a budget it was
-                // measured against. Empty when there is no tail at all — a local
-                // overrun summarises both halves and carries nothing.
+                // The overrun fold's own reason, not `plan_tail`'s: this tail was placed by arithmetic on the window,
+                // halfway BY TOKENS. Empty when there is no tail at all, since a local overrun summarises both halves.
                 let because = if tail.is_empty() { "" } else { "fold" };
                 let fork = self.fork_to_summary(
                     &outcome,
@@ -1541,13 +1288,9 @@ impl Harness {
         }
     }
 
-    /// Take on the prompt the fork just opened under.
-    ///
-    /// **Only after the fork has landed.** Until then this harness is still
-    /// speaking the old prompt, and a `self.prefix` that ran ahead of the
-    /// transcript would make every later turn build the wrong bytes — the same
-    /// ordering `reseat` spells out at its own swap.
-    /// Returns what the announced tool list gained and lost, for the report.
+    /// Take on the prompt the fork just opened under, and only after the fork has landed: until then this
+    /// harness still speaks the old prompt, and a `self.prefix` ahead of the transcript would make every later turn
+    /// build the wrong bytes. Returns what the announced tool list gained and lost.
     pub fn adopt_reseat(
         &mut self,
         reseat: Option<(StablePrefix, String)>,
@@ -1565,19 +1308,9 @@ impl Harness {
         )
     }
 
-    /// **The fork.** Replace the resident history with one summary item, in a new
-    /// transcript the store links back to this one.
-    ///
-    /// Split from [`Harness::compact`] so it can be driven without a model server:
-    /// the summary turn needs one, this half needs only the vocabulary, the store
-    /// and the harness — so the store, resume-chain and ledger behaviour is
-    /// testable offline, and the turn side is tested in `letibot-turn`.
-    ///
-    /// The old transcript is persisted first and kept whole — compaction never
-    /// deletes anything, it stops *carrying* it. The new transcript's body is one
-    /// system-update item holding the summary; the next prompt is the prefix plus
-    /// that item, which is the cold re-prefill `docs/compaction.md` §3 says is
-    /// unavoidable, measured in tokens rather than minutes.
+    /// The fork: replace the resident history with one summary item, in a new transcript the store links back to
+    /// this one. Split from `compact` so it runs without a model server, and the old transcript is persisted first
+    /// and kept whole, since compaction never deletes anything, it stops carrying the history.
     pub fn fork_to_summary(
         &mut self,
         outcome: &CompactionOutcome,
@@ -1588,16 +1321,9 @@ impl Harness {
         self.fork_onto(outcome, onto, onto_id, tail, None)
     }
 
-    /// **The fork, with the new transcript's first item handed in** — or `None` for the
-    /// note a compaction or a re-seat writes about itself.
-    ///
-    /// One body for every fork, because everything around the first item is the same
-    /// act whoever asks: the old transcript persisted and kept whole, the store row that
-    /// links the two, the fingerprint, the swap, `TranscriptForked`, the stored context
-    /// count cleared. `/clear` is the one caller with a first item of its own (an
-    /// orientation built from the session's state, spoken as the harness — see
-    /// `harness/clear.rs`), and a second copy of this function for it would be a second
-    /// place for the rules above to drift.
+    /// The fork, with the new transcript's first item handed in, or `None` for the note a compaction writes about
+    /// itself. One body for every fork, because everything around the first item is the same act: the old transcript
+    /// kept, the store row linking them, the fingerprint, the swap. `/clear` is the one caller with its own item.
     pub(crate) fn fork_onto(
         &mut self,
         outcome: &CompactionOutcome,
@@ -1618,22 +1344,16 @@ impl Harness {
             && tail_split.is_none()
             && tail_items.len() == self.session.items.len();
         let prefix_before = self.session.ledger.prefix_tokens().len() as i64;
-        // The prefix the FORK opens under, which is the caller's choice and not
-        // always this session's. A compaction keeps the one the conversation has
-        // been speaking under; a re-seat is the whole point of being able to hand
-        // in a different one, because the tool list lives in here.
-        // Cloned rather than borrowed: `persist` below needs `&mut self`, and a
-        // prefix is two strings and a small vector — cheaper than threading a
-        // borrow through the whole fork.
+        // The prefix the FORK opens under, which is the caller's choice and not always this session's: a
+        // compaction keeps the one the conversation speaks under, and a re-seat exists to hand in a different one.
+        // Cloned rather than borrowed, since `persist` needs `&mut self`.
         let onto: StablePrefix = onto.cloned().unwrap_or_else(|| self.prefix.clone());
         let onto_id: String = onto_id
             .map(str::to_string)
             .unwrap_or_else(|| self.prefix_id.clone());
-        // The old transcript is flushed with the summary turn in it, and before the
-        // fork writes anything: a fork that dropped the turn that justified it
-        // would leave the store unable to say where the summary came from. With no
-        // store this is a no-op, and the refusal below is the only thing that
-        // happens.
+        // The old transcript is flushed with the summary turn in it, before the fork writes anything: a fork that
+        // dropped the turn that justified it would leave the store unable to say where the summary came from. With
+        // no store this is a no-op.
         self.persist()?;
         let Some(store) = self.store.as_ref() else {
             return Err(HarnessError::Setup(
@@ -1655,59 +1375,27 @@ impl Harness {
         // `forked_at_seq` means: where in the session's event stream the divergence
         // happened, not where in the transcript.
         let forked_at = self.hub.head_seq();
-        // Nothing is written to the store yet. The transcript row, the fingerprint and the stale flag
-        // used to be written here, before a row of the new transcript existed, so a crash during the
-        // carry resumed onto a partial conversation. The row now goes in UNSEALED just before the
-        // swap, and the seal, the fingerprint and the stale flag follow the last row.
-        //
-        // The fingerprint follows the transcript: a fork is the other place a session's prefix is
-        // decided, and a column left at what the session was CREATED with would report every
-        // re-seated session stale on the next attach. A plain compaction writes the same hash it
-        // read, deliberately, so there is no second rule about when the write is needed.
-        //
-        // **And there is nothing left to tell an attaching head.** A fork either moves the
-        // session onto the seated prompt or leaves it on one that was never stale (`onto` is
-        // `self.prefix` only when `reseat_target` answered `None`), so the stale notice stops
-        // being true — once the fork is the session's, and not before.
+        // Nothing is written to the store yet, since the row used to go in before a row of the new transcript
+        // existed and a crash during the carry resumed onto a partial conversation. The row goes in UNSEALED before
+        // the swap, and the seal, the fingerprint and the stale flag follow the last row.
         let fingerprint = prefix_fingerprint(self.cfg.seat, &onto);
         let mut next = self
             .engine
             .open(&new_id, &onto)
             .map_err(|e| HarnessError::Setup(format!("opening the compacted transcript: {e}")))?;
-        // **A record that was cut off says so, in the record.**
-        //
-        // This is the base every later turn reads as the whole of what came
-        // before. When the summary turn ran out of room mid-sentence, that base
-        // used to claim to be "the summary, written over the full history" — with
-        // the last third missing and nothing anywhere saying it. A model reading
-        // it cannot tell, and neither could the operator until they read to the
-        // end and found `&page.final_url, &page`.
-        //
-        // Not a refusal: a session at the wall has nowhere else to go, and an
-        // incomplete record that admits it is more useful than no compaction at
-        // all. The sentence goes FIRST, before the summary, because a reader who
-        // stops early is exactly the reader who needs it.
+        // A record that was cut off says so, in the record: this base is what every later turn reads as the whole
+        // of what came before, and it used to claim to be the summary of the full history with a third of it missing.
+        // Not a refusal, since a session at the wall has nowhere else to go, and the sentence goes FIRST.
         let cut = if outcome.truncated {
             " The summary is incomplete (cut off); treat anything missing as unknown and check \
              with `transcript`."
         } else {
             ""
         };
-        // **A fork that summarised says so; one that did not must not.**
-        //
-        // An empty summary is `reingest`: the prompt changed and the conversation
-        // did not. Telling the model "everything before this is replaced by the
-        // summary below" and then showing it no summary — with the whole history
-        // underneath — is a sentence that contradicts what it can see.
-        //
-        // **And the sentence had to change when the tail arrived.** It said
-        // "everything said before this point is replaced by the summary below",
-        // which stopped being true the moment a remote compaction carried the
-        // newest exchanges verbatim: the reader can see both, and a note that
-        // claims a region was replaced while showing it is the same class of
-        // contradiction as the re-ingest case above.
-        // One implementation with the sentence the head is given: see
-        // `CompactionTail::why_line`, which both readers call.
+        // A fork that summarised says so; one that did not must not: an empty summary is `reingest`, and telling the
+        // model that everything before is replaced by a summary it is not shown contradicts what it can see. The
+        // sentence changed when a tail arrived, for the same reason. `CompactionTail::why_line` is the one place it is
+        // worded.
         let tail_why_text = (!tail.because.is_empty()).then(|| {
             letibot_sessionlog::event::CompactionTail {
                 turns: Vec::new(),
@@ -1719,17 +1407,10 @@ impl Harness {
             .unwrap_or_default()
         });
         let carried = match tail_items.len() {
-            // **WHY there is no tail, said in the row itself** — R41's shape one document
-            // over: an absence with two causes and one appearance. The `carried` clause below
-            // says how much when there is some; with none, this said nothing at all, so a
-            // reader of the record could not tell R27's ruling working from the budget losing
-            // to one item.
-            //
-            // **Here and not only on the wire, because this is the durable one.** The
-            // `compacted` warning is published to attached heads and the store has no events
-            // table: after a restart the transcript item is all a reader has, and it is where
-            // the question has to be answerable. `tail.because` is empty for a re-seat, which
-            // is not a compaction and gets no clause.
+            // WHY there is no tail, said in the row itself: an absence with two causes and one appearance, since
+            // with no tail this said nothing and a reader could not tell the ruling working from the budget losing.
+            // Here and not only on the wire, because this is the durable one: the store has no events table, so after
+            // a restart the item is all a reader has.
             0 if !tail.because.is_empty() => format!(" {}", tail_why_text.unwrap_or_default()),
             0 => String::new(),
             n => format!(
@@ -1766,23 +1447,17 @@ impl Harness {
                 origin: SystemOrigin::Update,
             },
         };
-        // The recent past is carried over verbatim, not described. Compaction used to keep none of
-        // it, so a session came back unable to see the turn it was in the middle of: that turn was
-        // now a sentence about a turn. The tail is the newest items under their own budget, appended
-        // after the summary so the order is preserved.
-        //
-        // Mapped to the wire's role and text as it is appended, so the report and the bytes cannot
-        // describe different tails: one pass over one slice.
+        // The recent past is carried verbatim, not described: compaction used to keep none of it, so a session
+        // came back unable to see the turn it was in the middle of. The newest items under their own budget, appended
+        // after the summary, mapped to the wire's role and text as appended so the report and the bytes cannot differ.
         let mut body: Vec<TranscriptItem> = Vec::with_capacity(1 + tail_items.len());
         body.push(note);
         body.extend_from_slice(tail_items);
         let tail_turns = wire_turns(tail_items);
 
-        // A carry the head can watch. Rendering and writing the new transcript is the long half of a
-        // fork, and the worker is inside this command until it ends, so a head with nothing on its
-        // screen but the old conversation and a queued prompt is the whole of what the operator sees.
-        // Said from the first moment, then once per committed chunk, never per row, so the head's
-        // queue is not flooded; and ended by the final total, which clears the line.
+        // A carry the head can watch: rendering and writing the new transcript is the long half of a fork, and the
+        // worker is inside this command until it ends. Said from the first moment, then once per committed chunk and
+        // never per row, and ended by the final total, which clears the line.
         let carrying = body.len() >= FILLING_STRIDE;
         // Two phases, each with its own bar: the render onto the new prompt, which is the long one,
         // and the write of the rendered rows to the store.
@@ -1838,10 +1513,8 @@ impl Harness {
             }
             return Err(e);
         }
-        // The swap is the point of no return, and it is deliberately **after** every
-        // store write that could fail: a harness that swapped and then could not
-        // persist would be a session whose transcript row exists but whose body does
-        // not, which is the one state a resume cannot rebuild honestly.
+        // The swap is the point of no return, after every store write that could fail: a harness that swapped and
+        // then could not persist would be a session whose transcript row exists and whose body does not.
         self.session = next;
         self.transcript_id = new_id.clone();
         self.persisted = 0;
@@ -1850,37 +1523,9 @@ impl Harness {
             fingerprint,
         });
         self.reconcile(&mut sink, &body);
-        // **AND EVERY ROW THAT WAS JUST PUBLISHED REPLACED THE ONES EVERY READER IS HOLDING.**
-        //
-        // `append_items` above publishes them under `new_id`, so every row a reader is now being
-        // sent is numbered in a transcript that is not the one the rows it already holds belong
-        // to. Nothing in the stream said so, and a reader can only fold what it is told:
-        // MEASURED in the head's fixtures, a 40-row conversation plus a 60-row carry left
-        // `items.len() == 100` — the conversation drawn twice, the reader anchored on a row of the
-        // transcript that went. The operator, scrolled up and reading, typed `/reseat` and was
-        // left with *"thousands of lines 'below'"*.
-        //
-        // **Two readers, and the daemon's own is the one that would have been missed.** A head
-        // folds this into its rows; the hub's view folds it into the rows a LATE head is handed,
-        // and without it a head that attached after the fork would be given both conversations —
-        // the same defect one attach later, with no event to blame it on.
-        //
-        // **After the rows, and the order is not what makes it correct** — which is the reason it
-        // can be chosen for what it costs instead. The event names the transcript it replaces
-        // rather than a count, so a reader drops exactly those rows whenever it hears the
-        // statement: a reader that gets the statement first clears and fills, and one that gets
-        // the rows first holds both for an instant and then drops the right ones. Two things then
-        // decide the order, and both point the same way:
-        //
-        //  * **A reconnect that missed the statement is not stranded.** A head acks what it has
-        //    written and resumes from that seq, so a statement published BEFORE the rows leaves a
-        //    one-seq window in which a resuming head replays the rows and not the boundary between
-        //    them — and holds both conversations with nothing left to tell it. Published after,
-        //    the same window replays the statement alone, which is the half that is enough.
-        //  * **A fork that FAILS must not have already emptied every reader.** `append_items`
-        //    returns `Result` and the session is swapped only if it succeeds; a statement
-        //    published first would leave every reader with nothing while the session still speaks
-        //    the transcript it was told it had left.
+        // AND EVERY ROW JUST PUBLISHED REPLACED THE ONES EVERY READER HOLDS: `append_items` publishes under
+        // `new_id`, so a reader folding what it is told draws both conversations. The event names the transcript it
+        // replaces, not a count, and goes AFTER the rows, so a fork that failed has not already emptied every reader.
         self.hub
             .publish(letibot_sessionlog::SessionEvent::TranscriptForked {
                 transcript_id: new_id.clone(),
@@ -1904,13 +1549,9 @@ impl Harness {
             // The line must not be left walking over a write that stopped.
             self.filling(what, "rows", total, total);
         }
-        // **Past the swap a failed write is not a failed fork (R91.2).** The session speaks the
-        // new transcript in this daemon, so returning an error here sent every caller down its
-        // refusal path — `reingest` returned before `self.prefix = next`, so metered turns sent
-        // the OLD schemas against the new transcript, and the operator was told "Nothing was
-        // changed". The rows stay in memory and the next store write takes them up from where
-        // this one stopped; the fork is sealed when it does, and until then a restart resumes
-        // the parent, whole. Said, because the gap is real.
+        // Past the swap a failed write is not a failed fork: the session speaks the new transcript in this daemon,
+        // so returning an error sent every caller down its refusal path — `reingest` returned before the prefix moved,
+        // and the operator was told nothing changed. The rows stay in memory and the next store write takes them up.
         if let Err(e) = persisted {
             self.hub.publish(SessionEvent::Warning {
                 code: "fork_unstored".into(),
@@ -1922,26 +1563,9 @@ impl Harness {
                 compaction: None,
             });
         }
-        // **The stored context size is about the OLD conversation.** It is the
-        // last prompt the provider measured, and that prompt no longer exists:
-        // this fork replaced the history with a summary. Only a turn can put a
-        // real number here, so until one runs there is no number — the operator
-        // restarted a session that had just compacted 1.5M tokens down and the
-        // header still read `1.05m`, because nothing between a compaction and
-        // the next turn ever wrote to this row.
-        //
-        // Cleared rather than estimated. The count this row holds is the
-        // provider's own, and dividing the new base by a measured ratio would put
-        // a derived number where every other reader expects a measured one.
-        //
-        // **Except a verbatim fork**, which replaced nothing: a `/reseat` carries every row across
-        // and changes only message zero. Clearing its measurement threw away the one thing a
-        // restart needs to read the ledger in the provider's units — the operator's peerdb
-        // session, 2026-10-12, re-seated, restarted before a round measured again, and was
-        // folded on 2.4M ledger bytes it had never been measured at. So the provider's count is
-        // kept and its ledger anchor moved by exactly the prefix's change: every row sits where
-        // it sat, shifted by the new message zero. That is the measurement, re-addressed, and not
-        // an estimate.
+        // The stored context size is about the OLD conversation: the last prompt the provider measured, which this
+        // fork replaced. Only a turn can put a real number here, so it is cleared rather than estimated. A verbatim
+        // fork is the exception, since it replaced nothing: its count is kept and its ledger anchor moved.
         if let Some(store) = &self.store {
             let kept = if verbatim {
                 store
@@ -1988,10 +1612,9 @@ impl Harness {
         })
     }
 
-    /// **Every row of the fork is stored: make it the session's conversation** (R91.2) — the
-    /// seal, then the fingerprint and the stale flag that follow the transcript (see
-    /// `fork_onto`). A seal that fails stays owed and is tried after the next store write; the
-    /// parent is still what a resume opens, which is consistent, only behind.
+    /// Every row of the fork is stored, so make it the session's conversation: the seal, then the fingerprint and
+    /// the stale flag that follow the transcript. A seal that fails stays owed and is retried after the next store
+    /// write; the parent is still what a resume opens, which is consistent, only behind.
     pub(crate) fn seal_fork(&mut self) {
         let Some(u) = self.unsealed_fork.take() else {
             return;
@@ -2017,18 +1640,9 @@ impl Harness {
         self.stale_told = None;
     }
 
-    /// **A resume restores the wall controller's `Stuck`**, from the row it wrote.
-    ///
-    /// `restore_provider_choice`'s shape, for its reason: without this call the row
-    /// would only be read on the lazy path a head's switch reaches, and the one resume
-    /// everybody types (`--continue`) would come back re-armed — the finding silently
-    /// unrecorded, which is the loop it exists to stop. And it is no longer for good:
-    /// the first round that measures the session comfortably below the wall releases
-    /// it (`observe_wall`). Returns the sentence a resume should say, or `None` when
-    /// there was nothing to restore.
-    ///
-    /// Rows written before 2026-10-11 hold the old guard's pair in LEDGER tokens; they
-    /// are printed as they are, and the next measured count is what decides.
+    /// A resume restores the wall controller's `Stuck` from the row it wrote: without this the row is only read on
+    /// the lazy path a head's switch reaches, and the one resume everybody types would come back re-armed. And it is
+    /// no longer for good, since the first round that measures comfortably below the wall releases it.
     pub fn restore_auto_compact(&mut self) -> Option<String> {
         let (before, measured) = self
             .store
@@ -2041,15 +1655,9 @@ impl Harness {
         if self.cfg.wall.is_stuck() {
             return None;
         }
-        // **A pair that cannot be the provider's count is not a finding.** A Stuck the
-        // controller wrote was MEASURED — the provider's `prompt_tokens` — and a provider
-        // counts nothing past its own window (it refuses the request instead), so a
-        // stored "measured" over the window is the old guard's pair in LEDGER tokens.
-        // MEASURED 2026-10-11 on pg-noop: a restart restored "a fold of 3213409 measured
-        // 1687673" against a 1000000 window — ledger numbers — and turned compaction off
-        // until the first round measured 584730 and released it. The operator saw the
-        // false OFF. Such a row is cleared and not restored; the next measured round
-        // decides, which is the controller's rule anyway.
+        // A pair that cannot be the provider's count is not a finding: a provider counts nothing past its own
+        // window, so a stored measured value over the window is the old guard's pair in LEDGER tokens. Such a row is
+        // cleared and not restored, and the next measured round decides, which is the controller's rule anyway.
         if let Some(window) = self.cfg.context_window
             && measured > window
         {
@@ -2143,20 +1751,9 @@ pub(crate) fn recovered_scale(
     Some((stored_ledger, provider_tokens))
 }
 
-/// **Whether the round about to be sent stops at the wall** — `resident` is the ledger
-/// count of the prompt it would send (the tool results of the round before already in
-/// it), `window` the planning window in the same units.
-///
-/// Round 0 stops only past the window itself; every later round stops inside the
-/// reserve. See the call in `run_rounds` for why the two differ.
-///
-/// **And round 0 stops only where a compaction could make room** — where the stable
-/// prefix (`prefix`, the system prompt and the tool schemas, which no compaction
-/// rewrites) leaves the reserve free. A prompt whose message zero alone is past the
-/// window is a session no summary can rescue: the compaction door already refuses it
-/// in its own words (*"this session's PROMPT is N token(s) of a W token window"*), and
-/// stopping the round as well would only trade the server's verdict for a compaction
-/// that is known to fail. The between-rounds check is unchanged.
+/// Whether the round about to be sent stops at the wall: `resident` is the ledger count of the prompt it would
+/// send and `window` the planning window in the same units. Round 0 stops only past the window itself and only where
+/// a compaction could make room, since a prompt whose message zero alone is past it is a session no summary rescues.
 pub(crate) fn wall_stops_round(
     round: usize,
     resident: u64,
@@ -2208,14 +1805,9 @@ pub(crate) fn wall_stops_this_round(
     wall_stops_round(round, resident, prefix, headroom, window)
 }
 
-/// **Where the smaller-tail fold splits** — the ordinary fold's split moved later until
-/// the verbatim part is at most half what it was, or the ordinary split unchanged when
-/// the longer first part would not fit one summary call (the next rung, the sliced fold,
-/// is the answer to that).
-///
-/// The ordinary fold (`plan_fold`) summarises the first half of the history BY TOKENS and
-/// carries the second half verbatim: on pg-noop's 941,101 that was the ~500k the provider
-/// then measured. Halving the verbatim part is the step between that and carrying nothing.
+/// Where the smaller-tail fold splits: the ordinary fold's split moved later until the verbatim part is at most
+/// half what it was, or the ordinary split unchanged when the longer first part would not fit one summary call, where
+/// the next rung is the answer.
 pub(crate) fn smaller_tail(
     per_item: &[u64],
     prefix_tokens: u64,
@@ -2237,19 +1829,9 @@ pub(crate) fn smaller_tail(
     }
 }
 
-/// **The closing line of an automatic compaction**, in one unit, said once: *"compacted:
-/// 937686 → 75408 deepseek tokens resident"*. Shared by both doors (`Harness` and
-/// `Sessions`), so the two cannot word the same fact two ways.
-///
-/// The after-count of a metered session is an ESTIMATE until a round on the new base
-/// measures it — the provider has not seen the base yet — and the line says so rather
-/// than printing an estimate beside a measurement as if they were the same kind of
-/// number.
-///
-/// **And it is printed as one** — `≈ N`, *estimated until the next round measures it*.
-/// MEASURED 2026-10-11 on pg-noop: an estimate of 1,039,055 for a base deepseek then
-/// counted at 507,355, printed beside the measured 941,101 as if they were the same kind
-/// of number, and judged as one.
+/// The closing line of an automatic compaction, in one unit, said once, shared by both doors so they cannot word
+/// the same fact two ways. The after-count of a metered session is an estimate until a round on the new base measures
+/// it, so the line prints `≈ N` rather than an estimate beside a measurement as if they were the same kind of number.
 pub(crate) fn compacted_line(before: u64, after: Resident, unit: &str, metered: bool) -> String {
     if metered && after.measured.is_none() {
         return format!(
@@ -2261,23 +1843,9 @@ pub(crate) fn compacted_line(before: u64, after: Resident, unit: &str, metered: 
     format!("compacted: {before} → {} {unit} resident.", after.tokens)
 }
 
-/// **Where the provider last counted this conversation** — the ledger length of the
-/// prompt it was sent, and its own count of that prompt. R72.
-///
-/// The wall used to be judged as `ledger.len() ÷ ratio`, with the ratio
-/// `(ledger, prompt_tokens)` learned at the end of the last round. That ratio is
-/// not a property of two tokenizers — the ledger holds reasoning the provider does
-/// not count (see `Config::ledger_scale`'s table) — so it is a property of how much
-/// of the history was reasoning AT ONE MOMENT, and it was taken with the two halves
-/// at two different moments besides: `prompt_tokens` is the prompt BEFORE the
-/// round's reply, the ledger length was read AFTER it. Every row appended after it
-/// was converted by that ratio — a tool result the provider is sent whole was
-/// counted at a third of its size, and a reasoning block it is not sent at all was
-/// counted at a third more than nothing. The operator's report: *"leticl head shows
-/// me 740k tokens yet it just started compaction citing 900k+ tokens"*.
-///
-/// So the wall counts the provider's own number and adds to it only what came
-/// after, sized the way it will be sent. See [`roll_resident`].
+/// Where the provider last counted this conversation, and its own count of that prompt. The wall used to be judged
+/// as a ledger length divided by a ratio, which is a property of how much of the history was reasoning at one moment,
+/// so it now counts the provider's number and adds only what came after, sized the way it will be sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WallAnchor {
     /// The transcript the count was taken on. A compaction forks a new one, and a
@@ -2290,18 +1858,9 @@ pub(crate) struct WallAnchor {
     pub(crate) provider: u64,
     /// Whether `provider` came from the provider.
     pub(crate) measured: bool,
-    /// **The last measurement as a ratio of what was SENT**: `(sent-sized ledger tokens,
-    /// the provider's count)` of one prompt, reasoning and marks left out of the first.
-    ///
-    /// A metered session's ledger is `Vocab::bytes` — one token per BYTE — so the sent
-    /// rows are not "the provider's size to within 4-17%", they are two to four times
-    /// it. Measured on pg-noop, 2026-10-11: a `/reseat` carried a transcript whose sent
-    /// rows were 1,276,902 bytes, deepseek counted it at 598k, and the estimate fired an
-    /// ordinary fold at "1276902 of 1000000". Every sent-sized delta — the rows after a
-    /// measurement, and a fork's whole new base — goes through this ratio. Carried across
-    /// a fork, because the bytes-per-token of what is sent belongs to the content, not
-    /// to the transcript id. `None` until something measured, or on a local session,
-    /// whose ledger IS the prompt.
+    /// The last measurement as a ratio of what was SENT: the sent-sized ledger tokens and the provider's count of one
+    /// prompt, since a metered ledger is one token per byte. Every sent-sized delta goes through this ratio, carried
+    /// across a fork, and it is `None` until something measured.
     pub(crate) scale: Option<(u64, u64)>,
 }
 
@@ -2362,10 +1921,8 @@ pub struct Resident {
 }
 
 impl Resident {
-    /// **The count's provenance, said once, in the line that prints the count** —
-    /// so the head's number and the wall's are visibly the same quantity: *"(740000
-    /// at the last round + 3000 appended since)"*. Empty when there is no
-    /// measurement to relate to.
+    /// The count's provenance, said once, in the line that prints the count, so the head's number and the wall's are
+    /// visibly the same quantity. Empty when there is no measurement to relate to.
     pub fn basis(&self) -> String {
         match self.measured {
             Some(m) if self.since > 0 => {
@@ -2377,28 +1934,9 @@ impl Resident {
     }
 }
 
-/// **What the ledger holds after `from` that the next request will carry**, in
-/// ledger tokens — the provider-sized estimate of an append.
-///
-/// Ledger tokens are the session's own vocabulary, not the provider's; WITHOUT the
-/// reasoning the two agree to 4-17% (`Config::ledger_scale`'s table), which is
-/// ordinary variance between two tokenizers and stable, unlike the reasoning share.
-/// So the estimate keeps every row the request carries and drops the ones it does
-/// not:
-///
-///   * `Reasoning` on a metered session — what moves the ledger and not the
-///     provider's count; the table above measures it at 27-34% of a history, and
-///     the session R72 is about at more than three quarters;
-///   * `SegmentMark` on a metered session — the store's, never sent
-///     (`letibot_provider::messages`).
-///
-/// On a LOCAL session the request is the ledger itself (`engine.rs`: `let mut
-/// prompt = session.ledger.tokens().to_vec()`), so everything after `from` is
-/// carried, reasoning included, and this is the ledger's own difference.
-///
-/// Rows and items are one-to-one (`Session::append_items`), so a row is classified
-/// by the item at its index. A row that STARTS before `from` is not counted: `from`
-/// is a row boundary wherever this harness wrote it.
+/// What the ledger holds after `from` that the next request will carry, in ledger tokens: the provider-sized
+/// estimate of an append, so it drops reasoning and the segment mark on a metered session while on a local one the
+/// request IS the ledger. A row that starts before `from` is not counted.
 fn sent_since(
     ledger: &letibot_tokencore::ledger::TokenLedger,
     items: &[TranscriptItem],
@@ -2438,23 +1976,9 @@ pub(crate) fn reasoning_text(items: &[TranscriptItem]) -> String {
         .join("\n\n")
 }
 
-/// **The resident count, rolled forward from `anchor` to the ledger as it stands.**
-///
-/// Two cases, and the second is the one a fork reaches:
-///
-///   * the anchor is on this transcript and not past its end — the provider's
-///     count plus [`sent_since`] the anchor. The count the head shows is `measured`,
-///     and the rest is said as `since`, so a line can name both;
-///   * it is not — a compaction forked a new transcript, or the ledger is shorter
-///     than the anchor. The count described a conversation this one is not, so the
-///     estimate starts over from the new base: its prefix plus everything sent,
-///     unmeasured, and the returned anchor is re-based there so the next roll adds
-///     only what comes after. The first round on the new base replaces it with a
-///     measurement. Dividing the base by the OLD ratio was what printed "compacted:
-///     726656 tokens resident now" for a summary and a verbatim tail whose reasoning
-///     share was nothing like the history it replaced.
-///
-/// Returns the anchor to keep and the reading.
+/// The resident count, rolled forward from `anchor` to the ledger as it stands. If the anchor is on this transcript
+/// it is the provider's count plus what was sent since; if not, a fork replaced it, so the estimate starts over from
+/// the new base and the anchor is re-based there, rather than dividing it by a ratio from another conversation.
 pub(crate) fn roll_resident(
     anchor: &WallAnchor,
     transcript_now: &str,
@@ -2492,14 +2016,9 @@ pub(crate) fn roll_resident(
     )
 }
 
-/// **`0` is unbounded**, which is the default; see [`Config::max_tool_rounds`].
-///
-/// `usize::MAX` rather than a second loop shape, so there is one body and one
-/// place a round is counted — two loops that had to stay in step is how the
-/// `round + 1` in the reporting would come to mean two different things.
-///
-/// A named function rather than a `match` inline, because this is the whole of
-/// "infinity" and it is one line that a test can hold to.
+/// `0` is unbounded, which is the default. `usize::MAX` rather than a second loop shape, so there is one body and
+/// one place a round is counted, since two loops to keep in step is how the reporting drifts. A named function because
+/// this is the whole of infinity.
 pub(crate) fn round_backstop(configured: usize) -> usize {
     match configured {
         0 => usize::MAX,

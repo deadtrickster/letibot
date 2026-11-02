@@ -3349,8 +3349,7 @@ mod endpoint_retry {
 
     /// The exception is the whole point: a credential the server rejected is rejected identically every time, so a
     /// minute of backoff buries the cause under six notices. The sweep's judgement, for a call whose executor and
-    /// process both vanished: it sat `running` for eight minutes while `esc esc` did nothing, and every caller of
-    /// settlement was the thread that was gone.
+    /// process both vanished: it sat `running` for eight minutes while `esc esc` did nothing.
     mod abandoned_call_sweep {
         use crate::harness::abandoned_calls;
         use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
