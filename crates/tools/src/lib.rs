@@ -1,12 +1,12 @@
-//! The tool runtime and the built-ins (W9, W10): §8.
+//! The tool runtime and the built-ins: everything between a `ToolCall` leaving the
+//! parser and a `TranscriptItem::ToolResult` returning to the transcript.
 //!
-//! # What this crate is
+//! A miss is self-correcting in the same call ([`builtins`]), malformed input is
+//! salvaged ([`args`]), outcomes are closed ([`result`]), the gate sees every non-read
+//! ([`schema::Access`]), and output is spilled, never truncated ([`spill`]).
 //!
-//! Everything between a `ToolCall` coming out of the parser and a
-//! `TranscriptItem::ToolResult` going back into the transcript, plus the tools
-//! themselves: `read`, `grep`, `glob`, `ask_code`, `ask_corpus` and `read_spill`
-//! (which clause 5 requires in order to be honest), and — since W10 — `write` and
-//! `edit`, the first two that can change the operator's tree.
+//! A tool schema is a stable prefix, so every tool ships even where this box cannot
+//! back it: the refusal comes from the gate or the backend, and it names which.
 //!
 //! ```text
 //!   ToolCall ──salvage──> args ──gate?──> Tool::invoke ──spill──> ToolResult
@@ -15,76 +15,6 @@
 //!                            Adjudicator  ExecBackend            FileEdit ─> a head
 //!                            (§11.2)      (the W9/W10 seam)      (both sides)
 //! ```
-//!
-//! # The six clauses, and where each is kept honest
-//!
-//! §8.1 says *"a tool that does not meet all six does not ship"*, so each one has a
-//! home and a test that fails when it stops being true.
-//!
-//! 1. **A miss is self-correcting in the SAME call.** [`builtins`], per tool, and
-//!    `tests/clauses.rs` holds the plan's three acceptance cases verbatim.
-//! 2. **Malformed input is salvaged, not rejected.** [`args`], with the repairs
-//!    carried onto the result rather than applied quietly.
-//! 3. **Outcome is a closed vocabulary and abstention is not success.**
-//!    [`result`] — the `NO_RESULT` envelope and [`result::propagate`].
-//! 4. **Read/write declared in the schema.** [`schema::Access`], and
-//!    [`runtime::ToolRuntime::invoke`] consults the gate only for what is not a
-//!    read — and always for what is. [`adjudicate`] is what is behind it.
-//! 5. **Bounded and spilled, never truncated.** [`spill`], with D6's decider
-//!    interface rather than a constant.
-//! 6. **The description says how to use the tool.** [`schema::lint_description`],
-//!    enforced at registration.
-//!
-//! # Two gates below a write, and neither is the default
-//!
-//! W10 built the write tools; it did not build §11.4's boundary, which is a
-//! substrate rather than a policy. What it built instead is the smallest thing
-//! that genuinely decides, plus a second mechanism that does not depend on it:
-//!
-//! 1. **the adjudicator** ([`adjudicate`]). [`runtime::NoBoundary`] and
-//!    [`adjudicate::NoAdjudicator`] are the defaults and both refuse, with
-//!    `NotRun` — *nobody decided* — rather than `Denied`;
-//! 2. **the backend** ([`backend::HostBackend::writable`], which is a different
-//!    constructor from [`backend::HostBackend::new`]). A session that did not ask
-//!    to be writable cannot write however the gate answers.
-//!
-//! A refusal always names which of the two stopped it.
-//!
-//! # What this crate deliberately does not do
-//!
-//! - **Layer 1 of the boundary, and not layers 2 or 3.**
-//!   `docs/boundary-and-adjudication.md` §4: [`exec::scope`] is the *lifetime* half
-//!   — every process in a cgroup owned by a scope — and [`exec::confine`] is the
-//!   *view* half: project-scoped mount, PID, network and user namespaces, so a
-//!   secret outside the project is **absent** rather than denied.
-//!   [`backend::HostBackend::confined`] is the constructor that has both;
-//!   [`backend::HostBackend::executable`] is the lifetime half alone and its
-//!   `describe()` says `NOT CONFINED`. Neither ever *silently* has no boundary:
-//!   asked-for-and-missing is [`exec::NoConfinement`], which refuses every spawn.
-//!
-//!   What is **not** here is §3's other half. The mount view keeps secret bytes out
-//!   of the view; *never entering the transcript* needs one choke point through
-//!   which every tool result passes, and each tool still builds its own body
-//!   (`docs/boundary-and-adjudication.md` §5). Nor is the normalisation layer here
-//!   (tree-sitter over the command) or the adjudicator (§4's layers 2 and 3) —
-//!   `bash` is still seated only by [`roles::m2_runner`].
-//! - **No §11.3 policy table and no auto mode.** One adjudicator is attached per
-//!   session, not a table of them; [`adjudicate::ActionClass`] is the routing key
-//!   that table will use, derived and logged from the first call.
-//! - **No differ.** `crates/ui` owns one. [`edit::FileEdit`] carries both sides of
-//!   a change so that it can be used; writing a second one here is how two
-//!   answers to one question start disagreeing.
-//! - **No firecode backend.** One `Box<dyn ExecBackend>`, by construction: no tool
-//!   in this crate calls `std::fs`.
-//! - **No MCP client, no HTTP client, no search provider and no forge credential.**
-//!   [`builtins::retrieval::Retrieval`] and the four seams in
-//!   [`builtins::external`] are where they attach; see those modules for why a
-//!   transport written blind, against a server nobody here can reach, would be
-//!   worse than none. The *tools* ship — with their real schemas, declaring
-//!   [`Access::Network`], refusing with `NotRun` — because a tool schema is stable
-//!   prefix and adding one later re-prefills every conversation.
-//! - **No async runtime and no HTTP.** The same argument the turn engine makes:
-//!   the whole thing is a synchronous function of a call and a filesystem.
 
 pub mod adjudicate;
 pub mod args;
@@ -92,14 +22,13 @@ pub mod attach;
 pub mod authorise;
 pub mod backend;
 pub mod builtins;
-/// **Which bash the operator's own `!` line is handed to** — `exec::console`'s flags, with
-/// the program chosen from what this box has, because `/bin/bash` on a stock Mac is 3.2 and
-/// the operator's rc is written for 4 or later. See the module note.
+/// Which bash an operator's own `!` line is handed to: `exec::console`'s flags, with the
+/// program chosen from what this box has, because a stock Mac's `/bin/bash` is 3.2 and
+/// the rc is written for 4 or later.
 pub mod console_bash;
-/// **A sweep of every gate decision a store ever recorded, replayed through today's
-/// parser and gate.** A development instrument rather than a runtime dependency: it is
-/// what makes *"the parser reads more than it did"* a number. See the module note, and
-/// `examples/gate_corpus.rs` for the command-line face of it.
+/// A development instrument, not a runtime dependency: every gate decision a store
+/// recorded, replayed through today's parser and gate, so "the parser reads more than it
+/// did" is a number rather than an impression.
 pub mod corpus_replay;
 pub mod detect;
 pub mod edit;
@@ -107,7 +36,7 @@ pub mod events;
 pub mod exec;
 pub mod files;
 pub mod firecode;
-// **`fanout` and `scenario`, and the engine under them** (RH8): work on many hosts at once, each
+// `fanout` and `scenario`, and the engine under them: work on many hosts at once, each
 // leg a job of that host's own table and a `process` record the daemon's supervisor owns.
 pub mod fleet;
 pub mod gatekeeper;
@@ -172,15 +101,10 @@ pub use spill::{
     SpillEntry, SpillRef, SpillStore, Spiller,
 };
 
-/// The read-only tool set M1 ships, in the order the prompt lists them.
+/// The read-only tool set, in the order the prompt lists them.
 ///
-/// Order is part of the stable prefix — reordering these re-prefills the whole
-/// conversation — so it is written down here once rather than assembled per
-/// session.
-///
-/// Six tools, against §8.4's ceiling of eight. That is not an accident: the table
-/// gives the `orchestrator` role six, and `read_spill` replaces `task`, which is
-/// W16's.
+/// Order is part of the stable prefix, so reordering these re-prefills the whole
+/// conversation: it is written down here once rather than assembled per session.
 pub fn read_only_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
@@ -193,28 +117,21 @@ pub fn read_only_tools(
     reg.register(Box::new(Ask::code(retrieval.clone())))?;
     reg.register(Box::new(Ask::corpus(retrieval)))?;
     reg.register(Box::new(builtins::read_spill::ReadSpill))?;
-    // **`hosts` — where this box may place work, read from the operator's file at every call.**
-    // Registered here and not with the session tools for the reason `outline` is: it needs no
-    // infrastructure, and a role that names it (`task`'s three seats) has to be able to resolve
-    // it. Reading the file at the call is the whole design — a list in the prompt would go stale
-    // when the operator edits `hosts.toml`, and the prompt is a cached prefix, so it would cost a
-    // re-prefill every time a machine was added.
+    // `hosts` reads the operator's file at every call, so a machine added mid-session is
+    // visible: a list in the prompt would go stale, and the prompt is a cached prefix, so
+    // refreshing it would cost a re-prefill. It needs no infrastructure, so it lives here.
     reg.register(Box::new(builtins::hosts::HostsTool::new()))?;
     Ok(reg)
 }
 
 /// Add the session tool (`todo_write`) to a registry.
 ///
-/// It is not in [`read_only_tools`] because its board is the session's own, restored
-/// from the store: the real harness passes the restored board, and a test passes an
-/// empty one. The read-only roles name `todo_write`, so any registry they are
-/// resolved against has to include it — this is the one registration that makes
-/// those roles resolvable, and the one the harness and the test harness share.
+/// It is not in [`read_only_tools`] because its board is the session's own, restored from
+/// the store - yet the read-only roles name it, so every registry they resolve against
+/// must hold it.
 ///
-/// `children` is the daemon-side half of the tool's `target` argument — the way a
-/// parent reaches a CHILD session's board ([`builtins::todo::ChildTodos`]). It is an
-/// `Option` because a test registry has no daemon behind it; the real harness always
-/// passes one, and a `target` call without it is refused by name.
+/// `children` is the daemon-side half of `target`, absent in a test registry; a `target`
+/// call without it is refused by name.
 pub fn with_session_tools(
     mut reg: Registry,
     board: std::sync::Arc<builtins::todo::TodoBoard>,
@@ -228,77 +145,68 @@ pub fn with_session_tools(
         None => builtins::todo::TodoWriteTool::new(board),
     };
     reg.register(Box::new(todo))?;
-    // **The children read the same corpus as the tool**, so a `task {skills}` name is checked
-    // against what `skill list` would answer — a second registry would be a second answer to
-    // *is there a skill called this*.
+    // The children read the same corpus as the tool, so a `task {skills}` name is checked
+    // against what `skill list` answers: a second registry would be a second answer to
+    // "is there a skill called this".
     reg.register(Box::new(builtins::skill::SkillTool::new(skills.clone())))?;
     reg.register(Box::new(builtins::lsp::LspTool::new(lsp)))?;
     reg.register(Box::new(
         builtins::task::TaskTool::new(task_runner.clone()).with_skills(skills.clone()),
     ))?;
-    // `task_result` is seated with `task` and never without it: a handle that
-    // nothing can collect is worse than no handle.
+    // `task_result` is seated with `task` and never without it: a handle that nothing can
+    // collect is worse than no handle.
     reg.register(Box::new(builtins::task::TaskResultTool::new(
         task_runner.clone(),
     )))?;
-    // **And so is `task_message`** — the ruling that produced it, 2026-10-06: *"in the tree all
-    // subagents must be addressable by their parents. that is how live corrections delivered."*
-    // A seat that can start work, read it and stop it — and cannot correct it — has only two
-    // remedies when a child goes down the wrong path: wait out a wrong answer, or throw the
-    // work away with `job_kill`.
+    // So is `task_message`: a seat that can start a child, read it and stop it but not
+    // correct it has only two remedies when the child goes wrong, wait out a wrong answer
+    // or throw the work away with `job_kill`.
     reg.register(Box::new(builtins::task::TaskMessageTool::new(
         task_runner.clone(),
     )))?;
-    // **And so is `task_start`** — the operator's ask: *"we will need a new tool -
-    // task_start or what that will arrange worktree, firecode and subagent"*. It is
-    // registered with the same runner as `task`, because it is the same spawn with the
-    // placement arranged first: a `task_start` that used a second runner would hand out
-    // handles its sibling's `task_result` cannot collect.
+    // And so is `task_start`, with the same runner as `task` because it is the same spawn
+    // with the placement arranged first: a second runner would hand out handles that
+    // `task_result` cannot collect.
     reg.register(Box::new(
         builtins::task::TaskStartTool::new(task_runner).with_skills(skills),
     ))?;
-    // **The merge queue, read** — what a repository's queue runs before landing, and what its
-    // files suggest. Read-only: the agent writes the `AGENTS.md` section with `edit`, which is
-    // where the operator's approval is. See `builtins::merge_gate`.
+    // The merge queue, read: what a repository's queue runs before landing and what its
+    // files suggest. Read-only, because the agent writes the `AGENTS.md` section with `edit`
+    // and that is where the operator's approval is.
     reg.register(Box::new(builtins::merge_gate::MergeGate))?;
-    // **The plugin loop** (P2): a session's model writes a pane, builds it, tests it and loads it
-    // hot. Seated with the daemon's own desk by `Harness::open`; here so a role that names the
-    // pair resolves against any registry this function builds, and says by name that it has no
-    // plugin host behind it rather than being absent (the rule `queue` follows one arm down).
+    // The plugin loop: a session's model writes a pane, builds it, tests it and loads it hot.
+    // Seated with the daemon's own desk by `Harness::open`; here so a role that names the pair
+    // resolves and says by name that no plugin host is behind it, rather than being absent.
     if reg.get(builtins::plugin::TOOL).is_none() {
         let desk: std::sync::Arc<dyn builtins::plugin::PluginDesk> =
             std::sync::Arc::new(builtins::plugin::NoPlugins);
         reg.register(Box::new(builtins::plugin::PluginTool::new(desk.clone())))?;
         reg.register(Box::new(builtins::plugin::PluginHooksTool::new(desk)))?;
     }
-    // **The merge queue, from the model's side** (R76 item 2). The daemon registers the real one
-    // first, bound to its session and store; anywhere else the seat that names it still resolves,
-    // and the tool says there is no queue behind it rather than being absent.
+    // The merge queue from the model's side. The daemon registers the real one first, bound to
+    // its session and store; anywhere else the seat still resolves and the tool says there is
+    // no queue behind it.
     if reg.get(builtins::queue::TOOL).is_none() {
         reg.register(Box::new(builtins::queue::QueueTool::new(
             std::sync::Arc::new(builtins::queue::NoQueue),
         )))?;
     }
-    // **The host's room** (the room's slice 2). Same shape as `queue` one arm up, and for the same
-    // reason: a seat that names `room` must resolve on every registry this function builds — a
-    // test's, a one-shot's — and the tool then says there is no coordinator behind it. The daemon
-    // replaces this with the session's own link (`Harness::open`), which is the one that can post.
+    // The host's room, the same shape as `queue` one arm up and for the same reason: a seat
+    // that names `room` resolves on every registry this function builds and the tool then says
+    // there is no coordinator behind it. The daemon replaces it with the session's own link.
     if reg.get(builtins::room::TOOL).is_none() {
         reg.register(Box::new(builtins::room::RoomTool::new(
             std::sync::Arc::new(builtins::room::NoRoom),
         )))?;
     }
-    // **The host's own changelog.** Same shape as `room` one arm up: a seat that names it must
-    // resolve on every registry this function builds, and the tool then says there is no config
-    // dir behind it rather than guessing one and writing into the operator's real one. The daemon
-    // replaces this with the session's own scope (`Harness::open`), which is the one that records.
+    // The host's own changelog, the same shape as `room` one arm up: with no config dir
+    // behind it the tool says so rather than guessing one and writing into the operator's
+    // real one. The daemon replaces it with the session's own scope.
     if reg.get(builtins::changelog::TOOL).is_none() {
         reg.register(Box::new(builtins::changelog::HostChangelogTool::nowhere()))?;
     }
-    // **This box's own settings**, and the same shape one arm down: a seat that names it must
-    // resolve on every registry this function builds, and the tool then says there is no changelog
-    // behind it. `read` and `settings` still answer — they change nothing — and `set` refuses
-    // before it runs anything, which is the rule the changelog one arm up exists for.
+    // This box's own settings, and the same shape one arm down: `read` and `settings` still
+    // answer because they change nothing, and `set` refuses before it runs anything.
     if reg.get(builtins::host_config::TOOL).is_none() {
         reg.register(Box::new(builtins::host_config::HostConfigTool::nowhere()))?;
     }
@@ -307,17 +215,10 @@ pub fn with_session_tools(
 
 /// Add the tools that need infrastructure this box does not run.
 ///
-/// `web_search`, `web_fetch` and `github`, over whatever [`ExternalBackends`] the
-/// session was given — which is [`ExternalBackends::unattached`] here, so all three
-/// refuse. They are **registered, not seated**: the registry is a superset and
-/// [`Registry::resolve_role`] decides what a session's prompt actually carries,
-/// because §8.4's ceiling is eight and these three plus the read-only seven are
-/// ten.
-///
-/// MCP tools are not registered here. Their schemas are the server's, so they are
-/// mounted from a catalog at open time — [`builtins::external::mcp::mount`], which
-/// is also where §8.4's *"refused with its tool list, not silently truncated"*
-/// lives.
+/// They are registered, not seated: the registry is a superset and [`Registry::resolve_role`]
+/// decides what a session's prompt carries, because the seat's ceiling is smaller than the
+/// union. MCP tools are not here - their schemas are the server's, so they are mounted from
+/// a catalog at open time ([`builtins::external::mcp::mount`]).
 pub fn external_tools(
     mut reg: Registry,
     backends: &ExternalBackends,
@@ -332,24 +233,11 @@ pub fn external_tools(
     Ok(reg)
 }
 
-/// The M2 tool set: the read-only five plus `write` and `edit`.
+/// The M2 tool set: the read-only ones plus `write` and `edit`.
 ///
-/// Six seatable under [`roles::m2_coder`], against §8.4's ceiling of eight.
-///
-/// # Registering these is not the same as being able to use them
-///
-/// Three things must all be true before a byte reaches the operator's disk, and
-/// they are three separate mechanisms on purpose:
-///
-/// 1. the tools are registered — this function;
-/// 2. an adjudicator is attached, so [`runtime::Gate`] admits the call. The
-///    default is [`NoBoundary`], which refuses. See [`adjudicate`];
-/// 3. the backend was opened writable — [`HostBackend::writable`], not
-///    [`HostBackend::new`].
-///
-/// Doing (1) alone gives a session whose `edit` refuses at the gate; doing (1)
-/// and (2) gives one whose `edit` refuses at the backend, naming which. Neither
-/// silently does nothing, and neither silently works.
+/// Registering them is not being able to use them: the gate must admit the call, since
+/// [`NoBoundary`] is the default and it refuses, and the backend must have been opened
+/// with [`HostBackend::writable`]. A refusal names which of the two stopped it.
 pub fn coder_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
@@ -359,25 +247,13 @@ pub fn coder_tools(
     Ok(reg)
 }
 
-/// The exec tool set: `bash` and the four job-control tools, on top of the
-/// read-only ones.
+/// The exec tool set: `bash`, the job tools and `monitor`, on top of the read-only ones.
 ///
-/// # Three mechanisms below a command, and none of them is the default
-///
-/// Same shape as [`coder_tools`], one capability further out:
-///
-/// 1. the tools are registered — this function;
-/// 2. an adjudicator is attached, so [`runtime::Gate`] admits `bash` and
-///    `job_kill`. The default is [`NoBoundary`], which refuses with `NotRun` —
-///    *nobody decided*;
-/// 3. the backend was opened with [`HostBackend::executable`], which needs a
-///    delegated cgroup v2 subtree. **Without one it fails rather than degrading**:
-///    a process with no owner is the leak `TODO.md` T24 exists to stop.
-///
-/// And a fourth thing that is not a mechanism but a seat: `bash` is reachable only
-/// under [`roles::m2_runner`]. [`roles::m1_orchestrator`] and [`roles::m2_coder`]
-/// are unchanged, so no session that exists today gains an exec path by this
-/// function existing.
+/// The same three mechanisms one capability further out: the tools registered, a gate
+/// that admits `bash` and `job_kill`, and a backend opened with
+/// [`HostBackend::executable`], which needs a delegated cgroup v2 subtree and fails rather
+/// than degrading without one, since a process with no owner is a leak. `bash` is
+/// reachable only under [`roles::m2_runner`].
 pub fn runner_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
@@ -388,11 +264,10 @@ pub fn runner_tools(
     reg.register(Box::new(builtins::jobs::JobWait))?;
     reg.register(Box::new(builtins::jobs::JobKill::new()))?;
     reg.register(Box::new(builtins::monitor::Monitor))?;
-    // **Work on many machines** (RH8). Registered with the exec surface, and proved by nothing
-    // here: a registry that names a role's tool and does not hold it is refused at resolve, so a
-    // seat seated `leticode` or `runner` opens only where these two exist. What is behind them is
-    // `crate::fleet`, and the daemon binds the process book
-    // ([`builtins::fanout::Fanout::with_book`]) so a started branch is a supervisor record.
+    // Work on many machines. Registered with the exec surface, and proved by nothing here:
+    // a registry that names a role's tool and does not hold it is refused at resolve, so a
+    // seat seated `leticode` or `runner` opens only where these two exist. The daemon binds
+    // the process book so a started branch is a supervisor record.
     reg.register(Box::new(builtins::fanout::Fanout::new()))?;
     reg.register(Box::new(builtins::scenario::Scenario::new()))?;
     Ok(reg)
@@ -404,14 +279,13 @@ mod tests {
 
     #[test]
     fn the_m1_tool_set_fits_under_the_ceiling() {
-        // §8.4 is a hard stop, not a guideline, and the set that ships must be
-        // seatable by the role that ships it.
+        // The seat's ceiling is a hard stop, and the set that ships must be seatable by
+        // the role that ships it.
         let reg = read_only_tools(std::sync::Arc::new(builtins::retrieval::Unavailable))
             .expect("the read-only registry");
-        // `todo_write` is a session tool, not a read-only one, so it is not in
-        // `read_only_tools` — but the role names it, so the registry the role is
-        // resolved against has to know it. That is exactly the failure shape the
-        // ceiling test exists to catch: a role that names a tool nobody registers.
+        // `todo_write` is a session tool, so it is not in `read_only_tools` - but the role
+        // names it, and a role naming a tool nobody registers is the failure this test
+        // exists to catch.
         let reg = with_session_tools(
             reg,
             std::sync::Arc::new(builtins::todo::TodoBoard::new(Vec::new())),
@@ -421,16 +295,12 @@ mod tests {
             std::sync::Arc::new(builtins::lsp::LspConfig::default()),
         )
         .expect("todo_write registers");
-        // **The ceiling binds what a SESSION is given, not what the registry holds.** This registry
-        // is a superset on purpose — `outline` and `hosts` are registered here and seated by no
-        // role in this test — so the number that has to fit §8.4 is the resolved seat's, which the
-        // assertion below counts. What the registry still has to satisfy is that a role naming a
-        // tool resolves at all, and that is what resolving it here proves.
+        // The ceiling binds what a SESSION is given, not what the registry holds: this one
+        // is a superset on purpose, so the number that has to fit is the resolved seat's.
         let seated = reg.resolve_role(&roles::m1_orchestrator()).unwrap();
-        // **Eight since the room.** `room` is the coordinator's own tool and the default seat's,
-        // and it resolves here because `with_session_tools` registers a `NoRoom` behind it — the
-        // rule this whole test is about: a role that names a tool must resolve on any registry
-        // this function builds, and the tool then says what is not behind it.
+        // `room` resolves here because `with_session_tools` registers a `NoRoom` behind it -
+        // the rule this test is about: a role that names a tool must resolve on any registry
+        // this crate builds, and the tool then says what is not behind it.
         assert_eq!(seated.len(), 8, "{:?}", seated.names());
         assert!(seated.len() <= DEFAULT_MAX_TOOLS, "{} tools", seated.len());
     }

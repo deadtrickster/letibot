@@ -1,17 +1,9 @@
-//! opencode's permission model, verbatim.
+//! opencode's permission model: a rule is `{ permission, pattern, action }`, a call
+//! is tested against every rule of every ruleset, and the LAST match wins, with
+//! `ask` as the answer when nothing matches.
 //!
-//! Mirrors `packages/core/src/v1/config/permission.ts`, `packages/core/src/v1/permission.ts`
-//! and `packages/core/src/util/wildcard.ts`. The model is:
-//!
-//! * a permission is a named string (`read`, `bash`, `todowrite`, …),
-//! * a call is tested against a list of patterns (paths, arguments),
-//! * the resolution is **last matching rule wins** (`findLast`), wildcard on both
-//!   the permission and the pattern, defaulting to `ask`,
-//! * a rule is `{ permission, pattern, action }` with action `allow` | `deny` | `ask`.
-//!
-//! The operator's config is the nested form (`"read": "allow"`, or
-//! `"edit": { "*.md": "allow", "*": "ask" }`, `"*"` for the default), flattened
-//! into a ruleset with the user's key order preserved — precedence depends on it.
+//! The config is the nested form, flattened into a ruleset with the user's key
+//! order preserved, because that order is what decides precedence.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -39,7 +31,6 @@ impl Action {
     }
 }
 
-/// `{ permission, pattern, action }`, the resolved unit opencode tests against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     pub permission: String,
@@ -59,15 +50,14 @@ impl Rule {
 
 pub type Ruleset = Vec<Rule>;
 
-/// opencode's `Wildcard.match` — `*` any run, `?` one char, backslash normalised
-/// to slash, anchored, dotall. The `" .*"` suffix is made optional (a pattern
-/// ending in a space before `*` matches with or without that trailing space).
+/// `*` is any run and crosses `/`, `?` is one char, and a backslash is a slash: this
+/// is opencode's wildcard, anchored and dotall, not a filesystem glob.
 pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     let normalized = input.replace('\\', "/");
     let escaped = pattern.replace('\\', "/");
 
-    // Escape the regex metacharacters opencode escapes (not `*` and `?`, which are
-    // the wildcards).
+    // Every metacharacter is escaped so it matches itself; `*` and `?` are the
+    // wildcards and are translated below.
     let mut re = String::with_capacity(escaped.len() + 8);
     for c in escaped.chars() {
         match c {
@@ -81,7 +71,8 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
         }
     }
 
-    // A trailing space-then-star is "match with or without the space".
+    // A trailing space-then-star means "with or without that space", so it is made
+    // optional rather than required.
     if re.ends_with(" .*") {
         re.truncate(re.len() - 3);
         re.push_str("( .*)?");
@@ -93,11 +84,10 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     regex.is_match(&normalized)
 }
 
-/// The one opencode function that decides: the last rule whose permission and
-/// pattern both wildcard-match, else `ask`.
+/// The last rule whose permission and pattern both wildcard-match, else `ask`.
 ///
-/// `rulesets` are consulted in order and flattened, so later rulesets (the user's
-/// `always` approvals) override earlier ones (the config) — exactly `findLast`.
+/// Rulesets are flattened in order, so a later one (the `always` approvals) outranks
+/// an earlier one (the config).
 pub fn evaluate(permission: &str, pattern: &str, rulesets: &[&Ruleset]) -> Rule {
     rulesets
         .iter()
@@ -110,10 +100,10 @@ pub fn evaluate(permission: &str, pattern: &str, rulesets: &[&Ruleset]) -> Rule 
         .unwrap_or_else(|| Rule::new(permission, "*", Action::Ask))
 }
 
-/// The operator's `permission` config, as JSON. Values are an `Action` string or a
-/// nested `{ pattern: Action }` object; `"*"` is the default key.
+/// A `permission` config as JSON: an action string or a nested `{ pattern: action }`
+/// object, with `"*"` as the default key.
 ///
-/// Preserves key order, because `evaluate`'s last-match precedence depends on it.
+/// Key order is preserved, because last-match precedence depends on it.
 pub fn config_to_ruleset(
     config: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Ruleset, String> {
@@ -128,10 +118,9 @@ pub fn config_to_ruleset(
     Ok(rules)
 }
 
-/// Recursively flatten one `permission` config entry into `Rule`s, key order kept.
+/// Flatten one `permission` entry into `Rule`s, key order kept.
 ///
-/// opencode's shape is one level deep: `"tool": "action"` (a bare action over `*`)
-/// or `"tool": { "pattern": "action", … }`. Deeper nesting is refused, not guessed.
+/// The shape is one level deep, so deeper nesting is refused rather than guessed at.
 fn flatten_rule(
     permission: &str,
     value: &serde_json::Value,
@@ -169,31 +158,13 @@ fn flatten_rule(
     Ok(())
 }
 
-/// **The preapproved list.** What a coding session runs a hundred times a day
-/// and nobody wants to answer for: the read-only half of `git` and `gh`, the
-/// build-and-test verbs of the toolchains on this fleet, and the shell's own
-/// read-only utilities. The operator's rule, 2026-09-14: *"we badly need a list
-/// of preapproved globs, like all read-only git and gh commands, cargo, go, and
-/// other tests"*.
-///
-/// Every pattern is a PREFIX over one simple command — see [`bash_segments`] for
-/// what makes a compound command safe to test prefix-by-prefix — and the list is
-/// the first ruleset consulted, so a row in the operator's file or environment
-/// outranks any of it (last match wins). Deliberately absent: `find` (`-delete`,
-/// `-exec`), `awk` (`system()`), `sed` without `-n` (`-i`), `env` (prints
-/// secrets), `gh api` (POSTs), `cargo run`, `go run`, `git branch -d`, `git
-/// stash` beyond `list` — each is one flag away from a write or a disclosure.
-/// **The preapproved list is a file, not a constant.** `config/permission.json`
-/// in the repository is the seed — read-only git and gh, the toolchains' build
-/// and test verbs, the shell's read-only utilities — and it is INSTALLED into
-/// `~/.config/letibot/permission.json` the first time a daemon finds no file
-/// there. From then on the file is the operator's: what they add, what *Always
-/// allow* appends, what they delete. The operator's rule, 2026-09-14: *"this
-/// preapproved list must be in config, not hardcoded."*
+/// The preapproved list, installed as `~/.config/letibot/permission.json` on a fresh
+/// box. Every entry is a prefix over ONE simple command, so it is tested per segment
+/// ([`bash_segments`]), and each omission is one flag away from a write.
 pub const SEED: &str = include_str!("../../../config/permission.json");
 
-/// The seed, parsed. What a fresh box starts with; a test's stand-in for the
-/// operator's file.
+/// The seed parsed: what a fresh box starts with, and a test's stand-in for the
+/// operator's own file.
 pub fn seed() -> Ruleset {
     let value: serde_json::Value =
         serde_json::from_str(SEED).expect("config/permission.json parses");
@@ -201,7 +172,8 @@ pub fn seed() -> Ruleset {
         .expect("config/permission.json is a ruleset")
 }
 
-/// Put the seed at `path` if nothing is there. `Ok(true)` when it was installed.
+/// Write the seed at `path` only when nothing is there, so a file the operator owns
+/// is never overwritten. `Ok(true)` when it was installed.
 pub fn install_seed(path: &std::path::Path) -> Result<bool, String> {
     if path.exists() {
         return Ok(false);
@@ -214,21 +186,8 @@ pub fn install_seed(path: &std::path::Path) -> Result<bool, String> {
 }
 
 /// A compound command as the simple commands it runs, or `None` when it cannot be
-/// read that way.
-///
-/// A prefix rule says something about one program and its arguments; `git log;
-/// rm -rf ~` matches `git log*` as a string and runs `rm`. So a command is tested
-/// **segment by segment** — split on `|`, `||`, `&&`, `;`, `&` and newlines, each
-/// segment trimmed — and admitted only when every segment is. And it is not
-/// tested at all when it contains a construct the split cannot see through:
-/// command substitution (`$(`, backticks), process substitution (`<(`, `>(`), a
-/// redirection to anything but `/dev/null` or another descriptor (`> file` is a
-/// write), a here-document, a brace or subshell group, or a leading variable
-/// assignment (`PATH=x cargo` is not `cargo`). Those go to the adjudicator like
-/// anything else — `None` here is "ask", never "allow".
-///
-/// This is a parser for the purpose of NOT admitting, which is the one job
-/// `docs/tool-survey.md` says a shell parser in a gate may do.
+/// read that way: a prefix rule is about ONE program, so `git log; rm -rf ~` must not
+/// match `git log*`. `None` is "ask", never "allow".
 pub fn bash_segments(command: &str) -> Option<Vec<String>> {
     if command.contains("$(")
         || command.contains('`')
@@ -256,8 +215,8 @@ pub fn bash_segments(command: &str) -> Option<Vec<String>> {
                     cur.push(c);
                 }
                 '|' | '&' | ';' | '\n' => {
-                    // `||`, `&&` and `2>&1` — the descriptor duplication is handled
-                    // in the redirection check below, not here.
+                    // `||` and `&&` collapse to one split; `2>&1` is left to the
+                    // redirection check below.
                     if c == '&' && cur.ends_with('>') {
                         cur.push(c);
                         continue;
@@ -268,7 +227,8 @@ pub fn bash_segments(command: &str) -> Option<Vec<String>> {
                     segments.push(std::mem::take(&mut cur));
                 }
                 '(' | ')' | '{' | '}' if !cur.trim().is_empty() || c != '{' => {
-                    // A group or a subshell: not one simple command.
+                    // A group or a subshell is not one simple command, so the split
+                    // cannot see what it runs.
                     return None;
                 }
                 _ => cur.push(c),
@@ -288,8 +248,8 @@ pub fn bash_segments(command: &str) -> Option<Vec<String>> {
         if !redirections_are_harmless(seg) {
             return None;
         }
-        // `FOO=bar cmd` runs cmd under a different environment; the prefix rule
-        // is about cmd as written, so it is not the same command.
+        // `FOO=bar cmd` runs something other than the command a prefix rule was
+        // written for, so it is not read here.
         let first = seg.split_whitespace().next().unwrap_or("");
         if first.contains('=') && !first.starts_with('=') {
             return None;
@@ -299,8 +259,8 @@ pub fn bash_segments(command: &str) -> Option<Vec<String>> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// Every `>` or `<` in the segment goes to `/dev/null` or duplicates a
-/// descriptor (`2>&1`); anything else is a file the command would write or read.
+/// Whether every redirection in the segment is harmless: a descriptor duplication
+/// (`2>&1`) or `/dev/null`. Anything else is a file the command would write.
 fn redirections_are_harmless(seg: &str) -> bool {
     let bytes: Vec<char> = seg.chars().collect();
     let mut i = 0;
@@ -313,7 +273,6 @@ fn redirections_are_harmless(seg: &str) -> bool {
             let rest: String = bytes[j..].iter().collect();
             let target = rest.trim_start();
             if target.starts_with('&') {
-                // `>&2`, `2>&1`
                 i = j;
                 continue;
             }
@@ -329,9 +288,9 @@ fn redirections_are_harmless(seg: &str) -> bool {
     true
 }
 
-/// Evaluate a `bash` command against the rulesets, segment by segment: every
-/// segment allowed → allow; any segment denied → deny; else ask. A command
-/// [`bash_segments`] cannot read is `ask` unless a rule denies the whole string.
+/// Evaluate a `bash` command segment by segment: every segment allowed means allow,
+/// any denied means deny, else ask. A command [`bash_segments`] cannot read is `ask`
+/// unless a rule denies the whole string.
 pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
     let whole = evaluate("bash", command, rulesets);
     if whole.action == Action::Deny {
@@ -356,76 +315,37 @@ pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
     }
 }
 
-/// **Programs that change the shell instead of doing the work**, and the two different
-/// reasons a gate has to know one of them is there.
-///
-/// `cd`, `pushd` and `popd` **move** the shell: nothing they do reaches a file or an
-/// argument, and every later command is judged on its own — `moves_only`, which is why
-/// a segment that only moves needs no rule and a durable rule written for it saves
-/// nothing.
-///
-/// The rest **set state a later segment reads**, which is the opposite fact and the more
-/// dangerous one. `export` carries no authority at all, which is why it must never be the
-/// name of a grant or of a rule (`intent`'s grant naming, and
-/// [`the_rule_that_admits`]); and a prefix rule over it is not a rule about `export`, it
-/// is a rule about every environment variable a later program trusts. MEASURED
-/// 2026-10-26: the rule `always_pattern_for_command` derives for the segment
-/// `export CARGO_TARGET_DIR=/w/target` is `export*`, and
-/// `wildcard_match("export LD_PRELOAD=/tmp/x.so", "export*")` is **true** — so a durable
-/// rule taken off that offer admits `export LD_PRELOAD=… ; git status` whole, because
-/// `bash_segments` splits it into two segments and both are then allowed, and the second
-/// program then loads and runs the first one's bytes. **`source`, `.`, `eval` and `exec`
-/// are deliberately not on this list**: they run code, so a rule about one is a rule about
-/// code, which is a thing an operator may legitimately mean.
+/// Programs that change the shell instead of doing the work. A `cd`, `pushd` or `popd`
+/// only MOVES it, so every later command is judged on its own; the rest set state a
+/// later segment reads, so a durable rule over one is a rule about every later program.
 pub const SHELL_STATE: &[&str] = &[
     "cd", "pushd", "popd", "export", "unset", "declare", "typeset", "readonly", "local", "set",
     "umask", "ulimit", "alias", "unalias",
 ];
 
-/// Whether this program changes the shell rather than doing the work — [`SHELL_STATE`].
-///
-/// Asked by `intent`'s grant naming (*would a person name this command by this program?*
-/// — no) and by this module's rule derivation (*should a durable rule be written for it?*
-/// — no, twice over).
+/// Whether this program changes the shell rather than doing the work - see
+/// [`SHELL_STATE`]. Asked by `intent`'s grant naming and by the rule derivation below,
+/// and both answer no: a person does not name a command by it.
 pub fn sets_shell_state(program: &str) -> bool {
     SHELL_STATE.contains(&program)
 }
 
 /// Whether this program changes what a LATER segment means, which is the half a durable
-/// rule must never be written for. See [`SHELL_STATE`] for the measurement.
+/// rule must never be written for. See [`SHELL_STATE`].
 pub fn sets_state_for_later(program: &str) -> bool {
     sets_shell_state(program) && !matches!(program, "cd" | "pushd" | "popd")
 }
 
-/// **A segment that only moves the shell**: `cd`, `pushd` or `popd`. It changes nothing a rule
-/// guards — every command after it is judged on its own — so it needs no rule of its own,
-/// and a rule that DENIES it still wins (`evaluate_bash` checks for one first).
-///
-/// Without this, `cd peerdb && grep … | head` asked forever: `cd` had no rule, and *Always
-/// allow* wrote one for `head`, which was already allowed. Measured 2026-10-08 — the
-/// operator answered *Always allow `head*`* over and over and it "never takes".
+/// A segment that only moves the shell: `cd`, `pushd` or `popd`. It changes nothing a rule
+/// guards, so it needs no rule of its own - and a rule that DENIES it still wins, because
+/// [`evaluate_bash`] checks the whole string first.
 fn moves_only(seg: &str) -> bool {
     matches!(seg.split_whitespace().next(), Some("cd" | "pushd" | "popd"))
 }
 
-/// **The one rule *Always allow* should write for this command, or `None` when no single rule
-/// would make the matcher allow it.**
-///
-/// Every segment is tested against the rules as they stand; the ones still asked are what a
-/// new rule has to cover. One distinct pattern among them is the answer. Two or more (`foo |
-/// bar`, neither known) cannot be covered by one rule, and none means the rules are not what
-/// is asking — either way the option would be a button whose effect the gate declines to
-/// honour, so it is not offered. A denied segment is `None` too: an allow written for the
-/// rest would change nothing.
-///
-/// **And a segment that sets state for a later one is `None`.** It will keep asking
-/// whatever is written — nothing legitimately blanket-allows `export` — and the only rule
-/// that WOULD silence it admits every environment variable, which is a rule about every
-/// program a later segment runs. Measured 2026-10-26 (see [`SHELL_STATE`]): the offer over
-/// the measured command shape was `Always allow \`export*\``.
-///
-/// It used to be the LAST stage's program, whatever the rules said, so `cd x && grep … |
-/// head` offered `head*` — already allowed — and asked again the next time.
+/// The one rule an "always allow" answer should write, or `None` when no single rule would
+/// make the matcher allow it: several still-asked patterns, a denied segment, or one that
+/// sets state for a later segment all mean the option would be a button that does nothing.
 pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<String> {
     let segments = bash_segments(command)?;
     let mut missing: Vec<String> = Vec::new();
@@ -457,33 +377,21 @@ pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<Stri
     }
 }
 
-/// **Can a durable rule ever apply to this command?**
+/// Whether a durable rule can ever apply to this command.
 ///
-/// [`evaluate_bash`] requires every segment to be allowed, and [`bash_segments`]
-/// refuses to split a command carrying a heredoc or a substitution — which
-/// `evaluate_bash` turns into [`Action::Ask`] *before any rule is consulted*. So
-/// for those commands no rule in the file can ever answer, however it is
-/// written.
-///
-/// That matters because *Always allow* writes to the operator's config and
-/// outlives the session. Offering it for a command the matcher will always ask
-/// about again is the one shape `adjudicate.rs` forbids at this exact seam:
-/// *"an operator is never shown a button whose effect the gate would then
-/// decline to honour."* Measured 2026-09-20 on the operator's own screen — a
-/// `python3` heredoc offered *Always allow `cd*`*, which is inert twice over
-/// (see [`always_pattern_for_stage`] for the other half).
+/// [`bash_segments`] refuses to split a heredoc or a substitution, and [`evaluate_bash`]
+/// turns that into [`Action::Ask`] before any rule is consulted - so no rule in the file
+/// can answer such a command, and offering a durable one is a button that does nothing.
 pub fn a_durable_rule_can_apply(command: &str) -> bool {
     bash_segments(command).is_some()
 }
 
-/// The pattern an *Always allow* answer over a `bash` command writes down: the
-/// program, its verb when the program has verbs, and `*`. `git status
-/// --short` → `git status*`; `cargo test -p x` → `cargo test*`; `ls -la` →
-/// `ls*`. Claude Code's `Bash(git status:*)`, in opencode's spelling.
+/// The pattern an "always allow" answer over a `bash` command writes down: the program,
+/// its verb when the program has verbs, and `*` - so `git status --short` gives
+/// `git status*`.
 ///
-/// **Takes the first whitespace token**, which is right only for a command that
-/// is one stage. See [`always_pattern_for_stage`] for the caller that has a
-/// parse and should use it.
+/// It takes the first whitespace token, which is the program only for a single stage; see
+/// [`always_pattern_for_stage`] for the caller that has a parse.
 pub fn always_pattern_for_command(command: &str) -> String {
     let mut words = command.split_whitespace();
     let Some(program) = words.next() else {
@@ -492,20 +400,10 @@ pub fn always_pattern_for_command(command: &str) -> String {
     always_pattern_for_stage(program, words.next())
 }
 
-/// **The same pattern, from a stage the shell grammar already resolved.**
+/// The same pattern, from a stage the shell grammar already resolved.
 ///
-/// `always_pattern_for_command` reads the first whitespace token of the raw
-/// string, which is the program only when the command is a single stage. The
-/// operator's screen, 2026-09-20: `cd /home/dead/Projects/letibot/letibot &&
-/// python3 - <<'PY' …` offered *Always allow `cd*`* — `cd` being the one token
-/// in that command carrying no authority at all, while the session option
-/// beside it correctly said `python3`, because that one is built from
-/// `grant_program`, which reads the parse.
-///
-/// Two derivations of *which program is this* is one too many, and the durable
-/// rule — the stronger of the two, the one written to a file — had the naive
-/// one. This is the seam where they become one: the caller passes the same
-/// stage `grant_program` reads, and the verb logic below is shared.
+/// Two derivations of "which program is this" would disagree, and the durable rule is the
+/// one written to a file, so the caller passes the stage `grant_program` reads.
 pub fn always_pattern_for_stage(program: &str, first_arg: Option<&str>) -> String {
     const VERBED: &[&str] = &[
         "git",
@@ -546,8 +444,8 @@ pub fn always_pattern_for_stage(program: &str, first_arg: Option<&str>) -> Strin
     format!("{program}*")
 }
 
-/// `~/.config/letibot/permission.json`: opencode's nested shape, the file an
-/// *Always allow* answer appends to and the operator edits by hand.
+/// `~/.config/letibot/permission.json`: the file an "always allow" answer appends to
+/// and the operator edits by hand.
 pub fn file_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
@@ -557,9 +455,10 @@ pub fn file_path() -> Option<std::path::PathBuf> {
     Some(base.join("letibot").join("permission.json"))
 }
 
-/// The rules in the file, or none when there is no file. A file that does not
-/// parse is an error, not an empty ruleset: a rule the operator wrote and the
-/// gate silently dropped is the failure this whole module exists to prevent.
+/// The rules in the file, or none when there is no file.
+///
+/// A file that does not parse is an error, not an empty ruleset: a rule the operator wrote
+/// and the gate silently dropped is the failure this module exists to prevent.
 pub fn load_file(path: &std::path::Path) -> Result<Ruleset, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(r) => r,
@@ -574,8 +473,8 @@ pub fn load_file(path: &std::path::Path) -> Result<Ruleset, String> {
     config_to_ruleset(obj).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Append one rule to the file, keeping every other entry: read, insert
-/// `permission → pattern → action`, write back. The file is created when absent.
+/// Append one rule to the file, keeping every other entry. The file is created when
+/// absent, and the write is a rename, so a reader never sees half of it.
 pub fn append_to_file(path: &std::path::Path, rule: &Rule) -> Result<(), String> {
     let mut root = match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
@@ -625,7 +524,7 @@ mod tests {
     fn wildcard_matches_star_and_question() {
         assert!(wildcard_match("src/lib.rs", "src/*.rs"));
         assert!(wildcard_match("src/lib.rs", "src/*"));
-        // `*` is `.*`, so it crosses `/` — opencode's wildcard is not a glob `*`.
+        // `*` is `.*`, so it crosses `/`: this wildcard is not a filesystem glob.
         assert!(wildcard_match("src/a/lib.rs", "src/*.rs"));
         assert!(wildcard_match("abc", "a?c"));
         assert!(!wildcard_match("abc", "a?"));
@@ -675,7 +574,7 @@ mod tests {
         );
     }
 
-    /// The operator's shipped read-only group, the part these commands touch.
+    /// The shipped read-only group, the part these commands touch.
     fn read_only() -> Ruleset {
         config_to_ruleset(&json(
             r#"{"bash": {"grep*": "allow", "head*": "allow", "echo*": "allow",
@@ -684,8 +583,8 @@ mod tests {
         .unwrap()
     }
 
-    /// **A `cd` in front of allowed commands asks nothing.** The operator's own commands from
-    /// 2026-10-08, asked every time although every program in them was allowed: `cd` had no rule.
+    /// A `cd` in front of allowed commands asks nothing: it moves the shell and changes
+    /// nothing a rule guards, so it needs no rule of its own.
     #[test]
     fn a_cd_in_front_of_allowed_commands_needs_no_rule() {
         let rs = read_only();
@@ -698,16 +597,15 @@ mod tests {
         ] {
             assert_eq!(evaluate_bash(cmd, &[&rs]), Action::Allow, "{cmd}");
         }
-        // What follows the cd is still judged: an unknown program still asks, a denied one
-        // still denies, and a rule that denies the cd itself wins.
+        // What follows the cd is still judged, and a rule that denies the cd itself wins.
         assert_eq!(evaluate_bash("cd x && make", &[&rs]), Action::Ask);
         assert_eq!(evaluate_bash("cd x && rm -rf y", &[&rs]), Action::Deny);
         let no_cd = vec![Rule::new("bash", "cd /etc*", Action::Deny)];
         assert_eq!(evaluate_bash("cd /etc && ls", &[&rs, &no_cd]), Action::Deny);
     }
 
-    /// ***Always allow* writes the rule the command is missing**, not its last program — and
-    /// offers nothing when no one rule would make the matcher allow it.
+    /// An "always allow" answer writes the rule the command is MISSING, not its last program,
+    /// and offers nothing when no one rule would make the matcher allow it.
     #[test]
     fn always_allow_names_the_segment_still_asked() {
         let rs = read_only();
@@ -760,8 +658,6 @@ mod tests {
         assert!(config_to_ruleset(&config).is_err());
     }
 
-    // --- the preapproved list -------------------------------------------------
-
     #[test]
     fn the_seed_admits_read_only_git_and_the_test_verbs_and_nothing_wider() {
         let d = seed();
@@ -798,12 +694,9 @@ mod tests {
             "sed -i s/a/b/ x",
             "env",
             "cargo test && rm -rf target",
-            // Reported 2026-09-14 by `lubuntu1-lab`: a fleet guard oracle ALLOWED
-            // `rsync -az --delete`, which mirrors a source over a destination and
-            // deletes whatever is not in the source. Nothing rsync-shaped is on
-            // the shipped list — no transfer verb is — and this pins that, because
-            // the list is the thing that decides whether the adjudicator is even
-            // consulted.
+            // Nothing rsync-shaped is on the shipped list: `-az --delete` mirrors a source
+            // over a destination and deletes what the source lacks, so no transfer verb is
+            // admitted and the adjudicator is the only thing that can see one.
             "rsync -az --delete ./src/ backup:/data/",
             "rsync -az ./src/ backup:/data/",
             "scp secrets.env host:/tmp/",
@@ -863,12 +756,8 @@ mod tests {
         std::fs::write(&path, "{not json").unwrap();
         assert!(load_file(&path).is_err());
 
-        // **Appending the SAME rule twice is ONE rule, not two.** Probed before it was asserted:
-        // `*Always allow*` on a command already allowed is the ordinary way this lands twice, and
-        // the property that saves it is that a JSON object is keyed — `insert` replaces. Without it
-        // the file grows a duplicate pattern per answer and which of the two wins is decided by
-        // source order, which is precisely the defect that hid `symbolic-ref` in two arms of the
-        // gate's own classifier.
+        // Appending the SAME rule twice is one rule, because a JSON object is keyed and
+        // `insert` replaces: a duplicate pattern would leave the winner to source order.
         let dir2 = crate::backend::tempdir::TempDir::new();
         let p2 = dir2.path().join("permission.json");
         append_to_file(&p2, &Rule::new("bash", "cargo run*", Action::Allow)).unwrap();
@@ -879,18 +768,15 @@ mod tests {
             1,
             "the same pattern was written twice: {text}"
         );
-        // And the same pattern with a DIFFERENT action replaces rather than doubling, so the last
-        // answer wins — which is the precedence the reader already implements.
+        // The same pattern with a DIFFERENT action replaces rather than doubling, so the last
+        // answer wins - the precedence the reader already implements.
         append_to_file(&p2, &Rule::new("bash", "cargo run*", Action::Deny)).unwrap();
         let back = load_file(&p2).unwrap();
         assert_eq!(evaluate_bash("cargo run --bin x", &[&back]), Action::Deny);
     }
 
-    /// **`export*` is not a rule about `export` — it is a rule about every variable.**
-    ///
-    /// This is the measurement behind [`SHELL_STATE`], and it is the answer to the finding
-    /// that `Always allow \`export*\`` was offered over the operator's own command shape.
-    /// The rule the derivation WOULD have written:
+    /// `export*` is not a rule about `export` but about every variable a later program
+    /// trusts, which is why [`SHELL_STATE`] is refused a durable rule.
     #[test]
     fn a_rule_over_export_would_admit_every_variable() {
         assert_eq!(
@@ -898,14 +784,13 @@ mod tests {
             "export*",
             "the premise: this is what the derivation spelled"
         );
-        // What that pattern matches, through opencode's own matcher: any variable at all,
-        // including the ones a later program obeys.
+        // What that pattern matches: any variable at all, including the ones a later
+        // program obeys.
         assert!(wildcard_match("export LD_PRELOAD=/tmp/evil.so", "export*"));
         assert!(wildcard_match("export BASH_ENV=/tmp/evil.sh", "export*"));
         assert!(wildcard_match("export PATH=/tmp/evil:$PATH", "export*"));
-        // **And the whole command would then be allowed**, because `bash_segments` splits
-        // a compound command and every segment being allowed is `Allow`. So a durable rule
-        // taken off one *Always allow* answer would admit this, unasked, for ever:
+        // And the whole command would then be allowed, because every segment being allowed
+        // is `Allow` - so one durable rule admits an env change plus a program, unasked.
         let taken = vec![Rule::new("bash", "export*", Action::Allow)];
         assert_eq!(
             evaluate_bash(
@@ -916,8 +801,8 @@ mod tests {
             "an env change plus an already-allowed program runs unasked under `export*`"
         );
 
-        // The derivation refuses to offer it, and the refusal is the shell-state rule — not
-        // "nothing is missing", which is why the second assertion is the control.
+        // The refusal is the shell-state rule and not "nothing is missing", which is why the
+        // `cd` assertion below is the control.
         assert_eq!(
             the_rule_that_admits(
                 "export CARGO_TARGET_DIR=/w/target && cargo test --offline -p x",
@@ -926,8 +811,8 @@ mod tests {
             None,
             "a rule was derived for a segment that no rule should blanket-allow"
         );
-        // A `cd` is still skipped rather than blocking the rule, which is what the
-        // 2026-09-20 fix is for: it moves the shell and changes nothing a later segment reads.
+        // A `cd` is skipped rather than blocking the rule: it moves the shell and changes
+        // nothing a later segment reads.
         assert_eq!(
             the_rule_that_admits("cd /w && frobnicate build", &[&seed()]),
             Some("frobnicate*".to_string())
