@@ -1,37 +1,33 @@
 //! The conversation record: what the harness stores, and what a dialect renders.
 //!
-//! This crate is deliberately tiny and has no dependency on a vocab, a model, an
-//! FFI or a running server. Both the dialect crate (which renders) and the token
-//! core (which tokenizes and persists) depend on it, and they must be buildable
-//! independently of each other.
-//!
-//! See `docs/implementation-plan.md` §4.2.
+//! Deliberately tiny, and with no dependency on a vocab, a model, an FFI or a running server: the
+//! dialect crate which renders and the token core which tokenizes and persists both depend on it,
+//! and they must be buildable independently of each other.
 
 use serde::{Deserialize, Serialize};
 
-/// **Text a head did not author, made safe for a terminal** (§3.1) — here because both
-/// sides of the log/wire boundary need it and neither can see the other.
+/// Text a head did not author, made safe for a terminal. Here because both sides of the log and
+/// wire boundary need it and neither can see the other.
 pub mod media;
 pub mod sanitize;
-/// **Fixtures that are real images** — public for the reason `letibot_sessionlog::testing` is: the
-/// crates that need a picture in a test are not this one. See the module for what it replaced.
+/// Fixtures that are real images. Public for the reason `letibot_sessionlog::testing` is: the
+/// crates that need a picture in a test are not this one.
 pub mod testing;
 
-/// **What a fence that cites code looks like** — the daemon reads the lines and the head fills
-/// the fence, so the two spellings of that fence (an empty block, and the one-liner) and the
-/// rule for a block that is never closed live here, once. Same reason as `media` above.
+/// What a fence that cites code looks like. The daemon reads the lines and the head fills the
+/// fence, so the two spellings of that fence and the rule for a block that is never closed live
+/// here, once.
 pub mod citation;
 
-/// **Cutting text to a bound**, once: a payload, a queue row, a card and a status line all cut,
-/// and a second copy of the arithmetic is a second place a character can be split.
+/// Cutting text to a bound, once: a payload, a queue row, a card and a status line all cut, and a
+/// second copy of the arithmetic is a second place a character can be split.
 pub mod text;
 
-/// **Who asked for a tool call** — R24 part two, decision 1.
+/// Who asked for a tool call.
 ///
-/// One variant today, and the enum exists rather than a `bool` or an `Option<String>` for the
-/// reason this tree reaches for an enum on a fact that can grow: a second origin (a peer agent,
-/// a flowy seat, a scheduled job) is a variant rather than a second field on a struct that
-/// already has one. `SystemOrigin` is the precedent for the naming.
+/// One variant today, and an enum rather than a `bool` or an `Option<String>` because this tree
+/// reaches for an enum on a fact that can grow: a second origin is a variant rather than a second
+/// field on a struct that already has one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallOrigin {

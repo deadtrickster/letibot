@@ -1,32 +1,24 @@
-//! **Metrics and operator feedback** — the event row, and the one way to send one.
+//! Metrics and operator feedback: the event row, and the one way to send one.
 //!
-//! `docs/metrics.md` is the design and TODO R81 schedules it. The short of it: every decision
-//! R61–R79 took was made from a hand query, a log grep or one anecdote, and each should have been
-//! a `SELECT`. So the daemon writes one append-only row per observation — a turn, a model round, a
-//! tool call, a delivery, a wake, a nag, a compaction, an operator's mark — into a SIBLING file,
-//! `~/.local/share/letibot/metrics.db`, never into the store (the operator's decision 1,
-//! 2026-10-11: eleven daemons already share the store's one writer lock).
+//! Every decision this tree has taken was made from a hand query, a log grep or one anecdote, and
+//! each should have been a `SELECT`. So the daemon writes one append-only row per observation, a
+//! turn or a model round or a tool call or a delivery or a wake or a compaction, into a sibling file
+//! beside the store rather than into it: every daemon on the box shares the store's one writer lock.
 //!
-//! # The one rule: [`emit`] never blocks and never touches SQL
+//! [`emit`] never blocks and never touches SQL. Anything on the worker's path is paid by every
+//! prompt, so an instrument builds a small [`Event`] and hands it to a bounded channel with
+//! `try_send`. A full channel drops the event and counts it ([`dropped`]), and the writer thread
+//! reports the count as a `metrics.dropped` row. No lock shared with the store, no allocation beyond
+//! the event, no file. The writer, one thread per daemon behind the `store` feature, drains the
+//! channel and commits a batch a second.
 //!
-//! The c12d044 lesson — the worker sat 29–89 s behind a store read nobody had timed — is that
-//! anything on the worker's path is paid by every prompt. So an instrument builds a small
-//! [`Event`] and hands it to a **bounded** channel with `try_send`. A full channel drops the event
-//! and counts it ([`dropped`]); the writer thread reports the count as a `metrics.dropped` row. No
-//! lock shared with the store, no allocation beyond the event, no file. The writer — one thread
-//! per daemon, behind the `store` feature — drains the channel and commits a batch a second.
+//! Off is free: nothing is installed until the daemon calls [`store::start`], so a head, a test and a
+//! daemon with metrics off all reach an [`emit`] that returns at the first branch.
 //!
-//! **Off is free.** Nothing is installed until the daemon calls [`store::start`] (the `[metrics]
-//! enabled` switch, on by default — decision 6), so a head, a test and a daemon with metrics off
-//! all reach an [`emit`] that returns at the first branch.
-//!
-//! # Typed at the site, generic in the file
-//!
-//! A row is `kind`, `name`, `outcome`, three integer slots and a small JSON `attrs` (§2.2), so a
-//! new kind is a new constant and a new view — never an `ALTER`, and a build that knows fewer
-//! kinds writes beside one that knows more. [`kind`] names every kind this tree writes; what each
-//! slot means per kind is the table in `docs/metrics.md` §2.3, and the views in [`store::VIEWS`]
-//! are where that table becomes column names.
+//! A row is `kind`, `name`, `outcome`, three integer slots and a small JSON `attrs`, so a new kind is
+//! a new constant and a new view rather than an `ALTER`, and a build that knows fewer kinds writes
+//! beside one that knows more. [`kind`] names every kind this tree writes, and [`store::VIEWS`] is
+//! where the meaning of each slot becomes column names.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -40,7 +32,7 @@ pub mod stats;
 #[cfg(feature = "store")]
 pub mod store;
 
-/// **Every kind this tree writes** — `docs/metrics.md` §2.3's vocabulary, dotted.
+/// Every kind this tree writes, dotted.
 pub mod kind {
     /// A turn began. Written with the turn's end (see the harness's `instruments`), stamped
     /// with the moment it began. `name` = the door; n1/n2/n3 = fill tokens, window, rounds.
