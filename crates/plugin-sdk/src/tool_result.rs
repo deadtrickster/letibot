@@ -128,11 +128,8 @@ impl ToolResultOut {
         }
     }
 
-    /// **The result this answer means** — a replacement, or a suffix, or neither.
-    ///
-    /// Both may appear: *this is what it was* and *here is what I noticed about it* are two
-    /// different sentences and a layer may want both. `Unchanged` when the answer names neither,
-    /// which is the common case and must cost nothing.
+    /// The result this answer means: a replacement, a suffix, or neither. Both may appear, since *this
+    /// is what it was* and *here is what I noticed* are different sentences; `Unchanged` names neither.
     pub fn said(&self) -> Said<'_> {
         use std::borrow::Cow;
         match (&self.payload, &self.append) {

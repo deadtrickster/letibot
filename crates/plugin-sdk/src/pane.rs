@@ -23,16 +23,8 @@
 //! out where the head knows what switching costs. Acts are declared too (`actions = ["switch"]`), so
 //! a layer cannot ask for a verb nobody reviewed.
 
-/// The contract version every pane input carries.
-///
-/// Version 2 added `feeds`, `folded` and the row's `enter`, which a version-1 pane never saw and
-/// cannot want, so a plugin that refuses anything but 1 keeps working by never asking. Version 3
-/// moved `feeds.sessions` and the session list's answer: a session now carries `project` and
-/// `system`, and the answer is a project's tree rather than five groups. Both shapes are rows, so
-/// the wire cannot tell them apart and a layer says which one it draws: see `letibot_plugins::MOVED`
-/// and the manifest's `[contracts]`.
-///
-/// The manifest's `contract` is a different number and stays 1: an added field is not a version.
+/// The contract version every pane input carries: version 2 added `feeds`, `folded` and `enter`,
+/// version 3 moved the session feed's answer. Both shapes being rows, a layer says which it draws.
 pub const V: u32 = 3;
 
 /// The export name a pane answers under: `pane_<name>`.
@@ -53,15 +45,11 @@ pub enum Feed {
     Todos,
     /// The repository the session stands in — branch, ahead/behind, what changed. Planned.
     Git,
-    /// **The merge queue, in the words a person reads it in** — the reviews and the landings
-    /// with their state, their reason and their age, the target branches' health, the leases
-    /// with their heartbeats, the last moves, and the repositories that are no queue's. Fed
-    /// today, by `plugins/builtin/queue`.
+    /// The merge queue in the words a person reads it in: the reviews and landings with their state
+    /// and age, the targets' health, the leases, and the repositories no queue holds.
     Queue,
-    /// **The room** — one host's agents' queues, per tag: every item with its state, its claimant
-    /// and the age of that claim's beat, its abandonment count, the open questions the arbiter is
-    /// being asked, and the room's own identity (which room, started when, and how much it holds).
-    /// Fed today, by `plugins/builtin/room`.
+    /// The room: one host's agents' queues per tag, with each item's state, claimant, abandonment
+    /// count, and the questions the arbiter is being asked.
     Room,
 }
 
@@ -119,10 +107,8 @@ impl<'de> serde::Deserialize<'de> for Feed {
     }
 }
 
-/// **A key on a row, performed by the host.**
-///
-/// One of the four and never two: an act that says two things is a key whose meaning nobody can
-/// state, and the host refuses it rather than picking (`Row::refusals`).
+/// A key on a row, performed by the host. One of the four and never two: the host refuses an act that
+/// says two things rather than picking one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum Act {
@@ -139,17 +125,8 @@ pub enum Act {
     },
     /// Call the pane again with `{"item": <the row's id>, "action": <this word>}`.
     Event { event: String },
-    /// **One of the person's verbs, on ONE row** — `{"verb":"approve","id":"r-1f2…"}`.
-    ///
-    /// The queue pane's keys (`a` approve, `v` veto, `r` restart, `d` rm) act on the entry the
-    /// row NAMES, not on whatever the host's own cursor happened to be over. That is the whole
-    /// point: before this variant a row could draw an entry and the keys would act on another,
-    /// so a plugin row could not say *which* entry it meant.
-    ///
-    /// **The verb word is what the manifest gates.** A layer that answers a row carrying
-    /// `approve` must declare `actions = ["approve", …]`, and `View::validate_for` refuses the
-    /// view otherwise; the head also refuses to perform a verb the answering layer did not
-    /// declare, so a letter whose word is absent from the manifest sends nothing.
+    /// One of the person's verbs on ONE row: the verbs act on the entry the row NAMES, and the verb
+    /// word is what the manifest gates in `actions`.
     Verb { verb: String, id: String },
 }
 
@@ -176,18 +153,8 @@ impl Act {
         }
     }
 
-    /// Which verb this is, as a manifest declares it — `switch`, `fold`, `event`, or the queue
-    /// verb's own word (`approve`, `veto`, `restart`, `rm`, …).
-    ///
-    /// **Why this answers a borrowed word and not a `&'static str`.** Before [`Act::Verb`] existed
-    /// every arm was a literal and `'static` was free. The queue verb's word is the LAYER's — it
-    /// arrives in the answer, it is the string the manifest's `actions` allowlist is checked
-    /// against, and there is no table in this crate to intern it against. The two ways to keep
-    /// `'static` were to add a second method for the real word (two doors, one of them a lie) or to
-    /// answer a word that is not the verb's (`"verb"`, which would make `validate_for` pass a view
-    /// the manifest never declared). So the return type widened, once, at a version where the only
-    /// caller that could notice is one that stored the answer in a `&'static str` — a compile error
-    /// at that call site, never a wrong word at run time.
+    /// Which verb this is, as a manifest declares it. A borrowed word because the queue verb's word is
+    /// the layer's and arrives in the answer, and answering another would pass a verb not declared.
     pub fn verb(&self) -> &str {
         match self {
             Act::Switch { .. } => "switch",
@@ -206,13 +173,9 @@ impl Act {
     }
 }
 
-/// **How a row folds**, on the wire: `true` open, `false` closed, and `"fixed"` for a row that
-/// cannot fold at all.
-///
-/// Two states were not enough. A group header that is always open — the session list's `mine` —
-/// has to be written `true` or `false` when only a bool exists, and both are a claim that some key
-/// folds it: a list then draws the glyph and offers *enter folds it away* on a row where Enter
-/// does nothing. `Fixed` is that row, and it is the third state a bool cannot say.
+/// How a row folds, on the wire: `true` open, `false` closed, and `"fixed"` for a row that cannot
+/// fold. A bool would make a header that never folds claim some key folds it, so a list would draw
+/// the glyph and offer a key that does nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Fold {
     Open,
@@ -255,12 +218,8 @@ impl<'de> serde::Deserialize<'de> for Fold {
     }
 }
 
-/// **One run of text in a row, and what it means** — the string it is when it takes the row's own
-/// role, an object when it does not.
-///
-/// `"the habr article"` is a cell; `{"text": "the habr article", "role": "strong"}` is a cell that
-/// says *this one is where I am*. The one-string spelling is the common case and is why this is
-/// untagged.
+/// One run of text in a row: the string it is when it takes the row's own role, an object when it
+/// says more. The one-string spelling is the common case, which is why this is untagged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
     pub text: String,
@@ -386,14 +345,8 @@ pub struct Input {
     /// **The feeds this layer declared, and only those**, by name (`Feed::name`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub feeds: std::collections::BTreeMap<String, serde_json::Value>,
-    /// **The host's fold state, by row id** — `true` for a row the person has OPENED (a fold that
-    /// is open, not one that is shut: `App::picker_folds` and `App::queue_folds` both store
-    /// *open*, which is what a row's `fold` act sets). The host keeps it so a fold is instant and
-    /// survives the next answer; a pane that has no folds never sees the field.
-    ///
-    /// A layer reads its own row's id out of the map and answers `Fold::Open`/`Fold::Closed` from
-    /// it — `plugins/builtin/sessions` and `plugins/builtin/queue` both do, and both would have
-    /// drawn the opposite glyph for a day had this doc been the one that was right.
+    /// The host's fold state by row id, `true` for a row the person has OPENED: the host keeps it so a
+    /// fold is instant and survives the next answer, and a pane with no folds never sees the field.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub folded: std::collections::BTreeMap<String, bool>,
     /// The answer of the layer below, when this layer asked for it (§2.1) — absent otherwise, and
@@ -465,10 +418,8 @@ mod tests {
         assert_eq!(Act::event("open").verb(), "event");
     }
 
-    /// **A verb act names the entry it is about, and the word the manifest gates is the verb's.**
-    ///
-    /// The id is the whole reason the variant exists: a row of a queue pane draws ONE entry and
-    /// the person's `a`/`v`/`r`/`d` must act on that one, whatever the host's own cursor is over.
+    /// A verb act names the entry it is about, and the word the manifest gates is the verb's: a queue
+    /// row draws one entry and the person's keys must act on that one, whatever the cursor is over.
     #[test]
     fn a_verb_act_carries_its_entry_and_its_own_word() {
         let one: Act =

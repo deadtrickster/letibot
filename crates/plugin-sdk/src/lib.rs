@@ -31,10 +31,8 @@
 //! Nothing here can widen a permission. `on_tool_call` runs before the gate, the rewritten call is
 //! the call the gate adjudicates, and there is no field by which a layer could say *allow*.
 
-/// The contract version every input carries, and the only one this crate describes.
-///
-/// A host that changes a contract keeps answering the old version or refuses the plugin by name;
-/// an added field is not a version.
+/// The contract version every input carries. A host that changes a contract keeps answering the old
+/// version or refuses the plugin by name; an added field is not a version.
 pub const V: u32 = 1;
 
 pub mod condition;
@@ -43,12 +41,8 @@ pub mod pane;
 pub mod tool_call;
 pub mod tool_result;
 
-/// One tool call, as a hook sees it: the name and the arguments the model proposed.
-///
-/// `arguments` is an object, not the model's raw text, so a layer that rewrites a call rewrites
-/// fields instead of being a JSON parser. A call whose arguments are not JSON never reaches a hook:
-/// the runtime's `salvage` owns that case, and a layer asked about a shape no tool accepts could
-/// only guess.
+/// One tool call, as a hook sees it. `arguments` is an object, not the model's raw text, so a layer
+/// rewrites fields rather than parsing JSON; a call whose arguments are not JSON never reaches a hook.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Call {
     pub name: String,
@@ -69,11 +63,8 @@ impl Call {
 mod tests {
     use super::*;
 
-    /// Every hook kind's name is one the host's own prefix list admits, which keeps a kind from
-    /// being spelled in a way the host never looks for.
-    ///
-    /// Duplicated as a list rather than depended on, because this crate is compiled into a guest
-    /// that must not depend on the daemon.
+    /// Every hook kind's name is one the host's prefix list admits, duplicated here because this crate
+    /// is compiled into a guest that must not depend on the daemon.
     const PREFIXES: &[&str] = &[
         "on_",
         "provider_",

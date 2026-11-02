@@ -62,14 +62,9 @@ pub const CANONICAL_INSTRUCTION_FILE: &str = "CLAUDE.md";
 /// The canonical name's directory under the box's home.
 const CANONICAL_DIR: &str = ".claude";
 
-/// **The two directories a box-scope answer comes from, given rather than
-/// discovered.**
-///
-/// A field each, because they are two different facts: the config dir is where
-/// this crate's own files live (and [`user_path`] already decides it), and the
-/// home is where another tool's canonical file lives. The default is two empty
-/// paths — a box with no instruction file of its own, which is what a fixture
-/// wants and what an unset `$HOME` degrades to.
+/// The two directories a box-scope answer comes from, given rather than discovered: the config dir,
+/// where this crate's own files live, and the home, where another tool's canonical file lives. The
+/// default is two empty paths, which is a box with no instruction file of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoxDirs {
     /// The seat's config dir — `~/.config/letibot/` in the default spelling.
@@ -79,11 +74,8 @@ pub struct BoxDirs {
 }
 
 impl BoxDirs {
-    /// This box's: the config dir [`user_path`] answers from, and `$HOME`.
-    ///
-    /// Derived from [`user_path`] rather than from `$HOME` spelled a second time,
-    /// so a `$XDG_CONFIG_HOME` that `providers.toml` honours is honoured here
-    /// too — the same argument [`user_path`] itself makes.
+    /// This box's: the config dir [`user_path`] answers from, and `$HOME`. Derived from [`user_path`]
+    /// rather than from `$HOME` spelled again, so `$XDG_CONFIG_HOME` is honoured here too.
     pub fn for_this_box() -> BoxDirs {
         BoxDirs {
             config: user_path()
@@ -97,13 +89,9 @@ impl BoxDirs {
     }
 }
 
-/// **The seat's instruction files for a session at `workspace`, nearest first**
-/// — at most two, and none when the seat has no instruction file anywhere.
-///
-/// The workspace's comes first because it is the more specific statement: a
-/// project that says how to build itself outranks a box that says how to work.
-/// The caller reads what this hands it; which name answered is not its business,
-/// and that is the whole point of the split.
+/// The seat's instruction files for a session at `workspace`, nearest first: at most two, and none
+/// when the seat has no instruction file anywhere. The workspace's comes first because a project
+/// that says how to build itself outranks a box that says how to work.
 pub fn instructions(workspace: &Path, box_dirs: &BoxDirs) -> Vec<PathBuf> {
     let mut out = Vec::with_capacity(2);
     for found in [workspace_scope(workspace), box_scope(box_dirs)]
@@ -120,11 +108,8 @@ pub fn instructions(workspace: &Path, box_dirs: &BoxDirs) -> Vec<PathBuf> {
     out
 }
 
-/// The workspace scope: the nearest directory at or above `workspace` holding
-/// either name, and inside it the seat's own before the canonical one.
-///
-/// `pop` returns `false` at the filesystem root, which is where the walk stops —
-/// a box with no instruction file anywhere is a no-file, not a loop.
+/// The workspace scope: the nearest directory at or above `workspace` holding either name, and inside
+/// it the seat's own before the canonical one. `pop` at the filesystem root ends the walk.
 fn workspace_scope(workspace: &Path) -> Option<PathBuf> {
     let mut dir = workspace.to_path_buf();
     loop {
@@ -137,14 +122,9 @@ fn workspace_scope(workspace: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The box scope: the config dir's own file, else the canonical one under the
-/// box's home.
-///
-/// **Exactly two addresses**, which is the rule the operator gave: the config dir
-/// this crate already reads, and `~/.claude/`. A canonical file dropped in the
-/// config dir is not a third one — it would be a place the rule never names, and
-/// a file that arrives from a place nobody documented is the kind of surprise
-/// this tree keeps paying for.
+/// The box scope: the config dir's own file, else the canonical one under the box's home. Exactly two
+/// addresses, which is the rule: a file arriving from a place nobody documented is the surprise this
+/// tree keeps paying for.
 fn box_scope(box_dirs: &BoxDirs) -> Option<PathBuf> {
     if let Some(own) = in_path(&box_dirs.config, INSTRUCTION_FILE).filter(|p| p.is_file()) {
         return Some(own);
@@ -165,11 +145,6 @@ fn in_dir(dir: &Path) -> Option<PathBuf> {
 }
 
 /// `dir/name`, or `None` when `dir` is empty.
-///
-/// **An empty path is not the working directory.** `BoxDirs::default()` is "this
-/// box has no instruction file of its own", and `PathBuf::new().join(name)` is a
-/// RELATIVE path — so an unguarded join would have a fixture, or a daemon whose
-/// `$HOME` is unset, reading `./leticode.md` out of wherever it was started.
 fn in_path(dir: &Path, name: &str) -> Option<PathBuf> {
     (!dir.as_os_str().is_empty()).then(|| dir.join(name))
 }
@@ -316,10 +291,9 @@ mod tests {
         assert!(instructions(&ws, &no_box()).is_empty());
     }
 
-    /// **The box scope is exactly the two addresses the rule names**: the config
-    /// dir's own file, and the canonical one under the box's home. A canonical
-    /// file dropped in the config dir is not a third — a file that arrived from a
-    /// place nobody documented would be a surprise, and this rule has two places.
+    /// The box scope is exactly the two addresses the rule names: the config dir's own file and the
+    /// canonical one under the box's home. A canonical file dropped in the config dir is not a third,
+    /// since a file arriving from an undocumented place is the surprise this rule exists to prevent.
     #[test]
     fn the_box_scope_is_the_two_addresses_the_rule_names() {
         let ws = dir("box-third-ws");

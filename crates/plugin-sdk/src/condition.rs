@@ -61,10 +61,8 @@ impl LookResult {
     }
 }
 
-/// The answer's `look`: what to run next. Two kinds, and both are the host's act.
-///
-/// The wire is `{"exec": ["prog", "arg"]}` or `{"read": "path"}` — externally tagged, so the key
-/// IS the kind and there is no second place to say it.
+/// The answer's `look`: what to run next, externally tagged so the key IS the kind and there is no
+/// second place to say it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LookAsk {
@@ -75,11 +73,8 @@ pub enum LookAsk {
     Read(String),
 }
 
-/// One watch of one pull request, shared with every other watch on it.
-///
-/// The host already refuses a second watch on a pull request another watch holds and names the one
-/// to use instead; a condition that declares this takes part in that rule, so a project watching
-/// pull requests through both a plugin and `github` does not spend two looks on one.
+/// One watch of one pull request, shared with every other watch on it: the host refuses a second
+/// watch on a pull request another holds, and a condition declaring this takes part in that rule.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Github {
     /// `owner/repo#N`.

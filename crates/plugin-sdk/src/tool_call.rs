@@ -102,20 +102,16 @@ pub struct ToolCallOut {
     /// answering `None` through the ABI.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pass: bool,
-    /// The arguments to run it with instead.
-    ///
-    /// `null` here is a rewrite, not silence: a layer narrowing a call to no arguments is narrowing
-    /// it, and serde's usual reading of `null` as absent would let the model's call through.
+    /// The arguments to run it with instead. `null` here is a rewrite, not silence: a layer narrowing
+    /// a call to no arguments is narrowing it.
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     pub arguments: Option<Value>,
-    /// Do not run it, and tell the model this.
-    ///
-    /// A layer that means this must write the sentence: `null` is *said nothing* and lets the call
-    /// run, because a refusal nobody can act on is not a refusal.
+    /// Do not run it, and tell the model this. A layer that means this must write the sentence: `null`
+    /// is said nothing and lets the call run, and a refusal nobody can act on is not a refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refuse: Option<String>,
     /// Do not run it, and answer the model with this. As with `refuse`, `null` is silence.
@@ -169,12 +165,9 @@ impl ToolCallOut {
         }
     }
 
-    /// **What this answer means**, in the order the host applies it: refuse, then answer, then a
-    /// rewrite, then pass.
-    ///
-    /// The order is the restrictive one on purpose. An answer naming two of them is a layer
-    /// saying *at least this much*, and a reader of a call that ran must never have to work out
-    /// whether the layer that refused it also wanted different arguments.
+    /// What this answer means, in the restrictive order the host applies it: refuse, answer, rewire,
+    /// pass. An answer naming two is a layer saying *at least this much*, so the reader never has to
+    /// work out whether a refusal also wanted different arguments.
     pub fn verdict(&self) -> Verdict<'_> {
         if let Some(why) = &self.refuse {
             return Verdict::Refuse(why);

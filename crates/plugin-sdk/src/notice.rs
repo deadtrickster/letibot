@@ -38,18 +38,13 @@ pub const MERGE_QUEUE: &str = "merge_queue";
 pub const PLUGIN: &str = "plugin";
 /// The session's workspace, or another fact about the ground it stands on.
 pub const WORKSPACE: &str = "workspace";
-/// A call the gate admitted without asking anybody: the sentence that makes a mode which stopped
-/// asking visible in the transcript rather than only in the audit rows.
-///
-/// A kind of its own because a layer that rewords one is rewording a disclosure.
+/// A call the gate admitted without asking anybody: the kind that makes a mode which stopped asking
+/// visible in the transcript, and a kind of its own because reworking one reworks a disclosure.
 pub const GATE: &str = "gate";
 /// A turn that produced no answer being salvaged.
 pub const SALVAGE: &str = "salvage";
-/// The host's room: a tagged queue somebody else posted to, claimed, finished or lost a claimant
-/// on, and the questions a raised item puts to the arbiter.
-///
-/// A kind of its own because it is news about other sessions on this box rather than about this
-/// session's own work.
+/// The host's room: a tagged queue somebody else posted to, claimed or lost, and the questions a
+/// raised item puts to the arbiter. News about other sessions rather than about this one's own work.
 pub const ROOM: &str = "room";
 
 /// Every kind the host composes. A hook name outside this list is one nothing ever asks for, and
@@ -97,10 +92,8 @@ pub fn droppable(kind: &str) -> bool {
     known(kind) && !MUST_SEE.contains(&kind)
 }
 
-/// The input: one notice, with the facts it was composed from.
-///
-/// Every field is present on the wire, `facts` being `{}` rather than absent when a site has none: a
-/// missing key is a plugin that cannot tell *nothing to say about it* from *the host forgot*.
+/// The input: one notice and the facts it was composed from. Every field is on the wire, `facts`
+/// being `{}` rather than absent, so a plugin can tell *nothing to say* from *the host forgot*.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Notice {
     /// [`V`](crate::V).
@@ -144,11 +137,8 @@ impl Notice {
     }
 }
 
-/// The answer: the sentence, reworded, or nothing at all.
-///
-/// Absent fields are absent on the wire rather than `null`, so *this layer said nothing about the
-/// text* cannot be confused with *this layer said the text is null*. `pass` and `mask` are the
-/// stack's and never appear here.
+/// The answer: the sentence reworded, or nothing at all. Absent fields are absent rather than `null`,
+/// so *said nothing about the text* cannot be confused with *said the text is null*.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NoticeOut {
     /// The sentence to record instead of the harness's.
