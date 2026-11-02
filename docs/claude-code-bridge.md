@@ -210,6 +210,31 @@ supersedes it**, settled `answer: nobody, applied: false` with the reason so the
 first. **A caller reads back the point IN FORCE**: a consented `allow-all` on a bare host lands on
 `allow-all (this box, consented)`.
 
+## Reading a Claude Code conversation
+
+`crates/claude` reads a Claude Code transcript into this head's rows, one JSONL line at a time
+(`letibot --session cc-<uuid>`), rendering nothing and publishing nothing - no credentials, no
+subagent directories, no writes - so its rules are testable in isolation. Four things the format
+makes non-obvious:
+
+- **Most of the file is not conversation.** Fifteen of its seventeen line types are never a row, so
+  a notice is said once per TYPE with a count; one scrap per unknown line buries the transcript.
+  `aiTitle` is the title.
+- **A message is one block per line, and nothing repeats** - no repeated `text` block and no repeated
+  `tool_use` id - so an importer must not dedupe by `message.id`.
+- **The speaker is DECLARED**: `origin.kind` and `promptSource`, with `isMeta: true` winning over
+  both and absent meaning the operator. A subagent is a FILE - `<uuid>/subagents/agent-*.jsonl`,
+  its `.meta.json` naming the `toolUseId` of the `Task` call that spawned it - not inline
+  `isSidechain` lines.
+- **`cost-state` is cumulative**: take the last, never the sum.
+
+Three parser traps, each of which attributes machinery to the operator without saying so: `<` is a
+byte, so a frame parser that strips it and then reports offsets into the remainder slices one short
+and hands the whole frame back as their words; a "first line found" flag set before the check
+reports "(no operator line)" for a transcript whose first `user` line is machinery; and a
+`<pasted_content>` frame's closing tag carries its id, so matching `</tag>` exactly misses every
+paste.
+
 ## What is measured
 
 `crates/bridge/tests/transcript.rs` and `crates/bridge/tests/mode_consent.rs` drive the daemon's own
