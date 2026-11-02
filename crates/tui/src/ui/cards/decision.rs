@@ -18,22 +18,32 @@ pub(crate) const PUT_AWAY_HINT: &str = "esc puts it away — alt-a brings it bac
 /// card and on the bar, one spelling.
 pub(crate) const LADDER_HINT: &str = "↑↓ or a row number marks · enter answers";
 
+/// A question's ladder: its digits are the answer being typed, so only the arrows mark a row, and
+/// typing is the other way to answer. Its rows carry no number, since a drawn number is the promise
+/// that the digit marks the row.
+pub(crate) const QUESTION_LADDER_HINT: &str = "↑↓ marks · enter answers · or type your own";
+
 /// The head of rano's ladder hint, which [`LADDER_HINT`] replaces.
 const RANO_LADDER_HINT: &str = "  ↑↓ to choose · Enter to answer";
 
 /// A ladder row with its number: the digit that marks it is drawn on it, `1`-`9`; a row past the
-/// ninth has no digit and is padded to line up. An empty choice reads as one rather than as a blank
-/// highlighted row.
+/// ninth has no digit and is padded to line up.
 pub(crate) fn numbered(i: usize, body: &str) -> String {
-    let body = if body.trim().is_empty() {
-        "(an empty answer)"
-    } else {
-        body
-    };
+    let body = row_body(body);
     if i < 9 {
         format!("{}  {body}", i + 1)
     } else {
         format!("   {body}")
+    }
+}
+
+/// A row's body alone, for a card whose rows carry no number: an empty choice reads as one rather
+/// than as a blank highlighted row.
+fn row_body(body: &str) -> String {
+    if body.trim().is_empty() {
+        "(an empty answer)".to_string()
+    } else {
+        body.to_string()
     }
 }
 
@@ -44,9 +54,10 @@ impl App {
     pub(crate) fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
         let (content, mut choices) = self.decision_view(d).split(w);
         let p = self.cfg.palette();
-        // The ladder's hint, in this head's words: a row number now marks a row (the numbers are
-        // drawn, see `decision_view`) and Enter answers it, and a question with nothing to choose
-        // from has no ladder for the arrows to walk - its line is typed. One casing with the bar.
+        // The ladder's hint, in this head's words: a permission's row number marks a row and Enter
+        // answers it, a question's digits are its answer so only the arrows mark, and a question
+        // with nothing to choose from has no ladder at all - its line is typed. One casing with
+        // the bar.
         let question = d.kind == "question";
         let rows = decision_rows(d);
         for l in choices.iter_mut() {
@@ -56,6 +67,8 @@ impl App {
             };
             let said = if question && rows == 0 {
                 "  type your answer · enter sends it".to_string()
+            } else if question {
+                format!("  {QUESTION_LADDER_HINT}{rest}")
             } else {
                 format!("  {LADDER_HINT}{rest}")
             };
@@ -153,12 +166,7 @@ impl App {
                     },
                 })
                 .collect(),
-            choices: d
-                .choices
-                .iter()
-                .enumerate()
-                .map(|(i, c)| numbered(i, c))
-                .collect(),
+            choices: d.choices.iter().map(|c| row_body(c)).collect(),
             selected: self.sel,
             deadline_ms: d.deadline,
             now_ms: self.now_ms,

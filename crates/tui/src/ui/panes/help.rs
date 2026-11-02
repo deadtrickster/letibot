@@ -32,7 +32,8 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "a card",
-            "a question or permission card: ↑↓ or its row number marks a row, enter answers, \
+            "a question or permission card: ↑↓ marks a row, and a permission's row number does too — a \
+             question's digits are your answer being typed. enter answers, \
              or type your own answer (an option id on a permission). esc puts any card away \
              unanswered — it keeps waiting, a line above the prompt says so — and alt-a brings \
              it back; alt-a also opens a todo row's question waiting on you",

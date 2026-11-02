@@ -50,16 +50,17 @@ impl App {
             .join(" · ")
     }
 
-    /// **The open decision's half of the bar** (R90.2) - this head's, not rano's `Deciding`
+    /// **The open decision's half of the bar** - this head's, not rano's `Deciding`
     /// tail, which says *"a row number answers"*: a row number marks the row, and Enter answers.
     pub(crate) fn deciding_tail(&self) -> String {
-        use crate::ui::cards::decision::{LADDER_HINT, PUT_AWAY_HINT};
+        use crate::ui::cards::decision::{LADDER_HINT, PUT_AWAY_HINT, QUESTION_LADDER_HINT};
         match self.open.first() {
             Some(d) if d.kind == "question" && decision_rows(d) == 0 => {
                 format!("type your answer · enter sends it · {PUT_AWAY_HINT}")
             }
+            // A question's digits are the answer being typed, so its tail offers no row number.
             Some(d) if d.kind == "question" => {
-                format!("{LADDER_HINT} · or type your own · {PUT_AWAY_HINT}")
+                format!("{QUESTION_LADDER_HINT} · {PUT_AWAY_HINT}")
             }
             _ => format!("{LADDER_HINT} · or type an option · {PUT_AWAY_HINT}"),
         }

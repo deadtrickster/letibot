@@ -122,32 +122,12 @@ fn a_question_brought_back_over_typed_words_holds_them() {
     assert_eq!(b.input(), "rel", "the card's own draft comes back with it");
 }
 
-// ──────────────── R90.2 / R90.23: a row number marks a numbered row ────────────────
+// ──────────────── R90.2 / R90.23: a row number marks a permission's row ────────────────
 
-/// `16` typed as a free answer to "how many workers?" answered choice 1 at the `1`. A digit now
-/// marks the row it names - and the numbers are drawn - and only Enter answers.
+/// On a permission a row number marks the row it names - the numbers are drawn and the bar says
+/// so - and only Enter answers. A question's rows carry no number: its digits are its answer.
 #[test]
-fn a_digit_on_a_question_marks_its_numbered_row_and_enter_answers() {
-    let mut a = app();
-    ask(
-        &mut a,
-        1,
-        testing::asked("q1", "how many workers?", &["2", "4", "8"], ""),
-    );
-    let card = a.decision_lines(&a.open[0].clone(), 80).join("\n");
-    assert!(card.contains("▸ 1  2"), "{card}");
-    assert!(card.contains("  3  8"), "{card}");
-    assert!(card.contains("a row number marks"), "{card}");
-    assert_eq!(a.key(Key::Char('3')), None, "a digit answers nothing");
-    assert_eq!(a.sel, 2);
-    assert_eq!(
-        a.key(Key::Enter),
-        Some(Action::AnswerQuestion {
-            req_id: "q1".into(),
-            answer: QuestionAnswer::choosing(2),
-        })
-    );
-    // On a permission the same: the bar says so, and the rows carry their numbers.
+fn a_digit_on_a_permission_marks_its_numbered_row_and_enter_answers() {
     let mut b = app();
     ask(&mut b, 1, testing::requested("r1", "rm"));
     let card = b.decision_lines(&b.open[0].clone(), 80).join("\n");
@@ -156,7 +136,8 @@ fn a_digit_on_a_question_marks_its_numbered_row_and_enter_answers() {
         "{card}"
     );
     assert!(b.hint_bar(200).contains("a row number marks"));
-    assert_eq!(b.key(Key::Char('2')), None);
+    assert_eq!(b.key(Key::Char('2')), None, "a digit answers nothing");
+    assert_eq!(b.sel, 1, "it moved the mark");
     assert_eq!(b.key(Key::Enter), answer("r1", "deny"));
 }
 
@@ -188,7 +169,8 @@ fn a_question_without_choices_offers_no_arrows_and_an_empty_choice_is_named() {
     let mut b = app();
     ask(&mut b, 1, testing::asked("q1", "suffix?", &["", "-v2"], ""));
     let card = b.decision_lines(&b.open[0].clone(), 80).join("\n");
-    assert!(card.contains("▸ 1  (an empty answer)"), "{card}");
+    assert!(card.contains("▸ (an empty answer)"), "{card}");
+    assert!(!card.contains("1  (an empty answer)"), "no number: {card}");
 }
 
 // ───────────────────── R90.5: the prompt card has a way back ─────────────────────
@@ -700,7 +682,7 @@ fn the_help_names_the_card_keys() {
     for words in [
         "alt-a brings",
         "alt-r reseats",
-        "row number marks",
+        "row number does too",
         "asks whether to",
     ] {
         assert!(help.contains(words), "{words}: {help}");
@@ -773,4 +755,31 @@ fn an_answered_card_closes_at_once_and_a_refusal_reopens_it() {
         actual_seq: 3,
     });
     assert!(a.open.is_empty(), "settled elsewhere: not reopened");
+}
+
+// ──────── A question's digits are its answer, and an answer in flight is not a card ────────
+
+/// Typing `16` as the free answer to "how many workers?" marked row 1 and left `6` in the field,
+/// so the answer sent was not the one typed. A question's digits are its answer; the arrows mark.
+#[test]
+fn a_question_cards_digit_is_typed_into_its_answer() {
+    let mut a = app();
+    ask(
+        &mut a,
+        1,
+        testing::asked("q1", "how many workers?", &["2", "4", "8"], ""),
+    );
+    typed(&mut a, "16");
+    assert_eq!(a.input(), "16", "both characters are the answer's");
+    assert_eq!(a.sel, 0, "no digit moved the mark");
+    let card = a.decision_lines(&a.open[0].clone(), 80).join("\n");
+    assert!(!card.contains("a row number"), "{card}");
+    assert!(card.contains("type your own"), "{card}");
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::AnswerQuestion {
+            req_id: "q1".into(),
+            answer: QuestionAnswer::free("16"),
+        })
+    );
 }

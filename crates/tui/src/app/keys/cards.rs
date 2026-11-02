@@ -315,6 +315,9 @@ impl App {
         // ladder the operator could not see.
         if !self.open.is_empty() && self.todo_draft.is_none() && self.key_ask.is_none() {
             let n = decision_rows(&self.open[0]);
+            // A question's digits are the characters of its answer, so only a permission's rows
+            // are answered by number; see the digit arm below.
+            let numbered = self.open[0].kind != "question";
             let typing = !self.editor.text().is_empty();
             match k {
                 // Esc puts a question card away and answers nothing: the words leave WITH the card
@@ -345,10 +348,10 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
-                // A row number MARKS the row; Enter answers it. Answering on the digit took a `16`
-                // typed as a free answer to "how many workers?" for choice 1 - the numbers are drawn
-                // now, so a digit is a move like the arrows and the answer is one deliberate Enter.
-                _ if !typing && digit_row(k, n).is_some() => {
+                // A row number MARKS the row on a permission; Enter answers it. Answering on the
+                // digit took a `16` typed as a free answer to "how many workers?" for choice 1,
+                // and marking it ate the first character of a question's answer.
+                _ if numbered && !typing && digit_row(k, n).is_some() => {
                     self.sel = digit_row(k, n).unwrap();
                     self.redraw = true;
                     return ControlFlow::Break(None);
