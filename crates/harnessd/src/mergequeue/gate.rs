@@ -1960,6 +1960,12 @@ pub fn gate_target_dir(worktree: &Path) -> PathBuf {
 /// **The entry id would name a run better and is not reachable here**: it lives in the queue, and
 /// [`GateRunner::run`] — the seam R62 fills — is handed a worktree and steps and no entry.
 pub fn gate_tmp_dir(worktree: &Path) -> PathBuf {
+    gate_tmp_dir_in(Path::new(GATE_TMP_ROOT), worktree)
+}
+
+/// [`gate_tmp_dir`] under a scratch root the caller chose: a test's own directory, or a box whose
+/// [`GATE_TMP_ROOT`] is not on a disk (the property is the root's, not this string's).
+pub fn gate_tmp_dir_in(root: &Path, worktree: &Path) -> PathBuf {
     static RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tree: String = worktree
         .file_name()
@@ -1969,7 +1975,7 @@ pub fn gate_tmp_dir(worktree: &Path) -> PathBuf {
         .take(GATE_TMP_NAME_CHARS)
         .collect();
     let run = RUN.fetch_add(1, Ordering::Relaxed) + 1;
-    Path::new(GATE_TMP_ROOT).join(format!("{tree}-{run}"))
+    root.join(format!("{tree}-{run}"))
 }
 
 /// **A run's scratch directory, made when the run starts and removed when it ends** — on every way
@@ -1980,8 +1986,13 @@ impl GateScratch {
     /// Make this run's scratch. Anything already at the name is cleared first: the name is per run,
     /// so what is there is a run that was killed before it could remove its own.
     fn for_run(worktree: &Path) -> Result<GateScratch, String> {
+        GateScratch::for_run_in(Path::new(GATE_TMP_ROOT), worktree)
+    }
+
+    /// The same under a root the caller chose. See [`gate_tmp_dir_in`].
+    fn for_run_in(root: &Path, worktree: &Path) -> Result<GateScratch, String> {
         use std::os::unix::fs::DirBuilderExt;
-        let dir = gate_tmp_dir(worktree);
+        let dir = gate_tmp_dir_in(root, worktree);
         let _ = std::fs::remove_dir_all(&dir);
         // **`0700`**: a step's scratch holds what the step wrote — on this tree that includes a
         // copy of the operator's store (`crates/turn/tests/restore.rs`) — and `/var/tmp` is
@@ -2550,51 +2561,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&wt);
     }
 
-    /// **A step's scratch is a short directory on the box's real disk, outside the tree, and it is
-    /// gone when the run ends** ([`GATE_TMPDIR`], [`GATE_TMP_ROOT`]) — a `TMPDIR` inside the landing
-    /// tree is too long for the AF_UNIX sockets this workspace's own tests bind.
-    #[test]
-    fn a_steps_scratch_is_short_on_a_real_disk_and_gone_when_the_run_ends() {
-        // **The decision, as a decision** — no process needed: the box's own root, the tree's name
-        // in the directory, and a number that makes two runs two directories.
-        // **A fixture name, so this test cannot collide with the live landing tree** (which on this
-        // box is `letibot-a156c9c34c8e`): a test that reuses the real name passes or fails by
-        // accident of the box it runs on.
-        let a = gate_tmp_dir(Path::new("/landing/letibot-fixture-abcdef123456"));
-        let b = gate_tmp_dir(Path::new("/landing/letibot-fixture-abcdef123456"));
-        assert_eq!(
-            a.parent(),
-            Some(Path::new(GATE_TMP_ROOT)),
-            "{}",
-            a.display()
-        );
-        assert_ne!(a, b, "one directory per run, not per step");
-        assert!(
-            a.to_string_lossy().contains("letibot-fixture"),
-            "a leftover names the tree it belongs to: {}",
-            a.display()
-        );
-        // **Short**: the longest socket name this workspace binds is 60 bytes
-        // (`crates/sessionlog/tests/resume_frames.rs`), and an AF_UNIX path must be under 108 with
-        // its NUL — so a root may spend 46 and no more.
-        assert!(
-            a.as_os_str().len() + 1 + 60 <= 107,
-            "{} bytes leaves no room for the 60-byte socket names this workspace binds: {}",
-            a.as_os_str().len(),
-            a.display()
-        );
-        // **Not the box's temp directory** — and the yardstick is `/tmp`, not
-        // `std::env::temp_dir()`: a gate step's own `TMPDIR` IS this scratch (that is the change
-        // under test), so comparing a path derived from `GATE_TMP_ROOT` with the temp dir it was
-        // handed is circular and fails exactly when the fix works. The tmpfs this exists to avoid
-        // is `/tmp`.
-        assert!(
-            !GATE_TMP_ROOT.starts_with("/tmp"),
-            "not the box's temp directory, which is the tmpfs this exists to avoid: {GATE_TMP_ROOT}"
-        );
+    /// **A tmpfs or a disk**: the one distinction this file's scratch decision turns on.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FileSystem {
+        Disk,
+        Tmpfs,
+    }
 
-        let wt = std::env::temp_dir().join(format!("letibot-gate-scratch-{}", std::process::id()));
-        std::fs::create_dir_all(&wt).unwrap();
+    /// **What a directory is on, where the platform says so.** `None` for a path that is not there
+    /// and for a platform with no answer, so a caller asks rather than assumes.
+    fn filesystem_of(path: &Path) -> Option<FileSystem> {
+        if !path.exists() {
+            return None;
+        }
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+        let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+        // SAFETY: a NUL-terminated path this test owns and a buffer it owns, and `statfs` writes
+        // only into that buffer.
+        if unsafe { libc::statfs(c.as_ptr(), &mut buf) } != 0 {
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Some(if buf.f_type == libc::TMPFS_MAGIC {
+                FileSystem::Tmpfs
+            } else {
+                FileSystem::Disk
+            })
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: `f_fstypename` is a NUL-terminated array inside the buffer `statfs` filled.
+            let name = unsafe { std::ffi::CStr::from_ptr(buf.f_fstypename.as_ptr()) };
+            Some(if name.to_bytes() == b"tmpfs" {
+                FileSystem::Tmpfs
+            } else {
+                FileSystem::Disk
+            })
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = &buf;
+            None
+        }
+    }
+
+    /// **One step, and what it was told about its scratch**: the production path, from the tree's
+    /// directory to the removal at the end of the run.
+    fn run_a_scratch_step(wt: &Path) {
         let stop = AtomicBool::new(false);
         let alive = || true;
         let ctl = GateControl {
@@ -2604,7 +2618,7 @@ mod tests {
             alive: &alive,
         };
         let run = run_with_memory(
-            &wt,
+            wt,
             &[
                 r#"printf '%s %s' "$TMPDIR" "$( [ -d "$TMPDIR" ] && echo dir || echo MISSING )""#
                     .to_string(),
@@ -2624,15 +2638,8 @@ mod tests {
             "the gate makes it before the step runs: {said}"
         );
         assert!(
-            !printed.starts_with(&wt),
+            !printed.starts_with(wt),
             "NOT inside the landing tree: {said}"
-        );
-        // **Not the box's temp directory**, judged against `/tmp` for the reason above: a gate
-        // step's `TMPDIR` is this very scratch, so `std::env::temp_dir()` here is the thing under
-        // test, not a yardstick.
-        assert!(
-            !printed.starts_with("/tmp"),
-            "the step used to inherit the box's temp directory: {said}"
         );
         assert!(
             printed.as_os_str().len() + 1 + 60 <= 107,
@@ -2643,23 +2650,107 @@ mod tests {
             "the gate removes it when the run ends: {}",
             printed.display()
         );
-        // **A real filesystem, not a tmpfs** — the whole point, and Linux has the answer. Elsewhere
-        // the assertions above (the box's temp directory, and not the tree) are what this can say.
-        #[cfg(target_os = "linux")]
-        {
-            let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-            let path = std::ffi::CString::new(GATE_TMP_ROOT).unwrap();
-            // SAFETY: a NUL-terminated path this test owns and a buffer it owns, and `statfs`
-            // writes only into that buffer.
-            let rc = unsafe { libc::statfs(path.as_ptr(), &mut buf) };
-            assert_eq!(rc, 0, "statfs {GATE_TMP_ROOT}");
-            assert_ne!(
-                buf.f_type,
-                libc::TMPFS_MAGIC,
-                "{GATE_TMP_ROOT} is a tmpfs, and a write there is shmem charged to the step's own \
-                 cgroup — the failure this root exists to avoid"
+    }
+
+    /// **A step's scratch is a short directory on a real disk, outside the tree, and it is gone when
+    /// the run ends** ([`GATE_TMPDIR`], [`GATE_TMP_ROOT`]). A `TMPDIR` inside the landing tree is
+    /// too long for the AF_UNIX sockets this workspace's own tests bind.
+    ///
+    /// **The disk is NOT this box's `/var/tmp`.** Whether that mount is a tmpfs is a fact about the
+    /// machine, and a test that asserts it is red on every placement sandbox, where it is. So the
+    /// filesystem half is measured on a root this test chooses, and where the box has no non-tmpfs
+    /// directory at all it is absent apparatus rather than a failure.
+    #[test]
+    fn a_steps_scratch_is_short_on_a_real_disk_and_gone_when_the_run_ends() {
+        // **A fixture name, so this test cannot collide with the live landing tree** (which on this
+        // box is `letibot-a156c9c34c8e`): a test that reuses the real name passes or fails by
+        // accident of the box it runs on.
+        let tree = Path::new("/landing/letibot-fixture-abcdef123456");
+
+        // **The decision, as a decision**: no process needed, the root it was given, the tree's
+        // name in the directory, and a number that makes two runs two directories.
+        let root = Path::new(GATE_TMP_ROOT);
+        let a = gate_tmp_dir_in(root, tree);
+        let b = gate_tmp_dir_in(root, tree);
+        assert_eq!(a.parent(), Some(root), "{}", a.display());
+        assert_ne!(a, b, "one directory per run, not per step");
+        assert!(
+            a.to_string_lossy().contains("letibot-fixture"),
+            "a leftover names the tree it belongs to: {}",
+            a.display()
+        );
+        // **Short**: the longest socket name this workspace binds is 60 bytes
+        // (`crates/sessionlog/tests/resume_frames.rs`), and an AF_UNIX path must be under 108 with
+        // its NUL, so a root may spend 46 and no more. A fact about the constant's SPELLING, which
+        // is why it holds on every box.
+        assert!(
+            a.as_os_str().len() + 1 + 60 <= 107,
+            "{} bytes leaves no room for the 60-byte socket names this workspace binds: {}",
+            a.as_os_str().len(),
+            a.display()
+        );
+        // **The scratch the production path makes**, and what the step is told: a directory, outside
+        // the tree, short, and gone when the run ends. Every one of those is a fact about the code.
+        let wt = std::env::temp_dir().join(format!("letibot-gate-scratch-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        run_a_scratch_step(&wt);
+
+        // **Which filesystem the gate's root is on, said rather than asserted.** On a box whose
+        // `/var/tmp` is a tmpfs this is a real cost, and it is the box's to fix, not this suite's.
+        // Asked after the run, because the root is a directory the first run makes.
+        if filesystem_of(root) == Some(FileSystem::Tmpfs) {
+            eprintln!(
+                "NOTE: {GATE_TMP_ROOT} is on a tmpfs here, so a step's scratch is shmem charged to \
+                 its own cgroup, so GATE_TMP_ROOT should name a real disk on this box"
             );
         }
+
+        // **The disk half, on a root this test chooses.** A candidate has to BE a directory that is
+        // already there, or the scratch could not be made under it.
+        let candidates = [
+            PathBuf::from(GATE_TMP_ROOT),
+            std::env::temp_dir(),
+            PathBuf::from("/var/tmp"),
+            PathBuf::from("/tmp"),
+        ];
+        let chosen = candidates
+            .into_iter()
+            .find(|p| p.is_dir() && filesystem_of(p) == Some(FileSystem::Disk));
+        let Some(root) = chosen else {
+            let _ = std::fs::remove_dir_all(&wt);
+            let _ = letibot_tokencore::apparatus::present(
+                "a directory on a filesystem that is not a tmpfs, to put a step's scratch on",
+                false,
+            );
+            return;
+        };
+        let made =
+            GateScratch::for_run_in(&root, tree).expect("a scratch under a root that exists");
+        let scratch = made.path().to_path_buf();
+        assert!(scratch.is_dir(), "{} was made", scratch.display());
+        assert_eq!(
+            scratch.parent(),
+            Some(root.as_path()),
+            "{}",
+            scratch.display()
+        );
+        assert_eq!(
+            filesystem_of(&scratch),
+            Some(FileSystem::Disk),
+            "{} is on the root this test chose, which is not a tmpfs",
+            scratch.display()
+        );
+        assert!(
+            scratch.as_os_str().len() + 1 + 60 <= 107,
+            "a scratch on a real root is short too: {}",
+            scratch.display()
+        );
+        drop(made);
+        assert!(
+            !scratch.exists(),
+            "the gate removes it when the run ends: {}",
+            scratch.display()
+        );
         let _ = std::fs::remove_dir_all(&wt);
     }
 
