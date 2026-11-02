@@ -108,20 +108,9 @@ fn queued_prompts_behind_a_running_turn_are_one_message() {
     assert_eq!(a.pending_prompts.len(), 2);
 }
 
-/// **The shape that actually happens on this box, and it retired nothing.**
-///
-/// Measured 2026-09-23 on the live head: six `queued ·` echoes, one per paragraph
-/// of the R27 instruction, every one of them answered — and the row that answered
-/// them was their JOIN. Six sends while the head did not think a turn was running
-/// became six separate entries (`App::submit`'s coalescing is conditional on the head
-/// thinking a turn is RUNNING, which is `turn_busy`'s question — see it for why the state
-/// name was the wrong instrument), the engine merged them into ONE user item joined by
-/// newlines, and against a whole-string rule every comparison was *no*.
-///
-/// Then the seventh thing: the operator's next message was sent while a turn WAS
-/// running, so the head appended it to the last entry — making an entry that is a
-/// *superset* of one row and a *prefix* of another. Every one of these three shapes
-/// is here, in one test, against the text lengths the real session had.
+/// The shape that happens on this box: six sends while no turn was thought to be running became six
+/// entries and the engine joined them into one row, so a whole-string rule retires nothing. The
+/// seventh, sent mid-turn, appended to the last entry and is a superset and a prefix at once.
 #[test]
 fn the_engine_join_of_several_prompts_retires_every_echo_it_answered() {
     let mut a = app();
@@ -498,24 +487,9 @@ fn a_landing_row_retires_its_echo_and_a_piece_strips_the_front() {
     assert!(a.pending_prompts.is_empty());
 }
 
-/// **The waiting words sit below the working, and move up when the daemon takes them** — two
-/// operator reports, and they are the two halves of one rule.
-///
-/// *"queued above thinking"* (their screen, 2026-10-05) is the half that was wrong. Their
-/// words, and directly under them the running turn's reasoning — and nothing answers those
-/// words, because the daemon has not been given them, so nothing under them may look like an
-/// answer. While nothing has taken them they belong at the tail, and the reply to the
-/// PREVIOUS prompt is above them, where it belongs.
-///
-/// *"a message was queued to harnessd, delivered to model, reply started streaming above the
-/// queued message and then some tick goes off and queued message dequeued and rendered
-/// rightfully above the reply. pure ui desync."* is the half that must not come back — and it
-/// is why the move happens at the moment the daemon TAKES the words: from then on the echo is
-/// above the pane by construction, so no reply to it can appear over it.
-///
-/// **The move is asserted as a move, because the move is the ruling.** What is deliberately
-/// not asserted is that the frame is the same frame — it is not, and it must not be: the two
-/// facts are different facts, and the frame is the one place that says which one holds.
+/// The waiting words sit below the working and move up when the daemon takes them: until then
+/// nothing has answered them, and from then on the echo is above the pane by construction, so no
+/// reply can appear over it. The move is asserted as a move, not that the frame is unchanged.
 #[test]
 fn a_queued_echo_waits_below_the_working_until_the_daemon_takes_it() {
     let mut a = app();
@@ -1262,28 +1236,9 @@ fn the_ladder_cycles_through_the_conversation_rung_by_name() {
     }
 }
 
-/// **R16: an echo whose prompt landed under a transcript that was then replaced.**
-///
-/// Measured on this head 2026-09-22: three prompts still rendering `queued ·`
-/// while the tree was clean, no turn was running, and the work they asked for was
-/// already committed. R2 says exactly why the mark can outlive the fact — an echo
-/// binds to an announced row and retires on `TranscriptContent` **matched by
-/// text** — and a compaction **replaces the transcript**, so the row those echoes
-/// were waiting for was summarised away and the retiring event never arrives.
-///
-/// The fix is at the fork and it is exact rather than approximate: the echoes that
-/// were in the air **when the fork began** are resolved, and the ones queued after
-/// it are left alone, because those belong to the new transcript and their rows
-/// are still coming. Both halves are asserted here, and the second matters as much
-/// as the first: retiring an echo whose row has not landed takes a sentence off
-/// the screen, which is §4.2's defect with a new cause.
-///
-/// **Why the shape is "mark on the way in, resolve on the way out".** A fork
-/// announces itself twice — `auto_compact` *before* it happens and `compacted`
-/// *after* — and only the first of those can say what was in the air. A manual
-/// `/compact` has no "before" warning at all, so the head takes its own mark as
-/// it sends the request. Both are the head's own bookkeeping on facts it already
-/// has; no daemon change is involved.
+/// R16: an echo whose prompt landed under a transcript that was then replaced. A fork announces
+/// itself before and after, so the echoes in the air when it began are resolved and the ones queued
+/// after it are left alone, since those belong to the new transcript and their rows are still coming.
 #[test]
 fn a_compaction_resolves_the_echoes_it_supersedes() {
     let hub = Hub::new("s");
@@ -1626,24 +1581,9 @@ fn ctrl_v_opens_one_rows_window_and_the_whole_folds_are_the_verb() {
     );
 }
 
-/// **R40: the bar says what `ctrl-t` does, and names the verb that does the rest.**
-///
-/// The operator, reading a real screen: *"als why Ct stopped expanding tools??? at least in
-/// letibt"*. Two defects, and only one of them was letibot's.
-///
-/// **This one was letibot's, and it is R29's rule failing on the bar instead of on a
-/// note.** `ctrl-t` was narrowed deliberately (R10, above) — it opens one row's window and
-/// the conversation-wide unfold is `/t` — and the bar still read `ctrl-t long output`,
-/// which is the reading the ruling removed. So the key advertised at the bottom of the
-/// screen did not do what the bar said, and `/t` was on the bar nowhere: the remedy the
-/// operator needed was real, existed, and was not offered.
-///
-/// **The bar's own arithmetic is R22's and it is measured here rather than asserted.**
-/// This bar is longer than 80 columns whatever it says — nine entries and room for about
-/// five — so what is *visible* is a decision. Two of them are pinned (R22: `ctrl-s` first,
-/// `ctrl-n` second, because a reflex worth advertising has to be inside the frame) and the
-/// rest are ordered by what a reader cannot find out any other way. That is the test's last
-/// assertion, and it is the reason `tab completes /commands` is the entry that gave way.
+/// The bar says what `ctrl-t` does and names the verb that does the rest: it advertised a
+/// conversation-wide unfold after the key was narrowed to one row, and `/t` appeared nowhere.
+/// What is visible at 80 and 120 columns is a decision, so the pinned entries are asserted.
 #[test]
 fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
     let mut a = app();
@@ -1714,23 +1654,9 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
         "the index has to stay on the bar — R29's remedy rule needs it there: {bar}"
     );
 
-    // **The measurement, recorded.** R22's arithmetic is that a chord past the frame's
-    // width is a chord nobody has, so the numbers are pinned rather than remembered.
-    // (`trim` is the frame's gutter, which is not the bar's own width.)
-    //
-    // **Re-measured 2026-10-03 for R56's rework**, which added `ctrl-p hold` and moved the
-    // todos pane to `ctrl-t` and the payload window to `ctrl-v`: 146 → 160, the new entry's
-    // own width. What is visible at 80 and at 120 is unchanged (the two pinned entries at 80,
-    // the `ctrl-v newest result · /t all` pair whole at 120), which the assertions below keep.
-    //
-    // **Re-measured 2026-10-11 for R69**, which generates the bar from the chords' own table and
-    // says what ctrl-n does — `ctrl-n clears notes`, where rano's sentence said `ctrl-n notes`
-    // about a chord that retires every note (R67 item 9): 160 → 167. Both pinned entries are
-    // still whole inside 80; the `ctrl-v`/`/t` pair is whole from 128 rather than 120.
-    //
-    // **Re-measured 2026-10-12 for R89**, which adds `alt-n newest notice` — every notice is one
-    // line now and alt-n is the keyboard's way to the rest of one: 167 → 189. The two pinned
-    // entries are still whole inside 80.
+    // The bar's width is pinned rather than remembered: a chord past the frame is a chord nobody
+    // has. The numbers moved with each entry added, and what is visible at 80 and at 120 is what the
+    // assertions below keep.
     assert_eq!(
         bar.trim().chars().count(),
         189,
@@ -2527,22 +2453,9 @@ fn two_prompts_behind_a_running_call_are_one_echo() {
     );
 }
 
-/// **A row's payload is reachable past its first screenful.**
-///
-/// The operator's framing: a tool result is a **logical** string that wraps to
-/// thousands of display lines, of which the window shows a few dozen. The fold drew
-/// the head and reported the rest as `… +N lines · ctrl-t`, and `ctrl-t` revealed
-/// none of them — it raised the *budget* (which rows may be long), never the
-/// *offset*. So the rest of a 418 KB payload could not be read at all.
-///
-/// This asserts what makes it reachable: the view opens on `ctrl-t`, the arrows move
-/// the window, the end is reachable, and the seam says which key does what.
-///
-/// A **tall** screen on purpose: the card draws up to the body budget when it is
-/// open, so on a 30-row terminal only the block's own tail is on screen and "did the
-/// head move" is unanswerable. Sixty rows fits the whole block and the chrome under
-/// it, which is what makes the assertions below about the *payload* rather than about
-/// which part of it the terminal happened to show.
+/// A row's payload is reachable past its first screenful: the fold drew the head and `ctrl-t` raised
+/// the budget and never the offset, so the rest of a large result could not be read at all. A tall
+/// screen on purpose, so what moves is the payload and not which part of it fits.
 #[test]
 fn a_long_payload_can_be_paged_to_its_end() {
     let mut a = app();
@@ -3487,23 +3400,9 @@ fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
     );
 }
 
-/// **A tool-heavy turn draws EXACTLY ONE marker, whatever rows the daemon
-/// interleaved** — R37 AMENDED, and this is the form to write rather than the case.
-///
-/// The operator ran the rung and got **eight markers in a row with no prose between
-/// any of them**. Every one of their CONTENTS was right; what was wrong was how many
-/// there were. So this asserts the **number**, not the content — a test that checked
-/// the wording would have passed on all eight — and it asserts it over the shapes the
-/// daemon really writes between one call and the next:
-///
-/// * an assistant row with **no text** carrying the round's calls (the shape of a
-///   tool-calling round, and invisible at this rung);
-/// * an assistant row whose text is **whitespace only**;
-/// * a **tool_result** row;
-/// * a row **announced with no body** — *"a zero-length text row"*, and invisible
-///   by design.
-///
-/// Each of those ended a run under the old boundary, and the count is what says so.
+/// A tool-heavy turn draws exactly one marker, whatever the daemon interleaved: the operator got
+/// eight in a row with no prose between them and every one's content was right. So this asserts the
+/// number over the shapes really written between two calls, each of which ended a run before.
 #[test]
 fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
     let mut a = app();
