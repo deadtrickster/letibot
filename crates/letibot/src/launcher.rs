@@ -720,56 +720,47 @@ mod liveness_tests {
         );
     }
 
-    /// **The Rust agrees with the box's own socket table about the daemons running RIGHT
-    /// NOW.**
+    /// **The Rust agrees with the box's own socket table about a daemon that is listening.**
     ///
-    /// This is the cross-check the whole port rests on and it cannot be a unit test: it
-    /// compares this module's answer against a tool that is NOT one of this module's own
-    /// paths, for every record on the box, and reports the stale ones by name. It SKIPS
-    /// when nothing is running — a runner has no daemons — and says so, rather than
-    /// passing vacuously.
+    /// This is the cross-check the whole port rests on and it cannot be a unit test: it compares
+    /// this module's answer against a tool that is NOT one of this module's own paths.
     ///
-    /// **Which tool depends on the platform, and the first version of this test only knew
-    /// the Linux one.** `ss -lxpH` names the socket path and the pid holding it, so on
-    /// Linux the agreement is about the PID. macOS has no `ss` — and `lsof` cannot stand in
-    /// for it, because `is_listening`/`daemon_pid` there FALL BACK TO `lsof` when a connect
-    /// fails, so agreement with it would be the module agreeing with itself. `netstat
+    /// **The daemon is one this test starts.** It used to walk the box's runtime directory and
+    /// compare whatever happened to be running there, so its result was a fact about the machine —
+    /// green on a box with a daemon, a skip on a runner, and a comparison against another session's
+    /// records elsewhere. A listener bound by this process, with the record the launcher would write
+    /// beside it, is the same question with nothing of the box in it.
+    ///
+    /// **Which tool depends on the platform.** `ss -lxpH` names the socket path and the pid holding
+    /// it, so on Linux the agreement is about the PID. macOS has no `ss` — and `lsof` cannot stand in
+    /// for it, because `is_listening`/`daemon_pid` there FALL BACK TO `lsof` when a connect fails, so
+    /// agreement with it would be the module agreeing with itself. `netstat
     /// -anv -f unix` is the independent witness: the kernel's local-domain socket table,
     /// with the `-v` columns that carry `process:pid`, so the same PID question is asked and
-    /// nothing is weakened. Without that second half the test could only ever fail on
-    /// macOS — `present("the ss command")` is a skip `LETIBOT_REQUIRE_APPARATUS=1` refuses,
-    /// about a command the platform does not have and never will (MEASURED: the merge
-    /// queue's daemon runs on this Mac, and this was the one red target in `-p letibot`).
-    ///
-    /// MEASURED when written: 10 records, 6 live, and the pid agreed in every case.
+    /// nothing is weakened.
     #[test]
     fn every_live_daemon_agrees_with_the_boxs_socket_table() {
         use letibot_tokencore::apparatus;
         use std::process::Command;
 
-        // **Everything this test needs is APPARATUS, and all three conditions go
-        // through the same machinery rather than an `assert!`.**
-        //
-        // Its first version refused to pass vacuously with
-        // `assert!(n_live > 0, "… it should have SKIPPED")` — the instinct is right and
-        // is the same judgement as `THIS IS NOT A PASS`, but the enforcement was wrong:
-        // on a box with no daemon that assertion FAILS, where what it means is "this
-        // machine has nothing to compare against". MEASURED in CI:
-        //
-        //   every_live_daemon_agrees_with_ss ... FAILED
-        //     nothing was listening, so this proved nothing — it should have SKIPPED
-        //
-        // A runner has no daemon, so that could only ever fail there — the mirror of the
-        // `ldd` step that could only ever pass. `apparatus::present` says the honest
-        // thing instead, and `LETIBOT_REQUIRE_APPARATUS=1` turns the skip back into a
-        // failure for a box that means it.
-        let dir = rundir();
-        let Some(_) = apparatus::present(
-            &format!("a letibot runtime directory ({})", dir.display()),
-            dir.is_dir(),
-        ) else {
-            return;
-        };
+        // **A runtime directory, a socket and a record — the three things a launcher leaves** —
+        // bound BEFORE the table is read, because the table is a snapshot and this listening socket
+        // has to be in it. The name is short because the socket path must fit in `sun_path`.
+        let dir = std::env::temp_dir().join(format!("letibot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a runtime directory");
+        let w = locate_in(&dir, &dir);
+        let listener = std::os::unix::net::UnixListener::bind(&w.socket)
+            .expect("a socket to be the daemon that answers for it");
+        std::fs::write(
+            &w.record,
+            format!(
+                r#"{{"workspace":"{}","socket":"{}","pid":{}}}"#,
+                w.workspace.display(),
+                w.socket.display(),
+                std::process::id()
+            ),
+        )
+        .expect("the record beside it");
 
         // The tool each platform answers the question with. Linux's `ss` is what the shell
         // uses; macOS's `netstat -anv` is the kernel's table (`tools/src/exec/host.rs` asks
@@ -796,58 +787,39 @@ mod liveness_tests {
         let listing =
             String::from_utf8_lossy(&listing.expect("present checked it").stdout).into_owned();
 
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return;
-        };
-        let (mut n_live, mut stale, mut agreed) = (0, 0, 0);
-        for e in entries.flatten() {
-            let path = e.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(rec) = read_record(&path) else {
-                continue;
-            };
-            if rec.workspace.is_empty() {
-                continue;
-            }
-            let w = locate(Path::new(&rec.workspace));
-            if !live(&w) {
-                stale += 1;
-                continue;
-            }
-            n_live += 1;
-            // What the box says: the pid on the line naming this socket.
-            #[cfg(target_os = "macos")]
-            let theirs = netstat_listener_pid(&listing, &w.socket);
-            #[cfg(not(target_os = "macos"))]
-            let theirs = ss_listener_pid(&listing, &rec.socket);
-            let mine = daemon_pid(&w);
-            if theirs.is_some() && mine == theirs {
-                agreed += 1;
-            } else {
-                eprintln!(
-                    "  {} {tool} says pid={theirs:?}, this module says pid={mine:?}",
-                    rec.socket
-                );
-            }
-        }
+        // This module's answer: the pid holding the listening socket.
+        let live_here = live(&w);
+        let mine = daemon_pid(&w);
+        // What the box says: the pid on the line naming this socket.
+        #[cfg(target_os = "macos")]
+        let theirs = netstat_listener_pid(&listing, &w.socket);
+        #[cfg(not(target_os = "macos"))]
+        let theirs = ss_listener_pid(&listing, &w.socket.to_string_lossy());
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
 
-        // **A daemon that lies about its pid FAILS; a machine with no daemon SKIPS.**
-        // This is the assertion, and it stays as it is — the machinery above is only
-        // about whether there was anything to assert against.
-        let Some(_) = apparatus::present(
-            "at least one daemon actually listening, to compare against",
-            n_live > 0,
-        ) else {
-            return;
-        };
-        assert_eq!(
-            agreed, n_live,
-            "every live daemon must be found at the pid `{tool}` reports; \
-             {stale} record(s) were stale"
+        eprintln!(
+            "{tool} says pid={theirs:?}, this module says pid={mine:?}, and the listener is {}",
+            std::process::id()
         );
-        eprintln!("agreed with {tool} on {agreed} live daemon(s); {stale} stale record(s) skipped");
+        assert!(
+            live_here,
+            "{} is a socket something is listening on",
+            w.socket.display()
+        );
+        assert_eq!(
+            mine,
+            Some(std::process::id()),
+            "the pid this module names for {} is the process listening on it",
+            w.socket.display()
+        );
+        assert_eq!(
+            theirs,
+            mine,
+            "`{tool}` and this module must name the same pid for {}: a daemon that answers for a \
+             socket nobody listens on is a `--stop` that signals the wrong process",
+            w.socket.display()
+        );
     }
 
     /// The pid `ss -lxpH` names on the line carrying this socket — `users:(("harnessd",pid=123,fd=9))`.
@@ -2679,7 +2651,7 @@ mod target_tests {
         // and the number reaches where that daemon listens.
         let mut folders = 0;
         let mut others = 0;
-                let mut rooms = 0;
+        let mut rooms = 0;
         for (i, path) in records.iter().enumerate() {
             let rec = read_record(path).expect("a record under the runtime dir must parse");
             let w = retarget(&dir, Path::new("/here"), &(i + 1).to_string())
