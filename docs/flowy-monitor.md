@@ -6,10 +6,9 @@ message arrives as a firing and costs no tool call. `crates/flowy/src/lib.rs` ha
 
 ## 1. The monitor
 
-`docs/design-brief.md` §7 says chat must be pushed, not polled, and *"no Monitor-shaped
-scaffolding anywhere in the design"*; the operator's words are *"I don't want to fiddle with
-monitors, nor timers which pollute the context."* Both are kept, and the way they are kept is
-the point:
+`docs/design-brief.md` §7 asks for chat pushed rather than polled, and the operator's words are
+*"I don't want to fiddle with monitors, nor timers which pollute the context."* How both are
+kept is the point:
 
 - **The daemon holds the connection.** `Seat` runs one long-poll loop for the life of
   `harnessd`, in its own thread: no shell, no re-arm, no tool call per message. The 20 s window
@@ -43,8 +42,7 @@ default. The env file's `FLOWY_TOKEN=$(cat …)` line is read as the path it nam
 
 Three refusals, each naming what it looked at: no seat named and two on the box (*"A seat is an
 identity, so it is not guessed"*); `~/.config/flowy/token`, never read, because it is the
-operator's own credential; and `https://`, because the client has no TLS and a silent downgrade
-would send a bearer token in the clear.
+operator's own credential; and `https://`, because the client has no TLS.
 
 `--flowy` that cannot be honoured is a startup error. A node merely away at startup is not: the
 seat opens (claim + spool), the loop starts stalled, and the banner says so.
@@ -84,8 +82,8 @@ naming the file, because polling as the old identity succeeds forever and hears 
 
 A seat is the finest thing the node addresses, so a session's address is **`@seat/session`** -
 the id, or the title as an alias. It needs no flowy change: the node's mention parser stops a
-name at `/`, resolving the seat as the addressee and leaving `/session` in the body for the
-daemon to route on.
+name at `/`, resolving the seat as the addressee and leaving `/session` for the daemon to route
+on.
 
 - **Inbound**, `Seat::fan_out_all`: a message whose tag names an attached session goes to **that
   session and nobody else**, through no table - being named is the whole of the decision.
@@ -99,7 +97,7 @@ daemon to route on.
 
 - **The daemon holds the seat; the seat is not the daemon.** A seat is the identity on the fabric
   - one name, one reader, one presence - and the daemon speaks as it; sessions are the minds
-  under it, and subagents route through their parent.
+  under it.
 - **Heads are the other direction.** A head (the TUI, a remote attach, in time the flowy room)
   carries the operator's identity, not the seat's: a head's prompt is `Speaker::Operator` and can
   authorise, where a seat's firing is `Speaker::Agent` and cannot.
@@ -108,13 +106,13 @@ daemon to route on.
   needs its own seat and a seat is held by one daemon. **Tenants** (seat + project) are the
   extension if `leticode` ever wants connect-or-start against one per-box server.
 - **No fan-out, but no threads either.** Each attached session chooses what it receives, so
-  agents stay focused and context stays small. Thread→session routing was considered and dropped;
-  the session **address** (§3b) is what was kept.
+  agents stay focused and context stays small. Thread→session routing was dropped; the session
+  **address** (§3b) is what was kept.
 
 ## 4. Attention
 
 flowy's `wakesFor` has three levels, two scopes and one mute, each edge paid for.
-`docs/implementation-plan.md` §12.2b says the harness should keep the definitions and drop the
+`docs/implementation-plan.md` §12.2b asks the harness to keep the definitions and drop the
 one-flag shape; `attention.rs` does exactly that:
 
 ```
@@ -132,8 +130,7 @@ raiser of an unowned row (two empty strings never match); outside the focus only
 a DM is addressed; a watched thread passes; then the room's level. Under `addressed`, a person's
 message *to somebody else* is skipped and says so, and a person's *unaddressed* message passes
 only while `wake_on_human_broadcast` is on. Every firing says how many went past locally and how
-many the node filtered, so a busy room the session asked to be spared from never reads as a
-silent one.
+many the node filtered, so a room the session asked to be spared from never reads as silent.
 
 ## 5. Subscriptions to entities
 
@@ -145,8 +142,7 @@ silent one.
 
 Envelopes, not deltas - a duplicate is a wasted read, an out-of-order one is invisible, nothing
 partial is applied. A row that cannot be read is refused at subscribe time rather than watched
-forever in silence. The watcher is seat-wide, each session filters by its own set, and the
-transport threads exit when nothing is watched.
+forever in silence.
 
 ## 5b. The shelf, and the fabric block
 
@@ -156,15 +152,14 @@ be read", never an empty shelf. `letibot_flowy::context` renders the operator's 
 are summaries of full pages, memories are titles"* - into one block that `Sessions` puts into a
 root session's system prompt at open, and after a compaction appends as a **system update** when
 it changed. Offline is a state: the live read, else the cached copy with its `read_at`, else a
-block saying no copy exists - never an empty block that reads as "there are no skills".
+block saying no copy exists - never an empty block that reads as no skills.
 
 ## 6. What flowy would have to provide for this to get better
 
 `GET /api/inbox/stream` (§12.2 ask 6) would replace the 20 s long poll with one SSE connection,
 same `wakesFor` and same reader row, and the seat's loop only swaps transport. An
 `artifact.edit` event would make the artifact subscription push instead of being polled. The
-decision object (§12.2 ask 1) is unchanged and still the one that matters most for adjudication
-over flowy.
+decision object (§12.2 ask 1) is still the gap that matters most.
 
 ## 7. The tool
 
