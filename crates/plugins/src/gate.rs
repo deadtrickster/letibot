@@ -42,7 +42,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::manifest::Manifest;
-use crate::{Candidate, Module, Recorder, Stack, WASM, sha256_file};
+use crate::{Candidate, Module, Recorder, Stack, sha256_file};
 
 /// How the gate's step 1 is performed, so tests never run cargo.
 pub trait Builder: Send + Sync {
@@ -124,7 +124,7 @@ impl Builder for CargoBuilder {
             ),
             log: log.clone(),
         })?;
-        let wasm = dir.join(WASM);
+        let wasm = dir.join(Manifest::module_name(dir));
         std::fs::copy(&artifact, &wasm).map_err(|e| BuildError {
             why: format!("{}: {e}", wasm.display()),
             log: log.clone(),
@@ -222,7 +222,13 @@ pub fn gate(stack: &Stack, rec: &Recorder, cand: &Candidate, builder: &dyn Build
             return report.stop(format!("load: {why}"));
         }
     };
-    let wasm = cand.dir.join(WASM);
+    let wasm = manifest.module_path(&cand.dir);
+    // The engine question before the load: a module this build cannot run is refused in its own
+    // words, not in whatever an engine says about a file whose format it never expected.
+    if let Err(why) = crate::engine_for(&manifest.module) {
+        report.load = Err(why.clone());
+        return report.stop(format!("load: {why}"));
+    }
     let module: Arc<dyn Module> = match stack.loader().load(&wasm, &manifest.capabilities) {
         Ok(module) => Arc::from(module),
         Err(why) => {
@@ -356,6 +362,46 @@ mod tests {
         assert!(why.starts_with("load:"), "{why}");
         assert!(report.load.is_err());
         assert!(report.diffs.is_empty());
+    }
+
+    #[test]
+    fn a_script_module_is_refused_at_load_with_the_sentence() {
+        let t = TempDir::new("gate-script");
+        let session = t.path().join("session");
+        let dir = session.join("a");
+        std::fs::create_dir_all(&dir).expect("a layer directory");
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "name = \"a\"\npurpose = \"p\"\nhooks = [\"pane_dashboard\"]\ncapabilities = []\ncontract = 1\nmodule = \"pane.js\"\n",
+        )
+        .expect("plugin.toml");
+        std::fs::write(dir.join("pane.js"), "export function pane_dashboard() {}\n")
+            .expect("the script");
+        let stack = Stack::discover(Some(&session), None, None, Arc::new(FakeLoader::new()));
+        // Discovery hashed the file the manifest names and said it cannot run it.
+        assert_eq!(
+            stack.layer("s1").unwrap().sha256,
+            crate::sha256_hex(b"export function pane_dashboard() {}\n")
+        );
+
+        let cand = stack.candidate(&dir, Scope::Session).unwrap();
+        // The build writes the file the manifest names, so the refusal is about the module and not
+        // about a `plugin.wasm` nothing ever wrote.
+        let report = gate(
+            &stack,
+            &recorder(),
+            &cand,
+            &FakeBuilder::writing(&[("pane_dashboard", Act::answer(json!({})))]),
+        );
+        assert!(!report.passed);
+        let why = report.failure.clone().unwrap();
+        assert!(why.starts_with("load:"), "{why}");
+        assert!(
+            why.contains("no engine for it is built into this host"),
+            "{why}"
+        );
+        assert!(why.contains("pane.js"), "{why}");
+        assert!(report.diffs.is_empty(), "the shadow never ran");
     }
 
     #[test]

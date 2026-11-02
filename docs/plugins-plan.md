@@ -1315,7 +1315,7 @@ why its work runs between the session's turns when the two share a server.
     This is also the shape §4.11's scripts and the butler's small fixes want, a fix written and
     loaded in one call, so the script world should be designed with them rather than beside them.
 
-    **Not built, 2026-10-31 — and it stops on three decisions this plan does not make.** They are
+    **Not built, 2026-10-31, and it stops on two decisions this plan does not make.** They are
     written here because the next session will otherwise re-derive them:
 
     1. **Where the engine artifact comes from.** No JavaScript engine is available offline on this
@@ -1325,20 +1325,20 @@ why its work runs between the session's turns when the two share a server.
        about the ladder, not about packaging**: a vendored blob compiled into the binary is a
        BUILT-IN, so §2.5 runs it freely, `exec` included, and the model's `.js` text becomes the
        only untrusted thing in the path. Nobody should discover that by reading a `build.rs`.
-    2. **What a script layer's module IS.** `Trust::pin` hashes `plugin.wasm` and nothing else, and
-       so do `Layer::sha256`, `has_module`, `poll_changes` and the declaration rule (§4.8's *a
-       manifest and no module*). A `.js` layer as it stands would pin with an EMPTY module hash,
-       and an edit to the `.js` would never un-pin it — a pinned layer could be rewritten by a
-       model and stay free. So step 11 has to say **the script text is the module** — one field on
-       the manifest (`module = "sessions.js"`, default `plugin.wasm`) that the pin, the poll and
-       the declaration rule all read — before any of it can sit on the ladder.
+    2. **What a script layer's module IS: decided and built, 2026-11-01.** `plugin.toml` carries
+       `module = "<file>"` (default `plugin.wasm`): one relative path inside the layer's own
+       directory, refused at admit if it leaves it. `Trust::pin`, `Layer::sha256`, `has_module`,
+       `poll_changes`, the gate's build and the declaration rule all read that field, so a `.js`
+       layer pins on the script text and an edit to it un-pins the layer like any rebuild. A module
+       that is not wasm is admitted to the ladder (pinned, hashed, polled) and refused at load with
+       a sentence naming the file, which is where the engine for it will have to go: until (1) is
+       answered there is none.
     3. **The JS-side contract, and the shadow gate's determinism.** Which functions a `.js` layer
        exports per hook, how it asks for a look, what a trap and a fuel exhaustion mean for the
        engine, and how §2.4's replay stays exact with a clock and `Math.random` inside it.
 
-    The first two are the ones that block: (1) is a trust decision and (2) is a one-line manifest
-    field that has to be decided before the engine is wired, or the ladder's first arm silently
-    grows a hole.
+    (1) is the one that blocks: it is a trust decision about what may run freely, and the manifest
+    field that lets a script layer sit on the ladder at all is now in place under it.
 
 ## 8. Open questions
 

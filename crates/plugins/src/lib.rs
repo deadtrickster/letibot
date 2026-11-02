@@ -206,11 +206,31 @@ pub const HOOK_PREFIXES: &[&str] = &[
     "tool_",
 ];
 
-/// The built module a layer directory holds.
+/// The module a layer directory holds when its manifest names none.
 pub const WASM: &str = "plugin.wasm";
 
 /// What a layer declares.
 pub const MANIFEST: &str = "plugin.toml";
+
+/// **Whether this build has an engine for a module file**, and the sentence when it has not.
+///
+/// The one engine here compiles wasm and nothing else, and a layer whose module is other text
+/// (a script, `docs/plugins-plan.md` step 11) is still on the ladder: pinned, hashed, polled. It
+/// is refused here, by name, so that a `module = "sessions.js"` layer is *unloadable* rather
+/// than pinned on an empty hash and answering nothing anybody can explain.
+pub fn engine_for(module: &str) -> Result<(), String> {
+    let wasm = Path::new(module)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("wasm"));
+    if wasm {
+        return Ok(());
+    }
+    Err(format!(
+        "`{module}` is not a wasm module, and no engine for it is built into this host. The \
+         layer is on the ladder (pinned, hashed and polled like any other), and nothing here can \
+         run it"
+    ))
+}
 
 /// Whether an export name is a hook this host knows. A hook kind carries a name after the
 /// prefix (`pane_dashboard`), and `is_hook_kind("pane_")` is false for that reason: an export

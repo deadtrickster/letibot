@@ -45,7 +45,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use crate::{MANIFEST, WASM, sha256_file, sha256_hex};
+use crate::{MANIFEST, Manifest, WASM, sha256_file, sha256_hex};
 
 /// **One person's statement about one layer's bytes**: *this module and this manifest are mine*.
 ///
@@ -58,7 +58,8 @@ pub struct Pin {
     pub name: String,
     /// The layer directory, as the stack spells it. Where a person pinned it, for the audit.
     pub dir: String,
-    /// The SHA-256 of `plugin.wasm`, or empty for a layer with no module (a declaration).
+    /// The SHA-256 of the layer's module file, named by its manifest (empty for a layer with no
+    /// module, or one whose manifest will not parse).
     pub module: String,
     /// The SHA-256 of `plugin.toml`.
     pub manifest: String,
@@ -545,7 +546,7 @@ impl Trust {
     pub fn pin(&self, name: &str, dir: &Path) -> Result<Pin, String> {
         let manifest = sha256_file(&dir.join(MANIFEST))
             .map_err(|why| format!("`{}` has no manifest to pin: {why}", dir.display()))?;
-        let module = sha256_file(&dir.join(WASM)).unwrap_or_default();
+        let module = sha256_file(&dir.join(Manifest::module_name(dir))).unwrap_or_default();
         // **The time is taken from the book, not from the clock alone**: a pin has to be newer
         // than the revocation it replaces even when the two happen inside one millisecond.
         let at_ms = self.lock().next_ms();
@@ -860,6 +861,42 @@ mod tests {
         assert!(daemon.refresh(), "the daemon's next poll sees it");
         assert!(daemon.standing(&dir, &pin.module, &pin.manifest).free);
         assert_eq!(daemon.pins().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_pin_hashes_the_module_the_manifest_names_and_editing_it_un_pins_the_layer() {
+        let root = tempdir("named-module");
+        let dir = root.join("one");
+        std::fs::create_dir_all(&dir).expect("a layer dir");
+        std::fs::write(
+            dir.join(MANIFEST),
+            "name = \"one\"\npurpose = \"p\"\nhooks = [\"pane_x\"]\ncapabilities = []\ncontract = 1\nmodule = \"one.js\"\n",
+        )
+        .expect("a manifest");
+        std::fs::write(dir.join("one.js"), b"a script v1").expect("the named module");
+        // A wasm file beside it is not this layer's module, so it is not what the pin is about.
+        std::fs::write(dir.join(WASM), b"a stale build")
+            .expect("a wasm the manifest does not name");
+
+        let trust = Trust::in_memory();
+        let pin = trust.pin("one", &dir).expect("a pin");
+        assert_eq!(
+            pin.module,
+            sha256_hex(b"a script v1"),
+            "the pin is about the file the manifest names"
+        );
+        let manifest = sha256_hex(&std::fs::read(dir.join(MANIFEST)).unwrap());
+        assert!(trust.standing(&dir, &pin.module, &manifest).free);
+
+        // Editing the script is a different layer, which is the whole point of pinning it.
+        std::fs::write(dir.join("one.js"), b"a script v2").expect("an edited module");
+        let now = sha256_hex(b"a script v2");
+        let standing = trust.standing(&dir, &now, &manifest);
+        assert!(!standing.free, "the pin was about the old text");
+        let said = standing.sentence("one", &now, &manifest);
+        assert!(said.contains(&pin.module), "the pinned hash: {said}");
+        assert!(said.contains("not pinned any more"), "{said}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

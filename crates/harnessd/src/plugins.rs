@@ -1153,7 +1153,7 @@ impl PluginHost {
         let dir = self.layer_dir(name)?;
         match self.builder.build(&dir) {
             Ok(log) => {
-                let wasm = dir.join(letibot_plugins::WASM);
+                let wasm = dir.join(Manifest::module_name(&dir));
                 let bytes = std::fs::metadata(&wasm).map(|m| m.len()).unwrap_or(0);
                 let mut said = format!("built `{name}` → {} ({bytes} bytes)", wasm.display());
                 let log = log.trim();

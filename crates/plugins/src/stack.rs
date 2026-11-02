@@ -45,7 +45,7 @@ use serde_json::Value;
 use crate::Capability;
 use crate::manifest::{Manifest, Scope, ToolDecl};
 use crate::trust::{Pin, Trust};
-use crate::{Loader, MANIFEST, Module, WASM, sha256_file};
+use crate::{Loader, MANIFEST, Module, sha256_file};
 
 /// How many module calls one resolution may make.
 ///
@@ -79,7 +79,8 @@ pub struct Layer {
     /// The layer's directory. Empty for a built-in, which has none.
     pub dir: PathBuf,
     pub manifest: Manifest,
-    /// The SHA-256 of `plugin.wasm` — or empty when there is no module to hash.
+    /// The SHA-256 of the layer's module file, named by [`Manifest::module`]; empty when there is
+    /// no module to hash.
     pub sha256: String,
     /// The SHA-256 of `plugin.toml`. A pin is a statement about BOTH files, so this is what
     /// [`Layer::trusted`] is decided against beside `sha256`.
@@ -241,7 +242,7 @@ impl Clone for Candidate {
     }
 }
 
-/// What a layer's `plugin.wasm` looked like the last time the stack read it.
+/// What a layer's module looked like the last time the stack read it.
 ///
 /// The SHA-256 is the truth — it is what a layer *is*, in the transcript and in the stack view.
 /// The mtime and the length are the cheap half of a poll: a file that has not moved in either
@@ -272,10 +273,10 @@ fn fingerprint(path: &Path) -> Result<Fingerprint, String> {
     })
 }
 
-/// Whether a layer's module is on disk at all.
+/// Whether the module a layer's manifest names is on disk at all.
 ///
-/// `false` for a path that is not there, and for nothing else: a `plugin.wasm` that exists and will
-/// not load is a [`Failure`], and a directory of that name is one too (`fingerprint` refuses to hash
+/// `false` for a path that is not there, and for nothing else: a module that exists and will not
+/// load is a [`Failure`], and a directory of that name is one too (`fingerprint` refuses to hash
 /// it). A dangling symlink counts as a module that is there, so the reason is recorded once instead
 /// of being taken for a layer that never meant to have one.
 fn has_module(path: &Path) -> bool {
@@ -711,12 +712,13 @@ impl Stack {
         }
     }
 
-    /// Re-stat each layer's `plugin.wasm`; the ones whose bytes changed come back as candidates.
+    /// Re-stat each layer's module; the ones whose bytes changed come back as candidates.
     ///
-    /// A change is pending until it is applied, so polling again reports it again: a candidate
-    /// the gate refused has not happened, and a caller that saw one and did nothing about it gets
-    /// told again. A layer with no `plugin.wasm` at all is silent — that is a build in progress,
-    /// and a failure recorded every poll would be noise, not news.
+    /// The file it stats is the one the manifest names, so a layer answering from a script is
+    /// polled on the script. A change is pending until it is applied, so polling again reports it
+    /// again: a candidate the gate refused has not happened, and a caller that saw one and did
+    /// nothing about it gets told again. A layer with no module at all is silent: that is a build
+    /// in progress, and a failure recorded every poll would be noise, not news.
     pub fn poll_changes(&mut self) -> Vec<Candidate> {
         let mut out = Vec::new();
         for i in 0..self.layers.len() {
@@ -724,7 +726,7 @@ impl Stack {
             if layer.scope == Scope::BuiltIn || layer.dir.as_os_str().is_empty() {
                 continue;
             }
-            let wasm = layer.dir.join(WASM);
+            let wasm = layer.manifest.module_path(&layer.dir);
             let Ok(meta) = std::fs::metadata(&wasm) else {
                 continue;
             };
@@ -778,7 +780,7 @@ impl Stack {
     /// (a new layer takes its scope from `scope` and gets its id when it is applied).
     pub fn candidate(&self, dir: &Path, scope: Scope) -> Result<Candidate, String> {
         let manifest = Manifest::read(dir)?;
-        let sha256 = sha256_file(&dir.join(WASM))
+        let sha256 = sha256_file(&manifest.module_path(dir))
             .map_err(|why| format!("{why} — a layer needs its module before it can be gated"))?;
         let id = self
             .layers
@@ -812,7 +814,9 @@ impl Stack {
         }
         let dir = c.dir.clone();
         let manifest = Manifest::read(&dir)?;
-        let wasm = dir.join(WASM);
+        let wasm = manifest.module_path(&dir);
+        // **A module this build cannot run never applies**, in the words the loader would use.
+        crate::engine_for(&manifest.module)?;
         let seen =
             fingerprint(&wasm).map_err(|why| format!("{why} — apply needs the built module"))?;
         let module = match c.replayed(&seen.sha256) {
@@ -932,7 +936,7 @@ impl Stack {
         // the session ever added, and its number must not move when a new one lands on top.
         for (n, (path, manifest)) in found.into_iter().enumerate().rev() {
             let id = format!("{}{}", scope.prefix(), n + 1);
-            let wasm = path.join(WASM);
+            let wasm = manifest.module_path(&path);
             // **A manifest and no module is a declaration, not a failure** — the module doc's
             // third case. Recording it would publish `plugin_layer` warnings on every session in
             // the project for a *correct* install of a built-in's tool, and there is nothing to
@@ -953,7 +957,7 @@ impl Stack {
                         Fingerprint::absent()
                     }
                 };
-                let module = match self.loader.load(&wasm, &manifest.capabilities) {
+                let module = match self.load_placed(&manifest, &wasm) {
                     Ok(module) => {
                         let hooks = module.hooks();
                         match manifest.admit(&hooks) {
@@ -1011,6 +1015,17 @@ impl Stack {
                 },
             );
         }
+    }
+
+    /// One placed layer's module, or the reason it has none. **The engine question comes first.**
+    ///
+    /// A manifest may name a module that is not wasm (`docs/plugins-plan.md` step 11), and this
+    /// build has one engine. Refusing here rather than inside a loader keeps every engine honest:
+    /// a `.js` layer is on the ladder (pinned, hashed, polled) and answers nothing, which is what
+    /// the operator is told before they pin it.
+    fn load_placed(&self, manifest: &Manifest, wasm: &Path) -> Result<Box<dyn Module>, String> {
+        crate::engine_for(&manifest.module)?;
+        self.loader.load(wasm, &manifest.capabilities)
     }
 
     fn run(&self, from: usize, input: &Value, walk: &mut Walk<'_>) -> Step {
@@ -1189,7 +1204,7 @@ fn layer_dirs(dir: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use crate::Capability;
-    use crate::testing::{Act, Fake, TempDir, layer, script, write_wasm};
+    use crate::testing::{Act, Fake, TempDir, layer, script, write_wasm, write_wasm_bytes};
     use serde_json::json;
 
     fn stack(scopes: &TempDir) -> Stack {
@@ -1203,6 +1218,138 @@ mod tests {
 
     fn answer_of(r: &Resolved) -> Value {
         r.answer.clone().expect("an answer")
+    }
+
+    /// A layer whose manifest NAMES its module: a script, which this build cannot run.
+    fn script_layer(root: &Path, name: &str, module: &str, body: &[u8]) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("a layer directory");
+        std::fs::write(
+            dir.join("plugin.toml"),
+            format!(
+                "name = \"{name}\"\npurpose = \"p\"\nhooks = [\"notice_fired\"]\ncapabilities = []\ncontract = 1\nmodule = \"{module}\"\n"
+            ),
+        )
+        .expect("plugin.toml");
+        std::fs::write(dir.join(module), body).expect("the named module");
+        dir
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // `module`: the file a layer answers from, which is not always plugin.wasm
+    // -----------------------------------------------------------------------------------------
+
+    /// **A script layer is on the ladder and answers nothing.** It is pinned, hashed and polled
+    /// like any other (`docs/plugins-plan.md` step 11's decision 2); what it cannot do is run,
+    /// because no engine for it is built in. Saying so at load is what keeps fail-down true.
+    #[test]
+    fn a_script_module_falls_down_and_says_no_engine_for_it_is_built_in() {
+        let t = TempDir::new("script-module");
+        let dir = script_layer(
+            &t.path().join("session"),
+            "fix",
+            "fix.js",
+            b"export function notice_fired() { return null }\n",
+        );
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "below",
+            &["notice_fired"],
+            Act::answer(json!({"from": "below"})),
+        );
+        let s = stack(&t);
+
+        // A layer, hashed, and the hash is the script's rather than a plugin.wasm that is not there.
+        let placed = s.layer("s1").expect("the script layer is a layer");
+        assert_eq!(placed.dir, dir);
+        assert_eq!(
+            placed.sha256,
+            crate::sha256_hex(b"export function notice_fired() { return null }\n")
+        );
+        // And it says why it cannot answer, once, on the stack.
+        assert_eq!(s.failures().len(), 1, "{:?}", s.failures());
+        let why = &s.failures()[0].why;
+        assert!(why.contains("fix.js"), "{why}");
+        assert!(
+            why.contains("no engine for it is built into this host"),
+            "{why}"
+        );
+        // The layer below answers, which is fail-down and not a stopped resolution.
+        let r = s.call("notice_fired", &json!({}));
+        assert_eq!(r.answer, Some(json!({ "from": "below" })));
+        assert_eq!(r.by.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn poll_changes_watches_the_module_the_manifest_names() {
+        let t = TempDir::new("poll-named");
+        let dir = script_layer(&t.path().join("session"), "fix", "fix.js", b"v1\n");
+        // A `plugin.wasm` beside it is not this layer's module, so it is not what the poll reads.
+        write_wasm_bytes(
+            &dir,
+            &script(&[("notice_fired", Act::answer(json!({"v": 1})))]),
+        );
+        let mut s = stack(&t);
+        assert!(
+            s.poll_changes().is_empty(),
+            "a quiet stack has no candidates"
+        );
+
+        std::fs::write(dir.join("plugin.wasm"), b"a build of something else").expect("a wasm");
+        assert!(
+            s.poll_changes().is_empty(),
+            "the module the manifest names is the one watched"
+        );
+
+        std::fs::write(dir.join("fix.js"), b"v2, a second version\n").expect("an edit");
+        let pending = s.poll_changes();
+        assert_eq!(pending.len(), 1, "the named module moved");
+        assert_eq!(pending[0].layer, "s1");
+        assert_eq!(
+            pending[0].sha256,
+            crate::sha256_hex(b"v2, a second version\n")
+        );
+        // And a module this build cannot run never applies, in the words the loader would use.
+        let why = s
+            .apply(pending.into_iter().next().unwrap())
+            .expect_err("a script cannot be applied");
+        assert!(
+            why.contains("no engine for it is built into this host"),
+            "{why}"
+        );
+    }
+
+    /// **A script layer is pinnable, and the pin is about the script.** D17's ladder admits it,
+    /// which is the whole of this package: without the manifest field it would pin on an EMPTY
+    /// module hash and an edit to the script would never un-pin the layer.
+    #[test]
+    fn a_script_layer_pins_on_its_script_and_an_edit_moves_the_bytes_the_pin_holds() {
+        let t = TempDir::new("script-pin");
+        let dir = script_layer(
+            &t.path().join("project/.letibot/plugins"),
+            "fix",
+            "fix.js",
+            b"v1\n",
+        );
+        let book = Trust::in_memory();
+        let mut s = stack(&t);
+        s.set_trust(book.clone());
+        let pin = book.pin("fix", &dir).expect("a pin");
+        assert_eq!(pin.module, crate::sha256_hex(b"v1\n"));
+        s.refresh_trust();
+        assert!(s.layer("p1").unwrap().trusted, "pinned bytes run freely");
+
+        std::fs::write(dir.join("fix.js"), b"v2\n").expect("an edit");
+        let pending = s.poll_changes();
+        assert_eq!(pending.len(), 1, "the script moved");
+        assert_ne!(
+            pending[0].sha256, pin.module,
+            "what is on disk is no longer what was pinned"
+        );
+        assert!(
+            !book.standing(&dir, &pending[0].sha256, &pin.manifest).free,
+            "the pin is a statement about the old text"
+        );
     }
 
     // -----------------------------------------------------------------------------------------

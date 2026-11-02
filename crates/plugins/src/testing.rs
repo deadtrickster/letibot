@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 use crate::manifest::Capability;
-use crate::{BuildError, Builder, Loader, MANIFEST, Module, WASM};
+use crate::{BuildError, Builder, Loader, MANIFEST, Manifest, Module, WASM};
 
 /// What a fake module does for one hook.
 #[derive(Clone, Debug)]
@@ -316,9 +316,11 @@ impl Builder for FakeBuilder {
                 log: self.log.clone(),
             });
         }
-        std::fs::write(dir.join(WASM), &self.body).map_err(|e| BuildError {
-            why: format!("{}: {e}", dir.display()),
-            log: self.log.clone(),
+        std::fs::write(dir.join(Manifest::module_name(dir)), &self.body).map_err(|e| {
+            BuildError {
+                why: format!("{}: {e}", dir.display()),
+                log: self.log.clone(),
+            }
         })?;
         Ok(self.log.clone())
     }

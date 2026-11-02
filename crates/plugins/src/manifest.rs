@@ -40,10 +40,15 @@
 //!
 //! Unknown keys are ignored rather than refused: a newer layer may carry metadata this host has
 //! no use for, and refusing it would make every forward-compatible field a version bump.
+//!
+//! `module` is the one field that has a default: `plugin.wasm`, which is what a layer written
+//! before the field existed means. It names the file the pin, the hash, the change poll and the
+//! declaration rule are about, so a layer whose answers are not wasm (a script,
+//! `docs/plugins-plan.md` step 11) is pinned on the text it actually runs.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
-use crate::{CONTRACT, is_hook_kind};
+use crate::{CONTRACT, WASM, is_hook_kind};
 
 /// Where a layer came from. The order is the precedence, session highest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -189,6 +194,35 @@ fn read_path(rest: &str) -> Result<String, String> {
     Ok(path.to_string())
 }
 
+/// **A declared module is one file inside the layer's own directory.** The rule is here rather
+/// than at each reader, because the pin, the hash and the poll all open this path: a module that
+/// names `../elsewhere.wasm` would make a pin a statement about a file the layer's folder does not
+/// hold, and a person reviewing the folder would never see the bytes it approves.
+///
+/// A path with no `..`, no root and no `.` prefix; subdirectories are allowed because a build may
+/// put its output in one.
+fn module_file(declared: &str) -> Result<String, String> {
+    let text = declared.trim();
+    if text.is_empty() {
+        return Err(
+            "module: names no file. A layer's module is a file beside its plugin.toml, and \
+             `plugin.wasm` when the key is left out"
+                .to_string(),
+        );
+    }
+    if !Path::new(text)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)))
+    {
+        return Err(format!(
+            "module: `{text}` leaves the layer's directory. A module is a relative path inside \
+             it (`pane.wasm`, `dist/pane.wasm`), because the pin is a statement about what that \
+             directory holds"
+        ));
+    }
+    Ok(text.to_string())
+}
+
 impl std::fmt::Display for Capability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -205,6 +239,13 @@ impl std::fmt::Display for Capability {
 pub struct Manifest {
     pub name: String,
     pub purpose: String,
+    /// **The file this layer's answers come from**, relative to the layer's own directory, and
+    /// `plugin.wasm` when the manifest says nothing.
+    ///
+    /// One file and not a search: the pin, the module hash, `poll_changes`, the gate's build and
+    /// the *a manifest and no module* rule all read this field, so the ladder is a statement about
+    /// the bytes that answer and not about a name this crate chose.
+    pub module: String,
     pub hooks: Vec<String>,
     pub capabilities: Vec<Capability>,
     pub contract: u32,
@@ -272,6 +313,26 @@ fn tool_name(name: &str) -> bool {
 }
 
 impl Manifest {
+    /// The file this layer's answers come from, in its own directory.
+    ///
+    /// One spelling of it, because seven callers need the answer: the pin, the module hash,
+    /// `poll_changes`, the gate's build and load, and the *a manifest and no module* rule.
+    pub fn module_path(&self, dir: &Path) -> PathBuf {
+        dir.join(&self.module)
+    }
+
+    /// **The module file a layer directory's manifest names**, and `plugin.wasm` when it names none
+    /// or will not parse.
+    ///
+    /// A builder and a pin need the answer before a `Manifest` is available, and a cargo build
+    /// that wrote one file while the loader read another would be a gate over nothing. A manifest
+    /// that is broken is still pinnable by its bytes, and the layer cannot load either way.
+    pub fn module_name(dir: &Path) -> String {
+        Manifest::read(dir)
+            .map(|manifest| manifest.module)
+            .unwrap_or_else(|_| WASM.to_string())
+    }
+
     /// Read and parse `<dir>/plugin.toml`. Every error names the file and the key, because the
     /// reader of it is a model about to fix the file.
     pub fn read(dir: &Path) -> Result<Manifest, String> {
@@ -298,6 +359,16 @@ impl Manifest {
             );
         }
         let hooks = strings(&table, "hooks")?;
+        let module = match table.get("module") {
+            Some(toml::Value::String(declared)) => module_file(declared)?,
+            Some(other) => {
+                return Err(format!(
+                    "module: expected a file name, found {}",
+                    other.type_str()
+                ));
+            }
+            None => WASM.to_string(),
+        };
         for hook in &hooks {
             if !is_hook_kind(hook) {
                 return Err(format!(
@@ -335,6 +406,7 @@ impl Manifest {
         Ok(Manifest {
             name,
             purpose,
+            module,
             hooks,
             capabilities,
             contract,
@@ -358,6 +430,9 @@ impl Manifest {
     /// A tool in the prompt that nothing answers is the harness telling a model about a capability
     /// it does not have, which is the defect every refusal in this crate exists against.
     pub fn admit(&self, exports: &[String]) -> Result<(), String> {
+        // The module's own path first: a manifest whose module leaves the folder describes a
+        // layer whose bytes are not the ones a person can review.
+        module_file(&self.module)?;
         if self.contract != CONTRACT {
             return Err(format!(
                 "contract {} — this host speaks {CONTRACT}",
@@ -608,6 +683,40 @@ contract = 1
         );
         assert_eq!(m.contract, 1);
         assert_eq!(m.capabilities[1].to_string(), "exec:gh");
+    }
+
+    #[test]
+    fn a_layer_names_its_module_and_plugin_wasm_is_the_default() {
+        let m = Manifest::parse(PLAN).expect("the C2 example must parse");
+        assert_eq!(
+            m.module, WASM,
+            "a manifest that says nothing means plugin.wasm"
+        );
+
+        let named = Manifest::parse(&format!("{PLAN}module = \"sessions.js\"\n"))
+            .expect("a manifest may name its module");
+        assert_eq!(named.module, "sessions.js");
+        assert_eq!(
+            named.module_path(Path::new("a/b")),
+            Path::new("a/b/sessions.js")
+        );
+    }
+
+    #[test]
+    fn a_module_that_leaves_the_layers_directory_is_refused() {
+        for named in ["../elsewhere.wasm", "a/../../b.wasm", "/etc/passwd"] {
+            let why = Manifest::parse(&format!("{PLAN}module = \"{named}\"\n"))
+                .expect_err("a module is a path inside the layer's own directory");
+            assert!(why.contains("module:"), "{named}: {why}");
+            assert!(why.contains(named), "{why}");
+        }
+        // The manifest's fields are public, so a hand-built one goes through `admit`.
+        let mut hand_built = Manifest::parse(PLAN).expect("the C2 example must parse");
+        hand_built.module = "../elsewhere.wasm".to_string();
+        let why = hand_built
+            .admit(&["pane_dashboard".to_string()])
+            .expect_err("an escaping module is never admitted");
+        assert!(why.contains("leaves the layer's directory"), "{why}");
     }
 
     #[test]
