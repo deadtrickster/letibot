@@ -190,44 +190,33 @@ tuned from the excuse sentence. The other exception is the operator's own mark (
 
 ### 2.9 The two caps - a rate and a size
 
-Age is not a bound on the file: a loop that writes a thousand rows a second is ninety days of that. A session
-that spun handing a command back to itself wrote 1,400 `worker.cmd` rows a second and produced an 89 GB file. So
-the writer holds two limits, both on the writer thread - **not** in the emitter, because coalescing means holding
-events back until the interval closes, which a fire-and-forget `try_send` cannot do.
+Age is not a bound on the file: a loop that writes a thousand rows a second is ninety days of that. So the writer
+holds two limits, both on the writer thread - **not** in the emitter, because coalescing means holding events back
+until an interval closes, which a fire-and-forget `try_send` cannot do.
 
-**The rate cap.** Key `(session_id, kind, name, outcome)` - identical events. Budget `[metrics] rate_per_sec`,
-default 20 rows per key per second. Under it nothing changes: the rows are byte-identical to what the writer
-wrote before the cap existed. Over it, the rest of that second becomes one row of the same kind with
-`attrs.suppressed` = the count held back and `attrs.window_ms`, `ts_ms` the start of the interval, and **`n1..n3`
-left NULL** - a count of events is not one observation of the kind, and `SUM(n1)` over `worker.cmd` must not
-average it. So the row count is bounded and `SUM(attrs->>'suppressed')` beside `COUNT(*)` is still the truth.
-Twenty is five times the fastest honest key in the tree (`worker.pass` has a 250 ms floor and cannot exceed 4/s;
-`round` and `tool.call` run at about 0.2/s); `rate_per_sec = 0` is no cap.
-
-**The report, because a loop is a defect.** A suppressed key writes one `metrics.suppressed` row per key per
-minute (`name` = the suppressed kind, `n1` = held back, `n2` = seen, `attrs.key`, `attrs.budget`) and one log
-line. It notifies no session and wakes nothing: a metrics problem must not become a turn. The key map is bounded
-(`MAX_KEYS` 4,096; stale windows dropped at every boundary).
+**The rate cap.** Key `(session_id, kind, name, outcome)`. Budget `[metrics] rate_per_sec`, default 20 rows per
+key per second, five times the fastest honest key in the tree (`worker.pass` has a 250 ms floor and cannot exceed
+4/s; `round` and `tool.call` run at about 0.2/s); `0` is no cap. Under it the rows are byte-identical to what the
+writer wrote before the cap existed. Over it, the rest of that second becomes one row of the same kind with
+`attrs.suppressed` = the count held back and `attrs.window_ms`, and **`n1..n3` left NULL**, so
+`SUM(attrs->>'suppressed')` beside `COUNT(*)` stays the truth and `SUM(n1)` is not polluted. A suppressed key
+also writes one `metrics.suppressed` row per minute and one log line; it wakes nothing, because a metrics problem
+must not become a turn.
 
 **The size cap.** `[metrics] max_mb`, default 2048, checked every 10 s and at start - not on the prune's day,
-because a storm can grow the file a gigabyte an hour. Over it, in bounded steps: roll the oldest whole day into
-`daily`; delete it in 50,000-row id ranges, at most 250,000 rows and 1,024 vacuumed pages a pass; repeat until
-the live size (`page_count - freelist_count`) is under 80 % of the cap; then `PRAGMA incremental_vacuum` and
-`PRAGMA wal_checkpoint(PASSIVE)`. **The cap beats the age rule, deliberately**: the rows it deletes may be
-minutes old, because a file eating the disk is not one to keep a retention promise to, and `daily` keeps the
-counts. Every mark, and every row of a marked turn, is still never deleted.
+because a storm can grow the file a gigabyte an hour. Over it: roll the oldest whole day into `daily`, delete it
+in 50,000-row id ranges at most 250,000 rows and 1,024 vacuumed pages a pass, repeat until the live size
+(`page_count - freelist_count`) is under 80 % of the cap, then vacuum and checkpoint. **The cap beats the age
+rule, deliberately** - the rows it deletes may be minutes old, and `daily` keeps the counts. Marks and the rows of
+marked turns are still never deleted.
 
-Four things the code has to get right, each of which a reader will otherwise "simplify" back. **`daily` holds
-exactly what `event` no longer has** - the rollup covers only the rows the delete takes and ADDS to a group
-instead of `INSERT OR IGNORE`-ing it, because a day deleted in chunks contributes the same group more than once.
-**The ceiling is the oldest DELETABLE row, not the oldest row** - a cap whose oldest row is a mark can never
-pass it, so the delete skips up to `SIZE_SKIP_CHUNKS` chunks of forever rows and gives up for that pass.
-**`PRAGMA incremental_vacuum` yields one row per page it frees**, so a statement stepped once - which is what
-`execute_batch` and `execute` do - gives back exactly one page; the rows must be drained. **`auto_vacuum` cannot
-be switched on after the first table**, so a `metrics.db` older than that line cannot return space however much
-is deleted; the writer says so once at start (`Writer::shrinks()` is how a test stands in that state) and names
-`sqlite3 ~/.local/share/letibot/metrics.db 'PRAGMA auto_vacuum=INCREMENTAL; VACUUM;'` as the fix. Neither cap
-needs a schema change, so `SCHEMA` stays 1, which matters because every daemon on the box opens this file.
+Four things a reader will otherwise "simplify" back: `daily` holds exactly what `event` no longer has, so the
+rollup covers only the deleted rows and ADDS to a group rather than `INSERT OR IGNORE`-ing it; the ceiling is the
+oldest DELETABLE row, not the oldest row, or a cap whose oldest row is a mark can never pass; `PRAGMA
+incremental_vacuum` yields one row per page it frees, so the rows must be drained or one statement frees one page;
+and `auto_vacuum` cannot be switched on after the first table, so an older file needs one `VACUUM` (the writer
+says so at start, and `Writer::shrinks()` is how a test stands in that state). Neither cap needs a schema change,
+so `SCHEMA` stays 1.
 
 ## 3. Analysis
 
@@ -239,8 +228,7 @@ millisecond bound `letibot_metrics::stats::floor` computes.
 **Q1 (R79) - what arrives mid-turn, by which rule, how long is it held?** Group the `delivery` view by `what`,
 `how` and `rule` over `COUNT(*)`, `AVG(held_ms)`, `SUM(mid_turn = '1')` and `AVG(batch)`.
 
-**Q2 - wake turns by cause**, and how many found nothing to say: group `wake` by `cause` and `outcome` over
-`COUNT(*)` and `SUM(items)`.
+**Q2 - wake turns by cause:** group `wake` by `cause` and `outcome` over `COUNT(*)` and `SUM(items)`.
 
 **Q3 (c12d044) - worker queue wait per verb, per build.**
 
@@ -254,34 +242,26 @@ FROM (SELECT build, verb, queued_ms,
 GROUP BY 1, 2 ORDER BY max_queued_ms DESC;
 ```
 
-**Q4 (R71) - context excuses by model and fill decile:** `context.claim` has no view; group
-`event WHERE kind = 'context.claim'` by `name`, `n1 * 10 / NULLIF(n2, 0)` and `outcome`, with `AVG(n3) / 1000`
-as the score.
-
-**Q5 (R72/R73) - compaction accuracy:** group `kind = 'compaction'` by `name` and `outcome` over `n1`, `n2`,
-`attrs->>'before_ledger'` and `AVG(dur_ms)`.
-
-**Q6 (R77) - does a nag work?** The follow-up is written a turn later, keyed by the nag's turn: join
-`kind = 'nag'` to `kind = 'nag.followup'` on `turn_id`, average `outcome = 'touched'`, group by
-`attrs->>'operator_row'`.
+**Q4 (R71)** - excuses by model and fill decile: group `kind = 'context.claim'` by `name`,
+`n1 * 10 / NULLIF(n2, 0)` and `outcome`, with `AVG(n3) / 1000` as the score. **Q5 (R72/R73)** - compaction
+accuracy: group `kind = 'compaction'` by `name` and `outcome` over `n1`, `n2`, `attrs->>'before_ledger'` and
+`AVG(dur_ms)`. **Q6 (R77)** - does a nag work: join `kind = 'nag'` to `kind = 'nag.followup'` on `turn_id`,
+average `outcome = 'touched'`, group by `attrs->>'operator_row'`.
 
 **Q7 - latency, throughput and R72's two counts side by side:** group `round_event` by `model` and `provider`
 over `AVG(ttfb_ms)`, `output_tokens * 1000 / predicted_ms`, `cached_tokens / prompt_tokens` and
 `ledger_tokens / prompt_tokens` - the last being the R72 discrepancy as one column, the box's count of the
-prompt against the number the provider reported for it.
+prompt against the number the provider reported for it. **Q8 - tool reliability:** group `tool_call` by tool over
+`AVG(outcome <> 'ok')`, `MAX(dur_ms)`, `AVG(peak_kib)`, `AVG(attrs->>'cap_kib')` and a count of calls within
+10 % of the cap.
 
-**Q8 - tool reliability:** group `tool_call` by tool over `AVG(outcome <> 'ok')`, `MAX(dur_ms)`, `AVG(peak_kib)`,
-`AVG(attrs->>'cap_kib')` and a count of calls within 10 % of the cap.
-
-**Q9 - degradation (§2.6):** proxies per turn by turns-since-reset and per model, with the operator's bad marks
-as the ground-truth column.
-
-**Q10 to Q15:** memory (R66) is `mem.sample`'s rss, heap live and `attrs.harness_mib` per daemon over time - a
-daemon whose rss climbs while the heap does not is pointing at SQLite or the vocabulary, not at Rust. Queue
-reliability (R61/R76) is time in each state from the store's `queue_transition`, `LEAD(at_ms) OVER (PARTITION BY
-queue, entry_id ORDER BY seq)` against `at_ms`. Adjudication and the oracle come from the store's `adjudication`
-table as it is. Cost is `SUM(cost_micros_usd) / 1e6` per day and model. Operator load is approvals asked per
-hour, operator latency and interrupts per turn. Feedback is `letibot stats feedback`.
+**Q9 - degradation (§2.6)** answers nothing until `attrs.deg` exists. **Q10 to Q15:** memory (R66) is
+`mem.sample`'s rss, heap live and `attrs.harness_mib` per daemon over time - a daemon whose rss climbs while the
+heap does not is pointing at SQLite or the vocabulary, not at Rust. Queue reliability (R61/R76) is time in each
+state from the store's `queue_transition`, `LEAD(at_ms) OVER (PARTITION BY queue, entry_id ORDER BY seq)`
+against `at_ms`. Adjudication and the oracle come from the store's `adjudication` table as it is. Cost is
+`SUM(cost_micros_usd) / 1e6` per day and model. Operator load is approvals asked per hour and interrupts per
+turn. Feedback is `letibot stats feedback`.
 
 ### 3.2 `letibot stats` - the CLI
 
@@ -315,17 +295,17 @@ rest are direct emits.
 
 | instrument | function | site |
 |---|---|---|
-| turn start and end | `turn_begins`, `turn_ends` | `turn_tail::run_turn`, beside the turn clock |
-| each round | `TurnMeter::round` via `Harness::meter_round` | `harness/turns.rs`, where the round's `TurnMetrics` is kept |
-| each tool call | `TurnMeter::tool` | `harness/turns.rs`, around `runtime.invoke` |
-| time to first byte | `TurnMetrics::first_byte_ms` | set by the engine at the first token, carried as `ttfb_ms` |
-| deliveries (R79) | `delivered_all` | `DeliveryLog::record`, the single record site |
-| wakes | `wake` via `Harness::meter_wake` | `Harness::wake`, causes in the order it gathers them |
-| worker queue wait | `worker_cmd` with a `Clock` | `Daemon::run` and `sessions.rs`, around `sessions.dispatch` |
+| turn start and end | `turn_begins`, `turn_ends` | `turn_tail::run_turn` |
+| each round | `TurnMeter::round` via `Harness::meter_round` | `harness/turns.rs` |
+| each tool call | `TurnMeter::tool` | `harness/turns.rs` |
+| time to first byte | `TurnMetrics::first_byte_ms` | the engine, at the first token |
+| deliveries (R79) | `delivered_all` | `DeliveryLog::record` |
+| wakes | `wake` via `Harness::meter_wake` | `Harness::wake` |
+| worker queue wait | `worker_cmd` with a `Clock` | `Daemon::run`, `sessions.rs` |
 | slow idle passes | `worker_pass` | the idle arm: sweep, room, todo-check, queue-census, park, review |
 | compaction and wall | `compaction`, `operator_compaction`, `wall`, `wall_change` | `Harness::meter_compaction`, `Sessions::compact`, the turn tail, `harness/wall.rs` |
-| nags | `TurnMeter::nag` via `Harness::meter_nag` | `harness/nags.rs`; the follow-up is written by `turn_ends` |
-| context claims | `context_claim` | `harness/turns.rs`, where the claim is judged |
+| nags | `TurnMeter::nag` via `Harness::meter_nag` | `harness/nags.rs`; the follow-up by `turn_ends` |
+| context claims | `context_claim` | `harness/turns.rs` |
 | memory samples | `mem_sample` | `memwatch`, every fifth tick and at every census or bound line |
 | warnings, operator actions, subagents, jobs, decisions, queue moves | the tap | `Hub::publish` |
 | marks | `metrics_tap::mark` | the `ClientFrame::Feedback` arm of `serve_conn` |
@@ -343,12 +323,12 @@ line on the head's status bar.
 ## 6. The instrument and the decision it unblocks
 
 Each of these was a decision taken from an anecdote; the kind is what turns it into a query. `worker.cmd` and
-`worker.pass` settle whether a command waited tens of seconds on the worker (c12d044), per command and per
-build. `turn.start` and `turn.end` are the denominator for everything else. `round` gives latency, tok/s, cache
-hit and R72's provider-versus-ledger count. `tool.call` gives error rate, duration and memory peak against cap
-(R65). `delivery` and `wake` give R79. `compaction` and `wall` give R72/R73. `nag` and `nag.followup` give R77.
-`context.claim` gives R71. `warning`, `operator.action` and `subagent` are one tap line covering every warning
-code, operator command and subagent transition. `mem.sample` is R66. `operator.feedback` is the label that
+`worker.pass` settle whether a command waited tens of seconds on the worker (c12d044), per command and per build.
+`turn.start` and `turn.end` are the denominator for everything else, and `round` adds latency, tok/s, cache hit
+and R72's provider-versus-ledger count. `tool.call` gives error rate, duration and memory peak against cap (R65);
+`delivery` and `wake` give R79; `compaction` and `wall` give R72/R73; `nag` and `nag.followup` give R77;
+`context.claim` gives R71; `mem.sample` gives R66. `warning`, `operator.action` and `subagent` are one tap line
+covering every warning code, operator command and subagent transition, and `operator.feedback` is the label that
 filters every analysis above to the turns the operator marked.
 
 ## 7. Open decisions
