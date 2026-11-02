@@ -1,14 +1,8 @@
-//! The matcher that `crates/tools/src/builtins/pattern.rs` used to hold, kept
-//! HERE and only here.
+//! The hand-rolled matcher that `builtins/pattern.rs` replaced, kept as the before half of
+//! the measurement that justified replacing it: a change argued from a number has to keep
+//! the number reproducible.
 //!
-//! It is not dead code and it is not a second implementation to maintain: it is
-//! the BEFORE half of the measurement that justified deleting it. A change
-//! argued from a number has to end with the number, and a number you cannot
-//! reproduce next month is an anecdote. Copied verbatim from e33cc1b, minus the
-//! `unsupported` reporting, which is not on the timed path.
-//!
-//! If it ever stops compiling, delete it and say in the commit that the
-//! comparison is now historical — do not repair it.
+//! If it stops compiling, delete it rather than repair it: the comparison is then history.
 #![allow(dead_code)]
 
 /// A compiled search pattern.
@@ -97,16 +91,9 @@ impl Pattern {
     }
 }
 
-/// Clause 1's third case: **the bare identifier inside a too-strict pattern.**
-///
-/// `^\s*fn parse_args\(` relaxes to `parse_args`; `\bTokenLedger\b` to
-/// `TokenLedger`. The rule is the longest run of identifier characters, because
-/// that is what the model was actually looking for and everything else it wrote
-/// was a guess about the surrounding syntax — which is precisely the guess that
-/// produced the empty result.
-///
-/// `None` when the pattern is already bare, so the caller cannot report a
-/// relaxation that did not happen.
+/// The bare identifier inside a too-strict pattern: `^\s*fn parse_args\(` relaxes to
+/// `parse_args`, the longest run of identifier characters, because the rest was a guess
+/// about surrounding syntax. `None` when the pattern is already bare.
 pub fn bare_identifier(source: &str) -> Option<String> {
     let mut best = String::new();
     let mut cur = String::new();

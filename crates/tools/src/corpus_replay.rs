@@ -1,62 +1,9 @@
-//! **Every decision this operator's boxes ever made, read again by the parser and the
-//! gate as they stand now.**
+//! Replays recorded gate decisions through today's parser and gate.
 //!
-//! # Why this exists
-//!
-//! The gate reads a shell command into stages, intents, regions, a shape and a grant
-//! key, and the oracle is shown *that reading* rather than the command. So the thing a
-//! change here improves or breaks is not a test — it is every decision already taken.
-//! The corpus is those decisions, exported read-only from each host's store
-//! (`~/letibot-corpus/*.json` on the box that holds it; this module takes the path on
-//! the command line and nothing in the tree points at that directory).
-//!
-//! The operator's own framing, 2026-10-26: *"we have neglected the command parsing and
-//! adjudication for too long"*, and *"this permission thing is more important actually
-//! because the oracle always had trouble figuring out the intent"*. This is the
-//! instrument that makes "better" a number instead of an opinion.
-//!
-//! # What it reports, and what each column is FOR
-//!
-//! * **resolved then vs now** — `then` is the record's own words: a baseline whose
-//!   summary ends with *"the meaning was never resolved"* was not read. It is the only
-//!   durable trace of that fact (`Baseline::summary` puts it there for exactly this
-//!   reason), and it is what the corpus can be trusted about.
-//! * **unresolved by construct**, from the parser's own
-//!   [`Unresolved::construct`](letibot_code::shell::Unresolved) — never from a regex
-//!   over the command text. Two numbers per construct: the commands it appears in, and
-//!   the commands where it is the **only** reason. The second is what fixing that one
-//!   construct buys; the first is only how common it is.
-//! * **shapes**, distinct, over every command and over the commands a person answered.
-//!   A shape is the approval key, so *"743 distinct shapes among 794 human asks"* is the
-//!   measurement the arity folding in `shell::shape` was written for.
-//! * **what a standing approval would now settle** — the per-session replay: in time
-//!   order, every human answer is recorded as a session grant AND as an approved shape
-//!   under the NEW reading, and each later human ask is asked whether that record would
-//!   have settled it. The corpus does not carry which rung a person chose (only
-//!   `selected`), so this is a **counterfactual with a stated assumption**: every past
-//!   approval at its strongest. It is the upper bound of what approval memory can save,
-//!   and the floor (nothing carried forward) is the plain count of human asks.
-//! * **the oracle-brief diff** — for a decision where a model was consulted, whether the
-//!   intent set or the region set the gate computes now differs from the one recorded in
-//!   the `baseline` column, which is the text the oracle was shown. A row here is a
-//!   decision that WAS taken on a different reading from the one the gate would give it
-//!   today.
-//!
-//! # What it deliberately does not do
-//!
-//! It does not decide anything, does not ask the oracle (no live test, no model), and
-//! does not read scripts (`scripts: &[]`): a corpus is a record of decisions, not the
-//! tree those decisions were taken in, and a sweep that opened files would measure this
-//! box instead of the corpus.
-//!
-//! # `then`'s regions were placed against a workspace this file does not record
-//!
-//! `--home` and `--workspace` are the caller's, because a corpus row carries the
-//! command and not the directory it ran in. The **intent** comparison does not depend on
-//! them (intents are read from programs and arguments); the **region** comparison does,
-//! and only for a path that is either relative or equal to the workspace prefix. So the
-//! report prints both counts apart rather than one "differs" number that hides which
-//! half moved.
+//! A change to the reading changes every decision already taken, so this is the instrument
+//! that makes "better" a number: [`sweep`] for the reading itself, [`unasked`] for what a
+//! boundary rule or a standing-answer rule would save. Nothing here writes, asks a model, or
+//! opens a file the corpus does not name.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufReader;
@@ -73,9 +20,8 @@ use crate::mode::Mode;
 use crate::schema::Access;
 
 /// The sentence [`Baseline::summary`] appends to a reading the grammar did not resolve.
-///
-/// Read rather than recomputed, because this is what the record says — the fact a
-/// corpus is evidence for.
+/// Matched in the record rather than recomputed: the record's own words are what a corpus
+/// is evidence for.
 const UNREAD: &str = "the meaning was never resolved";
 
 /// One decision, the fields this sweep reads. Everything else in the export is ignored,
@@ -130,10 +76,9 @@ pub struct Reading {
     pub baseline: Baseline,
     /// Every distinct construct the grammar could not resolve, by its own name.
     pub constructs: Vec<&'static str>,
-    /// The same constructs, one step finer, for choosing what to fix: the parameter's
-    /// name (`parameter_expansion:$PWD`) or the program inside a substitution
-    /// (`command_substitution_value:git`). The NAME and the PROGRAM only — never an
-    /// operand, so a report can be read aloud without repeating a session.
+    /// The same constructs one step finer, for choosing what to fix: the parameter's name
+    /// or the program inside a substitution. Name and program only, never an operand, so a
+    /// report can be read aloud without repeating a session.
     pub detail: Vec<String>,
     pub shape: Option<String>,
     pub class: ActionClass,
@@ -151,9 +96,9 @@ impl Reading {
                     Construct::ParameterExpansion { name } if !name.is_empty() => {
                         format!("parameter_expansion:${name}")
                     }
-                    // The substitution's *value* is what nobody can know, and WHICH
-                    // command produces it is what decides whether anything can be said
-                    // about it: `$(git rev-parse …)` is a directory, `$(date)` is not.
+                    // The value nobody can know; which command produces it decides what can
+                    // be said about it: `$(git rev-parse ...)` is a directory, `$(date)` is
+                    // not.
                     Construct::CommandSubstitutionValue | Construct::ProcessSubstitutionPath => {
                         let inner: Vec<&str> = n
                             .stages
@@ -227,11 +172,10 @@ pub struct Recorded {
     pub regions: Option<BTreeSet<String>>,
 }
 
-/// `ask — intents [read_file unknown] over [host_other]` → the two bracketed sets.
+/// `ask - intents [read_file unknown] over [host_other]` to the two bracketed sets.
 ///
-/// The summary's own grammar, parsed the way a reader parses it. `None` when the text is
-/// not a baseline summary at all — an older row, or a non-command — which the caller
-/// counts rather than silently treating as agreement.
+/// `None` when the text is not a baseline summary at all, which the caller counts rather
+/// than silently treating as agreement.
 pub fn recorded(text: &str) -> Option<Recorded> {
     const INTENTS: &str = " — intents [";
     let start = text.find(INTENTS)? + INTENTS.len();
@@ -286,21 +230,9 @@ fn words(r: Option<&Recorded>) -> String {
     )
 }
 
-/// Whether the RECORD says the command was never read.
-///
-/// Three spellings, and all three are in the corpus because the gate changed one:
-///
-/// * `the meaning was never resolved` — [`Baseline::summary`]'s marker, written since an
-///   unresolvable construct stopped being a refusal (2026-10-02);
-/// * `not_run` as the summary's verdict token — every row before that date, where the
-///   refusal WAS the verdict and the summary had no reason to repeat it;
-/// * `boundary:normaliser`, the verdict-by of the `NotRun` arm in
-///   `AdjudicatedGate::admit`, which is one place and says exactly this.
-///
-/// MEASURED 2026-10-26: read as the marker alone, 514 rows on lab2x1 looked like a
-/// REGRESSION — *resolved then, unresolved now* — and every one of them was a `not_run`
-/// row from before the marker existed. A count whose denominator is a rule that changed
-/// half way through the data is not a measurement.
+/// Whether the RECORD says the command was never read. Three spellings count: the
+/// summary's unresolved marker, `not_run` as the verdict token, and `boundary:normaliser`.
+/// Counting only the first reads older rows as regressions.
 fn unread(r: &Row) -> bool {
     if r.verdict_by == "boundary:normaliser" {
         return true;
@@ -311,32 +243,9 @@ fn unread(r: &Row) -> bool {
     }
 }
 
-/// **Why a command with a `parse_error` is unread**, in the four shapes a sweep can tell apart
-/// without running a shell.
-///
-/// This is §4i.4's census, as a function: the table there is this one run over every `bash`
-/// row on each host, so a reader can re-derive the numbers rather than take them.
-///
-/// The split that matters is the FIRST arm. `partial == false` means the grammar read the
-/// whole tree — there is no `ERROR` node and no `MISSING` one — and the command was called a
-/// parse error by the resolver's own fall-through for a node kind it does not name. That is
-/// this crate's bug and not the grammar's, and MEASURED 2026-10-27 it was 133 commands on
-/// lab2x1 and 25 on the mac, every one of them a `$` that ends a word (`x$$`, `run=^$`).
-///
-/// The other three arms are lexical, because a census that ran `bash -n` would be an
-/// instrument that spawns a shell over the operator's own commands:
-///
-/// * **`<>`** — this grammar's `file_redirect` has `<`, `>`, `>>`, `<&`, `>&`, `&>` and `&>>`
-///   and no read-write redirection, so `exec 3<>/dev/tcp/h/p` recovers as an `ERROR` on one
-///   of the two characters. The error node often IS that character, which is why the window
-///   is widened by one byte either side before looking for the pair.
-/// * **a here-document** — a `<<` earlier on the SAME line as the error. The grammar nests
-///   what follows the operator inside `heredoc_redirect`, and a second redirect there
-///   (`<<'EOF' 2>&1 | tail`) is what it cannot take.
-/// * **the rest**: a command bash itself would refuse (an unbalanced quote, Lisp in a
-///   single-quoted argument), a `%(…)` in a word, and a pair of prose backticks in an
-///   unquoted here-document body. Measured one by one on lab2x1 through `bash -n`, and §4i.4
-///   says which way each falls.
+/// Why a command with a `parse_error` is unread, in four shapes a sweep can tell apart
+/// without running a shell: `partial == false` (the resolver's own fall-through, not the
+/// grammar's), a `<>` redirect, a here-document with a second redirect, and the rest.
 pub fn parse_cause(n: &Normalised, u: &Unresolved) -> &'static str {
     if !n.partial {
         return "a token the resolver does not name";
@@ -361,12 +270,10 @@ pub fn parse_cause(n: &Normalised, u: &Unresolved) -> &'static str {
     "the text is not a command this grammar reads"
 }
 
-/// One session's approvals, replayed in the order they were given — **and its variables**.
+/// One session's approvals, replayed in the order they were given, and its variables.
 ///
-/// `vars` is the same-session environment: the assignments the gate READ in the commands
-/// before this one, first assignment winning, `unset` clearing, exactly as the per-session
-/// grant replay treats answers. It is a counterfactual (`Report::env_fixed`) and the report
-/// says so.
+/// `vars` is a counterfactual ([`Report::env_fixed`]): the assignments the gate read before
+/// this command, first assignment winning, `unset` clearing.
 #[derive(Default)]
 struct Session {
     grants: Vec<Grant>,
@@ -374,13 +281,10 @@ struct Session {
     vars: BTreeMap<String, String>,
 }
 
-/// **The names a command assigns to the shell, as its own text states them.** The replay's
-/// environment is built from this: a standalone `X=…` statement and an `export`/`declare`
-/// of a literal value, and `unset` for the names a shell would drop.
+/// The names a command assigns to the shell, as its own text states them.
 ///
-/// A value with a space, a glob or any other way of being more than one word is skipped —
-/// the same rule `parameters::as_one_word` applies to a splice, because a replay whose
-/// environment held a value the resolver could never use would count a gain that is not one.
+/// A value with a space or a glob is skipped, as `parameters::as_one_word` skips it: an
+/// environment holding a value the resolver could never use counts a gain that is not one.
 fn assigned(n: &letibot_code::shell::Normalised, vars: &mut BTreeMap<String, String>) {
     use letibot_code::shell::Word;
     let plain = |v: &str| {
@@ -433,18 +337,16 @@ fn as_grant(r: &Reading) -> Grant {
     }
 }
 
-/// Whether a point admits the call unasked — the gate's clause 2, before any grant.
+/// Whether a point admits the call unasked: the mode rule, before any grant.
 fn mode_admits(mode: &str, r: &Reading) -> bool {
-    // **The exec exception, and its one missing half.** Clause 2 is guarded by
-    // `exec_follows_mode`, which the daemon sets only for an UNCONFINED session
-    // (`cfg.unconfined`) and a corpus row does not record. The confined default is
-    // modelled — a shell asks at every point — so this can under-count what a point
-    // would settle and never over-count it.
+    // The mode rule is guarded by `exec_follows_mode`, which the daemon sets only for an
+    // unconfined session and a corpus row does not record. The confined default is modelled,
+    // so this can under-count what a point settles, never over-count it.
     if r.access == Access::Exec {
         return false;
     }
-    // The store spells the operator's own consent beside the name
-    // (`allow-all (this box, consented)`); the name is the part before ` (`.
+    // The store spells the consent beside the name (`allow-all (this box, consented)`); the
+    // name is the part before ` (`.
     let name = mode.split(" (").next().unwrap_or(mode);
     let Ok(mode) = Mode::parse(name) else {
         return false;
@@ -456,8 +358,8 @@ fn mode_admits(mode: &str, r: &Reading) -> bool {
 pub struct Constructs {
     /// Commands the construct appears in.
     pub appears: usize,
-    /// Commands where it is the ONLY reason the command is unresolved — what
-    /// resolving this construct alone would recover.
+    /// Commands where it is the only reason the command is unresolved: what resolving this
+    /// construct alone would recover.
     pub alone: usize,
 }
 
@@ -474,15 +376,14 @@ pub struct Report {
     pub now_resolved: usize,
     /// Unresolved then, resolved now. The change this sweep is measured by.
     pub fixed: usize,
-    /// Resolved then, unresolved now — a regression, and it must be zero.
+    /// Resolved then, unresolved now: a regression, and it must be zero.
     pub broken: usize,
     pub constructs: BTreeMap<&'static str, Constructs>,
-    /// The `parse_error` commands, by cause — [`parse_cause`]. One per command, so a command
+    /// The `parse_error` commands, by cause ([`parse_cause`]). One per command, so a command
     /// with two errors counts once, under its first.
     pub parse_causes: BTreeMap<&'static str, usize>,
-    /// The same, one step finer (`parameter_expansion:$HOME`,
-    /// `command_substitution_value:git`) — the table a fix is chosen from, because
-    /// *"parameter expansion"* is not one thing to fix.
+    /// The same one step finer, the table a fix is chosen from: "parameter expansion" is not
+    /// one thing to fix.
     pub details: BTreeMap<String, Constructs>,
     /// Commands still unresolved now, counted once each however many constructs.
     pub unresolved_now: usize,
@@ -517,39 +418,27 @@ pub struct Report {
     /// Rows whose session stream was not in `decided_ms` order, so the per-session
     /// replay is not the order they were given in. Reported, never hidden.
     pub out_of_order: usize,
-    /// `LETIBOT_CORPUS_SHOW=<n>`: up to `n` samples of a regression and of each
-    /// construct's leftovers, by request id and by the two readings' WORDS. Never the
-    /// command: a sample is here to classify a finding, not to reproduce the operator's
-    /// session.
+    /// `LETIBOT_CORPUS_SHOW=<n>`: up to `n` samples of a regression and of each construct's
+    /// leftovers, by the two readings' words. Never the command: a sample classifies a
+    /// finding, it does not reproduce a session.
     pub notes: Vec<String>,
 
-    // --- D14/R95/R96: the session's environment (a same-session counterfactual) --------
-    /// Commands that are unread under today's reading and **readable** once the session's
-    /// own assignments are in scope.
-    ///
-    /// **This is a counterfactual and it is labelled one.** The corpus records no
-    /// environment — a row is a command and a verdict, not the shell's state — so what is
-    /// replayed here is the environment a gate would have built had it tracked the
-    /// assignments it READ, which is what a shell would hold only if every one of them ran.
-    /// It is an upper bound on the gain and no claim at all about the cases where a value
-    /// came from a file the transcript never saw.
+    // --- the session's environment (a same-session counterfactual) --------------------
+    /// Commands unread under today's reading and readable once the session's own assignments
+    /// are in scope. A labelled counterfactual: the corpus records no environment, so this is
+    /// what a gate would have built had it tracked what it read, not what a shell held.
     pub env_fixed: usize,
-    /// Commands that are **readable** today and unread with the environment in scope. It
-    /// must be zero: the whole change is meant to be monotone, and a value that makes a
-    /// command *less* readable is a claim about a shell nobody observed.
+    /// Commands readable today and unread with the environment in scope. Must be zero: the
+    /// change is meant to be monotone, and a value that makes a command less readable is a
+    /// claim about a shell nobody observed.
     pub env_broken: usize,
     /// Commands still unresolved with the session's environment in scope.
     pub env_unresolved: usize,
     /// Which variable names bought what: `$p`, `$d`, `$PATH`, `$CARGO_TARGET_DIR`.
     pub env_names: BTreeMap<String, Constructs>,
-    /// **The names a tracker cannot help with**, counted the same way: a command could not
-    /// place `$X` and **no earlier command in the same session assigned it either**.
-    ///
-    /// This is the half R98 asked for: *how much of the cross-command bucket was set by the same
-    /// session's earlier commands, and how much came from somewhere a session's own history
-    /// cannot see* — the shell profile, the daemon's environment, a value read out of a file, a
-    /// `$(…)`. The names here are the second kind. `appears` counts every command that mentions
-    /// one; `alone` counts the commands where it is the only reason.
+    /// The names a tracker cannot help with: the command could not place `$X` and no earlier
+    /// command in the session assigned it, so it came from the profile, the daemon or a file.
+    /// `appears` counts every command mentioning one; `alone` where it is the only reason.
     pub env_nowhere: BTreeMap<String, Constructs>,
 }
 
@@ -569,19 +458,16 @@ impl Report {
     }
 }
 
-/// Sweep one corpus file. `env` is the caller's home/workspace assumption, and it must
-/// carry a declared shell (`with_pinned_shell`) — the daemon's own gate does, and a
-/// sweep under `ShellTrust::Unknown` would measure that instead of the parser.
+/// Sweep one corpus file. `env` is the caller's home/workspace assumption and must carry a
+/// declared shell (`with_pinned_shell`): under `ShellTrust::Unknown` every bare program is
+/// shadowable, so the sweep would measure that instead of the parser.
 pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
     let mut rep = Report::default();
     let mut sessions: HashMap<String, Session> = HashMap::new();
     let mut last_ms: HashMap<String, u64> = HashMap::new();
-    // **The `PATH` this replay resolves `$PATH` against, and what it is.** A record carries
-    // no environment, so there is no `PATH` to read — and the value matters for exactly one
-    // thing: whether `export PATH=…:$PATH` becomes a word this reading can write out. So it
-    // is a stated placeholder rather than this box's, and the report says which. With
-    // `ProgramLookup::None` no stage under it is ever named, so a command that *needs* the
-    // file a bare name runs stays unread — which is the same answer it gets today.
+    // The `PATH` this replay resolves `$PATH` against. A record carries no environment, so it
+    // is a stated placeholder and not this box's; with `ProgramLookup::None` no stage under
+    // it is ever named, so a command needing a file stays unread, as the gate reads it too.
     const PLACEHOLDER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
     let base = {
         let mut e = env.clone();
@@ -605,10 +491,9 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
         let Some(now) = rep.row(r, env) else {
             return;
         };
-        // **The same command read again with the session's own variables in scope** —
-        // D14/R95/R96, as a counterfactual the report labels. Nothing here observes a shell;
-        // what it measures is how many commands the gate could read if it tracked what its
-        // own text assigned before them.
+        // The same command read again with the session's own variables in scope: how many
+        // commands the gate could read if it tracked what its own text assigned before them.
+        // Nothing here observes a shell.
         let mut with = base.clone();
         let session_vars = sessions
             .get(&r.session_id)
@@ -642,9 +527,9 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
             if !t.resolved() {
                 rep.env_unresolved += 1;
             }
-            // **And what a session's own history cannot reach.** A name nothing earlier in
-            // the session assigned came from the profile, the daemon, a file or a `$(…)` —
-            // not from an earlier command, so tracking the session cannot buy it.
+            // What a session's own history cannot reach: a name nothing earlier assigned came
+            // from the profile, the daemon, a file or a `$(...)`, so tracking the session
+            // cannot buy it.
             if !now.resolved() {
                 let alone = now.detail.len() == 1;
                 for d in &now.detail {
@@ -728,7 +613,7 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
                     ));
                 }
             }
-            // The parse errors, by cause — once per command, under its first, because a
+            // The parse errors, by cause: once per command, under its first, because a
             // command is one decision however many errors the recovery put in it.
             if now.constructs.contains(&Construct::ParseError.as_str())
                 && let Some(n) = &now.baseline.command
@@ -808,8 +693,8 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
             if by_mode || by_shape || by_grant {
                 rep.human_settled += 1;
             }
-            // The answer, recorded at its strongest: both a grant and a shape. See the
-            // module note — the export does not carry which rung was chosen.
+            // The answer, recorded at its strongest: both a grant and a shape, because the
+            // export does not carry which rung was chosen.
             session.grants.push(as_grant(&now));
             if let (Some(shape), Tier::MayApprove) = (&now.shape, &now.baseline.tier)
                 && !now.destroys()
@@ -852,10 +737,8 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
 
 /// Fold every element of the top-level JSON array, one row at a time.
 ///
-/// Streamed rather than parsed into a `Vec`: the largest corpus file is 184 MiB of
-/// decisions, and a sweep that held all of it would make the measurement's own memory
-/// the first thing an operator has to provision — while what the report needs is one
-/// row at a time anyway.
+/// Streamed rather than parsed into a `Vec`: a corpus is large enough that holding all of
+/// it would make the measurement's own memory the first thing to provision.
 fn each_row(path: &Path, mut f: impl FnMut(&Row)) -> Result<(), String> {
     struct Seq<F>(F);
     impl<'de, F: FnMut(&Row)> serde::de::Visitor<'de> for Seq<F> {
@@ -881,45 +764,32 @@ fn each_row(path: &Path, mut f: impl FnMut(&Row)) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// **What D16 and R98(1) would change, over a corpus** — the two numbers the rulings were filed
-/// on, measured against every decision this operator's boxes ever took.
+/// What a boundary rule and a standing-answer rule would change, over a corpus.
 ///
-/// # What each column is, and the assumption under it
-///
-/// * **`cards_*`** are the calls a PERSON answered — `verdict_by: human:…` — which is what a card
-///   is. The corpus does not record which rung they chose (a denial and an admit are both
-///   `selected`), so these are *cards raised*, not *cards a person cleared*.
-/// * **`d16`** are those a `writes-allowed` session would not have raised **if its backend's
-///   boundary had been measured**. That is the assumption, and it is the only one: a corpus row
-///   records the call, the mode and who decided, and not the confinement the call ran in, so the
-///   measurement is [`crate::adjudicate::a_command_that_crosses_nothing`] — the gate's own rule
-///   minus the boundary half — and it is reported per mode rather than summed over them.
-/// * **`r98`** are settles whose deciding mechanism was a **standing answer** (an approved
-///   shape, a session grant, a `permission` rule) over a command that runs the project's own
-///   code, split by the runner. With `[permissions] ask_unconfined_code` OFF — the default — R98
-///   does nothing; this column is what turning it on would cost.
+/// A row records the call, the mode and who decided, never the confinement it ran in, so the
+/// gate's own [`crate::adjudicate::a_command_that_crosses_nothing`] is asked as if the
+/// session had been inside a measured boundary.
 #[derive(Debug, Default)]
 pub struct Unasked {
     pub rows: usize,
     pub commands: usize,
-    /// Human-answered cards at `writes-allowed` — the population D16 changes.
+    /// Human-answered cards at `writes-allowed`: the population the boundary rule changes.
     pub cards_writes_allowed: usize,
-    /// …and the ones the boundary rule would have settled with no card.
+    /// And the ones the boundary rule would have settled with no card.
     pub d16: usize,
-    /// Human-answered cards at any point, and the same rule over them — context only, because
-    /// D16 is a `writes-allowed` rule and a session that already admits everything has no cards
-    /// to save.
+    /// Human-answered cards at any point, and the same rule over them. Context only: the rule
+    /// is a `writes-allowed` one, and a session that already admits everything has no cards to
+    /// save.
     pub cards_any_point: usize,
     pub d16_any_point: usize,
-    /// Standing-answer settles over project code, by runner (R98's cost).
+    /// Standing-answer settles over project code, by runner: what the rule costs.
     pub r98: BTreeMap<String, usize>,
     pub r98_total: usize,
-    /// …of which at a point that would otherwise have ASKED for an exec call — the ones the
-    /// switch actually costs a card. The rest were at a point whose exec disposition is already
-    /// `Admit` (`allow-all`, in both coordinates), so the grant was not what settled them and
-    /// turning R98 on changes nothing there.
+    /// Of which at a point that would otherwise have asked for an exec call: the ones the
+    /// switch actually costs a card. The rest sat where exec is already `Admit`, so the grant
+    /// did not settle them and the switch changes nothing there.
     pub r98_would_ask: usize,
-    /// …and the same split by runner, for the rows that would ask.
+    /// And the same split by runner, for the rows that would ask.
     pub r98_would_ask_by_runner: BTreeMap<String, usize>,
 }
 
@@ -938,8 +808,8 @@ impl Unasked {
         let writes_allowed = mode == Some(Mode::WRITES_ALLOWED);
 
         if r.a_human_answered() {
-            // The gate's own rule, minus its boundary half — see the type's doc for why that is
-            // the honest question a corpus can answer.
+            // The gate's own rule, minus its boundary half: the honest question a corpus can
+            // answer, as the type's doc says.
             let would = crate::adjudicate::a_command_that_crosses_nothing(
                 Mode::WRITES_ALLOWED,
                 reading.access,
@@ -967,9 +837,9 @@ impl Unasked {
         {
             *self.r98.entry(kind.clone()).or_default() += 1;
             self.r98_total += 1;
-            // **The points that would otherwise ask.** An unparsed mode (the two `allow-all`
-            // spellings are not in `Mode::NAMED`) is not one of them: `allow-all` is where most
-            // of these rows are and the mode admits exec there whatever a grant says.
+            // The points that would otherwise ask. An unparsed mode is not one of them:
+            // `allow-all` is where most of these rows are, and it admits exec there whatever
+            // a grant says.
             let asks = mode
                 .is_some_and(|m| m.disposition(Access::Exec) != crate::mode::Disposition::Admit);
             if asks {
@@ -997,7 +867,7 @@ impl Unasked {
         }
     }
 
-    /// The table, as the operator reads it. Numbers only: not one command is printed.
+    /// The table. Numbers only: not one command is printed.
     pub fn render(&self, label: &str) -> String {
         let mut out = format!(
             "{label}: {} decisions, {} with a command\n",
@@ -1032,7 +902,7 @@ impl Unasked {
     }
 }
 
-/// **Measure one corpus file for D16 and R98(1).** `env` is the caller's home/workspace
+/// Measure one corpus file for the two rules. `env` is the caller's home/workspace
 /// assumption, for the same reason [`sweep`]'s is.
 pub fn unasked(path: &Path, env: &Surroundings) -> Result<Unasked, String> {
     let mut out = Unasked::default();
@@ -1103,8 +973,8 @@ impl Report {
         self.notes.extend(o.notes);
     }
 
-    /// The report, as the operator reads it. Numbers only: the corpus holds real
-    /// commands from their sessions and not one of them is printed here.
+    /// The report. Numbers only: the corpus holds real commands from real sessions and not
+    /// one of them is printed here.
     pub fn render(&self, label: &str) -> String {
         let mut out = String::new();
         let pct = |n: usize, d: usize| {
@@ -1199,9 +1069,9 @@ impl Report {
                 self.out_of_order
             ));
         }
-        // **D14/R95/R96, and the label is part of the number.** The corpus records no
-        // environment, so this is a same-session counterfactual: the assignments the gate
-        // read before each command, not what a shell was observed to hold.
+        // The label is part of the number: the corpus records no environment, so this is a
+        // same-session counterfactual, the assignments the gate read and not what a shell was
+        // observed to hold.
         out.push_str(&format!(
             "\n  session environment (COUNTERFACTUAL: the assignments the gate read, not a \
              shell's report)\n    fixed {} · BROKEN {} · still unresolved {}\n",
@@ -1212,7 +1082,7 @@ impl Report {
             v.sort_by_key(|(_, c)| std::cmp::Reverse(c.alone));
             out.push_str(&format!("    {:<24} {:>8}\n", "bought by", "commands"));
             for (name, c) in v.iter().take(12) {
-                // `name` already carries its `$` — the key is `parameter_expansion:$DB`.
+                // `name` already carries its `$`: the key is `parameter_expansion:$DB`.
                 out.push_str(&format!("    {:<24} {:>8}\n", name, c.alone));
             }
         }

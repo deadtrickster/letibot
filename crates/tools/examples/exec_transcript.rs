@@ -1,10 +1,8 @@
 //! `cargo run -p letibot-tools --features testing --example exec_transcript`
 //!
-//! Prints, verbatim, the three things `TODO.md` T21 and T24 ask to see: the
-//! refusal a kill-by-pattern gets, the refusal a wait-by-pattern gets, and the
-//! record a reap leaves behind. It exists because those are prose the model
-//! reads, and prose that is only ever asserted on in a test drifts into
-//! something nobody would want to receive.
+//! Prints, verbatim, the refusal a kill-by-pattern gets, the refusal a wait-by-pattern gets,
+//! and the record a reap leaves behind. These are prose the model reads, and prose only ever
+//! asserted on in a test drifts into something nobody would want to receive.
 use letibot_tools::testing::runner_harness;
 
 fn main() {

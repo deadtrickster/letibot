@@ -1,11 +1,8 @@
 //! The sweep's own tests, over a corpus small enough to reason about by hand.
 //!
-//! The file is `crates/tools/tests/data/gate-corpus-tiny.json`, beside this test the way
-//! `answer-key.tsv` sits beside the search test: a fixture a build needs is in the tree,
-//! and the operator's real corpus is not in the tree at all.
-//!
-//! Every command here is written for the fixture. Nothing in this module is copied from
-//! a store.
+//! The fixture is `crates/tools/tests/data/gate-corpus-tiny.json`, beside this test the
+//! way a build's fixture belongs in the tree: every command in it is written for the
+//! fixture and none is copied from a store.
 
 use super::*;
 
@@ -38,9 +35,9 @@ fn a_sweep_counts_the_rows_the_tools_and_the_commands() {
 #[test]
 fn a_command_the_record_calls_unresolved_and_today_reads_is_counted_as_fixed() {
     let r = tiny();
-    // Four rows say "never resolved" — `cat $FILE`, the `cd && export && cargo` chain,
-    // the `$(…)`, and the `tail -5 …` row, which carries no baseline column at all and is
-    // therefore `then_unknown` rather than either. The other six were read then.
+    // Four rows say "never resolved": `cat $FILE`, the `cd && export && cargo` chain, the
+    // `$(...)`, and the `tail -5 ...` row, which carries no baseline column at all and is
+    // therefore `then_unknown`. The other six were read then.
     assert_eq!(
         r.then_resolved, 5,
         "two greps, two cargo tests and the oracle row; the \
@@ -72,8 +69,8 @@ fn the_construct_that_stays_unresolved_is_named_by_the_parser_not_by_a_regex() {
     assert_eq!((cs.appears, cs.alone), (1, 1));
 }
 
-/// The approval key, replayed: a person answered a shape once, and the next call of that
-/// shape — and, separately, a call only a session grant could cover — are counted as
+/// The approval key, replayed: a person answered a shape once, so the next call of that
+/// shape, and separately a call only a session grant could cover, are counted as
 /// questions that need not have been asked.
 #[test]
 fn a_second_human_ask_is_counted_as_settled_by_the_approval_the_first_one_recorded() {
@@ -102,9 +99,8 @@ fn a_second_human_ask_is_counted_as_settled_by_the_approval_the_first_one_record
     );
 }
 
-/// The oracle was shown a reading. Where today's reading differs, the decision was taken
-/// on something else — and that is the count an operator has to see before trusting the
-/// gate's own record.
+/// The oracle was shown a reading. Where today's differs, the decision was taken on
+/// something else, which is the count to see before trusting the gate's own record.
 #[test]
 fn an_oracle_row_whose_recorded_intents_differ_from_todays_reading_is_counted() {
     let r = tiny();
@@ -147,7 +143,7 @@ fn the_record_says_first_that_a_command_was_never_read() {
         baseline: baseline.map(str::to_string),
         ..Row::default()
     };
-    // Since 2026-10-02 the summary carries the marker.
+    // The summary carries the marker when the grammar did not resolve the command.
     assert!(unread(&row(
         "gate:mode",
         Some(
@@ -155,8 +151,8 @@ fn the_record_says_first_that_a_command_was_never_read() {
              resolved (1 construct(s); each scope is the widest it could reach)"
         )
     )));
-    // Before that date the verdict token WAS the refusal, and there was no marker — the
-    // spelling that made 514 rows on lab2x1 look like a regression.
+    // An older row spells the refusal as the verdict token and carries no marker;
+    // counting only the marker would read it as a regression.
     assert!(unread(&row(
         "boundary:normaliser",
         Some("not_run — intents [inspect read_file unknown] over [host_other]")
@@ -195,14 +191,11 @@ fn a_file_that_is_not_a_decision_array_is_refused() {
     let _ = std::fs::remove_file(&path);
 }
 
-// ---------------------------------------------------------------------------
-// What D16 and R98(1) would change, over the same fixture
-// ---------------------------------------------------------------------------
+// The two rule counters, over the same fixture.
 
-/// **The D16 column over the fixture, counted by row.** Four calls a person answered, all at
-/// `writes-allowed`; three of them are in-checkout exec and would not have been cards inside a
-/// measured boundary; the fourth is a `grep`, which is judged a READ and is admitted at every
-/// point without a card already — so counting it would be claiming a saving that exists.
+/// The boundary column over the fixture, counted by row: three in-checkout exec calls a
+/// person answered would not have been cards inside a measured boundary. The fourth is a
+/// `grep`, already admitted at every point, so counting it claims a saving that is not one.
 #[test]
 fn the_d16_column_counts_the_cards_a_boundary_would_not_have_raised() {
     let path =
@@ -219,11 +212,9 @@ fn the_d16_column_counts_the_cards_a_boundary_would_not_have_raised() {
     assert_eq!(u.d16_any_point, 3);
 }
 
-/// **The R98 column counts STANDING answers, and the fixture shows why the distinction matters.**
-/// Its one project-code command (`cd … && export … && cargo test`) was settled by `gate:mode` —
-/// the point admitting it — and a point that admits will go on admitting whatever a grant says,
-/// so that call is not one R98 changes. The row beside it, `tail -5 /var/log/x.log`, was settled
-/// by a `permission` rule and is not project code. Zero, for two different right reasons.
+/// A standing-answer column over the fixture: its one project-code command was settled by
+/// `gate:mode`, which admits whatever a grant says, and the row beside it is not project
+/// code. Zero, for two different right reasons.
 #[test]
 fn the_r98_column_ignores_what_the_mode_settled_and_what_is_not_project_code() {
     let path =
@@ -233,10 +224,9 @@ fn the_r98_column_ignores_what_the_mode_settled_and_what_is_not_project_code() {
     assert_eq!(u.r98_would_ask, 0);
 }
 
-/// **A standing settle at `allow-all` is not a cost of the switch**, and this is the row that
-/// says so. The mode admits exec there whatever a grant says — so R98 turning the grant off
-/// changes nothing, and a report that counted it would overstate what the switch costs by the
-/// population that mostly runs it (the operator's own box).
+/// A standing settle at `allow-all` is not a cost of the switch: the mode admits exec there
+/// whatever a grant says, so turning the grant off changes nothing, and counting it would
+/// overstate the cost by the population that mostly runs the switch.
 #[test]
 fn a_standing_settle_at_allow_all_is_not_a_card_the_switch_costs() {
     let path =
@@ -272,9 +262,9 @@ fn a_standing_settle_at_allow_all_is_not_a_card_the_switch_costs() {
     assert_eq!(u.r98_would_ask_by_runner.get("cargo test"), Some(&1));
 }
 
-/// **A standing answer over a runner is counted**, by the runner's bucket — and a shape over
-/// something that is not one is not. The three mechanisms count alike (`gate:shape`,
-/// `gate:session-grant`, `gate:permission`): each is a standing answer that R98 stops honouring.
+/// A standing answer over a runner is counted by the runner's bucket; a shape over anything
+/// else is not. The three mechanisms count alike, because each is a standing answer the
+/// switch stops honouring.
 #[test]
 fn a_standing_answer_over_a_runner_is_counted_by_its_bucket() {
     let row = |id: &str, by: &str, mode: &str, command: &str| {
