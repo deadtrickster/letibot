@@ -3,13 +3,9 @@
 
 use super::*;
 
-/// The verbs `/todo` answers itself: the four that move a row, plus `when`. Everything else is
-/// offered to the `todo` layer first, because what a new row may be spelled like is a project's
-/// policy, while the write stays the head's.
-///
-/// This list and the `match` in [`App::todo_command`] are one list: a verb there without a word
-/// here is handed to the guest, which reads it as a title. One constant, and a test drives every
-/// word of it at a recording layer (`the_heads_own_verbs_never_reach_a_layer`).
+/// The verbs `/todo` answers itself: the four that move a row, plus `when`. Everything else goes to the
+/// `todo` layer first, because what a new row may be spelled like is a project's policy and the write
+/// stays the head's. A verb in the `match` without a word here is handed to the guest.
 pub(crate) const OWN_VERBS: [&str; 5] = ["done", "rm", "postpone", "resume", "when"];
 
 /// Is this word one the head answers, rather than one a layer may own?
@@ -17,11 +13,9 @@ pub(crate) fn is_own_verb(verb: &str) -> bool {
     OWN_VERBS.contains(&verb)
 }
 
-/// **The words out of a `command_todo` answer** — `Some(content)` when the layer asked the host to
-/// add a row, and `None` for every other answer: a pass, a malformed act, an act name this head
-/// does not perform. **The one name is the trust boundary** — `plugin.toml` declares `add_todo` in
-/// its `actions`, and the head performs nothing it has not heard of, so a layer that answered
-/// `{"act": {"name": "run_shell"}}` gets a line nothing happens to rather than a shell.
+/// The words out of a `command_todo` answer: `Some(content)` when the layer asked for a row, `None` for
+/// every other answer. The one act name is the trust boundary, so a layer that answered `run_shell`
+/// gets a line nothing happens to.
 pub(crate) fn add_todo_words(answer: &serde_json::Value) -> Option<String> {
     if act_name(answer)? != "add_todo" {
         return None;
@@ -60,10 +54,8 @@ impl App {
     /// cannot be reached by one route and skipped by another. The picker, `/mode
     /// NAME` and the config pane's cycle all end here.
     pub(crate) fn mode_action(&mut self, name: String) -> Option<Action> {
-        // The literal, not `Mode::ALLOW_ALL.name`: the head does not link
-        // `letibot-tools` and does not keep a mode list — every other name it
-        // handles comes from the daemon's `SettingRow::choices`. This is the one
-        // name it has to recognise, and it is the daemon's own spelling.
+        // The literal, not `Mode::ALLOW_ALL.name`: the head does not link `letibot-tools` and keeps no
+        // mode list, and this is the one name it has to recognise.
         if name == "allow-all" {
             self.mode_confirm = Some(name);
             // **This card is the operator's own**, so nothing another head asked for may still
@@ -79,21 +71,14 @@ impl App {
         })
     }
 
-    /// **Choose the profile `typed` names — one of R38's settings, and a local one.** Returns
-    /// `None` because nothing is sent anywhere.
-    ///
-    /// **The one place a set is set**, called by the card's `Enter`, by `/verbosity NAME` and
-    /// by `/v`, so the three cannot disagree about what a word means or about what happens to
-    /// the transcript when it changes. The word itself is read by [`Visibility::parse`] — the
-    /// same function `head.toml` is read with — so a name this reads here is a name the file
-    /// reads there.
+    /// Choose the profile `typed` names, a local setting, so nothing is sent anywhere. The one place a
+    /// set is set, called by the card, by `/verbosity` and by `/v`, and the word is read by
+    /// [`Visibility::parse`], the same function `head.toml` is read with.
     pub(crate) fn set_verbosity(&mut self, typed: &str) -> Option<Action> {
         let t = typed.trim().to_ascii_lowercase();
         let next = if t == "v" || t == "next" {
-            // **`/v` is the next profile**, in `Profile::ALL`'s order — which is the ladder's
-            // order with `read-edits` in it — and one key's worth of cycling is a promise this
-            // head made (R38 does not revoke it: what R38 rules out is having to CYCLE to
-            // learn what the values are, and the card is where they are read).
+            // `/v` is the next profile in `Profile::ALL`'s order, and cycling one key's worth is a
+            // promise this head made; R38 only rules out having to cycle to learn the values.
             let at = self
                 .visibility
                 .profile()
@@ -110,17 +95,12 @@ impl App {
                 }
             }
         };
-        // **What cannot be drawn is not stored** — see [`Visibility::undrawable`]. The ladder
-        // turns its three switches on in one order, so a set that hides one below a switch it
-        // shows would put a word on the status row that the screen does not carry, and the
-        // operator's own rule for the whole rewrite is that *"a profile a person can select
-        // that changes nothing is worse than an unfinished rewrite, because it lies about the
-        // screen."* The refusal names the switch that cannot be honoured and the way round it.
+        // What cannot be drawn is not stored ([`Visibility::undrawable`]): a profile that hides a switch
+        // below one it shows puts a word on the status row the screen does not carry, and a profile that
+        // changes nothing lies about the screen. The refusal names the switch and the way round it.
         if let Some(s) = next.undrawable() {
-            // The sentence names the way round that works, with the remedy FIRST: `say` trims it to
-            // the frame, so a refusal that opened by explaining the ladder was cut off before the verb
-            // that undoes it. The ladder turns switches on in order, so what cannot be drawn is a
-            // switch on with one BELOW it off, and only those below are named.
+            // The sentence names the way round with the remedy first, because `say` trims it to the frame;
+            // the ladder turns switches on in order, so only those below the offending one are named.
             const LADDER: [Show; 3] = [Show::Tools, Show::Thinking, Show::System];
             let below = LADDER.iter().position(|l| *l == s).unwrap_or(0);
             let missing: Vec<String> = LADDER[..below]
@@ -156,11 +136,8 @@ impl App {
             return None;
         }
         self.visibility = next;
-        // **And the body the set names moves with it**, through the one writer: `folded` and
-        // `open` are the fold this head has always had (`ctrl-r`, `/t`), so a profile that
-        // says `tools: folded` sets the fold and not only the word. `hidden` is left alone —
-        // a fold on a row nobody draws is not a fact about the screen, and the rows are the
-        // rung's business.
+        // The body the set names moves with it, through the one writer: a profile saying `tools: folded`
+        // sets the fold and not only the word. `hidden` is left alone, since the rows are the rung's business.
         for (show, level) in [
             (Show::Tools, next.level(Show::Tools)),
             (Show::Thinking, next.level(Show::Thinking)),
@@ -176,26 +153,18 @@ impl App {
         // for R36), so the view moves onto its nearest surviving neighbour at the moment of the
         // change, where the fact is known for certain.
         self.reanchor_off_hidden();
-        // **And whatever was OPEN is closed, because it was open in the other rendering**
-        // (R37 AMENDED). `payload_sel` names one thing — a payload window under every other
-        // rendering, the run `ctrl-t` opened under this one — and the same id means a different
-        // thing on either side of the change. Carrying it across opened a payload window on
-        // a row the reader had not asked about, which is the surprise this field exists to
-        // avoid: *I opened a run, changed my mind about the rung, and a window appeared.*
+        // Whatever was open is closed, because it was open in the other rendering: `payload_sel` names one
+        // thing, and the same id means a different thing on either side of a rung, so carrying it across
+        // opened a window on a row nobody asked about.
         self.payload_sel = None;
         self.payload_page = 0;
-        // **And the one switch goes with it.** A lift names a run under the rendering it was
-        // thrown in, and the same id means a different thing on either side of a rung — the
-        // argument one line up, one field over. Clearing `payload_sel` and leaving the lift is
-        // exactly the orphan this change exists for: the panel is the lift's only exit, so a
-        // lift without one cannot be closed by any key. Through `drop_lift`, so the field has
-        // two writers and not three.
+        // The one switch goes with it: a lift names a run under the rendering it was thrown in, and the
+        // panel is the lift's only exit, so a lift without one cannot be closed by any key. Through
+        // `drop_lift`, so the field has two writers and not three.
         self.drop_lift();
         self.invalidate_history();
-        // **And it is written down**, which is what *"persists headrestarts"* asks for: the
-        // change and the file are one act from here, so a set cannot be chosen and then
-        // forgotten. `RetiredWrite::Union` because this is not a statement about the retired
-        // set — the fold and diff toggles pass it for the same reason.
+        // And it is written down, which is what persisting across restarts asks for: the change and the
+        // file are one act from here. `RetiredWrite::Union`, since this says nothing about the retired set.
         let saved = self.save_prefs(RetiredWrite::Union);
         self.say(&if next.hides_the_working() {
             format!(
@@ -234,16 +203,12 @@ impl App {
         }
     }
 
-    /// **Set the diff style by name, or refuse by name** — R38's second setting.
-    ///
-    /// A local setting like the rung above, and one place for the same reason: the card's
-    /// `Enter` and the typed word must not be able to disagree.
+    /// Set the diff style by name, or refuse by name. A local setting, in one place so the card's `Enter`
+    /// and the typed word cannot disagree.
     pub(crate) fn set_diff(&mut self, typed: &str) -> Option<Action> {
-        // **`DiffPref::parse` and not a second list.** The preference file is SHARED with
-        // the other head, which accepts `split` / `side-by-side` / `auto` and `unified` /
-        // `single` on input and writes back exactly two words — so the spellings a value can
-        // arrive in are already a fact of this tree, and a verb with its own list would be a
-        // verb that refused a value the file accepts. One parser.
+        // `DiffPref::parse` and not a second list: the preference file is shared with the other head, so
+        // the spellings a value can arrive in are already a fact of this tree, and a verb with its own
+        // list would refuse a value the file accepts.
         let split = match crate::prefs::DiffPref::parse(typed) {
             Some(crate::prefs::DiffPref::Split) => true,
             Some(crate::prefs::DiffPref::Unified) => false,
@@ -284,13 +249,9 @@ impl App {
         None
     }
 
-    /// A door verb the person typed, turned into the call the wire wants.
-    ///
-    /// It returns the tool's own name and the arguments object, or a sentence saying why not, and it
-    /// knows only the three facts on the row: which field a bare line fills, what kind it is, and
-    /// which fields have defaults. A row with no bare form returns the daemon's own `why_json`; a
-    /// line with nothing after the verb is refused by name; anything starting with `{` goes through
-    /// untouched as the JSON form.
+    /// A door verb the person typed, turned into the call the wire wants, or a sentence saying why not.
+    /// The head knows only the three facts on the row: which field a bare line fills, what kind it is, and
+    /// which fields have defaults. A row with no bare form returns the daemon's own `why_json`.
     pub(crate) fn head_run_call(
         &self,
         tool: &letibot_sessionlog::HeadRunTool,
@@ -328,10 +289,8 @@ impl App {
                 tool.kind
             ));
         }
-        // **The defaults travel with the line**, so the object the daemon runs is the one a
-        // model's minimal call would have produced. Without them the same tool answers two
-        // different questions depending on who asked — the daemon published them for exactly
-        // this and a head that dropped them would be editing the call.
+        // The defaults travel with the line, so the object the daemon runs is the one a model's minimal
+        // call would have produced; a head that dropped them would be editing the call.
         let mut obj = serde_json::Map::new();
         obj.insert(
             tool.field.clone(),
@@ -343,15 +302,9 @@ impl App {
         Ok(serde_json::Value::Object(obj).to_string())
     }
 
-    /// The verbs the daemon published, from its settings row. Empty when it sent none.
-    /// **The providers this box holds a key for**, from the daemon's own row —
-    /// [`letibot_sessionlog::protocol::MODEL_KEYS_KEY`].
-    ///
-    /// Empty when the row is absent, which is a daemon older than this one: **no greening**
-    /// rather than every row greened, the same rule `daemon_verbs` follows. The head keeps no list
-    /// of its own because it *cannot* have one — whether a preset resolves a key is a fact about
-    /// this box's files and environment (`keys::resolve`), and the daemon is the half that reads
-    /// them.
+    /// The providers this box holds a key for, from the daemon's own row. Empty when the row is absent,
+    /// which is an older daemon: no greening rather than every row greened. The head cannot keep its own
+    /// list, since whether a preset resolves a key is a fact about this box's files.
     pub(crate) fn keyed_providers(&self) -> Vec<String> {
         self.settings
             .iter()
@@ -367,13 +320,8 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// **The rows that need no credential**, from the daemon's own
-    /// [`letibot_sessionlog::protocol::MODEL_KEYLESS_KEY`] row: `local` and every local
-    /// model declared in `providers.toml`.
-    ///
-    /// Falls back to `local` alone when the row is absent, which is a daemon older than
-    /// the row. That is exactly what this head did before the row existed, so an old
-    /// daemon greens what it always greened and nothing reads as newly broken.
+    /// The rows that need no credential, from the daemon's own row: `local` and every local model declared
+    /// in `providers.toml`. An absent row falls back to `local` alone, which is what this head did before.
     pub(crate) fn keyless_choices(&self) -> Vec<String> {
         self.settings
             .iter()
@@ -389,23 +337,14 @@ impl App {
             .unwrap_or_else(|| vec!["local".to_string()])
     }
 
-    /// Whether a picker row is one this box can actually take, so the colour answers *will this work
-    /// if I press enter*.
-    ///
-    /// Two ways to be ready and they are different facts: a credential this box holds, or no
-    /// credential wanted at all. The keyless list comes from the daemon, not a literal, because the
-    /// daemon is the half that knows, and a hardcoded `local` went wrong the moment there was a
-    /// second such row.
+    /// Whether a picker row is one this box can actually take, so the colour answers *will this work if I
+    /// press enter*. Two ways to be ready: a credential this box holds, or no credential wanted at all.
+    /// The keyless list comes from the daemon because the daemon is the half that knows.
     pub(crate) fn choice_ready(&self, name: &str) -> bool {
         let name = name.trim();
-        // **Three ways a row can name its model, so three candidates.**
-        //
-        // `deepseek/deepseek-flash` -- the preset is the part before the slash.
-        // `dense78` -- a declared name, whole, and it may contain anything the operator
-        // typed. `dense78 (qwen-3.8-27b at http://192.168.1.78:8082)` -- the row for a
-        // session already ON one, where the first WORD is the name; the `model` row's
-        // own comment is the rule (*"the first word is what a picker matches on"*), and
-        // splitting that on `/` lands inside the url instead.
+        // Three ways a row can name its model: `preset/model` (the part before the slash), a declared name
+        // whole, or `<name> (<model> at <url>)` where the first word is the name. Splitting that on `/`
+        // lands inside the url instead.
         let first_word = name.split_whitespace().next().unwrap_or(name);
         let provider = first_word.split('/').next().unwrap_or(first_word);
         let keyless = self.keyless_choices();
@@ -415,10 +354,8 @@ impl App {
             || self.keyed_providers().iter().any(|k| k == provider)
     }
 
-    /// **Did the daemon publish its key row at all?** An absent `models.keys` is a daemon
-    /// older than the field and reads as *no greening* — never as *no keys* — so the ask is
-    /// gated on the row being present rather than on the key list being empty, and an older
-    /// daemon never finds its switches blocked behind a prompt.
+    /// Did the daemon publish its key row at all? An absent row is an older daemon and reads as no greening,
+    /// never as no keys, so an older daemon never finds its switches blocked behind a prompt.
     pub(crate) fn keys_row_present(&self) -> bool {
         self.settings
             .iter()
@@ -426,10 +363,9 @@ impl App {
     }
 
     pub(crate) fn command(&mut self, cmd: &str) -> Option<Action> {
-        // The person's own tool call, first: a door verb is neither this head's nor the daemon's
-        // other half's but a TOOL, and it has to be matched against the published list before
-        // anything else refuses it as an unknown word. Both spellings are accepted and only one is
-        // offered, so a hyphen is looked up and the tool's own name goes on the wire.
+        // The person's own tool call first: a door verb is a tool, and it must be matched against the
+        // published list before anything refuses it as an unknown word. Both spellings are accepted and
+        // one is offered, so a hyphen is looked up and the tool's own name goes on the wire.
         let (typed_verb, rest) = match cmd.trim().split_once(char::is_whitespace) {
             Some((v, r)) => (v, r),
             None => (cmd.trim(), ""),
@@ -453,11 +389,9 @@ impl App {
             }
         }
 
-        // `/cells MESSAGE`: the message and what is on this screen with it. Captured here and not a
-        // moment later, because the screen meant is the one that was there when Enter was pressed and
-        // a turn takes seconds. Rendered from this head at this head's size, escapes intact: the
-        // point is what is painted, not a description of it.
-        // **An operator's mark** (TODO R81) — `app/feedback.rs`.
+        // `/cells MESSAGE`: the message and the screen with it, captured at Enter because a turn takes
+        // seconds and the screen meant is the one that was there. Rendered here at this head's size,
+        // escapes intact. An operator's mark: `app/feedback.rs`.
         if let Some(a) = self.feedback_command(cmd) {
             return a;
         }
@@ -476,11 +410,9 @@ impl App {
             } else {
                 format!("{message}\n\n")
             };
-            // Delimited rather than introduced by a sentence, so both readers can
-            // find the edges: the model knows where the screen stops and the
-            // operator's words end, and the head knows which part of its own
-            // transcript is a picture of itself and folds it away. A sentence would
-            // do the first job and not the second.
+            // Delimited rather than introduced by a sentence, so both readers find the edges: the model
+            // knows where the words stop and the picture starts, and the head knows which part of its own
+            // transcript to fold away.
             text.push_str(&format!(
                 "{CELLS_OPEN}{w}x{h} — my terminal exactly as this head drew it, ANSI \
                  escape codes included, so what you are reading IS the rendering and \
@@ -493,11 +425,9 @@ impl App {
             text.push_str(CELLS_CLOSE);
             text.push('\n');
             self.scroll = 0;
-            // **The same string that was sent.** The pending row is cleared by
-            // matching the user item the daemon appends, so an abbreviation here
-            // never matches and the `queued` line never leaves. The screen is taken
-            // out at RENDER time instead, by `queued_lines` and by `user_block`,
-            // which is where a decision about what to show belongs.
+            // The same string that was sent: the pending row is cleared by matching the item the daemon
+            // appends, so an abbreviation never matches and the `queued` line never leaves. The screen is
+            // taken out at render time instead, which is where that decision belongs.
             self.pending_prompts.push(text.clone());
             return Some(Action::Prompt(Prompt::new(text)));
         }
@@ -516,12 +446,9 @@ impl App {
         if let Some(id) = cmd.strip_prefix("switch ") {
             return self.pick(id.trim());
         }
-        // **`/forget` is the destructive sense of removing a session, and it says no.** It is a
-        // verb and not a key because the picker's typed line is a NAME: a letter bound there is
-        // matched exactly when the composer is empty, which is the first character of a filter. A
-        // line that starts with `/` cannot be one, and a verb is where a person looks for the act
-        // a key does not have (`app::removal` is the whole argument, including why no frame
-        // reaches the store's delete).
+        // `/forget` is the destructive sense of removing a session, and it says no: a letter bound in the
+        // picker is matched when the composer is empty, which is the first character of a filter, and a
+        // line starting with `/` cannot be one. See `app::removal`.
         if let Some(what) = verb_arg(cmd, "forget") {
             self.forget_named(what);
             return None;
