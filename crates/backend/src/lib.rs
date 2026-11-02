@@ -46,11 +46,8 @@ pub enum Meter {
     Metered,
 }
 
-/// How strongly the append-only prompt invariant holds.
-///
-/// The invariant is a property of submitting token ids over memory we own: request
-/// N+1 reads the same region further, so there is no rewrite to represent. A
-/// `messages` API cannot offer that, hence this enum.
+/// How strongly the append-only prompt invariant holds: request N+1 reads the same region of token
+/// ids further, so there is no rewrite to represent. A `messages` API cannot offer that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PrefixGuarantee {
     /// Violation is unrepresentable. Assert the region property directly.
@@ -62,10 +59,8 @@ pub enum PrefixGuarantee {
     None,
 }
 
-/// What a turn cost, in the unit that backend actually charges.
-///
-/// One type with an explicit meter rather than two, so a report cannot silently
-/// add wall-clock milliseconds to dollars.
+/// What a turn cost, in the unit that backend actually charges. One type with an explicit meter, so a
+/// report cannot silently add milliseconds to dollars.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TurnCost {
     pub meter: Meter,
@@ -78,25 +73,15 @@ pub struct TurnCost {
     pub micros_usd: Option<u64>,
 }
 
-/// One turn's worth of work, expressed in terms both a local and a remote backend
-/// can realise.
-///
-/// It carries the transcript, not a rendered prompt: realisation is the backend's
-/// job, and a rendered string across this seam would force every backend through
-/// the rendering stack.
+/// One turn's worth of work, in terms both a local and a remote backend can realise. It carries the
+/// transcript rather than a rendered prompt, or every backend would need the rendering stack.
 #[derive(Debug, Clone)]
 pub struct TurnRequest<'a> {
     pub system: &'a str,
     pub tools_json: &'a [String],
     pub items: &'a [TranscriptItem],
-    /// Items this request carries and the transcript does not.
-    ///
-    /// Rendered after everything `items` holds and committed nowhere, so the cached
-    /// prefix stays exactly `items`. An assembly can be recomposed where a row
-    /// cannot be un-said, so an offer the round declines leaves no trace.
-    ///
-    /// Not a `System` item: the API refuses a request that ends on a `system`
-    /// message while carrying tools, so a trailing item renders on the user side.
+    /// Items this request carries and the transcript does not: committed nowhere, so the cached prefix
+    /// stays exactly `items`. Not a `System` item, which the API refuses while tools are carried.
     pub tail: &'a [TranscriptItem],
     pub max_output_tokens: Option<u32>,
 }
@@ -109,10 +94,8 @@ pub trait Backend {
     fn name(&self) -> &str;
 }
 
-/// One piece of a streamed answer, as a `messages` API hands it over.
-///
-/// The turn engine forwards these to its event sink the way it forwards a local
-/// server's token deltas, so a head draws a cloud turn and a local one alike.
+/// One piece of a streamed answer as a `messages` API hands it over, forwarded to the engine's sink
+/// the way a local server's token deltas are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delta {
     Text(String),
@@ -187,13 +170,9 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// A backend that takes the transcript and answers with a completion: a `messages`
-/// API.
-///
-/// Realisation stays the backend's job, so the transcript crosses this seam and
-/// never a rendered prompt or token ids. The turn engine keeps its token ledger as
-/// the local record of the conversation, encoded with the session's own vocabulary,
-/// which is never sent anywhere.
+/// A backend that takes the transcript and answers with a completion. Realisation stays the
+/// backend's job, so the transcript crosses this seam and never a rendered prompt or token ids; the
+/// token ledger is the local record and is never sent anywhere.
 pub trait MessagesBackend: Send + Sync {
     fn caps(&self) -> BackendCaps;
 
@@ -203,12 +182,8 @@ pub trait MessagesBackend: Send + Sync {
     /// The model id sent on the wire.
     fn model(&self) -> &str;
 
-    /// `HOST:PORT` of the thing this backend actually talks to, for a message that
-    /// has to name it.
-    ///
-    /// Read from the URL the request is posted to, not stored beside it where it
-    /// could drift: a warning that names the wrong host sends the reader to look at
-    /// a server that was answering.
+    /// `HOST:PORT` of what this backend actually talks to. Read from the URL the request is posted to,
+    /// not stored beside it where it could drift and send a reader to a server that was answering.
     fn authority(&self) -> String;
 
     /// One completion over the request, streaming deltas to `on_delta` as they

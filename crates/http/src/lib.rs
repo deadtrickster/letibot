@@ -59,10 +59,8 @@ impl From<std::io::Error> for HttpError {
 pub struct Endpoint {
     pub host: String,
     pub port: u16,
-    /// How long to wait for the next byte.
-    ///
-    /// Not a total-request timeout: a cold model reload and a long prefill are progress, not a
-    /// hang, so the clock resets on every chunk while a total timeout would kill a healthy turn.
+    /// How long to wait for the next byte. Not a total-request timeout: a cold reload and a long
+    /// prefill are progress, not a hang, so the clock resets on every chunk.
     pub read_timeout: Duration,
     pub connect_timeout: Duration,
 }
@@ -83,11 +81,8 @@ impl Endpoint {
         format!("{}:{}", self.host, self.port)
     }
 
-    /// `HOST:PORT`, as a person types it. The inverse of [`Endpoint::authority`], so
-    /// an address written to a file comes back as the same endpoint.
-    ///
-    /// `rsplit_once` because an IPv6 literal contains colons and only the last one
-    /// separates the port.
+    /// `HOST:PORT` as a person types it, the inverse of [`Endpoint::authority`]. `rsplit_once`
+    /// because an IPv6 literal contains colons and only the last one separates the port.
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim();
         let (host, port) = s
@@ -120,10 +115,8 @@ enum Framing {
 }
 
 impl Body {
-    /// Read the next chunk of decoded body bytes into `buf`, or `false` at end of body.
-    ///
-    /// The caller brings the buffer because both callers copy the chunk into one of their own
-    /// anyway, and resizing into a live buffer reuses its capacity.
+    /// Read the next chunk of decoded body bytes into `buf`, or `false` at end of body. The caller
+    /// brings the buffer because both callers copy the chunk anyway.
     fn next_bytes(&mut self, buf: &mut Vec<u8>) -> Result<bool, HttpError> {
         buf.clear();
         if self.done {
@@ -182,12 +175,9 @@ impl Body {
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
-    /// Call `on_event` once per `data:` payload of a `text/event-stream`.
-    ///
-    /// Returning `Flow::Stop` closes the connection immediately. That is how an
-    /// urgent steering message and a repetition guard abort a generation: llama.cpp
-    /// notices the dropped socket and frees the slot, which is the only abort
-    /// mechanism the fallback path has.
+    /// Call `on_event` once per `data:` payload of a `text/event-stream`. `Flow::Stop` closes the
+    /// connection immediately, which is how an interrupt aborts a generation: llama.cpp notices the
+    /// dropped socket and frees the slot.
     pub fn for_each_event<F>(self, mut on_event: F) -> Result<(), HttpError>
     where
         F: FnMut(&str) -> Result<Flow, HttpError>,

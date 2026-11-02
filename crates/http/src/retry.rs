@@ -29,11 +29,9 @@ use std::time::Duration;
 
 use crate::HttpError;
 
-/// The statuses a provider uses to say *not now*, and the whole of the list.
-///
-/// `408` is here with the 5xx and the `429` for one reason: the server is saying the request did
-/// not get through this time, and nothing about it was refused. A `429` whose body names money is
-/// the exception, and it is [`Policy::states_a_refusal`]'s job rather than this table's.
+/// The statuses a provider uses to say *not now*, and the whole of the list. `408` is here with the
+/// 5xx and the `429` because the server is saying the request did not get through this time; a `429`
+/// whose body names money is [`Policy::states_a_refusal`]'s exception.
 pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504];
 
 /// The default number of retries: calls after the first. See [`Policy::standard`].
@@ -66,10 +64,8 @@ impl Class {
     }
 }
 
-/// The rule: how many times, how far apart, and which failures.
-///
-/// Cheap to copy: the daemon builds one per turn from its configured budget, and a test builds
-/// [`Policy::none`].
+/// The rule: how many times, how far apart, and which failures. Cheap to copy, since the daemon
+/// builds one per turn and a test builds [`Policy::none`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
     retries: u32,
@@ -116,10 +112,8 @@ impl Policy {
         }
     }
 
-    /// Is this worth taking the call again, and how long to wait first?
-    ///
-    /// `failed` is how many calls have already failed, `0` on the first. `None` means no: the
-    /// class refused it, or the ladder is spent.
+    /// Is this worth taking the call again, and how long to wait first? `failed` is how many calls
+    /// have already failed, and `None` means no: the class refused it or the ladder is spent.
     pub fn after(&self, e: &HttpError, failed: u32) -> Option<Duration> {
         if failed >= self.retries || !self.class(e).retryable() {
             return None;
@@ -127,22 +121,16 @@ impl Policy {
         Some(Duration::from_secs(1u64 << failed.min(31)))
     }
 
-    /// Did the MODEL refuse, rather than the wire failing?
-    ///
-    /// Deliberately not the same question as *is this worth waiting for*: a refused connection or
-    /// a partial answer may mean the endpoint is restarting, while the model itself is only out
-    /// on a `429` or a 5xx. A `408` is the server waiting too long for us, which is the route.
-    ///
-    /// Read by the daemon's fallback rule, the one thing that moves a session.
+    /// Did the MODEL refuse, rather than the wire failing? Not the same question as *is this worth
+    /// waiting for*: a refused connection may mean the endpoint is restarting, while the model is only
+    /// out on a `429` or a 5xx.
     pub fn the_model_refused(e: &HttpError) -> bool {
         matches!(e, HttpError::Status { code, .. } if *code == 429 || *code >= 500)
     }
 
-    /// The status, when the provider refused what was SENT: `4xx` except the two about timing.
-    ///
-    /// The question is whether this is evidence about the model. A `400`/`401`/`403`/`404` is a
-    /// request a model read and said no to, so it is the one class a switch-back notice may cite;
-    /// a `429` waits, a 5xx is an unwell endpoint, and a transport failure is neither.
+    /// The status, when the provider refused what was SENT: `4xx` except the two about timing. A
+    /// `400`/`401`/`403`/`404` is a request a model read and said no to, so it is the one class a
+    /// switch-back notice may cite.
     pub fn refusal_of_what_was_sent(e: &HttpError) -> Option<u16> {
         match e {
             HttpError::Status { code, .. }
@@ -154,14 +142,9 @@ impl Policy {
         }
     }
 
-    /// A refusal no retry can lift: the account behind the key cannot pay for the call.
-    ///
-    /// Narrow on purpose, to phrases that name MONEY. A bare `quota` is left out because *rate*
-    /// quota is exactly the transient thing this ladder exists for, and a list that swallowed it
-    /// would stop retrying the case the `429` exception was written around.
-    ///
-    /// A phrase list is where a variant goes missing, which is why the sentence a refusal ends
-    /// with names the class rather than trusting the list to be complete.
+    /// A refusal no retry can lift: the account behind the key cannot pay for the call. Narrow on
+    /// purpose, to phrases that name money, since a bare `quota` is the transient thing the ladder
+    /// exists for.
     pub fn states_a_refusal(body: &str) -> bool {
         const FILLED: &[&str] = &[
             "insufficient balance",
@@ -183,10 +166,8 @@ impl Policy {
         FILLED.iter().any(|p| b.contains(p))
     }
 
-    /// What failed, in the few words the ending sentence needs.
-    ///
-    /// `name resolution failed` is the one that pays for this: the io error behind it is a
-    /// sentence about lookups, and the first four words of it are the whole story.
+    /// What failed, in the few words the ending sentence needs. `name resolution failed` is the one
+    /// that pays for this: the io error behind it is a sentence about lookups.
     pub fn what(e: &HttpError) -> &'static str {
         match e {
             HttpError::Io(err) => {
@@ -226,11 +207,8 @@ impl Policy {
     }
 }
 
-/// One run of the ladder, and the sentence it ends with.
-///
-/// The daemon's retry loop keeps one of these per turn and asks it after every failed call. The
-/// count and the waiting are recorded here rather than at the failure site because nothing else
-/// keeps them, and an ending without them cannot say whether the daemon tried once or six times.
+/// One run of the ladder, and the sentence it ends with. The count and the waiting are recorded here
+/// rather than at the failure site because nothing else keeps them.
 #[derive(Debug, Clone)]
 pub struct Ladder {
     policy: Policy,
@@ -251,11 +229,8 @@ impl Ladder {
         self.policy
     }
 
-    /// One call failed. Returns the wait before the next one, or `None` when the ladder has
-    /// nothing left to offer, which is the answer for a refusal on the very first call.
-    ///
-    /// The wait is added to what this ladder reports as having waited, because the caller sleeps
-    /// it in the next line and there is no path where it does not.
+    /// One call failed: the wait before the next one, or `None` when the ladder has nothing left.
+    /// The wait is added to what this ladder reports as having waited, since the caller sleeps it.
     pub fn failed(&mut self, e: &HttpError) -> Option<Duration> {
         let wait = self.policy.after(e, self.failed);
         self.failed += 1;
@@ -275,11 +250,8 @@ impl Ladder {
         self.waited
     }
 
-    /// What was tried and how many times: the sentence the ending carries.
-    ///
-    /// Three shapes, and each says the one thing the failure alone cannot: a refusal, with its
-    /// single call; a ladder switched off, saying so rather than claiming it gave up; and a
-    /// ladder that ran out, with the count, the total wait and the provider's own words.
+    /// What was tried and how many times: a refusal with its single call, a ladder switched off saying
+    /// so, or one that ran out with the count, the wait and the provider's own words.
     pub fn ending(&self, e: &HttpError) -> String {
         let what = Policy::what(e);
         if !self.policy.class(e).retryable() {
@@ -439,11 +411,9 @@ mod tests {
         assert!(Policy::new(1).after(&status(503), 1).is_none());
     }
 
-    /// The budget is the caller's, and `0` means the first failure is the answer.
-    ///
-    /// The ladder is right for a server that might be reloading and wrong for one that is not
-    /// there, and only the caller knows which. The premise is asserted first: without it this
-    /// passes on a build that stopped retrying altogether.
+    /// The budget is the caller's: the ladder is right for a server that might be reloading and wrong
+    /// for one that is not there, and only the caller knows which. The premise is asserted first, or
+    /// this passes on a build that stopped retrying.
     #[test]
     fn one_attempt_means_no_retry_and_the_default_still_retries() {
         let e = refused();
