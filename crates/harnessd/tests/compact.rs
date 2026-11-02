@@ -376,7 +376,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
     // silence.
     let attempt_at = warnings
         .iter()
-        .position(|(c, _)| c == "auto_compact")
+        .position(|(c, _)| c == "compacting")
         .expect("the automatic compaction was announced: {warnings:?}");
     let failed_at = warnings
         .iter()
@@ -1012,7 +1012,7 @@ fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
     let events: Vec<SessionEvent> = hub.retained().iter().map(|e| e.event.clone()).collect();
     let announced = events
         .iter()
-        .position(|e| matches!(e, SessionEvent::Warning { code, .. } if code == "auto_compact"))
+        .position(|e| matches!(e, SessionEvent::Warning { code, .. } if code == "compacting"))
         .expect("the wall was announced at all");
     let started = events
         .iter()
@@ -1021,7 +1021,7 @@ fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
     assert!(
         announced < started,
         "the wall must be considered before the first turn is sent, not after it: \
-         auto_compact at {announced}, TurnStarted at {started}"
+         compacting at {announced}, TurnStarted at {started}"
     );
 }
 
@@ -1161,7 +1161,7 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     // The overrun came from the TOOL RESULT: the wall was announced after the
     // round that ran the call, and the compaction before the next turn was sent.
     let wall = at("context_wall", "stopping this turn");
-    let compacting = at("auto_compact", "compacting now");
+    let compacting = at("compacting", "compacting now");
     let compacted = at("compacted", "tokens");
     assert!(
         wall < compacting,
@@ -1170,6 +1170,16 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     assert!(
         compacting < compacted,
         "the compaction is attempted before it is reported: {compacting} < {compacted}"
+    );
+    // One row, and it is the report: nothing named `auto_compact` names a size any more, and the
+    // cut-off sentence travels on the report.
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            SessionEvent::Warning { code: c, detail: d, .. }
+                if c == "auto_compact" && d.contains('→')
+        )),
+        "an `auto_compact` row repeats the report's numbers:\n{events:#?}"
     );
     // ...and the turn that finished the task ran AFTER the compaction, on the
     // summary - a TurnStarted later than the report is the continuation.

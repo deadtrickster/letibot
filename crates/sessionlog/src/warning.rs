@@ -90,6 +90,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // Housekeeping the session does by design: nothing here is the reader's line answered.
     ("auto_compact", Class::Routine),
     ("compacted", Class::Routine),
+    // A fold about to run, and why: the wall, a refusal for length, which fold was chosen. A
+    // head keeps it as the state behind the progress line, so one compaction leaves one row;
+    // a head that does not know the code draws the sentence, as it did before.
+    ("compacting", Class::Routine),
     // **A plugin or a model misbehaved and the harness handled it**: a layer that failed while
     // the one below answered, a candidate the shadow gate refused, a pane whose view the host
     // refused, a model that refused an image. Hiccups handled, nothing at risk.
@@ -776,7 +780,7 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_40_routine_11_refused_and_64_failures() {
+    fn the_table_is_41_routine_11_refused_and_64_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // **The census, kept where it cannot drift.** Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what

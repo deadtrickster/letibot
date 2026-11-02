@@ -426,8 +426,11 @@ impl Harness {
             self.cfg.session_id,
             fold.name()
         );
+        // An announcement, not a row: the head keeps it as the state behind the progress line,
+        // so one compaction draws one durable line, its report. An older head knows no such code
+        // and draws the routine row it always drew.
         self.hub.publish(SessionEvent::Warning {
-            code: "auto_compact".into(),
+            code: "compacting".into(),
             detail: format!(
                 "{r} of {w} {unit} resident{basis}, leaving less than the {h} the next \
                  turn needs — compacting now, as one more message so the prefix the \
@@ -473,19 +476,17 @@ impl Harness {
                 // Whether it helped is not decided here: it used to be, on the base's estimate, for good. A
                 // metered base is judged by the first round that measures it, and a local one inside `compact_with`,
                 // where the count is exact. Either way the controller said it, once.
+                //
+                // The report is the one row this compaction leaves: a second row here repeated
+                // these numbers and drew a second size for one fold. The log keeps the short
+                // line an operator reads in a tail.
                 let cut = if report.fork.truncated {
-                    " The summary was CUT OFF at the model's length limit — it is \
-                     incomplete, and the base says so too."
+                    crate::sessions::SUMMARY_CUT_OFF
                 } else {
                     ""
                 };
                 let said = compacted_line(r, base, &self.token_unit(), self.provider.is_some());
                 eprintln!("  {}: {said}{cut}", self.cfg.session_id);
-                self.hub.publish(SessionEvent::Warning {
-                    code: "auto_compact".into(),
-                    detail: format!("{said}{cut}"),
-                    compaction: None,
-                });
             }
             Err(e) => {
                 // Announced and swallowed, as the sibling does: the room check in `submit_as_a_normal_session`
@@ -1081,7 +1082,7 @@ impl Harness {
                     });
                 if let Some(split) = folded {
                     self.hub.publish(SessionEvent::Warning {
-                        code: "auto_compact".into(),
+                        code: "compacting".into(),
                         detail: format!(
                             "at the wall: summarising the first {split} item(s) and continuing \
                              on the summary plus the rest, verbatim"
@@ -1240,7 +1241,7 @@ impl Harness {
                     match split {
                         Some(split) => {
                             self.hub.publish(SessionEvent::Warning {
-                                code: "auto_compact".into(),
+                                code: "compacting".into(),
                                 detail: format!(
                                     "over budget: summarising the first {split} item(s) and \
                                      continuing on the summary plus the rest, verbatim"
@@ -1273,7 +1274,7 @@ impl Harness {
                         _ => (0, 0),
                     };
                     self.hub.publish(SessionEvent::Warning {
-                        code: "auto_compact".into(),
+                        code: "compacting".into(),
                         detail: format!(
                             "over budget with no room for a summary in place: summarising \
                              off to one side, in two halves that overlap. First the recent \

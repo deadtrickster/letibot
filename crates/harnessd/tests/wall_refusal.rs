@@ -335,10 +335,11 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
         "re-armed by a measurement, then the wall: {released} < {refused}"
     );
 
-    // (2) The compaction that answered it was FORCED - announced as under
-    // duress, because the automatic one is off and an operator watching a
-    // session that "compacts automatically" deserves to know why this ran.
-    let duress = at(&warnings, "auto_compact", "under duress");
+    // (2) The compaction that answered it was FORCED - announced as under duress,
+    // because the automatic one is off and an operator watching a session that
+    // "compacts automatically" deserves to know why this ran. The announcement is a
+    // `compacting` warning: state behind the progress line, not a row of its own.
+    let duress = at(&warnings, "compacting", "under duress");
     assert!(
         refused < duress,
         "the wall is announced before the compaction reacts to it"
@@ -347,7 +348,7 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
     // (3) It reached the overrun branch. The local `Cut` fold announces itself in its own words -
     // two halves that overlap - and the ordinary fold never runs on a session at its wall, so the
     // sentence is evidence of WHICH fold ran.
-    let cut = at(&warnings, "auto_compact", "two halves that overlap");
+    let cut = at(&warnings, "compacting", "two halves that overlap");
     assert!(
         duress < cut,
         "the forced door announces before the fold it chose: {duress} < {cut}"
@@ -359,6 +360,14 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
     assert!(
         cut < compacted,
         "the fold is chosen before it is reported: {cut} < {compacted}"
+    );
+    // The report is the one row the fold leaves: no `auto_compact` row names a size, and the
+    // cut-off sentence travels on the report.
+    assert!(
+        !warnings
+            .iter()
+            .any(|(c, d)| c == "auto_compact" && d.contains('→')),
+        "an `auto_compact` row repeats the report's numbers: {warnings:#?}"
     );
     assert_eq!(
         sessions
@@ -504,9 +513,9 @@ fn a_refusal_on_a_stuck_session_still_folds() {
     );
     let warnings = warnings_of(&hub);
     let refused = at(&warnings, "context_wall", "the PROVIDER refused the prompt");
-    let duress = at(&warnings, "auto_compact", "under duress");
-    let sliced = at(&warnings, "auto_compact", "this one is the sliced fold");
-    let cut = at(&warnings, "auto_compact", "two halves that overlap");
+    let duress = at(&warnings, "compacting", "under duress");
+    let sliced = at(&warnings, "compacting", "this one is the sliced fold");
+    let cut = at(&warnings, "compacting", "two halves that overlap");
     assert!(
         refused < duress && duress <= sliced && sliced < cut,
         "refused, then folded under duress with the hardest press: {warnings:#?}"
@@ -598,8 +607,8 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
     );
     // Under duress, onto the two-half fold, forked, finished - the same chain
     // the other seam.
-    let duress = at(&warnings, "auto_compact", "under duress");
-    let cut = at(&warnings, "auto_compact", "two halves that overlap");
+    let duress = at(&warnings, "compacting", "under duress");
+    let cut = at(&warnings, "compacting", "two halves that overlap");
     let compacted = at(&warnings, "compacted", "tokens");
     assert!(refused < duress && duress < cut && cut < compacted);
     assert_eq!(
@@ -753,7 +762,7 @@ fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
     );
 
     let warnings = warnings_of(&hub);
-    let compacting = at(&warnings, "auto_compact", "compacting now");
+    let compacting = at(&warnings, "compacting", "compacting now");
     let compacted = at(&warnings, "compacted", "tokens");
     assert!(compacting < compacted);
     // The nag's own turn STARTED after the fork landed: a TurnStarted later
@@ -832,7 +841,7 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
     assert!(out.is_some(), "a due row was waiting, so a turn was spent");
 
     let warnings = warnings_of(&hub);
-    let compacting = at(&warnings, "auto_compact", "compacting now");
+    let compacting = at(&warnings, "compacting", "compacting now");
     let compacted = at(&warnings, "compacted", "tokens");
     assert!(compacting < compacted);
     let events: Vec<SessionEvent> = hub.retained().iter().map(|e| e.event.clone()).collect();

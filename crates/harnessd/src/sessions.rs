@@ -4718,40 +4718,37 @@ pub(crate) fn compaction_said(
     }
     // In the units the operator's header shows; see `Config::shown_tokens`. This line said
     // `1352917 → 11353` beside a header reading 900k, and the operator read the first number as a lie.
-    let mut said = if scales.estimated {
-        format!(
-            "compacted: {} → ≈ {} {unit}, estimated until the next round measures it, on \
-             transcript {}.",
-            shown(r.fork.was_tokens),
-            shown_after(r.fork.base_tokens),
-            r.fork.transcript_id
-        )
+    // One sentence carrying every fact a head draws: the size, what stands in for the history,
+    // what was kept and what was dropped. A count repeated in a later sentence is a second
+    // number a reader has to reconcile.
+    let (kept, dropped) = compaction_account(r);
+    let mark = if scales.estimated { "≈ " } else { "" };
+    // Between the facts and the transcript, so the facts stay inside the first clause.
+    let estimate = if scales.estimated {
+        ", estimated until the next round measures it"
     } else {
-        format!(
-            "compacted: {} → {} {unit}, on transcript {}.",
-            shown(r.fork.was_tokens),
-            shown_after(r.fork.base_tokens),
-            r.fork.transcript_id
-        )
+        ""
     };
-    // What was carried rather than described: zero on a local model and non-zero on a remote
-    // one, so the sentence is evidence of which path ran rather than a restatement of policy.
-    if r.fork.tail_items > 0 {
-        said.push_str(&format!(
-            " {} item(s) of the most recent exchange(s) were carried over verbatim \
-             rather than summarised.",
-            r.fork.tail_items
-        ));
+    let mut said = format!(
+        "compacted: {} → {mark}{} {unit}, {kept}, {dropped}{estimate}, on transcript {}.",
+        shown(r.fork.was_tokens),
+        shown_after(r.fork.base_tokens),
+        r.fork.transcript_id
+    );
+    // The consequence, not the count again: a verbatim part that opens inside an exchange
+    // answers something that is no longer there.
+    if r.fork.tail_dropped.is_some() {
+        said.push_str(
+            " The verbatim part begins inside an exchange, so its first message answers \
+             something that is no longer there.",
+        );
     }
-    if let Some(dropped) = r.fork.tail_dropped {
-        said.push_str(&format!(
-            " The verbatim part begins inside an exchange — {dropped} item(s) of it are \
-             gone — so its first message answers something that is no longer there."
-        ));
+    // The fold worked and what it produced is partial, and this report is the only row left to
+    // say the second half.
+    if r.fork.truncated {
+        said.push_str(SUMMARY_CUT_OFF);
     }
-    // And WHICH zero, when there is no tail. This comment two paragraphs up claims the
-    // non-zero count is *"evidence of which path ran rather than a restatement of the policy
-    // "* - and that was true in one direction only
+    // And WHICH zero, when there is no tail: `tail_why` knows all three reasons.
     if r.fork.tail_items == 0
         && let Some(line) = r.fork.tail_why.as_ref().and_then(|t| t.why_line())
     {
@@ -4783,6 +4780,26 @@ pub(crate) fn compaction_said(
         ));
     }
     said
+}
+
+/// The sentence for a summary that ran out of room, said by the report and by the daemon's own
+/// log line. One copy, because a warning's wording is what a head reads.
+pub(crate) const SUMMARY_CUT_OFF: &str = " The summary was CUT OFF at the model's length limit \
+                                          — it is incomplete, and the base says so too.";
+
+/// What the compaction kept and what it dropped. A fork that carried no tail says the summary is
+/// what it kept, because `kept 0 items` reads as a compaction that kept nothing at all.
+fn compaction_account(r: &crate::harness::CompactReport) -> (String, String) {
+    let chars = r.summary_turn.summary.chars().count();
+    let kept = match r.fork.tail_items {
+        0 => format!("kept as a {chars}-character summary"),
+        n => format!("kept {n} item(s) verbatim plus a {chars}-character summary"),
+    };
+    let dropped = match r.fork.tail_dropped {
+        Some(n) => format!("{n} item(s) dropped at the seam"),
+        None => "nothing dropped".to_string(),
+    };
+    (kept, dropped)
 }
 
 /// The structure behind the sentence - 's `warning.compaction`. The `detail` sentence stays
@@ -5291,7 +5308,10 @@ mod the_wire_report {
             None,
         );
         assert!(!with_tail.contains("No verbatim tail"), "{with_tail}");
-        assert!(with_tail.contains("carried over verbatim"), "{with_tail}");
+        assert!(
+            with_tail.contains("kept 1 item(s) verbatim plus a 9-character summary"),
+            "the one sentence carries what was kept: {with_tail}"
+        );
         // A reason this build does not know is shown, not swallowed - the wire's own rule
         // for `because`, and the shape that would catch a daemon one version ahead.
         let unknown = compaction_said(&none("something_new"), None);
@@ -5474,6 +5494,84 @@ mod the_wire_report {
         // And the sentence beside it agrees, which is the property that matters.
         let said = compaction_said(&r, scale);
         assert!(said.contains("160000 → 6000"), "{said}");
+    }
+
+    /// The size, what the summary stands in for, what was kept and what was dropped, in one
+    /// sentence: a head draws one line from it, so a fact told in a second sentence never reaches
+    /// the line.
+    #[test]
+    fn the_compacted_sentence_carries_the_size_and_what_it_kept_and_dropped() {
+        let r = report("## Objective\n\n- ship it", Vec::new(), 12, "budget");
+        let said = compaction_said(&r, Some((3u64, 2u64)));
+        assert!(
+            said.starts_with("compacted: 160000 → 6000 tokens, "),
+            "the size before and after first, in the one unit: {said}"
+        );
+        assert!(
+            said.contains("kept 12 item(s) verbatim plus a 23-character summary"),
+            "{said}"
+        );
+        assert!(said.contains("2 item(s) dropped at the seam"), "{said}");
+        // Said once: a count repeated in a later sentence is the defect this line exists for.
+        assert_eq!(said.matches("12 item(s)").count(), 1, "{said}");
+        assert_eq!(said.matches("dropped").count(), 1, "{said}");
+    }
+
+    /// A compaction that carried nothing verbatim says the summary is what it kept - not
+    /// `kept 0 items`, which reads as a compaction that kept nothing at all.
+    #[test]
+    fn a_compaction_with_no_tail_says_the_summary_is_what_it_kept() {
+        let r = report("## Objective\n\n- x", Vec::new(), 0, "local_model");
+        let said = compaction_said(&r, None);
+        assert!(said.contains("kept as a 17-character summary"), "{said}");
+        assert!(!said.contains("kept 0 item(s)"), "{said}");
+        assert!(said.contains("nothing dropped"), "{said}");
+    }
+
+    /// The report is the one row an automatic compaction leaves, so the fact that changes how far
+    /// the record can be trusted belongs in it rather than beside it.
+    #[test]
+    fn a_cut_off_summary_says_so_in_the_report() {
+        let cut = report("a summary", Vec::new(), 0, "local_model");
+        assert!(cut.fork.truncated, "the fixture's summary is cut off");
+        let said = compaction_said(&cut, None);
+        assert!(said.contains("CUT OFF"), "{said}");
+        assert!(
+            said.contains("incomplete"),
+            "a reader is told what a cut-off summary means, not only that it happened: {said}"
+        );
+        let mut whole = report("a summary", Vec::new(), 0, "local_model");
+        whole.fork.truncated = false;
+        assert!(
+            !compaction_said(&whole, None).contains("CUT OFF"),
+            "a summary that finished says nothing about being cut off"
+        );
+    }
+
+    /// The unit is the daemon's own word for it and it is not dropped on the floor: an estimate
+    /// keeps its `≈` in front of the number and its reason after the facts.
+    #[test]
+    fn the_unit_is_named_and_an_estimate_keeps_its_mark() {
+        let r = report("a summary", Vec::new(), 0, "local_model");
+        let said = compaction_said(
+            &r,
+            Scales {
+                // The identity pair: this test is about the unit and the mark, not the
+                // conversion, which `the_numbers_are_the_same_units_the_sentence_is_in` holds.
+                before: Some((1, 1)),
+                after: Some((1, 1)),
+                unit: Some("deepseek tokens".into()),
+                estimated: true,
+            },
+        );
+        assert!(
+            said.starts_with("compacted: 240000 → ≈ 9000 deepseek tokens, "),
+            "{said}"
+        );
+        assert!(
+            said.contains("estimated until the next round measures it"),
+            "{said}"
+        );
     }
 }
 
