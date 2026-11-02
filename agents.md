@@ -215,11 +215,9 @@ The skip is loud: it names what is missing and prints `THIS IS NOT A PASS`.
 apparatus can refuse to skip. Set `LETIBOT_REQUIRE_MODEL=1` alongside it and a run that means it
 says so.
 
-An apparatus the platform can never have is a different call: it goes through
-`apparatus::applies`, which says `NOT APPLICABLE on <os>` and is deliberately not refusable, or
-carries `#[cfg(target_os = "linux")]`. bwrap, unprivileged user namespaces, cgroup v2,
-`systemd-run` and `ss` over `/proc/net/unix` are that kind. A test that cannot apply on this OS is
-not missing apparatus.
+An apparatus the platform can never have is a different call, and the Merge gate section above states
+it: `apparatus::applies` says `NOT APPLICABLE on <os>` and is deliberately not refusable. A test that
+cannot apply on this OS is not missing apparatus.
 
 What is not apparatus: a configured endpoint that refuses. The two look identical at the socket
 and are not the same fact. `LETIBOT_COMPLETION_URL` set is a promise about where the model is, and
