@@ -143,26 +143,45 @@ impl TranscriptItem {
                 .iter()
                 .map(|p| match p {
                     UserPart::Text { text } => text.len(),
-                    // An image or a file reference is a pointer, not a body: the
-                    // payload is elsewhere and counting it here would bound the wrong
-                    // thing.
-                    UserPart::Image { .. } | UserPart::FileRef { .. } => 32,
+                    // A picture's bytes are ON this row, base64 and all: the reference is the body,
+                    // not a pointer. Counting 32 for it left the census blind to the largest row a
+                    // session can hold, and the hub's byte bound blind in the same place.
+                    UserPart::Image { data_ref, .. } => data_ref.len(),
+                    UserPart::FileRef { .. } => 32,
                 })
                 .sum()
         };
         match self {
-            TranscriptItem::System { text, .. }
-            | TranscriptItem::Reasoning { text, .. }
-            | TranscriptItem::Assistant { text, .. } => text.len(),
+            TranscriptItem::System { text, .. } | TranscriptItem::Reasoning { text, .. } => {
+                text.len()
+            }
+            // A `write` call carries the whole file body in its arguments, so a row that counted
+            // only its text under-reports by the size of the file it wrote.
+            TranscriptItem::Assistant {
+                text, tool_calls, ..
+            } => {
+                text.len()
+                    + tool_calls
+                        .iter()
+                        .map(|c| c.name.len() + c.arguments.len())
+                        .sum::<usize>()
+            }
             TranscriptItem::User { parts: p, .. } => parts(p),
-            TranscriptItem::ToolResult { payload, edit, .. } => {
+            TranscriptItem::ToolResult {
+                payload,
+                edit,
+                media,
+                ..
+            } => {
                 // The excerpt is what makes a `read` or an `edit` row large, and it is
-                // carried to the head, so it counts.
+                // carried to the head, so it counts - and so does a picture a tool read, whose
+                // bytes are inline on the row for the next round.
                 payload.len()
                     + edit
                         .as_ref()
                         .map(|e| e.before.len() + e.after.len())
                         .unwrap_or(0)
+                    + media.as_ref().map(|m| m.data_ref.len()).unwrap_or(0)
             }
             TranscriptItem::SegmentMark { label, .. } => label.len(),
         }
@@ -558,5 +577,70 @@ mod tests {
         .unwrap();
         assert_ne!(operator, agent);
         assert!(agent.contains(r#""speaker":"agent""#), "{agent}");
+    }
+
+    /// The size bound counts what a row actually holds. A picture's base64 body, a tool's own
+    /// picture and a `write` call's file body are the three rows that can be megabytes, and each
+    /// counting as nothing left a census and a byte bound blind to the largest row there is.
+    #[test]
+    fn a_row_that_carries_a_picture_or_a_written_file_counts_its_bytes() {
+        let base64 = "data:image/png;base64,".to_string() + &"A".repeat(4096);
+        let picture = TranscriptItem::User {
+            speaker: Speaker::Operator,
+            parts: vec![
+                UserPart::Text {
+                    text: "look".into(),
+                },
+                UserPart::Image {
+                    media_type: "image/png".into(),
+                    data_ref: base64.clone(),
+                },
+            ],
+        };
+        assert_eq!(picture.bytes(), 4 + base64.len());
+
+        let written = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "write".into(),
+                arguments: format!(r#"{{"path":"a","content":"{}"}}"#, "x".repeat(2048)),
+            }],
+            truncated: false,
+        };
+        assert!(
+            written.bytes() > 2048,
+            "a write call's body is on the row: {}",
+            written.bytes()
+        );
+
+        let read_a_picture = TranscriptItem::ToolResult {
+            call_id: "c2".into(),
+            name: "read".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "a picture".into(),
+            edit: None,
+            origin: None,
+            media: Some(media::Media {
+                mime: "image/png".into(),
+                bytes: 1024,
+                width: Some(8),
+                height: Some(8),
+                data_ref: base64.clone(),
+                delivered: true,
+            }),
+        };
+        assert_eq!(read_a_picture.bytes(), "a picture".len() + base64.len());
+
+        // And a file REFERENCE really is a pointer: the row does not carry those bytes, so
+        // counting the file it names would bound the wrong thing.
+        let referenced = TranscriptItem::User {
+            speaker: Speaker::Operator,
+            parts: vec![UserPart::FileRef {
+                path: "/tmp/huge.bin".into(),
+                sha256: "0".repeat(64),
+            }],
+        };
+        assert_eq!(referenced.bytes(), 32);
     }
 }
