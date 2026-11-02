@@ -1,13 +1,6 @@
 //! `grep`: search a tree, and answer a miss with where the term does occur.
-//!
-//! Both halves are a ladder of named attempts, and every rung climbed is reported. The order
-//! matters: relax the pattern before widening the scope, because a model that wrote
-//! `^\s*fn parse_args\(` usually had the right file and the wrong syntax, and pointing it at
-//! another directory sends it somewhere it did not need to go.
-//!
-//! It never rewrites the query and reports the result as though the original matched: every
-//! relaxation is in the notes, in the words the model reads, because a silent rewrite is a
-//! different search wearing the answer's clothes.
+//! Both halves are a ladder of named attempts, every rung climbed is reported, and the pattern is
+//! relaxed before the scope is widened. A relaxation is in the notes, never silent.
 
 use letibot_transcript::text::clip_line_counted;
 use serde_json::Value;
@@ -107,13 +100,9 @@ impl Tool for Grep {
             .map(|n| (n as usize).min(MAX_CONTEXT))
             .unwrap_or(0);
 
-        // A `path` naming a file would otherwise search nothing: `walk` lists its root, `list`
-        // on a file errors, and zero entries come back, which the ladder then reports as
-        // "matched nothing" about a file that is there. Scoping to one file is an obvious thing
-        // to ask for, so do it rather than diagnose it.
-        //
-        // A scope that does not exist is its own miss, and `read`'s answer to it is the right one
-        // here too.
+        // A `path` naming a file would otherwise search nothing: `walk` lists its root, `list` on a
+        // file errors, and zero entries come back, which the ladder reports as "matched nothing"
+        // about a file that is there. Scoping to one file is an obvious ask, so it is done.
         if ctx.backend.stat(&scope).is_none() && scope != "." {
             let (dir, entries) = super::nearest_listing(ctx.backend, &scope);
             return Invocation::failed(
@@ -126,10 +115,9 @@ impl Tool for Grep {
             ));
         }
 
-        // A pattern that does not compile is a reported error: treating an unsupported
-        // construct as a literal is still a search for something other than what was asked,
-        // and the model has no way to tell an annotated approximation from an answer. What
-        // comes back is the engine's own message, naming the position in the pattern.
+        // A pattern that does not compile is a reported error: treating an unsupported construct as
+        // a literal is still a search for something other than what was asked. What comes back is
+        // the engine's own message, naming the position in the pattern.
         let asked = match Pattern::compile(source, ci) {
             Ok(p) => p,
             Err(e) => return compile_failed(&e),
@@ -237,12 +225,9 @@ impl Tool for Grep {
             return inv;
         }
 
-        // Zero files searched is not a fact about the tree. `glob: "*.rs"` matches against the
-        // whole relative path, so it can select none of `src/*.rs` and answer "does not occur in
-        // the searched tree" about a tree holding nine of them.
-        //
-        // The rule worth keeping: a count does not travel without its denominator, and a
-        // denominator of zero is a failed scope rather than an answer about content.
+        // Zero files searched is not a fact about the tree: `glob: "*.rs"` matches the whole relative
+        // path, so it can select none of `src/*.rs`. A count does not travel without its denominator,
+        // and a denominator of zero is a failed scope rather than an answer about content.
         if files_scanned == 0 {
             let mut why = String::new();
             if let Some(g) = file_glob {
@@ -295,11 +280,9 @@ impl Tool for Grep {
     }
 }
 
-/// The definition keywords that make a pattern structural rather than lexical.
-///
-/// Not "words that appear in code": words that name a KIND OF DEFINITION, which is what
-/// `outline` indexes. `pub`, `return` and `let` are deliberately absent, because a search for
-/// `pub` is a search for text.
+/// The definition keywords that make a pattern structural rather than lexical: words that name a
+/// KIND OF DEFINITION, which is what `outline` indexes. `pub`, `return` and `let` are absent,
+/// because a search for `pub` is a search for text.
 const DEFINITION_KEYWORDS: &[&str] = &[
     "fn",
     "func",
@@ -316,12 +299,9 @@ const DEFINITION_KEYWORDS: &[&str] = &[
     "package",
 ];
 
-/// Does this pattern ask a structural question in a lexical language?
-///
-/// Deliberately narrow, a line anchor plus a definition keyword: a suggestion that fires on
-/// every search mentioning `fn` is noise, and noise in the notes is how the notes stop being
-/// read. The anchor is what makes it structural: `^fn` is not looking for the text `fn`, it is
-/// looking for a definition and guessing at the column it starts in.
+/// Does this pattern ask a structural question in a lexical language? Deliberately narrow, a line
+/// anchor plus a definition keyword: a suggestion that fires on every search mentioning `fn` is
+/// noise, and noise in the notes is how the notes stop being read.
 fn is_structural(source: &str) -> bool {
     if !source.contains('^') {
         return false;
@@ -341,14 +321,9 @@ fn is_structural(source: &str) -> bool {
     hit
 }
 
-/// Name `outline` when it would actually have answered, and stay quiet otherwise.
-///
-/// Two conditions, and the second keeps it honest: the pattern has to be structural, and the
-/// files actually opened have to be in a language this build parses. Suggesting `outline` for a
-/// tree of `.tf` files hands the model a tool that will refuse it.
-///
-/// It suggests and does not run: running a different tool is a larger rewrite than relaxing a
-/// pattern, and the model decides.
+/// Name `outline` when it would actually have answered, and stay quiet otherwise: the pattern has to
+/// be structural, and the files actually opened have to be in a language this build parses. It
+/// suggests and does not run, because running a different tool is the model's decision.
 fn outline_suggestion(source: &str, scope: &str, parseable: &[&'static str]) -> Option<String> {
     if !is_structural(source) || parseable.is_empty() {
         return None;
@@ -364,12 +339,9 @@ fn outline_suggestion(source: &str, scope: &str, parseable: &[&'static str]) -> 
     ))
 }
 
-/// Add a rung, or leave it off if its pattern will not compile.
-///
-/// A rung is a relaxation, so it is allowed to be unavailable: the bare identifier and the
-/// widened scope both derive from a pattern that already compiled, so this is close to
-/// unreachable, but a rung that silently searched for something else would be the exact failure
-/// the compile error exists to prevent.
+/// Add a rung, or leave it off if its pattern will not compile. A rung is a relaxation, so it is
+/// allowed to be unavailable, and a rung that silently searched for something else would be the
+/// exact failure the compile error exists to prevent.
 fn push_rung(ladder: &mut Vec<Attempt>, source: &str, ci: bool, scope: &str, relaxation: String) {
     if let Ok(pattern) = Pattern::compile(source, ci) {
         ladder.push(Attempt {
@@ -380,10 +352,9 @@ fn push_rung(ladder: &mut Vec<Attempt>, source: &str, ci: bool, scope: &str, rel
     }
 }
 
-/// The engine's own words about the pattern, and what to do about it.
-///
-/// `failed`, not `abstained`: an abstention claims the content was looked at and did not contain
-/// the term, and this call opened no files at all.
+/// The engine's own words about the pattern, and what to do about it. `failed`, not `abstained`: an
+/// abstention claims the content was looked at and did not contain the term, and this call opened no
+/// files at all.
 fn compile_failed(e: &PatternError) -> Invocation {
     Invocation::failed(
         format!("`{}` did not compile, so nothing was searched", e.source),
@@ -405,21 +376,14 @@ pub const FILE_CEILING: u64 = 16 * 1024 * 1024;
 /// answering heads.
 pub const BYTES_BUDGET: u64 = 512 * 1024 * 1024;
 
-/// How many candidate files one [`crate::backend::ExecBackend::read_many`] asks for: `grep`'s
-/// page and [`crate::builtins::outline`]'s, because the number belongs to the seam.
-///
-/// A page exists because a substrate whose `read` is a round trip pays per file: 64 paths a page
-/// turns a few hundred round trips into a handful, and the search itself stays on the host, so
-/// nothing the model reads changes.
+/// How many candidate files one [`crate::backend::ExecBackend::read_many`] asks for: `grep`'s page
+/// and [`crate::builtins::outline`]'s, because the number belongs to the seam. A substrate whose
+/// `read` is a round trip pays per file, so 64 paths a page turns hundreds into a handful.
 pub const READ_PAGE_FILES: usize = 64;
 
 /// The other bound on a page: 64 paths of 16 MiB each ([`FILE_CEILING`]) would be a gigabyte in
-/// memory and a third again on the wire. A page stops growing at this many declared bytes but
-/// always takes its first file, so a page is never empty and no file is skipped for being the one
-/// that did not fit.
-///
-/// [`crate::builtins::outline`] uses it too, and there it is the only size bound a file has, so
-/// one large file is still read whole and never 64 of them at once.
+/// memory. A page stops growing at this many declared bytes but always takes its first file, so no
+/// file is skipped for being the one that did not fit.
 pub const READ_PAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// What one rung of the ladder found, and over what.
@@ -432,10 +396,9 @@ struct Scan {
     skipped_large: usize,
     /// Files after [`BYTES_BUDGET`] ran out, never opened.
     unreached: usize,
-    /// The languages among the files opened that `outline` has a grammar for.
-    /// Collected here because it is the only place that knows which files were
-    /// really read, and a suggestion to use `outline` is only honest if it would
-    /// have worked.
+    /// The languages among the files opened that `outline` has a grammar for. Collected here because
+    /// it is the only place that knows which files were really read, and a suggestion to use `outline`
+    /// is only honest if it would have worked.
     languages: Vec<&'static str>,
 }
 
@@ -478,10 +441,9 @@ fn search(
     let mut unreached = 0usize;
     let mut read_bytes = 0u64;
     let mut languages: Vec<&'static str> = Vec::new();
-    // A page at a time, not a file at a time. The page is chosen by the same tests the
-    // one-at-a-time loop applied (the size ceiling, then the byte budget), so the tallies and the
-    // hit list are unchanged; a backend whose `read` is a round trip is asked once for a page
-    // instead of once per file ([`READ_PAGE_FILES`]).
+    // A page at a time, not a file at a time. The page is chosen by the same tests the one-at-a-time
+    // loop applied (the size ceiling, then the byte budget), so the tallies and the hit list are
+    // unchanged, and a backend whose `read` is a round trip is asked once per page.
     let mut i = 0usize;
     while i < files.len() {
         let mut page: Vec<usize> = Vec::new();
@@ -631,12 +593,8 @@ fn render_hits(hits: &[Hit], scope: &str) -> String {
         }
         return out;
     }
-    // With context, the answer is regions rather than lines: numbered, so a location can be
-    // cited and an edit made from it without a second look, which is why `sed -n 'A,Bp'` was
-    // being reached for.
-    //
-    // Overlapping regions are printed once. Two matches three lines apart with
-    // `context: 5` are one block, not two blocks quoting each other, and `--`
+    // With context, the answer is regions rather than lines: numbered, so a location can be cited and
+    // an edit made from it without a second look. Overlapping regions are printed once, and `--`
     // marks a real gap so nobody reads two blocks as contiguous.
     let mut last: Option<(&str, usize)> = None;
     for h in hits {
@@ -755,10 +713,8 @@ mod tests {
     }
 
     /// The defect: `grep` was asked for `#\[cfg\(test\)\]` with `glob: "*.rs"` under `src` and
-    /// answered "does not occur in the searched tree" about a tree holding nine of them.
-    ///
-    /// The assertion is not about wording: a call that opened no files must not come back as an
-    /// abstention, because an abstention is a claim about content and this call examined none.
+    /// answered "does not occur in the searched tree" about a tree holding nine of them. A call that
+    /// opened no files must not abstain, because an abstention is a claim about content.
     #[test]
     fn zero_files_searched_is_never_a_claim_about_the_tree() {
         let mut h = harness();
@@ -793,10 +749,9 @@ mod tests {
             r.render()
         );
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
-        // The assertion that actually distinguishes the fix. Without it the scope
-        // yielded nothing and the LADDER rescued the call by re-searching the whole
-        // session root -- same hits, same payload, and a passing test that proves
-        // nothing. What the fix changes is that the file was searched DIRECTLY.
+        // The assertion that actually distinguishes the fix. Without it the scope yielded nothing and
+        // the LADDER rescued the call by re-searching the whole session root: same hits, same payload,
+        // and a passing test that proves nothing. What the fix changes is a DIRECT search.
         let notes = r.notes.join(" ");
         assert!(
             !notes.contains("whole session root"),
@@ -805,14 +760,9 @@ mod tests {
         );
     }
 
-    /// The survey found ~20-space runs inside two guidance strings -- a `\`
-    /// continuation lost when the code was pasted, so the literal spaces shipped
-    /// to the model. Source-level scanning for this is unreliable: a correct
-    /// continuation looks the same to a naive scan, and it cost three wrong
-    /// attempts. So assert the FACT -- what is actually rendered -- and scope it
-    /// to the defect's shape, a run of spaces BETWEEN WORDS. The regex engine's
-    /// error diagnostic aligns a caret with leading spaces and must keep them;
-    /// a first cut of this test forbade that too.
+    /// Assert the FACT (what is rendered) and scope it to the defect's shape, a run of spaces BETWEEN
+    /// WORDS: source-level scanning is unreliable, since a correct continuation looks the same to a
+    /// naive scan. The regex engine's diagnostic aligns a caret with leading spaces and keeps them.
     #[test]
     fn no_guidance_string_ships_a_run_of_spaces() {
         let mut h = harness();
@@ -968,12 +918,9 @@ mod tests {
         assert!(r.payload.contains("src"), "{}", r.payload);
     }
 
-    /// A file past [`FILE_CEILING`] is never opened, and the result says so: a search that
-    /// silently skipped a file would report an absence it did not establish.
-    ///
-    /// The file is created SPARSE, so the test costs a metadata call rather than 16 MiB of writes,
-    /// and its name is a candidate for the same search so that only the ceiling explains its
-    /// absence.
+    /// A file past [`FILE_CEILING`] is never opened, and the result says so: a search that silently
+    /// skipped a file would report an absence it did not establish. The file is created SPARSE, so the
+    /// test costs a metadata call, and its name is a candidate for the same search.
     #[test]
     fn a_file_over_the_ceiling_is_skipped_and_the_result_says_so() {
         let mut h = harness();
@@ -1183,12 +1130,9 @@ mod paging_tests {
 
     const ASK: &str = r#"{"pattern":"needle_here"}"#;
 
-    /// A repository-sized candidate list costs one round trip per FILE without the batched read
-    /// and one per PAGE with it.
-    ///
-    /// Both numbers are asserted, because either alone proves nothing: 0 batch calls is what a
-    /// backend that ignored the seam looks like, and one read per file beside the pages would be a
-    /// paging loop that still went back for every file.
+    /// A repository-sized candidate list costs one round trip per FILE without the batched read and
+    /// one per PAGE with it. Both numbers are asserted, because either alone proves nothing: 0 batch
+    /// calls is a backend that ignored the seam, one read per file a paging loop.
     #[test]
     fn a_page_of_files_is_one_call_and_a_file_is_one_call() {
         let (one_at_a_time, reads, batches) = grep_over(false, None, false, ASK);
@@ -1230,13 +1174,9 @@ mod paging_tests {
         );
     }
 
-    /// How the files were read cannot be told from the answer: the whole rendered result is the
-    /// same either way for every shape the tool has, from a plain hit to a term that is nowhere
-    /// and climbs the ladder.
-    ///
-    /// This is a test rather than an intention: every shape goes through the same paging loop, so
-    /// a page boundary that changed the ordering, the caps or the truncation would show up here
-    /// as a diff.
+    /// How the files were read cannot be told from the answer: the whole rendered result is the same
+    /// either way for every shape the tool has. Every shape goes through the same paging loop, so a
+    /// boundary that changed the ordering, the caps or the truncation would show up here.
     #[test]
     fn the_answer_does_not_depend_on_how_the_files_were_read() {
         let shapes = [

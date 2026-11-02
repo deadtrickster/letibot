@@ -1,37 +1,6 @@
 //! `bash`: run a command in the workspace, in a cgroup that owns its lifetime.
-//!
-//! What makes it different from a shell is that the process it starts has an owner, and that the
-//! two commands a model reaches for most in a shell, kill-by-pattern and wait-by-pattern, are
-//! answered by tools with no pattern in them.
-//!
-//! Three refusals, and each hands over what the retry needs:
-//!
-//! | refusal | what it hands over |
-//! |---|---|
-//! | the gate has nobody to ask | `NotRun`, nobody decided, never `Denied`. [`crate::runtime::NoBoundary`] |
-//! | the backend cannot start processes | which constructor would, and the fact that it is still not a sandbox |
-//! | the command's predicate matches the process running it | the pids, the diagnosis, and the handle-shaped command ([`crate::exec::predicate`]) |
-//!
-//! The inline body is capped by line and by byte, and says so with its denominator. The rest is
-//! not lost: every `bash` call is a job, and `job_output` reads the job's capture, so a clip with
-//! no way back is unreachable: the locator is the job id the result already printed. Shell output
-//! keeps the tail, because a build that fails prints the error last.
-//!
-//! Two ways into the background: the model asks (`background: true`, the session scope and no
-//! deadline), or a person moves a running call from a head through [`ProcessHost::promote`]. A
-//! foreground command that outlives [`DEFAULT_TIMEOUT_MS`] is killed rather than moved, because a
-//! command the model did not ask to run longer must not run forever. The operator's own `!` line
-//! has no deadline at all; [`deadline_for`] says why.
-//!
-//! A foreground command past [`SLOW_FOREGROUND`] is told on in both directions: the operator sees
-//! the wait loop's progress line, and the result carries a note that a command this long belongs
-//! in the background rather than behind a raised `timeout_ms`.
-//!
-//! The outcome is a variant, not a wording. A backgrounded command comes back as
-//! [`letibot_transcript::ToolOutcome::Backgrounded`]; a killed one as
-//! [`letibot_transcript::ToolOutcome::Timeout`]. `Ok` with a short body would read as an empty
-//! command, `Failed` as a reason to retry and start a second build, and `Backgrounded` for a kill
-//! as a command that is still running.
+//! Unlike a shell, the process it starts has an owner, and the two commands a model reaches for
+//! most, kill-by-pattern and wait-by-pattern, are answered by tools with no pattern in them.
 
 use std::time::Duration;
 
@@ -70,11 +39,8 @@ const MAX_INLINE_BYTES: usize = 30_000;
 const MAX_INLINE_LINES: usize = 400;
 
 /// The default kill deadline, two minutes.
-///
-/// A foreground command still running after this is killed, and the result says it timed out and
-/// how to ask for more. `timeout_ms` raises it, `background: true` removes it, and a person can
-/// move a running command to the background from the head. The operator's own run has no deadline
-/// to begin with; [`deadline_for`] says why.
+/// A foreground command still running after this is killed, and the result says how to ask for more:
+/// `timeout_ms` raises it, `background: true` removes it, and the operator's own run has none.
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// The longest a deadline may be asked for.
 const MAX_TIMEOUT_MS: u64 = 600_000;
@@ -108,11 +74,8 @@ fn default_sentence(p: &MemoryPolicy) -> String {
     )
 }
 
-/// The note a model call's result carries about memory, only when there is one to carry.
-///
-/// The model is not handed numbers to size its work by, so this says nothing on an ordinary run:
-/// it is said when the run was killed at its cap or came within a tenth of it, and when a cap
-/// that was asked for could not be set.
+/// The note a model call's result carries about memory, only when there is one to carry: said when
+/// the run was killed at its cap or came within a tenth of it, or when a cap could not be set.
 fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
     use crate::exec::MemoryCap;
     let used = job.memory_used();
@@ -192,11 +155,8 @@ impl Bash {
     }
 }
 
-/// What a foreground command killed at its deadline says: one sentence, one way out.
-///
-/// Offering "a larger `timeout_ms`" beside `background: true` would be two answers to one
-/// question, since raising the timeout only makes the wait longer. The command is not echoed,
-/// because the model wrote it one round ago.
+/// What a foreground command killed at its deadline says: one sentence, one way out. Raising the
+/// timeout only makes the wait longer, so `background: true` is the only answer offered.
 fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
     let deadline = if secs < 1.0 {
         format!("{:.0}ms", secs * 1000.0)
@@ -208,23 +168,9 @@ fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
     )
 }
 
-/// What deadline this call gets: the one place the choice is made.
-///
-/// Pure on purpose: which run may be killed by a clock is a fact about inputs, not about a
-/// process, and a test that waited 120 s to watch a kill would not be a test at all.
-///
-/// Three facts go in, one answer comes out:
-///
-/// * the model's foreground run: `Some`, from `timeout_ms` when it asked and
-///   [`DEFAULT_TIMEOUT_MS`] when it did not, clamped to [`MAX_TIMEOUT_MS`]. The deadline exists
-///   for this case and only this one.
-/// * `background: true`: `None`, because the model asked for exactly no deadline.
-/// * the operator's own run (`ctx.tty`): `None`, whatever `timeout_ms` says. The deadline's whole
-///   reason is a run nobody is watching; the operator's `!` line is watched by the person who
-///   typed it, its output is on their screen, and Ctrl+C or closing the head is its stop. A
-///   person spending a minute reading a prompt is using the feature, not exceeding a deadline.
-///   `timeout_ms` on an operator call means nothing today, and is ignored on purpose: a head that
-///   grew a way to pass one would be re-arming the measured bug by hand.
+/// What deadline this call gets: the one place the choice is made, and pure on purpose, because a
+/// test that waited 120 s to watch a kill would not be a test. It exists for the model's foreground
+/// run and no other: `background: true` asked for none, and the operator's own `!` line has no clock.
 fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Option<Duration> {
     if background || operator {
         return None;
@@ -236,26 +182,17 @@ fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Opti
     ))
 }
 
-/// The name the caller gave this run, or `None` when nobody said one.
-///
-/// `j57` is a counter, and a person watching the transcript cannot tell which running job is the
-/// release build and which is the fold's tests. So `bash` takes a name: it is the agent's own
-/// stated intent for the work, never a parse of the command line, and missing or blank means no
-/// slug, because absent is the honest answer when nobody said one.
-///
-/// A name and not a sentence: the rule is [`crate::exec::job_name`], so one stated name is one row
-/// in the listing whatever the caller typed. Nothing else is touched, no case change and no
-/// fallback word for a blank argument, and a job nobody named keeps falling back to its id.
+/// The name the caller gave this run, or `None` when nobody said one: `j57` is a counter, and a
+/// person watching the transcript cannot tell which job is the release build. It is the agent's own
+/// stated intent, never a parse of the command line, and the rule is [`crate::exec::job_name`].
 fn slug_arg(args: &Value) -> Option<String> {
     let raw = args.get("slug").and_then(|v| v.as_str())?;
     crate::exec::job_name(raw)
 }
 
 /// `wake: "now" | "later"`, the optional argument on `bash` (background) and `task`.
-///
-/// Absent is the default and says nothing: the daemon delivers the completion by its own rules
-/// and a caller's `wait` holds on the job until it ends. `now` is tell me the moment it ends;
-/// `later` is the model parking it (a server left running). Anything else is refused by name.
+/// Absent is the default: the daemon delivers by its own rules and a caller's `wait` holds on the
+/// job. `now` is tell me the moment it ends, `later` is the model parking it (a server left running).
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
     match args.get("wake") {
@@ -272,22 +209,13 @@ pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
     }
 }
 
-/// How long a foreground run may go before the daemon says it is the wrong shape: one minute.
-///
-/// It is half of [`DEFAULT_TIMEOUT_MS`], so under the default deadline the reminder arrives while
-/// the call is still runnable: a reminder that could only land after the kill is a post-mortem,
-/// and the kill has its own sentence.
+/// How long a foreground run may go before the daemon says it is the wrong shape: one minute, half of
+/// [`DEFAULT_TIMEOUT_MS`], so the reminder arrives while the call is still runnable.
 const SLOW_FOREGROUND: Duration = Duration::from_secs(60);
 
 /// The reminder a long foreground run owes the seat that reads its result, or `None` when it owes
-/// nothing.
-///
-/// Pure like [`deadline_for`], and for the same reason: the boundary is a fact about inputs, and
-/// a test that waited a real minute to watch a sentence appear would not be a test at all.
-///
-/// `operator` is the operator's own run ([`InvokeCtx::tty`]), and it is exempt: that run is
-/// watched by the person who typed it, its stop is their own act, and the seat that reads a `!`
-/// line's result is a person, not a model deciding how to spell its next call.
+/// nothing. Pure like [`deadline_for`], for the same reason. The operator's own run is exempt: its
+/// stop is their own act, and the seat reading a `!` line is a person, not a model.
 fn slow_foreground(elapsed: Duration, operator: bool) -> Option<&'static str> {
     if operator || elapsed < SLOW_FOREGROUND {
         return None;
@@ -373,16 +301,9 @@ impl Tool for Bash {
             );
         }
 
-        // A one-shot run has nobody to hand a background job to, and it is a fact about the RUN, so
-        // it is decided here with the other facts that need only the request.
-        //
-        // `letibot "a question"` starts a daemon of its own, prints the answer and exits, and the
-        // daemon exits with it. Nobody reads a job's output after that, and the process in the
-        // session scope would outlive the only thing that could deliver its result.
-        //
-        // So it is refused rather than quietly run in the foreground: a model given a job id would
-        // go on to `job_wait` for it, and the refusal says what to do instead. A `monitor` needs no
-        // such rule, being in-memory and dying with the daemon.
+        // A one-shot run has nobody to hand a background job to: `letibot "a question"` starts a
+        // daemon of its own and exits with it, so the job would outlive the only thing that could
+        // deliver its result. Refused rather than run in the foreground, and the refusal says so.
         if ctx.one_shot
             && args
                 .get("background")
@@ -403,14 +324,8 @@ impl Tool for Bash {
         }
 
         // A program that wants to own the terminal is refused before it is started, and this is the
-        // first thing decided, ahead of the backend, the scope and the predicate, because it is a
-        // fact about the command text alone.
-        //
-        // Only where a terminal is handed out, which is the operator's own run: `ctx.tty` is `!`
-        // and nothing else. A model's `bash` keeps its pipe, where `nano` reads EOF and exits rather
-        // than hanging. The pty that makes `ls --color=auto` colourise is a capture (one transcript
-        // row, `/dev/null` on stdin), so a program that takes the screen draws escapes into that row
-        // and waits for a keystroke that cannot arrive.
+        // first thing decided, because it is a fact about the command text alone. Only where a
+        // terminal is handed out, which is the operator's own run: a model's `bash` keeps its pipe.
         if ctx.tty
             && let Some(r) = terminal::wants_the_terminal(command)
         {
@@ -418,10 +333,8 @@ impl Tool for Bash {
         }
 
         // The workspace, not the backend's root: `root_path()` is `/` for an unconfined session,
-        // which is the right answer to *is this path inside the boundary* and the wrong one for
-        // *where is the tree I am watching*, the only question a `git status` can answer. Seeded
-        // from `/` the sweep finds no repository, so a shell that rewrites a file hands the head
-        // no diff on exactly the sessions that can write anything.
+        // which is the right answer to is-this-inside-the-boundary and the wrong one for where-is-
+        // the-tree-I-am-watching, so seeded from `/` a shell that rewrites a file hands no diff.
         let root = ctx
             .backend
             .workspace_path()
@@ -556,13 +469,9 @@ impl Tool for Bash {
                 return Invocation::failed(format!("cwd `{cwd}`: {e}"), String::new());
             }
         };
-        // The world their console gives this run, and only this run.
-        //
-        // The pairs go on the REQUEST rather than being added by the host after the wrap is built,
-        // because `confine` reads `req.env` to decide what to put back inside a confined view
-        // (`--clearenv` then a keep-list then these): a pair added later would reach an unconfined
-        // child and be dropped for a confined one, so the pager fix would hold in one session and
-        // not the other.
+        // The world their console gives this run, and only this run. The pairs go on the REQUEST,
+        // because `confine` reads `req.env` to decide what to put back inside a confined view: added
+        // later they would reach an unconfined child and be dropped for a confined one.
         let mut env: Vec<(String, String)> = Vec::new();
         if ctx.tty {
             env.extend(crate::exec::console::env());
@@ -581,15 +490,9 @@ impl Tool for Bash {
             scope_name,
             background,
             env,
-            // The operator's own run meets their console; a model's does not.
-            //
-            // `ls` colours only when `isatty(1)` is true, and a pipe is not a terminal, so an
-            // operator run gets a pty; the alias that asks for colour is shell state in an rc file,
-            // so it is also handed to their shell, interactive, with their environment on it
-            // ([`crate::exec::console`] carries the decision).
-            //
-            // The model's call keeps its pipe and `/bin/sh -c`: the payload is tokens it reads, so
-            // escape codes around every directory name are a cost it pays and cannot see.
+            // The operator's own run meets their console; a model's does not. `ls` colours only when
+            // `isatty(1)` is true, so an operator run gets a pty and their shell's rc file; the model's
+            // call keeps its pipe, because escape codes around every name are a cost it cannot see.
             tty: ctx.tty,
             memory,
         };
@@ -603,29 +506,16 @@ impl Tool for Bash {
             }
         };
 
-        // The deadline is armed on the HOST, and the host is what fires it: this is the line that
-        // stops the timeout being enforced inside the thing it guards. The loop below still checks
-        // the clock, because it can say how far past the deadline the run went, but a run whose
-        // thread never comes back round that loop is still ended, by the run's own cgroup and by a
-        // thread that is not the run's.
-        //
-        // A run with no deadline has nothing armed for it: `background: true`
-        // (the model asking for exactly that) and the operator's own run (a
-        // person's command, whose stop is their own act) both come back `None`
-        // from [`deadline_for`].
+        // The deadline is armed on the HOST, and the host is what fires it: that is what stops the
+        // timeout being enforced inside the thing it guards. The loop below still checks the clock,
+        // because it can say how far past the deadline the run went.
         if let Some(timeout) = timeout {
             host.arm_deadline(&id, timeout);
         }
 
-        // What this job is called, in the one spelling the tree uses: the name the caller stated
-        // beside the id the daemon minted (`release-build · j65`), or the bare id when nobody named
-        // it. Every sentence about this run uses it, whichever way the run goes, because a job
-        // spelled by its name in one arm and by its id in the next is two answers to *which job is
-        // this*.
-        //
-        // Read off the VIEW rather than off `req`: the host makes a name unique within the session
-        // (`release-build`, then `release-build-2`), so the request is what was asked for while the
-        // view is what every row and every sentence will say.
+        // What this job is called, in the one spelling the tree uses: the stated name beside the id
+        // the daemon minted, or the bare id when nobody named it. Read off the VIEW rather than the
+        // request, because the host makes a name unique within the session.
         let view = host.job(&id);
         let slug = view
             .as_ref()
@@ -635,18 +525,12 @@ impl Tool for Bash {
 
         if background {
             // Where this job's own output goes, which changes what the sentences below may SAY and
-            // not merely adds a footnote beside them: a note that argues with the line beneath it
-            // is worse than no note, because the model believes the line it has seen before. The
-            // redirect is in the text, so this needs nothing to run.
+            // not merely adds a footnote: a note that argues with the line beneath it is worse than no
+            // note, because the model believes the line it has seen before.
             let redirected = crate::builtins::output_redirect_path(command);
-            // Where the whole of it is, said at the one moment the caller learns the handle: a
-            // background run's file has existed since its spawn, and a reader told only about the
-            // 8 MiB window loses a long build's first half. The same record the promotion's result
-            // names, so the two ways into the background cannot describe the file two ways.
-            //
-            // Not when the command redirects its own stdout: that job's window and file are both
-            // empty by construction, and naming a file that will never hold anything sends the
-            // reader to it when the real answer is the path in the command.
+            // Where the whole of it is, said at the one moment the caller learns the handle: a reader
+            // told only about the 8 MiB window loses a long build's first half. Not when the command
+            // redirects its own stdout, since that job's window and file are empty by construction.
             let kept = match (
                 &redirected,
                 view.as_ref().and_then(|v| v.output_file.clone()),
@@ -659,10 +543,8 @@ impl Tool for Bash {
                 _ => String::new(),
             };
             // `Backgrounded`, not `Ok`, even though the model asked. The outcome names a fact about
-            // the world (this command is running and has not answered yet) that does not depend on
-            // who wanted it. Reporting `Ok` here would make a backgrounded result grounding for an
-            // answer nothing has produced, which is what `is_grounded` exists to prevent, and it
-            // would leave a head with two shapes to render for one situation.
+            // the world that does not depend on who wanted it, and `Ok` here would make a result
+            // grounding for an answer nothing has produced.
             let read_it = match &redirected {
                 Some(path) => format!(
                     "Its own window will be EMPTY however long it runs — the command sends \
@@ -712,15 +594,9 @@ impl Tool for Bash {
             return inv;
         }
 
-        // Foreground. Progress reports WORK DONE (bytes produced) and never "still alive": a
-        // liveness indicator that moves when nothing has happened measures the wrong thing.
-        //
-        // The operator's own run is handed to the daemon before it is waited on, and taken back
-        // after: that report says *this run has a stdin and here is the way in*, which is what
-        // makes `!send` work when no card is ever raised at all. Only for the operator's run: a
-        // model's `bash` has `/dev/null` for stdin, so the flag and the open handle are checked
-        // together, because a model's run that somehow got a pipe is the failure this must not
-        // have.
+        // Foreground. Progress reports WORK DONE (bytes produced) and never "still alive": a liveness
+        // indicator that moves when nothing has happened measures the wrong thing. The operator's run
+        // is handed to the daemon before it is waited on, which is what makes `!send` work.
         let answerable = (ctx.tty && ctx.operator_runs_wired())
             .then(|| host.job_handle(&id).map(|j| j.stdin()))
             .flatten()
@@ -734,10 +610,9 @@ impl Tool for Bash {
         }
         let waited_from = std::time::Instant::now();
         let foreground = wait_with_progress(ctx, host, &id, timeout);
-        // The run is over, so whatever card was up for it comes down: after the wait and before
-        // every branch below, because all three (a state, a promotion, a deadline) mean this tool is
-        // no longer waiting, and a card that outlived its command would be a person answering a
-        // program that had already exited.
+        // The run is over, so whatever card was up for it comes down: after the wait and before every
+        // branch below, because a state, a promotion and a deadline all mean this tool is no longer
+        // waiting, and a card that outlived its command would be a person answering nothing.
         if answerable.is_some() {
             ctx.operator_run(OperatorRun::Ended { job: &id.0 });
         }
@@ -752,18 +627,9 @@ impl Tool for Bash {
         let full = out.text();
         let (body, capped) = tail_lines(&full, MAX_INLINE_LINES, MAX_INLINE_BYTES);
 
-        // Absence must be legible. A path the mount namespace does not contain produces a bare
-        // `ENOENT`, and a model reads that as *the file does not exist*: an answer about an empty
-        // haystack, the same defect as a `grep` reporting 0 over a scope it failed to open. The
-        // confinement turns it into "not in this session's filesystem view".
-        //
-        // Scanned over the WHOLE capture rather than the clipped body, because a path in the
-        // dropped head is exactly the one whose diagnosis got lost. Nothing here stats the host,
-        // so the note never says whether the path exists outside.
-        //
-        // The boundary's own failure is not the command's answer: a helper that could not set up
-        // the namespaces exits with a code indistinguishable from a command's, and rendering it as
-        // `[exit 1] the command ran and exited non-zero` tells the model something false.
+        // Absence must be legible: a path the mount namespace does not contain gives a bare `ENOENT`,
+        // which a model reads as the file does not exist. Scanned over the WHOLE capture, because a
+        // path in the dropped head is the one whose diagnosis got lost, and nothing here stats.
         for n in host.absence_notes(&full) {
             notes.push(n);
         }
@@ -776,14 +642,9 @@ impl Tool for Bash {
             // The call was blocked on this command, so its result is one the model is waiting
             // for: delivered the moment it ends, never held for a break.
             ctx.want_completion(&id.0, WantedNow::Awaited);
-            // A promotion is a backgrounding, so the redirect rule is this one's too: a command the
-            // operator moved to the background has the same capture as one the model asked for, and
-            // the same sentence must not tell its reader to open a window that will stay empty.
-            //
-            // And this is where the file is said, because it is the only moment the caller learns
-            // it: `promote` opened `job-<id>.out` in the session's scratch directory, and a reader
-            // told only about the 8 MiB window loses a long build's first half. A file nobody names
-            // is the same /dev/null with an inode.
+            // A promotion is a backgrounding, so the redirect rule is this one's too: the same
+            // sentence must not tell its reader to open a window that will stay empty. And this is
+            // where the file is said, because it is the only moment the caller learns it.
             let kept = match &p.output_file {
                 Some(f) => format!(
                     " Every byte it printed before the move, and every byte it prints from here \
@@ -853,14 +714,8 @@ impl Tool for Bash {
         let killed_at_cap = used.is_some_and(|u| u.killed_at_cap());
         let mut inv = match &state {
             // The deadline: the command outlived `timeout_ms`, so it is killed and not promoted.
-            // Killing is the point, since a command the model did not ask to run longer must not
-            // run forever.
-            //
-            // The second way a deadline arrives here: `JobState::Running` is the loop's own check,
-            // and this arm is the host's watchdog having already ended the run, where the job is
-            // settled as `Killed` with the deadline's own reason. Reporting that as a plain failure
-            // would be a timeout rendered as an error. Both paths render the same sentence, because
-            // they are the same fact.
+            // The second way it arrives here is the host's watchdog having already ended the run,
+            // settled as `Killed` with the deadline's own reason; both render the same sentence.
             JobState::Killed { by } if by == crate::exec::DEADLINE_KILL => {
                 // `Some` by construction: the watchdog settles `DEADLINE_KILL` only for a deadline
                 // it was armed with, and nothing arms one when [`deadline_for`] said `None`.
@@ -889,11 +744,8 @@ impl Tool for Bash {
                     inv
                 }
                 // No deadline was armed, so this is not a timeout and the run is not stopped.
-                // `Running` with no deadline arrives when the wait ended without the run ending (a
-                // promotion the host refused, or a wait that errored), which is a fact about this
-                // daemon rather than about the command. Killing here would end a person's run by a
-                // clock nobody armed for it: the run is theirs, its stop is their act, and naming
-                // the job in the spelling its own result used is the honest answer.
+                // `Running` with no deadline arrives when the wait ended without the run ending, which
+                // is a fact about this daemon; killing here would end a person's run by no clock.
                 None => Invocation::failed(
                     format!("`{label}` is still running"),
                     format!(
@@ -926,10 +778,9 @@ impl Tool for Bash {
                     launcher_failed.clone().unwrap_or_default()
                 ),
             ),
-            // Killed at its memory cap, checked before the exit code is read as the command's
-            // answer, because `[exit 137]` is not one: the kernel ended it for the number this call
-            // ran under. A run that exited 0 with a process killed inside it (`x || true`) keeps
-            // its own answer, and the note below says what was killed.
+            // Killed at its memory cap, checked before the exit code is read as the command's answer,
+            // because `[exit 137]` is not one. A run that exited 0 with a process killed inside it
+            // keeps its own answer, and the note below says what was killed.
             s if killed_at_cap && !matches!(s, JobState::Exited { code: 0 }) => {
                 let u = used.expect("killed_at_cap reads it");
                 Invocation::failed(
@@ -974,14 +825,9 @@ impl Tool for Bash {
             inv = inv.with_note(note);
         }
 
-        // A run that spent over a minute in the foreground says so on its way out: appended to the
-        // result, which is the channel the model reads, so the reminder lands on the next round in
-        // band with no new delivery path. It names the tool's own feature rather than the escape
-        // hatch a model reaches for.
-        //
-        // Skipped for the two deadline arms, whose payloads already end with "re-run it in the
-        // background", since a second note would give the same advice twice, and for a promotion,
-        // whose body already says the command was moved.
+        // A run that spent over a minute in the foreground says so on its way out, appended to the
+        // result the model reads. Skipped for the two deadline arms, whose payloads already say
+        // "re-run it in the background", and for a promotion, whose body says it was moved.
         let deadline_answered = matches!(
             &state,
             JobState::Killed { by, .. } if by == crate::exec::DEADLINE_KILL
@@ -993,9 +839,8 @@ impl Tool for Bash {
         }
 
         // And what it changed. Attached as an edit when it is one file, which is the shape a
-        // script-that-edits has, and named otherwise, because one result carries one card and a
-        // merge touching forty files is not one card. Either way the operator is told: a change
-        // nobody can see is a change nobody reviewed.
+        // script-that-edits has, and named otherwise, because one result carries one card. Either way
+        // the operator is told: a change nobody can see is a change nobody reviewed.
         if let (Some(root), Some(base)) = (root.as_deref(), before.as_ref()) {
             // Names first, and only names: one `git status` and a stat each. The diff below is
             // computed for the one file it is drawn for, never for every file that moved.
@@ -1077,12 +922,9 @@ enum Foreground {
     Promoted(Promotion),
 }
 
-/// What has already been said about this run, so one question is one card and one inability is
-/// one sentence.
-///
-/// A blocked run stays blocked for as long as nobody answers, and a run whose processes cannot be
-/// read stays unreadable for as long as it runs, so a loop that reported either every tick would
-/// put a hundred identical lines on the screen for one fact.
+/// What has already been said about this run, so one question is one card and one inability is one
+/// sentence. A blocked run stays blocked and an unreadable one stays unreadable, so a loop that
+/// reported either every tick would put a hundred identical lines on the screen for one fact.
 #[derive(Default)]
 struct Told {
     /// What the last card was about. Keyed on the pair (bytes produced, the line shown) and not on
@@ -1099,16 +941,9 @@ struct Told {
     unreadable: bool,
 }
 
-/// Wait, emitting progress that measures work rather than a heartbeat, and honour a head's Ctrl+B
-/// by promoting the command mid-flight.
-///
-/// `timeout` of `None` is no deadline, and the loop then has no clock to break on: it ends only on
-/// the run's own state, a promotion, or a wait that errored. That is the operator's own run.
-///
-/// And ask, once a beat, whether this run is waiting for an answer. That is the operator's `!` line
-/// and nothing else, and it is here because this loop is the only thing holding all three facts the
-/// question needs at once: the job is alive, it has been quiet for a beat, and the loop is already
-/// polling.
+/// Wait, emitting progress that measures work rather than a heartbeat, and honour a head's Ctrl+B by
+/// promoting the command mid-flight. `timeout` of `None` is no deadline, so the loop ends only on the
+/// run's own state; it also asks, once a beat, whether the run is waiting for an answer.
 fn wait_with_progress(
     ctx: &mut InvokeCtx<'_>,
     host: &dyn ProcessHost,
@@ -1175,43 +1010,14 @@ fn wait_with_progress(
     Foreground::State(host.job(id).map(|v| v.state).unwrap_or(JobState::Running))
 }
 
-/// How long a run must have written nothing before it is read as waiting.
-///
-/// The poll above is half a second, so this is one beat: at the tick after a program stops writing,
-/// its last byte is at least `QUIET` old. It is the one tunable here and it is a judgement: too
-/// short and a program between two lines of a slow build looks like a question, too long and a
-/// person waits for a card the program has been blocked on for a second already.
+/// How long a run must have written nothing before it is read as waiting. The poll above is half a
+/// second, so this is one beat: too short and a program between two lines of a slow build looks like
+/// a question, too long and a person waits for a card the program has blocked on for a second.
 const QUIET: Duration = Duration::from_millis(250);
 
 /// Is this run waiting for an answer, and if so, tell the daemon.
-///
-/// Three conditions, and the first two are the caller's because the caller holds the clock and the
-/// job state:
-///
-/// 1. Alive. A program that printed something and exited is not waiting for anything, which is
-///    also what keeps `! printf 'are you sure?'` from raising a card: `wait_job` returns
-///    `Happened` for it and this function is never reached.
-/// 2. Quiet for a beat. A program that is asking and still drawing is not blocked.
-///    `since_last_output` is `None` for a program that has written nothing at all (`! cat`,
-///    blocked before its first byte), and the elapsed time is the same beat for it. This condition
-///    is the CARD's and only the card's.
-/// 3. Some process of the run has its stdin on the pipe this daemon holds and is blocked in a read
-///    on that descriptor. That is [`crate::exec::ask`], and it is the whole of the detection: not
-///    one byte of the run's output is consulted to decide anything.
-///
-/// [`crate::exec::ask::Waiting::Unreadable`] is a third answer, *this daemon could not look*: a
-/// process of the run belongs to another uid (the `sudo` case), or a `/proc` the daemon may not
-/// open. No card is raised on it, because a card is a reading and one raised here would be a guess
-/// that is wrong for every long quiet command that asks nothing. It is still said, once per run,
-/// because silence there leaves a person watching a run that looks hung.
-///
-/// The beat gates the card and not that sentence. A card claims some process is blocked reading the
-/// answer we hold, and a run writing every 100 ms is genuinely not blocked; the inability is about
-/// permissions, exactly as true at a 100 ms write interval as at a 2 s one, and a `!` line's output
-/// does not land until the run ends, so a streaming run and a hung one look identical.
-///
-/// The text that travels with a card is the last line of the output, for the card to show. Nothing
-/// anywhere may decide by it.
+/// Three conditions: alive, quiet for a beat (the card's condition, and only the card's), and a
+/// process of the run blocked reading the stdin this daemon holds. No byte of the output is read.
 fn ask_if_waiting(
     ctx: &mut InvokeCtx<'_>,
     host: &dyn ProcessHost,
@@ -1229,9 +1035,8 @@ fn ask_if_waiting(
         None => v.elapsed >= QUIET,
     };
     // The device is OURS, and that comparison is what keeps a `grep` blocked on `ls`'s pipe in
-    // `! ls | grep foo` from looking like a program waiting for a line. The run's fd 0 is its own
-    // terminal (`pipe:[<inode>]` is the pty-less fallback) and [`Stdin::input_end`] is the name the
-    // kernel gives both sides.
+    // `! ls | grep foo` from looking like a program waiting for a line: the run's fd 0 is its own
+    // terminal, and [`Stdin::input_end`] is the name the kernel gives both sides.
     let handle = host.job_handle(id);
     let ours = handle.as_ref().and_then(|j| j.stdin().input_end());
     let pids = host.job_pids(id);
@@ -1255,11 +1060,9 @@ fn ask_if_waiting(
         // The signal was read, and it says no: every process of the run was looked at and none is
         // reading our pipe. Nothing to say.
         crate::exec::ask::Waiting::No => return,
-        // The signal could not be read, which is not the card's kind of fact: it is the absence of
-        // a reading, a fact about permissions rather than about the clock, and exactly as true at a
-        // 100 ms write interval as at a 2 s one. Gating it behind the beat is what made the daemon
-        // say nothing about a run that streams its progress. One sentence, once per run, and it
-        // says which of the two facts it is.
+        // The signal could not be read, which is not the card's kind of fact: it is the absence of a
+        // reading, a fact about permissions rather than about the clock, and exactly as true at a
+        // 100 ms write interval. One sentence, once per run, naming which of the two facts it is.
         crate::exec::ask::Waiting::Unreadable => {
             if !told.unreadable {
                 told.unreadable = true;
@@ -1294,10 +1097,9 @@ fn ask_if_waiting(
 mod tests {
     use super::*;
 
-    /// A name is never invented from the command, which is the whole point of the parameter. The
-    /// test that matters is the one where the command is exactly the shape a deriver would reach
-    /// for, and the answer is no name at all: a guessed slug is worse than none, since the command
-    /// is already on the row.
+    /// A name is never invented from the command, which is the whole point of the parameter: a guessed
+    /// slug is worse than none, since the command is already on the row, and a test where the command
+    /// is exactly the shape a deriver would reach for must answer no name at all.
     #[test]
     fn no_slug_is_ever_derived_from_the_command() {
         let deriver_bait = serde_json::json!({
@@ -1355,11 +1157,9 @@ mod tests {
         assert!(capped.chars().count() <= crate::exec::MAX_JOB_NAME);
     }
 
-    /// The rule is [`crate::exec::job_name`]'s and this argument is a reader of it.
-    ///
-    /// The rule lives outside this file so the daemon's own names for the work it starts could be
-    /// the same rule rather than a second spelling of one: a name has to read the same in the pane,
-    /// in `/job` and in the transcript. This pins the wiring.
+    /// The rule is [`crate::exec::job_name`]'s and this argument is a reader of it. The rule lives
+    /// outside this file so the daemon's own names for the work it starts could be the same rule
+    /// rather than a second spelling of one: a name has to read the same in the pane and `/job`.
     #[test]
     fn the_slug_argument_reads_the_shared_rule_and_does_not_re_spell_it() {
         for raw in [
