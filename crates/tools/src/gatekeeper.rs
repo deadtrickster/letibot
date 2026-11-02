@@ -1,31 +1,24 @@
-//! The gatekeeper's half of the merge queue: the seat
-//! ([`crate::runtime::Role::gatekeeper`]), the brief-first request ([`ReviewRequest`]),
-//! the verdict ([`Verdict`]) and the prompt ([`review_prompt`]).
-//! Two doors face opposite ways: [`wake`] is the queue's door to a reviewer, and the
-//! reviewer's door is `review_verdict`, whose [`Submission`] the daemon writes onto the
-//! queue's row. The answer is the child's own act, never a label read out of its prose.
+//! The gatekeeper: the reviewer that judges a subagent's work before it can land.
+//! It is given the child's brief and never its report, and it answers with a
+//! `review_verdict` call rather than with prose somebody reads a label out of.
 
 /// The request the gatekeeper is given: the original brief, verbatim, and the
-/// placement facts.
-///
-/// The brief is the only framing because a child's report is its own account of the ask,
-/// and a reviewer that starts from that account reviews the story rather than the
-/// artifact. There is no field for a report, so none can be smuggled in, and
-/// [`review_prompt`] is a function of these fields alone.
+/// placement facts. There is no field for a report, so a report cannot be smuggled
+/// in, and the prompt is a function of exactly these fields and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewRequest {
-    /// The prompt the child was spawned with, verbatim: the only framing a reviewer may
-    /// start from.
+    /// The prompt the child was spawned with, verbatim. The only framing the
+    /// reviewer is allowed to start from.
     pub brief: String,
-    /// The branch the work landed on, named in the verdict: a verdict against a branch
-    /// nobody can name is not evidence.
+    /// The branch the work landed on. Named in the verdict, because a verdict
+    /// against a branch nobody can name is not evidence.
     pub branch: String,
-    /// The base SHA the branch was cut from. The diff is `base...head`, and the verdict
-    /// names it for the same reason.
+    /// The base SHA the branch was cut from. The diff is `base...head`, and the
+    /// verdict names it for the same reason.
     pub base_sha: String,
-    /// The head under review, which the verdict is bound to. The diff is `base...head_sha`
-    /// rather than `base...branch`, so a commit made while the review runs is not part of
-    /// what was judged, and the queue lands only this sha. Empty is the branch as it is.
+    /// The head under review: the diff read is `base...head_sha`, not `base...branch`, so a
+    /// commit made while the review runs is not part of what was judged. Empty means the
+    /// branch as it is.
     pub head_sha: String,
     /// Where to run the review's commands: the repository on the host, or empty for the
     /// reviewer's own workspace (a VM booted on a clone of the branch).
@@ -52,24 +45,22 @@ impl Decision {
         }
     }
 
-    /// Every decision, in the order the queue reads them. One list, because the parse and
-    /// the rendering both ask *which of the values is this*. `Accept` leads because it is
-    /// the only one that lands; the two refusals follow in the order a reviewer means them.
+    /// Every decision, in the order the queue reads them. An `Accept` is the only one that
+    /// lands and the other two are parked for a person, which is why `Accept` is first and
+    /// the two refusals follow in the order a reviewer is likelier to mean them.
     pub const ALL: [Decision; 3] = [Decision::Accept, Decision::Reject, Decision::NeedsHuman];
 
-    /// The decision a stored word names, if it names one.
-    ///
-    /// `None` for a word outside the set, which is a refusal rather than a default: reading
-    /// an unknown word as `Accept` would land a branch on the strength of a typo.
+    /// The decision a stored word names, if it names one. `None` for a word outside the set,
+    /// and that is a refusal rather than a default: reading an unknown word as `Accept` would
+    /// land a branch on the strength of a typo.
     pub fn parse(stored: &str) -> Option<Decision> {
         Self::ALL.into_iter().find(|d| d.as_str() == stored)
     }
 }
 
-/// What the reviewer actually looked at: the files it read and the commands it ran.
-///
-/// Evidence says what it looked at. A verdict that names no files and runs no commands is
-/// an opinion, and this is the field that keeps the two apart.
+/// What the reviewer actually looked at: the files it read and the commands it ran. A
+/// verdict that names no files and runs no commands is an opinion, and this is the field
+/// that keeps the two apart.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LookedAt {
     /// The files the reviewer read.
@@ -78,11 +69,9 @@ pub struct LookedAt {
     pub commands: Vec<String>,
 }
 
-/// The verdict: the entry judged, the decision, the reasons, and the evidence.
-///
-/// A verdict is evidence, so it must say which branch and base it judged. Both come from
-/// the [`ReviewRequest`] the reviewer was asked about ([`Verdict::for_request`]), so a
-/// verdict can never name a SHA the queue did not hand over.
+/// The verdict: the entry judged, the decision, the reasons, and the evidence. The branch
+/// and base come from the [`ReviewRequest`] the reviewer was asked about, so a verdict can
+/// never name a SHA the queue did not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     /// The branch judged.
@@ -98,8 +87,8 @@ pub struct Verdict {
 }
 
 impl Verdict {
-    /// A verdict against the request it was asked about, so it can name no SHA the queue
-    /// did not.
+    /// A verdict against the request it was asked about, so it can never name a SHA the
+    /// queue did not.
     pub fn for_request(
         req: &ReviewRequest,
         decision: Decision,
@@ -153,17 +142,14 @@ impl Verdict {
     }
 }
 
-/// What a reviewer hands in: the verdict as the child's own act, and not as prose somebody
-/// else read.
-///
-/// There is no field for the branch or the base: those are the [`ReviewRequest`]'s, joined
-/// at the daemon's write ([`Verdict::for_request`]). This is what `review_verdict` carries
-/// and the only thing that becomes a row's decision; a reply in prose is never read as one.
+/// What a reviewer hands in: the verdict as the child's own act, not prose somebody else read.
+/// There is no field for the branch or the base; those are the [`ReviewRequest`]'s, joined to
+/// this at the daemon's write, so a verdict can never name a SHA the queue did not hand over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Submission {
-    /// One word out of [`Decision::ALL`]. A word outside the set is refused by the door
-    /// rather than defaulted: guessing `Accept` lands a branch nobody accepted, and guessing
-    /// `Reject` parks work nobody rejected.
+    /// One word out of [`Decision::ALL`], and nothing else: a word outside the set is refused
+    /// by the door rather than defaulted, because guessing `Accept` lands a branch nobody
+    /// accepted and guessing `Reject` parks work nobody rejected.
     pub decision: Decision,
     /// Why, in the reviewer's own words.
     pub reasons: Vec<String>,
@@ -171,17 +157,12 @@ pub struct Submission {
     pub looked_at: LookedAt,
 }
 
-/// The exact text the gatekeeper is asked with: the brief, the placement, and the rules.
-///
-/// The verdict is a `review_verdict` CALL, not prose: re-parsing a reply to recover a label
-/// is a reader guessing at the decision that lands a branch. One simple command per call,
-/// because the matcher never splits a compound one: a card, or `not run` with nobody there.
-///
-/// The prompt is the only half that can carry that rule: no seat reaches the exec path, so
-/// a refusal at the seat would mean plumbing the seat into the gate first.
+/// The exact text the gatekeeper is asked with: the brief, the placement, and the rules. The
+/// brief is the only framing and it is there verbatim; the verdict is the `review_verdict`
+/// call, and one simple command per call is the prompt's half of a rule the seat cannot refuse.
 pub fn review_prompt(req: &ReviewRequest) -> String {
-    // The revision the diffs name: the bound head when the queue named one, else the
-    // branch.
+    // The revision the diffs name: the head under review when the queue bound one, else the
+    // branch (see `ReviewRequest::head_sha`).
     let head = if req.head_sha.trim().is_empty() {
         req.branch.clone()
     } else {
@@ -268,18 +249,15 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
     )
 }
 
-/// The line that opens the block of example commands in [`review_prompt`], and the anchor
-/// the tests parse that block back out by: one constant, so the writer and the reader cannot
-/// disagree about where the list begins.
+/// The line that opens the block of example commands in [`review_prompt`]: the anchor the
+/// tests parse that block back out by, so the writer and the reader cannot disagree about
+/// where the list begins.
 const ONE_COMMAND_SHAPES_HEAD: &str = "The shapes a review needs, one per line, and each line is ONE command with nothing \
      after it:";
 
-/// The seam the merge queue lands on: the queue hands an entry's brief and placement facts
-/// here, and a gatekeeper session is asked with [`review_prompt`].
-///
-/// A request with an empty entry id, brief, branch or base is refused BY NAME rather than
-/// handed on: a reviewer given no ask reviews the artifact against nothing, and a verdict
-/// against a SHA nobody can resolve is not evidence.
+/// The seam the merge queue lands on: this crate has no daemon, so [`Reviewer`] is the
+/// caller's own door. A request with an empty brief, branch or base is refused by name, since
+/// a reviewer given no ask would review the artifact against nothing.
 pub fn wake(entry_id: &str, req: ReviewRequest, reviewer: &dyn Reviewer) -> Result<String, String> {
     if entry_id.trim().is_empty() {
         return Err(
@@ -306,42 +284,31 @@ pub fn wake(entry_id: &str, req: ReviewRequest, reviewer: &dyn Reviewer) -> Resu
     reviewer.wake(entry_id, &req)
 }
 
-/// The door a wake goes through: the daemon's two acts, and nothing else.
-///
-/// The queue's thread owns no session, so the ask is a fact written down plus a bell rung and
-/// the answer returns through the store on a later pass. That keeps a minutes-long review from
-/// blocking a serial queue; a door that can do neither returns `Err`, never a wake that was not.
+/// The door a wake goes through: the daemon's own two acts, and nothing else. The queue is
+/// serial and a review is minutes long, so the ask is a fact written down plus a bell rung and
+/// the answer comes back through the store on a later pass.
 pub trait Reviewer {
     /// Write the request down and ring the reviewer's bell. `Ok` is what was done, in the
     /// words the operator gets; `Err` is why it could not be, said rather than swallowed.
     fn wake(&self, entry_id: &str, req: &ReviewRequest) -> Result<String, String>;
 
-    /// Whether a session exists that will judge an entry's branch: `Ok(())` is *one will*,
-    /// `Err` is why none will.
-    ///
-    /// The queue asks this before it asks for a verdict, because *nobody has asked yet* and
-    /// *nobody is there to ask* are two different facts only the door can tell apart. The
-    /// default `Ok(())` is a door with no registry, which must not read as *there is none*.
+    /// Whether a session exists that will judge an entry's branch: `Ok(())` is one will, `Err`
+    /// is why none will. The default says `Ok(())`, for a door with no registry behind it: a
+    /// door that cannot answer must not be read as there is none.
     fn gatekeeper_ready(&self, _entry_id: &str) -> Result<(), String> {
         Ok(())
     }
 
-    /// Tell the project's agent that the entry's repository has no merge gate, once, when an
-    /// entry starts waiting for one. The default tells nobody, which is a door with no
-    /// sessions behind it.
+    /// Tell the project's agent that the entry's repository has no merge gate. Called once,
+    /// when an entry starts waiting for one. The default tells nobody, which is a door with no
+    /// sessions behind it; the daemon's door rings the session that queued it.
     fn gate_missing(&self, _entry_id: &str) -> Result<(), String> {
         Ok(())
     }
 
-    /// Tell the project's agent that no gatekeeper can judge its branch: the queue's fallback,
-    /// through the session the branch came from, which owns the worktree it is checked out in.
-    ///
-    /// The interface between the two halves is a branch and not a session: the gatekeeper's
-    /// contribution is a verdict, and the gate and the merge are git and a shell a project can
-    /// run itself. `why` is the queue's own words, passed rather than re-derived.
-    ///
-    /// `Ok` is what was done and `Err` is why it could not be: *the project was told* and
-    /// *there was nobody to tell* are two facts a person acts differently on.
+    /// Tell the project's agent that no gatekeeper can judge its branch, through the session the
+    /// branch came from. `why` is the queue's own words, passed rather than re-derived; `Ok` is
+    /// what was done and `Err` is why it could not be, which the entry's row carries.
     fn no_gatekeeper(&self, entry_id: &str, _why: &str) -> Result<String, String> {
         Err(format!(
             "the door this daemon was built with has no session to tell about `{entry_id}`"
@@ -349,10 +316,9 @@ pub trait Reviewer {
     }
 }
 
-/// A door that refuses by name: what a build with no reviewer session attached answers.
-///
-/// An entry waiting for a verdict nobody was asked for waits for ever, so *nothing was asked*
-/// is said out loud rather than reported as a wake.
+/// A door that refuses by name: what a build with no reviewer session attached answers. An
+/// entry that waits for a verdict nobody was asked for waits for ever, so nothing was asked
+/// has to be said out loud rather than reported as a wake.
 pub struct NoReviewer;
 
 impl Reviewer for NoReviewer {
@@ -364,8 +330,9 @@ impl Reviewer for NoReviewer {
         ))
     }
 
-    /// And this door has nobody to tell either: a build with no reviewer session has no
-    /// registry behind it, so the fallback cannot reach a project session from here.
+    /// And this is the door that has nobody to tell either: with no reviewer session there is no
+    /// registry behind the door, so the fallback cannot reach a project session and the entry's
+    /// row says nobody could be told.
     fn no_gatekeeper(&self, entry_id: &str, _why: &str) -> Result<String, String> {
         Err(format!(
             "this daemon has no session to tell about `{entry_id}`, and no gatekeeper session \
@@ -374,21 +341,17 @@ impl Reviewer for NoReviewer {
     }
 }
 
-/// The value on a line that begins with `label:`, or `None`. Case-insensitive on the label
-/// and anchored at the start of the line, so a mention of the word in prose is not read as
-/// the field.
-///
-/// Shared with the notes keeper ([`crate::notes_keeper::parse_report`]), which reads a block
-/// of exactly this shape: one reader for one shape, or the two drift the first time either
-/// grows a case.
+/// The value on a line that begins with `label:`, or `None`. Case-insensitive on the label and
+/// anchored at the start of the line, so a mention of the word in the reviewer's prose is not
+/// the field. Shared with [`crate::notes_keeper::parse_report`], one reader for one shape.
 pub(crate) fn label<'a>(line: &'a str, label: &str) -> Option<&'a str> {
     let t = line.trim_start();
     let (head, tail) = t.split_once(':')?;
     head.trim().eq_ignore_ascii_case(label).then(|| tail.trim())
 }
 
-/// One field's worth of bullets: a single line carrying several `- ` items, or one, and
-/// `none` means nothing, on [`commas`]' rule. Shared with [`crate::notes_keeper`].
+/// One field's worth of bullets: a single line that carries several `- ` items, or one, and
+/// `none` means nothing on [`commas`]' rule. Shared with [`crate::notes_keeper`].
 pub(crate) fn bullets(v: &str) -> Vec<String> {
     let t = v.trim();
     if t.is_empty() || t.eq_ignore_ascii_case("none") {
@@ -404,8 +367,9 @@ pub(crate) fn bullets(v: &str) -> Vec<String> {
     out
 }
 
-/// A comma-separated list, with `none` meaning nothing: the prompt names it as the way to
-/// say *I looked at nothing*, and it must not become a file called `none`.
+/// A comma-separated list, with `none` meaning nothing, which the prompt names as the way to
+/// say I looked at nothing and which must not become a file called `none`. Shared with
+/// [`crate::notes_keeper`].
 pub(crate) fn commas(v: &str) -> Vec<String> {
     let t = v.trim();
     if t.is_empty() || t.eq_ignore_ascii_case("none") {
@@ -432,9 +396,9 @@ mod tests {
         }
     }
 
-    /// The brief is the only framing and it is there verbatim, the placement is named, and
-    /// the prompt says the report is not given. The report's absence as data is structural, so
-    /// this asserts the stated negative rather than searching for a field that cannot exist.
+    /// The brief is the only framing, and it is there verbatim; the placement is named; and the
+    /// prompt says the report is not given. The request has no field for a report, so the test
+    /// asserts the stated negative rather than searching for one.
     #[test]
     fn the_prompt_carries_the_brief_verbatim_and_no_report() {
         let req = request();
@@ -472,9 +436,9 @@ mod tests {
         assert!(r.contains("git diff a4fbe70...agent/gatekeeper"), "{r}");
     }
 
-    /// The prompt names the door the verdict goes through, and its three words: the tool's
-    /// name, the closed set and the fields the call takes. A reviewer told none of them holds
-    /// the door and no way to know it is the answer.
+    /// The prompt names the door the verdict goes through, and its three words: the tool's name,
+    /// the closed set and the fields the call takes. A prompt naming none of them would leave a
+    /// reviewer with the only door it holds and no way to know it is the answer.
     #[test]
     fn the_prompt_names_the_door_the_verdict_goes_through() {
         let p = review_prompt(&request());
@@ -492,8 +456,9 @@ mod tests {
             p.contains("has judged nothing"),
             "and what a reply that never made the call means:\n{p}"
         );
-        // And the block is GONE: a second spelling of the answer is a second answer, and a
-        // prompt that still asked for it would be asking a reviewer to judge nothing.
+        // The block is gone, because a second spelling of the answer is a second answer: a
+        // reviewer that wrote the old block instead of calling the tool would have judged
+        // nothing, and a prompt that still asked for it would be asking for that.
         for gone in ["verdict:", "reasons:", "files:", "commands:"] {
             assert!(
                 !p.contains(gone),
@@ -503,9 +468,9 @@ mod tests {
         }
     }
 
-    /// The rule that decides whether a review can run at all, in the prompt's own words: one
-    /// simple command per call, every shape that breaks it, and the reason. Asserted as strings
-    /// on the rendered prompt, so the demand cannot be dropped in an edit that leaves the rest.
+    /// The prompt states the rule that decides whether a review can run at all: one simple
+    /// command per call, every shape that breaks it, and the reason. Asserted as strings on the
+    /// rendered prompt, so the demand cannot be dropped in an edit.
     #[test]
     fn the_prompt_demands_one_simple_command_per_call_and_says_why() {
         let p = review_prompt(&request());
@@ -526,16 +491,15 @@ mod tests {
         // where it would look for it.
         assert!(p.contains("`bash` takes a `cwd`"), "{p}");
         assert!(p.contains("rather than piping it into `head`"), "{p}");
-        // And the `commands` field is named as a LIST, so the rule above cannot be read as
-        // forbidding the evidence field beside it: its items are already the separator.
+        // And the `commands` list is named as a list, so the rule above cannot be read as
+        // forbidding the evidence field it sits beside: the field is a list of simple commands
+        // and needs no separator, which is the one `;` a reader might have expected.
         assert!(p.contains("is a LIST and not a shell line"), "{p}");
     }
 
     /// The command shapes the prompt states, read back out of the prompt's own text: the
-    /// non-empty lines after `ONE_COMMAND_SHAPES_HEAD`.
-    ///
-    /// Parsed rather than taken from a constant, because a test that read the writer's own list
-    /// would pass while the prompt said something else.
+    /// non-empty lines that follow `ONE_COMMAND_SHAPES_HEAD`, trimmed. Parsed rather than taken
+    /// from a constant, since a test that read the writer's own list would pass on anything.
     fn stated_command_shapes(prompt: &str) -> Vec<String> {
         let mut lines = prompt
             .lines()
@@ -548,11 +512,9 @@ mod tests {
             .collect()
     }
 
-    /// Every command the prompt states is one simple command, and the seed rules admit it.
-    ///
-    /// The matcher refuses to split a substitution, a redirection, a group and a `&&`/`;`/`|`,
-    /// so one in an example teaches the very card the rule forbids, and an example the seed
-    /// does not preapprove costs a person a card.
+    /// Every command the prompt states is one simple command, and the seed rules admit it. A
+    /// substitution, a redirection, a group or a `&&`/`;`/`|` is exactly what the matcher refuses
+    /// to split, and an example the seed does not preapprove costs a person a card.
     #[test]
     fn every_shape_the_prompt_states_is_one_simple_command_and_costs_no_card() {
         let shapes = stated_command_shapes(&review_prompt(&request()));
@@ -580,8 +542,9 @@ mod tests {
         }
     }
 
-    /// The closed set is closed: one answer per word and `None` for everything else, because
-    /// reading an unknown word as `accept` would land a branch nobody accepted.
+    /// The closed set is closed, and one word out is not a verdict. Reading an unknown word as
+    /// `accept` would land a branch nobody accepted, so there is one answer per word and `None`
+    /// for everything else.
     #[test]
     fn the_decision_words_are_a_closed_set() {
         for d in Decision::ALL {
@@ -594,7 +557,8 @@ mod tests {
     }
 
     /// The wake hands the request to the door and reports what the door did, and it refuses a
-    /// request nobody could act on before the door is reached.
+    /// request nobody could act on before the door is reached, which is the half that belongs to
+    /// this layer.
     #[test]
     fn the_wake_goes_through_the_door_and_refuses_a_blank_ask() {
         use std::sync::Mutex;
@@ -620,9 +584,9 @@ mod tests {
             "the door was handed the entry id and the request"
         );
 
-        // A blank ask never reaches the door: three ways to be unactionable, each refused with
-        // the field it is about rather than handed to a reviewer who would review the artifact
-        // against nothing.
+        // A blank ask never reaches the door. Three ways to be unactionable, and each one is
+        // refused with the field it is about rather than handed on to a reviewer who would
+        // review the artifact against nothing.
         let blank = ReviewRequest {
             brief: "  ".into(),
             branch: "agent/x".into(),
@@ -656,18 +620,14 @@ mod tests {
     }
 }
 
-/// The heading the merge gate lives under, in the repository's `AGENTS.md`.
-///
-/// A section rather than a file of its own because that file is already the one agents and
-/// people both read about how a project is worked on.
+/// The heading the merge gate lives under, in the repository's `AGENTS.md`. A section rather
+/// than a file of its own, because that file is already the one agents and people both read
+/// about how a project is worked on.
 pub const MERGE_GATE_HEADING: &str = "Merge gate";
 
-/// The gate's steps, out of an `AGENTS.md`: the first fenced block under a `Merge gate`
-/// heading (any level, any case), one command per line, blank lines and `#` skipped. `None`
-/// for no such section or no command in its block: a gate nobody wrote passes nothing.
-///
-/// The block ends at its closing fence, and the search ends at the next heading of the same
-/// or a higher level, so a fence further down the file cannot be read as this one.
+/// The gate's steps, out of an `AGENTS.md`: the first fenced block under a `Merge gate` heading
+/// (any level, any case), one command per line; blank lines and `#` comments skipped. The block
+/// ends at its closing fence and the search at the next heading of the same level.
 pub fn parse_merge_gate(md: &str) -> Option<Vec<String>> {
     let heading = |line: &str| -> Option<(usize, String)> {
         let t = line.trim_start();
@@ -718,7 +678,7 @@ pub fn parse_merge_gate(md: &str) -> Option<Vec<String>> {
     (!steps.is_empty()).then_some(steps)
 }
 
-/// The section, written: what [`parse_merge_gate`] reads back, for an agent to put into
+/// The section, written, for what [`parse_merge_gate`] reads back, for an agent to put into
 /// `AGENTS.md` once the operator has chosen.
 pub fn merge_gate_section(steps: &[String]) -> String {
     format!(
