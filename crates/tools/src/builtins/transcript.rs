@@ -1,32 +1,14 @@
-//! `transcript` — read this session's own conversation out of the store.
+//! `transcript`: read this session's own conversation out of the store. It is not a way to
+//! re-read what is on screen, but the door to what is not on screen any more: after a compaction
+//! the rows are no longer context the model has, and the store is the only place they still exist.
 //!
-//! **The tool `harness` deliberately did not carry, and the reason it gave is
-//! exactly the case this one exists for.** That file says:
+//! `harness` refused this tool because re-reading a conversation spends context to recover
+//! context, and the rows a model cannot see are the ones compaction replaced. True until a session
+//! compacts, so `history` is on by default and the search walks the fork chain.
 //!
-//! > The transcript. A model asking to re-read its own conversation would be
-//! > spending context to recover context it already has, and the rows it cannot
-//! > see are the ones compaction deliberately replaced.
-//!
-//! Both halves were right about a session that has not compacted. After a
-//! compaction they invert: the rows are no longer context the model already has
-//! — they were folded into a summary — and the store is the only place they
-//! still exist. The operator's ask, 2026-09-19: *"I should be able to point it at
-//! the transcript, 'looks like it was compacted, look at the history'"*.
-//!
-//! So this tool is not a way to re-read what is on screen. It is the door to what
-//! is **not** on screen any more, and its default reflects that: `history` is on,
-//! and the search walks the fork chain backwards through every transcript the
-//! session has had.
-//!
-//! # Find, not SQL
-//!
-//! The operator's other half: *"we need a standard tool to read transcript, so
-//! the model won't be fiddling with paths, files, sql and what not… something
-//! like `transcript "blabla"` which behaves similar to find, including limits"*.
-//!
-//! This is what a session does without it, caught by the operator on 2026-09-19
-//! while this file was being written — *"look how letibot is doing it now, a
-//! disaster"*:
+//! The shape is find's, not SQL's: `match` is the text to look for and the rest narrow it, so a
+//! model never spells a store path, a table name, or a `transcript_id` it had to find first. What
+//! a session does without it:
 //!
 //! ```text
 //! bash {"command": "sqlite3 /home/dead/.local/share/letibot/sessions.db \"SELECT
@@ -34,59 +16,27 @@
 //!   transcript_id='s-1789639478142928813#t7' ORDER BY seq DESC LIMIT 15\""}
 //! ```
 //!
-//! Four things wrong with it, and each one is an argument of this tool:
+//! The call hardcodes the store path, returns 120 bytes of JSON tag and field names where the
+//! row's text was wanted, names one generation of a fork chain where the answer is usually an
+//! older one, and reads backwards. It also needs `bash`, and with it the gate.
 //!
-//! - **the store path is hardcoded**, so the call is wrong on any other box and
-//!   on any session opened with a different `--store`;
-//! - **`substr(item_json, 1, 120)`** returns 120 bytes of JSON — mostly the tag
-//!   and the field names — where what was wanted was the row's text;
-//! - **`transcript_id='…#t7'`** had to be found first, and `#t7` is one
-//!   generation of a fork chain: the rows a compaction moved are in `#t6` and
-//!   below, which is exactly where the answer usually is;
-//! - **`ORDER BY seq DESC`** reads the conversation backwards.
+//! Every argument is a predicate, and predicates AND together the way find's do. `match` is the
+//! one positional idea; the rest narrow it: `kind` (`user`, `assistant`, `reasoning`,
+//! `tool_result`, `system`, `mark`), `tool`, `last`, `from`/`to` (a `seq` range), `session`.
 //!
-//! It also needs `bash`, which means it needs the gate, which means on a confined
-//! seat it does not run at all. A read of one's own conversation should not be an
-//! exec.
+//! And `limit`, which is find's `| head` made explicit: the alternative is a tool that can return a
+//! 200k-token conversation into a context that has room for none of it.
 //!
-//! Every argument is a **predicate**, and predicates AND together the way find's
-//! do. `match` is the one positional idea — the text to look for — and the rest
-//! narrow it:
+//! A search is the one read here whose matches are routinely larger than the window they are read
+//! into, so the rows go through the spiller like any oversized output, and the notice names two
+//! outs: `read_spill` for the bytes, and `digest` for an answer.
 //!
-//! | argument | narrows to |
-//! |---|---|
-//! | `match` | rows whose text contains it (case-insensitive) |
-//! | `kind` | `user`, `assistant`, `reasoning`, `tool_result`, `system`, `mark` |
-//! | `tool` | `tool_result` rows from one tool |
-//! | `last` | the newest N rows of the chain |
-//! | `from` / `to` | a `seq` range in the current transcript |
-//! | `session` | another session, by id or by part of its title |
+//! That offer is not decoration: a model told "412 rows matched, 18 shown" will otherwise page
+//! through them with `offset`, which is the exact cost this tool exists to avoid.
 //!
-//! And `limit`, which is find's `| head` made explicit, because the alternative
-//! is a tool that can return a 200k-token conversation into a context that has
-//! room for none of it.
-//!
-//! # What a sweep costs, and the way out of paying it
-//!
-//! A transcript search is the one read in this tool set whose matches are
-//! routinely larger than the window they are being read into. So the rows go
-//! through the spiller like any other oversized output — and the notice that
-//! comes back names **two** outs, not one: `read_spill` for the bytes, and
-//! `digest` for an answer. The operator: *"we can do a summarization of all
-//! findings by streaming them to a subagent… and offer it for big matches"*.
-//!
-//! That offer is not decoration. A model that has just been told "412 rows
-//! matched, 18 shown" will otherwise page through them with `offset`, and paging
-//! a conversation into a context to find one fact about it is the exact cost this
-//! tool was built to avoid.
-//!
-//! # Read-only, and about this session by default
-//!
-//! Naming another session is allowed — the operator's own workflow is *"check
-//! letibot letibot session"*, one session looking at another's history — and
-//! nothing here can write. A transcript is append-only at the store level
-//! (§18: no-UPDATE, no-DELETE triggers), so there is no write surface to expose
-//! even if one were wanted.
+//! Naming another session is allowed, one session looking at another's history, and nothing here
+//! can write: a transcript is append-only at the store level (no-UPDATE, no-DELETE triggers), so
+//! there is no write surface to expose even if one were wanted.
 
 use std::sync::Arc;
 
@@ -108,13 +58,9 @@ pub struct TranscriptRow {
     /// The row's visible text — what a renderer would show, not the JSON.
     pub text: String,
     pub created_ms: i64,
-    /// **How far back this row is from the conversation running now.** `0` is the
-    /// live transcript; `1` its parent; and so on up the fork chain.
-    ///
-    /// Anything above `0` is history the current conversation no longer carries,
-    /// which after a compaction is precisely what somebody is looking for. A row
-    /// found at generation 2 is not a row the model forgot — it is a row the
-    /// model was never given.
+    /// How far back this row is from the conversation running now: `0` is the live transcript, `1`
+    /// its parent, and so on up the fork chain. Above `0` is history the current conversation no
+    /// longer carries, which is what somebody looks for after a compaction.
     pub generation: u32,
 }
 
@@ -809,14 +755,9 @@ mod tests {
         assert!(out.contains("tool_result —"), "{out}");
     }
 
-    /// The operator's rule for big matches: the notice offers `digest`, not just
-    /// another page.
-    ///
-    /// **And it does not price the read** (R93.A7): *"which costs you the answer instead of the
-    /// conversation"* asked the model to weigh a call against its own context, which the base
-    /// prompt forbids (*"Do not size, split or stop work by how much context you think is left"*)
-    /// and the `[context check]` slaps. The choice is the sentence; the arithmetic is the
-    /// harness's.
+    /// A match bigger than the limit offers `digest`, not just another page, and the sentence does
+    /// not price the read: asking a model to weigh a call against its own context is the arithmetic
+    /// the base prompt forbids.
     #[test]
     fn a_match_bigger_than_the_limit_offers_digest() {
         let out = call(serde_json::json!({"limit": 1}));

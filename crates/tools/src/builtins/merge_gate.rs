@@ -1,16 +1,6 @@
-//! `merge_gate` — **what a repository's merge gate is, and what it could be.**
-//!
-//! The operator, 2026-10-09: *"make the gate configurable per repo, and let main project agent
-//! manage it … it is not hard to guess project type and ask for confirmation and user can provide
-//! a command (make test if exists can be used, or even act if .github present) - all heuristics
-//! can be presented as choices"*, and *"then it becomes a section in agents.md"*.
-//!
-//! So this is the agent's half: it reads the repository (the session's root, or a directory
-//! under it — an agent may run in the repo or a level above it), reports the gate its `AGENTS.md`
-//! already has, and lists what the project's own files suggest, each with the reason. It changes
-//! nothing. The operator picks one or types their own; the agent writes the section
-//! ([`crate::gatekeeper::merge_gate_section`]) with `edit`/`write`, which is where the operator's
-//! approval is, and commits it to `main` — the queue reads `main`'s copy.
+//! `merge_gate`: what a repository's merge gate is, and what it could be. It reports the section
+//! `AGENTS.md` already declares and lists what the project's own files suggest, each with a
+//! reason, and writes nothing: the operator picks, the agent writes it ([`merge_gate_section`]).
 
 use serde_json::Value;
 
@@ -44,12 +34,8 @@ fn has_target(text: &str, name: &str) -> bool {
     })
 }
 
-/// **The candidates this repository's own files suggest**, most specific first: a project's
-/// own entry points (`make`, `just`, `task`) before a toolchain's defaults, and the CI the
-/// repository already runs (`act`) last, because it needs Docker.
-///
-/// `read` answers a path relative to the repository; `workflows` are the files under
-/// `.github/workflows`. Pure, so every heuristic is asserted without a filesystem.
+/// The candidates this repository's own files suggest, most specific first: `make`/`just`/`task`
+/// before a toolchain's defaults, and CI (`act`) last because it needs Docker. Pure.
 pub fn candidates(read: &dyn Fn(&str) -> Option<String>, workflows: &[String]) -> Vec<Candidate> {
     let mut out = Vec::new();
     if let Some(mk) = ["Makefile", "makefile", "GNUmakefile"]

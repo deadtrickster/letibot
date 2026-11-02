@@ -1,26 +1,6 @@
-//! `queue` — **the merge queue, from the model's side** (R76 item 2).
-//!
-//! The operator, on pg-noop's red `main` (2026-10-11): *"looks like the main agent doesnt get
-//! these main emergencies. also, it should be able to get out of it itself obviously"*. The
-//! `/queue` verbs were a head's; a model told its target was red could do nothing but tell the
-//! operator to type them. This is the door it holds:
-//!
-//! * `status` — **this session's repository, and a screenful of it**: the target's health, what
-//!   each queue holds by state, the rows somebody must act on first. `all` is one line per
-//!   repository on the box and `repository` is one repository in full. Every answer's first line
-//!   says which of the three it printed. A read.
-//! * `regate` — gate the target's tip again even when it was already judged (the cause was the
-//!   machine, a flake, a gate fixed outside the target). Changes the queue's own state: `Session`.
-//! * `restart` — a parked review back to waiting, a parked landing back in line. `Session`.
-//! * `withdraw` — a review or landing row taken out (history kept; the branch stays). The one
-//!   verb that drops somebody's work from the queue, so it is the schema's `Write` and goes to the
-//!   gate like any write.
-//! * `propose_target` — the project lands on another branch than the queue gates. **Setting
-//!   `[queue] target` is the operator's decision**: this raises it to them, naming the exact
-//!   `leticode.toml` line, and writes no config. `Session`.
-//!
-//! What it acts on is the daemon's ([`QueueDesk`]); the caller's session is bound at open and
-//! recorded on every move, never read from the call.
+//! `queue`: the merge queue from the model's side. `status` reads one repository, `all` reads
+//! every one on the box and `repository` one in full; `regate`, `restart` and `withdraw` move a
+//! row; `propose_target` raises a target change to the operator and writes no config.
 
 use std::sync::Arc;
 

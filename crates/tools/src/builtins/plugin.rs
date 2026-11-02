@@ -1,41 +1,22 @@
-//! `plugin` — **a session's model builds and loads a plugin pane while the session runs.**
-//!
-//! The operator, pointing at the pane language that landed in slice 1: *"this is exactly the case
-//! — you building panes at runtime — i want the same in letibot"*. What a session could do until
-//! now was *use* a plugin whose source already existed; what it could not do was write one.
-//!
-//! The loop is a handful of calls and no restart (`docs/plugins-plan.md` §5):
+//! `plugin`: a session's model builds and loads a plugin pane while the session runs, in a handful
+//! of calls and no restart. Until this, a session could use a plugin whose source already existed;
+//! it could not write one.
 //!
 //! ```text
 //! scaffold → edit the view → build → test → load → (edit → build → load again, hot)
 //! ```
 //!
-//! * `scaffold` — a new pane plugin in the session's own plugin directory, from a template whose
-//!   `view` is a pure function with a native test beside it. A SOURCE, not a binary: the shadow
-//!   gate builds what the source says.
-//! * `build` — `cargo build --offline --release --target wasm32-unknown-unknown` in the plugin's
-//!   directory, and the compiler's own words back when it refuses.
-//! * `test` — one hook called with an input, and the view it answered, which layer answered it,
-//!   the fuel it burned and any trap. This is how a model checks its own work before applying it.
-//! * `load` — the shadow gate of §2.4 (build, load, a shadow stack, replay, report) *and* a call
-//!   of the pane on that shadow with a synthetic input, so a new layer is proved to answer a view
-//!   the host's keys can drive before anything on a screen changes. A pass applies the layer hot.
-//! * `stack`, `disable`, `enable` — what is in force, and the bisect for *"which of my fixes broke
-//!   this"*.
+//! `scaffold` writes a source, `build` compiles it to wasm, `test` calls one hook and reports the
+//! view, the layer, the fuel and any trap, `load` proves the layer on a shadow stack before
+//! applying it hot, and `stack`/`disable`/`enable` say what is in force and bisect a break.
 //!
-//! # Why the daemon's half is a trait
+//! Everything above needs the session's live `Stack`, and a second stack would be a second answer
+//! to what is in force: the tool asks [`PluginDesk`], the daemon answers from the stack the panes
+//! are drawn from, and this crate keeps no plugins of its own.
 //!
-//! Everything above needs the session's live `Stack` — the one a head's panes are drawn from — and
-//! a second stack would be a second answer to *what is in force*. So the tool asks
-//! [`PluginDesk`], the daemon answers from the stack the panes use, and this crate keeps no
-//! plugins of its own. The same shape `queue` uses for the merge queue, and for the same reason.
-//!
-//! # What it may not do
-//!
-//! A session plugin's scope is the session (`docs/plugins-plan.md` §3). Nothing here writes into
-//! the operator's tree: `scaffold` writes under the session's own plugin directory, and a
-//! capability is the manifest's to declare and the host's to enforce — `read` is the only one
-//! slice 1 grants, and an `exec` look is refused with a sentence saying so.
+//! A session plugin's scope is the session: `scaffold` writes under the session's own plugin
+//! directory, never the operator's tree, and a capability is the manifest's to declare and the
+//! host's to enforce. `read` is the only one granted; an `exec` look is refused with a sentence.
 
 use std::sync::Arc;
 
@@ -47,18 +28,14 @@ use crate::schema::{Access, ToolSchema};
 /// The tool's name, in one place.
 pub const TOOL: &str = "plugin";
 
-/// **The contracts, as a tool of their own.** A model about to write a pane wants the input and
-/// the output in front of it, read from the host's own types so it cannot drift from what the
-/// host accepts — a different question from *what is in force in this session*, which is
-/// `plugin`'s `stack`.
+/// The contracts, as a tool of their own: a model about to write a pane wants the input and the
+/// output in front of it, read from the host's own types so it cannot drift from what the host
+/// accepts. `plugin`'s `stack` answers the other question, what is in force here.
 pub const HOOKS_TOOL: &str = "plugin_hooks";
 
-/// **A refusal a person can act on**: the one sentence saying what did not happen, and the detail
-/// it is fixed from — a compiler's own words, a gate report, the layers there are.
-///
-/// Two fields rather than one string because a build failure is exactly the case: the reason is
-/// *"cargo build failed"* and the detail is forty lines of `error[E0425]`, which is the part the
-/// model edits. Collapsing them loses the sentence a tool result is classified by.
+/// A refusal a person can act on: the one sentence saying what did not happen, and the detail it
+/// is fixed from. Two fields because a build failure is the case: the reason is "cargo build
+/// failed" and the detail is forty lines of `error[E0425]`, which is what the model edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub why: String,
@@ -221,20 +198,16 @@ impl Tool for PluginTool {
                 },
                 "required": ["action"]
             }),
-            // **`Exec` is the declared class because `build` runs a compiler.** A build runs
-            // `cargo`, which runs the plugin's build script, so the tool as a whole reaches the
-            // gate with the class `bash` has — and every verb that is NOT a build narrows itself
-            // back down in `access_for`, which is the only direction the runtime honours. Getting
-            // this backwards is silent: a schema declaring `Session` would have `build`'s `Exec`
-            // filtered out as a widening and the compiler would run with nobody asked (the defect
-            // `flowy` was found with).
+            // `Exec` is the declared class because `build` runs a compiler, so the tool reaches the
+            // gate with the class `bash` has; every other verb narrows itself in `access_for`, the
+            // only direction the runtime honours; the reverse is silent and `build` runs unasked.
             Access::Exec,
         )
     }
 
-    /// **What THIS call amounts to**, narrowing only. `build` and `load` keep the schema's `Exec`
-    /// — a `load` compiles too — and everything that touches nothing but this session's own stack
-    /// says so.
+    /// What THIS call amounts to, narrowing only: `build` and `load` keep the schema's `Exec`,
+    /// because a `load` compiles too, and everything that touches nothing but this session's own
+    /// stack says so.
     fn access_for(&self, args: &Value) -> Option<Access> {
         match args.get("action").and_then(|v| v.as_str()) {
             Some("stack") | Some("test") => Some(Access::Read),
