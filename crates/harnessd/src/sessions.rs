@@ -3736,8 +3736,8 @@ impl<'a> Sessions<'a> {
                                     // pair this line has to convert with, carried or not.
                                     c.scale(),
                                     resident,
-                                    c.shown_tokens(c.planning_window().unwrap_or(0)),
-                                    c.shown_tokens(c.headroom()),
+                                    record_wall(&c).0,
+                                    record_wall(&c).1,
                                 ))
                             });
                             hub.publish(SessionEvent::Warning {
@@ -4811,6 +4811,13 @@ pub(crate) fn compaction_wire(
     }
 }
 
+/// The window and reserve a compaction RECORD carries: the pair the wall fires on, in the units
+/// the window was given in. `planning_window` is in ledger tokens, and converting it back through
+/// the ratio is a round trip that loses a token on each side.
+fn record_wall(c: &Config) -> (u64, u64) {
+    c.shown_wall()
+}
+
 impl SessionSource for StoreSessions {
     fn set_title(&self, session_id: &str, title: &str) -> Result<(), String> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -5295,6 +5302,30 @@ mod the_wire_report {
             compaction_wire(&prose, "compacted", None, 1, 2, 3)
                 .sections
                 .is_empty()
+        );
+    }
+
+    /// **A record's window is the one the wall fires on.** The wall stops a round at
+    /// `15/16 of context_window` in the provider's own count, so the window a head draws beside a
+    /// compaction is that window and not a planning window converted back through the ratio.
+    #[test]
+    fn a_compaction_record_carries_the_window_the_wall_fires_on() {
+        let mut cfg = Config::for_this_box("/w");
+        cfg.context_window = Some(1_000_000);
+        // A ledger 1.49x the provider's count: a gap wide enough to round a window down.
+        cfg.ledger_scale = Some((1_000_699, 671_280));
+        assert_eq!(
+            record_wall(&cfg),
+            (1_000_000, 62_500),
+            "the wall's own pair"
+        );
+        // And the spelling the record used, which answered one token less on each side.
+        assert_eq!(
+            (
+                cfg.shown_tokens(cfg.planning_window().expect("a window")),
+                cfg.shown_tokens(cfg.headroom())
+            ),
+            (999_999, 62_499)
         );
     }
 
