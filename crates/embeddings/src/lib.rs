@@ -28,8 +28,10 @@ pub mod model;
 pub mod remote;
 pub mod tier;
 
-#[cfg(test)]
-mod fixture;
+/// A tiny BERT a test builds: the internal path without a download, for this crate's
+/// tests and for a crate that scores with it.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 pub use cache::{Cache, CacheError, Hit, db_path};
 pub use config::{ConfigError, Mode, Settings};

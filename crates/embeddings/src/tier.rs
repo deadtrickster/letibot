@@ -256,7 +256,7 @@ fn normalise(mut vector: Vec<f32>) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture;
+    use crate::testing as fixture;
     use std::path::PathBuf;
 
     struct Dir(PathBuf);

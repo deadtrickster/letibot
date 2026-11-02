@@ -1659,6 +1659,7 @@ name = "letibot-tools"
 version = "0.5.1"
 dependencies = [
  "letibot-code",
+ "letibot-embeddings",
  "letibot-metrics",
  "letibot-plugin",
  "letibot-tokencore",

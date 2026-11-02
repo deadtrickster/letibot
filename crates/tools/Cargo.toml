@@ -20,6 +20,9 @@ letibot-plugin.workspace = true
 letibot-tokencore.workspace = true
 # The tree's one wall clock: `metrics` owns the millisecond whose unit `ts_ms` is.
 letibot-metrics.workspace = true
+# The second similarity tier: a caller's blended score is this crate's arithmetic over
+# that crate's cosine, so every caller gets one blend and keeps only its own floor.
+letibot-embeddings.workspace = true
 serde.workspace = true
 # preserve_order for the same reason the engine needs it: a tool call's argument
 # key order becomes prompt bytes on the next turn, and reordering re-prefills.
@@ -70,3 +73,6 @@ testing = []
 
 [dev-dependencies]
 letibot-tools = { path = ".", features = ["testing"] }
+# A real second tier over a tiny model, so the blend's tests run the crate's own path
+# instead of a fake that agrees with them.
+letibot-embeddings = { path = "../embeddings", features = ["testing"] }

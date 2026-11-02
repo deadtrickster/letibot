@@ -255,7 +255,7 @@ impl Model {
 mod tests {
     use super::*;
     use crate::cosine::cosine;
-    use crate::fixture;
+    use crate::testing as fixture;
 
     /// A directory that removes itself, so a fixture model never outlives its test.
     struct Dir(PathBuf);

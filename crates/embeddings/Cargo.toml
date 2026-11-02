@@ -34,3 +34,8 @@ candle-transformers = "0.9"
 # is the pure-Rust half of the pair tokenizers refuses to compile without.
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 safetensors = "0.4"
+
+[features]
+# The tiny BERT a test builds, for a crate that wants the internal path without a
+# 90 MB download: `letibot-embeddings = { path = "../embeddings", features = ["testing"] }`.
+testing = []
