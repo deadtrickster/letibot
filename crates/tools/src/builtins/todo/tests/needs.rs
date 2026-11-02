@@ -2,10 +2,8 @@
 
 use super::*;
 
-/// **A PLAN CAN WRITE ITS OWN EDGES, and the reply SHOWS them.** Both halves matter: the field
-/// is only a graph if the tool that writes the plan can express an edge, and an edge the model
-/// cannot SEE is an edge it cannot maintain — the next `todo_write` that re-words a row would
-/// break every edge into it with nothing said.
+/// A plan's field is only a graph if the tool can write an edge, and an edge the model cannot SEE
+/// is one it cannot maintain: the next `todo_write` that re-words a row breaks every edge into it.
 #[test]
 fn a_plan_writes_its_edges_and_the_reply_shows_them() {
     let (rt, board) = runtime();
@@ -72,11 +70,8 @@ fn a_need_may_be_written_in_the_tagged_form() {
     assert!(!msg.contains("cannot start yet"), "{msg}");
 }
 
-/// **A kind this build cannot evaluate is REFUSED by name** — never dropped. Dropping it would
-/// leave a row that looks like it waits for something and waits for nothing, which is the one
-/// reading a dependency must never have. (`session` here is a fiction, and deliberately one
-/// that is not a kind this build has: `child` IS one, and the whole point of the tag is that a
-/// model writing a kind nobody can answer is told so rather than silently dropped.)
+/// A kind this build cannot evaluate is refused by name, never dropped: dropping it leaves a row
+/// that looks like it waits for something and waits for nothing.
 #[test]
 fn a_need_of_a_kind_this_build_does_not_know_is_refused_by_name() {
     let (rt, board) = runtime();
@@ -112,13 +107,8 @@ fn a_need_of_a_kind_this_build_does_not_know_is_refused_by_name() {
     );
 }
 
-/// **A row can be told to WAIT ON A CHILD, and the reply shows it** — the write half of the
-/// dependency, and the half that makes the nag's silence reachable at all: a need nothing can
-/// write is a rule nothing can exercise.
-///
-/// Both spellings the parser takes are asserted, because the model has to be able to say this
-/// in the tagged form the store and the wire carry — a plain string is a row's name and can
-/// never be a child's, so there is exactly one shape here and it has to be the tagged one.
+/// The write half of the child edge, without which the nag's silence is unreachable. The tagged
+/// form is the only shape a child can take, because a plain string names a row.
 #[test]
 fn a_plan_can_wait_on_a_child_by_its_session_id() {
     let (rt, board) = runtime();
@@ -174,13 +164,8 @@ fn a_plan_can_wait_on_a_child_by_its_session_id() {
     );
 }
 
-/// **A row can be told to WAIT ON A JOB, and the reply shows it** — the write half of the edge
-/// the operator asked for (*"todo can be declared to be dependent on a subsession and on a
-/// job"*), and the half that makes the idle check's silence reachable at all: a need nothing can
-/// write is a rule nothing can exercise.
-///
-/// The handle is the one `bash` with `background: true` and `job_list` print, quoted verbatim
-/// for the same reason a child's session id is: it is what `job_output` and `job_kill` are given.
+/// The write half of the job edge. The handle is quoted verbatim because it is the one `bash` with
+/// `background: true` prints, and the one `job_output` and `job_kill` are given.
 #[test]
 fn a_plan_can_wait_on_a_job_by_its_handle() {
     let (rt, board) = runtime();
@@ -302,15 +287,8 @@ fn an_empty_need_and_a_malformed_needs_are_refused_by_name() {
     );
 }
 
-/// **A BOARD WITH NO EDGES IS READ EXACTLY AS IT WAS BEFORE EDGES EXISTED** — the compatibility
-/// claim, as evidence rather than as a promise.
-///
-/// Two halves, and the second is what makes the first more than a golden string. The TEXT is
-/// asserted byte for byte against what `1d24fab`'s implementation produced — every `state` arm
-/// and the count — so a change to any of them fails here. And the STRUCTURE is asserted too:
-/// with no `needs` anywhere, `as_a_graph` is the IDENTITY on `open_priority` — nothing can be
-/// blocked and the ready set is the whole queue — which is *why* the text cannot have moved,
-/// rather than a coincidence that it has not.
+/// A board with no edges reads as it did before edges existed. The text is pinned byte for byte,
+/// and `as_a_graph` is the identity on `open_priority` with no needs, which is why it cannot move.
 #[test]
 fn a_board_with_no_dependencies_is_read_exactly_as_before() {
     let plan = vec![
@@ -406,11 +384,8 @@ fn a_satisfied_need_is_inert() {
     assert_eq!(nag_for(&flat), nag_for(&edged));
 }
 
-/// **A BLOCKED ROW IS NOT THE ASK, and the row behind it is** — the whole point of the DAG.
-///
-/// The defect this replaces is head-of-line blocking: `open_priority(todos).first()` named the
-/// first open row whatever it was waiting for, so a row that could not start was asked about
-/// for ever and the row that could start was never reached.
+/// A blocked row is not the ask, the row behind it is: naming the first open row whatever it waits
+/// for asks about a row that cannot start and never reaches the one that can.
 #[test]
 fn a_row_whose_need_is_open_is_not_asked_about() {
     let plan = vec![
@@ -434,15 +409,8 @@ fn a_row_whose_need_is_open_is_not_asked_about() {
     );
 }
 
-/// **AN EDGE INTO A ROW THE OPERATOR STRUCK OFF IS NOT *STILL OPEN* — it can never be met.**
-///
-/// The interaction between the two halves of this change, and the reason it has its own
-/// sentence: `/todo rm N` cancels a row rather than removing it, so a plan's edge can now name a
-/// row that is on the board and will never be done. Saying *"still open"* about it sends the
-/// model to finish work the operator has decided against — the nag this check exists not to
-/// produce, and the same defect the *fourteen turns* measurement names. What the reader needs is
-/// that the edge is dead and that the remedy is its own: `todo_write` can drop or re-point a
-/// need.
+/// An edge into a row the operator struck off can never be met, so it must not say "still open":
+/// that sends the model to finish work they decided against. The remedy is its own.
 #[test]
 fn a_need_on_a_row_the_operator_struck_off_says_the_edge_can_never_be_met() {
     let struck_off = TodoItem {
@@ -476,12 +444,9 @@ fn a_need_on_a_row_the_operator_struck_off_says_the_edge_can_never_be_met() {
     );
 }
 
-/// **THE DEGENERATE CASE, designed deliberately: an unfinished plan with an EMPTY ready set.**
-///
-/// Everything left waits on something, so there is nothing to work on and something to UNBLOCK.
-/// Going quiet here would read as *nothing to do*, which is the one reading that is wrong; and
-/// asking about the head of the list anyway is the head-of-line blocking this replaced. A cycle
-/// lands in exactly this state, which is why it is the example.
+/// An unfinished plan with an empty ready set: going quiet would read as "nothing to do", the one
+/// wrong reading, and asking about the head is the head-of-line blocking this replaced. A cycle
+/// lands here, which is why it is the example.
 #[test]
 fn a_plan_where_nothing_can_start_says_so() {
     let plan = vec![
@@ -509,11 +474,8 @@ fn a_plan_where_nothing_can_start_says_so() {
     );
 }
 
-/// **An unresolvable need is NEVER met** — the rule `TodoCondition` learned first, *a condition
-/// nobody can evaluate must never read as met*.
-///
-/// A name that matches no row is the common case and the one the message has to make
-/// repairable: a row was re-worded, or deleted, or the name was never right.
+/// A need nobody can resolve is never met: a condition that cannot be evaluated must not read as
+/// satisfied, and a name that matches no row is the common case the message has to repair.
 #[test]
 fn a_need_that_names_nothing_blocks_the_row_and_says_so() {
     let plan = vec![
@@ -560,10 +522,8 @@ fn a_need_that_matches_two_rows_is_unresolvable() {
     );
 }
 
-/// **A need of a kind this build cannot evaluate blocks the row and SAYS SO** — the promise
-/// `TodoCondition` makes in its own words, kept where breaking it would be silent. This is the
-/// value a NEWER build's store leaves behind; see `TodoNeed::Unknown` for why it does not fail
-/// the whole plan instead.
+/// A kind this build cannot evaluate blocks the row and says so rather than failing the plan: this
+/// is the value a newer build's store leaves behind.
 #[test]
 fn a_need_of_a_kind_this_build_cannot_evaluate_blocks_and_says_so() {
     let plan = vec![TodoItem {
@@ -578,18 +538,8 @@ fn a_need_of_a_kind_this_build_cannot_evaluate_blocks_and_says_so() {
     );
 }
 
-/// **A row that waits on a CHILD is silent while the child is YOUNG, and spoken about once it
-/// has been running long enough to be worth a look.**
-///
-/// The operator's directive, and the failure it was written against: *"so you are not nagged
-/// till childs are running for the first 30 minutes of child life"*, because a row marked in
-/// progress with a child working on it was nagged four times in twenty minutes.
-///
-/// The two halves are asserted on the SAME plan and the SAME child, forty minutes apart in age:
-/// the only fact that changes is the age, and what changes with it is whether the check may
-/// speak about the row at all. The narrowing is the caller's — `waits_on_a_child_with_room_to_
-/// breathe`, which is what `harnessd`'s `the_check_may_ask_about` reads — so this asserts the
-/// rule where it lives rather than through a daemon.
+/// A row waiting on a young child is silent, and spoken about once the child is old enough to be
+/// worth a look. The narrowing is the caller's, so the rule is asserted where it lives.
 #[test]
 fn a_child_that_is_still_young_keeps_the_row_silent_and_an_old_one_is_spoken_about() {
     let plan = vec![waiting_on_a_child(
@@ -605,12 +555,8 @@ fn a_child_that_is_still_young_keeps_the_row_silent_and_an_old_one_is_spoken_abo
         "a row waiting on a five-minute-old child is one the check may not speak about"
     );
 
-    // **Forty-five minutes old: it is talkable, and what it says is *check the child*.** The
-    // child has gone quiet — a turn is in flight and nothing has come out of it for twelve
-    // minutes — which is the state the operator wants the model steered to. **A turn in flight
-    // is what makes this the *stuck* case**: the same silence with NO turn in flight is a child
-    // between turns, and `a_child_between_turns_is_told_to_be_asked_and_not_killed` below is
-    // that state's own sentence.
+    // Old enough to be talkable, and quiet with a turn in flight, which is the stuck case. The
+    // same silence with no turn in flight is a child between turns, and has its own sentence.
     let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
     assert!(
         !waits_on_a_child_with_room_to_breathe(&plan[0], &old),
@@ -639,14 +585,8 @@ fn a_child_that_is_still_young_keeps_the_row_silent_and_an_old_one_is_spoken_abo
     );
 }
 
-/// **A WORKING child and a QUIET one are told apart by the sentence** — the second half of the
-/// directive, and the whole of the report that prompted it: *"I have just asked the registry
-/// three times about another row's child and got the identical sentence every time — 'still
-/// working' — which tells me it has not died and nothing at all about whether it is stuck."*
-///
-/// Both children are the same age here — forty-five minutes — so the age decides nothing and
-/// the difference between the two notices is only what the child last showed. That is the whole
-/// point: a notice that can report liveness alone cannot steer anybody.
+/// Both children are the same age, so only what the child last showed differs: a notice that can
+/// report liveness alone cannot steer anybody, so the two states must read differently.
 #[test]
 fn a_child_that_is_moving_is_not_sent_to_be_checked_on() {
     let plan = vec![waiting_on_a_child(
@@ -675,16 +615,9 @@ fn a_child_that_is_moving_is_not_sent_to_be_checked_on() {
     );
 }
 
-/// **An IDLE child is told to be ASKED, and not to be killed** — the third state, and the one
-/// that had no sentence at all.
-///
-/// The operator's own measurement: *"it was between turns … a turn has been started for it"*
-/// was learned only by sending a message nothing said to send. The reading is one fact — **no
-/// turn is in flight and the child is still there** — and the move it asks for is
-/// `task_message`, which is the only door that reaches a parked child.
-///
-/// **What it must NOT say is `job_kill`**, and that is the assertion with teeth: the old
-/// sentence sent its reader to stop a child that was doing nothing wrong, waiting to be asked.
+/// No turn in flight and the child still there means it is parked, and the move is `task_message`,
+/// the only door that reaches it. Saying `job_kill` would send the reader to stop a child waiting
+/// to be asked.
 #[test]
 fn a_child_between_turns_is_told_to_be_asked_and_not_killed() {
     let plan = vec![waiting_on_a_child(
@@ -715,12 +648,8 @@ fn a_child_between_turns_is_told_to_be_asked_and_not_killed() {
     assert_ne!(msg, other, "idle and wedged must not read the same");
 }
 
-/// **A child that has FINISHED resolves the need, and the row stops being about the child.**
-///
-/// A finished child is simply not in the snapshot — the daemon's journal says `done` — so the
-/// need is met, the row is READY, and the check asks about it as ordinary work. This is the
-/// half that makes the need a dependency rather than a note about one, and it is the same
-/// reading `TodoCondition::Job` gives a handle it does not know.
+/// A finished child is not in the snapshot, so the need is met and the row is ordinary work. This
+/// is what makes the need a dependency rather than a note about one.
 #[test]
 fn a_child_that_has_finished_resolves_the_need() {
     let plan = vec![waiting_on_a_child(
@@ -744,17 +673,8 @@ fn a_child_that_has_finished_resolves_the_need() {
     );
 }
 
-/// **A row that waits on a JOB is silent while the job runs, and asked about once it ends.**
-///
-/// The operator's ask, 2026-10-11: *"todo can be declared to be dependent on a subsession and on
-/// a job ... and that should drastically decrease nags count"* — measured the same night, when
-/// each of their long jobs had a row nagging while it ran.
-///
-/// **The same plan and the same handle throughout**, and the only fact that changes is whether
-/// the job is running. While it is, `waits_on_a_running_job` is what the caller narrows with —
-/// `harnessd`'s `the_check_may_ask_about` reads it exactly as it reads the child one — so the row
-/// is not asked about AND not listed as blocked. When the job ends the edge is MET and what the
-/// check says is the row itself.
+/// The same plan and the same handle throughout, and only whether the job runs changes: while it
+/// does the caller narrows the row away, and when it ends the edge is met and the row is the work.
 #[test]
 fn a_running_job_keeps_the_row_silent_and_the_end_of_it_asks_again() {
     let plan = vec![waiting_on_a_job("push the branch", "j2070")];
@@ -815,13 +735,8 @@ fn a_running_job_keeps_the_row_silent_and_the_end_of_it_asks_again() {
     );
 }
 
-/// **A handle NOBODY knows is a job that ended** — `TodoCondition::Job`'s own ruling, read as an
-/// edge: *"a job that is not running — including one this session has never heard of, which is
-/// what a handle looks like after a restart — is a job that ended"*.
-///
-/// This is the half that keeps the feature from inventing a way to wait for ever: a plan resumed
-/// after a restart names handles the new daemon has never seen, and every one of them is a job
-/// that is over. The row is READY, which is what the model is then asked about.
+/// A handle nobody knows is a job that ended, which is what a resumed plan's handles look like
+/// after a restart: without it the feature would invent a way to wait for ever.
 #[test]
 fn a_job_nobody_has_heard_of_counts_as_ended() {
     let plan = vec![waiting_on_a_job("push the branch", "j-before-the-restart")];
@@ -846,13 +761,8 @@ fn a_job_nobody_has_heard_of_counts_as_ended() {
     );
 }
 
-/// **A job edge and a child edge are read by their OWN snapshot, and a daemon full of one says
-/// nothing about the other** — the compatibility half, said the other way round from the
-/// child-side test above.
-///
-/// A board that waits on rows is read exactly as it was before either kind existed, whether the
-/// caller hands in running jobs, running children, or both; and a row waiting on a job is
-/// unmoved by a snapshot full of children (and the reverse). One handle is one question.
+/// A job edge and a child edge are read by their own snapshot: a board that waits on rows reads
+/// the same whichever is handed in, and one handle is one question.
 #[test]
 fn a_snapshot_of_jobs_changes_nothing_about_a_board_that_waits_on_rows() {
     let flat = vec![
@@ -864,12 +774,8 @@ fn a_snapshot_of_jobs_changes_nothing_about_a_board_that_waits_on_rows() {
         needs("deploy", TodoStatus::Pending, &["run the tests"]),
     ];
     let busy = RunningJobs::none().running("j2070").running("j2081");
-    // **The one thing a running job DOES add is the offer of `wait_on`** — a sentence appended to
-    // the advice, naming a handle this session holds — and it is taken off before comparing: the
-    // claim here is about the PLAN's reading, which the offer leaves alone.
-    // The offer runs from its first sentence ("It reads like …", or "If this row is only
-    // waiting …") to the end of the advice line, "Also running: …" included — the line it rides
-    // so the head's fold still folds it.
+    // A running job adds only the offer of `wait_on`, appended to the advice and taken off before
+    // comparing: the claim here is about the plan's reading, which the offer leaves alone.
     let plan_of = |msg: Option<String>| {
         msg.map(|m| {
             let start = [" It reads like", " If this row is only waiting"]
@@ -911,17 +817,9 @@ fn a_snapshot_of_jobs_changes_nothing_about_a_board_that_waits_on_rows() {
     );
 }
 
-/// **The silence a young child buys has an END, and the clock is told when it is.**
-///
-/// A clock is armed by a turn, a board write or a prompt, and a child's AGE is none of those —
-/// so a row that went quiet at five minutes would stay quiet until somebody happened to do
-/// something, and the steering the operator asked for would arrive only by accident. This is the
-/// one number that closes that: the moment the FIRST of the children a plan waits on leaves its
-/// room to breathe.
-///
-/// Three shapes, and the middle one is why it is a `min`: a plan waiting on two young children
-/// is due when the EARLIER one grows up, not when both have — the other row's silence is not
-/// this row's.
+/// A clock is armed by a turn, a board write or a prompt, and a child's age is none of those, so
+/// the silence needs a deadline of its own: the earliest child a plan waits on leaving its room to
+/// breathe, because another row's silence is not this row's.
 #[test]
 fn the_silence_a_young_child_buys_ends_when_that_child_grows_up() {
     let two = vec![
@@ -948,10 +846,8 @@ fn the_silence_a_young_child_buys_ends_when_that_child_grows_up() {
     );
 }
 
-/// **A daemon full of children changes nothing about a board that waits on rows** — the
-/// compatibility half, said the other way round. `ChildSessions` is read by a `Child` need and
-/// by nothing else, so a flat plan and a row-edged plan are both read exactly as they were
-/// before any of this existed, whether the caller knows about children or not.
+/// `ChildSessions` is read by a `Child` need and by nothing else, so a daemon full of children
+/// leaves a flat or row-edged plan reading exactly as it did.
 #[test]
 fn a_snapshot_of_children_changes_nothing_about_a_board_that_waits_on_rows() {
     let flat = vec![
@@ -1035,10 +931,8 @@ fn the_sticky_choice_moves_on_when_the_named_row_becomes_blocked() {
     );
 }
 
-/// **A child named in `needs` by its slug is stored as its session id**, and a name that is no
-/// child of this session is refused with nothing written — the resolution `wait_on`'s `child`
-/// already goes through. A `job` need that names no job but is one of this session's children
-/// becomes a `child` need. A session id is stored as written.
+/// A slug resolves to the session id, and a name that is no child of this session is refused with
+/// nothing written; a `job` need naming one of this session's children becomes a `child` need.
 #[test]
 fn a_child_named_in_needs_by_its_slug_is_stored_as_its_id() {
     let child = Arc::new(TodoBoard::new(vec![]));
@@ -1085,10 +979,8 @@ fn a_child_named_in_needs_by_its_slug_is_stored_as_its_id() {
     assert_eq!(own.snapshot(), rows, "nothing was written");
 }
 
-/// **A row can wait on a MONITOR** — a timer, a file, a pull request: whatever a monitor watches.
-/// While it watches the row is quiet (its firing wakes the session by itself); once it has ended,
-/// or for a name this session does not hold (a restart), the row is ready. The operator's *"come
-/// with it later"* is a row waiting on a one-shot timer.
+/// While a monitor watches, the row is quiet, because the firing wakes the session by itself; once
+/// it has ended, or for a name this session does not hold, the row is ready.
 #[test]
 fn a_row_waits_on_a_monitor_until_it_ends() {
     let (rt, board) = runtime();
