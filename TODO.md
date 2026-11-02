@@ -1016,7 +1016,7 @@ answered by a person in a head; the cross-session ledger above.
 
 ---
 
-## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb), cause not reproduced; the two-threads-per-subagent leak is explained in R68.3 / R67.13 and closed on `r68-lifecycle`**
+## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb) and now MEASURED on a scratch daemon (2026-11-02) — 40 turns with a refused compaction each grow nothing; the two-threads-per-subagent leak is explained in R68.3 / R67.13 and closed on `r68-lifecycle`; only the LOCAL-model route is untried**
 
 MEASURED in the kernel's OOM report, 2026-10-11 00:47:00: `Killed process 3985588 (harnessd)
 anon-rss:113190136kB` — the daemon's own heap, not a child's. It was the `/home/dead/Projects/letibot`
@@ -1070,6 +1070,60 @@ catalogue from disk on every `Config::settings`, i.e. on every session open.
 qwen-3.8-flash-next on :8082, which streams token ids through `/completion` and keeps the token
 ledger itself; deepseek does neither. Reproducing it needs the local server running, which is
 the operator's to start.
+
+**MEASURED 2026-11-02 — a scratch daemon with a fake model does not grow per turn, and the four
+lines that could have carried it are each bounded:**
+
+- **The daemon itself.** `crates/harnessd/tests/r66_daemon_rss.rs` starts a real `harnessd` on its
+own store, socket and runtime dirs under an address-space cap, with a fake model whose summary
+requests it refuses, and drives one session: **40 turns of 8 KiB prompts, a refused compaction
+after each — rss 230.5 → 223.5 MiB, and the last watch line reads `grew s-r66 events +7 · view +1 ·
+warnings +1`.** The same file takes `R66_TURNS`/`R66_PROMPT_BYTES`/`R66_IDLE_SECS` for the probe at
+its own scale. A session with a refused compaction refuses its next prompt for room (`0 refused`
+above is what a session with room looks like), so the driver waits on the turn's own events rather
+than on the model.
+- **The probe at its own scale, and idling.** 120 turns of 16 KiB prompts with a refused compaction
+after each: **rss 235.6 → 257.3 MiB over 119 turns — 0.18 MiB a turn against 1.9 MiB of prompts
+appended**, most of it the token region (4 bytes a token on a byte vocabulary) and the hub's own two
+copies, so ~1.4× what the rows cost and inside the 2× the CI test allows. Then **60 s idle: 257.3 MiB
+at all six readings** — nothing grows with the clock.
+- **The worker and the queue gain nothing per turn.** `crates/harnessd/tests/r66_queue.rs`: 40 turns
+through the real `Sessions` and its worker leave `opened()==1`, one registry entry and a watcher set
+holding nothing, at **0.01 MiB of heap a turn, the same in both halves**. Every map is keyed by session
+and removed at close; `Outcome` is a return value; activity is rebuilt per publish; metrics are a
+bounded channel. **Two maps were unbounded per JOB and are now bounded**: `JobWatchers.settled` (one
+name per backgrounded job, never removed) and `ReadRecord.seen` (one entry per delivered completion),
+which also made `want_now`'s guard read a record with no history.
+- **What is per CHILD, and still holds an answer after the child is gone:** `TaskSlots`
+(`harness/children.rs:140`) is a `Vec` that only grows, and a slot keeps `TaskStatus::Done { answer }`
+— the child's whole answer — after it has parked, been collected or died: measured **5 271 B for a
+closed child whose answer was 2 bytes, 119 593 B for one that answered 16 KB, 351 767 B while it is
+still open**. At the 519 children that tree ran that is tens of MB, not 113 GB, and it is the same
+class as the threads R68.2 closed. `HostProcesses` also keeps a row per command ever run (1.1 KB a
+row, per HARNESS and not per daemon, its capture already bounded at 64 MiB), which is what makes
+`job_output j12` answer at all.
+- **One failed fold** leaves exactly one row — the 1 470-byte `SUMMARY_INSTRUCTION` — and 1 511
+ledger tokens, and no failure arm takes it back (`crates/turn/src/compaction.rs:210`). Measured over
+40 attempts on a 2 MiB conversation: +0.19 MiB of heap in total, flat. It compounds the *prompt*
+(+1 494 bytes per attempt), not the heap, and 113 GB of it would be ~74 million attempts.
+- **A round's working set** is two whole-prompt copies inside the stream (22.4 bytes per prompt
+token at 244 139 tokens) and none of it survives the round; a fork frees both the rows and the token
+region (40 rows / 1.06 MiB → 1 row / 0.27 MiB). The region only grows by doubling and never shrinks
+between forks, which is the capacity the footprint already states.
+- **Two blind spots were real and are fixed.** `restate_footprint` did not run for a compaction's own
+rows, so a session that could not compact under-reported itself by exactly the instructions it kept
+(58 800 bytes after 40 attempts) — `harnessd: walk the census after a compaction's own rows`. And
+`TranscriptItem::bytes` counted a picture's base64 body as 32 and a tool call's arguments as zero,
+so the ceiling and the hub's byte bound were blind to the largest rows a session can hold —
+`transcript: count a picture's body and a write call's arguments in a row's bytes`.
+- **The watch now says what GREW**, not only what is held: every line after the first prints
+`memwatch: grew <term> +<bytes> · …` (biggest first, per session), and three growth readings in a
+row with nothing in the census accounting for them raise `MEMORY CREEP` in the log and a
+`memory_creep` warning on every session. That is the line the 47-hour daemon's log never had.
+
+**What is still unexplained:** the incident's own 113 GB. Nothing measured here produces it, and the
+one route that was never exercised is the LOCAL model (`/completion`, token ids, no GGUF on this
+box). The watch now names the term that grows, so the next daemon to do it says which.
 
 ---
 
