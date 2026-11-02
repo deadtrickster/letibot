@@ -3589,18 +3589,28 @@ impl Harness {
             // process that stopped with the daemon.
             mode_confirm: None,
         };
+        h.announce_the_open(stale);
+        h.import_the_foreign_conversation();
+        Ok(h)
+    }
+
+    /// **Say that the session is open, once everything it is made of exists**: the board's
+    /// first settings, the activity and footprint sources, the reads a head attaches for,
+    /// and the resume's own republish. Split out of `open_with_registry` so its last step is
+    /// a sentence rather than a hundred lines between the struct literal and `Ok`.
+    fn announce_the_open(&mut self, stale: Option<String>) {
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
         // first thing that reads it — a `/reseat` before any turn included.
-        h.measure_resident();
+        self.measure_resident();
         // **The operator's `/nag pause`, from the session's own row** — before the settings are
         // first published, so the first `nags` row a head reads is already the true one.
-        h.restore_nag_pause();
+        self.restore_nag_pause();
         // What the board already waits on the operator for is the state, not news: the settings row
         // says it, and only a question asked from here on is announced.
-        h.asks_said = crate::operator_ask::waiting(&h.todos.snapshot());
-        h.publish_settings();
-        h.publish_jobs();
+        self.asks_said = crate::operator_ask::waiting(&self.todos.snapshot());
+        self.publish_settings();
+        self.publish_jobs();
         // **What this session is waiting on** (`PROTOCOL_VERSION` 52), and how to work it out again.
         //
         // Registered here rather than at the hub's construction because this is the first point at
@@ -3609,33 +3619,33 @@ impl Harness {
         // against. From here on the hub re-derives the value after any event that can have moved it
         // (`Hub::publish`) and drops an unchanged one, so what the daemon has to say explicitly is
         // only the changes no event announces — see `crate::activity`.
-        h.hub.set_activity_source(crate::activity::source(
-            h.job_watch.clone(),
-            h.monitors.clone(),
-            h.monitor_cursor.clone(),
-            h.prompt_in_flight.clone(),
+        self.hub.set_activity_source(crate::activity::source(
+            self.job_watch.clone(),
+            self.monitors.clone(),
+            self.monitor_cursor.clone(),
+            self.prompt_in_flight.clone(),
         ));
-        h.publish_activity();
+        self.publish_activity();
         // **And what this session's harness HOLDS** (R66) — the half of a session's memory that is
         // not on the hub at all. Registered here, where the harness, its transcript, its ledger
         // and its trail all exist, and read by the memory watchdog's census.
-        h.restate_footprint();
-        h.hub.set_footprint(crate::footprint::source(
-            h.footprint_gauges.clone(),
-            h.trail.clone(),
+        self.restate_footprint();
+        self.hub.set_footprint(crate::footprint::source(
+            self.footprint_gauges.clone(),
+            self.trail.clone(),
         ));
         // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
         // is answered from it, so it has to be installed before a head can attach. See
         // `Harness::install_notes_source`.
-        h.install_notes_source();
+        self.install_notes_source();
         // **And the skills source**, for the same reason: a head's `ListSkills` is answered from
         // it, and it has to be in place before a head can attach.
-        h.install_skills_source();
+        self.install_skills_source();
         // **And the live job-output read**, for the same reason and with the same timing: the
         // jobs pane's Enter is answered from it while a turn holds the worker. See
         // `Harness::install_job_output_source`.
-        h.install_job_output_source();
-        if h.resumed.is_some() {
+        self.install_job_output_source();
+        if self.resumed.is_some() {
             // **The RESUME's own sentence, and it is not the carry's.** The operator read the
             // carry's wording here and asked the obvious question — *"why it was decided to carry
             // the conversation to the new prompt?"* — about an operation that rebuilds no prompt:
@@ -3644,8 +3654,8 @@ impl Harness {
             // to end, one layer up: an indicator must be the fact, not a rendering of the fact.
             // ...and it restores the CONVERSATION, which a compaction splits across
             // transcripts: the tail of the ones before comes back too, up to the view's bound.
-            let before = h.ancestor_tail();
-            h.republish_after(letibot_sessionlog::RESTORING_ROWS, before);
+            let before = self.ancestor_tail();
+            self.republish_after(letibot_sessionlog::RESTORING_ROWS, before);
         }
         // **What a head attaching to this session should be told**, left in the registry for
         // `seat_in` — see the comment in the resume arm for why it is not said there. A
@@ -3659,8 +3669,13 @@ impl Harness {
         // it must tell it AFTER the rows, because a live note is filed at the seam it arrives
         // at: said before the republish, it would be drawn above the whole restored
         // conversation, which on a long session is a screen nobody scrolls to.
-        h.session_registry
-            .set_stale_prefix(&h.cfg.session_id, stale);
+        self.session_registry
+            .set_stale_prefix(&self.cfg.session_id, stale);
+    }
+
+    /// **A session whose id marks somebody else's conversation reads it in** — an opencode
+    /// one (R6) or a Claude Code transcript (Package H), never a resume of either.
+    fn import_the_foreign_conversation(&mut self) {
         // **R6: a session whose id marks an opencode conversation reads it in.**
         //
         // `oc-` is the namespace mark and the rest is opencode's opaque id
@@ -3670,21 +3685,21 @@ impl Harness {
         // fails the session — a missing database or id is a sentence on the log and
         // the head stays up, because by the time it is read the head is already a
         // working head with a screen.
-        if h.resumed.is_none()
-            && let Some(oc_id) = h.cfg.session_id.strip_prefix("oc-").map(str::to_string)
+        if self.resumed.is_none()
+            && let Some(oc_id) = self.cfg.session_id.strip_prefix("oc-").map(str::to_string)
         {
-            h.import_opencode(&oc_id);
+            self.import_opencode(&oc_id);
         }
         // **And a `cc-` session reads a Claude Code transcript in** (Package H). The rule is
         // the same one and it lives in one place — `letibot_claude::import_target` — so a
         // resumed session imports nothing and a re-run of the same `--session cc-<uuid>`
         // finds the stored conversation instead of appending a second copy of it.
-        if let Some(cc_id) = letibot_claude::import_target(h.resumed.is_some(), &h.cfg.session_id)
-            .map(str::to_string)
+        if let Some(cc_id) =
+            letibot_claude::import_target(self.resumed.is_some(), &self.cfg.session_id)
+                .map(str::to_string)
         {
-            h.import_claude(&cc_id);
+            self.import_claude(&cc_id);
         }
-        Ok(h)
     }
 
     /// **Read an opencode conversation into this session (R6).**
