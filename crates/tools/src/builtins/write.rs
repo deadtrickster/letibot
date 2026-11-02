@@ -122,7 +122,7 @@ fn create(ctx: &mut InvokeCtx<'_>, path: &str, content: &str) -> Invocation {
     if let Err(e) = ctx.backend.write(path, content.as_bytes()) {
         return write_failed(ctx, path, e);
     }
-    ctx.files.record(path, content.as_bytes(), true);
+    ctx.files.mark_whole(path, content.as_bytes());
     // **Who wrote these bytes, at the write** — D17's third arm. A `plugin.toml` or a module this
     // call lands is provenance about a layer, and the daemon's sink is what records it.
     ctx.wrote(path, content.as_bytes());
@@ -197,17 +197,17 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
     // shared directory makes it **more** relevant rather than less, because a second
     // writer is the thing that changes a file under a read. A write over somebody
     // else's change would discard it with neither of them seeing it.
-    let seen = ctx.files.seen(path);
+    let seen = ctx.files.whole_of(path);
     let now = crate::spill::content_hash(bytes);
     let refusal = match &seen {
-        Some(s) if s.digest != now => Some((
+        Some((digest, bytes_then)) if digest != &now => Some((
             format!("`{path}` changed since this session read it"),
             format!(
                 "it was {} bytes when it was read and is {} bytes now, so somebody else \
                  has written to it, and overwriting it would discard their change \
                  without either of you seeing it. The current contents are below and are \
                  now recorded as read.",
-                s.bytes,
+                bytes_then,
                 bytes.len()
             ),
         )),
@@ -215,7 +215,7 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
     };
 
     if let Some((reason, why)) = refusal {
-        ctx.files.record(path, bytes, true);
+        ctx.files.mark_whole(path, bytes);
         let mut body = format!("{why}\n\n");
         for (i, l) in file.lf.lines().enumerate() {
             body.push_str(&format!("{:>6}| {l}\n", i + 1));
@@ -236,7 +236,7 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
     if let Err(e) = ctx.backend.write(path, out.as_bytes()) {
         return write_failed(ctx, path, e);
     }
-    ctx.files.record(path, out.as_bytes(), true);
+    ctx.files.mark_whole(path, out.as_bytes());
     ctx.wrote(path, out.as_bytes());
 
     let after = out.replace("\r\n", "\n");

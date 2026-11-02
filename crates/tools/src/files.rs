@@ -1,79 +1,162 @@
-//! What this session has been shown of the operator's files, and what it may
-//! therefore change.
+//! The lines this session was shown of each file, and what it may therefore
+//! change.
 //!
-//! # Read-before-write, actually enforced
+//! # The line-level rule (R111)
 //!
-//! Both harnesses whose edit tools have met real users *tell the model* they
-//! enforce this and then do not:
+//! An `edit` may only replace lines a tool **displayed** to the model: a `read`
+//! window, a search hit with its context, or the region of this session's own
+//! earlier edit. The ledger keeps one fingerprint per line, so the two facts the
+//! old whole-file digest could not say apart are separate here:
 //!
-//! - opencode's `edit.txt:4` says *"You must use your Read tool at least once in
-//!   the conversation before editing. This tool will error if you attempt an edit
-//!   without reading the file."* There is no such check anywhere in the tree — no
-//!   path→time map, no digest, nothing. Its V2 rewrite added a compare-and-swap
-//!   (`file-mutation.ts`, *"File changed after permission approval. Read it again
-//!   before editing."*) which covers read → prompt → write **inside one call**,
-//!   and still tracks nothing across the session.
-//! - grok-build is honest about it instead: `search_replace/mod.rs:803` —
-//!   *"read-before-edit is encouraged via description and RL grading, not
-//!   runtime-enforced"* — with a test named
-//!   `consecutive_edits_succeed_without_prior_read`. Its only trace of the concern
-//!   is a default-on **hint** in the no-match message: *"The user may have changed
-//!   the file since you last read it."*
+//! - a formatter touching line 900 does not disturb what was shown at line 12,
+//!   so an edit at 12 still lands;
+//! - a change to the shown lines themselves makes the stored fingerprint
+//!   mismatch, and the edit is refused with the range to read.
 //!
-//! A hint is what you write when you cannot check. This module is the check, and
-//! it turns grok-build's sentence into a fact: [`FileLedger`] holds the digest of
-//! what was last handed to the model for each path, so *"the file changed since
-//! you read it"* is either true or false rather than a nudge.
+//! How near to a shown line counts as seen: **only the displayed lines**.
+//! Adjacency is not display, and the showing tools already carry their own
+//! context (a search hit can ask for lines around it, an edit's result shows
+//! three lines either side), so the boundary is where the display stopped.
 //!
-//! # Why a digest and not an mtime
+//! # Fingerprints, not an mtime and not a whole-file digest
 //!
-//! An mtime is the filesystem's opinion about a file, and three ordinary things
-//! move it without changing a byte: a `touch`, a checkout that restores identical
-//! content, and a formatter that rewrote the file to what it already was. A digest
-//! answers the question actually being asked — *are the bytes the model was shown
-//! still the bytes on disk* — and it works unchanged over a backend that has no
-//! mtime, which is the point of [`crate::backend::ExecBackend`].
-//!
-//! # The rule, stated exactly
-//!
-//! An edit or an overwrite may only land on content this session has **shown to
-//! the model**. Two consequences, both deliberate:
-//!
-//! - a failed read-before-write check **records the content it is refusing over**,
-//!   so the same call that refuses also supplies what was missing and the retry
-//!   succeeds. That is clause 1 applied to a guard: the guard costs one call and
-//!   never costs a wrong edit. The invariant it protects is unchanged — no write
-//!   lands on bytes the model was not shown — because the refusal is what shows
-//!   them;
-//! - creating a file that does not exist needs no prior read. There is nothing to
-//!   have read, and demanding a read of a non-existent path would be a rule about
-//!   a ritual rather than about the content.
+//! An mtime moves on a `touch` and on a checkout that writes the same bytes
+//! back. A whole-file digest answers "did anything change" when the question is
+//! "did *these* lines change". One fingerprint per shown line answers that
+//! exactly, over a backend that has no mtime at all. The hashes live in this
+//! process only; they are never serialised, so they need no stable cross-version
+//! definition.
 
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::sync::Mutex;
 
-/// What was last shown to the model for one path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Seen {
-    /// The content hash of the **whole file** at the moment it was read, not of
-    /// the slice that was displayed. Staleness is a property of the file.
-    pub digest: String,
-    pub bytes: usize,
-    /// Whether the model saw the whole file or a window of it.
-    ///
-    /// Only ever used to add a note. It is deliberately not a second gate: an
-    /// exact match of a search string is itself evidence that the model has the
-    /// text right, and refusing an edit whose target text matched byte for byte
-    /// because the display happened to stop at line 40 would be a rule that
-    /// punishes a correct model.
-    pub whole_file: bool,
+use crate::edit::display_lines;
+
+/// One line's fingerprint. `DefaultHasher::new()` is keyed the same way for the
+/// life of the process, which is as long as this ledger lives.
+fn fp_line(line: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    h.write(line.as_bytes());
+    h.finish()
 }
 
-/// Per-session: what has been read, and what it looked like.
+/// What the session was shown of one path, line by line.
+///
+/// `table[n - 1]` is line `n`: `Some(fp)` when a tool displayed that line with
+/// exactly those bytes, `None` when it did not. Line numbers are the
+/// `str::lines()` numbers every showing tool numbers by.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Seen {
+    /// Fingerprint of the **whole file** at the last whole-file fact (`read`
+    /// that showed all of it, or this session's own write). `write`'s
+    /// staleness check reads this: an overwrite discards everything, so its
+    /// question is about the whole file.
+    pub digest: String,
+    pub bytes: usize,
+    table: Vec<Option<u64>>,
+}
+
+impl Seen {
+    /// May an edit replace lines `first..=last`, given the file's current lines?
+    pub fn check(&self, lines: &[&str], first: usize, last: usize) -> Cover {
+        for n in first..=last {
+            match (self.table.get(n - 1), lines.get(n - 1)) {
+                (Some(Some(was)), Some(is)) if fp_line(is) == *was => continue,
+                (Some(Some(_)), Some(_)) => return Cover::Stale,
+                // No stored line, or a line the current file does not have:
+                // either way the model was never shown what it is replacing.
+                _ => return Cover::Never,
+            }
+        }
+        Cover::Covered
+    }
+
+    /// Move the table across this session's own edit. Lines above the change
+    /// keep their numbers, lines below shift by the change's delta, and the
+    /// changed span itself is dropped: what is there now is new text.
+    pub fn reseat(&mut self, before: &str, after: &str) {
+        let span = crate::edit::changed_span(before, after);
+        let after_lines = display_lines(after).len();
+        let mut out = vec![None; after_lines];
+        for old_line in 1..=span.last_before {
+            if old_line < span.first {
+                out[old_line - 1] = self.table.get(old_line - 1).copied().flatten();
+            }
+        }
+        let delta = span.last_after as isize - span.last_before as isize;
+        for old_line in (span.last_before + 1)..=span.before_lines {
+            let at = (old_line as isize + delta - 1) as usize;
+            if let Some(slot) = out.get_mut(at) {
+                *slot = self.table.get(old_line - 1).copied().flatten();
+            }
+        }
+        self.table = out;
+    }
+
+    pub fn mark(&mut self, lines: &[&str], first: usize, last: usize) {
+        let total = lines.len();
+        if first < 1 || last < first || first > total {
+            return;
+        }
+        let last = last.min(total);
+        if self.table.len() < total {
+            self.table.resize(total, None);
+        }
+        for n in first..=last {
+            self.table[n - 1] = Some(fp_line(lines[n - 1]));
+        }
+    }
+
+    /// The shown runs, as a model reads them: "lines 1-50, 120-140".
+    pub fn describe(&self) -> String {
+        let mut runs: Vec<String> = Vec::new();
+        let mut run: Option<(usize, usize)> = None;
+        for (i, slot) in self.table.iter().enumerate() {
+            match (run, slot.is_some()) {
+                (None, true) => run = Some((i + 1, i + 1)),
+                (Some((a, b)), true) => run = Some((a, b + 1)),
+                (Some((a, b)), false) => {
+                    runs.push(if a == b {
+                        a.to_string()
+                    } else {
+                        format!("{a}-{b}")
+                    });
+                    run = None;
+                }
+                (None, false) => {}
+            }
+        }
+        if let Some((a, b)) = run {
+            runs.push(if a == b {
+                a.to_string()
+            } else {
+                format!("{a}-{b}")
+            });
+        }
+        if runs.is_empty() {
+            "none of it".to_string()
+        } else {
+            format!("lines {}", runs.join(", "))
+        }
+    }
+}
+
+/// The answer to "may this edit replace these lines".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cover {
+    Covered,
+    /// No tool displayed those lines.
+    Never,
+    /// They were displayed, and the bytes there have moved since.
+    Stale,
+}
+
+/// Per-session: the lines shown, per path.
 ///
 /// Interior mutability because [`crate::runtime::Tool::invoke`] takes `&self` —
-/// tools are values in a registry and are shared across calls, which is what
-/// keeps them free of per-call state.
+/// tools are values in a registry and are shared across calls.
 #[derive(Debug, Default)]
 pub struct FileLedger {
     seen: Mutex<BTreeMap<String, Seen>>,
@@ -84,44 +167,125 @@ impl FileLedger {
         Self::default()
     }
 
-    /// Record that the model has been shown this content for this path.
-    pub fn record(&self, path: &str, content: &[u8], whole_file: bool) {
-        let key = normalise(path);
-        let digest = crate::spill::content_hash(content);
-        let Ok(mut g) = self.seen.lock() else { return };
-        // A later partial read of the **same bytes** does not un-see a whole-file
-        // read: the strongest claim about what the model was shown is the one that
-        // stands. A partial read of *different* bytes does, because the file moved
-        // and the old claim is about content that is gone.
-        let still_whole = g
-            .get(&key)
-            .is_some_and(|s| s.whole_file && s.digest == digest);
-        g.insert(
-            key,
-            Seen {
-                digest,
-                bytes: content.len(),
-                whole_file: whole_file || still_whole,
-            },
-        );
+    fn entry(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Seen>> {
+        // A poisoned lock means a panic mid-mark; the ledger's facts are then
+        // merely incomplete, which is the safe direction (less is shown).
+        self.seen.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn seen(&self, path: &str) -> Option<Seen> {
-        self.seen.lock().ok()?.get(&normalise(path)).cloned()
+    /// The whole file was shown (a `read` that displayed every line) or the
+    /// whole file was authored by this session (`write`). Marks every line and
+    /// records the whole-file digest.
+    pub fn mark_whole(&self, path: &str, content: &[u8]) {
+        let text = String::from_utf8_lossy(content);
+        let lines: Vec<&str> = display_lines(&text);
+        let mut g = self.entry();
+        let s = g.entry(normalise(path)).or_default();
+        s.digest = crate::spill::content_hash(content);
+        s.bytes = content.len();
+        s.table = Vec::new();
+        s.mark(&lines, 1, lines.len());
     }
 
-    /// Paths this session has read, in a stable order. Clause 1's material for a
-    /// refusal: *"you have read these, and this is not one of them."*
+    /// A partial read: mark the lines it displayed, in full. A line `read`
+    /// clipped is not marked — the model saw a prefix of it. The whole-file
+    /// digest is still recorded: the bytes were read, which is `write`'s fact.
+    pub fn mark_read(&self, path: &str, content: &[u8], shown: &[usize]) {
+        let text = String::from_utf8_lossy(content);
+        let lines: Vec<&str> = display_lines(&text);
+        let mut g = self.entry();
+        let s = g.entry(normalise(path)).or_default();
+        s.digest = crate::spill::content_hash(content);
+        s.bytes = content.len();
+        for &n in shown {
+            s.mark(&lines, n, n);
+        }
+    }
+
+    /// Search hits, with any context the same call displayed. No digest: a
+    /// search says nothing about the file as a whole.
+    pub fn mark_hits(&self, path: &str, lines: &[(usize, &str)]) {
+        if lines.is_empty() {
+            return;
+        }
+        let mut g = self.entry();
+        let s = g.entry(normalise(path)).or_default();
+        for &(n, text) in lines {
+            let total = s.table.len().max(n);
+            s.table.resize(total, None);
+            if n >= 1 {
+                s.table[n - 1] = Some(fp_line(text));
+            }
+        }
+    }
+
+    /// This session's own edit landed: reseat the table across the change and
+    /// mark the region the result displayed. `mark_from`/`mark_to` are line
+    /// numbers in `after`; `on_disk` is what was written, whose whole-file
+    /// digest must match what a later `read` hashes.
+    pub fn mark_edit(
+        &self,
+        path: &str,
+        before: &str,
+        after: &str,
+        on_disk: &[u8],
+        mark_from: usize,
+        mark_to: usize,
+    ) {
+        let lines: Vec<&str> = display_lines(after);
+        let mut g = self.entry();
+        let s = g.entry(normalise(path)).or_default();
+        s.digest = crate::spill::content_hash(on_disk);
+        s.bytes = on_disk.len();
+        s.reseat(before, after);
+        s.mark(&lines, mark_from, mark_to);
+    }
+
+    /// May an edit replace lines `first..=last` of `path`? `lines` are the
+    /// file's current lines, so a change since the showing is caught here.
+    pub fn check(&self, path: &str, lines: &[&str], first: usize, last: usize) -> Cover {
+        match self.entry().get(&normalise(path)) {
+            Some(s) => s.check(lines, first, last),
+            None => Cover::Never,
+        }
+    }
+
+    /// The whole-file fact `write` gates on: `(digest, bytes)` at the last
+    /// whole-file read or this session's own write. A path only ever touched by
+    /// a search has no whole-file fact: its entry exists, its digest does not.
+    pub fn whole_of(&self, path: &str) -> Option<(String, usize)> {
+        let g = self.entry();
+        g.get(&normalise(path))
+            .filter(|s| !s.digest.is_empty())
+            .map(|s| (s.digest.clone(), s.bytes))
+    }
+
+    /// A copy of one path's shown table, for a batch's steps: the batch checks
+    /// each step against the text as the steps before it left it, and mutates
+    /// nothing until the whole batch has written.
+    pub fn checkout(&self, path: &str) -> Option<Seen> {
+        self.entry().get(&normalise(path)).cloned()
+    }
+
+    /// What has been shown of `path`, for a refusal that says it. `total` is
+    /// the file's current line count, so the answer never names lines the file
+    /// no longer has.
+    pub fn describe(&self, path: &str, total: usize) -> String {
+        match self.entry().get(&normalise(path)) {
+            Some(s) => {
+                let mut t = s.clone();
+                t.table.truncate(total);
+                t.describe()
+            }
+            None => "none of it".to_string(),
+        }
+    }
+
+    /// Paths this session has been shown, in a stable order.
     pub fn paths(&self) -> Vec<String> {
         match self.seen.lock() {
             Ok(g) => g.keys().cloned().collect(),
             Err(_) => Vec::new(),
-        }
-    }
-
-    pub fn forget(&self, path: &str) {
-        if let Ok(mut g) = self.seen.lock() {
-            g.remove(&normalise(path));
         }
     }
 }
@@ -130,8 +294,7 @@ impl FileLedger {
 ///
 /// `./src/lib.rs`, `src//lib.rs` and `src/lib.rs` are one file, and a ledger that
 /// keyed on the model's spelling would let a re-spelling walk past the guard.
-/// This is lexical only: the backend's own `stat` is what resolves a symlink, and
-/// [`crate::builtins::edit`] prefers its answer when there is one.
+/// This is lexical only: the backend's own `stat` is what resolves a symlink.
 pub fn normalise(path: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     for seg in path.split('/') {
@@ -153,32 +316,78 @@ mod tests {
     #[test]
     fn three_spellings_of_one_path_are_one_entry() {
         let l = FileLedger::new();
-        l.record("./src//lib.rs", b"hello", true);
-        assert!(l.seen("src/lib.rs").is_some());
-        assert!(l.seen("src/util/../lib.rs").is_some());
+        l.mark_whole("./src//lib.rs", b"hello");
+        assert_eq!(
+            l.check("src/lib.rs", &["hello"], 1, 1),
+            Cover::Covered,
+            "a re-spelling of a shown path is the same file"
+        );
         assert_eq!(l.paths(), vec!["src/lib.rs".to_string()]);
     }
 
     #[test]
-    fn a_changed_file_has_a_different_digest() {
+    fn a_change_elsewhere_leaves_the_shown_lines_current() {
         let l = FileLedger::new();
-        l.record("a", b"one", true);
-        let before = l.seen("a").unwrap();
-        l.record("a", b"two", true);
-        assert_ne!(before.digest, l.seen("a").unwrap().digest);
+        let before: Vec<String> = (1..=50)
+            .map(|i| format!("line {i}"))
+            .chain((51..=900).map(|i| format!("line {i}")))
+            .collect();
+        l.mark_whole("a.rs", before.join("\n").as_bytes());
+        // A formatter rewrites line 900 only.
+        let mut after = before.clone();
+        after[899] = "line 900, reformatted".to_string();
+        let lines: Vec<&str> = after.iter().map(|s| s.as_str()).collect();
+        assert_eq!(l.check("a.rs", &lines, 12, 12), Cover::Covered);
+        assert_eq!(l.check("a.rs", &lines, 900, 900), Cover::Stale);
     }
 
     #[test]
-    fn a_partial_read_after_a_whole_one_does_not_un_see_the_file() {
+    fn a_line_never_shown_is_never_covered() {
         let l = FileLedger::new();
-        l.record("a", b"one", true);
-        l.record("a", b"one", false);
-        assert!(l.seen("a").unwrap().whole_file);
+        let body: String = (1..=400).map(|i| format!("line {i}\n")).collect();
+        l.mark_read("a.rs", body.as_bytes(), &(1..=50).collect::<Vec<_>>());
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(l.check("a.rs", &lines, 50, 50), Cover::Covered);
+        assert_eq!(l.check("a.rs", &lines, 300, 300), Cover::Never);
     }
 
     #[test]
-    fn an_unread_path_is_absent_rather_than_empty() {
+    fn the_sessions_own_edit_shifts_the_shown_lines_below_it() {
         let l = FileLedger::new();
-        assert_eq!(l.seen("nope"), None);
+        let before: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+        l.mark_read("a.rs", before.as_bytes(), &(1..=40).collect::<Vec<_>>());
+        // Five lines inserted at line 10; the changed region is shown.
+        let mut after: Vec<String> = (1..=9).map(|i| format!("line {i}")).collect();
+        after.extend((0..5).map(|i| format!("new {i}")));
+        after.extend((10..=40).map(|i| format!("line {i}")));
+        let after_text = after.join("\n");
+        l.mark_edit("a.rs", &before, &after_text, after_text.as_bytes(), 7, 17);
+        let lines: Vec<&str> = after_text.lines().collect();
+        // What was line 30 is now line 35, and it is still shown.
+        assert_eq!(l.check("a.rs", &lines, 35, 35), Cover::Covered);
+        // The inserted lines are inside the marked region.
+        assert_eq!(l.check("a.rs", &lines, 10, 14), Cover::Covered);
+    }
+
+    #[test]
+    fn a_search_hit_marks_its_line_without_a_whole_file_fact() {
+        let l = FileLedger::new();
+        l.mark_hits("a.rs", &[(30, "the hit line")]);
+        let mut lines: Vec<&str> = vec!["filler"; 30];
+        lines[29] = "the hit line";
+        assert_eq!(l.check("a.rs", &lines, 30, 30), Cover::Covered);
+        assert_eq!(l.check("a.rs", &lines, 2, 2), Cover::Never);
+        assert!(
+            l.whole_of("a.rs").is_none(),
+            "a search is not a whole-file read"
+        );
+    }
+
+    #[test]
+    fn describe_names_the_runs() {
+        let mut s = Seen::default();
+        s.mark(&["a", "b", "c", "d", "e"], 1, 2);
+        s.mark(&["a", "b", "c", "d", "e"], 5, 5);
+        assert_eq!(s.describe(), "lines 1-2, 5");
     }
 }

@@ -203,7 +203,7 @@ impl Tool for WritePlan {
             };
             return Invocation::failed(format!("could not write `{path}`: {e}"), extra);
         }
-        ctx.files.record(&path, body.as_bytes(), true);
+        ctx.files.mark_whole(&path, body.as_bytes());
 
         let verb = if existing.is_some() {
             if append { "appended to" } else { "replaced" }

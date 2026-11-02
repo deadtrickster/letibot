@@ -222,6 +222,10 @@ impl Tool for Read {
         let mut byte_capped = false;
         let mut end = offset - 1;
         let mut first_window = true;
+        // The lines this call displayed in full, for the shown-lines ledger. A
+        // line clipped at the character cap is not added: the model saw a prefix
+        // of it, and an edit aimed from that prefix is aimed at a memory.
+        let mut shown: Vec<usize> = Vec::new();
         for (w_offset, w_end) in &windows {
             let (w_offset, w_end) = (*w_offset, *w_end);
             // A gap between windows is marked, so two regions are never read as
@@ -239,6 +243,8 @@ impl Tool for Read {
                 }
                 if clipped {
                     truncated += 1;
+                } else {
+                    shown.push(w_offset + i);
                 }
                 body.push_str(&chunk);
                 end = w_offset + i;
@@ -248,15 +254,18 @@ impl Tool for Read {
             }
         }
 
-        // Read-before-write's other half. Recorded here, at the moment the bytes
-        // are read, rather than at the moment they are rendered: the digest is
-        // about the file, and an `offset`/`limit` window changes what is shown and
-        // not what is there. "Whole" means the model saw the whole of it — a
-        // capped or clipped read has not, whatever the arguments said.
-        // See `crate::files`.
+        // The shown-lines ledger, recorded at the moment of the display. A read
+        // that showed every line in full marks the whole file; a capped or
+        // clipped one marks only the lines the model actually saw. The whole-file
+        // digest is recorded either way — the bytes were read, which is `write`'s
+        // fact. See `crate::files`.
         let whole_file =
             end == total && !byte_capped && truncated == 0 && (total == 0 || end >= offset);
-        ctx.files.record(path, &bytes, whole_file);
+        if whole_file {
+            ctx.files.mark_whole(path, &bytes);
+        } else {
+            ctx.files.mark_read(path, &bytes, &shown);
+        }
 
         if truncated > 0 {
             notes.push(format!(

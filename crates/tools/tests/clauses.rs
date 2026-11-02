@@ -597,19 +597,34 @@ fn clause6_the_write_tool_descriptions_say_only_what_this_code_does() {
         letibot_tools::schema::lint_description(&edit.description),
         vec![]
     );
-    // Read-before-write and the staleness refusal are gone from the code and
-    // from the sentence together, which is the whole point of this test. What
-    // the description promises now is the check that was always doing the work.
-    assert!(!edit.description.contains("Read the file first"));
-    assert!(!edit.description.contains("changed since"));
+    // The shown-lines rule is back (R111), and the sentence says it in the
+    // terms the code keeps: lines shown, changed since shown, refused with the
+    // range to read. Not the old whole-file ritual, which is not coming back.
+    assert!(
+        edit.description
+            .contains("must have been shown to this session")
+    );
+    assert!(edit.description.contains("changed since they were shown"));
+    assert!(edit.description.contains("the line range to read"));
     assert!(
         edit.description
             .contains("exactly once unless `replace_all`")
     );
 
     let mut h = writable_harness();
-    // …and nothing about reading or staleness gates it any more: a unique
-    // target on an unread file lands.
+    // …and the promise is a behaviour: an unread file's unique target is
+    // refused with the range to read, and the read it names is what lands it.
+    let refused = h.call(
+        "edit",
+        r#"{"path":"README.md","old_string":"letibot","new_string":"x"}"#,
+    );
+    assert!(!refused.is_grounded());
+    assert!(
+        refused.render().contains("not been shown"),
+        "{}",
+        refused.render()
+    );
+    h.call("read", r#"{"path":"README.md"}"#);
     assert!(
         h.call(
             "edit",

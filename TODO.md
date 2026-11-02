@@ -43,7 +43,7 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R111 - Revisit read-before-edit: an edit should only touch what the model was shown - **OPEN, filed 2026-11-02, operator's ask**
+## R111 - Revisit read-before-edit: an edit should only touch what the model was shown - **CLOSED on branch `remote/04269000`, filed 2026-11-02, operator's ask**
 
 The operator, 2026-11-02: *"add that file not read back to todo. i think we might want to revisit it"*.
 
@@ -53,8 +53,10 @@ The operator, 2026-11-02: *"add that file not read back to todo. i think we migh
 
 What was left open then (board item 01M2RFDXW33CPJHNDX0KMYPN92) is the version worth building: track the lines the model was actually shown (`read` ranges, grep and search hits, its own earlier edits), and refuse an edit whose target region it never saw or that changed since it saw it. Open question from that time: how near to a shown line counts as seen.
 
-**Done when**: an edit to a region the session never saw, or saw before it changed, is refused with the lines it should read; an edit inside shown lines is never refused for a change elsewhere in the file.
-**Still open?** `git log --oneline -1 -- crates/tools/src/builtins/edit.rs` has no such gate.
+**Decision on "how near": a line counts as seen only when a tool displayed that line.** Adjacency is not display, and every showing tool already carries its own context — a `grep` hit can ask for lines around it, an edit's result shows three lines either side, a `read` window is explicit — so the boundary is where the display stopped. A line `read` clipped at its character cap, and a hit line `grep` clipped at 400 characters, are not shown: the model saw a prefix.
+
+**Landed (2026-11-02, branch `remote/04269000`):** the ledger is `crates/tools/src/files.rs`, now one fingerprint per shown line instead of a whole-file digest, and `edit`'s gate runs after the match (the match locates the region the showing must cover; a miss or an ambiguity never reaches it). `read` marks the lines it displayed in full; a capped or clipped read marks only those; `grep` marks the rendered rung's hit and context lines; a landed edit reseats the table across its change (lines below shift, the changed region plus three either side is licensed) and a `write` of the session's own marks the whole file. A refusal names the range to read (`call read with offset=A and limit=B`), shows what has been shown, and marks nothing — the old rung's paste-and-record, which cleared its own flag, is deliberately not back. `replace_all` checks every occurrence, and a batch checks each step on a checkout of the ledger that is thrown away unless the whole batch writes. `write`'s whole-file staleness check is unchanged and now keys on `whole_of`, which a search-only path does not satisfy.
+**Still open?** nothing.
 ## R110 - The gate's result depended on the host: nine tests that read the machine instead of their fixture - **CLOSED on branch `hermetic-tests`, filed 2026-11-02**
 
 Measured 2026-11-02 by running the same gate on four hosts: these tests passed or failed by host state, not by code.

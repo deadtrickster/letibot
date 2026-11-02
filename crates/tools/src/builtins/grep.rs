@@ -219,6 +219,7 @@ impl Tool for Grep {
                 continue;
             }
 
+            mark_shown(ctx, &hits);
             let mut inv = Invocation::ok(render_hits(&hits, &attempt.scope));
             // The relaxation, and every rung below it, in the result the model
             // reads. A silent relaxation is a rewritten query.
@@ -729,6 +730,41 @@ fn clip(line: &str) -> String {
         "{head}… (+{} more characters on this line)",
         line.chars().count() - CAP
     )
+}
+
+/// Whether the rendered output carried this line whole, which is what the
+/// shown-lines ledger may mark. `clip`'s 400-character cap is the boundary: a
+/// line it cut showed the model a prefix, and an edit aimed from that prefix is
+/// aimed at a memory.
+fn shown_in_full(line: &str) -> bool {
+    line.chars().count() <= 400
+}
+
+/// Mark the hit and context lines this call rendered, for the shown-lines
+/// ledger (`edit`'s gate). Only the rung whose hits were rendered is marked;
+/// rungs that found nothing showed the model nothing.
+fn mark_shown(ctx: &mut InvokeCtx<'_>, hits: &[Hit]) {
+    let mut by_path: std::collections::BTreeMap<&str, Vec<(usize, &str)>> =
+        std::collections::BTreeMap::new();
+    for h in hits {
+        if shown_in_full(&h.line) {
+            by_path
+                .entry(h.path.as_str())
+                .or_default()
+                .push((h.line_no, h.line.as_str()));
+        }
+        for (n, text) in &h.region {
+            if shown_in_full(text) {
+                by_path
+                    .entry(h.path.as_str())
+                    .or_default()
+                    .push((*n, text.as_str()));
+            }
+        }
+    }
+    for (path, lines) in by_path {
+        ctx.files.mark_hits(path, &lines);
+    }
 }
 
 #[cfg(test)]

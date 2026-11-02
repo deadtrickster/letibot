@@ -10,7 +10,8 @@
 //!       → the file exists?        no  → the nearest listing, and `write` named
 //!         → the backend writable? no  → which of the two gates stopped this
 //!           → exactly one match?  no  → what IS there (§8.1 clause 1)
-//!             → apply, atomically
+//!             → those lines shown, and current?  no  → the range to read
+//!               → apply, atomically
 //! ```
 //!
 //! Every `no` on that ladder produces **more** output than the `yes` does, and
@@ -19,35 +20,22 @@
 //! keep; it costs more here, because the alternative to a good miss report is a
 //! model guessing at a file it is about to write to.
 //!
-//! # Two rungs that used to be on that ladder, and why they are not
+//! # The two rungs that went in 2026-09-17, and the one that came back
 //!
-//! **read-before-write** — refuse an edit to a file this session had not read,
-//! *"so that a write can never be aimed at a file the model is remembering
-//! rather than reading"* — and **staleness**, refuse when the file's bytes had
-//! changed since this session was shown them. Both went on 2026-09-17, for
-//! reasons the operator put better than the code had:
+//! Read-before-write and the staleness refusal were removed together, and both
+//! removals were right about the shape they removed: the read rung asked for
+//! evidence the match had just produced ("if before region matches what is in
+//! file it just looks dumb"), and over the paste ceiling it showed an excerpt,
+//! marked the file seen and let the retry through, so it cleared its own flag
+//! exactly where being wrong was likeliest. The staleness rung digested the
+//! whole file, so a formatter touching line 900 refused an edit at line 12.
 //!
-//! *"if before region matches what is in file it just looks dumb"*. It did: the
-//! read rung ran BEFORE the match, and the match already refuses a miss and an
-//! ambiguity — so every edit that lands has proved `old_string` occurs exactly
-//! once in the file's current bytes, which is not something a model does from a
-//! faulty memory. The rung was asking for evidence that had just been produced.
-//!
-//! *"if a file was never truly read what is the value"*. None: over the paste
-//! ceiling the refusal showed an EXCERPT, recorded the file as seen, and let the
-//! retry through — so on exactly the large files where being wrong about
-//! surroundings is likeliest, it pasted a fragment and stood aside. It was
-//! bookkeeping that cleared its own flag.
-//!
-//! The staleness rung was the better of the two — it stated a fact rather than
-//! guessing — but the fact it stated was too coarse to act on: the digest is of
-//! the WHOLE file, so a formatter touching line 900 refused an edit at line 12
-//! whose target was verified current. Making it mean what it says needs the set
-//! of lines the model was actually shown, across `read` ranges and grep hits,
-//! which is a real piece of work and is on the board rather than half-done here.
-//!
-//! What is left is one check that is true by construction: the text being
-//! replaced is in the file, exactly once, right now.
+//! What is back is neither of those: [`crate::files`] keeps one fingerprint per
+//! line the model was shown, and the gate asks it about the lines the match
+//! located. A region no tool displayed is refused with the range to read; a
+//! region whose bytes moved since they were shown is refused the same way; a
+//! change elsewhere in the file refuses nothing, because those lines' own
+//! fingerprints still match.
 
 use serde_json::Value;
 
@@ -90,7 +78,11 @@ impl Tool for Edit {
              `new_string`. `old_string` must occur exactly once unless `replace_all` is true; if it \
              occurs more than once the reply lists every line it occurs on. If it is \
              not found, the reply says what is at the nearest matching place instead, \
-             and whether the difference is whitespace, indentation or case.",
+             and whether the difference is whitespace, indentation or case. The lines \
+             an edit replaces must have been shown to this session: by a `read`, a \
+             search hit, or this session's own earlier edit. An edit whose lines were \
+             never shown, or that changed since they were shown, is refused with the \
+             line range to read; a change elsewhere in the file refuses nothing.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -231,6 +223,12 @@ impl Tool for Edit {
                         ),
                     );
                 }
+                // The shown-lines gate, after the match: the match is what locates
+                // the region whose showing this asks about, and a miss or an
+                // ambiguity answers itself without a second rule firing first.
+                if let Some(refusal) = shown_gate(ctx, path, &file, old, &hits) {
+                    return refusal;
+                }
                 apply(ctx, path, &file, old, new, &hits)
             }
         }
@@ -336,6 +334,11 @@ fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
     let mut text = file.lf.clone();
     let mut replacements = 0usize;
     let mut first_at: Option<usize> = None;
+    // The shown-lines gate over a batch's steps: each step is checked against
+    // the text as the steps before it left it, on a checkout of the ledger that
+    // is thrown away unless the whole batch writes. The ledger itself is updated
+    // once, in write_out, over the batch's outer change.
+    let mut shown = ctx.files.checkout(path);
     for (i, step) in steps.iter().enumerate() {
         let n = i + 1;
         let (needle, all) = match step {
@@ -367,6 +370,27 @@ fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
             }
             _ => {}
         }
+        {
+            let lines_now: Vec<&str> = text.lines().collect();
+            let line_of = |byte: usize| text[..byte.min(text.len())].matches('\n').count() + 1;
+            let mut uncovered: Option<(usize, usize, crate::files::Cover)> = None;
+            for &at in &hits {
+                let first = line_of(at);
+                let last = line_of(at + needle.len().saturating_sub(1));
+                let cover = match shown.as_ref() {
+                    Some(s) => s.check(&lines_now, first, last),
+                    None => crate::files::Cover::Never,
+                };
+                if cover != crate::files::Cover::Covered {
+                    uncovered = Some((first, last, cover));
+                    break;
+                }
+            }
+            if let Some((first, last, cover)) = uncovered {
+                return unshown_refusal(ctx.files, path, first, last, cover, lines_now.len())
+                    .with_note(format!("step {n} of {} is the one refused", steps.len()));
+            }
+        }
         first_at.get_or_insert(hits[0]);
         let mut out = String::with_capacity(text.len() + 64);
         let mut from = 0usize;
@@ -392,7 +416,22 @@ fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
             replacements += 1;
         }
         out.push_str(&text[from..]);
-        text = out;
+        // Carry the checkout across this step, so the step after it is asked at
+        // its own line numbers; and mark this step's region, which the call
+        // authored, so an insertion anchored in it is covered.
+        if let Some(s) = shown.as_mut() {
+            let step_before = std::mem::replace(&mut text, out);
+            let span = changed_span(&step_before, &text);
+            let lines_after: Vec<&str> = text.lines().collect();
+            s.reseat(&step_before, &text);
+            s.mark(
+                &lines_after,
+                span.first.saturating_sub(CONTEXT).max(1),
+                (span.last_after + CONTEXT).min(lines_after.len()),
+            );
+        } else {
+            text = out;
+        }
     }
 
     if text == file.lf {
@@ -424,6 +463,83 @@ fn excerpt(needle: &str) -> String {
     } else {
         one
     }
+}
+
+/// The shown-lines gate (R111): an edit may only replace lines a tool displayed
+/// to this session, and only while those lines are still what was displayed.
+/// Runs after the match, which is the check that locates the target; a miss or
+/// an ambiguity never reaches it. Every occurrence is checked, so a
+/// `replace_all` cannot touch an unseen region through a seen one.
+///
+/// A refusal does NOT mark what it refused over: the old rung pasted the file
+/// and recorded it as read in the same breath, which was the bookkeeping that
+/// cleared its own flag. The range to read is named instead, and the read is a
+/// real read.
+///
+/// The refusal both doors share: the range to read, what has been shown, and
+/// not one byte of the refused region (see the gate's note above).
+fn unshown_refusal(
+    files: &crate::files::FileLedger,
+    path: &str,
+    first: usize,
+    last: usize,
+    cover: crate::files::Cover,
+    total: usize,
+) -> Invocation {
+    let read = format!(
+        "call `read` with offset={first} and limit={} and edit again",
+        last + 1 - first
+    );
+    let shown = files.describe(path, total);
+    match cover {
+        crate::files::Cover::Never => Invocation::failed(
+            format!("this session has not been shown lines {first}-{last} of `{path}`"),
+            format!(
+                "an edit may only replace lines a tool has shown this session, so that a \
+                 write never lands on text the model is remembering rather than reading. \
+                 This session has been shown {shown} of `{path}`. {read}. Nothing was \
+                 written."
+            ),
+        ),
+        _ => Invocation::failed(
+            format!("lines {first}-{last} of `{path}` changed since this session was shown them"),
+            format!(
+                "what was displayed there is no longer what is there, so an edit aimed from \
+                 what was shown could land in the wrong place. {read}. Nothing was written."
+            ),
+        ),
+    }
+}
+
+/// The single-edit door's ask of the gate: every occurrence's line span,
+/// checked against the ledger over the file as it is now.
+fn shown_gate(
+    ctx: &mut InvokeCtx<'_>,
+    path: &str,
+    file: &FileText,
+    old: &str,
+    hits: &[usize],
+) -> Option<Invocation> {
+    let lines = display_lines(&file.lf);
+    let mut uncovered: Option<(usize, usize, crate::files::Cover)> = None;
+    for &at in hits {
+        let first = file.line_of(at);
+        let last = file.line_of(at + old.len().saturating_sub(1));
+        let cover = ctx.files.check(path, &lines, first, last);
+        if cover != crate::files::Cover::Covered {
+            uncovered = Some((first, last, cover));
+            break;
+        }
+    }
+    let (first, last, cover) = uncovered?;
+    Some(unshown_refusal(
+        ctx.files,
+        path,
+        first,
+        last,
+        cover,
+        lines.len(),
+    ))
 }
 
 /// The write, and everything that has to be true at the moment it happens.
@@ -482,16 +598,19 @@ fn write_out(
         return write_failed(ctx, path, e);
     }
 
-    // The model may now edit again without re-reading: it has been told exactly
-    // what the file became. Recording the *new* content is what makes that true
-    // rather than a courtesy.
-    ctx.files.record(path, out.as_bytes(), true);
+    // The model may now edit again around this change without re-reading: it
+    // was told exactly what the file became there. The table reseats across the
+    // change, so shown lines below it keep their standing at their new numbers.
+    let span = changed_span(&file.lf, &after);
+    let lines: Vec<&str> = display_lines(&after);
+    let mark_from = span.first.saturating_sub(CONTEXT).max(1);
+    let mark_to = (span.last_after + CONTEXT).min(lines.len());
+    ctx.files
+        .mark_edit(path, &file.lf, &after, out.as_bytes(), mark_from, mark_to);
     // And who wrote it: an `edit` into a layer directory is a model's write of that layer's
     // bytes, which is D17's third arm.
     ctx.wrote(path, out.as_bytes());
 
-    let span = changed_span(&file.lf, &after);
-    let lines: Vec<&str> = display_lines(&after);
     let shown_from = file.line_of(first_at).saturating_sub(CONTEXT).max(1);
     let shown_to = (span.last_after + CONTEXT).min(lines.len());
 
@@ -819,32 +938,64 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_lands_on_its_target_whatever_this_session_has_read() {
-        // Read-before-write and the staleness refusal are both gone. What is
-        // left is the check that was always doing the work: `old_string` occurs
-        // exactly once in the file's CURRENT bytes. See the module note for the
-        // two findings that retired the other two.
+    fn an_edit_to_a_region_never_shown_is_refused_with_the_range_to_read() {
+        // R111's first sentence. The old rung pasted the file and recorded it as
+        // read in the same breath, so its refusal cleared its own flag; this one
+        // names the range and expects a real read.
         let mut h = writable_harness();
         let r = h.call(
             "edit",
             r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"pub fn parse_argv"}"#,
         );
-        assert!(r.is_grounded(), "{}", r.render());
-        assert!(
-            h.read_file("src/lib.rs").contains("parse_argv"),
-            "it landed"
-        );
+        assert!(!r.is_grounded());
+        let out = r.render();
+        assert!(out.contains("not been shown lines 2-2"), "{out}");
+        assert!(out.contains("offset=2 and limit=1"), "{out}");
+        assert!(out.contains("Nothing was written"), "{out}");
+        assert!(h.read_file("src/lib.rs").contains("parse_args"));
 
-        // And a file somebody else rewrote under this session still edits, so
-        // long as the target is there exactly once — the bytes it lands on are
-        // the bytes that were matched.
+        // The refusal marked nothing: the same call again is refused again.
+        let again = h.call(
+            "edit",
+            r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"pub fn parse_argv"}"#,
+        );
+        assert!(!again.is_grounded(), "a refusal must not be its own read");
+
+        // And the read it names is what lets the edit land.
+        h.call("read", r#"{"path":"src/lib.rs"}"#);
+        let landed = h.call(
+            "edit",
+            r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"pub fn parse_argv"}"#,
+        );
+        assert!(landed.is_grounded(), "{}", landed.render());
+        assert!(h.read_file("src/lib.rs").contains("parse_argv"));
+    }
+
+    #[test]
+    fn an_edit_to_lines_that_changed_since_they_were_shown_is_refused_until_re_read() {
+        // R111's second sentence: saw the region, but before it changed.
+        let mut h = writable_harness();
         h.call("read", r#"{"path":"README.md"}"#);
         h.write_file("README.md", "somebody else was here\n");
         let r = h.call(
             "edit",
             r#"{"path":"README.md","old_string":"somebody","new_string":"nobody"}"#,
         );
-        assert!(r.is_grounded(), "{}", r.render());
+        assert!(!r.is_grounded());
+        let out = r.render();
+        assert!(
+            out.contains("changed since this session was shown them"),
+            "{out}"
+        );
+        assert!(out.contains("offset=1 and limit=1"), "{out}");
+        assert_eq!(h.read_file("README.md"), "somebody else was here\n");
+
+        h.call("read", r#"{"path":"README.md"}"#);
+        let landed = h.call(
+            "edit",
+            r#"{"path":"README.md","old_string":"somebody","new_string":"nobody"}"#,
+        );
+        assert!(landed.is_grounded(), "{}", landed.render());
         assert_eq!(h.read_file("README.md"), "nobody else was here\n");
     }
 
@@ -865,6 +1016,224 @@ mod tests {
             h.read_file("src/lib.rs").contains("parse_args"),
             "untouched"
         );
+    }
+
+    /// R111's third sentence, and the case that killed the whole-file digest: a
+    /// formatter touching line 900 must not refuse an edit at line 12. A partial
+    /// read is the honest fixture, because it leaves lines the session has no
+    /// claim on at all.
+    #[test]
+    fn a_change_elsewhere_in_the_file_refuses_nothing_but_its_own_lines() {
+        let mut h = writable_harness();
+        let mut body = String::new();
+        for i in 1..=900 {
+            body.push_str(&format!("line {i} of the file\n"));
+        }
+        h.write_file("big.rs", &body);
+        h.call("read", r#"{"path":"big.rs","offset":1,"limit":50}"#);
+        // A formatter rewrites line 900 under the session.
+        h.write_file(
+            "big.rs",
+            &body.replace("line 900 of the file", "line 900, formatted"),
+        );
+
+        let r = h.call(
+            "edit",
+            r#"{"path":"big.rs","old_string":"line 12 of the file","new_string":"line twelve"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+
+        // The other half of the sentence: a line that WAS shown, then changed.
+        // Read the whole file, let the formatter rewrite line 900 again, and an
+        // edit aimed at the current text of that line is refused for the change.
+        h.call("read", r#"{"path":"big.rs","offset":1,"limit":1000}"#);
+        h.write_file(
+            "big.rs",
+            &body.replace("line 900 of the file", "line 900, formatted again"),
+        );
+        let stale = h.call(
+            "edit",
+            r#"{"path":"big.rs","old_string":"line 900, formatted again","new_string":"line nine hundred"}"#,
+        );
+        assert!(!stale.is_grounded());
+        assert!(
+            stale
+                .render()
+                .contains("changed since this session was shown them"),
+            "{}",
+            stale.render()
+        );
+        assert!(stale.render().contains("offset=900"), "{}", stale.render());
+    }
+
+    /// A search hit with its context licenses an edit on the lines it displayed,
+    /// and nothing beyond them.
+    #[test]
+    fn a_grep_hit_licenses_its_line_and_context_and_nothing_else() {
+        let mut h = writable_harness();
+        let mut body = String::new();
+        for i in 1..=40 {
+            body.push_str(&format!("filler {i}\n"));
+        }
+        body.push_str("the needle lives here\n");
+        for i in 41..=80 {
+            body.push_str(&format!("filler {i}\n"));
+        }
+        h.write_file("hay.rs", &body);
+        let g = h.call(
+            "grep",
+            r#"{"pattern":"the needle lives","path":"hay.rs","context":2}"#,
+        );
+        assert!(g.is_grounded(), "{}", g.render());
+
+        // The hit line (41) and its context (39-43) were displayed.
+        let on_hit = h.call(
+            "edit",
+            r#"{"path":"hay.rs","old_string":"the needle lives here","new_string":"the needle moved"}"#,
+        );
+        assert!(on_hit.is_grounded(), "{}", on_hit.render());
+        // Line 20 was never displayed, context or otherwise.
+        let beyond = h.call(
+            "edit",
+            r#"{"path":"hay.rs","old_string":"filler 20","new_string":"filler twenty"}"#,
+        );
+        assert!(!beyond.is_grounded());
+        let out = beyond.render();
+        assert!(out.contains("not been shown lines 20-20"), "{out}");
+        assert!(out.contains("offset=20 and limit=1"), "{out}");
+    }
+
+    /// R111: a file the session created itself counts as seen, in full.
+    #[test]
+    fn a_file_the_session_created_itself_counts_as_seen() {
+        let mut h = writable_harness();
+        h.call(
+            "write",
+            r#"{"path":"made.rs","content":"one\ntwo\nthree\n"}"#,
+        );
+        let r = h.call(
+            "edit",
+            r#"{"path":"made.rs","old_string":"two","new_string":"deux"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        assert_eq!(h.read_file("made.rs"), "one\ndeux\nthree\n");
+    }
+
+    /// R111: a read over the ceiling marks only the lines actually displayed.
+    /// The byte cap is the ceiling that bites here: lines past it were never on
+    /// the screen, and an edit there is refused exactly as an unread edit is.
+    #[test]
+    fn a_read_past_the_byte_cap_marks_only_the_lines_it_displayed() {
+        let mut h = writable_harness();
+        let long = "x".repeat(200);
+        let mut body = String::new();
+        for i in 1..=300 {
+            body.push_str(&format!("{long} {i}\n"));
+        }
+        h.write_file("wall.rs", &body);
+        let r = h.call("read", r#"{"path":"wall.rs"}"#);
+        assert!(
+            r.notes.iter().any(|n| n.contains("capped at")),
+            "the fixture must hit the byte cap: {:?}",
+            r.notes
+        );
+
+        let early = h.call(
+            "edit",
+            r#"{"path":"wall.rs","old_string":"x 1\n","new_string":"y 1\n"}"#,
+        );
+        assert!(
+            early.is_grounded(),
+            "line 1 was displayed: {}",
+            early.render()
+        );
+
+        let late = h.call(
+            "edit",
+            r#"{"path":"wall.rs","old_string":"x 290\n","new_string":"y 290\n"}"#,
+        );
+        assert!(!late.is_grounded());
+        assert!(
+            late.render().contains("not been shown"),
+            "{}",
+            late.render()
+        );
+    }
+
+    /// R111: the session's own earlier edits count. The region a landed edit's
+    /// result displayed is licensed for a follow-up, without a re-read; and a
+    /// change that shifts line numbers keeps what was shown below it standing at
+    /// the new numbers.
+    #[test]
+    fn the_sessions_own_edit_licenses_its_region_and_shifts_what_is_below_it() {
+        let mut h = writable_harness();
+        let mut body = String::new();
+        for i in 1..=60 {
+            body.push_str(&format!("row {i}\n"));
+        }
+        h.write_file("rows.rs", &body);
+        h.call("read", r#"{"path":"rows.rs","offset":1,"limit":50}"#);
+
+        // An insertion at line 5 adds four lines; lines 2-12 of the result were
+        // displayed around it.
+        let ins = h.call(
+            "edit",
+            r#"{"path":"rows.rs","old_string":"row 5\n","new_string":"row 5\nnew a\nnew b\nnew c\nnew d\n"}"#,
+        );
+        assert!(ins.is_grounded(), "{}", ins.render());
+
+        // Inside the region the edit's own result showed.
+        let follow = h.call(
+            "edit",
+            r#"{"path":"rows.rs","old_string":"new c\n","new_string":"new see\n"}"#,
+        );
+        assert!(follow.is_grounded(), "{}", follow.render());
+
+        // Below the change: what was shown as line 40 is now line 44, and the
+        // reseat keeps it standing there.
+        let below = h.call(
+            "edit",
+            r#"{"path":"rows.rs","old_string":"row 40\n","new_string":"row forty\n"}"#,
+        );
+        assert!(below.is_grounded(), "{}", below.render());
+
+        // Past everything the session was ever shown: line 60 was never read and
+        // no edit of ours touched it.
+        let never = h.call(
+            "edit",
+            r#"{"path":"rows.rs","old_string":"row 60\n","new_string":"row sixty\n"}"#,
+        );
+        assert!(!never.is_grounded());
+        assert!(
+            never.render().contains("not been shown"),
+            "{}",
+            never.render()
+        );
+    }
+
+    /// Every occurrence a `replace_all` touches has to be shown: one unseen
+    /// region cannot ride in on a seen one.
+    #[test]
+    fn replace_all_is_refused_while_any_occurrence_is_unshown() {
+        let mut h = writable_harness();
+        let mut body = String::new();
+        for i in 1..=300 {
+            body.push_str(&format!("marker {i}\n"));
+        }
+        body = body
+            .replace("marker 10\n", "tag\n")
+            .replace("marker 250\n", "tag\n");
+        h.write_file("tags.rs", &body);
+        h.call("read", r#"{"path":"tags.rs","offset":1,"limit":50}"#);
+
+        let r = h.call(
+            "edit",
+            r#"{"path":"tags.rs","old_string":"tag","new_string":"label","replace_all":true}"#,
+        );
+        assert!(!r.is_grounded());
+        let out = r.render();
+        assert!(out.contains("not been shown lines 250-250"), "{out}");
+        assert_eq!(h.read_file("tags.rs"), body, "nothing was written");
     }
 
     #[test]
