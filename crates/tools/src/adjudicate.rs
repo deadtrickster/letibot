@@ -1693,7 +1693,7 @@ impl AdjudicatedGate {
                 format!(
                     "the guard refused this one — no card was raised for it, and nothing is \
                      waiting for an answer. Nothing was executed and nothing changed. The \
-                     operator saw it on `/gate` and can lift it: `grant {}` ({}).",
+                     row is on `/gate`, where the operator can lift it: `grant {}` ({}).",
                     req.id, req.tool
                 )
             } else {

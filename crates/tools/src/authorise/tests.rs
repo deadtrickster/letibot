@@ -845,6 +845,10 @@ fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
             assert!(tell.contains("REFUSED"), "{tell}");
             assert!(tell.contains("no witness"), "{tell}");
             assert!(tell.contains("the guard refused this one"), "{tell}");
+            // The row is where the remedy lives; whether a person has looked at it is a fact
+            // about a screen, and this sink reached none.
+            assert!(tell.contains("row is on `/gate`"), "{tell}");
+            assert!(!tell.contains("saw it"), "{tell}");
             assert!(
                 !tell.contains("answer the pending decision"),
                 "a model's refusal has no card behind it: {tell}"
