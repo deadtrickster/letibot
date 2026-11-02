@@ -256,7 +256,7 @@ Two halves, the first smaller and first:
    `go test`, `npm test`, `make`, a script the session wrote) is not settled by a session or
    durable grant when the backend is unconfined; it asks every time, and the card says why
    (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
-   corpus replay (how many past grants would no longer settle) before landing. — **STILL OPEN.**
+   corpus replay (how many past grants would no longer settle) before landing. — **STILL OPEN.** — OPEN: the rule is built and tested but OFF by default: `runs_project_code_unconfined` returns early unless the switch is set (`crates/tools/src/adjudicate.rs:1769`) and `ask_unconfined_code()` is false unless a `leticode.toml` says so (`crates/leticode-config/src/lib.rs:508`), so a default config still lets an approved shape settle `cargo test`; turning it on is the operator's ruling (R97, `docs/boundary-and-adjudication.md:909`).
 2. **Give the Mac a boundary** — **BUILT 2026-10-27**, `crates/tools/src/exec/seatbelt.rs`, and
    written up in `docs/boundary-and-adjudication.md` §4k. Seatbelt (`sandbox-exec -f <profile>`)
    renders the same `ViewSpec` the Linux side renders as a bubblewrap argv, and the probe measures
@@ -272,7 +272,7 @@ Two halves, the first smaller and first:
    real `cargo --version`, and it does not grow with the command's work. What macOS cannot give —
    a PID namespace, so processes are unreachable but not absent, and no `PR_SET_NO_NEW_PRIVS` —
    is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
-   Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was.
+   Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was. — ✓ fixed in 5442b7c8, test the_probe_measures_a_boundary_and_says_what_macos_cannot_give
 
 **Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
 session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
@@ -369,31 +369,32 @@ because `FirecodeBackend` runs a `firecode` binary on THIS box and holds THIS bo
 reads to decide a worktree is mounted). It needs a remote runner for the firecode backend, not a
 flag. `docs/subagents.md` §2 carries the decision. Tests:
 `crates/harnessd/tests/cli_placement.rs` (both flag orders, through `cli::run`) and the pair test in
-`cli::tests`, which now asserts the pair IS the placement (the build below).
+`cli::tests`, which now asserts the pair IS the placement (the build below). — ✓ fixed in ad447d53, test a_vm_and_a_host_are_one_placement_whichever_flag_came_first
 
 **Built (2026-11-01, branch `firecode-remote`): the pair is the placement.** `leticode --host lab2x1
 --vm`, `leticode_start { host: "lab2x1", vm: true }` and `where: "host:lab2x1:vm"` are one
 `Placement::RemoteVm(name)`; either flag alone still means what it did. `SshSpec::vm` carries the
 ask into `SshBackend::place`, and five things follow from it:
+— ✓ fixed in 46949113, test a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there
 
 1. **The host is asked once per host per process** (`Ssh::probe_firecode`): `command -v firecode` in
 a login shell, and `$LETIBOT_KVM_DEVICE`/`/dev/kvm` readable and writable by this connection's user.
 A host that cannot boot a guest is refused **by name before anything is arranged there** — no
-bundle, no checkout — and a probe that did not answer is not cached.
+bundle, no checkout — and a probe that did not answer is not cached. — ✓ fixed in 46949113, test a_host_without_firecode_is_refused_by_name
 2. **The checkout is a CLONE when the ask is a VM**, not the linked worktree every other placement
 gets. The guest holds a *copy* of the directory, and a worktree's `.git` is a file naming a
 directory in the mirror that the copy does not carry — so no commit inside the guest would have
-worked. `bring_back` fetches the branch from the checkout in that case, from the mirror otherwise.
+worked. `bring_back` fetches the branch from the checkout in that case, from the mirror otherwise. — fixed in 46949113 in code, untested: nothing asserts the VM checkout is a clone rather than a linked worktree, so a revert to `git worktree add` would leave a guest copy with no repository and only a comment to notice
 3. `firecode up --project <checkout>`, and then **every call is `firecode in --project <checkout>
 --cwd <checkout> '<script>'`** — `Ssh::remote_command` wraps every door at once, so a command, a
 file read, a file write, a job's launcher, a poll and the group kill all run in the guest, and the
-cancel path builds its own command for the same reason.
+cancel path builds its own command for the same reason. — ✓ fixed in 46949113, test a_vm_placement_boots_the_guest_and_runs_every_call_in_it
 4. **The guest is the boundary**, so `cfg.placement.is_vm()` puts the session at `allow-all`
-(`Harness::open`'s `in_vm`) and no `bwrap` is probed for.
+(`Harness::open`'s `in_vm`) and no `bwrap` is probed for. — fixed in 46949113 in code, untested: no test opens a session at `Placement::RemoteVm`, so the `allow-all` arm (`crates/harnessd/src/harness/open.rs:594`) is asserted nowhere
 5. **On close: `firecode down`, then the guest's work is taken onto the host checkout** — `down`
 leaves a sibling `<checkout>-<stamp>` when something changed, that copy's branch is fetched into
 the checkout and fast-forwarded, and the branch then comes home as `remote/<host>/<short id>` as
-every host placement's does.
+every host placement's does. — ✓ fixed in 46949113, test a_commit_made_in_the_guest_comes_back_as_the_branch
 
 **Tests** (`crates/tools/tests/remote_vm.rs`, a fake `firecode` on the fake remote's `PATH` through
 the same fake ssh `remote_hosts.rs` uses): `up`, then `in` for the session's calls, then `down`, in
@@ -418,18 +419,18 @@ card) and item 4 were not tried, because:
    in `remote.rs` and `firecode.rs` found this one and no other: `Ssh::write_abs` is the only one,
    `firecode.rs` feeds no stdin at all (its writes are inline base64 or `firecode cp`), and the two
    other `run_bounded_fed` sites (`mergequeue/gate_host.rs`, `room/supervise.rs`) feed a declared
-   host's ssh and never a guest.
+   host's ssh and never a guest. — ✓ fixed in e4c69ac2, test a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin
 2. **A one-shot stopped with SIGINT left the VM up**, with the calls still stuck in it. The forced
    exits (`stop_on_signal`'s second signal and its 5 s give-up) end the process without closing a
    backend, and the orderly stop closes no backend at all. Fixed: a guest this process booted is on
    one list (`remote::guests_down`), bounded at 30 s for `down` and 10 s for the copy-out, and every
    exit path runs it once and prints one line saying whether the VM came down and where the copy
-   landed. A session's own close takes its guest off that list, so no guest is brought down twice.
+   landed. A session's own close takes its guest off that list, so no guest is brought down twice. — ✓ fixed in e4c69ac2, test a_guest_nothing_closed_is_brought_down_once_by_the_last_act
 
 **Still owed, for the next live run**: item 2 (whether a real `firecode` copy of a clone carries a
 commit out), item 4 (a resumed session keeps its clone, and a file one command writes is there for
 the next command), the `cargo test` inside the guest with no card, and the copy-out's real cost read
-off the daemon's own line rather than a manual `down`.
+off the daemon's own line rather than a manual `down`. — OPEN: no live proof — the 2026-11-02 run saw a guest boot and one foreground `bash` inside it and nothing more, so the guest `cargo test` with no card, item 2, item 4 and the copy-out's cost are still untried on lab2x1.
 
 **Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
 guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
@@ -445,29 +446,29 @@ and types ⌘C. The text is copied (the terminal's own copy, and this head's dra
 and:
 
 * rano's `Mods::from_bits` is `Mods(b & 7)` (`src/term/event.rs:27-29`, and there is no super
-  constant at all), so the bit is discarded before any letibot code sees it;
+  constant at all), so the bit is discarded before any letibot code sees it; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
 * `kitty_key` then re-encodes the character through `kitty_legacy`, which carries alt and ctrl
   only (`src/term/decode.rs:402-421`, `482-512`), so `CSI 99;9u` decodes to `Key::Char('c')` with
-  empty mods;
+  empty mods; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
 * and the one door to the raw bytes is lossy the same way — `Terminal::raw_input` answers
-  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`).
+  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`). — OPEN: rano's `legacy_bytes` still turns a `CSI … u` into the legacy spelling (`crates/tui/src/app/keys/input.rs:571` pins it) and that is the door a `!term` pane's program reads (`crates/tui/src/head.rs:1041`), so ⌘C still types a `c` into a pane — a decision, not a line.
 
 **The fix is two lines in rano**, not in this tree: keep the bit in `Mods::from_bits`, and in
 `kitty_key` emit `Char(ch)` **with its mods** when a bit the legacy spelling cannot carry is set.
 Verified against a scratch copy of the pinned rev: both `CSI 99;9u` and `CSI 99;13u` then decode
 to nothing, every existing decode test still passes, and **letibot needs no change** — `key()`'s
-last character arm already answers `None` for a modifier it does not bind.
+last character arm already answers `None` for a modifier it does not bind. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter; the head's own bindings landed in 8eaa4985, so "letibot needs no change" was not quite so.
 
 **And ⌘⌃C is worse than the report**: with the super bit masked it decodes to `CtrlC`, which
-interrupts the turn instead of copying.
+interrupts the turn instead of copying. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (both bits are kept and the head answers nothing)
 
 `crates/tui/src/app/tests/keys.rs` carries a characterization test pinning today's decode
 (`a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit`), written to fail
 loudly with instructions the day rano keeps the bit, and
 `a_selection_does_not_swallow_what_is_typed` refuses the tempting wrong fix (a head that goes deaf
-under a selection).
+under a selection). — ✓ fixed in 8eaa4985, test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (the characterization test and its file are gone; a_selection_does_not_swallow_what_is_typed is at `crates/tui/src/app/tests/editor.rs:1136`)
 **Still open?** `printf '\033[99;9u'` into the key decoder, or press ⌘C over a selection after a
-rano bump — a `c` in the composer means it is still rano's.
+rano bump — a `c` in the composer means it is still rano's. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter — the decoder is fed exactly those bytes and no `c` comes out
 
 ---
 
