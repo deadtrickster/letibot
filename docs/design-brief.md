@@ -22,25 +22,19 @@ Every failure measured has a name in data systems:
 | accounted cache and resident bytes disagree | wrong statistics, so the planner decides wrongly |
 | three misdiagnoses in one session | no EXPLAIN, no per-stage metrics |
 
-Two are more than analogy. **Multi-head compaction with different decay rates is leveled compaction**
-- fine-grained recent levels, older ones merged into coarser ones in the background - which removes
-the stall rather than shortening it, at the price of fidelity lost to re-summarisation. **Per-stage
-observability is EXPLAIN**: "why did this prefill 144,436 tokens with zero cache hits?" is a
-query-plan question.
-
-Where the analogy stops: attention is position-dependent through RoPE, so KV "pages" are not freely
-relocatable the way database pages are.
+Two are more than analogy. **Multi-head compaction with different decay rates is leveled compaction**,
+which removes the stall rather than shortening it, at the price of fidelity lost to re-summarisation.
+**Per-stage observability is EXPLAIN**: "why did this prefill 144,436 tokens with zero cache hits?" is
+a query-plan question. Where the analogy stops: attention is position-dependent through RoPE, so KV
+"pages" are not freely relocatable the way database pages are.
 
 ## 2. What was measured, and why it matters
 
 On a harness built on OpenAI-shaped requests against GLM-5.3-Flash on llama.cpp: **reasoning was not
-replayed**, so every turn diverged from its own cache entry and entries grew without bound;
-**compaction cold-prefilled by construction** at 144,436 tokens and cache hit 0, about 13 minutes to
-the first summary token; **the output cap was silent**, so a subagent that spent its budget thinking
-returned an empty result recorded as success; **the renderer was quadratic**.
-
-Replaying reasoning moved `f_keep` p10 from **0.000 to 0.999**. Nobody surveyed has warm compaction on
-the default path; only one enforces prefix stability with a test.
+replayed**, so every turn diverged from its own cache entry; **compaction cold-prefilled by
+construction**, at 144,436 tokens and cache hit 0, about 13 minutes to the first summary token; **the
+output cap was silent**, so an empty result was recorded as success. Replaying reasoning moved
+`f_keep` p10 from **0.000 to 0.999**, and nobody surveyed has warm compaction on the default path.
 
 ## 3. Model targets
 
@@ -76,8 +70,7 @@ to isolate the agent and spare me hitting enter."*
 
 A **run** is one microVM and everything created for it, and its lifetime is a cgroup subtree, not a
 process tree, "because a process tree cannot express what a run owns". Root is overlayfs layers, so
-nothing is copied per run, and the guest is untrusted by construction: paths from host config,
-parentage from the connection, no host-side seed script.
+nothing is copied per run, and the guest is untrusted by construction.
 
 **The harness must not reinvent any of this**, and it must say how it composes: session to run?
 subagent to child run? who owns lifetime? firecode is the operator's own repo and changes to it are
@@ -100,8 +93,7 @@ Three adjudicators behind **one interface**:
 Routing is **configuration, not code**, escalation is first-class both ways, and everything is
 auditable. Keep `--ask`'s semantics, because asks should be uncommon: post and wait; if nobody
 answers, say so and tell the agent to decide and record what it chose; acknowledge before acting,
-since silence is indistinguishable from absence. A blocking call cannot be a permanent listener, so
-the listener exits per message. Asks-per-hour is an **observable, not a budget**.
+since silence is indistinguishable from absence. Asks-per-hour is an **observable, not a budget**.
 
 ## 7. flowy - chat and permissions
 
@@ -122,11 +114,11 @@ and is re-armed, so every arrival costs a tool call plus a result plus the re-ar
 
 ### What flowy must provide
 
-- **Three wake levels, not four**: all / addressed / mentions-only, plus two orthogonal scopes and a
-  per-room mute. A human's *unaddressed* broadcast wakes an addressed reader; mentions-only turns that
-  off. **Per-room policy does not exist and cannot** - the level is sent per poll and stored nowhere -
-  so the harness should provide it: the level on a per-room subscription row, flowy's *definitions*
-  kept and its one-flag shape dropped.
+- **Three wake levels, not four**: all / addressed / mentions-only, two orthogonal scopes and a
+  per-room mute; a human's *unaddressed* broadcast wakes an addressed reader. **Per-room policy does
+  not exist and cannot** - the level is sent per poll and stored nowhere - so the harness should
+  provide it on a per-room subscription row, flowy's *definitions* kept and its one-flag shape
+  dropped.
 - **Chat is not on a pushed transport** - SSE covers todos and queues only - so pushed chat needs a
   flowy change. File it verbatim:
 
@@ -165,30 +157,24 @@ rather than dropped; a miss returns the surrounding context and what *would* hav
 dead-ending on "not found".
 
 **Every tool's failure mode is a design decision, paid for in permanent context, not in one wasted
-call**, and a miss should be self-correcting within the same call - a contract every built-in meets,
-with a test.
+call**, and a miss should be self-correcting within the same call.
 
-- **Abstention must be structural.** "No answer" must be distinguishable from "here is the answer",
-  and stay so as it propagates up - *"a hallucination wearing a footnote is more dangerous than a
-  naked one."*
+- **Abstention must be structural.** "No answer" must stay distinguishable from "here is the answer"
+  as it propagates up - *"a hallucination wearing a footnote is more dangerous than a naked one."*
 - **Per-stage observability, or you will misdiagnose.**
-- **Tool count is a measured ceiling for small models**: past roughly 5-7 servers they choose worse;
-  15 tested fine, 23 near the edge. State the budget per role.
+- **Tool count is a measured ceiling for small models**: past roughly 5-7 servers they choose worse.
+  State the budget per role.
 - **Discipline is structural, not prompted**: a step that must happen is a node the model cannot
   route around.
 
 ## 10. The tension: cache stability versus context occupation
 
 *"A big window is a higher tolerance, not immunity. So minimising context occupation is a quality
-measure, not a speed one."*
-
-§4 pushes the other way: reasoning was **51.7%** of one measured conversation's content, so replaying
-it roughly doubles occupancy. Keep the **shape** append-only and byte-stable and make the **content**
-dense - return what is needed, spill rather than truncate, no restated framing, and reclaim occupancy
-at compaction rather than by reshaping history mid-flight.
-
-If occupation is a quality measure, **compaction is the primary quality lever**, not cost control -
-which raises its priority, and it is the one thing nobody surveyed does warm.
+measure, not a speed one."* §4 pushes the other way: reasoning was **51.7%** of one measured
+conversation's content, so replaying it roughly doubles occupancy. Keep the **shape** append-only and
+byte-stable and make the **content** dense - return what is needed, spill rather than truncate, no
+restated framing - and reclaim occupancy at compaction rather than by reshaping history mid-flight.
+If occupation is a quality measure, **compaction is the primary quality lever**, not cost control.
 
 ## 11. The server is ours - fuse to it
 
@@ -259,25 +245,22 @@ everything after it whatever the indexing looks like.
 **Finer-grained cross-session sharing is real and available** - block-hash addressing or a radix tree
 lets branches share rather than only extend, which matters because N subagents behind one system
 prompt currently pay for that prefix N times as separate resident sequences. The honest limit: **the
-436.7 MiB recurrent state is not token-proportional and no block scheme can share it**, and a ladder
-over entries differs from one over shared blocks, which need refcounting.
+436.7 MiB recurrent state is not token-proportional and no block scheme can share it.**
 
-**Composing arbitrary blocks out of order is blocked by physics.** A block's KV depends on its own
+**Composing arbitrary blocks out of order is blocked by physics**: a block's KV depends on its own
 tokens, every preceding token and its absolute position, which is why a block hash **chains the
-parent**: a block is reusable only at the same position behind the same prefix, and "send blocks A, F,
-Q plus new text" cannot work as stated. What a handle protocol *would* buy, so nobody over-invests:
-not prefill compute (the cache hit saves that either way), not bandwidth, but **an explicit,
+parent**, and "send blocks A, F, Q plus new text" cannot work as stated. What a handle protocol
+*would* buy, so nobody over-invests: not prefill compute, not bandwidth, but **an explicit,
 verifiable cache hit instead of a discovered one** - the EXPLAIN idea moved into the wire format,
 which is the argument for building it.
 
 **Routes past the position problem, to measure and not assume.** *Position shifting*: llama.cpp has
 the primitive, and the hazard is measured and model-specific - it corrupted recurrent state on GLM,
-fixed by content-based invalidation. *Stitching*: recompute a fraction of tokens to reconcile
-out-of-order segments, where **the recompute fraction is the entire economics and it is unknown for
-MLA + DSA** - an experiment with a stated method, noting that the premise may assume attention-only
-layers, which GLM's recurrent blocks are not. *Accepting the cost*: a swap costs a re-prefill from the
-swap point - cheap at the tail, total at the head. This is the honest path to *"infinite memory via
-explicit search and attention segments that are swappable"* (§13).
+fixed by content-based invalidation. *Stitching*: recompute a fraction of tokens, where **the
+recompute fraction is the entire economics and it is unknown for MLA + DSA** - an experiment with a
+stated method, noting that the premise may assume attention-only layers, which GLM's recurrent blocks
+are not. *Accepting the cost*: a swap costs a re-prefill from the swap point - cheap at the tail,
+total at the head.
 
 ### 11.6 Track discipline
 
@@ -304,16 +287,15 @@ tells us a milestone actually beat the current setup rather than feeling like it
 
 flowy's delivery tests are the ones worth having - a `--to-me` waiter still hears a person's
 unaddressed message, a pasted address wakes nobody, `--mentions` beats `--to-me`, and a note reaches
-its assignee and nobody else, with the guard that **two empty strings must not compare equal** or the
-fallback becomes a broadcast. Also port the *inversion*: assert the wire format carries everything the
-persisted model carries minus a **named** exclusion list computed by reflecting the type - the
-antidote to the enumerating-renderer bug class.
+its assignee and nobody else, with the guard that **two empty strings must not compare equal**. Also
+port the *inversion*: assert the wire format carries everything the persisted model carries minus a
+**named** exclusion list computed by reflecting the type.
 
 Identify which tests run **without** our harness, as black-box conformance against a real llama.cpp
-plus any client: those measure today's setup, tomorrow's harness and any third-party candidate on one
-axis - `f_keep`, `n_prompt_tokens_cache`, p99 re-prefill, `finish_reason` handling, prefix-extension
-byte equality. What no existing suite covers, so we write it: warm-prefix compaction, reading
-`prompt_progress`/`timings` off the stream, adjudication over flowy, multi-head attach.
+plus any client, measuring `f_keep`, `n_prompt_tokens_cache`, p99 re-prefill, `finish_reason`
+handling and prefix-extension byte equality. What no existing suite covers, so we write it:
+warm-prefix compaction, reading `prompt_progress`/`timings` off the stream, adjudication over flowy,
+multi-head attach.
 
 ## 13. Future directions, and what they demand of v1
 
