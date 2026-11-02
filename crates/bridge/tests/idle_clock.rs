@@ -32,8 +32,10 @@
 //!
 //! **The load this file does not need to be run under**, and why: the instrument's whole claim is
 //! that the number is the same on a quiet box and on a busy one. `no_spin.rs`'s report is where
-//! that is measured (the same six windows, 0.6–4.0 ms quiet and under four hundred busy
-//! processes); what is proved here is the mechanism that makes it so.
+//! that is measured — the same six windows, **0.76–3.72 ms** across the four runs on record
+//! (2.02–2.38 on a quiet box, 0.76–2.12 under four hundred busy processes on the gate's box,
+//! 1.87–3.72 on a 32-core box at load 28) — and what is proved here is the mechanism that makes it
+//! so.
 
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
@@ -129,11 +131,15 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
     // a Mac would be red for its OS, and `apparatus::applies` is for a test with nothing left to
     // test here, while the window below still measures this process's own `getrusage`, which
     // every box has.
-    match has_burned(burner.pid(), Duration::from_millis(300), Duration::from_secs(30)) {
+    match has_burned(
+        burner.pid(),
+        Duration::from_millis(300),
+        Duration::from_secs(30),
+    ) {
         Some(true) => {}
-        Some(false) => panic!(
-            "the burner never got going, so nothing below would have been proved either way"
-        ),
+        Some(false) => {
+            panic!("the burner never got going, so nothing below would have been proved either way")
+        }
         None if !cfg!(target_os = "linux") => println!(
             "  no /proc/<pid>/stat on {}: the burner's own reading is not available, so that it \
              burned is unproved here — what follows is this process's own getrusage",

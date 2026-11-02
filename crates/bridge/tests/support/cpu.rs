@@ -65,15 +65,18 @@ pub fn procs_reading() -> Option<Duration> {
     of_pid(std::process::id())
 }
 
-/// What one reading of a settled process costs, and what a settle measures over.
+/// **The stretch a settle adds up** — one second, added up as a TOTAL rather than as a run of
+/// shorter slices. That is the whole of the design and it was measured: a bursty tail that spends
+/// 22 ms a second puts a few quarter-second slices under 5 ms each, so *two quiet slices in a row*
+/// was satisfied while the work went on — while 22 ms is 22 ms wherever the bursts land, so a
+/// second's total cannot be fooled that way. [`settle_budget`] carries the two rejected cuts and
+/// the numbers they read.
 ///
-/// [`SLICE`] is a quarter second — long enough that the 20 ms poll of a waiting accept loop is a
-/// rounding error in it, short enough that a settle is not most of a test's wall clock. [`SPAN`] is
-/// the stretch a settle adds up, and it is four slices long for a measured reason: a *total* over a
-/// second cannot be fooled by the phase of a bursty tail the way a run of short slices can.
-pub const SLICE: Duration = Duration::from_millis(250);
-
-/// The stretch a settle measures — see [`SPAN`](self::SPAN).
+/// **It is not a slice.** A settle is one reading over this span and there is no shorter unit in
+/// it: `wait_until_idle` calls [`over`] once and compares. Two things follow, and both are
+/// somebody's wall clock — every call to a settle costs at least this long, and the window a test
+/// opens after it is `no_spin.rs`'s 3 s on top of that, which is why that file's `WINDOW` doc
+/// counts the settles and not only the windows.
 pub const SPAN: Duration = Duration::from_secs(1);
 
 /// **The settle's line: 1% of a core** — [`SPAN`] / 100, i.e. 10 ms of CPU in a second.
@@ -89,13 +92,16 @@ pub const SPAN: Duration = Duration::from_secs(1);
 ///   — a settle that ended after 5.5 s left **68 ms** in the window. At 1%, over a full second, the
 ///   most a settle can contribute to a 3 s window is 30 ms, a tenth of that budget.
 /// * **It must be high enough that a genuinely waiting daemon is under it by a wide margin.**
-///   Measured: **0.19 ms in a 250 ms slice** on a quiet box, and the six 3 s windows of
-///   `no_spin.rs` read **0.57–1.49 ms** (0.02–0.05% of a core) both alone and under four hundred
-///   busy processes — the accept loop's 20 ms poll and nothing else, twenty times below the line.
+///   Measured: **0.19 ms in a 250 ms slice** on a quiet box — a slice being the unit of the design
+///   that was rejected above, kept because that is how the number was taken — and the six 3 s
+///   windows of `no_spin.rs` read **0.76–3.72 ms** (0.03–0.12% of a core) across the four runs on
+///   record: 2.02–2.38 ms on a quiet box, 0.76–2.12 ms under four hundred busy processes on the
+///   gate's box, and 1.87–3.72 ms on a 32-core box at load 28 with another workspace's test
+///   running beside it. That is the accept loop's 20 ms poll and nothing else: at the loudest of
+///   them, two and a half times under this line and eighty times under the window's budget.
 ///
-/// And the span is why this is a total and not a run of slices: a tail that spends 22 ms a second
-/// puts a few 250 ms slices under 5 ms each, so *two quiet slices in a row* was satisfied while the
-/// work went on. A second's total cannot be — 22 ms is 22 ms wherever the bursts land.
+/// And the span is why this is a total and not a run of slices — see [`SPAN`] for the tail that
+/// made two quiet slices in a row a lie.
 pub fn settle_budget() -> Duration {
     SPAN / 100
 }

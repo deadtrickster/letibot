@@ -66,8 +66,15 @@ const ANSWER: &str = "answer-marker: done";
 const PATIENCE: Duration = Duration::from_secs(60);
 
 /// **How long each phase is measured over.** Long enough that a full core shows up as seconds
-/// rather than as a rounding error, short enough that the six windows here cost under twenty
-/// seconds of the suite's wall clock.
+/// rather than as a rounding error.
+///
+/// **And it is not the whole of this file's wall clock, which is what the first version of this
+/// doc got wrong.** Six windows are 18 s of sleeping, and every one of them is opened by a settle
+/// ([`cpu::wait_until_idle`]) that itself costs at least [`cpu::SPAN`]: MEASURED 2026-11-01, the
+/// six settles here read 2.000 1.000 1.000 1.002 1.000 1.000 s — the first is the daemon's
+/// opening, the rest are a second each — so this binary ran in **29.63 s** on a 32-core box at
+/// load 28. The doc promised *under twenty seconds* because it counted the windows and not the
+/// settles; under the gate's own load the first settle alone was 7.08 s.
 const WINDOW: Duration = Duration::from_secs(3);
 
 /// **What counts as idle.** A spinning session thread spends about WINDOW of CPU (a whole core);
@@ -133,12 +140,12 @@ fn assert_idle(what: &str) -> Duration {
     assert!(
         spent < budget,
         "{what}: the process spent {spent:?} of CPU over a {WINDOW:?} window with nothing to do \
-         (the budget is {budget:?}), having already been quiet for a {:?} slice {settled:?} after \
+         (the budget is {budget:?}), having already been quiet for one {:?} span {settled:?} after \
          the last thing it was asked to do. That is a session thread looping rather than \
          blocking: `court_main` takes a command off its session's queue and dispatches it, so a \
          dispatch path that puts the command back on that same queue takes it again at once, for \
          ever.",
-        cpu::SLICE,
+        cpu::SPAN,
     );
     spent
 }
