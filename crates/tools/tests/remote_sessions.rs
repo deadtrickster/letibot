@@ -1,13 +1,10 @@
-//! One ssh master per daemon, a refused session that is transport, and a write that is one call,
-//! against a fake ssh that can be told to behave like a busy one.
+//! One ssh master per daemon, a refused session that is transport, and a write that is one call, against
+//! a fake ssh that can be told to behave like a busy one.
 //!
-//! Every `ssh` here ignores its flags and runs the last argument locally with `HOME` in a
-//! temporary directory: the commands, the base64 channel, the far side's size and hash check and
-//! the `mv` are the production ones, and only the transport is faked.
-//!
-//! The fake can refuse a session the way a full master does, cut a stream part way through a
-//! write, or enforce a ceiling, and its ledger is files rather than counters because a counter
-//! under a `mkdir` lock lost increments.
+//! Every `ssh` here ignores its flags and runs the last argument locally with `HOME` in a temporary
+//! directory, so the commands, the base64 channel, the far side's size and hash check and the `mv` are
+//! the production ones and only the transport is faked. The ledger is files rather than counters, because
+//! a counter under a `mkdir` lock lost increments.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,12 +17,9 @@ use letibot_tools::remote::{Host, Mise, Paths, SshBackend, SshSpec};
 // The fake ssh
 // ---------------------------------------------------------------------------
 
-/// A fake ssh, with a ledger of the sessions it opened.
-///
-/// The body a test passes runs with the command ssh was asked to run in `$last`, and then, unless
-/// the body exited, that command runs: a body is a behaviour of the transport (a refusal, a cut
-/// stream), not a reimplementation of the remote shell. It has `live_now`, `mark <word>` and
-/// `first_time <name>` in scope.
+/// A fake ssh, with a ledger of the sessions it opened. The body a test passes runs with ssh's command in
+/// `$last` and then, unless it exited, that command runs: a body is a behaviour of the transport, not a
+/// reimplementation of the remote shell.
 struct Fake {
     dir: PathBuf,
     program: PathBuf,
@@ -57,15 +51,12 @@ impl Fake {
         let log = dir.join("ssh.log");
         let d = dir.display().to_string();
         let body = body.replace("@DIR@", &d);
-        // `[ $# -eq 0 ] && exit 0` first: `write_stub` proves the file by exec'ing it with no
-        // arguments, and a `sleep 300` prelude would be this fixture hanging.
+        // `[ $# -eq 0 ] && exit 0` first, because `write_stub` proves the file by exec'ing it with no
+        // arguments and a `sleep 300` prelude would be this fixture hanging. `-O check`/`-O exit` are the
+        // control-socket verbs and answer `1`, so nothing waits on a socket nothing listens to.
         //
-        // `-O check`/`-O exit` are the control-socket verbs, not sessions: answered `1` (no master)
-        // so `fresh_master` clears what it finds and nothing waits on a socket nothing listens to.
-        //
-        // `bash -lc "$last"` runs as a CHILD, not an `exec`: a replaced shell runs no `EXIT` trap,
-        // so the session's `live` file would never be removed and the next session would see a
-        // place taken that is in fact free.
+        // `bash -lc "$last"` runs as a CHILD, not an `exec`: a replaced shell runs no `EXIT` trap, so the
+        // session's `live` file would never be removed.
         write_executable(
             &program,
             &format!(
@@ -104,10 +95,9 @@ impl Fake {
             .collect()
     }
 
-    /// How many invocations carried `needle` anywhere in their argv, the count a retry changes.
-    ///
-    /// Counted over the whole log because a remote command is often several lines long and the
-    /// fake logs the argv verbatim: a needle on the script's second line would be invisible.
+    /// How many invocations carried `needle` anywhere in their argv, which is the count a retry changes.
+    /// Counted over the whole log because the fake logs the argv verbatim and a remote command is often
+    /// several lines long.
     fn count(&self, needle: &str) -> usize {
         std::fs::read_to_string(&self.log)
             .unwrap_or_default()
@@ -260,15 +250,11 @@ fn payload(len: usize) -> Vec<u8> {
 // The write
 // ---------------------------------------------------------------------------
 
-/// A write whose far side fails never moves a short temp file over the target.
+/// A write whose far side fails never moves a short temp file over the target: the fake breaks `base64
+/// -d` there, so the target must be byte-identical and the tool must say the write failed.
 ///
-/// The fake breaks `base64 -d` on the far side, which is the shape of a decode that cannot write:
-/// the target must be byte-identical and the tool must say the write failed.
-///
-/// Linux only, and only because of how the break is planted: the fake shadows `base64` by putting
-/// its `bin` first on `PATH`, and a macOS login shell's `path_helper` rebuilds `PATH` with the
-/// system directories in front, so the real `base64` decodes and the write rightly succeeds. The
-/// property under test is the script's, which is the same text on both platforms.
+/// Linux only, because the fake shadows `base64` by putting its `bin` first on `PATH` and a macOS login
+/// shell rebuilds `PATH` with the system directories in front.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_far_side_that_cannot_decode_never_touches_the_target() {
@@ -369,12 +355,9 @@ fn a_write_is_one_session_whatever_its_size() {
 // A refused session is transport, and it is retried
 // ---------------------------------------------------------------------------
 
-/// A session the multiplexer refused is retried on a fresh connection, and the write lands.
-///
-/// The fake refuses the first session that carries a write with the sentence a full master prints,
-/// and answers everything after it. Two things have to be true: the write succeeds, and what ssh
-/// said is never reported as the command's own exit, because a tool result reading `exit 255` for a
-/// session that never existed sends the model looking for a bug in its own command.
+/// A session the multiplexer refused is retried on a fresh connection, and the write lands. Two things
+/// have to be true: the write succeeds, and what ssh said is never reported as the command's own exit,
+/// because `exit 255` for a session that never existed sends the model looking for a bug in its command.
 #[test]
 fn a_refused_session_is_retried_on_a_fresh_connection() {
     let fake = Fake::new(
@@ -407,11 +390,9 @@ fn a_refused_session_is_retried_on_a_fresh_connection() {
     assert_eq!(b.read("landed.bin").expect("it reads back"), bytes);
 }
 
-/// A `run` whose session was refused runs exactly once: the retry neither lost it nor doubled it,
-/// which is the only reading under which retrying an at-most-once operation is honest.
-///
-/// A refused session provably had no channel and the command never started, and the fake proves it:
-/// the command appends a line to a file, and after a refusal and a retry that file holds one line.
+/// A `run` whose session was refused runs exactly once: a refused session provably had no channel, and the
+/// fake proves it, since the command appends a line to a file and after a refusal and a retry the file
+/// holds one line.
 #[test]
 fn a_run_whose_session_was_refused_runs_exactly_once() {
     let fake = Fake::new(
@@ -465,12 +446,9 @@ fn a_run_whose_session_was_refused_runs_exactly_once() {
 // A stream that is cut
 // ---------------------------------------------------------------------------
 
-/// A stream cut mid-write leaves the target byte-identical, and the failure is a transport one.
-///
-/// The fake feeds the far side only the first 64 characters of the stream, which is what a session
-/// killed at its deadline gives it: an early end of input. Both attempts are cut, so the write must
-/// fail and the target must not have moved; and a third write, with the cuts spent, must land
-/// whole, so the failure left nothing behind that stops the next one.
+/// A stream cut mid-write leaves the target byte-identical and the failure is a transport one. Both
+/// attempts are cut, so the write must fail; a third write, with the cuts spent, must land whole, so the
+/// failure left nothing behind.
 #[test]
 fn a_cut_stream_leaves_the_target_byte_identical() {
     // Two sessions are cut, one per attempt. A third write is not cut at all.
@@ -519,13 +497,8 @@ fn a_cut_stream_leaves_the_target_byte_identical() {
 // Twelve at once
 // ---------------------------------------------------------------------------
 
-/// Twelve threads through one host, with the host enforcing `MaxSessions`-2: every call gets a
-/// reply and the host never has to refuse one.
-///
-/// The fake refuses the ninth concurrent session the way a full master does, so this fails if the
-/// client ever asks for more than eight. The ceiling is eight because a master keeps two of
-/// `MaxSessions`' ten for itself (its own channel and a `-O check`), so a ninth is the first one a
-/// real host would refuse.
+/// Twelve threads through one host, with the host enforcing `MaxSessions`-2: every call gets a reply and
+/// the host never has to refuse one. The ceiling is eight because a master keeps two of ten for itself.
 #[test]
 fn twelve_threads_through_one_host_all_get_an_answer() {
     let fake = Fake::new(
@@ -618,12 +591,9 @@ fn twelve_threads_through_one_host_all_get_an_answer() {
 // One master per daemon
 // ---------------------------------------------------------------------------
 
-/// The socket a daemon's calls multiplex over is its own, and git's is a second one.
-///
-/// A socket named only by host is shared by every daemon on the box, so `MaxSessions` is divided
-/// among all of them and the eleventh session is refused. Naming it by the daemon's pid divides
-/// nothing, and naming git's separately keeps a `git fetch`, which this process does not start and
-/// cannot count, off the master the calls are bounded on.
+/// The socket a daemon's calls multiplex over is its own, and git's is a second one. A socket named only
+/// by host is shared by every daemon on the box, so the eleventh session is refused; naming it by the
+/// daemon's pid divides nothing, and git's is separate because a `git fetch` cannot be counted here.
 #[test]
 fn one_daemon_has_one_master_and_git_has_another() {
     let mine = letibot_tools::remote::control_path("lab2x1", 4242);

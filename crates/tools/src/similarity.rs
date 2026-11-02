@@ -28,11 +28,8 @@ use crate::builtins::notes::abstract_of;
 /// is that `id`, `vm`, `ui` and `db` are not terms.
 pub const MIN_TERM: usize = 3;
 
-/// One text as a weighted bag of terms, against a corpus's `idf`.
-///
-/// Not a `HashMap`: iteration order over a score's terms is the difference between a
-/// deterministic answer and one that changes with the allocator, and a gate whose verdict
-/// flickers is worse than no gate.
+/// One text as a weighted bag of terms, against a corpus's `idf`. Not a `HashMap`: iteration order over a
+/// score's terms is the difference between a deterministic answer and one that changes with the allocator.
 #[derive(Debug, Clone, Default)]
 pub struct Weights {
     terms: BTreeMap<String, f64>,
@@ -64,11 +61,9 @@ impl Weights {
     }
 }
 
-/// The one function: how alike two texts are, `0.0` to `1.0`.
-///
-/// `1.0` only for two texts with the same terms in the same proportions. A text with no
-/// terms scores `0.0` rather than `NaN`: nothing is not similar to anything, and a score
-/// that cannot be compared is a score a floor cannot be applied to.
+/// The one function: how alike two texts are, `0.0` to `1.0`, and `1.0` only for the same terms in the
+/// same proportions. A text with no terms scores `0.0` rather than `NaN`, because a score that cannot be
+/// compared is a score a floor cannot be applied to.
 pub fn similarity(a: &Weights, b: &Weights) -> f64 {
     let den = a.norm() * b.norm();
     if den <= 0.0 {
@@ -84,18 +79,14 @@ struct Note {
     weights: Weights,
 }
 
-/// The corpus, with the `idf` that makes a common word cheap.
-///
-/// Built from the same list the injected section is assembled from - the reader's
-/// `gather` - so the notes a score is computed over are exactly the notes a model can be
-/// told about, and a score is never about something unreachable.
+/// The corpus, with the `idf` that makes a common word cheap. Built from the same list the injected
+/// section is assembled from, so a score is never about a note a model cannot be told about.
 pub struct Corpus {
     notes: Vec<Note>,
     idf: BTreeMap<String, f64>,
-    /// What an unseen term weighs: as much as a term exactly one note uses, which is
-    /// what a term in the note being written and in no other actually is. A fallback of
-    /// zero would make a brand-new note score zero against everything, so the gate would
-    /// pass everything it should and nothing it should not.
+    /// What an unseen term weighs: as much as a term exactly one note uses, which is what a term in the
+    /// note being written and in no other is. A fallback of zero would make a brand-new note score zero
+    /// against everything.
     unseen: f64,
 }
 
@@ -109,14 +100,9 @@ impl Corpus {
         Corpus::of_texts(&indexed)
     }
 
-    /// Build from texts that are scored whole - the same arithmetic as [`Corpus::new`],
-    /// without [`index_text`] in front of it.
-    ///
-    /// A note is scored on its title, abstract and headings because that is what a reader
-    /// is shown; a corpus that is not notes has none of the three, and running a sentence
-    /// through `index_text` would score it on its first sentence plus whatever the label
-    /// happened to be called. The label is still a path, so the callers can say which
-    /// document matched.
+    /// Build from texts that are scored whole, without [`index_text`] in front of it. A note is scored on
+    /// its title, abstract and headings because that is what a reader is shown, and a text that is not a
+    /// note has none of the three.
     pub fn of_texts(files: &[(PathBuf, String)]) -> Corpus {
         let n = files.len().max(1) as f64;
         let mut counts: Vec<(PathBuf, BTreeMap<String, f64>)> = Vec::with_capacity(files.len());
@@ -184,10 +170,8 @@ impl Corpus {
         all
     }
 
-    /// The note this text is most alike - the read hint's question. `None` only when the
-    /// corpus is empty, or when nothing shares a single term with it.
-    ///
-    /// Ties break by path, so two notes that score the same offer the same one every time.
+    /// The note this text is most alike, and `None` only when the corpus is empty or nothing shares a
+    /// single term. Ties break by path, so the same one is offered every time.
     pub fn best(&self, text: &str) -> Option<(&Path, f64)> {
         let q = self.weigh(text);
         self.notes
@@ -201,11 +185,8 @@ impl Corpus {
             })
     }
 
-    /// The note a candidate would be a near-copy of - the write gate's question, asked of
-    /// a note that is not in the corpus yet.
-    ///
-    /// `skip` is the note being edited, excluded from its own corpus: an `append` must not
-    /// be refused for being similar to the note it is growing.
+    /// The note a candidate would be a near-copy of. `skip` is the note being edited, excluded from its own
+    /// corpus: an `append` must not be refused for being similar to the note it is growing.
     pub fn nearest(&self, candidate: &str, skip: Option<&Path>) -> Option<(&Path, f64)> {
         let cand = self.weigh(candidate);
         self.notes
@@ -227,10 +208,8 @@ fn weigh(tf: &BTreeMap<String, f64>, idf: &BTreeMap<String, f64>, unseen: f64) -
         // Sublinear, because a word said four times in one abstract is a word said once:
         // without it a note that repeats itself would be scored as a note about less.
         let w = (1.0 + count.ln()) * idf.get(term).copied().unwrap_or(unseen);
-        // A term the whole corpus uses weighs nothing and is dropped rather than
-        // carried as a zero: it adds nothing to a dot product or a norm, and leaving it
-        // in would make `terms()` - the report a reader sees - name words that did not
-        // count.
+        // A term the whole corpus uses weighs nothing and is dropped rather than carried as a zero, since
+        // leaving it in would make `terms()` name words that did not count.
         if w <= 0.0 {
             continue;
         }
@@ -240,13 +219,9 @@ fn weigh(tf: &BTreeMap<String, f64>, idf: &BTreeMap<String, f64>, unseen: f64) -
     Weights { terms, squared }
 }
 
-/// The text a note is scored on: its title, its abstract and its headings.
-///
-/// The same three fields the injected index leads with, so the score is about what a
-/// reader is shown rather than about a whole body - a note that mentions a thing once in
-/// passing is not a note about it, and the abstract is where an author says what it is
-/// about. The title is the file stem with its separators opened out, because the name an
-/// author chose is a summary they had to write.
+/// The text a note is scored on: its title, its abstract and its headings, the same three fields the
+/// injected index leads with. A note that mentions a thing once in passing is not a note about it, and the
+/// title is the file stem with its separators opened out.
 pub fn index_text(path: &Path, text: &str) -> String {
     let mut out = String::new();
     if let Some(stem) = path.file_stem() {
@@ -268,11 +243,8 @@ pub fn index_text(path: &Path, text: &str) -> String {
     out
 }
 
-/// The terms of a text: lowercased runs of letters and digits, at least
-/// [`MIN_TERM`] long, in the order they appear.
-///
-/// Digits are terms, and so are words with digits in them (`gpt4`, `2k`), because they
-/// are exactly the terms nothing else shares.
+/// The terms of a text: lowercased runs of letters and digits, at least [`MIN_TERM`] long, in order. Digits
+/// are terms, and so are words with digits in them, because they are exactly the terms nothing else shares.
 pub fn terms(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.chars().count() >= MIN_TERM)
