@@ -466,6 +466,9 @@ pub struct LeticodeConfig {
     /// **The `[permissions]` table** — currently one key, `ask_unconfined_code`. See
     /// [`PermissionKeys`].
     pub permissions: PermissionKeys,
+    /// **The `[skills]` table**: the skills this level pins. A pin asks for a skill to stay
+    /// loaded, so the two levels add up instead of one replacing the other.
+    pub skills: SkillKeys,
 }
 
 /// **`[permissions]` in a `leticode.toml`** — the gate settings a file may carry, which is to
@@ -533,6 +536,62 @@ fn permission_keys(value: &toml::Value) -> Result<PermissionKeys, String> {
     })?;
     Ok(PermissionKeys {
         ask_unconfined_code: t.ask_unconfined_code,
+    })
+}
+
+/// **`[skills]` in a `leticode.toml`**: the skills a session keeps in hand whatever it is
+/// asked to do.
+///
+/// ```toml
+/// [skills]
+/// pin = ["latex-presentation", "release"]
+/// ```
+///
+/// **Both levels' pins apply**, so this is a union and not an override: a pin is a request
+/// to have a skill loaded, and a project file (which a session with `write` can edit) must
+/// not be able to unsay what the operator pinned for every project on the box.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillKeys {
+    pub pin: Vec<String>,
+}
+
+impl SkillKeys {
+    /// The two levels as one: this level's names in its own order, then the ones `other`
+    /// adds, each once. See the type's note on why a pin unions rather than overrides.
+    pub fn overridden_by(&self, other: &SkillKeys) -> SkillKeys {
+        let mut pin: Vec<String> = Vec::with_capacity(self.pin.len() + other.pin.len());
+        for name in self.pin.iter().chain(other.pin.iter()) {
+            if !pin.contains(name) {
+                pin.push(name.clone());
+            }
+        }
+        SkillKeys { pin }
+    }
+
+    /// Whether the file said anything at all, for the disclosure, which must not claim a
+    /// setting nobody made.
+    pub fn is_empty(&self) -> bool {
+        self.pin.is_empty()
+    }
+}
+
+/// The `[skills]` table as the file wrote it; unknown keys refused by name.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillTable {
+    #[serde(default)]
+    pin: Option<Vec<String>>,
+}
+
+fn skill_keys(value: &toml::Value) -> Result<SkillKeys, String> {
+    let t: SkillTable = value.clone().try_into().map_err(|e| {
+        format!(
+            "[skills]: {e}; the one key is `pin`, a list of the skill names this level keeps \
+             loaded"
+        )
+    })?;
+    Ok(SkillKeys {
+        pin: t.pin.unwrap_or_default(),
     })
 }
 
@@ -712,6 +771,10 @@ impl LeticodeConfig {
                 }
                 None => PermissionKeys::default(),
             },
+            skills: match &file.skills {
+                Some(v) => skill_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => SkillKeys::default(),
+            },
         };
 
         // One seat, two answers. The guard and the adjudicator are one oracle in this
@@ -803,6 +866,7 @@ impl LeticodeConfig {
                 ceiling: other.memory.ceiling.or(self.memory.ceiling),
             },
             permissions: self.permissions.overridden_by(&other.permissions),
+            skills: self.skills.overridden_by(&other.skills),
         }
     }
 
@@ -949,6 +1013,10 @@ struct LeticodeConfigFile {
     /// belongs on this side of the wall rather than beside the models.
     #[serde(default)]
     permissions: Option<toml::Value>,
+    /// **The `[skills]` table**: a pin says which skills stay loaded, so it sits on this side
+    /// of the wall, seating no tool and lifting no narrowing.
+    #[serde(default)]
+    skills: Option<toml::Value>,
 }
 
 /// A model name that is blank is no model at all: an empty string would
@@ -1678,6 +1746,48 @@ mod tests {
         assert!(
             !off.overridden_by(&PermissionKeys::default())
                 .ask_unconfined_code()
+        );
+    }
+
+    /// **`[skills] pin` is read in the order the file wrote it**, and one key this build does
+    /// not know is refused by name.
+    #[test]
+    fn the_skills_table_is_read_and_its_one_key_is_named() {
+        let dir = project_dir("skills");
+        let path = write_file(
+            &dir,
+            "[skills]\npin = [\"latex-presentation\", \"release\"]\n",
+        );
+        let cfg = LeticodeConfig::load(&path).expect("one key parses");
+        assert_eq!(
+            cfg.skills.pin,
+            ["latex-presentation", "release"],
+            "the names, in the file's order"
+        );
+        assert!(
+            LeticodeConfig::default().skills.is_empty(),
+            "a file that says nothing pins nothing"
+        );
+
+        let path = write_file(&dir, "[skills]\npi = [\"x\"]\n");
+        let err = LeticodeConfig::load(&path).unwrap_err();
+        assert!(err.contains("`pi`") && err.contains("[skills]"), "{err}");
+    }
+
+    /// **Both levels' pins apply**: the user's names first, then the project's new ones, each
+    /// once. A pin asks for a skill, so a project cannot unsay the operator's list.
+    #[test]
+    fn the_two_levels_pin_skills_by_union() {
+        let user_dir = project_dir("skills-user");
+        let user_path = write_file(&user_dir, "[skills]\npin = [\"a\", \"b\"]\n");
+        let user = LeticodeConfig::load_as(&user_path, Level::User).expect("the user file parses");
+        let project_root = project_dir("skills-project");
+        let project_path = write_file(&project_root, "[skills]\npin = [\"b\", \"c\"]\n");
+        let project = LeticodeConfig::load(&project_path).expect("the project file parses");
+        assert_eq!(
+            user.overridden_by(&project).skills.pin,
+            ["a", "b", "c"],
+            "the union, each name once, the user's order first"
         );
     }
 }
