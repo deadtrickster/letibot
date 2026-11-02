@@ -61,6 +61,27 @@ impl Store {
             .optional()?)
     }
 
+    /// **Every key written under `prefix`**, oldest first, with what was said about it — the reading
+    /// for a queue of owed things: what was written down and has not been forgotten yet
+    /// (`review::redeliver_refusals`).
+    pub fn told_with_prefix(&self, prefix: &str) -> Result<Vec<(String, Told)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT key, count, at_ms FROM queue_told WHERE substr(key, 1, length(?1)) = ?1
+               ORDER BY at_ms, key",
+        )?;
+        let rows = st.query_map(params![prefix], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Told {
+                    count: r.get::<_, i64>(1)?.max(0) as u32,
+                    at_ms: r.get::<_, i64>(2)?.max(0) as u64,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// **Forget every key that starts with `prefix`** — the state they were about is over (a red
     /// target is green again), so the next time it comes back it is news. Answers how many rows
     /// were forgotten: more than none is "this was said, and is not true any more".
@@ -111,6 +132,23 @@ mod tests {
         assert_eq!(s.untell_prefix("rung:/r:health:main:").unwrap(), 1);
         assert_eq!(s.untell_prefix("rung:/r:health:main:").unwrap(), 0);
         assert!(s.tell_once("rung:/r:health:main:abc:red", 8).unwrap());
+
+        // **What was written down under a prefix, and only that**: a queue of owed notices reads
+        // this, so another teller's key has to stay out and the clock has to come back with it.
+        assert!(s.tell_once("refusal:abc:s-1", 30).unwrap());
+        assert!(s.tell_once("refusal:def:s-2", 40).unwrap());
+        assert_eq!(
+            s.told_with_prefix("refusal:").unwrap(),
+            vec![
+                ("refusal:abc:s-1".to_string(), Told { count: 1, at_ms: 30 }),
+                ("refusal:def:s-2".to_string(), Told { count: 1, at_ms: 40 }),
+            ],
+            "oldest first, with the count and the clock each was written at"
+        );
+        assert!(
+            s.told_with_prefix("nothing:").unwrap().is_empty(),
+            "a prefix nobody wrote under is no row, not every row"
+        );
         let _ = std::fs::remove_file(&p);
     }
 }

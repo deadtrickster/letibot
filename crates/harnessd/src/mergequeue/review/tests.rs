@@ -260,6 +260,42 @@ fn judge(
     }
 }
 
+/// One pass of the reviewers' host over an EXISTING store - what a later pass looks like when the
+/// thing under test is what the queue remembers between two of them. `judge` cannot be used for the
+/// second pass: it moves the row it is about into `reviewing`, and a rejected row is not there.
+fn a_pass(
+    store: &Store,
+    deliver: &dyn Fn(&str, &str) -> Result<String, String>,
+    live: &dyn Fn(&str) -> bool,
+    heard: Arc<Heard>,
+) -> Served {
+    let events = move |e: SessionEvent| {
+        if let SessionEvent::Warning { code, detail, .. } = e {
+            heard.raised.lock().unwrap().push((code, detail));
+        }
+    };
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let desk = ReviewDesk::new();
+    let clones_dir = TempDir::new("review-a-pass-clones");
+    let pool = Pool {
+        reviewer_skills: &[],
+        store,
+        runner: &Reviewers,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, e| events(e),
+        deliver,
+        live,
+        settings: &settings,
+        clones: clones_dir.0.join(CLONES_DIR),
+        slots: &Vec::new,
+    };
+    serve(&pool).expect("a pass")
+}
+
 // ===== Who a refusal reaches =====
 
 /// The live session of the branch's workspace the last rung may fall back to, a live session of a
@@ -523,6 +559,188 @@ fn a_child_nobody_can_walk_from_is_tried_alone_and_then_raised() {
         !raised[0].contains("`s-root`"),
         "the root was never named: {}",
         raised[0]
+    );
+}
+
+/// **A refusal nobody could take is owed to whoever opens next.** The daemon was gone when the
+/// verdict landed and the child that wrote the branch comes back: the queue wrote the debt down, so
+/// a pass after the door opens hands it over - once, to the first session that takes it - and the
+/// operator hears about the miss once rather than once per pass.
+#[test]
+fn a_refusal_nobody_heard_is_handed_to_the_session_that_opens_later() {
+    let (_dir, store) = the_queue("owed");
+    let heard = Arc::new(Heard::default());
+    let refused = |to: &str, _text: &str| -> Result<String, String> {
+        Err(format!(
+            "no session `{to}` is live in this daemon, so there is nothing to say it to"
+        ))
+    };
+    judge(
+        &store,
+        ReviewState::Waiting,
+        "s-gatekeeper-sub-1",
+        Decision::Reject,
+        reasons(),
+        &refused,
+        &[],
+        heard.clone(),
+        1,
+    );
+    assert_eq!(
+        heard.raised("refusal_undelivered").len(),
+        1,
+        "the operator is told about the miss, once"
+    );
+    assert_eq!(heard.sent().len(), 0, "nobody heard it on the first pass");
+
+    // The child comes back. The door that was closed takes the message now, and the next pass is
+    // what the queue owes it.
+    let heard_door = heard.clone();
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flip = open.clone();
+    let door = move |to: &str, text: &str| -> Result<String, String> {
+        if !flip.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(format!(
+                "no session `{to}` is live in this daemon, so there is nothing to say it to"
+            ));
+        }
+        heard_door
+            .sent
+            .lock()
+            .unwrap()
+            .push((to.to_string(), text.to_string()));
+        Ok(format!("`{to}` was told"))
+    };
+    open.store(true, std::sync::atomic::Ordering::Relaxed);
+    let nobody_live = |_: &str| false;
+    let served = a_pass(&store, &door, &nobody_live, heard.clone());
+    assert_eq!(served.redelivered, 1, "the pass handed the owed refusal over");
+    let went = heard.sent();
+    assert_eq!(went.len(), 1, "{went:?}");
+    assert_eq!(
+        went[0].0, CHILD,
+        "the child that wrote the branch, which is the door the first attempt tried first"
+    );
+    for asked in [
+        "the retry is not bounded: `loop` can run for ever",
+        "the test it added asserts nothing",
+        BRANCH,
+        HEAD,
+        "REFUSED",
+    ] {
+        assert!(
+            went[0].1.contains(asked),
+            "`{asked}` is missing from: {}",
+            went[0].1
+        );
+    }
+    assert_eq!(
+        heard.raised("refusal_undelivered").len(),
+        1,
+        "a debt paid is not news a second time"
+    );
+    assert_eq!(
+        store.review_row(ID).unwrap().unwrap().state,
+        ReviewState::Rejected,
+        "the delivery does not undo the judgement"
+    );
+
+    // And it is paid ONCE: the next pass finds nothing written down.
+    let served = a_pass(&store, &door, &nobody_live, heard.clone());
+    assert_eq!(served.redelivered, 0);
+    assert_eq!(
+        heard.sent().len(),
+        1,
+        "one refusal is one message, however many passes look for a session to take it"
+    );
+}
+
+/// **A refusal is owed for a day, and only while its verdict stands.** Two ends of the same rule: a
+/// session that opens a week later is not handed a stale complaint about a branch nobody has touched
+/// since, and a row a person put back in line is owed nothing at all.
+#[test]
+fn an_owed_refusal_expires_and_one_whose_row_moved_on_is_forgotten() {
+    // A week old: past the day the door looks for.
+    let (_dir, store) = the_queue("owed-old");
+    let heard = Arc::new(Heard::default());
+    let refused = |to: &str, _t: &str| -> Result<String, String> {
+        Err(format!("no session `{to}` is live in this daemon"))
+    };
+    judge(
+        &store,
+        ReviewState::Waiting,
+        "s-gatekeeper-sub-1",
+        Decision::Reject,
+        reasons(),
+        &refused,
+        &[],
+        heard.clone(),
+        1,
+    );
+    let key = format!("{REFUSAL_OWED}{HEAD}:{ID}");
+    assert!(
+        store.told(&key).unwrap().is_some(),
+        "the miss is written down under the head it judged"
+    );
+    let week_ago = now_ms().saturating_sub(7 * 24 * 60 * 60 * 1000);
+    store.untell_prefix(&key).unwrap();
+    store.tell_once(&key, week_ago).unwrap();
+    let takes_it = |to: &str, text: &str| Ok(format!("`{to}` took: {}", text.len()));
+    let everyone_live = |_: &str| true;
+    assert_eq!(
+        a_pass(&store, &takes_it, &everyone_live, heard.clone()).redelivered,
+        0,
+        "a week-old refusal is not owed to anybody"
+    );
+    assert!(
+        store.told(&key).unwrap().is_none(),
+        "and the row that said it was owed is gone with it"
+    );
+
+    // A row a person put back in line: the verdict it was rejected with is not the row's any more.
+    let (_dir2, store2) = the_queue("owed-moved");
+    let heard2 = Arc::new(Heard::default());
+    judge(
+        &store2,
+        ReviewState::Waiting,
+        "s-gatekeeper-sub-1",
+        Decision::Reject,
+        reasons(),
+        &refused,
+        &[],
+        heard2.clone(),
+        1,
+    );
+    assert!(
+        store2
+            .move_review(
+                ID,
+                ReviewState::Rejected,
+                ReviewState::Waiting,
+                &Move::new("operator:s-1", "restarted by a person"),
+                3,
+            )
+            .unwrap()
+    );
+    let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tally = sent.clone();
+    let counting = move |_to: &str, _text: &str| {
+        tally.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(String::from("told"))
+    };
+    assert_eq!(
+        a_pass(&store2, &counting, &everyone_live, heard2.clone()).redelivered,
+        0,
+        "a row that is not rejected is owed nothing"
+    );
+    assert_eq!(
+        sent.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "and nobody was told about it"
+    );
+    assert!(
+        store2.told_with_prefix(REFUSAL_OWED).unwrap().is_empty(),
+        "the debt is forgotten once its verdict no longer stands"
     );
 }
 

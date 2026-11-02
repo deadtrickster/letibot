@@ -58,6 +58,9 @@ pub struct Pool<'a> {
 pub struct Served {
     pub started: usize,
     pub moved: bool,
+    /// Refusals nobody heard that this pass handed to a session which had opened since - see
+    /// [`redeliver_refusals`].
+    pub redelivered: usize,
 }
 
 impl Pool<'_> {
@@ -279,6 +282,10 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     let mut out = Served::default();
     // The trees no row is on any more, before anything is started - see [`sweep_clones`].
     sweep_clones(p);
+    // **The other end of a refusal nobody heard** - before the rows are read, so a session that
+    // opened since the verdict is told in the same pass that starts the next reviewer.
+    out.redelivered = redeliver_refusals(p)?;
+    out.moved |= out.redelivered > 0;
     let rows = p.store.review_rows(None)?;
 
     // ---- Start a reviewer for every row this daemon claimed and nobody is on.
@@ -856,17 +863,50 @@ fn open_fix_branch(
     Ok(())
 }
 
+/// The word a refusal nobody heard is written down under, in the store's `queue_told` table: the row
+/// whose complaints are OWED to the first session that opens later. The head it judged is in the
+/// key, because a re-review of a new head is a new debt - the verdict that was never delivered is
+/// about the head the reviewer actually read.
+pub const REFUSAL_OWED: &str = "refusal:";
+
+/// How long a refusal nobody heard is owed. A branch rejected a week ago and never touched again is
+/// the row's evidence, not a message: the door looks for a session still in the story.
+pub const REFUSAL_OWED_MS: u64 = 24 * 60 * 60 * 1000;
+
+fn owed_key(r: &ReviewRow) -> String {
+    format!("{REFUSAL_OWED}{}:{}", r.head_sha, r.id)
+}
+
 /// The refusal goes back to the child that wrote the branch, or its root when the child is
-/// gone; then to a live session of the branch's workspace when the whole tree is dead; and
-/// when nobody can be told, the operator is (it stays on the row either way).
+/// gone; then to a live session of the branch's workspace when the whole tree is dead; and when
+/// nobody can be told, it is WRITTEN DOWN - the operator is told once, and
+/// [`redeliver_refusals`] hands it to whoever opens next (it stays on the row either way).
 fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
+    let Err(tried) = hand_refusal(p, r, reasons) else {
+        return;
+    };
+    // **A refusal is the child's news, and a child whose daemon is gone comes back.** The write is
+    // the fact a later pass reads; `tell_once` is also what makes the operator's warning one row
+    // per undelivered head rather than one per pass.
+    let first = p.store.tell_once(&owed_key(r), now_ms()).unwrap_or(true);
+    if first {
+        p.raise(
+            &r.repository,
+            "refusal_undelivered",
+            notices::refusal_undelivered(r, &tried.join("; ")),
+        );
+    }
+}
+
+/// Hand the refusal to the first session that will take it, and answer the session that did - or
+/// every party that did not, in its own words, which is the evidence *told nobody* has to carry.
+fn hand_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) -> Result<String, Vec<String>> {
     let to_child = notices::refused(r, reasons);
     let child = r.session_id.clone();
-    // Every party the door tried, in its own words - the evidence *told nobody* has to carry.
     let mut tried: Vec<String> = Vec::new();
     if !child.is_empty() {
         match (p.deliver)(&child, &to_child) {
-            Ok(_) => return,
+            Ok(_) => return Ok(child),
             Err(e) => tried.push(format!("`{child}`: {e}")),
         }
     }
@@ -874,7 +914,7 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     if !root.is_empty() && root != child {
         let to_root = notices::refused_to_root(r, reasons, &child, &tried.join("; "));
         match (p.deliver)(&root, &to_root) {
-            Ok(_) => return,
+            Ok(_) => return Ok(root),
             Err(e) => tried.push(format!("`{root}`: {e}")),
         }
     }
@@ -883,7 +923,7 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
             let to_them =
                 notices::refused_to_workspace(r, reasons, &child, &workspace, &tried.join("; "));
             match (p.deliver)(&to, &to_them) {
-                Ok(_) => return,
+                Ok(_) => return Ok(to),
                 Err(e) => tried.push(format!("`{to}`: {e}")),
             }
         }
@@ -892,11 +932,38 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
             r.repository
         )),
     }
-    p.raise(
-        &r.repository,
-        "refusal_undelivered",
-        notices::refusal_undelivered(r, &tried.join("; ")),
-    );
+    Err(tried)
+}
+
+/// **A refusal nobody heard is owed to whoever opens next.** `deliver_refusal` wrote the debt down
+/// when the verdict landed and there was no session to take it; this is the other end - a pass that
+/// hands it to a session that has opened since, once - and the two ends that close a debt nobody
+/// wants: a row that is no longer the verdict it was rejected with (a person restarted it, or a new
+/// head was judged), and a day gone by with nobody to tell.
+pub fn redeliver_refusals(p: &Pool) -> Result<usize, StoreError> {
+    let mut handed = 0;
+    let now = now_ms();
+    for (key, told) in p.store.told_with_prefix(REFUSAL_OWED)? {
+        let Some((head, id)) = key.trim_start_matches(REFUSAL_OWED).split_once(':') else {
+            // Not a key this function wrote: leave it, rather than guess what it meant.
+            continue;
+        };
+        let Some(r) = p.store.review_row(id)? else {
+            // A row the store does not have cannot be owed anything.
+            p.store.untell_prefix(&key)?;
+            continue;
+        };
+        let stands = r.state == ReviewState::Rejected && r.head_sha == head;
+        if !stands || now.saturating_sub(told.at_ms) > REFUSAL_OWED_MS {
+            p.store.untell_prefix(&key)?;
+            continue;
+        }
+        if hand_refusal(p, &r, &r.reasons).is_ok() {
+            p.store.untell_prefix(&key)?;
+            handed += 1;
+        }
+    }
+    Ok(handed)
 }
 
 /// The live session of the branch's workspace a refusal falls back to - the newest
