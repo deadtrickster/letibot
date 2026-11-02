@@ -1,38 +1,13 @@
 //! The seam between the turn engine and whatever actually runs the model.
 //!
-//! # Why this exists before there is a second implementation
+//! A backend states what it can promise in [`BackendCaps`], and that statement is
+//! what an invariant suite reads to decide whether it may assert the structural
+//! prefix property or must skip and say so. A skip carries a sentence rather than a
+//! bool because a silent degradation that reads as a green tick is the failure this
+//! seam exists to prevent.
 //!
-//! Today there is one backend: a llama.cpp server we control, which we render for
-//! and submit token ids to. A token-metered provider API is a later milestone
-//! (`TODO.md` T8) — but the seam is reserved now, because retrofitting it means
-//! touching the turn engine, compaction, EXPLAIN and every metric. That is the same
-//! lesson `max_inline_bytes` taught one level down: a decision expressed as an
-//! interface costs nothing today.
-//!
-//! # The three modes, and why only one of them is hard
-//!
-//! | mode | who renders | submit | a token costs |
-//! |---|---|---|---|
-//! | local llama.cpp | us | token ids | wall clock |
-//! | our own cloud compute | us | token ids | wall clock (hardware time) |
-//! | token-metered API | **the provider** | `messages` | **money** |
-//!
-//! The middle mode is architecturally the first: we still run the server, so
-//! self-rendering, the token ledger and the structural prefix invariant all survive.
-//! Only the metered API is a different shape.
-//!
-//! # The rule this crate exists to enforce
-//!
-//! **A backend must declare what it cannot guarantee, and the tests must skip
-//! loudly rather than pass vacuously.** A prefix-stability suite that silently
-//! degrades to "the provider's cache seemed fine" against an API, while claiming
-//! the same green tick as the structural check, is precisely the failure this
-//! project was started to remove. `PrefixGuarantee` is not documentation; it is the
-//! input to that decision.
-//!
-//! This crate deliberately depends on `letibot-transcript` and nothing else — no
-//! dialect, no tokenizer, no FFI. A provider backend must not have to link the
-//! rendering stack it will never use.
+//! Only `letibot-transcript` is a dependency: a provider backend must not have to
+//! link the rendering stack it will never use.
 
 use letibot_transcript::TranscriptItem;
 
@@ -65,9 +40,7 @@ pub enum CacheReporting {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Meter {
-    /// Tokens cost wall clock. Local, and our own cloud compute — the operator's
-    /// point is that renting the hardware makes these the same case, because you
-    /// pay for time either way.
+    /// Tokens cost wall clock: local work, or hardware rented by the hour.
     WallClock,
     /// Tokens cost money. Compaction stops being a latency optimisation.
     Metered,
@@ -75,27 +48,24 @@ pub enum Meter {
 
 /// How strongly the append-only prompt invariant holds.
 ///
-/// The plan's claim (§4.3) is that a prefix violation is *blocked*: request
-/// N+1 is the same append-only token region read to a greater length, so there is
-/// no rewrite operation to call. That claim is a property of submitting token ids
-/// over memory we own. It does not survive a `messages` API, and pretending it does
-/// would be worse than not having it.
+/// The invariant is a property of submitting token ids over memory we own: request
+/// N+1 reads the same region further, so there is no rewrite to represent. A
+/// `messages` API cannot offer that, hence this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PrefixGuarantee {
     /// Violation is unrepresentable. Assert the region property directly.
     Structural,
-    /// We send messages; the provider renders. We can only check afterwards that
-    /// its cache behaved as though the prefix was stable — a weaker, statistical
-    /// claim about the past.
+    /// We send messages and the provider renders, so the check is afterwards: did
+    /// its cache behave as though the prefix was stable?
     Asserted,
-    /// Nothing to check. A suite reaching this must **skip and say so**.
+    /// Nothing to check. A suite reaching this must skip and say so.
     None,
 }
 
 /// What a turn cost, in the unit that backend actually charges.
 ///
-/// Kept as one type with an explicit meter rather than two, so a report cannot
-/// silently add wall-clock milliseconds to dollars.
+/// One type with an explicit meter rather than two, so a report cannot silently
+/// add wall-clock milliseconds to dollars.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TurnCost {
     pub meter: Meter,
@@ -103,7 +73,7 @@ pub struct TurnCost {
     pub cached_tokens: u64,
     pub generated_tokens: u64,
     pub wall_ms: u64,
-    /// Only meaningful when `meter == Metered`. `None` under `WallClock` — not
+    /// Only meaningful when `meter == Metered`. `None` under `WallClock` - not
     /// zero, because zero is a number somebody will sum.
     pub micros_usd: Option<u64>,
 }
@@ -111,30 +81,22 @@ pub struct TurnCost {
 /// One turn's worth of work, expressed in terms both a local and a remote backend
 /// can realise.
 ///
-/// Note it carries the **transcript**, not a rendered prompt. Realisation is the
-/// backend's job: the local one renders, tokenizes and appends to the ledger; a
-/// provider one converts to that provider's message shape. Handing a rendered
-/// string across this seam would force every backend through the rendering stack.
+/// It carries the transcript, not a rendered prompt: realisation is the backend's
+/// job, and a rendered string across this seam would force every backend through
+/// the rendering stack.
 #[derive(Debug, Clone)]
 pub struct TurnRequest<'a> {
     pub system: &'a str,
     pub tools_json: &'a [String],
     pub items: &'a [TranscriptItem],
-    /// **Items this request carries and the transcript does not.**
+    /// Items this request carries and the transcript does not.
     ///
-    /// Rendered after everything `items` holds and committed nowhere — the
-    /// session's log, and therefore the next request's cached prefix, is exactly
-    /// `items`. The one caller today is the standing-notes offer
-    /// (`letibot_harnessd::notes_offer`), and the reason it must be here rather
-    /// than in the log is that module's whole subject: a row cannot be un-said, an
-    /// assembly can be recomposed. An offer the round does not take leaves no
-    /// trace because it was never anything but this slice.
+    /// Rendered after everything `items` holds and committed nowhere, so the cached
+    /// prefix stays exactly `items`. An assembly can be recomposed where a row
+    /// cannot be un-said, so an offer the round declines leaves no trace.
     ///
-    /// **Not a `System` item.** MEASURED against the live API (`crate::messages`'s
-    /// `trailing_system_becomes_user`): a request that ends on a `system` message
-    /// while carrying `tools` is refused with *"The `reasoning_content` in the
-    /// thinking mode must be passed back to the API"*, which is why a trailing
-    /// item is rendered as the user-side row it is.
+    /// Not a `System` item: the API refuses a request that ends on a `system`
+    /// message while carrying tools, so a trailing item renders on the user side.
     pub tail: &'a [TranscriptItem],
     pub max_output_tokens: Option<u32>,
 }
@@ -147,13 +109,14 @@ pub trait Backend {
     fn name(&self) -> &str;
 }
 
-/// One piece of a streamed answer, as a `messages` API hands it over. The
-/// turn engine forwards these to its event sink the way it forwards a local
+/// One piece of a streamed answer, as a `messages` API hands it over.
+///
+/// The turn engine forwards these to its event sink the way it forwards a local
 /// server's token deltas, so a head draws a cloud turn and a local one alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delta {
     Text(String),
-    /// `reasoning_content` (DeepSeek, GLM, Grok) — the thinking, kept apart from
+    /// `reasoning_content` (DeepSeek, GLM, Grok) - the thinking, kept apart from
     /// the answer by the API rather than by a parser.
     Reasoning(String),
     /// A fragment of a tool call. The first fragment for an `index` carries the
@@ -193,7 +156,7 @@ pub struct Completion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamFlow {
     Continue,
-    /// Close the connection now — an urgent steering message, a guard.
+    /// Close the connection now - an urgent steering message, a guard.
     Stop,
 }
 
@@ -224,37 +187,28 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// A backend that takes the **transcript** and answers with a completion — a
-/// `messages` API. D10: realisation is the backend's job; the transcript
-/// crosses this seam, never a rendered prompt and never token ids.
+/// A backend that takes the transcript and answers with a completion: a `messages`
+/// API.
 ///
-/// The turn engine's `run_turn_messages` drives this and keeps its token
-/// ledger as the local **record** of the conversation (tokenised with the
-/// session's own vocabulary, which is an encoding for the store and the
-/// compaction arithmetic, and is never sent anywhere). The invariant suites
-/// skip loudly: `caps().skip_reason()` says the structural prefix check did
-/// not run.
+/// Realisation stays the backend's job, so the transcript crosses this seam and
+/// never a rendered prompt or token ids. The turn engine keeps its token ledger as
+/// the local record of the conversation, encoded with the session's own vocabulary,
+/// which is never sent anywhere.
 pub trait MessagesBackend: Send + Sync {
     fn caps(&self) -> BackendCaps;
 
-    /// `deepseek`, `glm`, `grok` — the preset's name.
+    /// `deepseek`, `glm`, `grok` - the preset's name.
     fn name(&self) -> &str;
 
     /// The model id sent on the wire.
     fn model(&self) -> &str;
 
-    /// **`HOST:PORT` of the thing this backend actually talks to**, for a message that
+    /// `HOST:PORT` of the thing this backend actually talks to, for a message that
     /// has to name it.
     ///
-    /// A warning about a failed round used to name the LOCAL endpoint
-    /// (`cfg.endpoint.authority()`) on a path that also serves cloud turns — so a
-    /// resolver failure against `api.deepseek.com` was reported as a problem with
-    /// `127.0.0.1:8080`, and the operator went to look at a `llama-server` that was
-    /// answering. MEASURED 2026-10-01.
-    ///
-    /// So the host comes from the backend being used rather than from the daemon's
-    /// configuration, and it is read from the same URL the request is posted to — not
-    /// stored beside it, where it could drift.
+    /// Read from the URL the request is posted to, not stored beside it where it
+    /// could drift: a warning that names the wrong host sends the reader to look at
+    /// a server that was answering.
     fn authority(&self) -> String;
 
     /// One completion over the request, streaming deltas to `on_delta` as they
@@ -268,8 +222,7 @@ pub trait MessagesBackend: Send + Sync {
 }
 
 impl BackendCaps {
-    /// The shape of a llama.cpp server we run ourselves — local or rented, the
-    /// operator's distinction being that rented compute is still billed by time.
+    /// The shape of a llama.cpp server we run ourselves, local or rented.
     pub const OWN_SERVER: BackendCaps = BackendCaps {
         renders_locally: true,
         accepts_token_ids: true,
@@ -278,8 +231,8 @@ impl BackendCaps {
         prefix: PrefixGuarantee::Structural,
     };
 
-    /// The shape of a token-metered provider API. Not implemented; reserved so the
-    /// tests that must weaken against it can be written now.
+    /// The shape of a token-metered provider API. Not implemented yet; reserved so
+    /// the tests that must weaken against it exist first.
     pub const METERED_API: BackendCaps = BackendCaps {
         renders_locally: false,
         accepts_token_ids: false,
