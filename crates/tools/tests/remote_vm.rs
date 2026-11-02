@@ -19,10 +19,10 @@
 //! `down` delivers, and what a real guest's copy-out costs are the live proof's business.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use letibot_tools::backend::{Command, ExecBackend};
-use letibot_tools::exec::Egress;
+use letibot_tools::exec::{Egress, ScopeKind, SpawnRequest};
 use letibot_tools::remote::{Host, Mise, Paths, SshBackend, SshSpec};
 
 /// The short id this suite's session gets: the last eight of `s-01abcdef`.
@@ -84,27 +84,7 @@ impl Rig {
         std::fs::write(&kvm, b"a stand-in for the device node").expect("the kvm stand-in");
 
         if firecode {
-            write_executable(
-                &bin.join("firecode"),
-                &format!(
-                    "#!/bin/bash\n\
-                     [ $# -eq 0 ] && exit 0\n\
-                     printf 'ARGV %s\\n' \"$*\" >> '{asked}'\n\
-                     verb=$1; shift\n\
-                     case \"$verb\" in\n\
-                     \x20 in)\n\
-                     \x20   for last; do :; done\n\
-                     \x20   exec bash -lc \"$last\" ;;\n\
-                     \x20 down)\n\
-                     \x20   project=\n\
-                     \x20   while [ $# -gt 0 ]; do [ \"$1\" = --project ] && project=$2; shift; done\n\
-                     \x20   [ -n \"$project\" ] && [ ! -e \"$project-landed\" ] && \
-                     \x20     cp -a \"$project\" \"$project-landed\" ;;\n\
-                     esac\n\
-                     exit 0\n",
-                    asked = asked.display()
-                ),
-            );
+            write_executable(&bin.join("firecode"), &firecode_body(&asked, true));
         }
 
         let ssh = bin.join("ssh");
@@ -204,6 +184,38 @@ fn write_executable(path: &Path, text: &str) {
     letibot_tools::testing::write_stub(path, text);
 }
 
+/// The fake `firecode`'s body, and the one difference that is a defect.
+///
+/// `forwards_stdin = false` is the real client: `firecode in` sends the command over the vsock
+/// and never the caller's stdin, so it is read here and dropped, and the guest sees an empty
+/// one. A step whose payload travels on stdin therefore delivers nothing at all.
+fn firecode_body(asked: &Path, forwards_stdin: bool) -> String {
+    let guest = if forwards_stdin {
+        "  exec bash -lc \"$last\" ;;"
+    } else {
+        "  cat >/dev/null; bash -lc \"$last\" </dev/null; exit $? ;;"
+    };
+    format!(
+        "#!/bin/bash\n\
+         [ $# -eq 0 ] && exit 0\n\
+         printf 'ARGV %s\\n' \"$*\" >> '{asked}'\n\
+         verb=$1; shift\n\
+         case \"$verb\" in\n\
+         \x20 in)\n\
+         \x20   for last; do :; done\n\
+         {guest}\n\
+         \x20 down)\n\
+         \x20   project=\n\
+         \x20   while [ $# -gt 0 ]; do [ \"$1\" = --project ] && project=$2; shift; done\n\
+         \x20   [ -n \"$project\" ] && [ ! -e \"$project-landed\" ] && \
+         \x20     cp -a \"$project\" \"$project-landed\" ;;\n\
+         esac\n\
+         exit 0\n",
+        asked = asked.display(),
+        guest = guest
+    )
+}
+
 /// A tree copied wholesale — the guest's own copy of the checkout.
 fn copy_tree(from: &Path, to: &Path) {
     let out = std::process::Command::new("cp")
@@ -244,6 +256,7 @@ fn git(repo: &Path, args: &[&str]) -> String {
 /// command inside the guest rather than on the host.
 #[test]
 fn a_vm_placement_boots_the_guest_and_runs_every_call_in_it() {
+    let _turn = turns();
     let rig = Rig::new("order", true);
     let b = SshBackend::place(&rig.spec(true)).expect("the placement is arranged");
     assert_eq!(
@@ -302,6 +315,7 @@ fn a_vm_placement_boots_the_guest_and_runs_every_call_in_it() {
 /// the guest's work in it, and the fake's `down` leaves a copy that is already there alone.
 #[test]
 fn a_commit_made_in_the_guest_comes_back_as_the_branch() {
+    let _turn = turns();
     let rig = Rig::new("commit", true);
     let b = SshBackend::place(&rig.spec(true)).expect("the placement is arranged");
 
@@ -354,6 +368,17 @@ impl Rig {
     fn local_checkout(&self) -> PathBuf {
         self.repo.clone()
     }
+
+    /// **The same rig, with a `firecode in` that behaves like the real client**: the caller's
+    /// stdin is read and dropped rather than handed to the guest.
+    fn vsock(tag: &str) -> Rig {
+        let rig = Rig::new(tag, true);
+        write_executable(
+            &rig.dir.join("bin").join("firecode"),
+            &firecode_body(&rig.asked, false),
+        );
+        rig
+    }
 }
 
 /// **A host with no `firecode` is refused by name**, before anything is arranged there.
@@ -397,4 +422,134 @@ fn a_host_placement_never_asks_for_a_guest() {
     );
     let said = b.describe();
     assert!(!said.contains("firecode VM"), "{said}");
+}
+
+/// **A background job starts in a guest whose client forwards no stdin.**
+///
+/// The launcher a job runs from is staged by `Ssh::write_abs`, whose payload travels on the ssh's
+/// stdin as `base64 -d > "$t"`. `firecode in` forwards neither, so the guest waits for an end that
+/// cannot come and the job never begins.
+#[test]
+fn a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin() {
+    let _turn = turns();
+    let rig = Rig::vsock("jobstdin");
+    let b = SshBackend::place(&rig.spec(true)).expect("the placement is arranged");
+    let host = b.processes_arc().expect("this backend starts processes");
+    let began = Instant::now();
+    let id = host
+        .spawn(&SpawnRequest {
+            command: "echo started-marker; echo to-stderr >&2".into(),
+            slug: Some("a-guest-job".into()),
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+        })
+        .expect("the launcher reaches the guest and the job starts");
+    assert!(
+        began.elapsed() < Duration::from_secs(30),
+        "a job's start is not a wait: {:?}",
+        began.elapsed()
+    );
+
+    let n = id.0.trim_start_matches('j').to_string();
+    let out_file = rig
+        .worktree
+        .join(".letibot-remote")
+        .join("jobs")
+        .join(format!("{n}.out"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut written = String::new();
+    while Instant::now() < deadline {
+        written = std::fs::read_to_string(&out_file).unwrap_or_default();
+        if written.contains("to-stderr") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        written.contains("started-marker") && written.contains("to-stderr"),
+        "the job ran in the guest and its output is {}: {written:?}",
+        out_file.display()
+    );
+    // And the same bytes through the tool call a model would read them with.
+    let slice = host.output(&id, 0, usize::MAX).expect("its output");
+    assert!(slice.text().contains("started-marker"), "{}", slice.text());
+    // The job is done with and its guest is brought down by the hook, which is quicker than a
+    // session's close: nothing was committed, so that one waits out its copy-out window.
+    letibot_tools::remote::guests_down();
+}
+
+/// **A guest that nothing closed is brought down by the process's last act, once, and the line
+/// says where the copy came out.**
+///
+/// A forced exit closes no backend, so a VM whose daemon ended that way used to outlive it with
+/// the calls still stuck inside. This is the hook those exits call.
+#[test]
+fn a_guest_nothing_closed_is_brought_down_once_by_the_last_act() {
+    let _turn = turns();
+    let rig = Rig::vsock("lastact");
+    let b = SshBackend::place(&rig.spec(true)).expect("the placement is arranged");
+    let said = letibot_tools::remote::guests_down();
+    assert_eq!(said.len(), 1, "one guest, one line: {said:?}");
+    assert!(
+        said[0].contains("was brought down"),
+        "the line says the VM came down: {}",
+        said[0]
+    );
+    assert!(
+        said[0].contains(&format!("{}-landed", rig.worktree.display())),
+        "and where the copy-out was delivered: {}",
+        said[0]
+    );
+    let downs = rig
+        .asked()
+        .into_iter()
+        .filter(|a| a.starts_with("down "))
+        .count();
+    assert_eq!(downs, 1, "down exactly once: {:?}", rig.asked());
+    assert!(
+        letibot_tools::remote::guests_down().is_empty(),
+        "a guest is brought down once, so the second call has nothing to say"
+    );
+    drop(b);
+}
+
+/// **A session that closed itself is not brought down a second time** by the last act: its own
+/// close has already done it, and it is what takes the guest off the hook's list.
+#[test]
+fn a_guest_its_own_session_closed_is_not_brought_down_again() {
+    let _turn = turns();
+    let rig = Rig::new("closedonce", true);
+    let b = SshBackend::place(&rig.spec(true)).expect("the placement is arranged");
+    // A commit in the guest's copy, so the close collects it instead of waiting out its window
+    // for a copy that will never differ.
+    let guest = PathBuf::from(format!("{}-landed", rig.worktree.display()));
+    copy_tree(&rig.worktree, &guest);
+    std::fs::write(guest.join("work.rs"), b"// the work\n").expect("a file");
+    git(&guest, &["add", "work.rs"]);
+    git(&guest, &["commit", "-q", "-m", "the work"]);
+    b.close().expect("a close says where the work went");
+    assert!(
+        letibot_tools::remote::guests_down().is_empty(),
+        "the close took the guest off the list: {:?}",
+        rig.asked()
+    );
+    let downs = rig
+        .asked()
+        .into_iter()
+        .filter(|a| a.starts_with("down "))
+        .count();
+    assert_eq!(downs, 1, "down exactly once: {:?}", rig.asked());
+}
+
+/// One `firecode`-booting test at a time: the guests this process booted are one list
+/// (`remote::guests_down`), so a test that inspects it must not run beside one that has a live
+/// guest.
+fn turns() -> std::sync::MutexGuard<'static, ()> {
+    static TURNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURNS.lock().unwrap_or_else(|e| e.into_inner())
 }

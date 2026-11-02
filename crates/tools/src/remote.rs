@@ -2448,7 +2448,13 @@ impl Ssh {
     ///
     /// **The retry is the whole write's, once** — idempotent by construction, since the temp name
     /// is this attempt's own and the target is only touched by the last `mv`.
+    ///
+    /// **A guest has no stdin**, so its bytes take [`write_into_guest`]'s road instead: a small
+    /// file inside the command, a large one staged on the host and carried in by `firecode cp`.
     fn write_abs(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
+        if let Some(vm) = &self.vm {
+            return write_into_guest(self, vm, path, bytes);
+        }
         let mut last = None;
         for _ in 0..2 {
             match self.write_once(path, bytes) {
@@ -2533,7 +2539,8 @@ impl Ssh {
         self.bound + Duration::from_secs((len / (512 * 1024)) as u64)
     }
 
-    /// **A step that is fed on stdin**, and the only one: [`Ssh::write_abs`].
+    /// **A step that is fed on stdin**, and the only one: [`Ssh::write_abs`], which a guest never
+    /// reaches because its bytes travel in the command instead.
     fn must_fed(
         &self,
         what: &str,
@@ -3625,6 +3632,9 @@ impl SshBackend {
         let mut said: Vec<String> = Vec::new();
         if let Some(vm) = &self.vm {
             let plain = self.ssh.without_vm();
+            // The session's own close is the authoritative act, so the last act has nothing left
+            // to do here: one `down` per guest, whichever door ends the session.
+            forget_guest(&self.host, vm);
             said.push(
                 match plain.must_within(
                     "bringing the firecode VM down",
@@ -4028,6 +4038,7 @@ fn vm_up(plain: &Ssh, host: &str, project: &str, found: VmHost) -> Result<Remote
             VM_BOUND,
         )
         .map_err(|e| BackendError::Io(format!("booting a firecode VM on {host}: {e}")))?;
+    remember_guest(plain, &vm);
     Ok(vm)
 }
 
@@ -4100,6 +4111,116 @@ fn write_into_guest(
         &format!("mv -f {} {}", quote(&format!("{dir}/{name}")), quote(path)),
     )
     .map(|_| ())
+}
+
+/// **Every guest this process booted and nothing has brought down yet**, with the plain
+/// connection that can reach its host: `down` is a verb of the host's own `firecode` client and
+/// is never wrapped in `in`.
+static GUESTS: std::sync::LazyLock<Mutex<Vec<(Ssh, RemoteVm)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// How long one guest's `down` gets when the daemon is on its way out: twice what a manual one
+/// costs, and not a budget.
+const VM_DOWN_AT_EXIT: Duration = Duration::from_secs(30);
+
+/// How long the copy-out is waited for after that `down` at the daemon's last act, per guest.
+const VM_COPY_AT_EXIT: Duration = Duration::from_secs(10);
+
+/// Take a booted guest onto the list the last act reads.
+fn remember_guest(plain: &Ssh, vm: &RemoteVm) {
+    let mut guests = GUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    if !guests
+        .iter()
+        .any(|(s, g)| s.host.name == plain.host.name && g.project == vm.project)
+    {
+        guests.push((plain.clone(), vm.clone()));
+    }
+}
+
+/// A guest the session's own close has brought down is not the last act's to bring down again.
+fn forget_guest(host: &str, vm: &RemoteVm) {
+    GUESTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(s, g)| !(s.host.name == host && g.project == vm.project));
+}
+
+/// **Bring down every guest this process booted and no session closed**, and say where each
+/// one's copy came out. A forced exit closes no backend at all, so without this a VM outlives the
+/// daemon with whatever calls were stuck in it. All at once, and bounded.
+pub fn guests_down() -> Vec<String> {
+    let guests = std::mem::take(&mut *GUESTS.lock().unwrap_or_else(|e| e.into_inner()));
+    let running: Vec<_> = guests
+        .into_iter()
+        .map(|(plain, vm)| std::thread::spawn(move || down_at_the_last_act(&plain, &vm)))
+        .collect();
+    running
+        .into_iter()
+        .map(|t| {
+            t.join().unwrap_or_else(|_| {
+                "a guest's last act panicked, so it may still be up".to_string()
+            })
+        })
+        .collect()
+}
+
+/// One guest's `down` and copy-out, in one call so the two cannot report different moments: the
+/// siblings that existed BEFORE it are what tell a fresh copy from an earlier run's.
+fn down_at_the_last_act(plain: &Ssh, vm: &RemoteVm) -> String {
+    let host = plain.host.name.clone();
+    let script = format!(
+        "p={p}\n\
+         before=$(for d in \"$p\"-*; do [ -d \"$d\" ] && printf '%s\\n' \"$d\"; done)\n\
+         said=$({fc} down --project \"$p\" 2>&1); rc=$?\n\
+         printf 'SAID %s\\n' \"$said\"\n\
+         i=0\n\
+         while [ $i -lt {n} ]; do\n\
+         \x20 for d in \"$p\"-*; do\n\
+         \x20   [ -d \"$d\" ] || continue\n\
+         \x20   case \"$before\" in *\"$d\"*) continue ;; esac\n\
+         \x20   printf 'COPY %s\\n' \"$d\"; exit $rc\n\
+         \x20 done\n\
+         \x20 i=$((i+1)); sleep 1\n\
+         done\n\
+         exit $rc\n",
+        p = quote(&vm.project),
+        fc = quote(&vm.firecode),
+        n = VM_COPY_AT_EXIT.as_secs()
+    );
+    let within = VM_DOWN_AT_EXIT + VM_COPY_AT_EXIT;
+    match plain.sh_once_within("bringing the firecode VM down", &script, within) {
+        Ok((out, _, exit)) => guest_line(&host, &vm.project, &out, exit),
+        Err(e) => format!("the VM on {host} was NOT brought down: {e}"),
+    }
+}
+
+/// What the last act says about one guest, in one line: whether it came down and where its tree
+/// was left. A `down` that failed leaves the VM up, and that is said rather than smoothed over.
+fn guest_line(host: &str, project: &str, out: &str, exit: i32) -> String {
+    let copy = out.lines().find_map(|l| l.strip_prefix("COPY "));
+    let said = out
+        .lines()
+        .find_map(|l| l.strip_prefix("SAID "))
+        .unwrap_or("")
+        .trim();
+    let said = if said.is_empty() {
+        String::new()
+    } else {
+        format!(": {said}")
+    };
+    match (exit, copy) {
+        (0, Some(copy)) => {
+            format!("the VM on {host} was brought down; the guest's tree was copied out to {copy}")
+        }
+        (0, None) => format!(
+            "the VM on {host} was brought down; nothing was copied out: the guest changed \
+             nothing, or firecode is still delivering it as {project}-<run id>"
+        ),
+        (code, _) => format!(
+            "the VM on {host} was NOT brought down (firecode down exited {code}{said}), and it may \
+             still be up on that machine"
+        ),
+    }
 }
 
 impl ExecBackend for SshBackend {
@@ -4175,10 +4296,9 @@ impl ExecBackend for SshBackend {
             ));
         }
         let abs = self.in_view(path)?;
-        match &self.vm {
-            Some(vm) => write_into_guest(&self.ssh, vm, &abs, bytes),
-            None => self.ssh.write_abs(&abs, bytes),
-        }
+        // One road for every write: `Ssh::write_abs` decides between the host's stdin and the
+        // guest's command from the placement itself, so a caller cannot pick the wrong one.
+        self.ssh.write_abs(&abs, bytes)
     }
 
     fn processes(&self) -> Option<&dyn ProcessHost> {

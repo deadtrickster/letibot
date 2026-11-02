@@ -101,6 +101,19 @@ pub fn one_shot_steps_done() {
     ONE_SHOT_STEPS_DONE.store(true, Ordering::SeqCst);
 }
 
+/// **The last thing done before a forced exit**: every guest this daemon booted comes down, and
+/// each line says where its copy-out landed.
+///
+/// The forced exits end the process without closing a single backend, so a session in a firecode
+/// guest on another machine left that VM running, with whatever calls were stuck in it, after the
+/// daemon was gone. Bounded, because somebody is waiting for this process to end, and said,
+/// because nothing else will ever mention those VMs again.
+fn bring_guests_down() {
+    for said in letibot_tools::remote::guests_down() {
+        eprintln!("harnessd: {said}");
+    }
+}
+
 /// **What one signal does, and what a second one does** — the whole of the signal path, on its own
 /// thread because `Hub::close` takes a mutex and a handler may not.
 ///
@@ -169,6 +182,7 @@ fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: boo
                         "Ctrl-C"
                     }
                 );
+                bring_guests_down();
                 std::process::exit(130);
             }
         }
@@ -181,6 +195,7 @@ fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: boo
                  store is consistent to the last settled row",
                 ONE_SHOT_EXIT_GRACE.as_secs()
             );
+            bring_guests_down();
             std::process::exit(130);
         }
     }

@@ -615,7 +615,26 @@ fn say_memory_caps() {
     }
 }
 
+/// **Nothing this process booted on another machine outlives it.** A guest is booted by a
+/// placement, and a `run` that then returns early (an error opening the session, a verb that is
+/// not a daemon at all) never reaches a backend's close, so it comes down here instead.
+///
+/// A declared guard and not a call at each exit: `run` has dozens of returns, and the ones that
+/// matter are the ones nobody wrote a line for.
+struct GuestsDown;
+
+impl Drop for GuestsDown {
+    fn drop(&mut self) {
+        for said in letibot_tools::remote::guests_down() {
+            eprintln!("  {said}");
+        }
+    }
+}
+
 pub fn run(args: &[String]) -> Result<i32, String> {
+    // Declared first, so it is dropped LAST: after every session, daemon and seat has had its own
+    // chance to close its backend and say where its work went.
+    let _guests = GuestsDown;
     // **Step into the daemon's own cgroup leaf before anything here can start a child** (R64/R65)
     // — `delegate_memory` refuses when the cgroup already holds another pid, so a `git` the
     // startup ran first would turn every tool call of this daemon's life uncapped. Said by
@@ -2313,6 +2332,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         for landed in sessions.close_backends() {
             eprintln!("  {landed}");
         }
+        // **And a guest whose session was never closed here.** A session served on its own thread
+        // holds its backend there, so `close_backends` cannot reach it, and this process is about
+        // to end. Bounded, and it says where each copy-out landed.
+        for said in letibot_tools::remote::guests_down() {
+            eprintln!("  {said}");
+        }
         lifeline.stopped();
         if let Some(seat) = &seat {
             seat.stop();
@@ -2400,6 +2425,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // slot on 2026-10-15 were children of a daemon that ended with no stop written. Whatever a
     // SIGKILL still interrupts here, the next daemon's reaper finds (`crate::vm_reap`).
     letibot_tools::firecode::down_all();
+    // And every guest a remote session booted, whose `down` is the host's own client: the same
+    // act, one machine over, and the line says where each copy-out landed.
+    eprintln!("  stopping: bringing every remote session's VM down");
+    for said in letibot_tools::remote::guests_down() {
+        eprintln!("  {said}");
+    }
     // **The queues are told to stop.**
     eprintln!(
         "  stopping: the merge queues (a gate in flight is killed, its row put back in line)"

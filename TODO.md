@@ -374,20 +374,33 @@ guest. Plus `cli::tests::a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there
 `bridge::tools::tests::the_vm_flag_turns_a_host_into_a_vm_on_that_host` and
 `bridge::daemon::tests::a_vm_on_a_host_is_both_flags`.
 
-**What is NOT proved, and is the live proof's work.** No VM was booted: this sandbox has no
-`/dev/kvm` and the task says not to try. What the live proof has to answer, on `lab2x1`:
+**The live run on `lab2x1` (2026-11-02), and the two defects it found.** `leticode --host lab2x1
+--vm` **booted a guest** and a **foreground `bash` ran inside it**, so half of item 1 is answered for
+a command that travels in the command text; a manual `firecode down` there took **15 s** and
+delivered the copy to `<project>-<run id>`. It did not reach item 2, and item 1's `cargo test` (no
+card) and item 4 were not tried, because:
 
-1. `leticode --host lab2x1 --vm` boots a guest and a `cargo test` runs inside it **with no card**
-   (the D16 half), and `bash` inside the guest sees the guest's own filesystem rather than lab2x1's.
-2. **Whether the guest can commit at all** — the clone (2 above) is what makes that possible in
-theory; nothing has watched a real `firecode` copy of a clone carry a commit out.
-3. **How long the copy-out actually takes.** The wait after `down` is a **30 s quiet window**
-   (`VM_COPY_OUT_QUIET`); a copy slower than that is named in the close's sentence with the
-   `git fetch` that collects it, rather than being waited for. If lab2x1's copy-out is reliably
-   slower, the bound or firecode's own run record (`runs/<run>/copy_out`, which the local backend
-   already reads) is what should decide it instead.
-4. That a resumed session (a second placement on the same id) keeps its clone rather than
-   re-cloning, and that a file a command writes in the guest is there for the next command.
+1. **A background job never started.** Its launcher is staged by `Ssh::write_abs`, whose bytes travel
+   on the ssh's **stdin** (`base64 -d > "$t"`). `firecode in` sends the command over the vsock and
+   never the caller's stdin, so the guest waited for an end that cannot come: ten calls sat for 52
+   minutes and the jobs directory was never made. Fixed: a step fed on stdin now takes the guest's
+   own road, the payload in the command when it is small (`VM_INLINE_WRITE`) and staged on the host,
+   where stdin works, then carried in by `firecode cp` above that. The audit of every stdin-fed call
+   in `remote.rs` and `firecode.rs` found this one and no other: `Ssh::write_abs` is the only one,
+   `firecode.rs` feeds no stdin at all (its writes are inline base64 or `firecode cp`), and the two
+   other `run_bounded_fed` sites (`mergequeue/gate_host.rs`, `room/supervise.rs`) feed a declared
+   host's ssh and never a guest.
+2. **A one-shot stopped with SIGINT left the VM up**, with the calls still stuck in it. The forced
+   exits (`stop_on_signal`'s second signal and its 5 s give-up) end the process without closing a
+   backend, and the orderly stop closes no backend at all. Fixed: a guest this process booted is on
+   one list (`remote::guests_down`), bounded at 30 s for `down` and 10 s for the copy-out, and every
+   exit path runs it once and prints one line saying whether the VM came down and where the copy
+   landed. A session's own close takes its guest off that list, so no guest is brought down twice.
+
+**Still owed, for the next live run**: item 2 (whether a real `firecode` copy of a clone carries a
+commit out), item 4 (a resumed session keeps its clone, and a file one command writes is there for
+the next command), the `cargo test` inside the guest with no card, and the copy-out's real cost read
+off the daemon's own line rather than a manual `down`.
 
 **Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
 guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
