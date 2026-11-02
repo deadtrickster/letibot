@@ -3328,6 +3328,44 @@ impl SilenceWatch {
     }
 }
 
+/// One line, at most `n` characters, with the newlines folded - a log row inside a sentence.
+pub(crate) fn one_line(s: &str, n: usize) -> String {
+    let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= n {
+        flat
+    } else {
+        let cut: String = flat.chars().take(n).collect();
+        format!("{cut}…")
+    }
+}
+
+/// Calls an assistant row asked for that no row ever answered, `(call_id, name)`, in order: the sweep's judgement,
+/// apart from the plumbing so it is tested alone. It reads ONE transcript, since a row naming a call is the request
+/// and a `ToolResult` with that id is the answer. Linear on purpose, since this runs on the worker.
+pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
+    let mut asked: Vec<(&str, &str)> = Vec::new();
+    let mut answered: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for item in items {
+        match item {
+            TranscriptItem::Assistant { tool_calls, .. } => {
+                for c in tool_calls {
+                    asked.push((c.id.as_str(), c.name.as_str()));
+                }
+            }
+            TranscriptItem::ToolResult { call_id, .. } => {
+                answered.insert(call_id.as_str());
+            }
+            _ => {}
+        }
+    }
+    // A call asked for TWICE and answered once is answered: the set difference, not a count.
+    asked
+        .into_iter()
+        .filter(|(id, _)| !answered.contains(id))
+        .map(|(id, name)| (id.to_string(), name.to_string()))
+        .collect()
+}
+
 #[cfg(test)]
 mod endpoint_retry {
     //! When the model server is not answering, take the round again. The retry rule's own tests are the policy's,
@@ -3889,42 +3927,4 @@ mod endpoint_retry {
         let proxy = Cloud("10.0.0.7:8443");
         assert_eq!(retry_host(Some(&proxy), &local), "10.0.0.7:8443");
     }
-}
-
-/// One line, at most `n` characters, with the newlines folded - a log row inside a sentence.
-pub(crate) fn one_line(s: &str, n: usize) -> String {
-    let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= n {
-        flat
-    } else {
-        let cut: String = flat.chars().take(n).collect();
-        format!("{cut}…")
-    }
-}
-
-/// Calls an assistant row asked for that no row ever answered, `(call_id, name)`, in order: the sweep's judgement,
-/// apart from the plumbing so it is tested alone. It reads ONE transcript, since a row naming a call is the request
-/// and a `ToolResult` with that id is the answer. Linear on purpose, since this runs on the worker.
-pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
-    let mut asked: Vec<(&str, &str)> = Vec::new();
-    let mut answered: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for item in items {
-        match item {
-            TranscriptItem::Assistant { tool_calls, .. } => {
-                for c in tool_calls {
-                    asked.push((c.id.as_str(), c.name.as_str()));
-                }
-            }
-            TranscriptItem::ToolResult { call_id, .. } => {
-                answered.insert(call_id.as_str());
-            }
-            _ => {}
-        }
-    }
-    // A call asked for TWICE and answered once is answered: the set difference, not a count.
-    asked
-        .into_iter()
-        .filter(|(id, _)| !answered.contains(id))
-        .map(|(id, name)| (id.to_string(), name.to_string()))
-        .collect()
 }
