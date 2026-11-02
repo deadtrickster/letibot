@@ -1,6 +1,6 @@
 //! A `/reseat` that carries a long conversation is a wait the head can SEE, and it ends.
 //! The operator ran a bare `/reseat` on a 971-row conversation with the head attached since
-//! the daemon's boot window:
+//! the daemon's boot window
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};

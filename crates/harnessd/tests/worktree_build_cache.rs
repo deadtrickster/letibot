@@ -1,5 +1,5 @@
 //! A `task_start` worktree is handed over exactly as its branch is, and the build cache is
-//! shared through the child's environment. The bug this pins:
+//! shared through the child's environment. The bug this pins
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -1,4 +1,4 @@
-//! A session's model choice survives a restart. It did not:
+//! A session's model choice survives a restart. It did not
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};

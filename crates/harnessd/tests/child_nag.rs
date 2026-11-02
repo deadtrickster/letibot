@@ -1,5 +1,5 @@
 //! A child is a session, so it gets the idle plan-check - with a live child harness and a
-//! store row behind it. The chain is the real one:
+//! store row behind it. The chain is the real one
 
 use std::time::{Duration, Instant};
 

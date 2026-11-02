@@ -6,7 +6,7 @@
 //! hung. The result comes back as a command, not over a channel, because the queue's
 //! ordering already holds and the worker is the one writer of the transcript.
 //!
-//! The worker spawns the thread and frees itself; its whole life is:
+//! The worker spawns the thread and frees itself; its whole life is
 //!
 //! ```text
 //! worker                          the run's own thread
@@ -110,7 +110,7 @@ pub fn spawn_run(run: OperatorRun) -> Result<(), String> {
         .map_err(|e| format!("the thread for the operator's run could not be started: {e}"))
 }
 
-/// The thread's whole body: wait for the command, hand back what it produced, once,
+/// The thread's whole body: wait for the command, hand back what it produced, once
 /// whichever way it ends.
 fn run_and_hand_back(run: OperatorRun) {
     let OperatorRun {
@@ -124,7 +124,7 @@ fn run_and_hand_back(run: OperatorRun) {
         watch,
     } = run;
     // The runtime's events go to a null sink, exactly as the synchronous path's do: the
-    // transcript row is the durable record and every head draws it. Null, and WATCHED:
+    // transcript row is the durable record and every head draws it. Null, and WATCHED
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut quiet = JobWatchSink::new(letibot_tools::events::NullToolSink, watch);
         // `turn_id` empty on purpose, as the door's runs are: this call belongs to no

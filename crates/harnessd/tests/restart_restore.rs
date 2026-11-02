@@ -1,5 +1,5 @@
 //! A daemon restart brings back what a session was running - or, past the threshold reminds
-//! the model of it. Under the threshold a restart restores the children, monitors and jobs;
+//! the model of it. Under the threshold a restart restores the children, monitors and jobs
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};

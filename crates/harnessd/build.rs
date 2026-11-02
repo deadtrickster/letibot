@@ -1,6 +1,6 @@
 //! Bakes the same rpath `letibot-tokencore` bakes, for this crate's own binaries.
 //! `cargo:rustc-link-arg` reaches the emitting package's targets and nothing downstream, so
-//! tokencore's rpath does not help a `harnessd` that links `libllama`:
+//! tokencore's rpath does not help a `harnessd` that links `libllama`
 
 include!("../llama/build-support.rs");
 

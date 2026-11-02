@@ -1,6 +1,6 @@
 //! A gate step that outgrows the gate's memory cap is killed alone, and its row says so.
 //! The gate's steps used to run in the daemon's own cgroup, so a heavy `cargo test` was
-//! charged to the daemon's `memory.high`;
+//! charged to the daemon's `memory.high`
 
 use std::process::Command;
 use std::sync::atomic::AtomicBool;

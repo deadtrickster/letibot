@@ -1,6 +1,6 @@
 //! The operator's pause of the idle plan-check: `/nag`, `/nag pause [DURATION]` `/nag
 //! resume`. A pause is one session's switch, on that session's row. While it stands the
-//! session's [`crate::sessions::TodoNagClock`] arms nothing but the pause's own end:
+//! session's [`crate::sessions::TodoNagClock`] arms nothing but the pause's own end
 
 use std::time::Duration;
 

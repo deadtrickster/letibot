@@ -1,5 +1,5 @@
 //! The wall as the provider speaks it: a context-length refusal is the wall, and every door
-//! that starts a turn recovers from it. The wedge this file is the regression guard for:
+//! that starts a turn recovers from it. The wedge this file is the regression guard for
 
 use letibot_harnessd::Sessions;
 use letibot_harnessd::config::Config;

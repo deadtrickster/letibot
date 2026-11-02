@@ -1,6 +1,6 @@
 //! A holder of a room item gets a todo row, and the idle check carries it - `docs/room.md`
 //! § *Still owed* item 3, end to end: a real socket, a real `Harness`, the real `room` tool
-//! and the real nag. One row per item, never a second:
+//! and the real nag. One row per item, never a second
 
 use std::sync::Arc;
 

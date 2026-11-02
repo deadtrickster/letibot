@@ -1,4 +1,4 @@
-//! A message to a child between turns starts a turn for it:
+//! A message to a child between turns starts a turn for it
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};

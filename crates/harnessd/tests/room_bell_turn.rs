@@ -1,6 +1,6 @@
 //! Rule 4 - a bell must be able to inject a turn, proved on a live session rather than
 //! assumed from the wiring. `crates/room/tests/bell.rs` proves what a CLIENT hears on the
-//! socket; what is asserted here is the hop after it:
+//! socket; what is asserted here is the hop after it
 
 use std::path::PathBuf;
 use std::sync::Arc;

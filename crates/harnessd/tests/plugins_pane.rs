@@ -1,5 +1,5 @@
 //! A plugin pane, end to end, through the REAL wasm - W4 of `docs/plugins-slice1.md`. Every
-//! step is the real one:
+//! step is the real one
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

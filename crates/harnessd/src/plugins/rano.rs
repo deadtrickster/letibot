@@ -1,6 +1,6 @@
 //! The one `Loader` production uses: a plugin is a wasm module, and rano is the host that
 //! loads one. The engine lives here and not in `crates/plugins` because that crate talks to
-//! a module through a trait on purpose:
+//! a module through a trait on purpose
 
 use std::collections::BTreeMap;
 use std::path::Path;

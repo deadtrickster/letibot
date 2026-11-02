@@ -1,6 +1,6 @@
 //! What the daemon publishes as a session moves - `PROTOCOL_VERSION` 52, end to end through
 //! the machinery that publishes it. `crates/sessionlog/src/activity.rs` carries the
-//! argument and `crates/harnessd/src/activity.rs` the composition;
+//! argument and `crates/harnessd/src/activity.rs` the composition
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};

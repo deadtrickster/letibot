@@ -1,6 +1,6 @@
 //! The layers this binary carries - `docs/plugins-plan.md` §7 step 10: the `builtin` scope
 //! is a table of modules compiled into the executable, not a directory beside it. Four
-//! things are asserted, each a way the mechanism can be silently wrong:
+//! things are asserted, each a way the mechanism can be silently wrong
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

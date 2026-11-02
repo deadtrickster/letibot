@@ -1,5 +1,5 @@
 //! The adjudication corpus behind the `decisions` tool. The sibling of
-//! [`crate::transcript_source`], and the same seam for the same reason:
+//! [`crate::transcript_source`], and the same seam for the same reason
 
 use letibot_tokencore::rusqlite;
 use letibot_tokencore::store::{ASKED_SQL, DISAGREEMENT_SQL, MEASURED_SQL, Store};

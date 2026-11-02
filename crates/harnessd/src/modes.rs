@@ -153,7 +153,7 @@ impl ModeStore {
     }
 
     /// Forget it, for a point that does not need an answer. Reports whether there was one - a "forgotten" that forgot nothing is the kind of report that makes somebody think
-    ///   they revoked something.
+    /// they revoked something.
     pub fn clear_consent(&mut self, root: &Path) -> std::io::Result<bool> {
         let root = canonical(root);
         let had = self.consented.contains_key(&root);

@@ -1,5 +1,5 @@
 //! A nag turn arms the clock that closes out a call nothing answered - the third door.
-//! `idle_clock.rs` is this file's sibling and carries the argument:
+//! `idle_clock.rs` is this file's sibling and carries the argument
 
 use std::time::Duration;
 

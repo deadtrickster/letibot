@@ -1,6 +1,6 @@
 //! Review and merge are two separate queues, each with its own state and its own thread.
 //! `settings` is a project's `[queue]` table; `lease` this daemon's claim on a repository's
-//! queues;
+//! queues
 
 use std::path::Path;
 use std::sync::Arc;

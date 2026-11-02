@@ -1,6 +1,6 @@
 //! What one session's harness holds, and the ceiling it is held to. `memwatch` says what a
 //! daemon's HUB holds (the event log, the view, each head's queue) and nothing about the
-//! structures on the harness:
+//! structures on the harness
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

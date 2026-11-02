@@ -1,4 +1,4 @@
-//! The metrics instruments on a real turn:
+//! The metrics instruments on a real turn
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;

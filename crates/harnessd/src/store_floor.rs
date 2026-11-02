@@ -1,6 +1,6 @@
 //! This daemon's binary against the store it serves: the sentence every head is told when
 //! the store was written by a newer build, and the refusal when it cannot be read at all.
-//! The two facts are one question asked once, at the one moment the answer exists:
+//! The two facts are one question asked once, at the one moment the answer exists
 
 use std::path::Path;
 

@@ -1,6 +1,6 @@
 //! `--host NAME` and `--vm` are two asks, and the pair is one placement - a VM there.
 //! `--vm` is the LAUNCHER's word for `--where firecode`, so the two orders that reach this
-//! door are `--host lab2x1 --where firecode` and its reverse;
+//! door are `--host lab2x1 --where firecode` and its reverse
 
 use std::path::PathBuf;
 

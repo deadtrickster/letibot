@@ -1,5 +1,5 @@
 //! The operator's own shell line (`!`), run by the daemon - the run half of the feature
-//! whose wire half is `letibot-sessionlog`'s `operator_shell.rs`. Three properties:
+//! whose wire half is `letibot-sessionlog`'s `operator_shell.rs`. Three properties
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

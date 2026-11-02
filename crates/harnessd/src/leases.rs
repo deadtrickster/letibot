@@ -1,6 +1,6 @@
 //! The daemon's half of a session's leases: where a block of a shared host's ports is
 //! taken, and the two moments it goes back. `crates/tools/src/lease.rs` is the engine and
-//! the seam;
+//! the seam
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

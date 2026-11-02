@@ -1,5 +1,5 @@
 //! A stored session a head asks a running daemon for, end to end - the warm half of resume.
-//! The report:
+//! The report
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

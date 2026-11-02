@@ -1,6 +1,6 @@
 //! An answered question leaves the operator's answer in the conversation as THEIRS. A
 //! question rides the permission-card machinery - `Answers::ask_question` publishes a
-//! `DecisionRequested { kind:
+//! `DecisionRequested { kind
 
 use std::sync::Arc;
 

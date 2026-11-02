@@ -1,6 +1,6 @@
 //! Fixtures that more than one integration binary spelled out identically, included with
 //! `mod support;`. A fixture belongs here when three or more binaries carried the same
-//! bytes:
+//! bytes
 
 // A fixture, not a library: each binary includes this file and uses the part its subject needs
 // so the rest is dead in that compilation and alive in another.

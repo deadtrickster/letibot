@@ -7,7 +7,7 @@ use letibot_transcript::UserPart;
 use sha2::{Digest, Sha256};
 
 /// A picture bigger than this is refused, as `read` refuses one: one number for both, or a
-/// picture `read` would refuse and a chip would attach are two answers to how big is too big,
+/// picture `read` would refuse and a chip would attach are two answers to how big is too big
 /// and the second is discovered by the store.
 pub const MAX_IMAGE_BYTES: u64 = letibot_tools::builtins::grep::FILE_CEILING * 16;
 

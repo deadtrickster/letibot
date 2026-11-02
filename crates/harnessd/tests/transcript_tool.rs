@@ -1,5 +1,5 @@
 //! `transcript` against a real store with a real fork chain. The unit tests in
-//! `letibot-tools` use a fake source, which proves the tool's reporting;
+//! `letibot-tools` use a fake source, which proves the tool's reporting
 
 use std::sync::Arc;
 

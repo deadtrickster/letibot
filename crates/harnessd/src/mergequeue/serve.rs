@@ -1,5 +1,5 @@
 //! The queues' own threads - a supervisor per daemon that finds the repositories it may
-//! serve and claims their leases, and one worker per repository it holds: the review queue,
+//! serve and claims their leases, and one worker per repository it holds: the review queue
 //! the gate on every change to the target's tip, and landings one at a time.
 
 use std::collections::HashMap;

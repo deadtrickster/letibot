@@ -1,4 +1,4 @@
-//! `decisions` against a real corpus: the SQL the unit tests, which use a fake source,
+//! `decisions` against a real corpus: the SQL the unit tests, which use a fake source
 //! cannot reach.
 
 use std::sync::Arc;

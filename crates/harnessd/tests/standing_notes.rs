@@ -1,5 +1,5 @@
 //! Standing notes against a real harness: the moments the head of the prompt may move -
-//! session open, and every base rebuild. Nothing delivers a note mid-conversation;
+//! session open, and every base rebuild. Nothing delivers a note mid-conversation
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::standing_notes;

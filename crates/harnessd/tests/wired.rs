@@ -1,5 +1,5 @@
 //! What a session can actually reach, and what it says about it. Everything under test here
-//! was built, tested and unreachable before this file existed:
+//! was built, tested and unreachable before this file existed
 
 use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::harness::ForkTail;

@@ -1,6 +1,6 @@
 //! A room is a project's, and its membership is the tree - the operator's hierarchy
 //! `<project>/<top-sessions>/<subagents>*|system/`, as the room holds it. Three facts, each
-//! false while there was one room per BOX:
+//! false while there was one room per BOX
 
 use std::sync::Arc;
 

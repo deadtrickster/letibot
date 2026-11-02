@@ -1,5 +1,5 @@
 //! A turn with two rounds, and the whole published history of what the session was waiting
-//! on. `Turn` is the PROMPT and not a round:
+//! on. `Turn` is the PROMPT and not a round
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};

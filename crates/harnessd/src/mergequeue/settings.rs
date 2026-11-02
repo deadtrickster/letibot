@@ -1,4 +1,4 @@
-//! **The queues' per-project settings** — the `[queue]` table of the project's `leticode.toml`,
+//! The queues' per-project settings - the `[queue]` table of the project's `leticode.toml`
 //! found by walking up from the repository the way every `leticode.toml` is found.
 //!
 //! ```toml
@@ -27,13 +27,13 @@
 //! ```
 //!
 //! The first three are the operator's own rulings of 2026-10-11, and each per PROJECT because
-//! the projects differ: pg-noop lands on `feat/memory-engine`, 91 commits ahead of its `main`,
+//! the projects differ: pg-noop lands on `feat/memory-engine`, 91 commits ahead of its `main`
 //! and a queue that measured its branches against `main` saw every one 56–60 commits ahead.
 //!
 //! `gate_carry` exists because the landing tree is a git worktree, and a worktree has nothing
 //! gitignored: firecode's gate booted no VM because its `images/` and `vendor/` were not there
 //! (`mergequeue::carry`). Each entry is a path relative to the repository's root and must stay
-//! inside it — absolute, `..`, `.git` and the root itself are refused by name here; a symlink
+//! inside it - absolute, `..`, `.git` and the root itself are refused by name here; a symlink
 //! out, a missing path or a TRACKED path is refused when the gate runs. Each is copied (`rsync -a
 //! --delete` when rsync is there, else a fresh recursive copy), never symlinked, so a gate cannot
 //! write into the operator's checkout.
@@ -61,16 +61,16 @@ impl RedTarget {
     }
 }
 
-/// **Where a project's reviewers run** — `[queue] reviewers`, and the one thing a project
+/// Where a project's reviewers run - `[queue] reviewers`, and the one thing a project
 /// can say about the review queue's own children. The key is named for WHAT it chooses
-/// (which of the queue's children, and where they run) rather than for the machinery:
+/// (which of the queue's children, and where they run) rather than for the machinery
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Reviewers {
-    /// **On this machine** — a reviewer is a `gatekeeper`-seated child on the host, in a
+    /// On this machine - a reviewer is a `gatekeeper`-seated child on the host, in a
     /// checkout of the head it judges. The default.
     #[default]
     Host,
-    /// **In a firecode microVM** — the VM is the boundary, so the reviewer's `bash` asks nobody.
+    /// In a firecode microVM - the VM is the boundary, so the reviewer's `bash` asks nobody.
     Vm,
 }
 
@@ -82,7 +82,7 @@ impl Reviewers {
         }
     }
 
-    /// The two words, and nothing else — a value this build does not know is refused by name,
+    /// The two words, and nothing else - a value this build does not know is refused by name
     /// with both of them in the sentence, rather than defaulted.
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim() {
@@ -97,7 +97,7 @@ impl Reviewers {
     }
 }
 
-/// **One project's queue settings**, with where they came from.
+/// One project's queue settings, with where they came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueSettings {
     /// The branch this project lands on; `None` is *the repository's default* (`main`, else
@@ -113,15 +113,15 @@ pub struct QueueSettings {
     pub gate_carry: Vec<String>,
     /// Where this project's reviewers run ([`Reviewers`]). `Host` unless the project says `vm`.
     pub reviewers: Reviewers,
-    /// **How many approved branches one gate may judge together** — `[queue] gate_train`. `1`
+    /// How many approved branches one gate may judge together - `[queue] gate_train`. `1`
     /// is one branch and one gate, which is what every project gets until it says otherwise and
     /// what the queue did before this key existed: nothing about the default path changed.
     pub gate_train: usize,
-    /// **Where this project's GATE runs** — `[queue] gate_host`, a name from the operator's
+    /// Where this project's GATE runs - `[queue] gate_host`, a name from the operator's
     /// `hosts.toml`, or `None` for this machine (the default, and what every project gets until
-    /// it says otherwise). The name is not checked here:
+    /// it says otherwise). The name is not checked here
     pub gate_host: Option<String>,
-    /// **The skills this project's reviewers are started with** — `[queue] reviewer_skills`. The
+    /// The skills this project's reviewers are started with - `[queue] reviewer_skills`. The
     /// bodies are preloaded into each reviewer's prompt, on top of the index every session gets
     /// (`Config::skills`, which the review queue's session carries). Empty is the ordinary case.
     pub reviewer_skills: Vec<String>,
@@ -176,9 +176,9 @@ struct FileWithQueue {
     queue: Option<toml::Value>,
 }
 
-/// **The settings for the repository at `repo`** — the nearest `leticode.toml` at or above it.
+/// The settings for the repository at `repo` - the nearest `leticode.toml` at or above it.
 /// No file, or a file with no `[queue]`, is the defaults. A `[queue]` that does not parse, or
-/// names a key this build does not know, is an `Err` naming the file — never a silent default.
+/// names a key this build does not know, is an `Err` naming the file - never a silent default.
 pub fn for_repository(repo: &Path) -> Result<QueueSettings, String> {
     let Some(path) = LeticodeConfig::discover(repo) else {
         return Ok(QueueSettings::default());
@@ -257,7 +257,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
     })
 }
 
-/// **The target for `repo`** — the project's, else the repository's default.
+/// The target for `repo` - the project's, else the repository's default.
 pub fn target_for(repo: &Path, settings: &QueueSettings) -> Option<String> {
     settings
         .target
@@ -318,8 +318,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// **`reviewers` says where this project's reviewers run, and `host` is what a project that
-    /// says nothing gets** — the operator's ruling of 2026-10-29. A word this build does not
+    /// `reviewers` says where this project's reviewers run, and `host` is what a project that
+    /// says nothing gets - the operator's ruling of 2026-10-29. A word this build does not
     /// know is refused BY NAME with both of them in the sentence, like every other key here.
     #[test]
     fn reviewers_defaults_to_host_and_a_word_this_build_does_not_know_is_refused() {
@@ -338,7 +338,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// **`gate_host` is a machine's name or nothing** — a value that is only whitespace is the
+    /// `gate_host` is a machine's name or nothing - a value that is only whitespace is the
     /// default (this machine), not a host called `""`, and a name is passed on as written.
     #[test]
     fn gate_host_is_a_name_or_nothing() {
@@ -358,7 +358,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// **`gate_train` is one branch and one gate unless a project says more**, and `0` is refused
+    /// `gate_train` is one branch and one gate unless a project says more, and `0` is refused
     /// by name rather than read as *a train that never runs a gate*.
     #[test]
     fn gate_train_is_one_unless_named_and_zero_is_refused() {
@@ -385,7 +385,7 @@ mod tests {
     }
 
     /// `gate_carry` is read as paths inside the repository, and an entry outside it is refused
-    /// by name — the whole `[queue]` with it, never silently dropped.
+    /// by name - the whole `[queue]` with it, never silently dropped.
     #[test]
     fn gate_carry_is_paths_inside_the_repository_and_one_outside_is_refused_by_name() {
         let (dir, repo) = file("[queue]\ngate_carry = [\"images\", \"./vendor/\"]\n");

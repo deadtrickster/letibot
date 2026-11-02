@@ -1,5 +1,5 @@
 //! One turn tail for every door, as one assertion list run against each. A review found the
-//! tails had diverged:
+//! tails had diverged
 
 use std::time::Duration;
 

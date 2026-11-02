@@ -1,6 +1,6 @@
 //! `todo_write`'s `target`: the daemon-side half of a PARENT writing a CHILD's board. # Why
 //! a module and not a method on `Harness` The parent's tool and the child's board are in
-//! the SAME daemon but never in the same [`crate::harness::Harness`]:
+//! the SAME daemon but never in the same [`crate::harness::Harness`]
 
 use std::collections::HashMap;
 use std::path::PathBuf;

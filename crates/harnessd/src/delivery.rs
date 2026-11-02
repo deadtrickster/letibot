@@ -1,6 +1,6 @@
 //! When a finished job or subagent is told to the model: [`decide`], over the [`Facts`] of
 //! one completion. A running turn is not interrupted, so a result is held by default. It is
-//! delivered at once only for what the work actually waits on:
+//! delivered at once only for what the work actually waits on
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

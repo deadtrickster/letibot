@@ -1,6 +1,6 @@
 //! The daemon's model call for the smart `!`: the local endpoint, bounded. The prompt and
 //! the defensive parse live in `letibot_sessionlog::suggest`, where they are testable
-//! without standing up inference;
+//! without standing up inference
 
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use letibot_transcript::TranscriptItem;
 use letibot_turn::http::{self, Endpoint};
 
 /// How long a suggestion may take the local model: three seconds. The gatekeeper's budget is
-/// tight because a verdict is on the tool path; a suggestion fills a composer and runs nothing,
+/// tight because a verdict is on the tool path; a suggestion fills a composer and runs nothing
 /// and past this the answer a waiting person wants is nothing.
 pub const SUGGEST_TIMEOUT: Duration = Duration::from_secs(3);
 

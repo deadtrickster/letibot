@@ -1,5 +1,5 @@
 //! A session says who ANSWERS, not what the vocabulary binds. Two models are in play in
-//! every daemon and they are different facts:
+//! every daemon and they are different facts
 
 use std::path::PathBuf;
 

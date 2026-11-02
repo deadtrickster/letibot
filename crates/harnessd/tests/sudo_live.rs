@@ -1,5 +1,5 @@
 //! The shim plus `SUDO_ASKPASS`, against the real `sudo` on this box - the one link that is
-//! genuinely ours and needs a live sudo to prove:
+//! genuinely ours and needs a live sudo to prove
 
 use letibot_harnessd::sudo;
 

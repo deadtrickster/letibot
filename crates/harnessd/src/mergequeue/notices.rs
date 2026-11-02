@@ -1,6 +1,6 @@
 //! What a project's model is told when its target is in trouble - the words
 //! `Harness::queue_emergency_notices` puts in front of a root session's model, once per red
-//! tip or parked row. The failing step and the end of its output come FIRST:
+//! tip or parked row. The failing step and the end of its output come FIRST
 
 use letibot_tokencore::store::{
     MergeGateOutcome, MergeGateStep, MergeRow, ReviewKind, ReviewRow, ReviewState, TargetHealth,

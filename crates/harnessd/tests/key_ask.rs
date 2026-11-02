@@ -1,6 +1,6 @@
 //! A daemon with no key asks for one - end to end, through the real `harnessd` binary.
 //! Before this, a provider whose key did not resolve made the daemon bind its socket and
-//! die before any head could attach;
+//! die before any head could attach
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

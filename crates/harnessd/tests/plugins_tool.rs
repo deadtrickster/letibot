@@ -1,6 +1,6 @@
 //! The `plugin` tool, from the model's side - every action, through the real desk, the real
 //! plugin host and the real stack. The `Loader`/`Builder` seams (`docs/plugins-slice1.md`
-//! C2) are what most of this file replaces:
+//! C2) are what most of this file replaces
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

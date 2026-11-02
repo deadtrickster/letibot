@@ -1,5 +1,5 @@
 //! A restarted daemon gives a head the session's earlier prompts, bodies and all - the fact
-//! the composer's Up history is now derived from. The operator sent thirty prompts,
+//! the composer's Up history is now derived from. The operator sent thirty prompts
 //! restarted, sent two, and arrow-up saw only the last two.
 
 use std::io::{BufRead, BufReader, Read, Write};

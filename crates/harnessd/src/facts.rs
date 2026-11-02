@@ -1,6 +1,6 @@
 //! The daemon's answer to [`letibot_tools::builtins::harness_view::HarnessFacts`] what a
 //! session may know about itself. The trait lives in `letibot-tools` so that crate keeps
-//! depending on nothing above it;
+//! depending on nothing above it
 
 use std::sync::Arc;
 

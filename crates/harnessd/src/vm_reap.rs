@@ -1,6 +1,6 @@
 //! A child's VM does not outlive the child - the daemon's half: whose each live firecode VM
 //! is, by this store's records, and the reaper that brings down the ones whose owner is
-//! gone. The operator's report, 2026-10-15:
+//! gone. The operator's report, 2026-10-15
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

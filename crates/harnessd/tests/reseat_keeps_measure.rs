@@ -1,6 +1,6 @@
 //! A verbatim `/reseat` keeps the provider's measurement, so a restart can still read the
 //! ledger in the provider's units. A `/reseat` forks the conversation onto the new prompt
-//! with every row carried, and it used to clear the stored measurement:
+//! with every row carried, and it used to clear the stored measurement
 
 use letibot_harnessd::config::{Config, ProviderConfig};
 use letibot_harnessd::{Dialect, Harness, Parts};

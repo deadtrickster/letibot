@@ -1,6 +1,6 @@
 //! The arbiter can rule - a `--room` coordinator's own session, opened for real, with the
 //! `room` tool on its seat and a raised item reaching a ruling through it. The defect this
-//! file exists for:
+//! file exists for
 
 use std::sync::Arc;
 

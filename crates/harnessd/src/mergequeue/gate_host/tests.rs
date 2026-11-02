@@ -1,5 +1,5 @@
 //! What a host gate can be wrong about, as values - the invocation it builds, the exit
-//! status it reads, and the row it writes. Nothing here reaches a network:
+//! status it reads, and the row it writes. Nothing here reaches a network
 
 use super::*;
 use crate::mergequeue::gate::{GateRunner, gate_host, run_gate};
