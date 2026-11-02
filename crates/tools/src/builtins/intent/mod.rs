@@ -1,39 +1,6 @@
-//! Intent: the list, the goal, plan mode, and asking a person.
-//!
-//! The five tools here are the ones that are about **what the turn means to do**
-//! rather than about the tree. They exist together because they share one
-//! mechanism, and that mechanism is the reason the group is worth building:
-//!
-//! > A harness that only *enforces* forces the model to be locked down. A harness
-//! > that *measures* lets it be loosened, because the miss is caught. **Feedback
-//! > is what buys latitude.** — `docs/closed-loop.md` §6
-//!
-//! # The error signal, which is the half everybody is missing
-//!
-//! `docs/closed-loop.md` §2 splits "guardrails" into four mechanisms and says the
-//! first two are the ones that were absent. This module is those two:
-//!
-//! | stepper | here |
-//! |---|---|
-//! | **encoder** — measure the actual effect | [`ledger::IntentSink`], a decorator on the runtime's own event sink. Only `Ok` counts as an effect; an abstention is an *attempt* |
-//! | **error signal** — diff intent against effect | [`ledger::IntentLedger::reconcile`], at the turn boundary |
-//! | **stall fault** — fail closed, never reroute | [`queue::NoMount`], [`ask::Headless`], both `not_run` |
-//! | **current limit** — the capability is not reachable | [`plan::seating`]: in plan mode the write tools are not in the tool list at all |
-//!
-//! T21.3 — *"when model says ill start that and by end of the turn forgets and
-//! does not start anything"* — is the error signal's acceptance case, and none of
-//! the five surveyed harnesses has anything that could catch it. Their todo lists
-//! are notes the model writes to itself; nothing reads them back.
-//!
-//! # What is wired, and what is left to wire
-//!
-//! Everything in this module is a function of a call and a ledger, so it is all
-//! testable without a model, a GPU or a network — `docs/closed-loop.md` §10 calls
-//! that Class 1, *"the cheapest work in this document"*.
-//!
-//! The one thing that is **not** here is the caller at the turn boundary. It is
-//! three lines and it needs nothing new:
-//!
+//! Intent: the list, the goal, plan mode, and asking a person - the tools about what the
+//! turn means to do. [`ledger::IntentSink`] measures the effect and
+//! [`ledger::IntentLedger::reconcile`] diffs it against intent at the turn boundary.
 //! ```text
 //!   let rec = ledger.reconcile(&turn.turn_id, assistant_text_of(&turn.items));
 //!   if let Some(text) = rec.steering() {
@@ -41,13 +8,9 @@
 //!   }
 //! ```
 //!
-//! `letibot_turn::steering::SteeringSource` and `ChannelSteering` already exist and
-//! already inject at a step boundary, which is exactly what T21.3 asks for
-//! (*"append 'you said you would X — do it or say why not' and continue"*). What
-//! is missing is only that nobody calls it yet, and the session loop that would is
-//! under concurrent rewrite this session. See the crate report; this module does
-//! **not** fake the comparison in the meantime — an unwired encoder is a declared
-//! state ([`ledger::Verification::NoEncoder`]) rather than a silent zero.
+//! `letibot_turn::steering::SteeringSource` and `ChannelSteering` already inject at a step
+//! boundary; what is missing is only the call site. An unwired encoder is a declared state
+//! ([`ledger::Verification::NoEncoder`]) rather than a silent zero.
 
 pub mod ask;
 pub mod board;
@@ -72,11 +35,8 @@ pub use write_plan::{PLAN_DIR, PLAN_EXT, WritePlan};
 
 use crate::runtime::{RegisterError, Registry};
 
-/// **The turn-boundary hook, in one call.**
-///
-/// Give it the turn that just finished and it returns the steering text, or
-/// `None` when there is nothing to say — which is the common case and is meant to
-/// be.
+/// The turn-boundary hook, in one call: give it the turn that just finished and it returns
+/// the steering text, or `None` when there is nothing to say - the common case and meant to be.
 ///
 /// ```ignore
 /// if let Some(text) = intent::close_the_turn(&ledger, &turn.turn_id, &turn.items) {
@@ -84,15 +44,9 @@ use crate::runtime::{RegisterError, Registry};
 /// }
 /// ```
 ///
-/// `letibot_turn::steering` already injects a message at the next step boundary,
-/// which is exactly the response T21.3 asks for — *"append 'you said you would X —
-/// do it or say why not' and continue"*. This function is the other half; what is
-/// missing is only the call site, and it is missing because the session loop that
-/// owns turn boundaries is under concurrent rewrite. See this module's docs.
-///
-/// It reads the assistant's own text out of the turn for the prose heuristic and
-/// nothing else: the tool calls are already in the ledger, put there by the
-/// encoder as they ran.
+/// `letibot_turn::steering` already injects at the next step boundary, so what is missing is
+/// only the call site. It reads the assistant's text for the prose heuristic and nothing
+/// else: the tool calls are already in the ledger, put there by the encoder as they ran.
 pub fn close_the_turn(
     ledger: &IntentLedger,
     turn_id: &str,
@@ -128,11 +82,9 @@ pub fn close_the_turn_over(
     ledger.reconcile(turn_id, &said).steering_over(plan)
 }
 
-/// Everything this module needs from the session it is registered into.
-///
-/// A struct rather than five arguments because two of the five are mounts whose
-/// `None` is meaningful, and a positional `None` at a call site is the kind of thing
-/// that gets passed in the wrong slot exactly once.
+/// Everything this module needs from the session it is registered into: a struct rather
+/// than five arguments, because two of the five are mounts whose `None` is meaningful and a
+/// positional `None` is the kind of thing that gets passed in the wrong slot exactly once.
 pub struct Wiring {
     pub ledger: std::sync::Arc<IntentLedger>,
     pub plan: std::sync::Arc<PlanMode>,
@@ -192,14 +144,9 @@ impl Wiring {
     }
 }
 
-/// Register the seven intent tools into a registry.
-///
-/// A function rather than a `Vec` so that the *order* is written down once: order
-/// is part of the stable prefix and reordering it re-prefills the conversation.
-///
-/// `write_plan` and `say` are registered whether or not plan mode is ever entered:
-/// [`plan::seating`] decides what is *seated*, and a tool that had to be registered
-/// on entering plan mode would make the registry itself mode-dependent.
+/// Register the seven intent tools into a registry. A function rather than a `Vec` so the
+/// order is written down once - order is part of the stable prefix. `write_plan` and `say`
+/// are registered always: [`plan::seating`] decides what is seated, not what exists.
 pub fn register_into(reg: &mut Registry, w: &Wiring) -> Result<(), RegisterError> {
     reg.register(Box::new(match &w.queue {
         Some(q) => Todo::mounted(w.ledger.clone(), q.clone()),
@@ -286,10 +233,9 @@ mod tests {
 
     #[test]
     fn a_plan_mode_tool_the_registry_lacks_is_not_invented() {
-        // A session with no fabric still registers `say` (it refuses at the seam),
-        // but a build that dropped the tool entirely must not get a role naming it —
-        // that role would fail to resolve and a session that merely lacks chat
-        // should still be able to plan.
+        // A session with no fabric still registers `say` (it refuses at the seam), but a build that
+        // dropped the tool must not get a role naming it: that role would fail to resolve, and a
+        // session that merely lacks chat should still be able to plan.
         let mut bare =
             crate::coder_tools(Arc::new(crate::builtins::retrieval::Unavailable)).unwrap();
         bare.register(Box::new(WritePlan)).unwrap();
@@ -366,10 +312,9 @@ mod tests {
             &["read", "write", "edit", "todo", "exit_plan_mode"],
         );
         let s = seating(&r, &base, true);
-        // `todo` is Network here because a board is mounted, so plan mode drops it
-        // too. That is the boundary doing its job rather than a special case:
-        // filing a row on the shared queue changes the world outside the session.
-        // What is left is the base's read tools plus D9's three.
+        // `todo` is Network here because a board is mounted, so plan mode drops it too. That is the
+        // boundary doing its job rather than a special case: filing a row on the shared queue
+        // changes the world outside the session. What is left is the read tools plus D9's three.
         assert_eq!(
             s.tools,
             vec!["read", "exit_plan_mode", "write_plan", "say"],

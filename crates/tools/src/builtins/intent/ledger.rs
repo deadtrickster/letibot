@@ -1,42 +1,6 @@
-//! The intent ledger: what the turn *said* it would do, what actually *ran*, and
-//! the difference between them.
-//!
-//! This is `docs/closed-loop.md` §2's **encoder** and **error signal**, which are
-//! the two parts the four surveyed harnesses with a todo tool do not have. Their
-//! todo list is a note the model writes to itself; nothing ever reads it back
-//! against the tool log. T21.3 is exactly the failure that leaves:
-//!
-//! > when model says ill start that and by end of the turn forgets and does not
-//! > start anything
-//!
-//! Intent was commanded, effect was never measured, and the drift is silent.
-//!
-//! # The three quantities, which are not one thing
-//!
-//! | | what it is | where it comes from |
-//! |---|---|---|
-//! | **intent** | an item the model declared | [`IntentLedger::declare`], via the `todo` tool or a plan |
-//! | **effect** | a tool call that ran and returned `Ok` | [`IntentSink`], decorating the runtime's own event sink |
-//! | **diff** | intent this turn with no effect this turn | [`IntentLedger::reconcile`] |
-//!
-//! An **attempt** is a fourth: a tool call that ran and did not return `Ok`. It is
-//! counted separately, because "the model tried and the tool abstained" and "the
-//! model did nothing" are different facts and reporting them identically is the
-//! bug one layer down.
-//!
-//! # The encoder can be missing, and that is its own state
-//!
-//! §2.5 of `docs/tool-design-brief.md` says a gate that answers "allowed" because
-//! nothing is wired is worse than no gate. The mirror holds here and is easier to
-//! ship by accident: a ledger with no [`IntentSink`] attached sees zero effects,
-//! so **every** completion looks unverified and the diff screams drift at a
-//! session that was working perfectly.
-//!
-//! So the ledger knows whether its encoder is attached ([`IntentLedger::encoder`]),
-//! and an unverifiable completion is [`Verification::NoEncoder`] — a distinct
-//! state from [`Verification::NoEffect`], reported as a defect in the *harness*
-//! rather than as a finding about the model. A dead encoder never travels as a
-//! measurement.
+//! The intent ledger: what the turn said it would do, what actually ran, and the
+//! difference between them - the encoder and error signal that a todo list alone lacks.
+//! A ledger with no [`IntentSink`] attached reports [`Verification::NoEncoder`], never drift.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -46,12 +10,8 @@ use letibot_transcript::text::clip_bytes;
 
 use crate::events::{ToolEvent, ToolEventSink};
 
-/// The tools that record intent rather than produce effect.
-///
-/// A `todo` call is not evidence that the todo was done, and letting it count
-/// would make the whole mechanism self-satisfying: the model could close every
-/// item by announcing that it had. This list is the reason the diff means
-/// anything.
+/// The tools that record intent rather than produce effect. A `todo` call is not evidence
+/// that the todo was done, and letting it count would make the mechanism self-satisfying.
 pub const INTENT_TOOLS: &[&str] = &[
     "todo",
     "goal",
@@ -139,12 +99,9 @@ pub struct Intent {
     pub declared_turn: String,
     pub started_turn: Option<String>,
     pub settled_turn: Option<String>,
-    /// The row id on the shared board, when one is mounted.
-    ///
-    /// The ledger is not a *second list*: when a board is mounted the row is the
-    /// record and this is a handle to it. What stays here either way is the part
-    /// the board cannot know — which of **this session's** tool calls ran against
-    /// the item, which is what [`Verification`] is computed from.
+    /// The row id on the shared board, when one is mounted. The ledger is not a second
+    /// list: the row is the record and this is a handle to it, while what stays here is
+    /// which of this session's calls ran against the item - what [`Verification`] reads.
     pub row: Option<String>,
 }
 
@@ -171,11 +128,8 @@ pub struct Goal {
     pub met: Option<Verification>,
 }
 
-/// The board, with its denominators.
-///
-/// *"3 todos" is not a status.* Every field here is printed every time, including
-/// the zeroes, because a category that vanishes when empty is a category the
-/// reader stops looking for.
+/// The board, with its denominators: every field is printed every time, including the
+/// zeroes, because a category that vanishes when empty is one the reader stops looking for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Board {
     pub total: usize,
@@ -188,10 +142,9 @@ pub struct Board {
 }
 
 impl Board {
-    /// **A `todo_write` board, counted the way this ledger counts its own** (R93.F30) — for the
-    /// seat whose plan lives there. A struck-off row is not on the plan; a postponed one is still
-    /// pending. Nothing is `claimed` or `unverifiable`: those are this ledger's own judgements
-    /// about a `todo` item, and a `todo_write` row carries neither.
+    /// A `todo_write` board counted the way this ledger counts its own, for the seat whose
+    /// plan lives there. A struck-off row is not on the plan and a postponed one is still
+    /// pending; nothing is `claimed` or `unverifiable`, which are this ledger's judgements.
     pub fn of_plan(rows: &[letibot_tokencore::store::TodoItem]) -> Board {
         use letibot_tokencore::store::TodoStatus as S;
         let mut b = Board::default();
@@ -306,28 +259,21 @@ pub struct Reconciliation {
     pub findings: Vec<Finding>,
 }
 
-/// The most findings one steering message carries.
-///
-/// `docs/tool-design-brief.md` §5: a miss must not produce an unbounded reply. A
-/// turn that declared forty items and did none of them needs to be told once, not
-/// forty times.
+/// The most findings one steering message carries: a turn that declared forty items and did
+/// none of them needs to be told once, not forty times.
 const MAX_FINDINGS: usize = 6;
 
 impl Reconciliation {
-    /// The steering text to inject at the step boundary, or `None` when there is
-    /// nothing to say.
-    ///
-    /// `None` is the common case and matters: a mechanism that speaks every turn
-    /// is a mechanism that gets ignored by the fourth turn.
+    /// The steering text to inject at the step boundary, or `None` when there is nothing to
+    /// say - the common case, and it matters: a mechanism that speaks every turn is a
+    /// mechanism that gets ignored by the fourth turn.
     pub fn steering(&self) -> Option<String> {
         self.steering_over(None)
     }
 
-    /// **R93.F30 — the same steering, for a seat whose plan tool is `todo_write`.** One plan tool
-    /// per seat: where `todo_write` is seated `todo` is not, so this ledger's own board is empty
-    /// there and its "0 items — nothing has been declared" would contradict the plan the model
-    /// holds. `plan` is that seat's `todo_write` board ([`Board::of_plan`]); the board line reads
-    /// it, and the overflow line names no tool, because `todo` is not there to list the rest.
+    /// The same steering for a seat whose plan tool is `todo_write`: one plan tool per seat,
+    /// so this ledger's own board is empty there and its "nothing has been declared" would
+    /// contradict the plan the model holds. `plan` is that seat's board ([`Board::of_plan`]).
     pub fn steering_over(&self, plan: Option<Board>) -> Option<String> {
         if self.findings.is_empty() {
             return None;
@@ -391,10 +337,9 @@ impl IntentLedger {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        // A poisoned lock here means a tool panicked mid-update. The ledger is
-        // session state and not a safety boundary, so recovering the guard is
-        // right: losing the whole board because one call panicked would turn a
-        // tool bug into a lost session.
+        // A poisoned lock means a tool panicked mid-update. The ledger is session state and
+        // not a safety boundary, so recovering the guard is right: losing the whole board
+        // would turn a tool bug into a lost session.
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -460,12 +405,9 @@ impl IntentLedger {
             .cloned()
     }
 
-    /// Make sure a board row has a ledger entry, so the intent/effect diff covers
-    /// it too. Returns the local id.
-    ///
-    /// This is what makes a row **another seat filed** subject to the same check
-    /// as one this session wrote: a row claimed and not worked is visible to the
-    /// whole fleet, and that is the case where the diff is worth the most.
+    /// Make sure a board row has a ledger entry, so the intent/effect diff covers it too, and
+    /// return the local id. A row another seat filed is then subject to the same check as one
+    /// this session wrote, which is where the diff is worth the most.
     pub fn adopt(&self, turn_id: &str, row: &str, title: &str) -> u32 {
         if let Some(i) = self.by_row(row) {
             return i.id;
@@ -512,12 +454,9 @@ impl IntentLedger {
         Ok(i.clone())
     }
 
-    /// Settle an item as complete — **as checked, not as claimed.**
-    ///
-    /// The check is the whole point and it is done here rather than trusted from
-    /// the argument: at least one tool call must have returned `Ok` since the item
-    /// was started (or, if it was never started, in the turn that is settling it).
-    /// A `todo` call cannot be its own evidence — see [`INTENT_TOOLS`].
+    /// Settle an item as complete - as checked, not as claimed. At least one tool call must
+    /// have returned `Ok` since the item started (or in the turn settling it), and a `todo`
+    /// call cannot be its own evidence - see [`INTENT_TOOLS`].
     pub fn complete(&self, turn_id: &str, id: u32) -> Result<Intent, LedgerError> {
         let mut g = self.lock();
         if !g.items.iter().any(|i| i.id == id) {
@@ -632,15 +571,9 @@ impl IntentLedger {
         board_of(&self.lock().items)
     }
 
-    /// The error signal. Diff what this turn declared against what this turn ran.
-    ///
-    /// `assistant_text` is the turn's own prose, for the [`commitments`]
-    /// heuristic; pass `""` to use only the tool-declared half, which is the
-    /// deterministic one.
-    ///
-    /// Idempotent per turn: calling it twice returns the same findings and does
-    /// not double-count, because a turn boundary that fires twice is a thing that
-    /// happens and a diff that grows each time it is read is not a measurement.
+    /// The error signal: diff what this turn declared against what this turn ran.
+    /// `assistant_text` is the turn's prose for the [`commitments`] heuristic; `""` uses only
+    /// the deterministic half. Idempotent per turn, so reading twice does not double-count.
     pub fn reconcile(&self, turn_id: &str, assistant_text: &str) -> Reconciliation {
         let mut g = self.lock();
         g.reconciled.insert(turn_id.to_string(), ());
@@ -704,10 +637,9 @@ impl IntentLedger {
             }
         }
 
-        // The prose half. Only when the turn ran nothing: a turn that made a
-        // commitment and then ran six tools is not the failure this catches, and
-        // firing there is how the heuristic's false positives start costing more
-        // than the true ones save.
+        // The prose half, and only when the turn ran nothing: a turn that made a commitment
+        // and then ran six tools is not the failure this catches, and firing there is how the
+        // heuristic's false positives start costing more than the true ones save.
         if !ran_anything {
             for s in commitments(assistant_text) {
                 findings.push(Finding::ProseCommitment { sentence: s });
@@ -743,12 +675,9 @@ fn board_of(items: &[Intent]) -> Board {
     b
 }
 
-/// Call ids of successful calls in `since` or any later turn.
-///
-/// Turn ids sort lexically in creation order in this harness (`turn_1`,
-/// `turn_2`, …); where they do not, this degrades to "calls in the same turn",
-/// which is the conservative direction — it can only *withhold* evidence, never
-/// invent it.
+/// Call ids of successful calls in `since` or any later turn. Turn ids sort lexically in
+/// creation order here; where they do not, this degrades to "calls in the same turn", which
+/// can only withhold evidence and never invent it.
 fn evidence_since(effects: &[Effect], since: &str) -> Vec<String> {
     effects
         .iter()
@@ -757,18 +686,9 @@ fn evidence_since(effects: &[Effect], since: &str) -> Vec<String> {
         .collect()
 }
 
-/// **Did that call do anything?** The one definition, with more than one reader.
-///
-/// `Ok` is an *effect*; an abstention, a failure, a denial, a timeout, a `not_run`
-/// and a job still running in the background are all *attempts*. The distinction is
-/// the ledger's — `docs/tool-design-brief.md` §2.3 — and it is exactly the one a
-/// progress detector needs, so it is lifted out here rather than restated beside it.
-/// Two instruments with two nearly-identical predicates is how they end up
-/// disagreeing about the same turn, and the disagreement is silent.
-///
-/// `Backgrounded` is deliberately not an effect: the job has not finished, and a
-/// promotion counted as a success is `F5` — a component's "I did not do this"
-/// reported upward as done.
+/// Did that call do anything? `Ok` is an effect; an abstention, a failure, a denial, a
+/// timeout, a `not_run` and a job still running are attempts, and `Backgrounded` is
+/// deliberately not one. Lifted out so two instruments cannot disagree silently.
 pub fn is_effect(outcome: &ToolOutcome) -> bool {
     matches!(outcome, ToolOutcome::Ok)
 }
@@ -815,15 +735,9 @@ impl std::fmt::Display for LedgerError {
 // The encoder.
 // ---------------------------------------------------------------------------
 
-/// A [`ToolEventSink`] that feeds the ledger on its way to the real sink.
-///
-/// This is the encoder, and it is a decorator rather than a hook so that wiring it
-/// is one line at the call site and forgetting it is *visible* rather than silent
-/// ([`IntentLedger::encoder`]).
-///
-/// `ToolEvent::Finished` does not carry the tool's name — only `Started` does — so
-/// this keeps the correlation itself rather than asking for the event shape to
-/// change.
+/// A [`ToolEventSink`] that feeds the ledger on its way to the real sink: the encoder, and a
+/// decorator rather than a hook so that wiring it is one line and forgetting it is visible
+/// ([`IntentLedger::encoder`]). `Finished` carries no tool name, so it keeps that itself.
 pub struct IntentSink<S> {
     ledger: std::sync::Arc<IntentLedger>,
     pub inner: S,
@@ -853,10 +767,9 @@ impl<S: ToolEventSink> ToolEventSink for IntentSink<S> {
                 outcome,
                 ..
             } => {
-                // A call that never emitted `Started` never reached a tool — an
-                // unknown name, a salvage failure, a gate refusal. That is not an
-                // effect, and it is also not nothing: it is recorded under the
-                // name the runtime refused, so `attempts` counts it.
+                // A call that never emitted `Started` never reached a tool - an unknown name, a
+                // salvage failure, a gate refusal. Not an effect, and not nothing: it is recorded
+                // under the refused name, so `attempts` counts it.
                 let name = self
                     .names
                     .remove(call_id)
@@ -893,15 +806,9 @@ const OPENERS: &[&str] = &[
     "now i'll ",
 ];
 
-/// Future-tense first-person sentences in the assistant's own text.
-///
-/// **This is a heuristic and every caller labels it as one.** T21 states the trade
-/// explicitly: the harness does not need certainty, it needs the gap visible
-/// rather than silent, and a wrong steer costs a few tokens.
-///
-/// Three things keep the false-positive rate survivable: fenced code is skipped
-/// (a `let me` inside a code block is not a commitment), the openers are
-/// first-person only, and the result is capped.
+/// Future-tense first-person sentences in the assistant's own text, as a heuristic that
+/// every caller labels as one: a wrong steer costs a few tokens and a silent gap costs more.
+/// Fenced code is skipped, the openers are first-person only, and the result is capped.
 pub fn commitments(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut fenced = false;

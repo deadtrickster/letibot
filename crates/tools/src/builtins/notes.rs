@@ -1,120 +1,6 @@
-//! `notes` — read and write the standing notes the harness injects.
-//!
-//! Standing notes landed (`fb96763`) as a one-way loop: the operator wrote
-//! markdown files, the harness read them into the prompt at session open and
-//! every base rebuild, the model read them. The operator's ruling, 2026-10-09,
-//! opened the other half: *"i think both. and not only 'survive past a
-//! compaction' but also 'find interesting, remarkable or surprising, something
-//! you dont want to rediscover.' The read tool should carry a short note - 'it
-//! is a historical note, might be outdated'"*.
-//!
-//! # The write scope — and why it is as narrow as it is
-//!
-//! The reader (`crates/harnessd/src/standing_notes`) reads three sources: the
-//! config dir's `notes/`, the workspace's `AGENTS.md`, and the workspace's
-//! `.letibot/notes/`. This tool writes **the third one only**. A tool that
-//! could rewrite the other two could destroy the operator's own instructions,
-//! and — worse — could write a note that reads as one: the injected block is
-//! the place the model looks for what the operator wants, and authorship that
-//! cannot be told apart is how a note the model wrote comes to read as an
-//! instruction the operator gave. The directory line is the tell, and it is
-//! kept honest from both sides: the verbs take a bare NAME (never a path), so
-//! there is no spelling of a write that leaves `.letibot/notes/`, and the
-//! injected block's own opening says which sources are whose.
-//!
-//! # The read caveat
-//!
-//! Every `read` result carries a short line above the body: the note is
-//! historical, and when it was last written. A note is a record of what was
-//! true when someone wrote it, and the failure the line prevents is a stale
-//! note read as a current fact — the exact thing that makes a notes feature
-//! dangerous rather than useful. "May be outdated" is much stronger with the
-//! age beside it, so the mtime rides along wherever the caveat does.
-//!
-//! # The abstract — the one line the index shows for a note
-//!
-//! The injected block is verbatim up to a budget and an index above it, and the
-//! first line of each note's index entry is its **abstract**: the first *proper*
-//! sentence of the note's prose, or the author's own line when the file carries
-//! one (`<!-- abstract: … -->` at the top, above the text).
-//!
-//! Both halves live here rather than in the reader, for one reason: this tool is
-//! what tells an author what the index will say, and a report computed by a
-//! second implementation is a report that can disagree with the index it
-//! describes. The reader (`letibot_harnessd::standing_notes`) imports
-//! [`abstract_of`], [`first_sentence`] and [`sort_newest_first`] for exactly that
-//! reason — the derivation, the cap and the order are stated once, here, and used
-//! by both.
-//!
-//! `add`, `append` and `replace` take an optional `abstract`. Supplied, it is
-//! written into the note as the marker line; supplied to `append`, it replaces
-//! the one that was there. Absent, nothing is written and the reader derives the
-//! abstract — the derivation is deterministic, so a note carrying a copy of it
-//! would be a note that can drift from the text under it, and the duplication is
-//! what an author would see first.
-//!
-//! # The similarity gate on a write, and why it is here rather than at creation
-//!
-//! A note that is a near-copy of one that exists makes the index worse for every
-//! reader of it, and the corpus only grows. So `add`, `append` and `replace` all
-//! ask [`crate::similarity`] the same question before the bytes become durable —
-//! [`DUPLICATE_FLOOR`] is the answer that refuses — and the refusal names the
-//! note that was too close, because *"that name is taken"* is only half an
-//! answer.
-//!
-//! **Both triggers, and the operator said so twice:** *"since we ride similarity
-//! score - worth having it as a gate for new notes"*, and then *"add this
-//! new-note similarity check. add it for 'just before edit made durable' too. we
-//! dont want to endup with n almost identical notes by edits anyway"*. A defect
-//! that arrives by a second door is the same defect, so the check is not at
-//! creation: it is at `write_atomic`, where every one of the three verbs arrives,
-//! and the note being edited is excluded from its own corpus so an `append` is
-//! never refused for resembling the note it grows.
-//!
-//! **What it scores** is the same three fields the index shows — title, abstract,
-//! headings — and never a note's body, so an author can move a note out of the
-//! gate's way by saying what distinguishes it, which is the act the refusal is
-//! asking for.
-//!
-//! **And the doors that were open beside it.** `write` and `edit` take a `path`,
-//! and a path can spell `.letibot/notes/foo.md` — so both verbs refuse a target in
-//! this directory, by name, and point at the verbs here
-//! ([`refuse_a_path_into_the_notes_dir`], which carries the argument for where
-//! that refusal lives). The gate is still on the documented door — the one the
-//! schema describes, the one `list` reports, and the one a session reaches for
-//! when it means *write a note* — but it is no longer the only one a session has
-//! to walk through.
-//!
-//! **What is still open, and it is named rather than pretended about:** `bash`.
-//! A shell redirect into the directory is not a path argument, so neither this
-//! tool nor the two file verbs can see it, and the note it lands is a note nobody
-//! scored.
-//!
-//! # The search door
-//! `search` answers a query with paths, line numbers and the matching lines —
-//! local, no model, no network, and deliberately useful *without* the index being
-//! any good: the index names a note and its headings, and the note whose abstract
-//! is a poor summary of what it holds is still findable by its own words. That is
-//! the case the door exists for.
-//!
-//! # The seam
-//!
-//! `letibot-tools` cannot know where the workspace or the config dir are, so
-//! the tool holds a [`NotesScope`] the daemon supplies — the same shape as
-//! `HarnessFacts` and `TranscriptSource`. Reads go through that scope with
-//! `std::fs` rather than through the session backend, deliberately: the reader
-//! the notes must round-trip with is host-side, the box-wide notes dir is
-//! outside every session's backend view (the file `read` tool cannot reach it
-//! at all — reaching it is half of what this tool is for), and a session
-//! placed in a firecode VM must still land its notes host-side or the harness
-//! would never inject them. Writes honour the one backend fact that matters —
-//! [`crate::backend::ExecBackend::is_writable`] — so a session whose view was
-//! opened read-only refuses here as it would at the file tools, naming both
-//! gates, rather than writing around its own boundary.
-//!
-//! Writes are atomic by the same rules `HostBackend::write` keeps — a
-//! temporary file in the target directory, synced, then renamed over — because
-//! a half-written note is a note the next session injects.
+//! `notes` - read and write the standing notes the harness injects.
+//! Writes go to the workspace's `.letibot/notes/` only, through a [`NotesScope`] the daemon
+//! supplies; the index's derivation and sort live here so both sides agree.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -126,10 +12,9 @@ use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 use crate::similarity;
 
-/// Where the standing notes live, as the harness that injects them sees it.
-/// Supplied by the daemon, which owns the workspace and the config dir; this
-/// crate holds only the trait so that `letibot-tools` keeps depending on
-/// nothing above it.
+/// Where the standing notes live, as the harness that injects them sees it: the
+/// daemon owns the workspace and the config dir, and this crate holds only the trait
+/// so that `letibot-tools` depends on nothing above it.
 pub trait NotesScope: Send + Sync {
     /// The workspace root: `AGENTS.md` and `.letibot/notes/` are read from
     /// here, and `.letibot/notes/` is the one directory the tool writes.
@@ -161,12 +46,9 @@ struct Source {
 }
 
 impl Source {
-    /// The `*.md` files this source contributes, **newest first** — the same
-    /// order the reader assembles in ([`sort_newest_first`]), so the tool's
-    /// listing and the injected block agree about what follows what. A
-    /// single-file source (`AGENTS.md`) contributes its file only when the file
-    /// is there: the reader skips an absent `AGENTS.md`, and a listing that
-    /// named it would be a note that does not exist.
+    /// The `*.md` files this source contributes, newest first, in the reader's own order
+    /// ([`sort_newest_first`]). A single-file source contributes its file only when it is
+    /// there, because the reader skips an absent `AGENTS.md`.
     fn notes(&self) -> Vec<PathBuf> {
         if let Some(f) = &self.file {
             return if f.is_file() {
@@ -187,13 +69,9 @@ impl Source {
     }
 }
 
-/// **The three sources, in the reader's order — a rule, not a preference.**
-///
-/// `AGENTS.md`, then the box-wide notes, then the project's: the order the
-/// section is assembled in, and therefore the order that decides what arrives
-/// whole and what arrives as an index (see `letibot_harnessd::standing_notes`,
-/// where that rule is written down in full). `list` says it reports the notes
-/// "in prompt order", and this is what makes that sentence true.
+/// The three sources in the reader's order: `AGENTS.md`, then the box-wide notes, then
+/// the project's. The order decides what arrives whole and what arrives as an index,
+/// and it is what makes `list`'s "in prompt order" true.
 fn sources(scope: &dyn NotesScope) -> Vec<Source> {
     let ws = scope.workspace();
     vec![
@@ -215,17 +93,9 @@ fn sources(scope: &dyn NotesScope) -> Vec<Source> {
     ]
 }
 
-/// Every note the harness injects, as `(path, text)` — the corpus a score is
-/// computed over.
-///
-/// The same three sources and the same order the injected section is assembled
-/// from, so the notes a score is over are exactly the notes a model can be told
-/// about: a note the reader would not inject is not in the corpus, and a
-/// similarity score is never about something unreachable.
-///
-/// Read here rather than through the session backend, for the reason
-/// [`NotesScope`] gives: the box-wide notes are outside every session's backend
-/// view, and the corpus the gate scores against must be the whole one.
+/// Every note the harness injects, as `(path, text)`: the corpus a score is computed
+/// over, in the same sources and order the injected section is assembled from, so no
+/// score is ever about a note the reader would not inject.
 fn corpus(scope: &dyn NotesScope) -> Vec<(PathBuf, String)> {
     sources(scope)
         .iter()
@@ -234,18 +104,9 @@ fn corpus(scope: &dyn NotesScope) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// **Newest first, ties by name** — the order the reader assembles each notes
-/// directory in, and the order `list` reports, so the two cannot disagree about
-/// what follows what. It lives beside the writer because the reader imports it;
-/// a second sort one crate over is a sort that drifts.
-///
-/// A file whose mtime cannot be read sorts last, by name: an unreadable clock is
-/// not a reason to drop a note out of the listing, and it is not a reason to put
-/// it first either.
-///
-/// A sort and not `readdir`'s order, on the same principle the reader states: a
-/// listing that varied with directory order is a listing whose consumer misses
-/// its prefix cache for no reason.
+/// Newest first, ties by name: the order the reader assembles each notes directory in
+/// and the order `list` reports. It lives beside the writer because the reader imports
+/// it, and a file whose mtime cannot be read sorts last rather than out of the listing.
 pub fn sort_newest_first(paths: &mut [PathBuf]) {
     let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     paths.sort_by(|a, b| mtime(b).cmp(&mtime(a)).then_with(|| a.cmp(b)));
@@ -256,43 +117,9 @@ pub fn sort_newest_first(paths: &mut [PathBuf]) {
 /// other doors out cannot come to disagree about it.
 pub const NOTES_DIR: &str = ".letibot/notes";
 
-/// **The other doors into this directory, and why the refusal is here.**
-///
-/// `write` and `edit` take a path, and a path can spell `.letibot/notes/foo.md` —
-/// so a note can be put there without ever reaching this tool, which is the one
-/// place [`DUPLICATE_FLOOR`]'s similarity gate is asked. A note that arrives that
-/// way is a note nobody scored, and the reader injects it exactly as it injects
-/// the ones that were: the corpus is curated on purpose, so a door around the
-/// gate is a door around the curation.
-///
-/// # Why this is not a row on §11.4's never-write list
-///
-/// [`crate::adjudicate::NEVER_WRITE`] is a **boundary**: checked before any
-/// adjudicator, overridable by nobody — and its matcher (`never_hit`) scans the
-/// **path arguments** of a gated call, and every word of a `bash` command, with no
-/// tool in the test. `.letibot/notes/` is the opposite kind of rule: this harness writes it
-/// on purpose, through this tool, and a `never` row naming it would refuse **this
-/// tool's own writes** the moment a note's text happened to mention the directory
-/// — a rule that breaks the tool is worse than the hole it closes. (That was not
-/// hypothetical: until RH5 the matcher scanned `content` too, and a file whose body
-/// merely quoted a guarded path was refused. It does not any more — but the rule
-/// here is still a door's, because it is about which TOOL opens a path and not
-/// about which path exists.) The honest home is the door: the rule is *this door
-/// does not lead into that directory, the tool that owns it does*, and a door is
-/// where a routing rule belongs.
-///
-/// # What it reads, and what it does not
-///
-/// The path as the session sees it, lexically: the leading components, `.`
-/// dropped and `..` resolved — the walk [`crate::runtime::GateCall::path_is_inside`]
-/// keeps, for the same reason (the class of a path is a property of the argument,
-/// not of what the filesystem happens to hold). An absolute path is read against
-/// [`crate::backend::ExecBackend::workspace_path`], the directory a relative path
-/// starts from; a backend that cannot name one is the case this misses, and it is
-/// named here rather than papered over.
-///
-/// `None` for every other path, so the two verbs that call it are unchanged for
-/// everything that is not a note.
+/// The other doors into the notes directory: `write` and `edit` take a path, and a
+/// path can spell `.letibot/notes/foo.md`, which lands a note nobody scored. Not a
+/// [`crate::adjudicate::NEVER_WRITE`] row, because that would refuse this tool's own writes.
 pub(crate) fn refuse_a_path_into_the_notes_dir(
     backend: &dyn crate::backend::ExecBackend,
     path: &str,
@@ -320,10 +147,8 @@ pub(crate) fn refuse_a_path_into_the_notes_dir(
             other => lead.push(other),
         }
     }
-    // Three components or more: the directory itself is left to the backend's own
-    // "is a directory" refusal, which is the true answer for it. What this rule is
-    // about is a FILE inside the directory the tool owns — and its whole subtree,
-    // because the directory is the tool's.
+    // Three components or more: the directory itself gets the backend's own "is a
+    // directory" refusal, and this rule is about a file inside the tool's directory.
     if lead.len() < 3 || !lead.starts_with(&NOTES_DIR.split('/').collect::<Vec<_>>()) {
         return None;
     }
@@ -342,14 +167,9 @@ pub(crate) fn refuse_a_path_into_the_notes_dir(
     ))
 }
 
-/// A note NAME as this tool accepts it: a file stem, no path in it. `.md` is
-/// stripped if the caller spelled the whole filename, because `add foo` and
-/// `add foo.md` are the same note and the tool adds the extension itself.
-///
-/// `Err` is the refusal: a name with a separator or a dot-prefix is not a
-/// name but a path wearing one, and writes go to `.letibot/notes/` only — the
-/// dot-prefix rule also keeps a note from colliding with this tool's own
-/// `.name.letibot-PID.tmp` temporaries.
+/// A note NAME as this tool accepts it: a file stem, no path in it, `.md` stripped
+/// because `add foo` and `add foo.md` are the same note. A separator or a dot prefix is
+/// a path wearing a name, and the dot also keeps notes off the tool's own temporaries.
 fn note_stem(raw: &str) -> Result<String, String> {
     let mut s = raw.trim();
     if s.len() >= 3 && s[s.len() - 3..].eq_ignore_ascii_case(".md") {
@@ -399,10 +219,8 @@ fn age_of(meta: &std::fs::Metadata) -> String {
     }
 }
 
-/// The short line every read of a note carries. Why it exists: a note is a
-/// record of what was true when someone wrote it, and without this line a
-/// stale note reads as a current fact — the one failure a notes feature must
-/// prevent rather than merely survive.
+/// The short caveat every read of a note carries: a note records what was true when it
+/// was written, and without this line a stale one reads as a current fact.
 fn caveat(meta: &std::fs::Metadata) -> String {
     format!(
         "[historical note — last written {}; it records what was true then and may be \
@@ -425,44 +243,24 @@ const WHEN_READ: &str = "The harness reads notes into the prompt at session open
 /// the note's own text follows
 /// ```
 ///
-/// An HTML comment rather than a heading or front matter, for the reason that
-/// decides it: the same file is injected VERBATIM when it is under the budget,
-/// so a marker that rendered as markdown would put a line the author did not
-/// write into the text the model reads. This one renders as nothing.
+/// An HTML comment rather than a heading or front matter: the file is injected
+/// verbatim when it is under the budget, so a marker that rendered as markdown would
+/// put a line the author did not write into the text the model reads.
 pub const ABSTRACT_MARKER: &str = "<!-- abstract:";
 
-/// How long an abstract may be in the index, in characters.
-///
-/// A cap is not decoration: an abstract is one line of a block that has to fit a
-/// budget, and the note that most needs one is the longest one. 240 characters is
-/// a sentence and a half of this tree's prose — enough to say what a note is
-/// about, short enough that two hundred of them are still an index. Over it the
-/// abstract is cut at a character boundary and says so with an ellipsis.
+/// How long an abstract may be in the index, in characters: one line of a block that
+/// has to fit a budget. Over it the abstract is cut at a character boundary and says so
+/// with an ellipsis.
 pub const ABSTRACT_CHARS: usize = 240;
 
-/// How many matching lines one `search` prints before it stops and says how
-/// many it did not.
-///
-/// A cap and not a budget: the corpus is the operator's own notes and a common
-/// word can match a thousand lines, and an answer that floods the turn is an
-/// answer the model has to spend a turn reading around. Past the cap the reply
-/// names the count it left out, so the caller can narrow rather than guess.
+/// How many matching lines one `search` prints before it stops: a common word can match
+/// a thousand, and an answer that floods the turn costs the reader a turn. Past the cap
+/// the reply names the count it left out, so the caller can narrow.
 const MAX_SEARCH_LINES: usize = 200;
 
-/// **How alike two notes have to be before the second one is refused.**
-///
-/// A floor and not a scale, because the gate is a refusal and a refusal has to be
-/// arguable: at or over this and the write does not happen, and the refusal names
-/// the note that was too close so the author can act on it. Raise it with a
-/// measurement, not a feeling.
-///
-/// MEASURED 2026-10-12 against this box's own corpus — the operator's 23 standing
-/// notes, read once by a scratch test deleted before the commit. The numbers, and
-/// the arithmetic that produced them, are in `crate::similarity`'s module doc:
-/// the closest honest pair in that corpus scores 0.183, the weakest near-copy
-/// 0.363, a verbatim copy under a new name 0.957. 0.30 sits in the gap, and it
-/// errs toward refusing — a refusal costs one round, a corpus of near-duplicates
-/// costs every reader of the index.
+/// How alike two notes have to be before the second one is refused: a floor, because a
+/// refusal has to be arguable, and the refusal names the note that was too close. It
+/// errs toward refusing - one refused write costs less than a corpus of near-copies.
 pub const DUPLICATE_FLOOR: f64 = 0.30;
 
 /// A note's abstract: the line the index shows for it, and where that line came
@@ -470,10 +268,8 @@ pub const DUPLICATE_FLOOR: f64 = 0.30;
 pub struct Abstract {
     /// The line itself — one line, capped at [`ABSTRACT_CHARS`].
     pub text: String,
-    /// `true` for the author's own marker line, `false` for the note's first
-    /// proper sentence. The index says which: an abstract the harness derived is
-    /// the harness's reading of the note, and a reader that cannot tell it from
-    /// the author's is a reader taking a guess for a statement.
+    /// `true` for the author's own marker line, `false` for the derived first sentence: a
+    /// reader that cannot tell them apart takes a guess for a statement.
     pub written: bool,
 }
 
@@ -493,19 +289,9 @@ pub fn abstract_of(text: &str) -> Option<Abstract> {
     })
 }
 
-/// The first **proper** sentence of a note's prose, capped at [`ABSTRACT_CHARS`]
-/// — `None` when the text holds no prose at all (only headings, blank lines or
-/// the abstract marker).
-///
-/// Proper, because the first version of this rule counted every period, and it
-/// was measured cutting a lead inside `exit 101 in 2.` (the period of `2.7 s`)
-/// and inside a path (`merge_review.attempts, .`). A period ends a sentence only
-/// when whitespace or the end of the text follows it, which is the same
-/// statement as *never a period inside a number or a filename*: `2.7`,
-/// `merge_review.attempts` and `notes.md` all continue with a character.
-///
-/// A text with no sentence end in it is its own first sentence, and the cap is
-/// what makes that a line rather than the whole note.
+/// The first proper sentence of a note's prose, capped at [`ABSTRACT_CHARS`], or `None`
+/// when the text holds no prose. A period ends a sentence only when whitespace or the
+/// end of the text follows it, so `2.7` and `notes.md` do not cut a lead short.
 pub fn first_sentence(text: &str) -> Option<String> {
     let prose = prose_lines(text);
     if prose.is_empty() {
@@ -520,16 +306,9 @@ pub fn first_sentence(text: &str) -> Option<String> {
     Some(cap(joined[..end].trim_end()))
 }
 
-/// Whether the period at byte `at` ends a sentence.
-///
-/// The whole rule is this one test, in the three spellings it has to hold in: a
-/// period followed by whitespace or by the end of the text ends a sentence, and
-/// a period inside a number (`2.7`) or inside a filename (`merge_review.attempts`,
-/// `notes.md`) is followed by neither, so it does not. The one case it does not
-/// catch is a filename that a LINE BREAK put a space after — `crates/x.rs` at the
-/// end of a line, joined to the next with a space — which cannot be told from a
-/// sentence end without guessing at tokens; the join is the caller's, and the
-/// limitation is stated rather than defended against.
+/// Whether the period at byte `at` ends a sentence: followed by whitespace or the end of
+/// the text, and not inside a number or a filename. A filename joined across a line
+/// break cannot be told from a sentence end, and the join is the caller's.
 fn ends_a_sentence(text: &str, at: usize) -> bool {
     match text[at + 1..].chars().next() {
         None => true,
@@ -589,11 +368,9 @@ fn prose_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A list marker off the front of a line — `- `, `* `, `+ `, `1. `, `2) `, or a
-/// bare `1.` — so the abstract of a bulleted note is the bullet's own words, and
-/// a numbered list's `1.` is never mistaken for a first sentence.
-///
-/// The space after the marker is required: `2.7 s` is a number, not item two.
+/// A list marker off the front of a line - `- `, `* `, `+ `, `1. `, `2) ` or a bare `1.`
+/// - so a bulleted note's abstract is its own words and a numbered list's `1.` is never
+/// a first sentence. The space is required: `2.7 s` is a number, not item two.
 fn strip_list_marker(line: &str) -> String {
     if let Some(rest) = line
         .strip_prefix("- ")
@@ -699,17 +476,9 @@ impl Tool for NotesTool {
 }
 
 impl NotesTool {
-    /// **The gate's question, asked of the bytes that are about to be durable:**
-    /// is this note a near-copy of one that exists?
-    ///
-    /// `target` is the note being written and is excluded from its own corpus —
-    /// an `append` must not be refused for being similar to the note it grows.
-    /// `after` is the whole file as it would land, not the fragment that changed:
-    /// the score is a property of the note, and half a note has no score.
-    ///
-    /// `None` when nothing is close, and `None` too when there is no corpus — the
-    /// first note in a workspace cannot be a duplicate of anything, and a gate
-    /// that refused the first write would be a gate nobody kept.
+    /// The gate's question about the bytes that are about to become durable: `after` is the
+    /// whole file as it would land, because half a note has no score, and `target` is left
+    /// out of its own corpus so an `append` is never refused for resembling what it grows.
     fn duplicate(&self, target: &Path, after: &str) -> Option<(PathBuf, f64)> {
         let corpus = similarity::Corpus::new(&corpus(self.scope.as_ref()));
         if corpus.is_empty() {
@@ -763,12 +532,9 @@ impl NotesTool {
         Invocation::ok(out)
     }
 
-    /// One note's text, with the caveat line above it. Resolution: a bare
-    /// name looks in the project notes first (that is the directory `add`
-    /// writes, so reading and writing agree), then the box-wide notes, then
-    /// `AGENTS.md`; a path matches the sources exactly or by its trailing
-    /// components, so the paths `list` reports and the paths a digest in the
-    /// prompt shows both work.
+    /// One note's text with the caveat line above it. A bare name looks in the project notes
+    /// first (where `add` writes, so the two agree), then the box-wide notes, then
+    /// `AGENTS.md`; a path matches exactly or by its trailing components.
     fn read(&self, path: Option<&str>, name: Option<&str>) -> Invocation {
         let all: Vec<PathBuf> = sources(self.scope.as_ref())
             .iter()
@@ -792,10 +558,8 @@ impl NotesTool {
                     if want.starts_with('/') {
                         have == want
                     } else {
-                        // A relative path matches by its trailing components, so
-                        // `.letibot/notes/foo.md` and a bare `foo.md` both find
-                        // the same note; two sources with one name between them
-                        // is the ambiguous case below, not a silent pick.
+                        // A relative path matches by its trailing components, so a bare `foo.md` and
+                        // `.letibot/notes/foo.md` find one note.
                         have == want || have.ends_with(&format!("/{want}"))
                     }
                 })
@@ -862,25 +626,9 @@ impl NotesTool {
         }
     }
 
-    /// **The search door: every note's own lines, by the words in them.**
-    ///
-    /// The case it exists for is the index being poor. The index names a note,
-    /// its headings and one line of it; a note whose abstract is a weak summary
-    /// of what it holds is still findable by its own words, and this is a local
-    /// substring match over the whole corpus — no model, no network, and no
-    /// dependence on the digest having been any good. That last part is the
-    /// point: the door has to work when the thing it is a door to does not.
-    ///
-    /// It answers in `grep`'s register, because that is the register a reader
-    /// already knows how to act on: the path, then the matching lines with their
-    /// numbers, so a line can be cited — or read around with `read`'s `ranges` —
-    /// without a second search. Case-insensitive, because this is a recall act
-    /// and not a syntax one.
-    ///
-    /// A query that matches nothing is an **abstention**, the same outcome
-    /// `grep` gives an empty search: the corpus was searched completely, so "no
-    /// note holds this" is an answer — and the body lists the notes there are,
-    /// which is the one thing a caller can act on next.
+    /// Every note's own lines, by the words in them: a local substring match over the whole
+    /// corpus, so a note stays findable when its index entry is a poor summary. It answers
+    /// in `grep`'s register, and no match is an abstention that lists the notes there are.
     fn search(&self, query: Option<&str>) -> Invocation {
         let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) else {
             return Invocation::failed(
@@ -1018,10 +766,9 @@ impl NotesTool {
         let dir = self.scope.workspace().join(NOTES_DIR);
         let target = dir.join(format!("{stem}.md"));
         let existing = std::fs::read_to_string(&target).ok();
-        // The abstract is the author's to set, and it is the one part of a note
-        // the text cannot be asked for: absent, nothing is written and the
-        // harness derives the note's first sentence ([`abstract_of`]). Supplied,
-        // it goes in as the marker line above the text.
+        // The abstract is the author's to set and the one part of a note the text cannot be
+        // asked for: absent, the harness derives it ([`abstract_of`]); supplied, it goes in as
+        // the marker line above the text.
         let asked = args.get("abstract").and_then(|v| v.as_str()).map(one_line);
         let (before, after, said) = match (action, &existing) {
             ("add", Some(_)) => {
@@ -1094,11 +841,9 @@ impl NotesTool {
                 );
             }
             ("append", Some(old)) => {
-                // The marker is not text to grow: it is lifted out, the note is
-                // grown, and the abstract — the new one, or the one that was
-                // there — goes back on top. An `append` that asked for no new
-                // abstract keeps the old one rather than silently dropping the
-                // line the index leads with.
+                // The marker is lifted out, the note grown, and the abstract - the new one or the
+                // one that was there - put back on top, so an `append` that asked for none keeps
+                // the line the index leads with.
                 let was = written_abstract(old);
                 let kept = asked.as_deref().or(was.as_deref());
                 let old_body = without_abstract(old);
@@ -1139,12 +884,9 @@ impl NotesTool {
                 "nothing to do: `{stem}` already holds exactly that text.\n\n{WHEN_READ}\n"
             ));
         }
-        // **The similarity gate, on BOTH write triggers and just before the write
-        // becomes durable.** A note that is a near-copy of one that exists is a
-        // defect wherever it arrives from — the `add` that creates it and the
-        // `append`/`replace` that grows one into it — so the check sits here,
-        // after the bytes are computed and before `write_atomic`, rather than at
-        // creation only. See [`DUPLICATE_FLOOR`].
+        // The similarity gate on both write triggers, after the bytes are computed and before
+        // they are durable: a near-copy is a defect wherever it arrives from, the `add` that
+        // creates it and the `append`/`replace` that grows one into it.
         if let Some((other, score)) = self.duplicate(&target, &after) {
             return Invocation::failed(
                 format!(
@@ -1180,11 +922,9 @@ impl NotesTool {
         let mut inv = Invocation::ok(format!(
             "{said}: {}.\n{}\n\n{WHEN_READ}\n",
             super::human(after.len() as u64),
-            // **What the index will lead with**, said at the moment the author
-            // can still change it: their own line, the note's first sentence, or
-            // the fact that there is no prose to take one from. It is computed
-            // by the reader's own function, so it cannot describe an index the
-            // reader would not build.
+            // What the index will lead with, said while the author can still change it: their
+            // line, the first sentence, or the fact that there is no prose. It uses the reader's
+            // own function, so it cannot describe an index the reader would not build.
             match abstract_of(&after) {
                 Some(a) if a.written => {
                     format!("The index will show your abstract: {}", a.text)
@@ -1224,11 +964,9 @@ impl NotesTool {
     }
 }
 
-/// Atomic write, by the same rules `HostBackend::write` keeps: a temporary in
-/// the target's own directory (created 0600, so nothing reads a half-written
-/// note), synced, then renamed over the target — which keeps the previous
-/// mode, or 0644 for a note that did not exist. A failure removes the
-/// temporary and leaves the original untouched.
+/// Atomic write, by the rules `HostBackend::write` keeps: a temporary in the target's
+/// own directory (0600, so nothing reads a half-written note), synced, then renamed over
+/// the target. A failure removes the temporary and leaves the original alone.
 fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let Some(dir) = target.parent() else {

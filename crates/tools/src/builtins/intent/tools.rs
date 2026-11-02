@@ -1,25 +1,6 @@
-//! `goal`, `enter_plan_mode` and `exit_plan_mode`.
-//!
-//! The three tools that are about the *shape* of a turn rather than its list.
-//!
-//! # `goal`
-//!
-//! Three of the five surveyed harnesses track a goal (`goal`, `update_goal`,
-//! `create_/get_/update_goal`). All three take a sentence and store it. Ours takes
-//! a sentence **and the criterion that would settle it**, and refuses without one,
-//! because a goal nobody can check is a wish and `docs/closed-loop.md` §8 is
-//! explicit that the harness *"can force the form — demand a baseline, demand the
-//! unverified list, refuse a conclusion citing no measurement — but not supply the
-//! answer."* Demanding the form is exactly what this does.
-//!
-//! Marking it met goes through the same check a todo item does: at least one tool
-//! call must have succeeded since the goal was set, or it is recorded as claimed
-//! and the call says so.
-//!
-//! # Plan mode
-//!
-//! See [`super::plan`] for why it is a seating decision rather than a flag. The two
-//! tools here are the doors; the boundary is in that module.
+//! `goal`, `enter_plan_mode` and `exit_plan_mode` - the tools about the shape of a turn.
+//! `goal` takes a sentence and the criterion that would settle it, and refuses without
+//! one: a goal nobody can check is a wish. See [`super::plan`] for plan mode.
 
 use serde_json::Value;
 
@@ -299,10 +280,8 @@ impl Tool for ExitPlanMode {
         steps.truncate(MAX_STEPS);
 
         let turn = ctx.turn_id().to_string();
-        // **This is where plan mode joins the error signal.** The steps a plan
-        // exits with are declared intents, so the turn-boundary diff can say
-        // "you committed to six things and did none of them" — which is T21.3
-        // over a plan rather than over a sentence.
+        // This is where plan mode joins the error signal: the steps a plan exits with are
+        // declared intents, so the turn-boundary diff can say a commitment was never met.
         let mut ids = Vec::new();
         for s in &steps {
             ids.push(self.ledger.declare_row(&turn, s, Source::Plan, None));

@@ -155,11 +155,8 @@ const STORE_LOCK: &str = "<!-- abstract: a store connection waits five seconds f
                               ## What the operator saw\n\nA failed write with no wait at all.\n\n\
                               ## The handler\n\nIt holds the wait rather than failing the call.\n";
 
-/// **The near-copy: the same note, a new name, its abstract reworded.**
-///
-/// The measurement in `crate::similarity` puts this shape at 0.363 and the
-/// closest honest pair in this box's corpus at 0.183, so it is the fixture
-/// the floor has to be on the right side of.
+/// The near-copy: the same note, a new name, its abstract reworded - the shape the
+/// floor has to be on the right side of, against an honest pair scoring far lower.
 const STORE_LOCK_AGAIN: &str = "<!-- abstract: a connection to the store holds for the \
                                     write lock, and the busy handler is what carries the \
                                     wait -->\n\n\
@@ -170,26 +167,17 @@ const STORE_LOCK_AGAIN: &str = "<!-- abstract: a connection to the store holds f
                                     ## The handler\n\nIt holds the wait rather than failing the \
                                     call.\n";
 
-/// **A near-duplicate note is refused by the write gate, and a genuinely
-/// new one is not.**
-///
-/// The operator's ask, verbatim: *"since we ride similarity score - worth
-/// having it as a gate for new notes"*. Both halves are asserted against the
-/// REAL tool over a fixture workspace, because a gate that only refuses — or
-/// only admits — is not a gate, and the half that is easier to forget is the
-/// one that must not fire.
+/// A near-duplicate note is refused by the write gate and a genuinely new one is not:
+/// both halves over the real tool, because a gate that only refuses is not a gate and
+/// the half easier to forget is the one that must not fire.
 #[test]
 fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
     let mut h = writable_harness();
     let (ws, _) = h.notes_dirs();
 
-    // The first note in an empty workspace cannot be a duplicate of anything,
-    // and the gate says so by admitting it. The second is admitted too, and
-    // for a reason that is worth stating: **with one note in the corpus every
-    // term is in every note, so `idf` is zero and nothing scores at all.**
-    // A gate that cannot discriminate admits — the unsafe direction, and the
-    // same limitation the read hint has in the other direction. Two notes is
-    // where the arithmetic starts to mean something.
+    // With one note in the corpus every term is in every note, so `idf` is zero and
+    // nothing scores: a gate that cannot discriminate admits, which is the unsafe
+    // direction, and two notes is where the arithmetic starts to mean something.
     let r = h.call(
         "notes",
         r###"{"action":"add","name":"tui-scrollbar-width","abstract":"the pane scrollbar is one column wide and the border colour is not the theme's","text":"## The width\n\nOne column.\n\n## The colour\n\nIt comes from the theme.\n"}"###,
@@ -237,16 +225,9 @@ fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
     assert!(ws.join(".letibot/notes/compaction-tail-clamp.md").exists());
 }
 
-/// **An edit that would turn a note into a near-copy of another is caught
-/// just before it is durable — and the note's own text is not what it is
-/// measured against.**
-///
-/// The operator's second half, verbatim: *"add it for 'just before edit made
-/// durable' too. we dont want to endup with n almost identical notes by edits
-/// anyway"*. `replace` is the edit that rewrites a note wholesale, and it is
-/// the one that can make a near-copy out of two notes that were distinct.
-/// `append` is the same door with a smaller step, and the note being edited is
-/// excluded from its own corpus — otherwise growing a note would refuse itself.
+/// An edit that would turn a note into a near-copy of another is caught just before it
+/// is durable. `replace` can make a near-copy out of two distinct notes and `append` is
+/// the same door with a smaller step, so the note being edited is left out of its corpus.
 #[test]
 fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
     let mut h = writable_harness();
@@ -296,12 +277,9 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
     assert!(grown.contains("configurable"), "the append landed: {grown}");
 }
 
-/// **The floor's two sides, stated as numbers, so a change to the
-/// arithmetic cannot move the gate quietly.**
-///
-/// The measured corpus is not in the tree — these are fixtures built to the
-/// shapes that were measured, and the numbers they hold are the ones
-/// `crate::similarity`'s module doc records.
+/// The floor's two sides as numbers, so a change to the arithmetic cannot move the gate
+/// quietly: the fixtures are built to the measured shapes, and the numbers they hold are
+/// the ones `crate::similarity` records.
 #[test]
 fn the_gate_floor_sits_between_the_measured_shapes() {
     let corpus = similarity::Corpus::new(&[
@@ -414,20 +392,9 @@ fn a_name_that_escapes_the_notes_dir_is_refused() {
     assert!(wrote.is_empty(), "nothing was written: {wrote:?}");
 }
 
-/// **The two other doors into the notes directory are refused, and the tool
-/// that owns it still writes.**
-///
-/// The hole this closes was named in this module's own doc: a note put in
-/// `.letibot/notes/` by `write` or `edit` never reaches [`DUPLICATE_FLOOR`]'s
-/// gate, and the reader injects it exactly as it injects the notes that were
-/// scored. The second half is the half that must not break — the fix is a rule
-/// about two OTHER doors, and a rule that also caught this tool's own writes
-/// would be worse than the hole.
-///
-/// The spellings are the ones a caller actually produces: the plain one, the
-/// `./`-prefixed one, one that climbs out and comes back, and the absolute path
-/// of the same file. A rule that read the spelling rather than the fact would
-/// be this same defect one door over, so the whole list is one case.
+/// The two other doors into the notes directory are refused and the tool that owns it
+/// still writes: a note put there by `write` or `edit` never reaches [`DUPLICATE_FLOOR`],
+/// and the spellings tried are the ones a caller produces, not one spelling each.
 #[test]
 fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
     let mut h = writable_harness();
@@ -544,10 +511,8 @@ fn read_reaches_the_box_wide_dir_and_a_miss_lists_what_exists() {
         "the miss lists what there is: {said}"
     );
 
-    // The miss stays honest after the note it would have named is gone:
-    // the listing is re-read, so it shows what exists NOW — which, with the
-    // box-wide note deleted and no AGENTS.md in the fixture, is nothing,
-    // and it says so rather than showing an empty listing.
+    // The miss stays honest after the note it would have named is gone: the listing is
+    // re-read, so it shows what exists now, and says so rather than showing an empty list.
     let _ = std::fs::remove_file(global.join("box-rules.md"));
     let r = h.call("notes", r#"{"action":"read","name":"nope"}"#);
     let said = r.render();
@@ -638,13 +603,9 @@ fn a_read_only_backend_refuses_the_write_verbs() {
     );
 }
 
-/// **The listing carries every source, in the prompt's own order, with the
-/// age and the one-line caveat — and within a directory, newest first.**
-///
-/// The order is the reader's rule (`letibot_harnessd::standing_notes`):
-/// `AGENTS.md`, then the box-wide notes, then the project's, each directory
-/// newest first. `list` claims to report them "in prompt order", and a
-/// listing in another order is a listing that makes that sentence false.
+/// The listing carries every source in the reader's order - `AGENTS.md`, then the
+/// box-wide notes, then the project's, each directory newest first - because `list`
+/// claims to report them "in prompt order" and another order makes that sentence false.
 #[test]
 fn list_reports_every_source_in_the_readers_order() {
     let mut h = writable_harness();
@@ -673,12 +634,9 @@ fn list_reports_every_source_in_the_readers_order() {
     );
 }
 
-/// **`search` answers with paths, line numbers and the matching lines —
-/// case-insensitively, and over the box-wide notes too.**
-///
-/// The box-wide dir is the half of the corpus no `read` of the session's
-/// own tree can reach, and it is the half an index built from the wrong
-/// assumption would leave out.
+/// `search` answers with paths, line numbers and the matching lines, case-insensitively
+/// and over the box-wide notes too: that dir is the half of the corpus no read of the
+/// session's own tree can reach.
 #[test]
 fn search_answers_with_paths_line_numbers_and_lines() {
     let mut h = writable_harness();

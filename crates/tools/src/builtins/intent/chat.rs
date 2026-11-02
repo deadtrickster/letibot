@@ -1,41 +1,6 @@
-//! `say` — the fleet chat verb, so a plan can be discussed while it is still a plan
-//! (D9).
-//!
-//! The other half of D9. Plan mode is *no writes to the work*, and the two things a
-//! plan is are **writing the plan** ([`super::write_plan`]) and **talking about it**.
-//! A planner that can neither record nor discuss its plan is a planner that has to
-//! finish alone and hand over prose.
-//!
-//! # This is not how you talk to the person driving the session
-//!
-//! Two different acts, deliberately two different tools:
-//!
-//! | | reaches | blocks | refuses with |
-//! |---|---|---|---|
-//! | [`super::ask::AskUserQuestion`] | the person at the head of *this* session | yes — it waits for an answer | `not_run`, nobody was asked |
-//! | [`Say`] | a room on the fabric, read by other seats and by the operator later | no — a message is not a question | `not_run`, no fabric is attached |
-//!
-//! Conflating them is how a model ends up posting a question into a room and then
-//! treating the absence of an immediate reply as an answer. `say` returns when the
-//! node has taken the message; it never returns an answer, so there is no answer to
-//! misread.
-//!
-//! # A mount, as everywhere else here
-//!
-//! Not attached is the default and it is a configuration, not a fault — the same
-//! rule [`super::queue`] states at length. The local half of this crate needs no
-//! fabric; `say` is the one verb that has nothing to fall back to, so unattached it
-//! is `not_run` naming what is missing and never a message written to a local file
-//! that nobody reads.
-//!
-//! # A room belongs to a project, and the speaker is not the model's to choose
-//!
-//! Measured on this fleet: a message addressed to a seat by name, sent in the wrong
-//! project's `#general`, was **never delivered**. So the room matters and a default
-//! room is a message into the void. And [`Chat::identity`] is read from the seam,
-//! never from an argument: a tool that let the model name the speaker is a tool that
-//! can speak under another seat's name, which is the one thing a shared fabric
-//! cannot forgive.
+//! `say` - the fleet chat verb, so a plan can be discussed while it is still a plan.
+//! It is not how you talk to the person driving the session: it returns when the node has
+//! taken the message and never an answer, so there is no answer to misread.
 
 use letibot_transcript::ToolOutcome;
 use serde_json::Value;
@@ -114,11 +79,9 @@ impl std::fmt::Display for ChatError {
     }
 }
 
-/// The seam to the fabric's rooms.
-///
-/// As with [`super::queue::Queue`], there is **no client here**: this crate has no
-/// HTTP client, no exec path and no async runtime. The implementation that shells
-/// out to `flowy say` or speaks to the node belongs to the daemon.
+/// The seam to the fabric's rooms. As with [`super::queue::Queue`] there is no client
+/// here - no HTTP client, no exec path, no async runtime - so the implementation that
+/// shells out to `flowy say` or speaks to the node belongs to the daemon.
 pub trait Chat: Send + Sync {
     /// The handle the fabric knows this seat by. Never an argument.
     fn identity(&self) -> String;
@@ -168,12 +131,9 @@ impl Chat for NoFabric {
     }
 }
 
-/// The most bytes one message may be.
-///
-/// The fleet's own rule for a room, and it is not arbitrary: *"Three lines is
-/// normal. Ten is a report, and a report belongs in a filed row."* A cap is the
-/// only version of that rule that binds, since a prompt is a prior and not a
-/// constraint.
+/// The most bytes one message may be: three lines is normal, ten is a report and a report
+/// belongs in a filed row. A cap is the only version of that rule that binds, since a
+/// prompt is a prior and not a constraint.
 const MAX_MESSAGE_BYTES: usize = 1200;
 
 pub struct Say {
