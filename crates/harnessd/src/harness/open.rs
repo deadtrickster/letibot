@@ -4174,6 +4174,9 @@ pub(crate) fn load_gguf(path: &std::path::Path) -> Result<Vocab, letibot_tokenco
     })
 }
 
+/// The GGUF's own file name, which is what two servers holding one model agree on even when the
+/// directories differ. A split GGUF's `-00001-of-00006` suffix is kept: two servers that disagree
+/// about the shard count are not serving the same file.
 pub(crate) fn vocab_basename(p: &std::path::Path) -> String {
     p.file_name()
         .map(|s| s.to_string_lossy().to_string())
