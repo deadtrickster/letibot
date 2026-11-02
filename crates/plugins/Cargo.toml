@@ -22,3 +22,5 @@ sha2 = "0.10"
 # live where both sides can see them rather than being spelled twice (serde-only, so this crate
 # stays free of a wasm engine — `docs/plugins-slice1.md` C2).
 letibot-plugin.workspace = true
+# The tree's one wall clock: a pin and a layer's stamp are dated by it.
+letibot-metrics.workspace = true

@@ -841,11 +841,9 @@ impl From<serde_json::Error> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// The store's stamps are `i64` columns; the wall clock itself is the tree's one.
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    letibot_metrics::now_ms() as i64
 }
 
 /// Token ids as a little-endian blob. Explicit, not a pointer cast: this blob

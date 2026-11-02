@@ -556,11 +556,10 @@ pub fn expired_by() -> &'static str {
     "its deadline"
 }
 
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+/// The clock a supervisor gets when nobody injected one: the tree's, in the `i64` a process row
+/// stamps with.
+fn now_ms() -> i64 {
+    letibot_metrics::now_ms() as i64
 }
 
 /// **Which process has this pid, and is it the one we recorded?**

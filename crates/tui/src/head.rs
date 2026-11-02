@@ -39,6 +39,7 @@
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 
+use letibot_metrics::now_ms;
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::event::Envelope;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
@@ -456,13 +457,6 @@ fn replay(args: &Args, cfg: RenderConfig) {
             }
         }
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// This daemon's sessions, one TSV line each, for `letibot --ls`.

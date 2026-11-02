@@ -966,14 +966,9 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Requ
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-/// The clock every part of the room reads: milliseconds since the epoch, and it is the process's
-/// own, so a beat and a sweep cannot disagree about what *now* is.
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+/// The clock every part of the room reads, from the tree's one, re-exported so a beat and a
+/// sweep cannot disagree about what *now* is.
+pub use letibot_metrics::now_ms;
 
 /// **The protocol number this build speaks** — re-exported so a client does not link the wire.
 pub fn protocol() -> u16 {

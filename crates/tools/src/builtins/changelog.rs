@@ -53,6 +53,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use letibot_metrics::now_ms;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -744,10 +745,6 @@ fn age_of(now_ms: u64, at_ms: u64) -> String {
         86_400..=2_591_999 => format!("{} d ago", secs / 86_400),
         _ => format!("{} mo ago", secs / 2_592_000),
     }
-}
-
-fn now_ms() -> u64 {
-    u64::try_from(letibot_tokencore::store::Store::lease_now_ms()).unwrap_or(0)
 }
 
 #[cfg(test)]

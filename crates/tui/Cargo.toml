@@ -21,6 +21,8 @@ letibot-vt.workspace = true
 # **`/health` on the session's local model**, asked off the loop before a message is sent
 # (`app::reach`) — the daemon's own client, so there is no second HTTP framing in the head.
 letibot-http.workspace = true
+# The tree's one wall clock: the head's patience and the daemon's stamps are one number.
+letibot-metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The daemon's pid off the socket (`getsockopt`, in the driver) and the local clock

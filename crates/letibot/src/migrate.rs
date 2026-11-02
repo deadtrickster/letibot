@@ -65,6 +65,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use letibot_metrics::now_ms;
 use letibot_sessionlog::activity::Activity;
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, NOTE_SESSION_CLOSED, ServerFrame};
@@ -1731,10 +1732,6 @@ fn now_ns() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
-}
-
-fn now_ms() -> u128 {
-    now_ns() / 1_000_000
 }
 
 // -------------------------------------------------------------------------------------------

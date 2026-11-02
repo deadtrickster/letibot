@@ -1094,6 +1094,7 @@ dependencies = [
 name = "letibot-plugins"
 version = "0.5.1"
 dependencies = [
+ "letibot-metrics",
  "letibot-plugin",
  "serde_json",
  "sha2",
@@ -1115,6 +1116,7 @@ dependencies = [
 name = "letibot-room"
 version = "0.5.1"
 dependencies = [
+ "letibot-metrics",
  "serde",
  "serde_json",
  "sha2",
@@ -1144,6 +1146,7 @@ name = "letibot-tokencore"
 version = "0.5.1"
 dependencies = [
  "letibot-dialect",
+ "letibot-metrics",
  "letibot-transcript",
  "libc",
  "rusqlite",
@@ -1157,6 +1160,7 @@ name = "letibot-tools"
 version = "0.5.1"
 dependencies = [
  "letibot-code",
+ "letibot-metrics",
  "letibot-plugin",
  "letibot-tokencore",
  "letibot-tools",
@@ -1183,6 +1187,7 @@ version = "0.5.1"
 dependencies = [
  "letibot-builtins",
  "letibot-http",
+ "letibot-metrics",
  "letibot-plugin",
  "letibot-plugins",
  "letibot-sessionlog",

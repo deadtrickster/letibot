@@ -2847,12 +2847,9 @@ impl Registry {
     }
 }
 
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+/// Unix millis now, through the tree's one clock: re-exported so this module's callers keep
+/// the path they have always used.
+pub use letibot_metrics::now_ms;
 
 #[cfg(test)]
 mod tests {

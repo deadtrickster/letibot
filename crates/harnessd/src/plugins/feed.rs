@@ -39,6 +39,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use letibot_sessionlog::registry::Registry;
+// The host's clock, in unix millis. See this module's note: a guest has none.
+pub(crate) use letibot_metrics::now_ms;
 use serde_json::{Value, json};
 
 /// **Where a pane's session list comes from.** One implementation in the daemon (the registry);
@@ -133,14 +135,6 @@ pub fn sessions(source: &dyn SessionFeed, here: &str) -> Value {
 /// The host's home, so a layer can draw `~/…` — the same shortening the head's own list does.
 fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
-}
-
-/// The host's clock, in unix millis. See this module's note: a guest has none.
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// **The folder of `workspace`'s git common directory** — the checkout a worktree was cut from,

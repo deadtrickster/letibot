@@ -40,6 +40,7 @@ use std::time::Duration;
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Parts, Sessions};
+use letibot_metrics::now_ms;
 use letibot_sessionlog::registry::Registry;
 use letibot_sessionlog::{SessionEvent, hub::Hub};
 use letibot_tokencore::Vocab;
@@ -161,10 +162,6 @@ fn a_landing(store: &Store, repo: &str, id: &str, to: MergeState, at: u64) {
             at,
         )
         .unwrap();
-}
-
-fn now_ms() -> u64 {
-    letibot_sessionlog::registry::now_ms()
 }
 
 fn session_row(id: &str, workspace: &std::path::Path, parent: Option<&str>) -> SessionRecord {

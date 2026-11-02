@@ -18,6 +18,8 @@ letibot-plugin.workspace = true
 # conversion on the way. tokencore is below this crate in the layering — it
 # depends on nothing here.
 letibot-tokencore.workspace = true
+# The tree's one wall clock: `metrics` owns the millisecond whose unit `ts_ms` is.
+letibot-metrics.workspace = true
 serde.workspace = true
 # preserve_order for the same reason the engine needs it: a tool call's argument
 # key order becomes prompt bytes on the next turn, and reordering re-prefills.

@@ -38,6 +38,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
+use letibot_metrics::now_ms;
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
 use letibot_sessionlog::wire::FrameReader;
@@ -1363,16 +1364,6 @@ fn open_url(url: &str) -> Result<(), String> {
             "no `{program}` on this box, so `{url}` was not opened: {e}"
         )),
     }
-}
-
-/// Wall clock in milliseconds. The head's own, not the daemon's: it is used only
-/// to notice that the daemon has gone quiet, and a clock taken from the party that
-/// has stopped talking cannot notice that.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 letibot-transcript.workspace = true
 letibot-dialect.workspace = true
+# The tree's one wall clock: `metrics` owns the millisecond whose unit `ts_ms` is.
+letibot-metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 libc = "0.2"

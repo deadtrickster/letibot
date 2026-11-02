@@ -58,6 +58,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use letibot_metrics::now_ms;
 use serde_json::{Value, json};
 
 use crate::builtins::changelog::{self, ChangelogScope};
@@ -1533,10 +1534,6 @@ fn text(args: &Value, key: &str) -> Option<String> {
         Some(Value::Bool(b)) => Some(b.to_string()),
         _ => None,
     }
-}
-
-fn now_ms() -> u64 {
-    u64::try_from(letibot_tokencore::store::Store::lease_now_ms()).unwrap_or(0)
 }
 
 #[cfg(test)]

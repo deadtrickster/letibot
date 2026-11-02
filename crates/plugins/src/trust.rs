@@ -41,8 +41,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
+use letibot_metrics::now_ms;
 use serde_json::{Value, json};
 
 use crate::{MANIFEST, Manifest, WASM, sha256_file, sha256_hex};
@@ -719,13 +720,6 @@ fn stamp_of(path: &Path) -> (u64, u64) {
         }
         Err(_) => (0, 0),
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// **Is this write about a layer?** — a module, a manifest, or a file beside one.
