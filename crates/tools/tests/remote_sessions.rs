@@ -52,9 +52,8 @@ impl Fake {
         let d = dir.display().to_string();
         let body = body.replace("@DIR@", &d);
         // `[ $# -eq 0 ] && exit 0` first, because `write_stub` proves the file by exec'ing it with no
-        // arguments and a `sleep 300` prelude would be this fixture hanging. `-O check`/`-O exit` answer
-        // `1`, so nothing waits on a socket nothing listens to. `bash -lc "$last"` runs as a CHILD and not
-        // an `exec`: a replaced shell runs no `EXIT` trap, so the session's `live` file would never go.
+        // arguments. `bash -lc "$last"` runs as a CHILD and not an `exec`: a replaced shell runs no `EXIT`
+        // trap, so the session's `live` file would never go.
         write_executable(
             &program,
             &format!(
