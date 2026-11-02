@@ -1760,7 +1760,9 @@ impl Harness {
         Ok(())
     }
 
-    fn rounds(&mut self) -> Result<Reply, HarnessError> {
+    /// **A turn needs somewhere to go, and a key to get there**: the two refusals `rounds`
+    /// makes before it drains anything the operator typed.
+    fn the_turn_has_somewhere_to_go(&mut self) -> Result<(), HarnessError> {
         // **The key first, before anything is drained or sent.** A provider with no key
         // is asked for one here; a refusal returns before the turn takes the operator's
         // message, so nothing they typed is spent on a turn that could not run.
@@ -1775,6 +1777,169 @@ impl Harness {
         if self.provider.is_none() && self.engine.vocab().is_bytes() {
             return Err(HarnessError::Setup(NO_MODEL_CHOSEN.to_string()));
         }
+        Ok(())
+    }
+
+    /// **The wall, checked between two rounds rather than only at a turn's boundary** — and
+    /// the whole turn stopped when it has been reached, which is the honest half a `Harness`
+    /// can do on its own.
+    fn stop_the_turn_at_the_wall(&mut self, round: usize) -> Result<(), HarnessError> {
+        // **The wall can arrive MID-TURN, and the turn boundary is too late.**
+        //
+        // A tool result is appended between rounds, so one big one can put the
+        // conversation past `n_ctx` while the turn is still running; the next
+        // round then sends a prompt the server refuses with
+        // `500 Context size has been exceeded` and the WHOLE TURN is lost with
+        // nothing recorded. That is how the operator's session died on
+        // 2026-09-15 — a 123k-token `edit` refusal, mid-turn.
+        //
+        // Measured after the boundary check was added and before this one: a
+        // 700-line read at `--context-window 8000` left 11,818 tokens
+        // resident, 3,818 PAST the window, and survived only because the model
+        // happened not to need another round.
+        //
+        // pi puts a `prepareNextTurn` hook here for the same reason — its own
+        // comment says *"Preparation can be long-running (for example,
+        // compaction)"* — and runs it between rounds rather than around the
+        // turn.
+        //
+        // This stops the turn instead of compacting in place, because
+        // `turn::compaction` is explicit that building the new base reaches
+        // the store, the resume chain and the registry, none of which a
+        // `Harness` owns. Stopping is the honest half a `Harness` CAN do: the
+        // rounds so far are committed, `Sessions` compacts at the boundary it
+        // already checks, and the next turn continues on the summary. A turn
+        // that ends early and says so beats one the server refuses whole.
+        // `!self.compacting`: **the compaction turn is exempt.** It runs
+        // through this same loop, and it is the one turn whose whole purpose
+        // is to be over the wall — stopping it there would make compaction
+        // impossible exactly when it is needed, which is what happened on the
+        // first run of this check.
+        // **Measured before it is judged (R72)**: the tool results of the round just
+        // ended are in the ledger and not in the last round's count, and the roll adds
+        // them as sent rather than through a ratio they have nothing to do with.
+        //
+        // **And round 0 is checked too, against the window itself** (R72 follow-up).
+        // The doors before a turn (`Sessions::run_prompt`, the nag, the wake) judge the
+        // conversation BEFORE the prompt is appended, with a reserve of a sixteenth of
+        // the window for it — so a prompt bigger than that reserve (a paste, a long
+        // message from a session) went out over the window and came back as the
+        // provider's refusal, the wall reached by a wasted request. Round 0 stops only
+        // when what it is about to send is already PAST the window, not inside the
+        // reserve: the reserve is the doors' question, and asking it again here would
+        // stop every turn the doors had just let through near the edge. Between rounds
+        // it is the reserve, as before — the next round's reply has to fit too.
+        let now = (!self.compacting).then(|| self.measure_resident());
+        // **Not on an estimate of a folded base, at round 0, on a metered session**:
+        // that count is the fork's re-based estimate, and the one round that would
+        // replace it with the provider's is this one. Stopping it on the estimate
+        // (pg-noop, 2026-10-11: ≈ 1,039,055, past the window; measured 507,355) is a
+        // wall nothing could ever measure its way out of. If the provider counts it
+        // over, it says so, and the refused door folds.
+        let unmeasured_base = round == 0
+            && self.provider.is_some()
+            && self.cfg.wall.awaiting_on(&self.session.transcript_id);
+        if !self.compacting
+            && !unmeasured_base
+            && let Some(window) = self.cfg.planning_window()
+            && self.cfg.auto_compact
+            && !self.cfg.wall.is_stuck()
+        {
+            let resident = self.session.ledger.len() as u64;
+            let prefix = u64::from(self.session.ledger.prefix_len());
+            if wall_stops_this_round(
+                round,
+                resident,
+                prefix,
+                self.cfg.headroom(),
+                window,
+                self.cfg.wall_basis(),
+            ) {
+                // In the units the operator's header shows, and the count the
+                // decision was made on; see `Harness::measure_resident`. The
+                // ledger's own figures are named once at the end rather than per
+                // number, because three conversions in one sentence is not a
+                // sentence.
+                let (w, h) = self.cfg.shown_wall();
+                let r = now.map(|n| n.tokens).unwrap_or(resident);
+                let unit = self.token_unit();
+                let here = self
+                    .provider
+                    .as_ref()
+                    .map(|p| format!("{}/{}", p.name(), p.model()))
+                    .unwrap_or_default();
+                let also = if let Some(model) = self.cfg.carried_note() {
+                    // **An estimate, named as one, with whose measurement it is.** This
+                    // is the line the 2026-10-25 session needed and did not get: the
+                    // count is the ledger's bytes converted by the ratio deepseek
+                    // measured, not a number anything has confirmed for glm-coding.
+                    format!(
+                        " (estimated with {model}'s measured scale: no round has run on \
+                             {here} yet, so this box's own ledger count is converted by the \
+                             ratio {model} measured before the switch. One round here replaces \
+                             it)"
+                    )
+                } else if self.cfg.tokens_are_converted() {
+                    format!(
+                        " (counted as the provider counts them; this box's own \
+                             ledger says {resident} of {window}, and it over-counts \
+                             because it holds the reasoning the provider is not sent)"
+                    )
+                } else if self.cfg.tokens_are_unscaled() {
+                    // **The switch window, named rather than presented as calibrated.**
+                    // No round has run on this model yet, so these are the ledger's own
+                    // counts against a window measured on the model before it — and a
+                    // reader who is not told cannot tell that from a measured sentence.
+                    format!(
+                        " (these are this box's own ledger counts: no round has run on \
+                             {here} since it took over, so nothing has measured how its \
+                             tokens relate to the ledger's. One round sets it)"
+                    )
+                } else {
+                    String::new()
+                };
+                self.hub.publish(SessionEvent::Warning {
+                    code: "context_wall".into(),
+                    detail: format!(
+                        "stopping this turn after {round} round(s): {r} of {w} \
+                             {unit} are resident and the next round needs {h} free{also}. \
+                             Everything so far is committed, and the session compacts \
+                             before the next turn — this is the wall, not a failure of \
+                             the work."
+                    ),
+
+                    compaction: None,
+                });
+                // **And it names the session, for the same reason the `compacting:` line
+                // two steps below it does and only since 2026-10-03.** This is one log file
+                // every daemon appends to, so a wall printed here and the compaction it
+                // triggers (`sessions.rs`) land with other sessions' work between them —
+                // and with no id either side, *which* session met the wall is unreadable,
+                // which is exactly what left the operator's *"too much too early"*
+                // unattributable. Measured 2026-10-03: a wall at 1.4M tokens followed by a
+                // fold to 633k and a compaction to 8k, and no way to say whether those were
+                // one session behaving differently or two behaving consistently. The id
+                // costs fourteen bytes and makes the pair a measurement rather than an
+                // adjacency — the same correction the `compacting:` line already had.
+                let session_id = &self.cfg.session_id;
+                eprintln!(
+                    "  {session_id}: context wall: stopped after {round} round(s) at {r} of {w} \
+                         {unit} ({resident} of {window} ledger tokens)"
+                );
+                return Err(HarnessError::ContextWall {
+                    rounds: round,
+                    resident: r,
+                    window: w,
+                    unit,
+                    ledger: (resident, window),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn rounds(&mut self) -> Result<Reply, HarnessError> {
+        self.the_turn_has_somewhere_to_go()?;
         // How many times this turn has asked again after a refused key. Bounded, so a
         // provider that refuses every key does not hold the worker in a loop of cards.
         let mut key_asks = 0usize;
@@ -1828,157 +1993,7 @@ impl Harness {
 
         let backstop = round_backstop(self.cfg.max_tool_rounds);
         for round in 0..backstop {
-            // **The wall can arrive MID-TURN, and the turn boundary is too late.**
-            //
-            // A tool result is appended between rounds, so one big one can put the
-            // conversation past `n_ctx` while the turn is still running; the next
-            // round then sends a prompt the server refuses with
-            // `500 Context size has been exceeded` and the WHOLE TURN is lost with
-            // nothing recorded. That is how the operator's session died on
-            // 2026-09-15 — a 123k-token `edit` refusal, mid-turn.
-            //
-            // Measured after the boundary check was added and before this one: a
-            // 700-line read at `--context-window 8000` left 11,818 tokens
-            // resident, 3,818 PAST the window, and survived only because the model
-            // happened not to need another round.
-            //
-            // pi puts a `prepareNextTurn` hook here for the same reason — its own
-            // comment says *"Preparation can be long-running (for example,
-            // compaction)"* — and runs it between rounds rather than around the
-            // turn.
-            //
-            // This stops the turn instead of compacting in place, because
-            // `turn::compaction` is explicit that building the new base reaches
-            // the store, the resume chain and the registry, none of which a
-            // `Harness` owns. Stopping is the honest half a `Harness` CAN do: the
-            // rounds so far are committed, `Sessions` compacts at the boundary it
-            // already checks, and the next turn continues on the summary. A turn
-            // that ends early and says so beats one the server refuses whole.
-            // `!self.compacting`: **the compaction turn is exempt.** It runs
-            // through this same loop, and it is the one turn whose whole purpose
-            // is to be over the wall — stopping it there would make compaction
-            // impossible exactly when it is needed, which is what happened on the
-            // first run of this check.
-            // **Measured before it is judged (R72)**: the tool results of the round just
-            // ended are in the ledger and not in the last round's count, and the roll adds
-            // them as sent rather than through a ratio they have nothing to do with.
-            //
-            // **And round 0 is checked too, against the window itself** (R72 follow-up).
-            // The doors before a turn (`Sessions::run_prompt`, the nag, the wake) judge the
-            // conversation BEFORE the prompt is appended, with a reserve of a sixteenth of
-            // the window for it — so a prompt bigger than that reserve (a paste, a long
-            // message from a session) went out over the window and came back as the
-            // provider's refusal, the wall reached by a wasted request. Round 0 stops only
-            // when what it is about to send is already PAST the window, not inside the
-            // reserve: the reserve is the doors' question, and asking it again here would
-            // stop every turn the doors had just let through near the edge. Between rounds
-            // it is the reserve, as before — the next round's reply has to fit too.
-            let now = (!self.compacting).then(|| self.measure_resident());
-            // **Not on an estimate of a folded base, at round 0, on a metered session**:
-            // that count is the fork's re-based estimate, and the one round that would
-            // replace it with the provider's is this one. Stopping it on the estimate
-            // (pg-noop, 2026-10-11: ≈ 1,039,055, past the window; measured 507,355) is a
-            // wall nothing could ever measure its way out of. If the provider counts it
-            // over, it says so, and the refused door folds.
-            let unmeasured_base = round == 0
-                && self.provider.is_some()
-                && self.cfg.wall.awaiting_on(&self.session.transcript_id);
-            if !self.compacting
-                && !unmeasured_base
-                && let Some(window) = self.cfg.planning_window()
-                && self.cfg.auto_compact
-                && !self.cfg.wall.is_stuck()
-            {
-                let resident = self.session.ledger.len() as u64;
-                let prefix = u64::from(self.session.ledger.prefix_len());
-                if wall_stops_this_round(
-                    round,
-                    resident,
-                    prefix,
-                    self.cfg.headroom(),
-                    window,
-                    self.cfg.wall_basis(),
-                ) {
-                    // In the units the operator's header shows, and the count the
-                    // decision was made on; see `Harness::measure_resident`. The
-                    // ledger's own figures are named once at the end rather than per
-                    // number, because three conversions in one sentence is not a
-                    // sentence.
-                    let (w, h) = self.cfg.shown_wall();
-                    let r = now.map(|n| n.tokens).unwrap_or(resident);
-                    let unit = self.token_unit();
-                    let here = self
-                        .provider
-                        .as_ref()
-                        .map(|p| format!("{}/{}", p.name(), p.model()))
-                        .unwrap_or_default();
-                    let also = if let Some(model) = self.cfg.carried_note() {
-                        // **An estimate, named as one, with whose measurement it is.** This
-                        // is the line the 2026-10-25 session needed and did not get: the
-                        // count is the ledger's bytes converted by the ratio deepseek
-                        // measured, not a number anything has confirmed for glm-coding.
-                        format!(
-                            " (estimated with {model}'s measured scale: no round has run on \
-                             {here} yet, so this box's own ledger count is converted by the \
-                             ratio {model} measured before the switch. One round here replaces \
-                             it)"
-                        )
-                    } else if self.cfg.tokens_are_converted() {
-                        format!(
-                            " (counted as the provider counts them; this box's own \
-                             ledger says {resident} of {window}, and it over-counts \
-                             because it holds the reasoning the provider is not sent)"
-                        )
-                    } else if self.cfg.tokens_are_unscaled() {
-                        // **The switch window, named rather than presented as calibrated.**
-                        // No round has run on this model yet, so these are the ledger's own
-                        // counts against a window measured on the model before it — and a
-                        // reader who is not told cannot tell that from a measured sentence.
-                        format!(
-                            " (these are this box's own ledger counts: no round has run on \
-                             {here} since it took over, so nothing has measured how its \
-                             tokens relate to the ledger's. One round sets it)"
-                        )
-                    } else {
-                        String::new()
-                    };
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "context_wall".into(),
-                        detail: format!(
-                            "stopping this turn after {round} round(s): {r} of {w} \
-                             {unit} are resident and the next round needs {h} free{also}. \
-                             Everything so far is committed, and the session compacts \
-                             before the next turn — this is the wall, not a failure of \
-                             the work."
-                        ),
-
-                        compaction: None,
-                    });
-                    // **And it names the session, for the same reason the `compacting:` line
-                    // two steps below it does and only since 2026-10-03.** This is one log file
-                    // every daemon appends to, so a wall printed here and the compaction it
-                    // triggers (`sessions.rs`) land with other sessions' work between them —
-                    // and with no id either side, *which* session met the wall is unreadable,
-                    // which is exactly what left the operator's *"too much too early"*
-                    // unattributable. Measured 2026-10-03: a wall at 1.4M tokens followed by a
-                    // fold to 633k and a compaction to 8k, and no way to say whether those were
-                    // one session behaving differently or two behaving consistently. The id
-                    // costs fourteen bytes and makes the pair a measurement rather than an
-                    // adjacency — the same correction the `compacting:` line already had.
-                    let session_id = &self.cfg.session_id;
-                    eprintln!(
-                        "  {session_id}: context wall: stopped after {round} round(s) at {r} of {w} \
-                         {unit} ({resident} of {window} ledger tokens)"
-                    );
-                    return Err(HarnessError::ContextWall {
-                        rounds: round,
-                        resident: r,
-                        window: w,
-                        unit,
-                        ledger: (resident, window),
-                    });
-                }
-            }
+            self.stop_the_turn_at_the_wall(round)?;
             let mut sink = CapturingSink::new(self.hub.clone());
             // **Compose this round's offer, before anything is sent.** It is scored
             // against the person's prompt and the turn's tool results — the design's
