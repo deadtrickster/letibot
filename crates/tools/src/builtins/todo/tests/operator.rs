@@ -1,12 +1,5 @@
-//! **A row that waits on the OPERATOR** — the `operator` edge, its refusals, the check's reading of
-//! it, and the answer that unblocks it.
-//!
-//! The operator's ask, verbatim, which every test here quotes from: *"a todo can be dependent on
-//! todo, and todo can be dependend on ME. if model says todo is dependent on ME the other heads of
-//! the todo DAG keep firing, model told to try to figure it out anyways, and the heads show loud
-//! notification that im waited. i guess we will force models to do choice for todo - so when it
-//! says it waits for ME it give me that choice list with an optioin to enter my freetext. and then
-//! when i submit todo becomes unblocked with reply attached"*.
+//! A row that waits on the OPERATOR: the `operator` edge, its refusals, the check's reading of it,
+//! and the answer that unblocks it.
 
 use super::*;
 

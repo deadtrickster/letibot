@@ -1,10 +1,5 @@
-//! **The room's rows on a session's board** — `TodoBoard::set_room_rows`, and the one predicate
-//! that decides whether the idle check speaks about them.
-//!
-//! `crates/harnessd/tests/room_reminders.rs` is the end-to-end proof (a real socket, a real
-//! harness, the real nag). This file is the board's own contract, which that test would only reach
-//! through a daemon: what a *second* pass does, what an item that is gone does, and what happens to
-//! a row the model already wrote with the same words.
+//! The room's rows on a session's board: `TodoBoard::set_room_rows` and the predicate that decides
+//! whether the idle check speaks about them, at the board's own level rather than through a daemon.
 
 use super::*;
 
@@ -64,10 +59,8 @@ fn a_pass_that_changes_nothing_bumps_nothing() {
     assert!(b.version() > v, "an edge coming off is news");
 }
 
-/// **Retired when the item is** — the pass that no longer names an item takes that item's row off
-/// the board, in the same pass. This is the one door on the model's half that can remove a row,
-/// and the argument is the queue's: a room row is the ROOM seen from a session, and the record of
-/// it is the room.
+/// The pass that no longer names an item retires that item's row in the same pass: the room is the
+/// record of it, so the board is a view that must not outlive the item.
 #[test]
 fn an_item_that_is_gone_takes_its_row_with_it() {
     let b = TodoBoard::new(Vec::new());
@@ -132,13 +125,8 @@ fn a_row_the_model_already_wrote_is_reused_and_a_reworded_one_is_left_alone() {
     );
 }
 
-/// **A row the model re-worded is the MODEL's** — this board's key is the words, so a re-worded
-/// row is a new row, and the pass's own row is still there to retire. What must not happen is the
-/// pass deleting a row it did not write.
-///
-/// **And retirement needs no memory of what was written**, which is what makes it survive a
-/// daemon restart: `Harness::open` rebuilds the board from the store, so the first pass of a new
-/// process has written nothing — and the row says whose it is, because the edge is on it.
+/// A re-worded row is a new row, because the board's key is the words; the pass must retire only the
+/// rows its edge is on, which is also why retirement needs no memory of what it wrote.
 #[test]
 fn retiring_by_the_edge_survives_a_board_rebuilt_from_a_store() {
     let b = TodoBoard::new(Vec::new());

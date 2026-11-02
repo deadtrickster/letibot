@@ -46,13 +46,8 @@ fn call(args: &str) -> ToolCall {
 
 // -- the turn boundary ------------------------------------------------
 
-/// **The check's sentence for a plan that IS the whole board** — the shorthand every test below
-/// uses, and the honest one: these plans carry no POSTPONED row, so the caller's narrowing
-/// (`the_plan_as_checked`) would hand back exactly the same rows, and no row of theirs waits on
-/// a child or on a job, so `ChildSessions::none()` and `RunningJobs::none()` are the reading the
-/// daemon would hand in for them. A test that needs the two to differ says so by calling
-/// `unfinished_plan` with both — or by passing the children or the jobs it means, as the child
-/// and job tests below do.
+/// The shorthand for a plan that IS the whole board: nothing postponed and no row waiting on a
+/// child or a job, so the caller's narrowing hands back exactly these rows.
 fn nag_for(todos: &[TodoItem]) -> Option<String> {
     nag_with(todos, &ChildSessions::none(), &no_jobs())
 }

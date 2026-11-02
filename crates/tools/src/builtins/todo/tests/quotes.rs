@@ -2,12 +2,8 @@
 
 use super::*;
 
-/// **A CALL THAT NAMES NO ROW IS REFUSED, and an empty list is one of those.**
-///
-/// `{"todos": []}` used to mean *clear the board*, and the operator has ruled that out: *"only i
-/// should be able to delete todo items."* With no delete on this board an empty list says
-/// nothing at all, so it is refused rather than read as one that did something — and the board
-/// keeps every row it had.
+/// Nothing this tool sends removes a row, so an empty list cannot mean "clear the board": it says
+/// nothing at all, and is refused rather than read as a call that did something.
 #[test]
 fn an_empty_list_is_refused_and_removes_nothing() {
     let (rt, board) = runtime();
@@ -40,15 +36,8 @@ fn an_empty_list_is_refused_and_removes_nothing() {
 
 // -- ONE ROW, BY ITS OWN WORDS -----------------------------------------
 
-/// **A QUOTE MARKS EXACTLY ONE ROW, and `update` does it without re-sending the list.**
-///
-/// The operator's ask: an `update` field that takes the row's exact content plus the new status,
-/// because there was no way to say *this row, and only this one, is now done* without sending the
-/// whole list again.
-///
-/// The assertion is a DIFF of the rendered board: one line moved, only the mark inside it, and
-/// the line count is the same. A status change that also moved a row, added one or dropped one
-/// would pass a count of `snapshot().len()` and fail here.
+/// `update` takes a row's exact content plus its new status, so one row can be marked without
+/// resending the list; the assertion is a line diff, which a row that moved or vanished would fail.
 #[test]
 fn a_quote_marks_exactly_one_row() {
     let (rt, board) = runtime();
@@ -112,11 +101,8 @@ fn a_quote_marks_exactly_one_row() {
     );
 }
 
-/// **A QUOTE THAT FITS NO ROW IS REFUSED, and the refusal names the rows that half DOES hold.**
-///
-/// The house rule for a name — `set_states`' own doc — and what makes content-keying safe: the
-/// model can quote one of the rows it was just shown instead of guessing again. **AND NOTHING IS
-/// WRITTEN** — not the row, and not the `todos` beside it.
+/// A quote that fits no row is refused naming the rows that half DOES hold, so the model can quote
+/// one instead of guessing; and nothing is written, neither the quote nor the `todos` beside it.
 #[test]
 fn a_quote_that_fits_no_row_is_refused_by_name() {
     let (rt, board) = runtime();
@@ -158,13 +144,8 @@ fn a_quote_that_fits_no_row_is_refused_by_name() {
     assert_eq!(board.version(), v, "and nothing was announced");
 }
 
-/// **A QUOTE THAT FITS TWO ROWS IS REFUSED, and BOTH are named.**
-///
-/// Two rows answer to one quote when their text differs only in whitespace — the match trims —
-/// which `todo_write` cannot produce (it upserts by trimmed text) and a store written by hand
-/// can. So the board is built directly, through the same door a RESUMED session's store comes in
-/// by. The guess this refuses to make is a row silently changing state under a model that quoted
-/// something else.
+/// Two rows answer to one quote when their text differs only in whitespace, because the match
+/// trims: refusing beats a row changing state under a model that meant the other one.
 #[test]
 fn a_quote_that_fits_two_rows_is_refused_naming_both() {
     let (rt, board) = runtime_with(vec![
