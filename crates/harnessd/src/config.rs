@@ -1544,6 +1544,13 @@ impl Config {
         self.box_skills.in_workspace(&self.workspace)
     }
 
+    /// The skills the operator pinned, `[skills] pin` from the project file and their own: the only
+    /// rows the prompt's index carries, and the one list a pin that answers to nothing is found in.
+    /// Both levels apply and `--no-project-config` leaves only the operator's, which is the merge.
+    pub fn skills_pin(&self) -> &[String] {
+        &self.leticode.skills.pin
+    }
+
     /// This session's logs directory: `<logs_root>/<session id>/`, or - with no logs root, as
     /// in a fixture - `<workspace>/.letibot/`, where they were before.
     pub fn daemon_logs(&self) -> PathBuf {

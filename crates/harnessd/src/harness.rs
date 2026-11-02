@@ -155,9 +155,10 @@ impl Parts {
                 )
             }
         };
-        let skills = std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_for(
-            &cfg.skill_dirs(),
-        ));
+        let skills = std::sync::Arc::new(
+            letibot_tools::builtins::skill::SkillRegistry::load_for(&cfg.skill_dirs())
+                .with_pins(cfg.skills_pin().iter().cloned()),
+        );
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
         let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(
             crate::tasks::default_state_path(),
@@ -754,6 +755,10 @@ impl HubSteering {
 
 /// The warning code for a session whose workspace no longer exists (R92.24).
 const WORKSPACE_GONE: &str = "workspace_gone";
+
+/// The warning code for a `[skills] pin` naming nothing this box holds: said at open, once, so a
+/// typo does not read as a pin that took effect.
+pub(crate) const SKILLS_PIN: &str = "skills_pin";
 
 /// The warning code for a session that asked for a boundary and got a whole-host shell, said once at
 /// open: the consequence is invisible from the inside, since a session with no boundary asks about

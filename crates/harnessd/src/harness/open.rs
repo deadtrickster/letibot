@@ -2072,6 +2072,24 @@ impl Harness {
         // The standing notes are composed HERE, at open, and not only at a base rebuild: `reseat_target` re-reads
         // them on every fork, and a fork was the only thing that ran it, so a FRESH session's message zero carried
         // none. A resumed session is unaffected. And the skills this session was STARTED with, in the same section.
+        // A pin that answers to nothing is the operator's typo, and silence is how it reads as a
+        // pin that took effect: said once, here, with the name they typed.
+        let unknown = parts.skills.unknown_pins();
+        if !unknown.is_empty() {
+            hub.publish(SessionEvent::Warning {
+                code: SKILLS_PIN.into(),
+                detail: format!(
+                    "a pinned skill nothing on this box answers to: {}. `[skills] pin` takes the \
+                     names `skill list` reports; the rest of the pins are in force.",
+                    unknown
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                compaction: None,
+            });
+        }
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
         let standing = crate::standing_notes::section_with_skills(
             &cfg.workspace,

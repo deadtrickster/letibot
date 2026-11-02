@@ -259,10 +259,21 @@ impl SkillRegistry {
         self
     }
 
-    /// The names the prompt lists in full, in the order they were pinned nowhere else: the set is
-    /// what `index` reads, and a caller may want to say a pin that answers to nothing.
+    /// The names the prompt lists in full: the set is what `index` reads, and what
+    /// [`Self::unknown_pins`] is measured against.
     pub fn pins(&self) -> &BTreeSet<String> {
         &self.pins
+    }
+
+    /// The pinned names nothing on this box answers to, sorted. A pin is the operator's own sentence,
+    /// and a typo in one is silent without this: both the prompt and the session's opening say it.
+    pub fn unknown_pins(&self) -> Vec<&str> {
+        let (rows, _) = self.index_rows();
+        self.pins
+            .iter()
+            .filter(|pin| !rows.iter().any(|r| &r.name == *pin))
+            .map(String::as_str)
+            .collect()
     }
 
     /// Install the shelf. Once: a second shelf replaces the first and says so in
@@ -534,13 +545,7 @@ impl SkillRegistry {
         }
         // A pin nothing answers to is the operator's mistake, and the prompt says it rather than
         // silently listing one row fewer than was asked for.
-        let mut unknown: Vec<&String> = self
-            .pins
-            .iter()
-            .filter(|p| !rows.iter().any(|r| &r.name == *p))
-            .collect();
-        unknown.sort();
-        for name in unknown {
+        for name in self.unknown_pins() {
             out.push_str(&format!("pinned `{name}` names no skill on this box\n"));
         }
         if let Some(said) = said {
@@ -1069,6 +1074,20 @@ mod tests {
         assert!(index.contains("0 pinned of 1"), "{index}");
         assert!(!index.contains("\n- "), "no row and no source: {index}");
         assert!(index.contains("1 more that `skill list` holds"), "{index}");
+
+        // A pin nothing answers to is NAMED in the prompt and not silently dropped: the operator
+        // typed a name, and a pin that did nothing is the one thing they cannot see from outside.
+        assert!(
+            plain.unknown_pins().is_empty(),
+            "a box with no pins has none"
+        );
+        let ghost = plain.with_pins(["ghost-skill"]);
+        assert_eq!(ghost.unknown_pins(), vec!["ghost-skill"]);
+        let index = ghost.index(&vocab).expect("an index");
+        assert!(
+            index.contains("pinned `ghost-skill` names no skill on this box"),
+            "{index}"
+        );
     }
 
     /// The index names a pinned skill with its source, and carries no body. The bodies are what
