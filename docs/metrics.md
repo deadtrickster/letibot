@@ -24,7 +24,6 @@ daemon log** carries no timestamp on any line, so it answers "did it happen" and
 **The hub's `SessionEvent`** already carries about half of what this design records - turn start and end with
 usage and timings, tool start and finish with bytes and spill, warnings by code, decisions, subagent and job
 transitions, queue moves - timestamped by arrival, bounded, and lost on restart. Nothing persisted it.
-
 Two rules follow, and they are the whole design: **the hub's stream is the source where it already says the
 thing** (a tap in `Hub::publish` costs a clone and a send), and **nothing on the worker's path may touch SQL**.
 
@@ -143,12 +142,12 @@ an empty composer). Scrolled back, `/fb` marks the row the view is held on. With
 
 The row carries `ts_ms` from the head's clock at the press (a clock more than a minute off the daemon's is not
 believed and the receipt time is used), the turn and round, the item id, the tags, the note, the head and
-identity, and `at_state` - `streaming`, `tool`, `waiting-approval` or `idle`, with the open call if any.
+identity, and `at_state` - `streaming`, `tool`, `waiting-approval` or `idle`.
 
 It travels on `ClientFrame::Feedback` and is answered **on the server's connection thread** by
-`metrics_tap::mark`, never through `hub.submit`'s command queue: the worker can be pinned for tens of seconds
-and a mark that waits lands on the wrong turn. The hub then publishes a routine `Warning { code: "feedback" }`,
-which every head draws, so the operator sees it was taken. `mark` is also the one place that knows which turn a
+`metrics_tap::mark`, never through `hub.submit`'s command queue: the worker can be pinned for tens of seconds and
+a mark that waits lands on the wrong turn. The hub then publishes a routine `Warning { code: "feedback" }`, which
+every head draws, so the operator sees it was taken. `mark` is also the one place that knows which turn a
 transcript row belongs to (the last 4,096 rows), so a mark on an older row keeps the row id and says it has no
 turn.
 
@@ -242,26 +241,21 @@ FROM (SELECT build, verb, queued_ms,
 GROUP BY 1, 2 ORDER BY max_queued_ms DESC;
 ```
 
-**Q4 (R71)** - excuses by model and fill decile: group `kind = 'context.claim'` by `name`,
-`n1 * 10 / NULLIF(n2, 0)` and `outcome`, with `AVG(n3) / 1000` as the score. **Q5 (R72/R73)** - compaction
-accuracy: group `kind = 'compaction'` by `name` and `outcome` over `n1`, `n2`, `attrs->>'before_ledger'` and
-`AVG(dur_ms)`. **Q6 (R77)** - does a nag work: join `kind = 'nag'` to `kind = 'nag.followup'` on `turn_id`,
-average `outcome = 'touched'`, group by `attrs->>'operator_row'`.
+**Q4 to Q8** are groups over one kind: R71's excuses by `name`, `n1 * 10 / NULLIF(n2, 0)` and `outcome`;
+R72/R73's compactions by `name` and `outcome` over `n1`, `n2`, `attrs->>'before_ledger'` and `AVG(dur_ms)`;
+R77's nags by joining `kind = 'nag'` to `kind = 'nag.followup'` on `turn_id` and averaging
+`outcome = 'touched'`; latency and throughput from `round_event`'s `ttfb_ms`, `output_tokens * 1000 /
+predicted_ms`, `cached_tokens / prompt_tokens` and `ledger_tokens / prompt_tokens` - the last being R72's
+discrepancy as one column; and tool reliability from `tool_call`'s `AVG(outcome <> 'ok')`, `MAX(dur_ms)` and
+`peak_kib` against `attrs->>'cap_kib'`.
 
-**Q7 - latency, throughput and R72's two counts side by side:** group `round_event` by `model` and `provider`
-over `AVG(ttfb_ms)`, `output_tokens * 1000 / predicted_ms`, `cached_tokens / prompt_tokens` and
-`ledger_tokens / prompt_tokens` - the last being the R72 discrepancy as one column, the box's count of the
-prompt against the number the provider reported for it. **Q8 - tool reliability:** group `tool_call` by tool over
-`AVG(outcome <> 'ok')`, `MAX(dur_ms)`, `AVG(peak_kib)`, `AVG(attrs->>'cap_kib')` and a count of calls within
-10 % of the cap.
-
-**Q9 - degradation (§2.6)** answers nothing until `attrs.deg` exists. **Q10 to Q15:** memory (R66) is
-`mem.sample`'s rss, heap live and `attrs.harness_mib` per daemon over time - a daemon whose rss climbs while the
-heap does not is pointing at SQLite or the vocabulary, not at Rust. Queue reliability (R61/R76) is time in each
-state from the store's `queue_transition`, `LEAD(at_ms) OVER (PARTITION BY queue, entry_id ORDER BY seq)`
-against `at_ms`. Adjudication and the oracle come from the store's `adjudication` table as it is. Cost is
-`SUM(cost_micros_usd) / 1e6` per day and model. Operator load is approvals asked per hour and interrupts per
-turn. Feedback is `letibot stats feedback`.
+**Q9** answers nothing until `attrs.deg` exists (§2.6). **Q10 to Q15:** memory (R66) is `mem.sample`'s rss, heap
+live and `attrs.harness_mib` per daemon over time - a daemon whose rss climbs while the heap does not is pointing
+at SQLite or the vocabulary, not at Rust. Queue reliability (R61/R76) is time in each state from the store's
+`queue_transition`, `LEAD(at_ms) OVER (PARTITION BY queue, entry_id ORDER BY seq)` against `at_ms`. Adjudication
+and the oracle come from the store's `adjudication` table as it is. Cost is `SUM(cost_micros_usd) / 1e6` per day
+and model; operator load is approvals asked per hour and interrupts per turn; feedback is `letibot stats
+feedback`.
 
 ### 3.2 `letibot stats` - the CLI
 
