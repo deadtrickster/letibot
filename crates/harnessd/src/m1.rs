@@ -426,114 +426,7 @@ fn judge(
     });
 
     // ---- C4: the f_keep distribution -------------------------------------- D11
-    let mut keeps: Vec<f64> = rows.iter().filter_map(|r| r.m.f_keep()).collect();
-    keeps.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mut repre: Vec<f64> = rows.iter().map(|r| r.m.reprefill() as f64).collect();
-    repre.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p10 = percentile(&keeps, 0.10);
-    out.push(format!(
-        "C4  {}  f_keep (D11: cached / the entry we left behind) p10 {:.4} p50 {:.4} \
-         p99 {:.4} min {:.4} over {} comparable submissions; re-prefill p50 {:.0} \
-         p99 {:.0} tokens  [exit criterion: p10 >= 0.99]",
-        if p10 >= 0.99 { "PASS" } else { "FAIL" },
-        p10,
-        percentile(&keeps, 0.50),
-        percentile(&keeps, 0.99),
-        keeps.first().copied().unwrap_or(f64::NAN),
-        keeps.len(),
-        percentile(&repre, 0.50),
-        percentile(&repre, 0.99),
-    ));
-    let below: Vec<String> = rows
-        .iter()
-        .filter(|r| r.m.f_keep().is_some_and(|f| f < 0.99))
-        .map(|r| {
-            format!(
-                "turn {}: f_keep {:.4}",
-                r.turn,
-                r.m.f_keep().unwrap_or(f64::NAN)
-            )
-        })
-        .collect();
-    out.push(if below.is_empty() {
-        format!(
-            "        every one of the {} comparable submissions reused the whole entry \
-             (f_keep = 1.0000 exactly)",
-            keeps.len()
-        )
-    } else {
-        format!(
-            "        {} of {} below 0.99, and they are exactly C3's shortfall turns: {}",
-            below.len(),
-            keeps.len(),
-            below.join("; ")
-        )
-    });
-
-    // `f_keep` above 1 is a fact about our denominator, not about the cache, and a
-    // p50 printed as 1.0001 with no explanation is exactly the kind of number
-    // somebody reads wrong. See `TurnMetrics::f_keep`.
-    let over: Vec<i64> = rows
-        .iter()
-        .filter_map(|r| match &r.m.prefix_check {
-            letibot_turn::PrefixCheck::Held {
-                expected_cached_min,
-                cached,
-                ..
-            } => Some(*cached as i64 - *expected_cached_min as i64),
-            _ => None,
-        })
-        .filter(|d| *d > 0)
-        .collect();
-    if !over.is_empty() {
-        let mut o = over.clone();
-        o.sort_unstable();
-        out.push(format!(
-            "        {} of {} came back ABOVE 1.0, by a median of {} and at most {} \
-             token(s). Our denominator is a lower bound on the entry the server kept \
-             — the boundary tokens the renderer strips before commit are re-rendered \
-             identically next turn, and a turn that fails after prefilling warms the \
-             slot while leaving no witness. Reported unclamped on purpose.",
-            o.len(),
-            keeps.len(),
-            o[o.len() / 2],
-            o[o.len() - 1],
-        ));
-    }
-
-    // `f_sim` - the OLD C4 - reported beside it so the two can be told apart. Its denominator
-    // is the whole new prompt, so its ceiling on any submission is `1 - new_tokens/prompt`
-    let mut sims: Vec<f64> = rows.iter().filter_map(|r| r.m.f_sim()).collect();
-    sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let ceilings: Vec<f64> = rows
-        .iter()
-        .filter_map(|r| match &r.m.prefix_check {
-            letibot_turn::PrefixCheck::Held {
-                expected_cached_min,
-                ..
-            } if r.m.prompt_tokens > 0 => {
-                Some(*expected_cached_min as f64 / r.m.prompt_tokens as f64)
-            }
-            _ => None,
-        })
-        .collect();
-    let mut c = ceilings.clone();
-    c.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let total_prompt: u64 = rows.iter().map(|r| r.m.prompt_tokens).sum();
-    let total_repre: u64 = rows.iter().map(|r| r.m.reprefill()).sum();
-    out.push(format!(
-        "f_sim   (NOT C4 — cached / this prompt, the metric T22 records as \
-         mis-specified) p10 {:.4} p50 {:.4} p99 {:.4}; the ceiling these prompts \
-         allow is p10 {:.4} p50 {:.4}, since appending a tool result caps it \
-         regardless of the cache. Session-wide {} of {} prompt tokens were prefilled.",
-        percentile(&sims, 0.10),
-        percentile(&sims, 0.50),
-        percentile(&sims, 0.99),
-        percentile(&c, 0.10),
-        percentile(&c, 0.50),
-        total_repre,
-        total_prompt,
-    ));
+    out.extend(c4(rows));
 
     // ---- C5: reasoning replay does not collapse the cache ------------------ Measured on
     // `f_keep`, which since D11 is the right metric for it.
@@ -699,7 +592,241 @@ fn judge(
     out
 }
 
+/// C4's exit bar, for `f_keep` alone: its denominator is the entry the previous turn left in the
+/// cache. The other ratio, cached over this prompt, falls by however much the conversation grew, so
+/// no bar of 0.99 is reachable on it.
+const C4_KEEP: f64 = 0.99;
+
+/// C4 over the rows, with `f_sim` printed beside it under its own name. Pure, so one session can be
+/// held against the bar without a model, a store and a slot, and it answers the lines a reader sees
+/// rather than numbers only a test would agree with.
+fn c4(rows: &[Row]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut keeps: Vec<f64> = rows.iter().filter_map(|r| r.m.f_keep()).collect();
+    keeps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut repre: Vec<f64> = rows.iter().map(|r| r.m.reprefill() as f64).collect();
+    repre.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p10 = percentile(&keeps, 0.10);
+    lines.push(format!(
+        "C4  {}  f_keep (D11: cached / the entry we left behind) p10 {:.4} p50 {:.4} \
+         p99 {:.4} min {:.4} over {} comparable submissions; re-prefill p50 {:.0} \
+         p99 {:.0} tokens  [exit criterion: p10 >= 0.99]",
+        if p10 >= C4_KEEP { "PASS" } else { "FAIL" },
+        p10,
+        percentile(&keeps, 0.50),
+        percentile(&keeps, 0.99),
+        keeps.first().copied().unwrap_or(f64::NAN),
+        keeps.len(),
+        percentile(&repre, 0.50),
+        percentile(&repre, 0.99),
+    ));
+    let below: Vec<String> = rows
+        .iter()
+        .filter(|r| r.m.f_keep().is_some_and(|f| f < C4_KEEP))
+        .map(|r| {
+            format!(
+                "turn {}: f_keep {:.4}",
+                r.turn,
+                r.m.f_keep().unwrap_or(f64::NAN)
+            )
+        })
+        .collect();
+    lines.push(if below.is_empty() {
+        format!(
+            "        every one of the {} comparable submissions reused the whole entry \
+             (f_keep = 1.0000 exactly)",
+            keeps.len()
+        )
+    } else {
+        format!(
+            "        {} of {} below {C4_KEEP}, and they are exactly C3's shortfall turns: {}",
+            below.len(),
+            keeps.len(),
+            below.join("; ")
+        )
+    });
+
+    // `f_keep` above 1 is a fact about our denominator, not about the cache, and a
+    // p50 printed as 1.0001 with no explanation is exactly the kind of number
+    // somebody reads wrong. See `TurnMetrics::f_keep`.
+    let over: Vec<i64> = rows
+        .iter()
+        .filter_map(|r| match &r.m.prefix_check {
+            letibot_turn::PrefixCheck::Held {
+                expected_cached_min,
+                cached,
+                ..
+            } => Some(*cached as i64 - *expected_cached_min as i64),
+            _ => None,
+        })
+        .filter(|d| *d > 0)
+        .collect();
+    if !over.is_empty() {
+        let mut o = over.clone();
+        o.sort_unstable();
+        lines.push(format!(
+            "        {} of {} came back ABOVE 1.0, by a median of {} and at most {} \
+             token(s). Our denominator is a lower bound on the entry the server kept \
+             — the boundary tokens the renderer strips before commit are re-rendered \
+             identically next turn, and a turn that fails after prefilling warms the \
+             slot while leaving no witness. Reported unclamped on purpose.",
+            o.len(),
+            keeps.len(),
+            o[o.len() / 2],
+            o[o.len() - 1],
+        ));
+    }
+
+    // `f_sim` is the old reading of C4: cached over this prompt, so appending a tool result caps it
+    // whatever the cache did. Nothing here compares it to `C4_KEEP`.
+    let mut sims: Vec<f64> = rows.iter().filter_map(|r| r.m.f_sim()).collect();
+    sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let ceilings: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| match &r.m.prefix_check {
+            letibot_turn::PrefixCheck::Held {
+                expected_cached_min,
+                ..
+            } if r.m.prompt_tokens > 0 => {
+                Some(*expected_cached_min as f64 / r.m.prompt_tokens as f64)
+            }
+            _ => None,
+        })
+        .collect();
+    let mut c = ceilings.clone();
+    c.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let total_prompt: u64 = rows.iter().map(|r| r.m.prompt_tokens).sum();
+    let total_repre: u64 = rows.iter().map(|r| r.m.reprefill()).sum();
+    lines.push(format!(
+        "f_sim   (NOT C4 — cached over this prompt, so appending a tool result caps it \
+         whatever the cache did) p10 {:.4} p50 {:.4} p99 {:.4}; the ceiling these prompts \
+         allow is p10 {:.4} p50 {:.4}, since appending a tool result caps it \
+         regardless of the cache. Session-wide {} of {} prompt tokens were prefilled.",
+        percentile(&sims, 0.10),
+        percentile(&sims, 0.50),
+        percentile(&sims, 0.99),
+        percentile(&c, 0.10),
+        percentile(&c, 0.50),
+        total_repre,
+        total_prompt,
+    ));
+
+    lines
+}
+
 fn die(msg: &str) -> ! {
     eprintln!("letibot-m1: {msg}");
     std::process::exit(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use letibot_backend::{Meter, TurnCost};
+    use letibot_turn::{FinishReason, PrefixCheck};
+
+    /// One submission as `judge` sees it. `entry` is what the previous turn left in the server's
+    /// cache, `reused` is how much of it came back, and `prompt` is this turn's own size, the only
+    /// number `f_sim` is about.
+    fn row(turn: usize, prompt: u64, reused: u64, entry: u64) -> Row {
+        Row {
+            turn,
+            kind: "ask",
+            after_reasoning: false,
+            m: TurnMetrics {
+                turn_id: format!("t{turn}"),
+                model: "m".into(),
+                dialect_template_sha: "00".into(),
+                ledger_head_sent: "ab".into(),
+                prompt_tokens: prompt,
+                cached_tokens: reused,
+                predicted_tokens: 0,
+                prompt_tokens_server: prompt,
+                prompt_processed: prompt - reused,
+                finish_reason: FinishReason::Eos,
+                prompt_ms: 0.0,
+                predicted_ms: 0.0,
+                draft_n: 0,
+                draft_n_accepted: 0,
+                id_slot: 0,
+                n_busy_slots: None,
+                prefix_check: PrefixCheck::Held {
+                    expected_cached_min: entry,
+                    cached: reused,
+                    shortfall: entry - reused,
+                },
+                cost: TurnCost {
+                    meter: Meter::WallClock,
+                    prompt_tokens: prompt,
+                    cached_tokens: reused,
+                    generated_tokens: 0,
+                    wall_ms: 0,
+                    micros_usd: None,
+                },
+                wall_ms: 0,
+                first_byte_ms: None,
+            },
+        }
+    }
+
+    /// The turn that found the defect: the whole 9,000-token entry came back and the prompt still
+    /// grew to 10,093 through a tool result. A pass on the entry, and the same numbers as a fraction
+    /// of the prompt are 0.8917 and would fail.
+    #[test]
+    fn c4s_bar_is_about_the_entry_and_not_about_the_prompt() {
+        let rows: Vec<Row> = (0..3).map(|i| row(i, 10_093, 9_000, 9_000)).collect();
+        let lines = c4(&rows);
+        assert!(
+            lines[0].contains("C4  PASS"),
+            "a session that reused every entry it was offered failed C4, so the bar is on the \
+             wrong quantity: {}",
+            lines[0]
+        );
+        assert!(lines[0].contains("p10 1.0000"), "{}", lines[0]);
+        let sim = lines
+            .iter()
+            .find(|l| l.starts_with("f_sim"))
+            .unwrap_or_else(|| panic!("no f_sim line in {lines:?}"));
+        assert!(sim.contains("NOT C4"), "{sim}");
+        // The case only means something while the other quantity is genuinely under the bar.
+        assert!(sim.contains("p50 0.8917"), "{sim}");
+        for weak in ["p10 0.8917", "p10 0.8920"] {
+            assert!(!lines[0].contains(weak), "{weak} in {}", lines[0]);
+        }
+    }
+
+    /// The converse, and the reason both directions are asserted: a bar applied to `f_sim` misses
+    /// this one. Half the entry came back on a prompt that grew by a single token, so the fraction
+    /// of the prompt is 0.998 and passes while the fraction of the entry is 0.500 and fails.
+    #[test]
+    fn a_server_that_reused_half_the_entry_fails_c4_though_f_sim_would_pass() {
+        let rows = vec![row(0, 501, 500, 1_000), row(1, 501, 500, 1_000)];
+        let lines = c4(&rows);
+        assert!(
+            lines[0].contains("C4  FAIL"),
+            "half the entry came back and C4 passed: {}",
+            lines[0]
+        );
+        assert!(lines[0].contains("p10 0.5000"), "{}", lines[0]);
+        let sim = lines
+            .iter()
+            .find(|l| l.starts_with("f_sim"))
+            .unwrap_or_else(|| panic!("no f_sim line in {lines:?}"));
+        assert!(sim.contains("p50 0.9980"), "{sim}");
+    }
+
+    /// A first turn has nothing to compare against: no distribution, and NaN fails the bar rather
+    /// than passing by vacancy.
+    #[test]
+    fn a_session_with_no_cached_entry_does_not_pass_c4_by_vacancy() {
+        let mut first = row(0, 1_000, 0, 0);
+        first.m.prefix_check = PrefixCheck::FirstTurn;
+        let lines = c4(&[first]);
+        assert!(
+            lines[0].contains("C4  FAIL"),
+            "a first turn is not a pass: {}",
+            lines[0]
+        );
+        assert!(lines[0].contains("p10 NaN"), "{}", lines[0]);
+    }
 }
